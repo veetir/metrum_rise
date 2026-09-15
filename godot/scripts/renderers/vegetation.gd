@@ -43,6 +43,10 @@ var cast_shadows := true
 # authored TREE_FAR_M. Must stay above TREE_MID_M or the far level gets an empty range.
 var far_range_override_m := 0.0
 var patches: Dictionary = {}
+# Patches that left terrain residency but are still inside the scatter radius. Terrain
+# residency follows the camera frustum, so a rotation evicts patches that are about to be
+# wanted again. These are hidden rather than freed, because rebuilding one costs a frame.
+var cache: Dictionary = {}
 var queue: Array[Vector2i] = []
 # meshes[species][variant] is an Array[ArrayMesh], ordered near to far.
 var meshes: Array = []
@@ -79,6 +83,9 @@ func rebuild_from_simulation_state() -> void:
 	for patch in patches.values():
 		patch.queue_free()
 	patches.clear()
+	for patch in cache.values():
+		patch.queue_free()
+	cache.clear()
 	queue.clear()
 	tree_count = 0
 	generated_patches = 0
@@ -112,13 +119,23 @@ func _process(_delta: float) -> void:
 				wanted[key] = center.distance_squared_to(camera_xz)
 		for key in patches.keys():
 			if not wanted.has(key):
-				tree_count -= patches[key].get_meta("tree_count")
-				patches[key].queue_free()
-				patches.erase(key)
+				_retire_patch(key, span, world, camera_xz)
+		# A cached patch outside the scatter radius will not be wanted again from here, so it
+		# is freed. This is what bounds the cache: it holds at most the patches of one disk.
+		for key in cache.keys():
+			if _patch_distance(key, span, world, camera_xz) > canopy_far_m() + span:
+				cache[key].queue_free()
+				cache.erase(key)
 		queue.clear()
 		for key in wanted:
-			if not patches.has(key):
-				queue.append(key)
+			if patches.has(key):
+				continue
+			# A cached patch is already built. Showing it again costs no upload, so it does
+			# not enter the queue and does not compete with a patch that has none.
+			if cache.has(key):
+				_restore_patch(key)
+				continue
+			queue.append(key)
 		queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool: return wanted[a] > wanted[b])
 	if queue.is_empty():
 		# O(resident patches) per frame: one dictionary lookup and one distance. A road,
@@ -194,18 +211,43 @@ func _refresh_distant_lod(patch: Node3D, distance: float) -> void:
 ## Re-applies the shadow setting to resident patches. Avoids a full placement rebuild.
 func set_cast_shadows(value: bool) -> void:
 	cast_shadows = value
-	for patch in patches.values():
-		for instance in patch.get_children():
-			instance.cast_shadow = _shadow_setting(
-				int(instance.get_meta("species")), int(instance.get_meta("lod"))
-			)
+	for store in [patches, cache]:
+		for patch in store.values():
+			for instance in patch.get_children():
+				instance.cast_shadow = _shadow_setting(
+					int(instance.get_meta("species")), int(instance.get_meta("lod"))
+				)
+
+## Takes a patch out of the drawn set. A patch still inside the scatter radius is hidden and
+## kept, because terrain residency is frustum-derived and will very likely ask for it again
+## within a few frames. Only a patch that is genuinely out of range is freed.
+func _retire_patch(key: Vector2i, span: float, world: Vector2, camera_xz: Vector2) -> void:
+	var patch: Node3D = patches[key]
+	tree_count -= int(patch.get_meta("tree_count"))
+	patches.erase(key)
+	if _patch_distance(key, span, world, camera_xz) <= canopy_far_m() + span:
+		patch.visible = false
+		cache[key] = patch
+		return
+	patch.queue_free()
+
+## Returns a hidden patch to the drawn set. The staleness and range tests in `_process` run
+## against it on the following frame, so a patch that was edited while it was hidden still
+## rebuilds; showing it first is what keeps the terrain from being bare in the meantime.
+func _restore_patch(key: Vector2i) -> void:
+	var patch: Node3D = cache[key]
+	cache.erase(key)
+	patch.visible = true
+	patches[key] = patch
+	tree_count += int(patch.get_meta("tree_count"))
 
 func has_pending_work() -> bool:
 	return enabled and (last_revision == -1 or not queue.is_empty())
 
 func metrics() -> Dictionary:
 	return {"enabled": enabled, "resident_patches": patches.size(), "resident_trees": tree_count,
-		"pending_patches": queue.size(), "generated_patches": generated_patches,
+		"pending_patches": queue.size(), "cached_patches": cache.size(),
+		"generated_patches": generated_patches,
 		"max_patch_generation_upload_ms": generation_ms_max, "density_fraction": density_fraction}
 
 func _upload_patch(key: Vector2i, span: float) -> void:
