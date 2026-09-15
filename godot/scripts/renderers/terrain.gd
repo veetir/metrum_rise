@@ -990,7 +990,9 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
 	material.set_shader_parameter("terrain_grass_visual_debug_mode", _terrain_grass_visual_debug_mode)
-	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
+	material.set_shader_parameter(
+		"scene_shadow_max_distance_m", SceneLightingConfig.shadow_max_distance_m()
+	)
 	material.set_shader_parameter(
 		"scene_shadow_split_distances_m",
 		SceneLightingConfig.shadow_split_distances()
