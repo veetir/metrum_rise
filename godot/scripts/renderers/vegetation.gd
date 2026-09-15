@@ -62,8 +62,12 @@ var ready_for_world := false
 func _ready() -> void:
 	meshes = TreeSpecies.build_meshes()
 
-## Draw range for one species level as (begin_m, end_m).
-func lod_range(species: int, lod: int) -> Vector2:
+## Draw range for one species level as (begin_m, end_m). `near_band` says whether the patch
+## also carries the near per-variant instances. A patch built far away carries none, and then
+## the distant instance must begin at zero: it is the only thing in the patch, so a begin of
+## TREE_NEAR_M empties the patch the moment the camera reaches that distance. The rebuild that
+## adds the near band is queued at one patch per frame, so a fast approach outruns it.
+func lod_range(species: int, lod: int, near_band: bool) -> Vector2:
 	if species == TreeSpecies.BUSH:
 		return Vector2(0.0, BUSH_RANGE_M)
 	if species == TreeSpecies.ROCK:
@@ -72,7 +76,7 @@ func lod_range(species: int, lod: int) -> Vector2:
 		return Vector2(0.0, TREE_NEAR_M)
 	# One instance covers both crown levels. TREE_MID_M chooses which mesh it carries, not
 	# where it starts and stops, so the mid/far switch is not a visibility band at all.
-	return Vector2(TREE_NEAR_M, canopy_far_m())
+	return Vector2(TREE_NEAR_M if near_band else 0.0, canopy_far_m())
 
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
@@ -333,7 +337,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
 					near_mm.set_instance_color(i, near_tints[i])
-				_add_instance(patch, near_mm, species, 0)
+				_add_instance(patch, near_mm, species, 0, near_band)
 		# Only the near level pays for variants. Mid and far share variant zero's mesh and the
 		# whole species population, so distance does not multiply draw calls. They also share
 		# one instance: the two levels draw the same transforms with a different mesh, so the
@@ -353,7 +357,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 				for i in range(far_transforms.size()):
 					far_mm.set_instance_transform(slot, far_transforms[i])
 					slot += 1
-			_add_instance(patch, far_mm, species, 1)
+			_add_instance(patch, far_mm, species, 1, near_band)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
 	patch.set_meta("vegetation_generation", vegetation_generation)
@@ -370,13 +374,13 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 	generated_patches += 1
 	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - start) / 1000.0)
 
-func _add_instance(patch: Node3D, mm: MultiMesh, species: int, lod: int) -> void:
+func _add_instance(patch: Node3D, mm: MultiMesh, species: int, lod: int, near_band: bool) -> void:
 	var instance := MultiMeshInstance3D.new()
 	instance.multimesh = mm
 	instance.set_meta("species", species)
 	instance.set_meta("lod", lod)
 	instance.cast_shadow = _shadow_setting(species, lod)
-	var range_m := lod_range(species, lod)
+	var range_m := lod_range(species, lod, near_band)
 	# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, and
 	# the instance is a whole patch: it made every plant in a patch translucent
 	# whenever the patch centre sat in a band, however close the plant itself was,

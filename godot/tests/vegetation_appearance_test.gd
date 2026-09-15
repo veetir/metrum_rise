@@ -91,8 +91,9 @@ func run():
 			resident += mm.instance_count
 			var species: int = instance.get_meta("species")
 			var lod: int = instance.get_meta("lod")
-			assert(instance.visibility_range_begin == vegetation.lod_range(species, lod).x)
-			assert(instance.visibility_range_end == vegetation.lod_range(species, lod).y)
+			var near_band: bool = patch.get_meta("near_band")
+			assert(instance.visibility_range_begin == vegetation.lod_range(species, lod, near_band).x)
+			assert(instance.visibility_range_end == vegetation.lod_range(species, lod, near_band).y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			assert(instance.cast_shadow == vegetation._shadow_setting(species, lod))
 			if lod > 0:
