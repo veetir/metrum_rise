@@ -85,11 +85,20 @@ var _pinned_day_fraction := -1.0
 var _sky_applied_elevation_deg := INF
 var _sky_applied_azimuth_deg := INF
 
+## Shadow range in effect, in metres. `METRUM_SHADOW_FAR` replaces the authored range, so a
+## probe can separate the two discontinuities that sit near each other in a forest view: the
+## end of shadow at SHADOW_MAX_DISTANCE_M, and the vegetation mesh change further out. Values
+## at or below zero keep the authored range.
+static func shadow_max_distance_m() -> float:
+	var override := OS.get_environment("METRUM_SHADOW_FAR").strip_edges().to_float()
+	return override if override > 0.0 else SHADOW_MAX_DISTANCE_M
+
 static func shadow_split_distances() -> Vector3:
+	var far_m := shadow_max_distance_m()
 	return Vector3(
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_1,
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_2,
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_3
+		far_m * SHADOW_SPLIT_1,
+		far_m * SHADOW_SPLIT_2,
+		far_m * SHADOW_SPLIT_3
 	)
 
 static func is_lighting_debug_enabled() -> bool:
@@ -452,7 +461,7 @@ func _configure_sun(scene_root: Node) -> void:
 	sun.shadow_normal_bias = SHADOW_NORMAL_BIAS
 	sun.shadow_blur = SHADOW_BLUR
 	sun.set("directional_shadow_mode", 2)
-	sun.set("directional_shadow_max_distance", SHADOW_MAX_DISTANCE_M)
+	sun.set("directional_shadow_max_distance", shadow_max_distance_m())
 	sun.set("directional_shadow_split_1", SHADOW_SPLIT_1)
 	sun.set("directional_shadow_split_2", SHADOW_SPLIT_2)
 	sun.set("directional_shadow_split_3", SHADOW_SPLIT_3)
