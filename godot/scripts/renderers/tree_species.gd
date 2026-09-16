@@ -4,6 +4,10 @@
 ## Owns mesh construction independently of patch residency and instance placement.
 extends RefCounted
 
+# Matches the renderers' idiom. A bare SceneLighting class_name reference needs Godot's
+# global class cache, which a freshly cloned checkout has not built yet.
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+
 # Species ordinals must match vegetation_api.rs.
 const CONIFER := 0
 const BROADLEAF := 1
@@ -272,7 +276,28 @@ static func _wind_branch_material() -> ShaderMaterial:
 	if _wind_material == null:
 		_wind_material = ShaderMaterial.new()
 		_wind_material.shader = preload("res://scripts/shaders/vegetation_wind.gdshader")
+		_apply_canopy_shading(_wind_material)
 	return _wind_material
+
+## Ties the canopy shading ramp to the shadow cascades. The term replaces the darkening the
+## cascades stop supplying, so it has to begin where they begin to fade and reach full strength
+## where they end. Reading the range through the accessor keeps the probe override in step.
+## Every material is built once at startup, so this is not on a per-frame path.
+static func _apply_canopy_shading(material: ShaderMaterial) -> void:
+	var far_m := SceneLightingConfig.shadow_max_distance_m()
+	material.set_shader_parameter(
+		"canopy_shade_begin_m", far_m * SceneLightingConfig.SHADOW_FADE_START
+	)
+	material.set_shader_parameter("canopy_shade_end_m", far_m)
+	material.set_shader_parameter("canopy_shade", _canopy_shade_strength())
+
+## Probe override for the canopy shading strength. Zero removes the term without an edit to a
+## shader, which is what a paired look at the same stand needs; one is the derived default and
+## values above it extrapolate past the floor for a stand that still reads too bright. An unset
+## or unparsable value keeps the default.
+static func _canopy_shade_strength() -> float:
+	var raw := OS.get_environment("METRUM_CANOPY_SHADE").strip_edges()
+	return clampf(raw.to_float(), 0.0, 2.0) if raw.is_valid_float() else 1.0
 
 ## One cached atlas serves every card; DDS retains the baked coverage-corrected mips.
 static func _foliage_material() -> ShaderMaterial:
@@ -282,6 +307,7 @@ static func _foliage_material() -> ShaderMaterial:
 		_card_material = ShaderMaterial.new()
 		_card_material.shader = preload("res://scripts/shaders/vegetation_wind_cards.gdshader")
 		_card_material.set_shader_parameter("foliage_mask", _card_texture)
+		_apply_canopy_shading(_card_material)
 	return _card_material
 
 ## Fixed branch counts and depth bound startup work to O(emitted vertices) per variant.
@@ -665,6 +691,7 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
+		_apply_canopy_shading(material)
 		_distant_materials[index] = material
 	return _distant_materials[index]
 

@@ -6,6 +6,7 @@
 extends SceneTree
 const Vegetation = preload("res://scripts/renderers/vegetation.gd")
 const Species = preload("res://scripts/renderers/tree_species.gd")
+const SceneLightingConfig = preload("res://scripts/core/scene_lighting.gd")
 const SPAN = 510.0
 class Terrain extends Node:
 	func get_patch_surface_generation(_key): return 7
@@ -267,8 +268,15 @@ func _check_meshes(meshes: Array) -> void:
 		assert(material.shader == preload("res://scripts/shaders/vegetation_distant.gdshader"))
 	assert(shared_distant[0].get_shader_parameter("crown_coverage")
 		!= shared_distant[1].get_shader_parameter("crown_coverage"))
+	for material in [shared_wind, shared_cards, shared_distant[0], shared_distant[1]]:
+		assert(material.get_shader_parameter("canopy_shade_end_m")
+			== SceneLightingConfig.shadow_max_distance_m())
+		assert(material.get_shader_parameter("canopy_shade_begin_m")
+			< material.get_shader_parameter("canopy_shade_end_m"))
 	var distant_code: String = shared_distant[0].shader.code
-	assert(distant_code.contains("BACKLIGHT = vegetation_backlight(COLOR.rgb);"))
+	# No trailing semicolon: the distant crown scales this by the canopy shade term. The
+	# contract is that it still routes backlight through the shared helper on its own colour.
+	assert(distant_code.contains("BACKLIGHT = vegetation_backlight(COLOR.rgb)"))
 	assert(distant_code.contains("ALPHA_SCISSOR_THRESHOLD = 0.4;"))
 	assert(distant_code.contains("COLOR.g > COLOR.r"))
 	# Source contracts only: the dummy renderer cannot compile shaders or prove pass routing.

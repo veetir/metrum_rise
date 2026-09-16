@@ -491,7 +491,7 @@ func _print_debug_if_requested(scene_root: Node) -> void:
 			str(_day_sample.fog_color),
 			_day_sample.ambient_energy,
 			str(_day_sample.ambient_light_scale),
-			SHADOW_MAX_DISTANCE_M,
+			shadow_max_distance_m(),
 			splits.x,
 			splits.y,
 			splits.z,

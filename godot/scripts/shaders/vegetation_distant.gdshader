@@ -6,9 +6,16 @@ shader_type spatial;
 // Lower than the former .22 point mask; no extra surfaces or texture fetches.
 uniform float crown_coverage : hint_range(0.0, 1.0) = 0.18;
 varying vec3 crown_position;
+varying float canopy_light;
 
 void vertex() {
 	crown_position = VERTEX;
+	// No world_vertex_coords here: the hash below needs object space, so the world position
+	// the shade ramp measures from is built rather than read.
+	canopy_light = vegetation_canopy_shade(
+		MODEL_MATRIX[3].xz,
+		distance((MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD)
+	);
 }
 
 // Power-of-two object-space cells follow the fragment footprint.
@@ -41,9 +48,9 @@ void fragment() {
 	// Foliage keeps the near crown mean. Wood takes a canopy-shadow tone instead of
 	// its own bark colour: a lit trunk at a kilometre is the brightest thing on the
 	// mesh, and the real forest hides its trunks behind the canopy at that range.
-	ALBEDO = foliage ? COLOR.rgb : vec3(0.025, 0.030, 0.010);
+	ALBEDO = (foliage ? COLOR.rgb : vec3(0.025, 0.030, 0.010)) * canopy_light;
 	ROUGHNESS = 1.0;
-	BACKLIGHT = vegetation_backlight(COLOR.rgb);
+	BACKLIGHT = vegetation_backlight(COLOR.rgb) * canopy_light;
 	// Unresolvable crowns gradually fill; wood stays sparse and in canopy shadow.
 	float coverage = foliage ? mix(crown_coverage, 1.0, smoothstep(4.0, 8.0, footprint)) : 0.04;
 	ALPHA = step(filtered_sample(crown_position, footprint), coverage);
