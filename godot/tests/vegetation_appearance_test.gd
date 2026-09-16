@@ -85,19 +85,25 @@ func run():
 		nodes += patch.get_child_count()
 		assert(patch.get_meta("surface_generation") == 7)
 		assert(patch.get_meta("understory"))
-		# Every level of a patch measures its visibility range from one bounds, or the
+		# The levels of one species measure their visibility range from one bounds, or the
 		# complementary near and distant ranges stop and start at different distances and
-		# drop the trees in between. The dummy renderer reports empty multimesh bounds, so
-		# here the shared value is the engine default; the contract is that it is shared.
-		var shared_bounds := AABB()
-		var union := AABB()
-		var first := true
+		# drop the trees in between. A single-level species keeps its own bounds. The dummy
+		# renderer reports empty multimesh bounds, so here every shared value is the engine
+		# default; the contract is that a species with two levels shares one box.
+		var species_bounds: Dictionary = {}
+		var species_union: Dictionary = {}
 		for instance in patch.get_children():
-			union = instance.get_aabb() if first else union.merge(instance.get_aabb())
-			shared_bounds = instance.custom_aabb if first else shared_bounds
-			first = false
-			assert(instance.custom_aabb == shared_bounds)
-		assert(shared_bounds == (union if union.size != Vector3.ZERO else AABB()))
+			var species: int = instance.get_meta("species")
+			var box: AABB = instance.get_aabb()
+			species_union[species] = (
+				box if not species_union.has(species) else (species_union[species] as AABB).merge(box)
+			)
+			if species_bounds.has(species):
+				assert(instance.custom_aabb == species_bounds[species])
+			species_bounds[species] = instance.custom_aabb
+		for species in species_bounds:
+			var union: AABB = species_union[species]
+			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
 			# Only the near band carries instance colours; see the renderer's distant level.
@@ -106,8 +112,15 @@ func run():
 			var species: int = instance.get_meta("species")
 			var lod: int = instance.get_meta("lod")
 			var near_band: bool = patch.get_meta("near_band")
-			assert(instance.visibility_range_begin == vegetation.lod_range(species, lod, near_band).x)
-			assert(instance.visibility_range_end == vegetation.lod_range(species, lod, near_band).y)
+			var variant: int = instance.get_meta("variant")
+			# The understory staggers its cutoff by variant and the canopy switches on a
+			# distance this patch keeps, so both arguments come from the instance, not from
+			# the constants. See CANOPY_SWITCH_JITTER_M and UNDERSTORY_STAGGER_MIN.
+			var expected := vegetation.lod_range(
+				species, lod, variant, near_band, vegetation.canopy_switch_m(key)
+			)
+			assert(instance.visibility_range_begin == expected.x)
+			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			assert(instance.cast_shadow == vegetation._shadow_setting(species, lod))
 			if lod > 0:
@@ -117,12 +130,8 @@ func run():
 				assert(mm.mesh == vegetation.meshes[species][0][patch.get_meta("distant_lod")])
 				assert(mm.instance_count == 512)
 			else:
-				var matched := false
-				for variant in range(Species.VARIANT_COUNTS[species]):
-					if mm.mesh == vegetation.meshes[species][variant][0]:
-						assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
-						matched = true
-				assert(matched)
+				assert(mm.mesh == vegetation.meshes[species][variant][0])
+				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
 	positions.sort()
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()

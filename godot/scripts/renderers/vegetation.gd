@@ -36,6 +36,21 @@ const UNDERSTORY_PATCH_RANGE_M := 800.0
 # conservative range test measures from the patch centre out to its farthest corner.
 const PATCH_HALF_DIAGONAL := 0.7071067811865476
 
+# How far inside its range one understory variant may stop, as a share of that range. Bush
+# and rock carry a single level, so a variant that stops early drops nothing into a gap: the
+# plant ends and the rest of the patch carries on. Twelve variants then end at twelve
+# distances and the carpet dissolves over the last quarter of its range. Sharing one distance
+# instead ends every plant of a 510 m patch on one line, and a camera above the canopy reads
+# that line as a straight edge between forest floor and bare ground.
+const UNDERSTORY_STAGGER_MIN := 0.75
+# How far before TREE_NEAR_M a patch may swap its near canopy for the distant level. The
+# switch is a per-patch decision, so on one distance every patch of the 510 m grid switches
+# on one circle and the boundary reads as a staircase of squares. Giving each patch its own
+# share of this breaks the staircase up. The offset is negative only: a patch may switch
+# early, never late, so the near band stays the conservative superset it already is, no patch
+# builds near meshes it did not build before, and the near level draws over less ground.
+const CANOPY_SWITCH_JITTER_M := 160.0
+
 var enabled := true
 var density_fraction := 1.0
 var cast_shadows := true
@@ -63,20 +78,41 @@ func _ready() -> void:
 	meshes = TreeSpecies.build_meshes()
 
 ## Draw range for one species level as (begin_m, end_m). `near_band` says whether the patch
-## also carries the near per-variant instances. A patch built far away carries none, and then
+## also carries the near per-variant instances, and `switch_m` is the distance this patch
+## swaps its canopy on. `variant` staggers the understory and is ignored by the canopy. A patch built far away carries none, and then
 ## the distant instance must begin at zero: it is the only thing in the patch, so a begin of
 ## TREE_NEAR_M empties the patch the moment the camera reaches that distance. The rebuild that
 ## adds the near band is queued at one patch per frame, so a fast approach outruns it.
-func lod_range(species: int, lod: int, near_band: bool) -> Vector2:
+func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: float) -> Vector2:
 	if species == TreeSpecies.BUSH:
-		return Vector2(0.0, BUSH_RANGE_M)
+		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
 	if species == TreeSpecies.ROCK:
-		return Vector2(0.0, ROCK_RANGE_M)
+		return Vector2(0.0, ROCK_RANGE_M * _understory_stagger(variant))
 	if lod == 0:
-		return Vector2(0.0, TREE_NEAR_M)
+		return Vector2(0.0, switch_m)
 	# One instance covers both crown levels. TREE_MID_M chooses which mesh it carries, not
 	# where it starts and stops, so the mid/far switch is not a visibility band at all.
-	return Vector2(TREE_NEAR_M if near_band else 0.0, canopy_far_m())
+	return Vector2(switch_m if near_band else 0.0, canopy_far_m())
+
+## Share of its range one understory variant keeps. A low-discrepancy sequence rather than a
+## hash: twelve variants then spread evenly across the band, where twelve samples of a hash
+## clump and leave the carpet ending on two or three lines instead of twelve.
+func _understory_stagger(variant: int) -> float:
+	return lerpf(UNDERSTORY_STAGGER_MIN, 1.0, fmod(float(variant) * 0.6180339887498949, 1.0))
+
+## Distance at which one patch swaps its near canopy for the distant level. See
+## CANOPY_SWITCH_JITTER_M. Keyed on the patch, so a rebuild reproduces the same distance and
+## the switch does not move when a terrain edit regenerates the patch.
+func canopy_switch_m(key: Vector2i) -> float:
+	return TREE_NEAR_M - CANOPY_SWITCH_JITTER_M * _patch_hash01(key)
+
+## Deterministic value in [0,1) for one patch key. The mix the vegetation shaders use for
+## their cell hashes. GDScript integers are 64-bit and signed, so the multiplies wrap into
+## negative values; the mask at the end is what brings the result back into range.
+func _patch_hash01(key: Vector2i) -> float:
+	var h := key.x * 374761393 + key.y * 668265263
+	h = (h ^ (h >> 13)) * 1274126177
+	return float((h ^ (h >> 16)) & 0xFFFFFF) / 16777216.0
 
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
@@ -265,6 +301,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 	var understory := _understory_wanted(distance)
 	var near_band := _near_band_wanted(distance, span)
 	var distant_lod := _distant_lod(distance)
+	var switch_m := canopy_switch_m(key)
 	var origin := Vector2(key) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
 	var patch := Node3D.new()
@@ -337,7 +374,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
 					near_mm.set_instance_color(i, near_tints[i])
-				_add_instance(patch, near_mm, species, 0, near_band)
+				_add_instance(patch, near_mm, species, 0, variant, near_band, switch_m)
 		# Only the near level pays for variants. Mid and far share variant zero's mesh and the
 		# whole species population, so distance does not multiply draw calls. They also share
 		# one instance: the two levels draw the same transforms with a different mesh, so the
@@ -357,7 +394,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 				for i in range(far_transforms.size()):
 					far_mm.set_instance_transform(slot, far_transforms[i])
 					slot += 1
-			_add_instance(patch, far_mm, species, 1, near_band)
+			_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m)
 	_share_patch_bounds(patch)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
@@ -386,27 +423,42 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 ## drawn by neither. Roughly half the variants sit on the losing side of that, which is why the
 ## canopy thins as the camera closes on the switch and fills back in a moment later.
 ##
+## The pair is one species' near levels and that species' own distant level, so the merge is
+## per species. A bush must not pull a 25 m canopy box into the box its own 420 m range is
+## measured from, and a species with one level has no partner to fall between: it keeps its
+## own bounds, which is also what leaves the understory stagger in `lod_range` an effect.
+##
 ## One pass over the patch's own children, at upload, and nothing per frame. The dummy renderer
 ## reports empty bounds, so a headless caller shares nothing and keeps the engine default.
 func _share_patch_bounds(patch: Node3D) -> void:
-	var bounds := AABB()
-	var first := true
+	var bounds: Dictionary = {}
+	var levels: Dictionary = {}
 	for instance in patch.get_children():
+		var species: int = instance.get_meta("species")
 		var box: AABB = instance.get_aabb()
-		bounds = box if first else bounds.merge(box)
-		first = false
-	if bounds.size == Vector3.ZERO:
-		return
+		bounds[species] = box if not bounds.has(species) else (bounds[species] as AABB).merge(box)
+		var seen: Dictionary = levels.get(species, {})
+		seen[int(instance.get_meta("lod"))] = true
+		levels[species] = seen
 	for instance in patch.get_children():
-		instance.custom_aabb = bounds
+		var species: int = instance.get_meta("species")
+		var box: AABB = bounds[species]
+		if (levels[species] as Dictionary).size() > 1 and box.size != Vector3.ZERO:
+			instance.custom_aabb = box
 
-func _add_instance(patch: Node3D, mm: MultiMesh, species: int, lod: int, near_band: bool) -> void:
+func _add_instance(
+	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,
+	near_band: bool, switch_m: float
+) -> void:
 	var instance := MultiMeshInstance3D.new()
 	instance.multimesh = mm
 	instance.set_meta("species", species)
 	instance.set_meta("lod", lod)
+	# The distant level stands for every variant of its species and carries variant zero's
+	# mesh, so the variant it records is the mesh it draws, not a subset of the population.
+	instance.set_meta("variant", variant)
 	instance.cast_shadow = _shadow_setting(species, lod)
-	var range_m := lod_range(species, lod, near_band)
+	var range_m := lod_range(species, lod, variant, near_band, switch_m)
 	# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, and
 	# the instance is a whole patch: it made every plant in a patch translucent
 	# whenever the patch centre sat in a band, however close the plant itself was,
