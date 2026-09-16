@@ -358,6 +358,7 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 					far_mm.set_instance_transform(slot, far_transforms[i])
 					slot += 1
 			_add_instance(patch, far_mm, species, 1, near_band)
+	_share_patch_bounds(patch)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
 	patch.set_meta("vegetation_generation", vegetation_generation)
@@ -373,6 +374,31 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 	tree_count += count
 	generated_patches += 1
 	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - start) / 1000.0)
+
+## Gives every level in a patch one set of bounds, so they all change level on one distance.
+## Godot measures a visibility range from the instance bounds, not from the node origin: a
+## probe put two MultiMeshInstance3D at the camera's own position and culled the one whose
+## single instance sat past the range. Each near level holds one variant and the distant level
+## holds the whole species, so their bounds centres stand about 12 m apart on a random scatter
+## and up to 67 m apart. The two ranges are complementary by construction and were not
+## complementary in practice: over the metres between the two centres the distant level had
+## already stopped and the near level had not yet started, and the trees of that variant were
+## drawn by neither. Roughly half the variants sit on the losing side of that, which is why the
+## canopy thins as the camera closes on the switch and fills back in a moment later.
+##
+## One pass over the patch's own children, at upload, and nothing per frame. The dummy renderer
+## reports empty bounds, so a headless caller shares nothing and keeps the engine default.
+func _share_patch_bounds(patch: Node3D) -> void:
+	var bounds := AABB()
+	var first := true
+	for instance in patch.get_children():
+		var box: AABB = instance.get_aabb()
+		bounds = box if first else bounds.merge(box)
+		first = false
+	if bounds.size == Vector3.ZERO:
+		return
+	for instance in patch.get_children():
+		instance.custom_aabb = bounds
 
 func _add_instance(patch: Node3D, mm: MultiMesh, species: int, lod: int, near_band: bool) -> void:
 	var instance := MultiMeshInstance3D.new()

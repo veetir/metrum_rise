@@ -85,6 +85,19 @@ func run():
 		nodes += patch.get_child_count()
 		assert(patch.get_meta("surface_generation") == 7)
 		assert(patch.get_meta("understory"))
+		# Every level of a patch measures its visibility range from one bounds, or the
+		# complementary near and distant ranges stop and start at different distances and
+		# drop the trees in between. The dummy renderer reports empty multimesh bounds, so
+		# here the shared value is the engine default; the contract is that it is shared.
+		var shared_bounds := AABB()
+		var union := AABB()
+		var first := true
+		for instance in patch.get_children():
+			union = instance.get_aabb() if first else union.merge(instance.get_aabb())
+			shared_bounds = instance.custom_aabb if first else shared_bounds
+			first = false
+			assert(instance.custom_aabb == shared_bounds)
+		assert(shared_bounds == (union if union.size != Vector3.ZERO else AABB()))
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
 			# Only the near band carries instance colours; see the renderer's distant level.
@@ -146,7 +159,7 @@ func run():
 	assert(vegetation.patches[Vector2i(0, 0)].get_meta("tree_count") == 0)
 	await process_frame
 	host.free()
-	print("PASS vegetation appearance, shared material, LOD buckets, positions and empty density")
+	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
 
 func _geometry_counts(meshes: Array) -> Array:
