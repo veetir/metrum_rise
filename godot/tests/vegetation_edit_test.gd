@@ -19,6 +19,13 @@ func _wheel(button: int) -> InputEventMouseButton:
 	event.ctrl_pressed = true
 	return event
 
+# A bare left press, which is what arms a stroke.
+func _click() -> InputEventMouseButton:
+	var event := InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = true
+	return event
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures += 1
@@ -109,6 +116,34 @@ func _run() -> void:
 	tool.mode = VegetationTool.Mode.PLANT
 	_expect(tool.radius == 256.0, "switching to planting must clamp the preview radius")
 	_expect(simulation.paint_vegetation(Vector2.ZERO, 256.01, 0) == 0, "native brush must reject oversized stamps")
+	# An open species dropdown is an embedded subwindow holding the input grab, and the click
+	# that dismisses it also reaches the tool. That click must dismiss and nothing else, or
+	# picking a species costs the player a tree wherever the cursor happened to rest.
+	tool.mode = VegetationTool.Mode.PLANT
+	tool.radius = 32.0
+	var menu := PopupMenu.new()
+	host.add_child(menu)
+	menu.popup()
+	_expect(not root.get_embedded_subwindows().is_empty(), "fixture popup must embed in the viewport")
+	tool._process(0.0)
+	tool._unhandled_input(_click())
+	_expect(not tool._painting, "the click that dismisses a popup must not arm a stroke")
+	menu.hide()
+	menu.free()
+	# The latch decays on its own, so the very next deliberate click still paints.
+	for _i in range(VegetationTool.MENU_DISMISS_FRAMES + 1):
+		tool._process(0.0)
+	tool._unhandled_input(_click())
+	_expect(tool._painting, "a click with no popup open must still arm a stroke")
+	tool._unhandled_input(_click())
+	# The dropdown forwards its own wheel events here, because the grab hides them from the tool.
+	tool.radius = VegetationTool.MIN_RADIUS_M
+	tool.step_radius(1)
+	_expect(tool.radius > VegetationTool.MIN_RADIUS_M, "the forwarded wheel notch must widen the brush")
+	tool.step_radius(-1)
+	_expect(tool.radius == VegetationTool.MIN_RADIUS_M, "the forwarded notch must step back onto the point radius")
+	tool._painting = false
+
 	manager._activate_tool_logic(InputManager.Tool.VEGETATION, false)
 	tool._process(0.0)
 	_expect(not tool.active and not tool.preview.visible, "deactivation must hide the ground preview")

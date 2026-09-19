@@ -699,6 +699,17 @@ func _build_vegetation_controls() -> void:
 		input_manager.vegetation_tool.species = index
 		plant.call()
 	)
+	# An open popup holds the input grab, so the tool never sees ctrl and the wheel while the
+	# player is choosing a species. The radius is not something this menu owns, and resizing the
+	# brush is exactly what a player reaches for with the species list in front of them.
+	species.get_popup().window_input.connect(func(event: InputEvent):
+		if not (event is InputEventMouseButton and event.pressed and event.ctrl_pressed):
+			return
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			input_manager.vegetation_tool.step_radius(1)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			input_manager.vegetation_tool.step_radius(-1)
+	)
 	remove_button.pressed.connect(func():
 		_activate_vegetation(VegetationTool.Mode.REMOVE)
 		remove_button.set_pressed_no_signal(true)
