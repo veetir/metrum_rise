@@ -17,6 +17,9 @@ void vertex() {
 }
 
 void fragment() {
+	// Godot flips normals on back faces of a two-sided material. These normals describe
+	// the foliage volume, not the card plane: both sides must keep the authored direction.
+	NORMAL = FRONT_FACING ? NORMAL : -NORMAL;
 	ALBEDO = COLOR.rgb * canopy_light;
 	ROUGHNESS = 1.0;
 	BACKLIGHT = vegetation_backlight(COLOR.rgb) * canopy_light;

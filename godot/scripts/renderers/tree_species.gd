@@ -31,10 +31,9 @@ const DISTANT_COVERAGE := [0.50, 0.82]
 # Share of its own albedo a distant crown keeps, per species, so that the two levels render to one
 # luminance. Fitted, not derived: the tone map makes rendered luminance a sublinear function of
 # albedo, so the value is read off a sweep rather than taken as the luminance ratio itself. The
-# uncorrected distant level renders 1.28x the near level for conifer and 1.36x for broadleaf, and
-# that ratio holds from 380 m to 1800 m, because the cause is the change of surface and not the
-# change of range. See `distant_radiance_match` in vegetation_distant.gdshader.
-const DISTANT_RADIANCE_MATCH := [0.558, 0.505]
+# calibration follows the near crown's volume normals, including preserving their direction
+# on the backs of foliage cards. See `distant_radiance_match` in vegetation_distant.gdshader.
+const DISTANT_RADIANCE_MATCH := [0.72, 0.90]
 
 static var _material: StandardMaterial3D
 static var _wind_material: ShaderMaterial
@@ -268,7 +267,8 @@ static func _trunk_profile(height_m: float, radius_m: float) -> PackedVector2Arr
 		Vector2(height_m, radius_m * 0.72),
 	])
 
-static func _finish(surface: SurfaceTool, material: Material = null) -> ArrayMesh:
+static func _finish(surface: SurfaceTool, material: Material = null,
+	crown_centre: Vector3 = Vector3.ZERO) -> ArrayMesh:
 	surface.generate_normals()
 	if _material == null:
 		_material = StandardMaterial3D.new()
@@ -277,6 +277,22 @@ static func _finish(surface: SurfaceTool, material: Material = null) -> ArrayMes
 	surface.set_material(_material if material == null else material)
 	# Primitive expansion duplicates shared vertices. Restore indexing for vertex-cache reuse.
 	surface.index()
+	if crown_centre != Vector3.ZERO:
+		# Generate the wood's geometric normals first, then shade foliage as one crown.
+		# The green discriminator is shared with vegetation_backlight; bark keeps its
+		# original normals. This O(vertices) pass runs only during catalogue construction.
+		var arrays := surface.commit_to_arrays()
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		for i in range(vertices.size()):
+			if colors[i].g > colors[i].r:
+				normals[i] = (vertices[i] - crown_centre).normalized()
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, material)
+		return mesh
 	return surface.commit()
 
 static func _wind_branch_material() -> ShaderMaterial:
@@ -396,7 +412,7 @@ static func _branched_tree(species: int, variant: int) -> ArrayMesh:
 		var offset := Vector3(cos(angle) * reach, rise, sin(angle) * reach)
 		_branch(surface, cards, crown_centre, start, offset, radius * lerpf(0.58, 0.19, t),
 			conifer, 0, seed, bark, (start.y - 0.35) / (height - 0.35) * 0.16, birch, pine)
-	var mesh := _finish(surface, _wind_branch_material())
+	var mesh := _finish(surface, _wind_branch_material(), crown_centre)
 	# Append to the same mesh: another draw, but no additional instances or uploads.
 	cards.set_material(_foliage_material())
 	cards.index()
@@ -576,12 +592,11 @@ static func _foliage_tuft(surface: SurfaceTool, centre: Vector3, direction: Vect
 		var b := TAU * float((side + 1) % sides) / float(sides)
 		var radial_a := (along * cos(a) * size.x + across * sin(a) * size.z) * lerpf(0.86, 1.12, _noise(seed + side, 269))
 		var radial_b := (along * cos(b) * size.x + across * sin(b) * size.z) * lerpf(0.86, 1.12, _noise(seed + (side + 1) % sides, 269))
-		var face := color.lerp(color * 1.35, _noise(seed + side, 271) * 0.60)
-		# Reset alpha after RGB shading: all cores and cards translate at tip weight 1.
+		# Keep the old top/bottom mean albedo without independently bright triangles.
+		# Crown normals now supply the light gradient across both cores and cards.
+		var face := color * 1.04975
 		face.a = 1.0
 		_tri(surface, face, centre + radial_a, top, centre + radial_b)
-		face *= 0.90
-		face.a = 1.0
 		_tri(surface, face, centre + radial_a, centre + radial_b, bottom)
 
 ## Three crossed quads share a tilted axis, with crown-outward lighting instead of plate normals.
@@ -595,6 +610,7 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 	var right := along.cross(axis).normalized()
 	var normal := (centre - crown_centre).normalized()
 	var color := _leaf_color(conifer, birch) if leaf_color.r < 0.0 else leaf_color
+	var tree_foliage := leaf_color.r < 0.0
 	var phase := _noise(seed, 307) * PI
 	# Top left generic broadleaf, top right birch; bottom row seeded conifer sprays.
 	var uv_origin := Vector2(float(seed & 1) if conifer else (1.0 if birch else 0.0),
@@ -608,13 +624,17 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 		var top := centre + axis * size.y
 		var corners := [bottom - radial * half_width, bottom + radial * half_width,
 			top + radial * half_width, top - radial * half_width]
-		var face := color.lerp(color * 1.35, _noise(seed + plane, 271) * 0.60)
+		# Preserve the former mean albedo, but stop crossed tree cards from looking like
+		# separate bright scraps. Ground plants retain their own colour and normal treatment.
+		var face := color * 1.105 if tree_foliage else color.lerp(color * 1.35, _noise(seed + plane, 271) * 0.60)
 		# Reset alpha after RGB shading; a card must sway with the core it sits on.
 		face.a = weight
 		surface.set_color(face)
 		surface.set_normal(normal)
 		for vertex in [0, 2, 1, 0, 3, 2]:
 			var position: Vector3 = corners[vertex]
+			if tree_foliage:
+				surface.set_normal((position - crown_centre).normalized())
 			if sway_per_m >= 0.0:
 				# Ground shoots bend from their base; tree tufts retain their rigid weight.
 				position.y = maxf(position.y, 0.0)

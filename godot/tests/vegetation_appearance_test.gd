@@ -48,6 +48,7 @@ func run():
 	var crown_colors := _check_crown_colors(vegetation.meshes)
 	_check_birch(vegetation.meshes[Species.BROADLEAF])
 	_check_meshes(vegetation.meshes)
+	_check_crown_cohesion(vegetation.meshes)
 	_check_atlas_cells()
 	for key in [Vector2i(0,0), Vector2i(1,0), Vector2i(0,1), Vector2i(1,1)]:
 		vegetation._upload_patch(key, SPAN)
@@ -205,6 +206,31 @@ func _check_geometry_budget(counts: Array) -> void:
 				assert(levels[1][0] <= [296, 274][species])
 				assert(levels[2][0] <= [77, 92][species])
 				assert(levels[1][1] == [102, 96][species] and levels[2][1] == [28, 32][species])
+
+func _check_crown_cohesion(meshes: Array) -> void:
+	# Both foliage surfaces must carry volume lighting, not flat normals or random
+	# bright faces. Check every near variant, including pine, spruce, birch and aspen.
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		for levels in meshes[species]:
+			var mesh: ArrayMesh = levels[0]
+			for surface in range(2):
+				var arrays := mesh.surface_get_arrays(surface)
+				var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+				var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+				var foliage_colors := {}
+				var smooth_triangles := 0
+				for i in range(colors.size()):
+					if colors[i].g > colors[i].r:
+						foliage_colors[colors[i]] = true
+						assert(normals[i].is_finite() and absf(normals[i].length() - 1.0) < 0.001)
+						assert(colors[i].a == 1.0)
+				for i in range(0, indices.size(), 3):
+					var a := indices[i]
+					var b := indices[i + 1]
+					if colors[a].g > colors[a].r and normals[a].dot(normals[b]) < 0.999:
+						smooth_triangles += 1
+				assert(foliage_colors.size() == 1 and smooth_triangles > 0)
 
 func _check_crown_integral() -> void:
 	# Two foliage triangles with areas 1 and 3, on separate surfaces, plus wood of area 5.

@@ -91,6 +91,43 @@ func _crown_color(holder: Node3D) -> Vector3:
 		sum += Vector3(c.r, c.g, c.b)
 	return sum / maxf(float(mask.size()), 1.0)
 
+func _check_card_backfaces(camera: Camera3D) -> void:
+	# Reversing a card's winding must not reverse its authored volume lighting.
+	# An opaque mask and zero sway isolate that contract from atlas filtering and TIME.
+	var material: ShaderMaterial = Species._foliage_material().duplicate()
+	var mask := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	mask.fill(Color.WHITE)
+	material.set_shader_parameter("foliage_mask", ImageTexture.create_from_image(mask))
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+		Vector3(-40, 30, -40), Vector3(40, 30, -40),
+		Vector3(40, 30, 40), Vector3(-40, 30, 40),
+	])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP])
+	var color := Color(0.2, 0.3, 0.07, 0.0)
+	arrays[Mesh.ARRAY_COLOR] = PackedColorArray([color, color, color, color])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO, Vector2.RIGHT, Vector2.ONE, Vector2.DOWN])
+	var node := MeshInstance3D.new()
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_viewport.add_child(node)
+	var point := Vector2i(camera.unproject_position(Vector3(0, 30, 0)))
+	var measured: Array[Color] = []
+	for indices in [PackedInt32Array([0, 1, 2, 0, 2, 3]), PackedInt32Array([0, 2, 1, 0, 3, 2])]:
+		arrays[Mesh.ARRAY_INDEX] = indices
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, material)
+		node.mesh = mesh
+		var shot := await _shot()
+		measured.append(shot.get_pixelv(point))
+	var front := Vector3(measured[0].r, measured[0].g, measured[0].b)
+	var back := Vector3(measured[1].r, measured[1].g, measured[1].b)
+	_expect(front.y > front.x and front.y > front.z, "the backface probe must sample foliage")
+	_expect(front.distance_to(back) < 0.01, "card winding must not change crown lighting")
+	node.queue_free()
+	await process_frame
+
 func _run() -> void:
 	if DisplayServer.get_name() == "headless":
 		push_error("This regression needs a rendering display; the dummy renderer draws no pixels.")
@@ -138,6 +175,7 @@ func _run() -> void:
 		0.0, sin(elevation) * CAMERA_DISTANCE_M, cos(elevation) * CAMERA_DISTANCE_M
 	)
 	camera.look_at(Vector3.ZERO, Vector3.UP)
+	await _check_card_backfaces(camera)
 
 	var stems := int(PATCH_EXTENT_M * PATCH_EXTENT_M / 10000.0 * STEMS_PER_HA)
 	for species in [Species.CONIFER, Species.BROADLEAF]:
