@@ -9,6 +9,7 @@ use crate::nodes::sim::core::{
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
+use crate::nodes::simulation_node::vegetation_api::CANOPY_CLEAR_RADIUS_M;
 use crate::simulation::buildings::allocator::{
     ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
@@ -19,6 +20,7 @@ use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::surface::{
     RoadExtensionReprofile, RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
+use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
@@ -28,6 +30,19 @@ const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
+
+/// Axis-aligned world bounds of one player polygon, or `None` for fewer than three points.
+pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vector2)> {
+    if points.len() < 3 {
+        return None;
+    }
+    Some(points.iter().fold((points[0], points[0]), |(lo, hi), p| {
+        (
+            Vector2::new(lo.x.min(p.x), lo.y.min(p.y)),
+            Vector2::new(hi.x.max(p.x), hi.y.max(p.y)),
+        )
+    }))
+}
 
 /// Result of a road placement attempt after synchronous input validation.
 #[derive(Clone, Debug)]
@@ -503,6 +518,12 @@ impl SimCore {
             return false;
         }
         let dirty_bounds = self.allocator.site_world_bounds(building_idx);
+        // Read while the farm still owns its field: removing it gives the ground back, and the
+        // plants the field was hiding have to return with it.
+        let field_bounds = self
+            .agriculture
+            .site_for_building(building_idx)
+            .and_then(|site| polygon_world_bounds(&site.polygon_world));
         self.allocator
             .accumulate_pending_site_dirty_bounds(dirty_bounds);
         if record_undo && !self.push_building_removal_undo(building_idx) {
@@ -532,6 +553,9 @@ impl SimCore {
             return false;
         }
         self.publish_pending_production_site_removals();
+        if let Some(bounds) = field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -1531,13 +1555,45 @@ impl SimCore {
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
         self.prepare_field_polygon_validation()?;
-        self.agriculture.commit_site(
+        // Captured before the commit: a resize has to give back the ground the old polygon
+        // covered as well as take the ground the new one covers.
+        let previous = self
+            .agriculture
+            .site_for_building(building_idx)
+            .and_then(|site| polygon_world_bounds(&site.polygon_world));
+        let committed = polygon_world_bounds(&polygon_world);
+        let summary = self.agriculture.commit_site(
             building_idx,
             polygon_world,
             &mut self.allocator,
             &self.zoning,
             &self.transit_network.road_surface,
-        )
+        )?;
+        for bounds in [previous, committed].into_iter().flatten() {
+            self.invalidate_vegetation_over(bounds);
+        }
+        Ok(summary)
+    }
+
+    /// Restales every vegetation patch a world-space box touches, so plants a field now covers
+    /// disappear on the next patch fetch rather than on the next load.
+    ///
+    /// A field hides its plants through the same `placement_clear` predicate a road deck or a
+    /// building pad uses. Those two already restale their patches through the terrain surface
+    /// generation, because both move ground; a field only paints it, so it advances the
+    /// vegetation revision itself. One increment per covered patch, evaluating no plants.
+    pub(crate) fn invalidate_vegetation_over(&mut self, bounds: (Vector2, Vector2)) {
+        let (min, max) = bounds;
+        let keys = self.heightmap.render_patch_keys_for_world_bounds(
+            min.x - CANOPY_CLEAR_RADIUS_M,
+            min.y - CANOPY_CLEAR_RADIUS_M,
+            max.x + CANOPY_CLEAR_RADIUS_M,
+            max.y + CANOPY_CLEAR_RADIUS_M,
+        );
+        for (patch_x, patch_z) in keys {
+            self.vegetation_edits
+                .bump_patch(pack_patch_key(patch_x as i32, patch_z as i32));
+        }
     }
 
     /// Removes an unfinalized industry area placement before its polygon is committed.

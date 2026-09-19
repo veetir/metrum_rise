@@ -229,6 +229,61 @@ fn vegetation_authored_plants_clear_under_a_surface_placed_later() {
 }
 
 #[test]
+fn vegetation_clears_under_a_committed_field_and_returns_when_it_is_removed() {
+    let mut core = core();
+    // Generator off, so the patch payload is exactly the two authored plants below.
+    core.vegetation = VegetationGenerator::resolve(
+        VegetationConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        &core.config,
+    );
+    let ploughed = Vector2::new(-100.0, 0.0);
+    let untouched = Vector2::new(100.0, 0.0);
+    assert!(add_at(&mut core, ploughed, 0));
+    assert!(add_at(&mut core, untouched, 1));
+    let before = scatter(&core, true);
+    assert_eq!(before.len(), 12);
+
+    // A farm's committed field, indexed the way agriculture indexes one on commit.
+    core.allocator.field_clearance.set(
+        0,
+        &[
+            Vector2::new(-120.0, -20.0),
+            Vector2::new(-80.0, -20.0),
+            Vector2::new(-80.0, 20.0),
+            Vector2::new(-120.0, 20.0),
+        ],
+    );
+    let after = scatter(&core, true);
+    assert_eq!(after.len(), 6);
+    assert_eq!(after[5], 1.0);
+
+    // The patch the field covers is restaled so the change reaches the renderer this session,
+    // and a patch the field does not reach keeps its revision.
+    let layout = PatchLayout::new(&core);
+    let covered = layout.key(ploughed.x, ploughed.y);
+    let remote = layout.key(layout.span * 2.0, layout.span * 2.0);
+    let covered_before = core.vegetation_edits.patch_generation(covered);
+    let remote_before = core.vegetation_edits.patch_generation(remote);
+    core.invalidate_vegetation_over((
+        Vector2::new(-120.0, -20.0),
+        Vector2::new(-80.0, 20.0),
+    ));
+    assert_eq!(
+        core.vegetation_edits.patch_generation(covered),
+        covered_before + 1
+    );
+    assert_eq!(core.vegetation_edits.patch_generation(remote), remote_before);
+
+    // Clearance is re-evaluated rather than destructive, so removing the field restores the
+    // plant bit for bit, exactly as removing a road deck or a building pad does.
+    core.allocator.field_clearance.clear();
+    assert_eq!(scatter(&core, true), before);
+}
+
+#[test]
 fn vegetation_patch_revisions_touch_only_changed_plants() {
     let mut core = core();
     let layout = PatchLayout::new(&core);

@@ -52,6 +52,10 @@ fn candidate(x: i32, z: i32, cell_m: f32, salt: u32) -> [f32; 4] {
     ]
 }
 
+/// Room a canopy plant is cleared over, in metres. Also the margin a field polygon grows by
+/// before its patches are restaled, because a tree this far outside it can still be affected.
+pub(crate) const CANOPY_CLEAR_RADIUS_M: f32 = 6.0;
+
 // A missing sample means water or an engineered surface owns the position. The radius is
 // the plant's own clearance: a bush does not need a canopy tree's room.
 fn clear_footprint(
@@ -589,7 +593,7 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
         return false;
     }
     let (radius, max_relief) = if layer == VegetationLayer::Canopy {
-        (6.0, 3.0)
+        (CANOPY_CLEAR_RADIUS_M, 3.0)
     } else {
         (2.5, 1.6)
     };
@@ -598,6 +602,9 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
     // and built surfaces. Check native terrain samples, not a global sea level.
     if !clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
         let p = Vector2::new(sx, sz);
+        // A committed field is worked land, so it clears plants exactly as a road deck or a
+        // building pad does: the test is the same predicate, and nothing is destroyed, so the
+        // stand returns if the field is redrawn or the farm is removed.
         if core.watermap.visible_depth_world(p.x, p.y) > 0.001
             || core
                 .transit_network
@@ -605,6 +612,7 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
                 .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
                 .is_some()
             || core.allocator.sample_building_site_height(p).is_some()
+            || core.allocator.field_clearance.covers_point(p)
         {
             return None;
         }

@@ -8,7 +8,7 @@ use crate::nodes::sim::core::{
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -615,12 +615,22 @@ impl SimCore {
                 last_idx,
                 undo.extractor_sites,
             );
+        // Read before the move: undoing the removal puts the fields back, so the plants they
+        // hide have to go again, exactly as committing those fields did.
+        let restored_field_bounds: Vec<(Vector2, Vector2)> = undo
+            .field_sites
+            .iter()
+            .filter_map(|site| super::editing::polygon_world_bounds(&site.polygon_world))
+            .collect();
         self.agriculture.restore_sites_after_building_removal_undo(
             building_idx,
             last_idx,
             undo.field_sites,
             &mut self.allocator,
         );
+        for bounds in restored_field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
 
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();

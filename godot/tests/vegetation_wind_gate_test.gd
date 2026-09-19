@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Holds tree sway to the range a viewer can resolve it in, on a real GPU.
+## Holds tree sway to the close range the effect is authored for, on a real GPU.
 ##
 ## Sway is authored in metres and drawn in pixels. Nothing connected the two, so a stand kept its
 ## full 0.50 m offset out to `TREE_NEAR_M`, where one pixel covers 1.14 m of world. Motion that
 ## small cannot move a crown's outline; it only flips alpha-scissor pixels along every cutout
 ## edge in the stand, which is what a forest seen from altitude reads as a boil rather than as
-## wind. This regression measures the two ends of that: the stand must still move close up, and
-## must be still at altitude.
+## wind. The gate ends well before that floor, because sway of one or two pixels still reads as
+## shimmer across a closed canopy. This regression measures the two ends of it: the stand must
+## still move close up, and must be still at the far edge of the band.
 ##
 ## It also pins the gate against the failure that produced it. The first implementation read the
 ## fade from `PROJECTION_MATRIX`, which is not populated in the vertex stage, so it silently
@@ -23,11 +24,13 @@ const PATCH_EXTENT_M := 120.0
 const VIEWPORT_PX := 768
 const CAMERA_FOV_DEG := 70.0
 const ELEVATION_DEG := 55.0
-# Inside the gate's full-sway distance, and well past its end.
-const NEAR_DISTANCE_M := 150.0
-const FAR_DISTANCE_M := 800.0
+# Inside the gate's full-sway distance, and past its end. Both are read through this viewport
+# and field of view, not the game's: the gate is screen-space, so the metric distance the same
+# curve lands on moves with them. At 768 px and 70 degrees the full offset covers 62 m.
+const NEAR_DISTANCE_M := 55.0
+const FAR_DISTANCE_M := 300.0
 # Share of crown pixels the wind is allowed to move, as a luminance change of more than
-# LUMINANCE_STEP. Close up the sway is the liveliness the near level exists for; at altitude
+# LUMINANCE_STEP. Close up the sway is the liveliness the near level exists for; past the band
 # anything above the floor is the boil itself.
 const NEAR_MOTION_MIN := 0.30
 const FAR_MOTION_MAX := 0.02
@@ -196,7 +199,7 @@ func _run() -> void:
 	)
 	_expect(
 		far_motion <= FAR_MOTION_MAX,
-		"sway below a pixel must not reach the screen, got %.4f moved" % far_motion
+		"sway past the gate's band must not reach the screen, got %.4f moved" % far_motion
 	)
 	_viewport.queue_free()
 	await process_frame
