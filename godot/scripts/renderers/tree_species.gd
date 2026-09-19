@@ -28,6 +28,13 @@ const PINE_CROWN_BARK := Color(0.360, 0.185, 0.080)
 # a surface of revolution has no depth to spare: its projected extent is already its width.
 # See docs/terrain.md for the instrument.
 const DISTANT_COVERAGE := [0.50, 0.82]
+# Share of its own albedo a distant crown keeps, per species, so that the two levels render to one
+# luminance. Fitted, not derived: the tone map makes rendered luminance a sublinear function of
+# albedo, so the value is read off a sweep rather than taken as the luminance ratio itself. The
+# uncorrected distant level renders 1.28x the near level for conifer and 1.36x for broadleaf, and
+# that ratio holds from 380 m to 1800 m, because the cause is the change of surface and not the
+# change of range. See `distant_radiance_match` in vegetation_distant.gdshader.
+const DISTANT_RADIANCE_MATCH := [0.558, 0.505]
 
 static var _material: StandardMaterial3D
 static var _wind_material: ShaderMaterial
@@ -683,6 +690,7 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
+		material.set_shader_parameter("distant_radiance_match", DISTANT_RADIANCE_MATCH[index])
 		_apply_canopy_shading(material)
 		_distant_materials[index] = material
 	return _distant_materials[index]

@@ -957,10 +957,27 @@ if [ $TEST -eq 1 ]; then
             --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
             exit 1
         fi
+    elif [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
+        echo "Running rendered terrain shader tests on $DISPLAY..."
+        if ! godot --display-driver x11 --rendering-method gl_compatibility \
+            --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
+            exit 1
+        fi
     elif [ "$METRUM_PLATFORM" = "linux" ]; then
-        echo "Rendered terrain shader tests skipped: xvfb-run is unavailable."
+        echo "Rendered terrain shader tests skipped: no xvfb-run and no DISPLAY."
     else
         echo "Rendered terrain shader tests skipped on macOS: the Xvfb/X11 path is Linux-only and a direct macOS renderer path is not yet validated."
+    fi
+    # Forward+ only: the level match is a comparison of what the shipped renderer draws, and
+    # the compatibility backend does not draw it. There is no Xvfb path for Vulkan here.
+    if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
+        echo "Running rendered vegetation level match test on $DISPLAY..."
+        if ! godot --audio-driver Dummy --resolution 640x480 \
+            --script res://tests/vegetation_level_match_test.gd; then
+            exit 1
+        fi
+    else
+        echo "Rendered vegetation level match test skipped: it needs a Forward+ display."
     fi
     exit 0
 fi
