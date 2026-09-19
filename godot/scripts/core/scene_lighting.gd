@@ -59,6 +59,20 @@ const SHADOW_BLUR := 1.80
 const GROUND_SHADOW_AMBIENT := 0.50
 const GROUND_SHADOW_SUN_STRENGTH := 0.50
 const GROUND_SHADOW_MIN_VISIBILITY := 0.02
+# Share of its open-ground brightness a fully covered forest floor keeps once the shadow
+# cascades stop reaching it. The crowns past the cascade edge already replace the shadow their
+# neighbours stop casting; the ground they stand on did not, so a distant stand read as lit
+# field with dark specks on it. This is the receiver half of the same term.
+#
+# The value is derived and not chosen. Terrain ground takes the key light at
+# GROUND_SHADOW_SUN_STRENGTH and the sky at GROUND_SHADOW_AMBIENT, and a fragment the cascades
+# put in shadow keeps GROUND_SHADOW_MIN_VISIBILITY of the key term. Where sun and sky are of
+# comparable strength, that is the ratio below, so ground outside the cascades holds what the
+# same ground held inside them.
+const CANOPY_FLOOR_SHADE_FLOOR := (
+	(GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH * GROUND_SHADOW_MIN_VISIBILITY)
+	/ (GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH)
+)
 const STATIC_CASTER_EXTRA_CULL_MARGIN_M := 32.0
 const DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M := 12.0
 const RECEIVER_EXTRA_CULL_MARGIN_M := 2.0
@@ -111,6 +125,27 @@ static func apply_ground_shadow_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("ground_shadow_ambient", GROUND_SHADOW_AMBIENT)
 	material.set_shader_parameter("ground_shadow_sun_strength", GROUND_SHADOW_SUN_STRENGTH)
 	material.set_shader_parameter("ground_shadow_min_visibility", GROUND_SHADOW_MIN_VISIBILITY)
+
+## Probe override for the canopy shading strength, which scales both halves of the term: the
+## shade on the crowns and the shade on the ground under them. Zero removes it without an edit
+## to a shader, which is what a paired look at the same stand needs; one is the derived default,
+## and values above it extrapolate past the floor for a stand that still reads too bright. An
+## unset or unparsable value keeps the default.
+static func canopy_shade_strength() -> float:
+	var raw := OS.get_environment("METRUM_CANOPY_SHADE").strip_edges()
+	return clampf(raw.to_float(), 0.0, 2.0) if raw.is_valid_float() else 1.0
+
+## Ties the forest-floor shading ramp to the shadow cascades, exactly as the canopy half in
+## `tree_species.gd` is tied to them. The term begins where the cascades begin to fade and
+## reaches full strength where they end, so no ground inside shadow range changes at all.
+static func apply_canopy_floor_shading(material: ShaderMaterial) -> void:
+	if material == null:
+		return
+	var far_m := shadow_max_distance_m()
+	material.set_shader_parameter("canopy_floor_shade_begin_m", far_m * SHADOW_FADE_START)
+	material.set_shader_parameter("canopy_floor_shade_end_m", far_m)
+	material.set_shader_parameter("canopy_floor_shade_floor", CANOPY_FLOOR_SHADE_FLOOR)
+	material.set_shader_parameter("canopy_floor_shade", canopy_shade_strength())
 
 static func apply_shadow_policy(
 	instance: GeometryInstance3D,

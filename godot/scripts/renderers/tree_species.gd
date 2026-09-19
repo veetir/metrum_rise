@@ -289,15 +289,7 @@ static func _apply_canopy_shading(material: ShaderMaterial) -> void:
 		"canopy_shade_begin_m", far_m * SceneLightingConfig.SHADOW_FADE_START
 	)
 	material.set_shader_parameter("canopy_shade_end_m", far_m)
-	material.set_shader_parameter("canopy_shade", _canopy_shade_strength())
-
-## Probe override for the canopy shading strength. Zero removes the term without an edit to a
-## shader, which is what a paired look at the same stand needs; one is the derived default and
-## values above it extrapolate past the floor for a stand that still reads too bright. An unset
-## or unparsable value keeps the default.
-static func _canopy_shade_strength() -> float:
-	var raw := OS.get_environment("METRUM_CANOPY_SHADE").strip_edges()
-	return clampf(raw.to_float(), 0.0, 2.0) if raw.is_valid_float() else 1.0
+	material.set_shader_parameter("canopy_shade", SceneLightingConfig.canopy_shade_strength())
 
 ## One cached atlas serves every card; DDS retains the baked coverage-corrected mips.
 static func _foliage_material() -> ShaderMaterial:
