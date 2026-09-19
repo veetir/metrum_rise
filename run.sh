@@ -968,16 +968,21 @@ if [ $TEST -eq 1 ]; then
     else
         echo "Rendered terrain shader tests skipped on macOS: the Xvfb/X11 path is Linux-only and a direct macOS renderer path is not yet validated."
     fi
-    # Forward+ only: the level match is a comparison of what the shipped renderer draws, and
-    # the compatibility backend does not draw it. There is no Xvfb path for Vulkan here.
+    # Forward+ only: both compare what the shipped renderer draws, and the compatibility
+    # backend does not draw it. There is no Xvfb path for Vulkan here.
     if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
         echo "Running rendered vegetation level match test on $DISPLAY..."
         if ! godot --audio-driver Dummy --resolution 640x480 \
             --script res://tests/vegetation_level_match_test.gd; then
             exit 1
         fi
+        echo "Running rendered vegetation wind gate test on $DISPLAY..."
+        if ! godot --audio-driver Dummy --resolution 640x480 \
+            --script res://tests/vegetation_wind_gate_test.gd; then
+            exit 1
+        fi
     else
-        echo "Rendered vegetation level match test skipped: it needs a Forward+ display."
+        echo "Rendered vegetation tests skipped: they need a Forward+ display."
     fi
     exit 0
 fi

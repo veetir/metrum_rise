@@ -284,12 +284,27 @@ static func _wind_branch_material() -> ShaderMaterial:
 		_wind_material = ShaderMaterial.new()
 		_wind_material.shader = preload("res://scripts/shaders/vegetation_wind.gdshader")
 		_apply_canopy_shading(_wind_material)
+		_apply_wind_visibility(_wind_material)
 	return _wind_material
 
 ## Ties the canopy shading ramp to the shadow cascades. The term replaces the darkening the
 ## cascades stop supplying, so it has to begin where they begin to fade and reach full strength
 ## where they end. Reading the range through the accessor keeps the probe override in step.
 ## Every material is built once at startup, so this is not on a per-frame path.
+## Vertical field of view of the player camera, in degrees. Nothing in the project assigns
+## `Camera3D.fov`, so the camera runs on the engine default and this is that value. It feeds the
+## one projection term the wind gate cannot read from a vertex built-in.
+const CAMERA_FOV_DEG := 75.0
+
+## Supplies the wind gate its projection term. The gate decides how much sway a tree keeps from
+## how many pixels that sway covers, and reads the window size from `VIEWPORT_SIZE` itself, so
+## this is the only part of the projection it needs and a resize needs no update. Materials are
+## built once at startup, so this is not on a per-frame path.
+static func _apply_wind_visibility(material: ShaderMaterial) -> void:
+	material.set_shader_parameter(
+		"camera_projection_scale", 1.0 / tan(deg_to_rad(CAMERA_FOV_DEG * 0.5))
+	)
+
 static func _apply_canopy_shading(material: ShaderMaterial) -> void:
 	var far_m := SceneLightingConfig.shadow_max_distance_m()
 	material.set_shader_parameter(
@@ -307,6 +322,7 @@ static func _foliage_material() -> ShaderMaterial:
 		_card_material.shader = preload("res://scripts/shaders/vegetation_wind_cards.gdshader")
 		_card_material.set_shader_parameter("foliage_mask", _card_texture)
 		_apply_canopy_shading(_card_material)
+		_apply_wind_visibility(_card_material)
 	return _card_material
 
 ## Fixed branch counts and depth bound startup work to O(emitted vertices) per variant.

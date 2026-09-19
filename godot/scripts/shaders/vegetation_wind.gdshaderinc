@@ -5,16 +5,43 @@ uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
 uniform float wind_speed : hint_range(0.0, 4.0) = 0.8;
 uniform float gust_wavelength : hint_range(1.0, 500.0) = 80.0;
 
+// The largest lateral offset the term below can produce, at weight 1 and default strength.
+const float WIND_MAX_OFFSET_M = 0.50;
+// Screen-space bounds of the gate, in pixels of that offset. Below the first the motion cannot
+// move a silhouette at all; above the second it is unmistakably sway.
+const float WIND_FADE_MIN_PX = 0.6;
+const float WIND_FADE_FULL_PX = 2.0;
+
+// 1 / tan(fov_y / 2) of the player camera. PROJECTION_MATRIX reads as a zero matrix in the vertex
+// stage, so the one term the gate cannot take from a built-in is supplied here instead.
+// VIEWPORT_SIZE is populated, so window size still needs no plumbing and a resize needs no
+// update. See CAMERA_FOV_DEG in tree_species.gd; the default is the engine's own 75 degrees.
+uniform float camera_projection_scale = 1.303;
+
+// Share of the wind a tree at this depth is allowed to take.
+//
+// Sway is authored in metres and drawn in pixels, and nothing connected the two. At 800 m, the
+// far edge of the near level, one pixel covers 1.14 m of world and the whole 0.50 m offset is
+// under half of one. Motion that small cannot move a crown's outline. It can only flip
+// alpha-scissor pixels on and off along every hard cutout edge in the stand, frame after frame,
+// which is why a forest seen from altitude boils rather than sways. This is the temporal
+// counterpart of a mipmap: animate only what the viewer can resolve as movement.
+float vegetation_wind_visibility(float distance_m, vec2 viewport) {
+	// Pixels one world metre covers at this depth.
+	float px_per_m = camera_projection_scale * viewport.y * 0.5 / max(distance_m, 0.001);
+	return smoothstep(WIND_FADE_MIN_PX, WIND_FADE_FULL_PX, WIND_MAX_OFFSET_M * px_per_m);
+}
+
 // O(1) per near vertex: three sine terms, no textures or inverse transforms.
 // Only instance origin and authored weight participate, so cores and cards stay together.
-vec3 vegetation_wind_offset(vec2 instance_xz, float weight, float time) {
+vec3 vegetation_wind_offset(vec2 instance_xz, float weight, float time, float visibility) {
 	vec2 direction = wind_direction / max(length(wind_direction), 0.0001);
 	vec2 across = vec2(-direction.y, direction.x);
 	float phase = time * wind_speed - dot(instance_xz, direction) * TAU / max(gust_wavelength, 1.0);
 	float bend = 0.36 * sin(phase) + 0.08 * sin(phase * 0.5);
 	float flutter = 0.06 * sin(phase * 4.0) * weight;
-	// At weight 1 and default strength, the offset is bounded by 0.50 m.
-	vec2 offset = (direction * bend + across * flutter) * weight * wind_strength;
+	// At weight 1, default strength and full visibility, the offset is WIND_MAX_OFFSET_M.
+	vec2 offset = (direction * bend + across * flutter) * weight * wind_strength * visibility;
 	return vec3(offset.x, 0.0, offset.y);
 }
 
