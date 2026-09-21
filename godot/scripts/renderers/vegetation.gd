@@ -34,11 +34,17 @@ const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const SPECIES_BITS := 2
 const SPECIES_MASK := 3
 
-# Shortest distance the near canopy is allowed to hand over on, whatever the grid does. A
-# tree covers 53 pixels at 1080p and 75 degrees here, against 13 at the 800 m this replaces,
-# and 13 pixels is where the cards stop reading as a crown and start reading as noise. For
-# scale, the authored-mesh policy in lod_policy.rs drops LOD0 at 512 pixels.
-const TREE_NEAR_FLOOR_M := 200.0
+# Shortest distance the near canopy is allowed to hand over on, whatever the grid does. This
+# is a quality floor, not a budget: at 800 m a 15 m tree covers 13 pixels, and that is where
+# the branched crown and its cards stop reading as a tree and the lathe cone can take over
+# without being noticed. The grid no longer sets this. A 510 m terrain patch used to force
+# 721 m, and subdividing it to 127.5 m dropped the forced minimum to 180 m, so for a while
+# this was 200 m. At 200 m a tree covers 53 pixels, which is far too large for a smooth cone:
+# the handover was plainly visible. Measured at the density the generator makes, the whole
+# 200 m to 800 m range costs 0.94 ms of GPU (E17), so the short band bought nothing there.
+# It only pays in a brush-painted stand of about 531 stems/ha, and the answer to that stand
+# is its stem count, not a band every normal view has to look at.
+const TREE_NEAR_FLOOR_M := 800.0
 const TREE_MID_M := 2000.0
 const TREE_FAR_M := 4500.0
 const BUSH_RANGE_M := 420.0

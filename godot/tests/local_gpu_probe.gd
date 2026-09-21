@@ -7,7 +7,8 @@
 ## E03 (long lateral panning), E04 (terrain texture import comparison), E11 (day cycle
 ## hours), E12 (tree scatter from an eye-level horizon camera), E14 (a forest the brush
 ## painted, which is much denser than the one the generator makes), E15 (the vegetation
-## patch grid and the near canopy band swept together over that same painted forest) or E16
+## patch grid and the near canopy band swept together over that same painted forest), E17
+## (the near canopy band swept at the generator's own density instead) or E16
 ## (what is left in the frame once E15 has picked the grid: shadows, band and far range).
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
@@ -152,6 +153,15 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E17":
+		# The near band swept at the density the generator makes, not the one the brush
+		# paints. Every earlier band number came from a painted stand of about 531 stems/ha,
+		# which is 17 times the shipped 30.47 and is the worst case by construction. The
+		# band has to be chosen for the forest the player normally flies over, so it is
+		# priced here too. No paint call: this is the generator's own scatter.
+		trials = ["gen_off", "gen_f4_near200_full", "gen_f4_near400_full",
+			"gen_f4_near600_full", "gen_f4_near800_full", "gen_f4_near200_full_repeat"]
+		radii = [300.0]
 	elif experiment == "E16":
 		# Attribution at the grid E15 selected. Every trial holds the subdivision at 4 and
 		# changes one lever, so each difference is that lever. "plain" drops shadow casting,
@@ -276,7 +286,7 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
-			elif experiment in ["E15", "E16"]:
+			elif experiment in ["E15", "E16", "E17"]:
 				vegetation.enabled = not trial.contains("_off")
 				vegetation.density_fraction = 1.0
 				vegetation.cast_shadows = trial.contains("full")
