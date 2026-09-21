@@ -3,10 +3,18 @@
 ## Headless contract test for per-patch vegetation invalidation after a world edit.
 ## Trees are a derived product of the terrain surface, so a patch must regenerate when
 ## the terrain renderer commits a newer surface generation for that patch only.
+##
+## The vegetation grid is finer than the terrain grid, so "that patch only" now means every
+## sub-patch the edited terrain patch owns and no sub-patch of any other. Both generations
+## are still published per terrain patch, which is what makes the invalidation conservative.
 extends SceneTree
 
 const VegetationScript := preload("res://scripts/renderers/vegetation.gd")
 const SPAN_M := 510.0
+const SUBDIVISION := VegetationScript.PATCH_SUBDIVISION
+const VEGETATION_SPAN_M := SPAN_M / SUBDIVISION
+# Sub-patches one terrain patch owns, and so uploads one terrain patch costs.
+const SUB_PATCHES := SUBDIVISION * SUBDIVISION
 const WORLD_SIZE := Vector2(20400.0, 20400.0)
 
 class MockTerrain:
@@ -81,6 +89,7 @@ func _run() -> void:
 
 	var near := Vector2i(20, 20)
 	var far := Vector2i(21, 20)
+	var near_origins := _sub_origins(near)
 	terrain.resident = [near, far]
 	terrain.generations = {near: 4, far: 4}
 	# Place the camera inside the near patch so both patches are within tree range.
@@ -90,28 +99,39 @@ func _run() -> void:
 	)
 	vegetation.rebuild_from_simulation_state()
 
-	# One patch per frame, so two frames build both.
-	for i in range(3):
+	# One patch per frame, so both terrain patches take their sub-patch count in frames.
+	for i in range(SUB_PATCHES * 2 + 1):
 		vegetation._process(0.016)
-	_expect(vegetation.patches.size() == 2, "both resident patches must build")
-	_expect(simulation.patch_fetches.size() == 2, "each patch must fetch placements once")
+	_expect(
+		vegetation.patches.size() == SUB_PATCHES * 2,
+		"both resident patches must build every sub-patch, got %d" % vegetation.patches.size()
+	)
+	_expect(
+		simulation.patch_fetches.size() == SUB_PATCHES * 2,
+		"each sub-patch must fetch placements once, got %d" % simulation.patch_fetches.size()
+	)
 
 	# A road edit dirties one patch. The terrain renderer commits it at a newer generation.
 	simulation.patch_fetches.clear()
 	terrain.generations[near] = 9
-	vegetation._process(0.016)
-	var near_origin := Vector2(near) * SPAN_M - WORLD_SIZE * 0.5
+	for i in range(SUB_PATCHES):
+		vegetation._process(0.016)
 	_expect(
-		simulation.patch_fetches == [near_origin],
+		_sorted(simulation.patch_fetches) == _sorted(near_origins),
 		"only the edited patch may regenerate, got %s" % [simulation.patch_fetches]
 	)
-	_expect(vegetation.patches.size() == 2, "the replacement must not orphan a patch key")
 	_expect(
-		int(vegetation.patches[near].get_meta("surface_generation")) == 9,
-		"the rebuilt patch must record the generation it was built against"
+		vegetation.patches.size() == SUB_PATCHES * 2,
+		"the replacement must not orphan a patch key"
 	)
+	for key in _sub_keys(near):
+		_expect(
+			int(vegetation.patches[key].get_meta("surface_generation")) == 9,
+			"the rebuilt patch must record the generation it was built against"
+		)
 
 	# A settled patch must not regenerate again, and an uncommitted patch must not churn.
+	vegetation._process(0.016)
 	vegetation._process(0.016)
 	_expect(vegetation.queue.is_empty(), "a patch at the current generation must stay settled")
 	terrain.generations[far] = -1
@@ -121,22 +141,52 @@ func _run() -> void:
 	# A vegetation edit changes no terrain generation, and only its own patch rebuilds.
 	simulation.patch_fetches.clear()
 	simulation.vegetation_generations[near] = 1
-	vegetation._process(0.016)
-	_expect(simulation.patch_fetches == [near_origin], "vegetation edits must rebuild only their touched patch")
-	_expect(int(vegetation.patches[near].get_meta("vegetation_generation")) == 1, "upload must stamp the independent vegetation revision")
+	for i in range(SUB_PATCHES):
+		vegetation._process(0.016)
+	_expect(
+		_sorted(simulation.patch_fetches) == _sorted(near_origins),
+		"vegetation edits must rebuild only their touched patch, got %s" % [simulation.patch_fetches]
+	)
+	for key in _sub_keys(near):
+		_expect(int(vegetation.patches[key].get_meta("vegetation_generation")) == 1, "upload must stamp the independent vegetation revision")
 	_expect(terrain.generations[near] == 9, "vegetation must not advance terrain generations")
-	_expect(not vegetation._is_patch_stale(far), "vegetation edits must leave the neighboring patch settled")
+	for key in _sub_keys(far):
+		_expect(not vegetation._is_patch_stale(key), "vegetation edits must leave the neighboring patch settled")
 
 	# A concurrent edit during fetch must remain detectable: revisions are read before fetch.
+	var probe: Vector2i = _sub_keys(near)[0]
 	simulation.advance_during_fetch = true
-	vegetation._upload_patch(near, SPAN_M)
-	_expect(vegetation._is_patch_stale(near), "an edit during placement fetch must not be stamped as already rendered")
+	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
+	_expect(vegetation._is_patch_stale(probe), "an edit during placement fetch must not be stamped as already rendered")
 	simulation.advance_during_fetch = false
-	vegetation._upload_patch(near, SPAN_M)
-	_expect(not vegetation._is_patch_stale(near), "a subsequent upload must settle the vegetation revision")
+	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
+	_expect(not vegetation._is_patch_stale(probe), "a subsequent upload must settle the vegetation revision")
 
 	host.free()
 	quit(1 if _failures > 0 else 0)
+
+## Every vegetation sub-patch key one terrain render patch owns.
+func _sub_keys(terrain_key: Vector2i) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	for column in range(SUBDIVISION):
+		for row in range(SUBDIVISION):
+			keys.append(terrain_key * SUBDIVISION + Vector2i(column, row))
+	return keys
+
+## World-space minimum corner of every sub-patch one terrain render patch owns.
+func _sub_origins(terrain_key: Vector2i) -> Array[Vector2]:
+	var origins: Array[Vector2] = []
+	for key in _sub_keys(terrain_key):
+		origins.append(Vector2(key) * VEGETATION_SPAN_M - WORLD_SIZE * 0.5)
+	return origins
+
+## Upload order follows the queue, which sorts by distance, so a set comparison is what the
+## contract actually claims: these origins and no others.
+func _sorted(origins: Array) -> Array:
+	var copy := origins.duplicate()
+	copy.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.x < b.x if a.x != b.x else a.y < b.y)
+	return copy
 
 func _expect(condition: bool, message: String) -> void:
 	if condition:

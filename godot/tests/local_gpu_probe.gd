@@ -5,7 +5,9 @@
 ## METRUM_GPU_PROBE_OUTPUT selects a fresh output directory; METRUM_GPU_PROBE_WORLD selects a world SQLite.
 ## METRUM_GPU_PROBE_EXPERIMENT selects E01 (micro grass), E02 (shader cost attribution),
 ## E03 (long lateral panning), E04 (terrain texture import comparison), E11 (day cycle
-## hours) or E12 (tree scatter from an eye-level horizon camera).
+## hours), E12 (tree scatter from an eye-level horizon camera), E14 (a forest the brush
+## painted, which is much denser than the one the generator makes) or E15 (the vegetation
+## patch grid and the near canopy band swept together over that same painted forest).
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
 
@@ -38,6 +40,12 @@ var pan_origin := Vector3.ZERO
 # Applies to stationary trials only; pan trials carry their own durations.
 var capture_seconds := 8.0
 var vegetation: Node
+# E14 brush fixture. Preset 8 is the managed stand: 0.85 of a 4 m lattice, about 531
+# stems per hectare, inside the real Finnish 400-700 for a managed stand.
+const PAINT_PRESET := 8
+var painted_plants := 0
+var painted_extent_m := 1600.0
+var painted_ms := 0.0
 
 func _initialize() -> void:
 	call_deferred("run")
@@ -143,6 +151,28 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E15":
+		# What the vegetation patch grid costs and what it buys. A patch is one instance, so
+		# the near band cannot be narrower than the patch diagonal; the grid was the 510 m
+		# terrain grid, which is what held the near cards out to 800 m. Each trial names a
+		# subdivision and a near range. f1_near800 is the shipped geometry, f4_near800
+		# isolates what subdividing costs on its own, and f4_near200 is the pair of them.
+		paint_dense_forest()
+		trials = ["grid_off", "grid_f1_near800_full", "grid_f4_near800_full",
+			"grid_f2_near400_full", "grid_f4_near200_full", "grid_f8_near200_full",
+			"grid_f1_near800_full_repeat"]
+		radii = [300.0]
+	elif experiment == "E14":
+		# Cost of a forest the brush painted rather than the one the generator makes.
+		# The brush plants on a fixed 4 m lattice, so its managed-stand preset is about
+		# 531 stems/ha where the shipped generator is 30.47. That is the case the player
+		# reports as unplayable, and no generator density can reach it: the generator
+		# ceiling is 121.875 stems/ha. The view is the E12 pose, so the two are comparable.
+		paint_dense_forest()
+		trials = ["dense_eye_horizon_off", "dense_eye_horizon_plain",
+			"dense_eye_horizon_full", "dense_eye_horizon_near",
+			"dense_eye_horizon_off_repeat"]
+		radii = [300.0]
 	elif experiment == "E12":
 		# Cost of the tree scatter from a camera just above the canopy that looks level
 		# at the horizon. E08 measured a horizon view from 120 m up. Only from eye level
@@ -235,7 +265,14 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
-			elif experiment == "E12" or experiment == "E13":
+			elif experiment == "E15":
+				vegetation.enabled = not trial.contains("_off")
+				vegetation.density_fraction = 1.0
+				vegetation.cast_shadows = trial.contains("full")
+				vegetation.patch_subdivision_override = trial_grid_value(trial, "f")
+				vegetation.near_range_override_m = float(trial_grid_value(trial, "near"))
+				vegetation.rebuild_from_simulation_state()
+			elif experiment in ["E12", "E13", "E14"]:
 				vegetation.enabled = not trial.contains("_off")
 				vegetation.density_fraction = 1.0
 				# "full" is the shipped configuration.
@@ -263,7 +300,7 @@ func run() -> void:
 			camera.focus_on(trial_start_pivot(trial), camera_radius)
 			apply_far_lever(trial)
 			apply_horizon_view(trial)
-			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13"] and not await settle_view():
+			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15"] and not await settle_view():
 				quit(1)
 				return
 			await create_timer(4.0).timeout
@@ -285,6 +322,10 @@ func run() -> void:
 		"camera_pivot": [pivot.x, pivot.y, pivot.z], "camera_radii": radii,
 		"capture_seconds": capture_seconds,
 		"terrain_patch_span_m": terrain.get_render_patch_span_m(),
+		"painted_plants": painted_plants,
+		"painted_extent_m": painted_extent_m,
+		"painted_preset": PAINT_PRESET,
+		"paint_ms": painted_ms,
 		"pan_route_m": pan_route_m,
 		"pan_origin": [pan_origin.x, pan_origin.y, pan_origin.z],
 		"note": "GPU viewport timings are asynchronous observations, not presentation latency. Trials are sequential; each includes 4 seconds warmup and a per-trial capture window. The legacy pan trial traverses 400m in 8 seconds; E03 pan trials use pan_plan().",
@@ -433,8 +474,47 @@ func pan_plan(trial: String) -> Dictionary:
 
 ## E08 keeps the camera at fixed altitude and low pitch, looking north toward the horizon.
 ## Override focus_on's automatic pose identically for tree-on and tree-off captures.
+## Paints a square of brushed managed stand centred on the probe pivot, and records what
+## it planted. The brush is the only way to reach this density: it writes a fixed 4 m
+## planting lattice, where the generator's own ceiling is an 8 m canopy cell.
+##
+## Stamps are discs, so they are spaced below their own radius and overlap. An overlap
+## plants nothing twice: a lattice point that already carries a plant is not clear, so the
+## painted population is a property of the square and not of how it was covered.
+func paint_dense_forest() -> void:
+	var simulation: Node = main.get_node("SimulationNode")
+	var start := Time.get_ticks_msec()
+	var radius := 200.0
+	var step := 140.0
+	var half := painted_extent_m * 0.5
+	var steps := int(half / step)
+	for column in range(-steps, steps + 1):
+		for row in range(-steps, steps + 1):
+			var at := Vector2(pivot.x + column * step, pivot.z + row * step)
+			painted_plants += int(simulation.paint_vegetation(at, radius, PAINT_PRESET, 1))
+	painted_ms = float(Time.get_ticks_msec() - start)
+	print("GPU_PROBE_PAINTED plants=%d extent_m=%.0f ms=%.0f" % [
+		painted_plants, painted_extent_m, painted_ms,
+	])
+	vegetation.rebuild_from_simulation_state()
+
+## Integer a grid trial carries after `prefix`, as in "f4" or "near200". Returns zero when
+## the trial names none, which is what both renderer overrides read as "keep the authored
+## value" -- so `grid_off` and every non-E15 trial leave the shipped geometry alone.
+func trial_grid_value(trial: String, prefix: String) -> int:
+	for part in trial.split("_"):
+		if part.begins_with(prefix) and part.substr(prefix.length()).is_valid_int():
+			return part.substr(prefix.length()).to_int()
+	return 0
+
 func apply_horizon_view(trial: String) -> void:
-	if not trial.contains("horizon"):
+	if not trial.contains("horizon") and not trial.begins_with("grid_"):
+		return
+	# E15 shares the E12 pose: the honest case for a per-patch level choice is the one
+	# where a single patch fills the view from the camera to the horizon.
+	if trial.begins_with("grid_"):
+		camera.position.y = pivot.y + 30.0
+		camera.rotation = Vector3(-0.04, 0.0, 0.0)
 		return
 	# E12 sits just above the canopy and looks level, so a single scatter patch spans
 	# the screen from the camera to the horizon instead of covering a thin strip.
@@ -607,6 +687,8 @@ func capture(trial: String) -> void:
 	var sun_state: DayCycleConfig.Sample = main.get_node("SceneLighting").current_sample()
 	var entry := {"trial": trial, "camera_radius": camera_radius, "terrain_material_instances": active_material_count, "frame_ms": summarize(frames), "gpu_ms": summarize(gpu), "render_cpu_ms": summarize(cpu), "samples_frame_gpu_cpu_pending": raw,
 		"vegetation": vegetation.metrics(),
+		"patch_subdivision_override": vegetation.patch_subdivision_override,
+		"near_range_override_m": vegetation.near_range_override_m,
 		"vegetation_at_start": vegetation_before,
 		"vegetation_pending_frames": vegetation_pending_frames,
 		"capture_seconds": float(plan.get("seconds", capture_seconds)),

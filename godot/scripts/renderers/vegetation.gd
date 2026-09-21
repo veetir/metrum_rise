@@ -2,7 +2,7 @@
 
 ## Vegetation presentation reuses terrain residency; Rust owns the generated and edited state.
 ## Rust supplies deterministic patch-local placements for four species: conifer, broadleaf,
-## bush and rock. Uploads at most one patch per frame.
+## bush and rock. Uploads at most one terrain patch of area per frame.
 ## A patch regenerates when the terrain renderer commits a newer surface generation for it,
 ## or Rust advances its independent vegetation revision. Later surface edits clear generated
 ## scatter; player placements remain authoritative.
@@ -15,15 +15,18 @@ const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 # and a short range: it exists to stop near forest floor looking like mown lawn.
 #
 # Every range below is evaluated ONCE PER PATCH. Godot tests one distance for a whole
-# MultiMeshInstance3D, and a patch is a terrain patch: 510 m across, 361 m from centre to
-# corner. A plant therefore gets the level its patch centre asks for, not the level its own
-# distance asks for, and that error is up to 361 m. Two rules follow, and both were broken
-# before this was measured from a ground-level camera:
+# MultiMeshInstance3D, so a plant gets the level its patch centre asks for and not the level
+# its own distance asks for. Two rules follow, and both were broken before this was measured
+# from a ground-level camera:
 #   - A band must be wider than the patch diagonal, or one patch spans several bands and
-#     the level it draws is wrong for most of what it contains. Only TREE_NEAR_M is a band
-#     now: the two crown levels share one instance and TREE_MID_M picks its mesh per patch.
+#     the level it draws is wrong for most of what it contains. Only the near canopy is a
+#     band: the two crown levels share one instance and TREE_MID_M picks its mesh per patch.
 #   - A range must be longer than the patch half-diagonal, or the patch under the camera
 #     can be culled while the plants at the camera's feet are still in view.
+# Both rules are a tax on the patch size, and the patch used to be a 510 m terrain patch:
+# 361 m from centre to corner, which put a 721 m floor under the near band on its own. That
+# is why the near canopy reached 800 m, where a tree is 13 pixels tall. PATCH_SUBDIVISION
+# below cuts the vegetation grid off the terrain grid so the band can follow the trees.
 # Lane five of a packed placement carries the species ordinal in its low two bits and, above
 # them, the renderer mesh variant the brush pinned, biased by one. Zero there leaves the
 # variant to the appearance seed, which is every generated plant and every plant authored
@@ -31,14 +34,15 @@ const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const SPECIES_BITS := 2
 const SPECIES_MASK := 3
 
-const TREE_NEAR_M := 800.0
+# Shortest distance the near canopy is allowed to hand over on, whatever the grid does. A
+# tree covers 53 pixels at 1080p and 75 degrees here, against 13 at the 800 m this replaces,
+# and 13 pixels is where the cards stop reading as a crown and start reading as noise. For
+# scale, the authored-mesh policy in lod_policy.rs drops LOD0 at 512 pixels.
+const TREE_NEAR_FLOOR_M := 200.0
 const TREE_MID_M := 2000.0
 const TREE_FAR_M := 4500.0
 const BUSH_RANGE_M := 420.0
 const ROCK_RANGE_M := 420.0
-# Patch-level cutoff for generating the understory at all. Must clear the longest understory
-# range plus the patch half-diagonal, or a patch is skipped while its near corner wants bushes.
-const UNDERSTORY_PATCH_RANGE_M := 800.0
 # Half the diagonal of a square patch, per metre of span. A patch is one instance, so every
 # conservative range test measures from the patch centre out to its farthest corner.
 const PATCH_HALF_DIAGONAL := 0.7071067811865476
@@ -47,16 +51,27 @@ const PATCH_HALF_DIAGONAL := 0.7071067811865476
 # and rock carry a single level, so a variant that stops early drops nothing into a gap: the
 # plant ends and the rest of the patch carries on. Twelve variants then end at twelve
 # distances and the carpet dissolves over the last quarter of its range. Sharing one distance
-# instead ends every plant of a 510 m patch on one line, and a camera above the canopy reads
+# instead ends every plant of one patch on one line, and a camera above the canopy reads
 # that line as a straight edge between forest floor and bare ground.
 const UNDERSTORY_STAGGER_MIN := 0.75
-# How far before TREE_NEAR_M a patch may swap its near canopy for the distant level. The
-# switch is a per-patch decision, so on one distance every patch of the 510 m grid switches
-# on one circle and the boundary reads as a staircase of squares. Giving each patch its own
+# What share of the near band a patch may swap its canopy early by. The switch is a
+# per-patch decision, so on one distance every patch switches on one circle and the boundary
+# reads as a staircase of squares. Giving each patch its own
 # share of this breaks the staircase up. The offset is negative only: a patch may switch
 # early, never late, so the near band stays the conservative superset it already is, no patch
 # builds near meshes it did not build before, and the near level draws over less ground.
-const CANOPY_SWITCH_JITTER_M := 160.0
+const CANOPY_SWITCH_JITTER_FRACTION := 0.2
+
+# How many vegetation patches one terrain render patch is cut into along each axis. The
+# vegetation grid WAS the terrain grid, and that is what set every distance above: a patch is
+# one instance, so no band can be narrower than the patch that has to fit inside it, and a
+# 510 m terrain patch therefore forced a 721 m floor under the near band. The trees never
+# needed that. Rust already takes an arbitrary origin and span in get_decorative_tree_patch,
+# so the finer grid costs no simulation change: a sub-patch key divides back to its owning
+# terrain key for both staleness questions, which leaves invalidation terrain-coarse and so
+# conservative. Subdividing raises the distant instance count by its square, which is the
+# cost this buys the near band's area reduction with.
+const PATCH_SUBDIVISION := 4
 
 var enabled := true
 var density_fraction := 1.0
@@ -64,6 +79,14 @@ var cast_shadows := true
 # Probe override for the canopy far range, in metres. Values at or below zero keep the
 # authored TREE_FAR_M. Must stay above TREE_MID_M or the far level gets an empty range.
 var far_range_override_m := 0.0
+# Probe override for the canopy near range, in metres. Values at or below zero keep the
+# range canopy_near_m() derives from the patch span.
+var near_range_override_m := 0.0
+# Probe override for PATCH_SUBDIVISION. Values below one keep the authored subdivision.
+var patch_subdivision_override := 0
+# Vegetation patch span in metres, cached from the last residency pass so the range
+# accessors can answer without a terrain call. Zero until the first patch is built.
+var patch_span_m := 0.0
 var patches: Dictionary = {}
 # Patches that left terrain residency but are still inside the scatter radius. Terrain
 # residency follows the camera frustum, so a rotation evicts patches that are about to be
@@ -88,7 +111,7 @@ func _ready() -> void:
 ## also carries the near per-variant instances, and `switch_m` is the distance this patch
 ## swaps its canopy on. `variant` staggers the understory and is ignored by the canopy. A patch built far away carries none, and then
 ## the distant instance must begin at zero: it is the only thing in the patch, so a begin of
-## TREE_NEAR_M empties the patch the moment the camera reaches that distance. The rebuild that
+## the near range empties the patch the moment the camera reaches that distance. The rebuild that
 ## adds the near band is queued at one patch per frame, so a fast approach outruns it.
 func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: float) -> Vector2:
 	if species == TreeSpecies.BUSH:
@@ -108,10 +131,11 @@ func _understory_stagger(variant: int) -> float:
 	return lerpf(UNDERSTORY_STAGGER_MIN, 1.0, fmod(float(variant) * 0.6180339887498949, 1.0))
 
 ## Distance at which one patch swaps its near canopy for the distant level. See
-## CANOPY_SWITCH_JITTER_M. Keyed on the patch, so a rebuild reproduces the same distance and
+## CANOPY_SWITCH_JITTER_FRACTION. Keyed on the patch, so a rebuild reproduces the same distance and
 ## the switch does not move when a terrain edit regenerates the patch.
 func canopy_switch_m(key: Vector2i) -> float:
-	return TREE_NEAR_M - CANOPY_SWITCH_JITTER_M * _patch_hash01(key)
+	var near_m := canopy_near_m()
+	return near_m - near_m * CANOPY_SWITCH_JITTER_FRACTION * _patch_hash01(key)
 
 ## Deterministic value in [0,1) for one patch key. The mix the vegetation shaders use for
 ## their cell hashes. GDScript integers are 64-bit and signed, so the multiplies wrap into
@@ -125,6 +149,29 @@ func _patch_hash01(key: Vector2i) -> float:
 ## can never disagree about how far the scatter reaches.
 func canopy_far_m() -> float:
 	return far_range_override_m if far_range_override_m > TREE_MID_M else TREE_FAR_M
+
+## Distance the near canopy hands its cards over to the distant lathe on. Derived from the
+## patch span rather than authored, because the binding constraint is the grid and not the
+## tree: the band has to stay wider than the patch diagonal or one patch straddles the
+## switch and draws the wrong level for most of what it holds. The floor is what the trees
+## themselves ask for, and a patch small enough to reach it stops paying the grid's tax.
+func canopy_near_m() -> float:
+	if near_range_override_m > 0.0:
+		return near_range_override_m
+	return maxf(TREE_NEAR_FLOOR_M, patch_span_m * PATCH_HALF_DIAGONAL * 2.0)
+
+## Vegetation patches per terrain render patch along one axis, with the probe override.
+## Also the square root of the per-frame upload budget; see the budget in _process.
+func patch_subdivision() -> int:
+	return patch_subdivision_override if patch_subdivision_override >= 1 else PATCH_SUBDIVISION
+
+## The terrain render patch that owns a vegetation sub-patch. Both staleness questions are
+## answered on the terrain grid: the surface generation is published there, and routing the
+## vegetation revision through the same key keeps one edit invalidating a whole terrain
+## patch. That is coarser than it has to be and therefore never misses an edit.
+func _owner_key(key: Vector2i) -> Vector2i:
+	var divisor := patch_subdivision()
+	return Vector2i(floori(float(key.x) / divisor), floori(float(key.y) / divisor))
 
 func rebuild_from_simulation_state() -> void:
 	for patch in patches.values():
@@ -148,9 +195,12 @@ func _process(_delta: float) -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return
-	var span: float = terrain.get_render_patch_span_m()
-	if span <= 0.0:
+	var terrain_span: float = terrain.get_render_patch_span_m()
+	if terrain_span <= 0.0:
 		return
+	var divisor := patch_subdivision()
+	var span := terrain_span / divisor
+	patch_span_m = span
 	var camera_xz := Vector2(camera.global_position.x, camera.global_position.z)
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var revision: int = terrain.get_resident_patch_revision()
@@ -160,10 +210,16 @@ func _process(_delta: float) -> void:
 		last_camera_cell = camera_cell
 		var wanted: Dictionary = {}
 		var world: Vector2 = simulation.get_terrain_world_size()
-		for key in terrain.get_resident_patch_keys():
-			var center := Vector2(key) * span - world * 0.5 + Vector2.ONE * span * 0.5
-			if center.distance_to(camera_xz) <= canopy_far_m() + span:
-				wanted[key] = center.distance_squared_to(camera_xz)
+		# Terrain residency is the frustum test, and it is answered on the terrain grid. Each
+		# resident terrain patch expands into the sub-patches it owns, so the frustum stays
+		# terrain-coarse while every distance below is answered on the finer grid.
+		for terrain_key in terrain.get_resident_patch_keys():
+			for column in range(divisor):
+				for row in range(divisor):
+					var key := Vector2i(terrain_key) * divisor + Vector2i(column, row)
+					var center := Vector2(key) * span - world * 0.5 + Vector2.ONE * span * 0.5
+					if center.distance_to(camera_xz) <= canopy_far_m() + span:
+						wanted[key] = center.distance_squared_to(camera_xz)
 		for key in patches.keys():
 			if not wanted.has(key):
 				_retire_patch(key, span, world, camera_xz)
@@ -196,18 +252,25 @@ func _process(_delta: float) -> void:
 			_refresh_distant_lod(patch, distance)
 			if (
 				_is_patch_stale(key)
-				or _understory_wanted(distance) != bool(patch.get_meta("understory"))
+				or _understory_wanted(distance, span) != bool(patch.get_meta("understory"))
 				or _near_band_wanted(distance, span) != bool(patch.get_meta("near_band"))
 			):
 				queue.append(key)
-	if not queue.is_empty():
+	# The budget is an area, not a count. One upload per frame was one terrain patch per
+	# frame, and a sub-patch covers a square of that, so the same ground per frame is
+	# PATCH_SUBDIVISION squared of them. Holding the count instead would make the time to
+	# settle grow with the square of the subdivision, and in a dense forest that is minutes.
+	var budget := divisor * divisor
+	while budget > 0 and not queue.is_empty():
 		_upload_patch(queue.pop_back(), span)
+		budget -= 1
 
 func _is_patch_stale(key: Vector2i) -> bool:
 	# -1 means the terrain patch has committed no payload yet. Keep the current scatter
 	# rather than churning; the next commit advances the generation and triggers a rebuild.
-	var current: int = terrain.get_patch_surface_generation(key)
-	var vegetation_generation: int = simulation.get_vegetation_patch_generation(key)
+	var owner := _owner_key(key)
+	var current: int = terrain.get_patch_surface_generation(owner)
+	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
 	return (
 		(current >= 0 and current != int(patches[key].get_meta("surface_generation")))
 		or vegetation_generation != int(patches[key].get_meta("vegetation_generation"))
@@ -228,8 +291,13 @@ func _patch_distance(key: Vector2i, span: float, world: Vector2, camera_xz: Vect
 	return (Vector2(key) * span - world * 0.5 + Vector2.ONE * span * 0.5).distance_to(camera_xz)
 
 ## Whether this patch is close enough to be worth generating the dense understory layer.
-func _understory_wanted(distance: float) -> bool:
-	return distance >= 0.0 and distance <= UNDERSTORY_PATCH_RANGE_M
+## Conservative by the patch half-diagonal, like the near band: a patch centre outside the
+## longest understory range can still have a near corner inside it. On the terrain grid that
+## slack was 361 m on a 420 m range, so nearly half of every understory patch generated was
+## never drawn.
+func _understory_wanted(distance: float, span: float) -> bool:
+	var longest := maxf(BUSH_RANGE_M, ROCK_RANGE_M) + span * PATCH_HALF_DIAGONAL
+	return distance >= 0.0 and distance <= longest
 
 ## Whether any part of this patch can fall inside the near band, and so whether the near
 ## per-variant meshes are worth building at all. A patch is one instance, so the test is
@@ -237,7 +305,7 @@ func _understory_wanted(distance: float) -> bool:
 ## builds one distant level and skips the variant split, the tints and 36 of its 38 nodes.
 ## With no camera every level is built, which is what a headless caller wants.
 func _near_band_wanted(distance: float, span: float) -> bool:
-	return distance < 0.0 or distance <= TREE_NEAR_M + span * PATCH_HALF_DIAGONAL
+	return distance < 0.0 or distance <= canopy_near_m() + span * PATCH_HALF_DIAGONAL
 
 ## Which crown mesh the patch's distant instance carries. The patch is one instance, so this
 ## is a per-patch choice and needs no band wider than the patch.
@@ -295,17 +363,21 @@ func metrics() -> Dictionary:
 	return {"enabled": enabled, "resident_patches": patches.size(), "resident_trees": tree_count,
 		"pending_patches": queue.size(), "cached_patches": cache.size(),
 		"generated_patches": generated_patches,
-		"max_patch_generation_upload_ms": generation_ms_max, "density_fraction": density_fraction}
+		"max_patch_generation_upload_ms": generation_ms_max, "density_fraction": density_fraction,
+		"patch_span_m": patch_span_m, "patch_subdivision": patch_subdivision(),
+		"canopy_near_m": canopy_near_m(), "canopy_far_m": canopy_far_m()}
 
 func _upload_patch(key: Vector2i, span: float) -> void:
 	var start := Time.get_ticks_usec()
 	# Read before the placement fetch. Stamping an older generation onto newer data only
 	# causes one redundant rebuild; the reverse would leave a stale patch undetected.
-	var generation: int = terrain.get_patch_surface_generation(key)
-	var vegetation_generation: int = simulation.get_vegetation_patch_generation(key)
+	var owner := _owner_key(key)
+	var generation: int = terrain.get_patch_surface_generation(owner)
+	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
 	var world: Vector2 = simulation.get_terrain_world_size()
+	patch_span_m = span
 	var distance := _patch_distance(key, span, world, _camera_xz())
-	var understory := _understory_wanted(distance)
+	var understory := _understory_wanted(distance, span)
 	var near_band := _near_band_wanted(distance, span)
 	var distant_lod := _distant_lod(distance)
 	var switch_m := canopy_switch_m(key)
