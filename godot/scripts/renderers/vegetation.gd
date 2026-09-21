@@ -98,10 +98,13 @@ var patches: Dictionary = {}
 # residency follows the camera frustum, so a rotation evicts patches that are about to be
 # wanted again. These are hidden rather than freed, because rebuilding one costs a frame.
 var cache: Dictionary = {}
-var queue: Array[Vector2i] = []
+var queue: Array[Vector3i] = []
 # meshes[species][variant] is an Array[ArrayMesh], ordered near to far.
 var meshes: Array = []
 var last_revision := -1
+# Span of one terrain render patch, in metres. A patch key carries the grid it belongs to,
+# and this is what turns that grid back into a distance.
+var terrain_span_m := 0.0
 var last_camera_cell := Vector2i(2147483647, 2147483647)
 var tree_count := 0
 var generated_patches := 0
@@ -146,15 +149,15 @@ func _understory_stagger(variant: int) -> float:
 ## Distance at which one patch swaps its near canopy for the distant level. See
 ## CANOPY_SWITCH_JITTER_FRACTION. Keyed on the patch, so a rebuild reproduces the same distance and
 ## the switch does not move when a terrain edit regenerates the patch.
-func canopy_switch_m(key: Vector2i) -> float:
+func canopy_switch_m(key: Vector3i) -> float:
 	var near_m := canopy_near_m()
 	return near_m - near_m * CANOPY_SWITCH_JITTER_FRACTION * _patch_hash01(key)
 
 ## Deterministic value in [0,1) for one patch key. The mix the vegetation shaders use for
 ## their cell hashes. GDScript integers are 64-bit and signed, so the multiplies wrap into
 ## negative values; the mask at the end is what brings the result back into range.
-func _patch_hash01(key: Vector2i) -> float:
-	var h := key.x * 374761393 + key.y * 668265263
+func _patch_hash01(key: Vector3i) -> float:
+	var h := key.x * 374761393 + key.y * 668265263 + key.z * 2246822519
 	h = (h ^ (h >> 13)) * 1274126177
 	return float((h ^ (h >> 16)) & 0xFFFFFF) / 16777216.0
 
@@ -182,9 +185,23 @@ func patch_subdivision() -> int:
 ## answered on the terrain grid: the surface generation is published there, and routing the
 ## vegetation revision through the same key keeps one edit invalidating a whole terrain
 ## patch. That is coarser than it has to be and therefore never misses an edit.
-func _owner_key(key: Vector2i) -> Vector2i:
-	var divisor := patch_subdivision()
+func _owner_key(key: Vector3i) -> Vector2i:
+	var divisor := maxi(key.z, 1)
 	return Vector2i(floori(float(key.x) / divisor), floori(float(key.y) / divisor))
+
+## Span of the patch this key names, in metres. The key carries its own grid divisor, so a
+## coarse far patch and a fine near patch answer this differently and never collide in the
+## patch dictionary even where their corners coincide.
+func _key_span(key: Vector3i) -> float:
+	return terrain_span_m / float(maxi(key.z, 1))
+
+## Distance within which a terrain block has to be carried on the fine grid. Only a patch
+## that can hold near canopy or understory needs the fine grid: those are the levels whose
+## band is narrower than a terrain patch. Everything beyond draws one distant crown mesh,
+## which is chosen per patch and needs no band at all, so subdividing it buys nothing and
+## costs a patch, two instances and a sweep entry each.
+func _fine_tier_radius() -> float:
+	return maxf(canopy_near_m(), maxf(BUSH_RANGE_M, ROCK_RANGE_M))
 
 func rebuild_from_simulation_state() -> void:
 	for patch in patches.values():
@@ -211,6 +228,7 @@ func _process(_delta: float) -> void:
 	var terrain_span: float = terrain.get_render_patch_span_m()
 	if terrain_span <= 0.0:
 		return
+	terrain_span_m = terrain_span
 	var divisor := patch_subdivision()
 	var span := terrain_span / divisor
 	patch_span_m = span
@@ -227,20 +245,30 @@ func _process(_delta: float) -> void:
 		# Terrain residency is the frustum test, and it is answered on the terrain grid. Each
 		# resident terrain patch expands into the sub-patches it owns, so the frustum stays
 		# terrain-coarse while every distance below is answered on the finer grid.
+		var fine_radius := _fine_tier_radius()
 		for terrain_key in terrain.get_resident_patch_keys():
-			for column in range(divisor):
-				for row in range(divisor):
-					var key := Vector2i(terrain_key) * divisor + Vector2i(column, row)
-					var center := Vector2(key) * span - world * 0.5 + Vector2.ONE * span * 0.5
-					if center.distance_to(camera_xz) <= canopy_far_m() + span:
-						wanted[key] = center.distance_squared_to(camera_xz)
+			var block := Vector2i(terrain_key)
+			var block_center := (Vector2(block) * terrain_span - world * 0.5
+				+ Vector2.ONE * terrain_span * 0.5)
+			var block_distance := block_center.distance_to(camera_xz)
+			# Measured from the block's nearest corner, so a block with any part of it inside
+			# the fine radius is carried whole on the fine grid.
+			if block_distance - terrain_span * PATCH_HALF_DIAGONAL <= fine_radius:
+				for column in range(divisor):
+					for row in range(divisor):
+						var key := Vector3i(block.x * divisor + column, block.y * divisor + row, divisor)
+						var center := Vector2(key.x, key.y) * span - world * 0.5 + Vector2.ONE * span * 0.5
+						if center.distance_to(camera_xz) <= canopy_far_m() + span:
+							wanted[key] = center.distance_squared_to(camera_xz)
+			elif block_distance <= canopy_far_m() + terrain_span:
+				wanted[Vector3i(block.x, block.y, 1)] = block_center.distance_squared_to(camera_xz)
 		for key in patches.keys():
 			if not wanted.has(key):
-				_retire_patch(key, span, world, camera_xz)
+				_retire_patch(key, world, camera_xz)
 		# A cached patch outside the scatter radius will not be wanted again from here, so it
 		# is freed. This is what bounds the cache: it holds at most the patches of one disk.
 		for key in cache.keys():
-			if _patch_distance(key, span, world, camera_xz) > canopy_far_m() + span:
+			if _patch_distance(key, world, camera_xz) > canopy_far_m() + _key_span(key):
 				cache[key].queue_free()
 				cache.erase(key)
 		queue.clear()
@@ -253,7 +281,7 @@ func _process(_delta: float) -> void:
 				_restore_patch(key)
 				continue
 			queue.append(key)
-		queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool: return wanted[a] > wanted[b])
+		queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return wanted[a] > wanted[b])
 	if queue.is_empty():
 		# O(resident patches) per frame: one dictionary lookup and one distance. A road,
 		# building or terrain edit advances the terrain surface generation of the patches it
@@ -262,12 +290,13 @@ func _process(_delta: float) -> void:
 		var world: Vector2 = simulation.get_terrain_world_size()
 		for key in patches:
 			var patch: Node3D = patches[key]
-			var distance := _patch_distance(key, span, world, camera_xz)
+			var key_span := _key_span(key)
+			var distance := _patch_distance(key, world, camera_xz)
 			_refresh_distant_lod(patch, distance)
 			if (
 				_is_patch_stale(key, owner_generations)
-				or _understory_wanted(distance, span) != bool(patch.get_meta("understory"))
-				or _near_band_wanted(distance, span) != bool(patch.get_meta("near_band"))
+				or _understory_wanted(distance, key_span) != bool(patch.get_meta("understory"))
+				or _near_band_wanted(distance, key_span) != bool(patch.get_meta("near_band"))
 			):
 				queue.append(key)
 	# The budget is an area, not a count. One upload per frame was one terrain patch per
@@ -276,10 +305,11 @@ func _process(_delta: float) -> void:
 	# settle grow with the square of the subdivision, and in a dense forest that is minutes.
 	var budget := divisor * divisor
 	while budget > 0 and not queue.is_empty():
-		_upload_patch(queue.pop_back(), span)
+		var next: Vector3i = queue.pop_back()
+		_upload_patch(next, _key_span(next))
 		budget -= 1
 
-func _is_patch_stale(key: Vector2i, cache = null) -> bool:
+func _is_patch_stale(key: Vector3i, cache = null) -> bool:
 	# -1 means the terrain patch has committed no payload yet. Keep the current scatter
 	# rather than churning; the next commit advances the generation and triggers a rebuild.
 	var generations := _owner_generations(_owner_key(key), cache)
@@ -311,10 +341,12 @@ func _camera_xz() -> Vector2:
 
 ## Distance from the camera to this patch centre, or a negative value with no camera. One
 ## distance feeds every range decision for the patch, so they cannot disagree.
-func _patch_distance(key: Vector2i, span: float, world: Vector2, camera_xz: Vector2) -> float:
+func _patch_distance(key: Vector3i, world: Vector2, camera_xz: Vector2) -> float:
 	if camera_xz == Vector2.INF:
 		return -1.0
-	return (Vector2(key) * span - world * 0.5 + Vector2.ONE * span * 0.5).distance_to(camera_xz)
+	var span := _key_span(key)
+	return (Vector2(key.x, key.y) * span - world * 0.5
+		+ Vector2.ONE * span * 0.5).distance_to(camera_xz)
 
 ## Whether this patch is close enough to be worth generating the dense understory layer.
 ## Conservative by the patch half-diagonal, like the near band: a patch centre outside the
@@ -362,11 +394,11 @@ func set_cast_shadows(value: bool) -> void:
 ## Takes a patch out of the drawn set. A patch still inside the scatter radius is hidden and
 ## kept, because terrain residency is frustum-derived and will very likely ask for it again
 ## within a few frames. Only a patch that is genuinely out of range is freed.
-func _retire_patch(key: Vector2i, span: float, world: Vector2, camera_xz: Vector2) -> void:
+func _retire_patch(key: Vector3i, world: Vector2, camera_xz: Vector2) -> void:
 	var patch: Node3D = patches[key]
 	tree_count -= int(patch.get_meta("tree_count"))
 	patches.erase(key)
-	if _patch_distance(key, span, world, camera_xz) <= canopy_far_m() + span:
+	if _patch_distance(key, world, camera_xz) <= canopy_far_m() + _key_span(key):
 		patch.visible = false
 		cache[key] = patch
 		return
@@ -375,7 +407,7 @@ func _retire_patch(key: Vector2i, span: float, world: Vector2, camera_xz: Vector
 ## Returns a hidden patch to the drawn set. The staleness and range tests in `_process` run
 ## against it on the following frame, so a patch that was edited while it was hidden still
 ## rebuilds; showing it first is what keeps the terrain from being bare in the meantime.
-func _restore_patch(key: Vector2i) -> void:
+func _restore_patch(key: Vector3i) -> void:
 	var patch: Node3D = cache[key]
 	cache.erase(key)
 	patch.visible = true
@@ -391,9 +423,20 @@ func metrics() -> Dictionary:
 		"generated_patches": generated_patches,
 		"max_patch_generation_upload_ms": generation_ms_max, "density_fraction": density_fraction,
 		"patch_span_m": patch_span_m, "patch_subdivision": patch_subdivision(),
+		"fine_patches": _tier_count(patch_subdivision()), "coarse_patches": _tier_count(1),
+		"fine_tier_radius_m": _fine_tier_radius(),
 		"canopy_near_m": canopy_near_m(), "canopy_far_m": canopy_far_m()}
 
-func _upload_patch(key: Vector2i, span: float) -> void:
+## How many resident patches sit on one grid. Reported so a probe can show what the two
+## tiers actually cost against each other.
+func _tier_count(divisor: int) -> int:
+	var total := 0
+	for key in patches:
+		if key.z == divisor:
+			total += 1
+	return total
+
+func _upload_patch(key: Vector3i, span: float) -> void:
 	var start := Time.get_ticks_usec()
 	# Read before the placement fetch. Stamping an older generation onto newer data only
 	# causes one redundant rebuild; the reverse would leave a stale patch undetected.
@@ -406,12 +449,15 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
 	var world: Vector2 = simulation.get_terrain_world_size()
 	patch_span_m = span
-	var distance := _patch_distance(key, span, world, _camera_xz())
+	# A direct caller can name a span the key's own grid does not imply, so the key is made
+	# to agree with it before any distance is measured from it.
+	terrain_span_m = span * float(maxi(key.z, 1))
+	var distance := _patch_distance(key, world, _camera_xz())
 	var understory := _understory_wanted(distance, span)
 	var near_band := _near_band_wanted(distance, span)
 	var distant_lod := _distant_lod(distance)
 	var switch_m := canopy_switch_m(key)
-	var origin := Vector2(key) * span - world * 0.5
+	var origin := Vector2(key.x, key.y) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
 	var patch := Node3D.new()
 	patch.position = Vector3(origin.x, 0.0, origin.y)

@@ -154,7 +154,7 @@ func _run() -> void:
 		_expect(not vegetation._is_patch_stale(key), "vegetation edits must leave the neighboring patch settled")
 
 	# A concurrent edit during fetch must remain detectable: revisions are read before fetch.
-	var probe: Vector2i = _sub_keys(near)[0]
+	var probe: Vector3i = _sub_keys(near)[0]
 	simulation.advance_during_fetch = true
 	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
 	_expect(vegetation._is_patch_stale(probe), "an edit during placement fetch must not be stamped as already rendered")
@@ -166,18 +166,19 @@ func _run() -> void:
 	quit(1 if _failures > 0 else 0)
 
 ## Every vegetation sub-patch key one terrain render patch owns.
-func _sub_keys(terrain_key: Vector2i) -> Array[Vector2i]:
-	var keys: Array[Vector2i] = []
+func _sub_keys(terrain_key: Vector2i) -> Array[Vector3i]:
+	var keys: Array[Vector3i] = []
 	for column in range(SUBDIVISION):
 		for row in range(SUBDIVISION):
-			keys.append(terrain_key * SUBDIVISION + Vector2i(column, row))
+			keys.append(Vector3i(terrain_key.x * SUBDIVISION + column,
+				terrain_key.y * SUBDIVISION + row, SUBDIVISION))
 	return keys
 
 ## World-space minimum corner of every sub-patch one terrain render patch owns.
 func _sub_origins(terrain_key: Vector2i) -> Array[Vector2]:
 	var origins: Array[Vector2] = []
 	for key in _sub_keys(terrain_key):
-		origins.append(Vector2(key) * VEGETATION_SPAN_M - WORLD_SIZE * 0.5)
+		origins.append(Vector2(key.x, key.y) * VEGETATION_SPAN_M - WORLD_SIZE * 0.5)
 	return origins
 
 ## Upload order follows the queue, which sorts by distance, so a set comparison is what the

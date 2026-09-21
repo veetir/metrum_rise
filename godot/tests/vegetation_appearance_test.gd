@@ -50,7 +50,7 @@ func run():
 	_check_meshes(vegetation.meshes)
 	_check_crown_cohesion(vegetation.meshes)
 	_check_atlas_cells()
-	for key in [Vector2i(0,0), Vector2i(1,0), Vector2i(0,1), Vector2i(1,1)]:
+	for key in [Vector3i(0,0,1), Vector3i(1,0,1), Vector3i(0,1,1), Vector3i(1,1,1)]:
 		vegetation._upload_patch(key, SPAN)
 	await process_frame
 	vegetation.generation_ms_max = 0.0
@@ -144,8 +144,8 @@ func run():
 	# Out of the near band a patch drops the variant split, the tints and the understory,
 	# keeping one distant instance per canopy species over the whole species population.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
-	vegetation._upload_patch(Vector2i(0, 0), SPAN)
-	var far_patch: Node3D = vegetation.patches[Vector2i(0, 0)]
+	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
 	assert(far_patch.get_meta("distant_lod") == 2)
 	assert(far_patch.get_child_count() == 2)
@@ -165,9 +165,9 @@ func run():
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
 	vegetation.density_fraction = 0.0
-	vegetation._upload_patch(Vector2i(0, 0), SPAN)
-	assert(vegetation.patches[Vector2i(0, 0)].get_child_count() == 0)
-	assert(vegetation.patches[Vector2i(0, 0)].get_meta("tree_count") == 0)
+	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	assert(vegetation.patches[Vector3i(0, 0, 1)].get_child_count() == 0)
+	assert(vegetation.patches[Vector3i(0, 0, 1)].get_meta("tree_count") == 0)
 	await process_frame
 	host.free()
 	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
