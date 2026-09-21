@@ -6,8 +6,9 @@
 ## METRUM_GPU_PROBE_EXPERIMENT selects E01 (micro grass), E02 (shader cost attribution),
 ## E03 (long lateral panning), E04 (terrain texture import comparison), E11 (day cycle
 ## hours), E12 (tree scatter from an eye-level horizon camera), E14 (a forest the brush
-## painted, which is much denser than the one the generator makes) or E15 (the vegetation
-## patch grid and the near canopy band swept together over that same painted forest).
+## painted, which is much denser than the one the generator makes), E15 (the vegetation
+## patch grid and the near canopy band swept together over that same painted forest) or E16
+## (what is left in the frame once E15 has picked the grid: shadows, band and far range).
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
 
@@ -151,6 +152,16 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E16":
+		# Attribution at the grid E15 selected. Every trial holds the subdivision at 4 and
+		# changes one lever, so each difference is that lever. "plain" drops shadow casting,
+		# which measured as more than half the tree cost on the coarse grid. far2500 clamps
+		# the canopy range, which bought nothing on the coarse grid and is re-asked here.
+		paint_dense_forest()
+		trials = ["abl_off", "abl_f4_near200_plain", "abl_f4_near200_full",
+			"abl_f4_near100_full", "abl_f4_near400_full",
+			"abl_f4_near200_far2500_full", "abl_f4_near200_plain_repeat"]
+		radii = [300.0]
 	elif experiment == "E15":
 		# What the vegetation patch grid costs and what it buys. A patch is one instance, so
 		# the near band cannot be narrower than the patch diagonal; the grid was the 510 m
@@ -265,12 +276,13 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
-			elif experiment == "E15":
+			elif experiment in ["E15", "E16"]:
 				vegetation.enabled = not trial.contains("_off")
 				vegetation.density_fraction = 1.0
 				vegetation.cast_shadows = trial.contains("full")
 				vegetation.patch_subdivision_override = trial_grid_value(trial, "f")
 				vegetation.near_range_override_m = float(trial_grid_value(trial, "near"))
+				vegetation.far_range_override_m = float(trial_grid_value(trial, "far"))
 				vegetation.rebuild_from_simulation_state()
 			elif experiment in ["E12", "E13", "E14"]:
 				vegetation.enabled = not trial.contains("_off")
@@ -300,7 +312,7 @@ func run() -> void:
 			camera.focus_on(trial_start_pivot(trial), camera_radius)
 			apply_far_lever(trial)
 			apply_horizon_view(trial)
-			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15"] and not await settle_view():
+			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16"] and not await settle_view():
 				quit(1)
 				return
 			await create_timer(4.0).timeout
@@ -508,11 +520,15 @@ func trial_grid_value(trial: String, prefix: String) -> int:
 	return 0
 
 func apply_horizon_view(trial: String) -> void:
-	if not trial.contains("horizon") and not trial.begins_with("grid_"):
+	if (
+		not trial.contains("horizon")
+		and not trial.begins_with("grid_")
+		and not trial.begins_with("abl_")
+	):
 		return
 	# E15 shares the E12 pose: the honest case for a per-patch level choice is the one
 	# where a single patch fills the view from the camera to the horizon.
-	if trial.begins_with("grid_"):
+	if trial.begins_with("grid_") or trial.begins_with("abl_"):
 		camera.position.y = pivot.y + 30.0
 		camera.rotation = Vector3(-0.04, 0.0, 0.0)
 		return

@@ -100,6 +100,13 @@ var last_camera_cell := Vector2i(2147483647, 2147483647)
 var tree_count := 0
 var generated_patches := 0
 var generation_ms_max := 0.0
+# Both staleness generations, keyed by owner patch, for the duration of one sweep. Every
+# sub-patch of one terrain patch shares an owner, so the sweep asked the same two questions
+# across the language boundary once per sub-patch: PATCH_SUBDIVISION squared times the
+# answers it needed. Only the sweep reads it; _is_patch_stale and _upload_patch called from
+# anywhere else still cross, because their answer is about the moment they are called. The
+# dictionary is cleared, never replaced, to keep the sweep allocation-free.
+var owner_generations: Dictionary = {}
 var ready_for_world := false
 @onready var terrain = $"../Terrain"
 @onready var simulation = $"../SimulationNode"
@@ -201,6 +208,7 @@ func _process(_delta: float) -> void:
 	var divisor := patch_subdivision()
 	var span := terrain_span / divisor
 	patch_span_m = span
+	owner_generations.clear()
 	var camera_xz := Vector2(camera.global_position.x, camera.global_position.z)
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var revision: int = terrain.get_resident_patch_revision()
@@ -251,7 +259,7 @@ func _process(_delta: float) -> void:
 			var distance := _patch_distance(key, span, world, camera_xz)
 			_refresh_distant_lod(patch, distance)
 			if (
-				_is_patch_stale(key)
+				_is_patch_stale(key, owner_generations)
 				or _understory_wanted(distance, span) != bool(patch.get_meta("understory"))
 				or _near_band_wanted(distance, span) != bool(patch.get_meta("near_band"))
 			):
@@ -265,16 +273,28 @@ func _process(_delta: float) -> void:
 		_upload_patch(queue.pop_back(), span)
 		budget -= 1
 
-func _is_patch_stale(key: Vector2i) -> bool:
+func _is_patch_stale(key: Vector2i, cache = null) -> bool:
 	# -1 means the terrain patch has committed no payload yet. Keep the current scatter
 	# rather than churning; the next commit advances the generation and triggers a rebuild.
-	var owner := _owner_key(key)
-	var current: int = terrain.get_patch_surface_generation(owner)
-	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
+	var generations := _owner_generations(_owner_key(key), cache)
 	return (
-		(current >= 0 and current != int(patches[key].get_meta("surface_generation")))
-		or vegetation_generation != int(patches[key].get_meta("vegetation_generation"))
+		(generations.x >= 0 and generations.x != int(patches[key].get_meta("surface_generation")))
+		or generations.y != int(patches[key].get_meta("vegetation_generation"))
 	)
+
+## The surface and vegetation generations of an owner patch, as (surface, vegetation). With a
+## cache this crosses into Rust once per owner instead of once per caller; without one it
+## always crosses, because the answer is only about the moment it is asked.
+func _owner_generations(owner: Vector2i, cache) -> Vector2i:
+	if cache != null and cache.has(owner):
+		return cache[owner]
+	var generations := Vector2i(
+		terrain.get_patch_surface_generation(owner),
+		simulation.get_vegetation_patch_generation(owner)
+	)
+	if cache != null:
+		cache[owner] = generations
+	return generations
 
 ## Camera position on the ground plane, or `INF` when there is no camera to measure from.
 func _camera_xz() -> Vector2:
@@ -371,6 +391,10 @@ func _upload_patch(key: Vector2i, span: float) -> void:
 	var start := Time.get_ticks_usec()
 	# Read before the placement fetch. Stamping an older generation onto newer data only
 	# causes one redundant rebuild; the reverse would leave a stale patch undetected.
+	# Deliberately not the memoised read. The order matters here: this value is stamped onto
+	# the patch, so it must be fetched after any edit that preceded this upload and before the
+	# placement fetch below. A value memoised earlier in the frame can be newer than that and
+	# would stamp an edit as already rendered.
 	var owner := _owner_key(key)
 	var generation: int = terrain.get_patch_surface_generation(owner)
 	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
