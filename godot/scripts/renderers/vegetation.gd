@@ -12,7 +12,7 @@ const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 # The shadow caster choice is bounded by the sun's own range; see _shadow_caster_wanted.
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 
-# Per-species draw ranges. Canopy trees carry three levels because they are the silhouette
+# Per-species draw ranges. Canopy trees carry four levels because they are the silhouette
 # of the landscape at every distance. Understory reads only close up, so it gets one level
 # and a short range: it exists to stop near forest floor looking like mown lawn.
 #
@@ -22,7 +22,8 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 # from a ground-level camera:
 #   - A band must be wider than the patch diagonal, or one patch spans several bands and
 #     the level it draws is wrong for most of what it contains. Only the near canopy is a
-#     band: the two crown levels share one instance and TREE_MID_M picks its mesh per patch.
+#     band: the two near levels share one instance and TREE_NEAR_DETAIL_M picks its mesh per
+#     patch, and so do the two crown levels under TREE_MID_M.
 #   - A range must be longer than the patch half-diagonal, or the patch under the camera
 #     can be culled while the plants at the camera's feet are still in view.
 # Both rules are a tax on the patch size, and the patch used to be a 510 m terrain patch:
@@ -47,6 +48,14 @@ const SPECIES_MASK := 3
 # It only pays in a brush-painted stand of about 531 stems/ha, and the answer to that stand
 # is its stem count, not a band every normal view has to look at.
 const TREE_NEAR_FLOOR_M := 800.0
+# Distance beyond which a patch draws its near canopy from the reduced level, which carries
+# every foliage card and none of the interior wood: no child branch tubes, no solid tufts
+# behind the cards, four trunk sides instead of five. That is 41% to 50% of the triangles and
+# it cost 26.0 ms of a close painted-stand frame to keep. This is a per-patch mesh swap on the
+# instance already uploaded, so it needs no band wider than a patch and costs no second draw.
+# At 1080p and the default 75-degree vertical FOV the projection is 703.7 px/rad, so a 15 m
+# tree covers 15 / d * 703.7 pixels: about 235 px here. Starting point for a rendered sweep.
+const TREE_NEAR_DETAIL_M := 45.0
 # Distance beyond which a patch casts from the lathe proxy instead of from the branched tree.
 # The proxy is ten times cheaper but it is a solid volume standing exactly where the branched
 # crown stands, so every foliage card inside it receives its shadow: up close that reads as
@@ -105,6 +114,9 @@ var far_range_override_m := 0.0
 var near_range_override_m := 0.0
 # Probe override for PATCH_SUBDIVISION. Values below one keep the authored subdivision.
 var patch_subdivision_override := 0
+# Probe override for TREE_NEAR_DETAIL_M, in metres. Values below zero keep the authored
+# distance. Zero is meaningful: it draws the whole near band from the reduced level.
+var near_detail_override_m := -1.0
 # Probe override for the per-frame upload budget, in sub-patch builds. Values below one keep
 # the area budget the subdivision derives. Separates "how fine is the grid" from "how much
 # work may one frame do", which the derived budget ties together.
@@ -153,6 +165,8 @@ func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: 
 		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
 	if species == TreeSpecies.ROCK:
 		return Vector2(0.0, ROCK_RANGE_M * _understory_stagger(variant))
+	# Both branched levels ride the same instance, which is built as level zero whichever
+	# mesh it holds, so there is no second range here for the reduced one.
 	if lod == 0:
 		return Vector2(0.0, switch_m)
 	# One instance covers both crown levels. TREE_MID_M chooses which mesh it carries, not
@@ -194,6 +208,11 @@ func canopy_near_m() -> float:
 	if near_range_override_m > 0.0:
 		return near_range_override_m
 	return maxf(TREE_NEAR_FLOOR_M, patch_span_m * PATCH_HALF_DIAGONAL * 2.0)
+
+## Distance the branched tree hands over to the reduced near level. One accessor so the two
+## bands can never disagree about where they meet.
+func near_detail_m() -> float:
+	return near_detail_override_m if near_detail_override_m >= 0.0 else TREE_NEAR_DETAIL_M
 
 ## Vegetation patches per terrain render patch along one axis, with the probe override.
 ## Also the square root of the per-frame upload budget; see the budget in _process.
@@ -312,6 +331,7 @@ func _process(_delta: float) -> void:
 			var key_span := _key_span(key)
 			var distance := _patch_distance(key, world, camera_xz)
 			_refresh_distant_lod(patch, distance)
+			_refresh_near_detail(patch, distance)
 			if (
 				_is_patch_stale(key, owner_generations)
 				or _understory_wanted(distance, key_span) != bool(patch.get_meta("understory"))
@@ -380,15 +400,35 @@ func _understory_wanted(distance: float, span: float) -> bool:
 ## Whether any part of this patch can fall inside the near band, and so whether the near
 ## per-variant meshes are worth building at all. A patch is one instance, so the test is
 ## conservative by the patch half-diagonal rather than by the centre. Beyond this the patch
-## builds one distant level and skips the variant split, the tints and 36 of its 40 nodes.
+## builds one distant instance per canopy species and skips the variant split and tints.
 ## With no camera every level is built, which is what a headless caller wants.
 func _near_band_wanted(distance: float, span: float) -> bool:
 	return distance < 0.0 or distance <= canopy_near_m() + span * PATCH_HALF_DIAGONAL
 
+## Which near mesh the patch's per-variant instances carry. The patch is one instance per
+## variant, so this is a per-patch choice and needs no band wider than the patch.
+func _near_detail_lod(distance: float) -> int:
+	# With no camera every patch takes the detailed level, which is what a headless caller
+	# wants: the catalogue test reads the mesh the instance holds.
+	return 0 if distance < 0.0 or distance <= near_detail_m() else 1
+
+## Moves resident near instances between the two branched levels. Both carry the same
+## transforms and the same cards, so this is a mesh write on the buffer already uploaded.
+func _refresh_near_detail(patch: Node3D, distance: float) -> void:
+	var lod := _near_detail_lod(distance)
+	if int(patch.get_meta("near_detail_lod")) == lod:
+		return
+	patch.set_meta("near_detail_lod", lod)
+	for instance in patch.get_children():
+		var species := int(instance.get_meta("species"))
+		if species >= TreeSpecies.BUSH or int(instance.get_meta("lod")) != 0:
+			continue
+		instance.multimesh.mesh = meshes[species][int(instance.get_meta("variant"))][lod]
+
 ## Which crown mesh the patch's distant instance carries. The patch is one instance, so this
 ## is a per-patch choice and needs no band wider than the patch.
 func _distant_lod(distance: float) -> int:
-	return 2 if distance >= TREE_MID_M else 1
+	return 3 if distance >= TREE_MID_M else 2
 
 ## Moves resident distant instances across the mid/far boundary. The transforms are unchanged,
 ## so this is a property write where a rebuild would be another full patch upload.
@@ -398,7 +438,7 @@ func _refresh_distant_lod(patch: Node3D, distance: float) -> void:
 		return
 	patch.set_meta("distant_lod", lod)
 	for instance in patch.get_children():
-		if int(instance.get_meta("lod")) > 0 and not instance.get_meta("shadow_proxy"):
+		if int(instance.get_meta("lod")) >= 2 and not instance.get_meta("shadow_proxy"):
 			instance.multimesh.mesh = meshes[int(instance.get_meta("species"))][0][lod]
 
 ## Re-applies the shadow setting to resident patches. Avoids a full placement rebuild.
@@ -483,6 +523,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	var near_band := _near_band_wanted(distance, span)
 	var caster := _shadow_caster_wanted(distance, span)
 	var distant_lod := _distant_lod(distance)
+	var near_detail_lod := _near_detail_lod(distance)
 	var switch_m := canopy_switch_m(key)
 	var origin := Vector2(key.x, key.y) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
@@ -554,7 +595,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				var near_mm := MultiMesh.new()
 				near_mm.transform_format = MultiMesh.TRANSFORM_3D
 				near_mm.use_colors = true
-				near_mm.mesh = meshes[species][variant][0]
+				near_mm.mesh = meshes[species][variant][
+					near_detail_lod if levels.size() > 1 else 0]
 				near_mm.instance_count = near_transforms.size()
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
@@ -579,12 +621,12 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				for i in range(far_transforms.size()):
 					far_mm.set_instance_transform(slot, far_transforms[i])
 					slot += 1
-			_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m, caster)
+			_add_instance(patch, far_mm, species, 2, 0, near_band, switch_m, caster)
 			if caster == ShadowCaster.PROXY:
 				# Share the uploaded buffer so mesh swaps also update the shadow crown. Built
 				# only where it is the caster: nearer than that the branched tree casts, and
 				# further than the sun's range nothing in the patch reaches a cascade.
-				_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m, caster, true)
+				_add_instance(patch, far_mm, species, 2, 0, near_band, switch_m, caster, true)
 	_share_patch_bounds(patch)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
@@ -593,6 +635,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	patch.set_meta("near_band", near_band)
 	patch.set_meta("shadow_caster", caster)
 	patch.set_meta("distant_lod", distant_lod)
+	patch.set_meta("near_detail_lod", near_detail_lod)
 	# Replace in place. The previous node stays visible until this one is in the tree,
 	# so an edit does not blank the surrounding forest for a frame.
 	if patches.has(key):

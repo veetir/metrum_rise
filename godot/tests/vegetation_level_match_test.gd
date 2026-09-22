@@ -194,7 +194,7 @@ func _run() -> void:
 					if not subset.is_empty():
 						_add(holder, catalogue[species][variant][0], subset, true)
 			else:
-				_add(holder, catalogue[species][0][1], transforms, false)
+				_add(holder, catalogue[species][0][2], transforms, false)
 			measured[level] = await _crown_color(holder)
 			holder.queue_free()
 			await process_frame

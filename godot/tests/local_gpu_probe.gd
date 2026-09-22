@@ -165,6 +165,19 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E23":
+		# What the reduced near level is actually worth. It keeps every foliage card and cuts
+		# only interior wood, and E18 found the near cost follows card area rather than plane
+		# count, so the saving is not obvious and has to be priced before the handover is
+		# tuned. `d` is the handover distance in metres: 800 draws the whole near band from
+		# the branched tree, which is what shipped, and 1 draws all of it from the reduced
+		# level, which is the ceiling this change can reach.
+		paint_dense_forest()
+		trials = ["nearsweep_near800_f4_d800", "nearsweep_near800_f4_d180",
+			"nearsweep_near800_f4_d800_b", "nearsweep_near800_f4_d45",
+			"nearsweep_near800_f4_d800_c", "nearsweep_near800_f4_d1",
+			"nearsweep_near800_f4_d800_d"]
+		radii = [30.0]
 	elif experiment == "E22":
 		# Whether the finer grid's hitch is the grid or the budget it derives. E21 found
 		# subdivision 8 worth 10.2 ms of GPU time while panning and 4 to 5 ms WORSE at frame
@@ -358,7 +371,7 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
-			elif experiment in ["E20", "E21", "E22"]:
+			elif experiment in ["E20", "E21", "E22", "E23"]:
 				vegetation.enabled = true
 				vegetation.density_fraction = 1.0
 				# Shipped shadow configuration throughout, so the only thing that moves is the
@@ -367,6 +380,9 @@ func run() -> void:
 				vegetation.patch_subdivision_override = trial_grid_value(trial, "f")
 				vegetation.near_range_override_m = float(trial_grid_value(trial, "near"))
 				vegetation.upload_budget_override = trial_grid_value(trial, "b")
+				# Zero would mean "draw everything from the reduced level", so absence is -1.
+				var detail := trial_grid_value(trial, "d")
+				vegetation.near_detail_override_m = float(detail) if detail > 0 else -1.0
 				vegetation.rebuild_from_simulation_state()
 			elif experiment == "E19":
 				vegetation.enabled = true
@@ -864,6 +880,7 @@ func capture(trial: String) -> void:
 		"vegetation": vegetation.metrics(),
 		"patch_subdivision_override": vegetation.patch_subdivision_override,
 		"upload_budget_override": vegetation.upload_budget_override,
+		"near_detail_m": vegetation.near_detail_m(),
 		"near_range_override_m": vegetation.near_range_override_m,
 		"vegetation_at_start": vegetation_before,
 		"vegetation_pending_frames": vegetation_pending_frames,

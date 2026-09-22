@@ -231,7 +231,7 @@ def measure(meshes, height, mips, elevation=45.):
 def summarize(rows):
     result = []
     for species in (0, 1):
-        for lod in range(3):
+        for lod in sorted({r["lod"] for r in rows if r["species"] == species}):
             for mode in MODES:
                 group = [r for r in rows if (r["species"], r["lod"], r["mode"]) == (species, lod, mode)]
                 result.append(dict(species=species, lod=lod, mode=mode, samples=len(group),

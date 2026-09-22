@@ -559,6 +559,64 @@ several times over on this GPU. The pose is static, though, and patch churn whil
 moves is what made subdivision expensive before the two-tier grid, so this wants a moving
 camera before it ships. It did not survive one; see the next section.
 
+### The branched tree at half the wood is worth 26 ms (2026-09-22)
+
+The canopy had two authored levels and a 9.4x step between them. A third now sits between
+them, catalogue index 1, and the two lathes move to 2 and 3.
+
+**It cuts wood and keeps every card.** Index 1 omits the depth-1 child branch tubes and the
+solid foliage tufts behind the cards, and turns the trunk lathes from five sides to four.
+Primary bough counts are untouched at 14, 20 and 12 for pine, spruce and broadleaf, so the
+silhouette is the same one. Every card's arrays are byte-identical between the two levels
+across all 24 variants, `_crown_envelope` is unchanged, and both levels use the same cached
+wind and card materials. The distant coverage and radiance constants still derive from index
+0 and did not move.
+
+| form | level 0 opaque | cards | level 1 opaque | cards | total retained |
+|---|---:|---:|---:|---:|---:|
+| pine | 727 | 168 | 212 | 168 | `42.5%` |
+| spruce | 1005 | 240 | 276 | 240 | `41.5%` |
+| birch | 821 | 144 | 340 | 144 | `50.2%` |
+| aspen | 721 | 144 | 260 | 144 | `46.7%` |
+
+**A patch picks its level the way it already picks its crown.** `TREE_NEAR_DETAIL_M` is a
+mesh swap on the instance already uploaded, not a visibility band, so it needs no band wider
+than a patch and adds no instance, no draw call and no second copy of the transforms: a
+populated near patch still carries 38 nodes. A band would have broken the rule this file
+states twice, because 45 m is far narrower than the 180 m diagonal of a 127.5 m sub-patch.
+The switch is therefore per patch, and a patch changes level as a whole.
+
+**E23 prices it.** Same painted stand and pose as E20, sweeping the handover distance. `d800`
+draws the whole near band from the branched tree, which is what shipped. `d1` draws all of it
+from the reduced level. Controls ran at positions 1, 3, 5 and 7 and drifted `0.33 ms` per
+position, fitted out below.
+
+| handover | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| `800 m` (shipped) | `65.27` | – | – | 4708 | `62.19 M` |
+| `180 m` | `46.10` | `65.70` | `19.61` | 4708 | `44.44 M` |
+| `45 m` | `40.53` | `66.37` | **`25.84`** | 4708 | `34.27 M` |
+| `1 m` | `41.49` | `67.03` | `25.54` | 4708 | `31.75 M` |
+
+**Nearly all of it arrives by 45 m, and nothing arrives after.** Moving the handover from
+45 m to 1 m removes another `2.5 M` primitives and buys no time at all, inside the drift
+bracket. The detailed tree can therefore be kept as close as it looks best; there is no
+performance argument for pushing the handover nearer than 45 m, and `180 m` still returns
+three quarters of the saving if the switch proves visible.
+
+**The saving is geometry, not fill.** Draw calls are identical in every trial and primitives
+fall `45%`. E18 found the near cost follows card area rather than plane count, and that
+remains true of the cards; this is the other half of the near cost, and the branch tubes were
+carrying it. They are dense, thin and mostly inside the foliage, they are submitted again by
+the depth pre-pass, and again by up to four shadow cascades within `SHADOW_PROXY_M`.
+
+Headless suites: appearance, edit, invalidation and land cover all pass, each checked for
+both `SCRIPT ERROR` and `ERROR:`. Startup catalogue construction goes from `113` to `148 ms`,
+once, and the maximum patch upload is unchanged within noise at `19.3` to `20.2 ms`. The
+handover distance is a starting point for a rendered sweep, not a tuned result: at 1080p and
+the default 75 degree vertical FOV the projection is 703.7 px/rad, so a 15 m tree covers
+about 235 px at 45 m and about 1056 px at 10 m.
+
 ### The finer grid does not survive a moving camera (2026-09-22)
 
 E21 pans the E20 pose `800 m` in `20 seconds`, through the middle of the `1600 m` painted

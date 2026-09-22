@@ -17,9 +17,9 @@ func _initialize() -> void:
 	var meshes := []
 	for species in [Species.CONIFER, Species.BROADLEAF]:
 		for variant in range(Species.VARIANT_COUNTS[species]):
-			for lod in range(3):
+			for lod in range(catalogue[species][variant].size()):
 				# Runtime collapses distant variants to zero.
-				if lod > 0 and variant > 0:
+				if lod >= 2 and variant > 0:
 					continue
 				var mesh: ArrayMesh = catalogue[species][variant][lod]
 				var surfaces := []

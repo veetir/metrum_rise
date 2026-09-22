@@ -133,14 +133,17 @@ func run():
 			assert(instance.visibility_range_begin == expected.x)
 			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
-			if lod > 0:
+			if lod >= 2:
 				# One distant instance per species; which crown mesh it carries is the
 				# patch's distance choice, not a second instance.
-				assert(lod == 1)
+				assert(lod == 2)
 				assert(mm.mesh == vegetation.meshes[species][0][patch.get_meta("distant_lod")])
 				assert(mm.instance_count == 512)
 			else:
-				assert(mm.mesh == vegetation.meshes[species][variant][0])
+				# Which of the two branched levels this instance holds is the patch's
+				# distance choice, the same way the distant instance picks its crown.
+				var detail: int = patch.get_meta("near_detail_lod") if species < Species.BUSH else 0
+				assert(mm.mesh == vegetation.meshes[species][variant][detail])
 				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
 	positions.sort()
 	appearance.sort()
@@ -148,6 +151,19 @@ func run():
 	var digest := "\n".join(positions).sha256_text()
 	assert(nodes == 152 and resident == 20480)
 	assert(vegetation.tree_count == 16384)
+	# Crossing the detail distance swaps the near mesh on the buffer already uploaded, which
+	# is why the reduced level costs no second instance and no second draw.
+	var detail_patch: Node3D = vegetation.patches[vegetation.patches.keys()[0]]
+	for wanted in [0, 1]:
+		vegetation._refresh_near_detail(detail_patch,
+			Vegetation.TREE_NEAR_DETAIL_M * (0.5 if wanted == 0 else 2.0))
+		assert(int(detail_patch.get_meta("near_detail_lod")) == wanted)
+		for instance in detail_patch.get_children():
+			var species: int = instance.get_meta("species")
+			if species >= Species.BUSH or int(instance.get_meta("lod")) != 0:
+				continue
+			assert(instance.multimesh.mesh
+				== vegetation.meshes[species][int(instance.get_meta("variant"))][wanted])
 	print("FIXTURE ", JSON.stringify({"catalogue_ms":catalogue_ms, "geometry":geometry, "crown_colors":crown_colors, "metrics":vegetation.metrics(), "nodes_per_patch":nodes / 4, "total_nodes":nodes, "resident_instances":resident, "position_sha256":digest, "appearance_sha256":appearance_digest}))
 	# Past SHADOW_PROXY_M and still inside the sun's range, the patch hands its casting to
 	# one shadows-only lathe instance per canopy species. The patch is still in the near
@@ -171,7 +187,7 @@ func run():
 			proxies[species] = instance.multimesh
 			continue
 		assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
-		if int(instance.get_meta("lod")) > 0:
+		if int(instance.get_meta("lod")) >= 2:
 			distant[species] = instance.multimesh
 	assert(proxies.size() == 2)
 	for species in [Species.CONIFER, Species.BROADLEAF]:
@@ -197,20 +213,20 @@ func run():
 	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
 	assert(far_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NONE)
-	assert(far_patch.get_meta("distant_lod") == 2)
+	assert(far_patch.get_meta("distant_lod") == 3)
 	assert(far_patch.get_child_count() == 2)
 	for instance in far_patch.get_children():
 		var species: int = instance.get_meta("species")
-		assert(instance.get_meta("lod") == 1)
+		assert(instance.get_meta("lod") == 2)
 		assert(species == Species.CONIFER or species == Species.BROADLEAF)
-		assert(instance.multimesh.mesh == vegetation.meshes[species][0][2])
+		assert(instance.multimesh.mesh == vegetation.meshes[species][0][3])
 		assert(instance.multimesh.instance_count == 512)
 		assert(not instance.multimesh.use_colors)
 	# Crossing back over the mid boundary swaps the mesh on the buffer already uploaded.
 	vegetation._refresh_distant_lod(far_patch, 1500.0)
-	assert(far_patch.get_meta("distant_lod") == 1)
+	assert(far_patch.get_meta("distant_lod") == 2)
 	for instance in far_patch.get_children():
-		assert(instance.multimesh.mesh == vegetation.meshes[instance.get_meta("species")][0][1])
+		assert(instance.multimesh.mesh == vegetation.meshes[instance.get_meta("species")][0][2])
 		assert(instance.multimesh.instance_count == 512)
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
@@ -254,9 +270,9 @@ func _check_geometry_budget(counts: Array) -> void:
 			var before: int = [1803 if variant in [4, 8] else 1805, 1469, 160, 132][species]
 			assert(levels[0][0] <= before * (2 if species < Species.BUSH else 1))
 			if species < Species.BUSH:
-				assert(levels[1][0] <= [296, 274][species])
-				assert(levels[2][0] <= [77, 92][species])
-				assert(levels[1][1] == [102, 96][species] and levels[2][1] == [28, 32][species])
+				assert(levels[2][0] <= [296, 274][species])
+				assert(levels[3][0] <= [77, 92][species])
+				assert(levels[2][1] == [102, 96][species] and levels[3][1] == [28, 32][species])
 
 func _check_crown_cohesion(meshes: Array) -> void:
 	# Both foliage surfaces must carry volume lighting, not flat normals or random
@@ -306,7 +322,7 @@ func _check_crown_colors(meshes: Array) -> Array:
 			integral += Species._crown_integral(levels[0])
 		var mean := Vector3(integral.x, integral.y, integral.z) / integral.w
 		for levels in meshes[species]:
-			for lod in [1, 2]:
+			for lod in [2, 3]:
 				var colors: PackedColorArray = levels[lod].surface_get_arrays(0)[Mesh.ARRAY_COLOR]
 				for color in colors:
 					if color.g > color.r:
@@ -349,8 +365,8 @@ func _check_birch(variants: Array) -> void:
 
 func _check_meshes(meshes: Array) -> void:
 	var shared: Material = meshes[Species.ROCK][0][0].surface_get_material(0)
-	var shared_distant: Array[Material] = [meshes[Species.CONIFER][0][1].surface_get_material(0),
-		meshes[Species.BROADLEAF][0][1].surface_get_material(0)]
+	var shared_distant: Array[Material] = [meshes[Species.CONIFER][0][2].surface_get_material(0),
+		meshes[Species.BROADLEAF][0][2].surface_get_material(0)]
 	var shared_wind: Material = meshes[0][0][0].surface_get_material(0)
 	var shared_cards: Material = meshes[0][0][0].surface_get_material(1)
 	assert(shared is StandardMaterial3D)
@@ -394,7 +410,7 @@ func _check_meshes(meshes: Array) -> void:
 		var min_height := INF
 		var max_height := 0.0
 		for levels in meshes[species]:
-			assert(levels.size() == (3 if species < Species.BUSH else 1))
+			assert(levels.size() == (4 if species < Species.BUSH else 1))
 			var bounds: AABB = levels[0].get_aabb()
 			silhouettes[bounds] = true
 			min_height = minf(min_height, bounds.size.y)
@@ -405,11 +421,11 @@ func _check_meshes(meshes: Array) -> void:
 				# alone, and only the woody forms carry both a stem surface and cards.
 				var bush: bool = species == Species.BUSH
 				var surfaces: int = mesh.get_surface_count()
-				var has_cards: bool = mesh == levels[0] and (surfaces == 2 or (bush and _card_surface(mesh, shared_cards) == 0))
+				var has_cards: bool = (species < Species.BUSH and mesh in [levels[0], levels[1]]) or (bush and _card_surface(mesh, shared_cards) >= 0)
 				if bush:
 					assert(surfaces == 1 or surfaces == 2)
 				else:
-					assert(surfaces == (2 if species < Species.BUSH and mesh == levels[0] else 1))
+					assert(surfaces == (2 if has_cards else 1))
 				# Materials are cached across variants. The surface count above, rather than
 				# the number of distinct materials, bounds the per-patch draw count.
 				for surface in range(surfaces):
@@ -433,11 +449,12 @@ func _check_meshes(meshes: Array) -> void:
 					for surface in range(surfaces):
 						_check_sway_range(mesh, surface, 0.8)
 				else:
-					var top_weight := 1.0
+					# Level 1 omits child tubes/tufts; retained primary tips sway at 0.70.
+					var top_weight := 0.70 if species < Species.BUSH and mesh == levels[1] else 1.0
 					_check_sway_weights(mesh, 0, 0.0 if has_cards else 1.0, top_weight)
 					if has_cards:
 						# Tree cards all sit at the crown.
-						_check_sway_weights(mesh, 1, 1.0, top_weight)
+						_check_sway_weights(mesh, 1, 1.0, 1.0)
 		assert(silhouettes.size() == Species.VARIANT_COUNTS[species])
 		# Trees and rocks are variants of one plant and must keep its proportions. The
 		# understory deliberately is not: a 0.2 m blueberry mat and a 1.6 m spruce sapling
@@ -457,7 +474,8 @@ func _check_sway_weights(mesh: ArrayMesh, surface: int, expect_min: float, expec
 	for color in colors:
 		lowest = minf(lowest, color.a)
 		highest = maxf(highest, color.a)
-	assert(is_equal_approx(lowest, expect_min) and is_equal_approx(highest, expect_max))
+	# The retained primary tips' 0.70 weight is quantized to an 8-bit colour channel.
+	assert(is_equal_approx(lowest, expect_min) and absf(highest - expect_max) <= 1.0 / 255.0)
 
 ## Index of the surface carrying the shared card material, or -1 when there is none.
 func _card_surface(mesh: ArrayMesh, shared_cards: Material) -> int:

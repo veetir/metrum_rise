@@ -62,7 +62,8 @@ static func build_meshes() -> Array:
 		for variant in range(variants.size()):
 			match species:
 				CONIFER, BROADLEAF:
-					variants[variant] = [_branched_tree(species, variant)]
+					variants[variant] = [_branched_tree(species, variant, 0),
+						_branched_tree(species, variant, 1)]
 				BUSH:
 					variants[variant] = [_bush(variant)]
 				ROCK:
@@ -79,6 +80,7 @@ static func build_meshes() -> Array:
 			crown.a = 1.0
 			envelope /= float(variants.size())
 			for variant in range(variants.size()):
+				# Lathe shape indices stay 1/2; appended catalogue levels are now 2/3.
 				for lod in [1, 2]:
 					variants[variant].append(_conifer(lod, variant, crown, envelope)
 						if species == CONIFER else _broadleaf(lod, variant, crown, envelope))
@@ -377,7 +379,7 @@ static func _foliage_material() -> ShaderMaterial:
 	return _card_material
 
 ## Fixed branch counts and depth bound startup work to O(emitted vertices) per variant.
-static func _branched_tree(species: int, variant: int) -> ArrayMesh:
+static func _branched_tree(species: int, variant: int, level: int) -> ArrayMesh:
 	var conifer := species == CONIFER
 	var pine := conifer and _is_pine(variant)
 	var birch := not conifer and _is_birch(variant)
@@ -409,10 +411,11 @@ static func _branched_tree(species: int, variant: int) -> ArrayMesh:
 	cards.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Cards face out of the crown they sit in, and a pine crown sits far higher than the rest.
 	var crown_centre := Vector3.UP * height * (0.80 if pine else (0.56 if conifer else 0.66))
+	var trunk_sides := 5 if level == 0 else 4
 	if birch or aspen:
-		_banded_trunk(surface, height, radius, 5, variant, true, birch)
+		_banded_trunk(surface, height, radius, trunk_sides, variant, true, birch)
 	elif pine:
-		_pine_trunk(surface, height, radius, 5, variant)
+		_pine_trunk(surface, height, radius, trunk_sides, variant)
 	else:
 		# Retain the grounded flare and carry a tapering leader through the junctions.
 		var trunk := _trunk_profile(height * 0.55, radius)
@@ -421,7 +424,7 @@ static func _branched_tree(species: int, variant: int) -> ArrayMesh:
 		var trunk_weights := PackedFloat32Array()
 		for ring in trunk:
 			trunk_weights.append(clampf((ring.x - 0.35) / (height - 0.35), 0.0, 1.0) * 0.16)
-		_lathe(surface, trunk, 5, bark, 0.08, 11 + variant * 61, 0.0, trunk_weights)
+		_lathe(surface, trunk, trunk_sides, bark, 0.08, 11 + variant * 61, 0.0, trunk_weights)
 	# A spruce needs enough boughs to close into a mass rather than to read as a stick with
 	# tufts on it; a pine packs its into the top third and needs fewer.
 	var count := 14 if pine else (20 if conifer else 12)
@@ -446,7 +449,7 @@ static func _branched_tree(species: int, variant: int) -> ArrayMesh:
 			rise = reach * lerpf(-0.26, 0.55, t)
 		var offset := Vector3(cos(angle) * reach, rise, sin(angle) * reach)
 		_branch(surface, cards, crown_centre, start, offset, radius * lerpf(0.58, 0.19, t),
-			conifer, 0, seed, bark, (start.y - 0.35) / (height - 0.35) * 0.16, birch, pine)
+			conifer, 0, seed, bark, (start.y - 0.35) / (height - 0.35) * 0.16, birch, pine, level)
 	var mesh := _finish(surface, _wind_branch_material(), crown_centre)
 	# Append to the same mesh: another draw, but no additional instances or uploads.
 	cards.set_material(_foliage_material())
@@ -549,13 +552,15 @@ static func _branch_point(start: Vector3, offset: Vector3, bend: float, t: float
 static func _branch(surface: SurfaceTool, cards: SurfaceTool, crown_centre: Vector3,
 	start: Vector3, offset: Vector3, radius: float,
 	conifer: bool, depth: int, seed: int, bark: Color, root_weight: float, birch: bool,
-	pine: bool = false) -> void:
+	pine: bool, level: int) -> void:
 	# A spruce bough hangs and a pine limb lifts. One sign carries most of that difference.
 	var bend := offset.length() * (0.16 if birch and depth == 1 else (
 		0.12 if pine else (-0.14 if conifer else -0.10)))
 	var middle := _branch_point(start, offset, bend, 0.5)
 	var tip_weight := 0.70 if depth == 0 else 1.0
-	_branch_tube(surface, start, middle, start + offset, radius, bark, root_weight, tip_weight)
+	# Level 1 keeps the primary skeleton and every card, omitting interior child wood.
+	if depth == 0 or level == 0:
+		_branch_tube(surface, start, middle, start + offset, radius, bark, root_weight, tip_weight)
 	if depth == 0:
 		for child in range(2):
 			var t := 0.60 + float(child) * 0.23 + _noise(seed + child, 347) * 0.06
@@ -566,7 +571,7 @@ static func _branch(surface: SurfaceTool, cards: SurfaceTool, crown_centre: Vect
 			var rise := reach * (-0.55 if birch else (0.12 if conifer else 0.95))
 			_branch(surface, cards, crown_centre, origin, Vector3(cos(angle) * reach, rise, sin(angle) * reach),
 				radius * (0.24 if birch else 0.32), conifer, 1, seed + child + 1,
-				Color(0.22, 0.17, 0.12) if birch else bark, lerpf(root_weight, tip_weight, t), birch, pine)
+				Color(0.22, 0.17, 0.12) if birch else bark, lerpf(root_weight, tip_weight, t), birch, pine, level)
 	else:
 		# Small solid cores anchor the cut-out clusters at the child tips.
 		var size := offset.length()
@@ -584,7 +589,8 @@ static func _branch(surface: SurfaceTool, cards: SurfaceTool, crown_centre: Vect
 		var dimensions := Vector3(length, height, width)
 		if birch:
 			dimensions *= Vector3(0.86, 1.15, 0.86)
-		_foliage_tuft(surface, centre, offset, dimensions * 0.45, conifer, seed, birch)
+		if level == 0:
+			_foliage_tuft(surface, centre, offset, dimensions * 0.45, conifer, seed, birch)
 		_foliage_cards(cards, centre, crown_centre, offset,
 			dimensions * (1.10 if conifer else 1.25), conifer, seed, 1.0, birch)
 

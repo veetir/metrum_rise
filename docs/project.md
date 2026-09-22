@@ -17,8 +17,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   inside it the branched tree still casts, because a proxy shadows the crown it stands in.
   Subdividing the near grid to 8 is worth `10 ms` of GPU and was rejected: it costs more than
   that in CPU spikes while the camera moves, because the residency sweep scales with the square
-  of the subdivision. A level between the branched tree and the lathe is still open, and the
-  band it would compete for costs `33.5 ms` in a painted stand. See
+  of the subdivision. A third canopy level sits between the branched tree and the lathe: it
+  keeps every foliage card and drops the interior wood, which is `41%` to `50%` of the near
+  triangles and `25.8 ms` of a close painted-stand frame. A patch picks between the two the
+  way it already picks its crown, by swapping the mesh on the instance it has uploaded, so it
+  costs no extra instance and no extra draw. `TREE_NEAR_DETAIL_M` is `45 m` and wants a
+  rendered sweep; past `45 m` a nearer handover buys nothing. See
+  [the intermediate canopy measurements](terrain.md#the-branched-tree-at-half-the-wood-is-worth-26-ms-2026-09-22) and
   [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 
 - **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated
