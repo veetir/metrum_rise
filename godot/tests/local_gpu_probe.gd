@@ -11,6 +11,8 @@
 ## (the near canopy band swept at the generator's own density instead) or E16
 ## (what is left in the frame once E15 has picked the grid: shadows, band and far range).
 ## E18 prices the near canopy's foliage card area in one painted stand, seen from inside it.
+## E19 prices shadow work at that same pose: what the trees cost as casters and what
+## shortening the directional shadow range buys.
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
 
@@ -157,6 +159,20 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E19":
+		# Restoring the near band to 800 m grew the shadow casting set from the 200 m disc it
+		# had been tuned against to the full SHADOW_MAX_DISTANCE_M disc, which is 4.4 times the
+		# ground. Shadows re-render the same alpha scissored canopy into four cascades, so the
+		# cost follows covered area exactly as the colour pass does. Trials share one process
+		# and one pose; the sun's split distances are fractions of its range and rescale with it.
+		paint_dense_forest()
+		# This pose runs near 90 ms, which heats the card enough that trial order alone moves
+		# the result by several percent. The authored range is repeated between every
+		# measurement so the drift can be fitted and removed rather than assumed away.
+		trials = ["shadowsweep_far420", "shadowsweep_veg_off", "shadowsweep_far420_b",
+			"shadowsweep_far250", "shadowsweep_far420_c", "shadowsweep_far150",
+			"shadowsweep_far420_d"]
+		radii = [30.0]
 	elif experiment == "E18":
 		# Card fill, measured from inside the stand rather than above it. The cards are
 		# alpha scissored into the opaque pass, so their cost follows the area they cover,
@@ -298,6 +314,18 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
+			elif experiment == "E19":
+				vegetation.enabled = true
+				vegetation.density_fraction = 1.0
+				# The authored band and grid: this prices the shipped configuration.
+				vegetation.patch_subdivision_override = 0
+				vegetation.near_range_override_m = 0.0
+				vegetation.cast_shadows = not trial.contains("veg_off")
+				var sun: DirectionalLight3D = main.get_node("DirectionalLight3D")
+				var shadow_far := trial_grid_value(trial, "far")
+				sun.set("directional_shadow_max_distance", float(shadow_far)
+					if shadow_far > 0 else SceneLightingConfig.shadow_max_distance_m())
+				vegetation.rebuild_from_simulation_state()
 			elif experiment == "E18":
 				vegetation.enabled = true
 				vegetation.density_fraction = 1.0
@@ -342,7 +370,7 @@ func run() -> void:
 			camera.focus_on(trial_start_pivot(trial), camera_radius)
 			apply_far_lever(trial)
 			apply_horizon_view(trial)
-			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16", "E18"] and not await settle_view():
+			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16", "E18", "E19"] and not await settle_view():
 				quit(1)
 				return
 			await create_timer(4.0).timeout
@@ -572,7 +600,7 @@ func trial_grid_value(trial: String, prefix: String) -> int:
 	return 0
 
 func apply_horizon_view(trial: String) -> void:
-	if trial.begins_with("cards_"):
+	if trial.begins_with("cards_") or trial.begins_with("shadowsweep_"):
 		# In the painted stand, at crown height, looking into the nearest trees.
 		camera.position = pivot + Vector3(0.0, 12.0, 30.0)
 		camera.rotation = Vector3(-0.04, 0.0, 0.0)

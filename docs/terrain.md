@@ -433,6 +433,35 @@ The scatter had become a CPU cost. Two things caused it, both consequences of su
   frame time from `27.66 ms` to `13.01 ms` with the GPU unchanged. The overhang between frame
   time and GPU time went from `15.1 ms` to `0.22 ms`.
 
+### Tree shadow casting is the largest cost in a close forest view (2026-09-22)
+
+Experiment E19 prices shadows from inside a painted stand, in the shipped configuration. The
+pose runs near `86 ms`, which heats the card enough that trial order alone moves the result by
+several percent, so the authored range is repeated between every measurement and the drift is
+fitted out. Baselines came in at `85.33`, `86.39`, `88.25` and `88.23 ms`.
+
+| trial | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| authored, shadow range `420 m` | `85.33` | - | - | 7316 | 106.0 M |
+| trees do not cast | `48.13` | `85.86` | **`37.72`** | 3476 | 37.1 M |
+| shadow range `250 m` | `77.73` | `87.32` | `9.59` | 5684 | 78.1 M |
+| shadow range `150 m` | `67.88` | `88.24` | `20.35` | 4724 | 60.3 M |
+
+**Tree shadow casting is `37.7 ms` of an `86 ms` frame, and 65 percent of every primitive in
+it.** The draw and primitive counts fall monotonically with the range and corroborate each
+step, which is what makes the fitted savings trustworthy at this drift.
+
+This is a consequence of the near band and the shadow range being set independently. Trees
+cast only at LOD0, the near band reaches `800 m`, and `SHADOW_MAX_DISTANCE_M` is `420 m`, so
+the full `420 m` disc of branched crowns and alpha scissored cards is re-rendered into four
+cascades. When the band was `200 m` that disc was the band; now the range is what bounds it,
+and nothing in the vegetation renderer knows about it.
+
+A whole-scene control that disabled the sun's shadows was attempted and discarded: it reported
+draw and primitive counts identical to shadows being on, so the lever did not take effect. The
+trees-do-not-cast trial isolates the same quantity and did behave, so the control was dropped
+rather than debugged.
+
 ### Card area is the near cost, and plane count is not (2026-09-21)
 
 Seen from a distance a dense stand is cheap; flown into, the same stand pins the GPU. The near
