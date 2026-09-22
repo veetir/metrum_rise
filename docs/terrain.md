@@ -75,7 +75,8 @@ and sampled road/building footprints. The renderer reuses terrain residency and 
 at most one patch per frame. Two opaque tree species each have three geometry levels.
 Trees have no collisions. Near trees and bushes sway in a vertex-shader wind; nothing
 else moves. The initial visibility limit is 4500 m.
-Shadow casting is off by default and available for the near geometry only.
+Tree shadow casting is on by default and uses lathe crown proxies; visible instances,
+bushes and rocks never cast. `set_cast_shadows` updates both resident and cached patches.
 
 Placement is derived from the terrain surface. The terrain renderer stamps each committed
 patch payload with the surface generation it was built from, and that generation advances
@@ -451,16 +452,61 @@ fitted out. Baselines came in at `85.33`, `86.39`, `88.25` and `88.23 ms`.
 it.** The draw and primitive counts fall monotonically with the range and corroborate each
 step, which is what makes the fitted savings trustworthy at this drift.
 
-This is a consequence of the near band and the shadow range being set independently. Trees
-cast only at LOD0, the near band reaches `800 m`, and `SHADOW_MAX_DISTANCE_M` is `420 m`, so
-the full `420 m` disc of branched crowns and alpha scissored cards is re-rendered into four
-cascades. When the band was `200 m` that disc was the band; now the range is what bounds it,
-and nothing in the vegetation renderer knows about it.
+This was a consequence of the near band and the shadow range being set independently. Trees
+cast only at LOD0 in that measurement, the near band reached `800 m` and
+`SHADOW_MAX_DISTANCE_M` was `420 m`, so the full `420 m` disc of branched crowns and alpha
+scissored cards was re-rendered into four cascades. When the band was `200 m` that disc was
+the band; once it was restored the range was what bounded it, and nothing in the vegetation
+renderer knew the range existed. The section below is what replaced that caster.
 
 A whole-scene control that disabled the sun's shadows was attempted and discarded: it reported
 draw and primitive counts identical to shadows being on, so the lever did not take effect. The
 trees-do-not-cast trial isolates the same quantity and did behave, so the control was dropped
 rather than debugged.
+
+### Trees cast from the lathe crown, not from the tree (2026-09-22)
+
+The standard answer to the cost above is the one every open-world renderer uses: a tree does
+not cast from the mesh it is drawn with. A shadow is a blurred patch on ground a few metres
+away, so it needs a silhouette, not structure, and alpha scissored foliage is the worst
+possible caster because every shadow fragment does a texture fetch and a discard.
+
+The patch already holds the cheap caster. Its distant level is one `MultiMesh` over the same
+trees as the near level, and inside the near band it is simply held out of sight. Reusing it
+was not free, though: a rendered probe put a `SHADOWS_ONLY` caster inside and outside its
+visibility range and counted shadowed ground pixels, and got `2538` in range against `0` out
+of it, with the in-range case reproduced exactly on a repeat. **A range culled instance does
+not cast**, so the caster has to be an instance of its own that is never culled.
+
+The renderer therefore adds one `SHADOWS_ONLY` instance per tree species per patch. It shares
+the distant instance's `MultiMesh` resource, so it shares its transforms and follows its
+mid/far mesh swap, and its visibility range covers the whole patch life. Every visible
+instance stops casting. That is two nodes per patch and no new geometry, transform copy or
+buffer upload. Bush and rock still never cast, and the runtime toggle reaches the proxy in
+resident and cached patches, hiding it when casting is off so an `OFF` proxy cannot draw.
+
+E19 re-run on the same pose and the shipped configuration, against the table above:
+
+| trial | GPU p50 before | GPU p50 after | draws | primitives |
+|---|---:|---:|---|---|
+| authored, shadow range `420 m` | `85.33` | `58.92` | 7316 → 3652 | `106.0 M` → `44.59 M` |
+| trees do not cast | `48.13` | `48.24` | 3476 → 3476 | `37.1 M` → `37.04 M` |
+| shadow range `250 m` | `77.73` | `58.59` | 5684 → 3568 | `78.1 M` → `41.14 M` |
+| shadow range `150 m` | `67.88` | `57.81` | 4724 → 3528 | `60.3 M` → `39.36 M` |
+
+**The shipped configuration goes from `85.33 ms` to `58.92 ms`, a `26.4 ms` saving of `31%`.**
+The trees-do-not-cast trial is the control that makes the two processes comparable: it carries
+no tree shadows in either build and reproduced to `0.11 ms`, `0` draws and `0.2%` of
+primitives. Shadow primitives fall from `68.9 M` to `7.55 M` and shadow draw calls from `3840`
+to `176`. What is left of tree shadow cost is `11.06 ms` against a fitted baseline, down from
+`37.72 ms`.
+
+The sweep also loses its point, which corroborates the diagnosis: shortening the range to
+`250 m` now buys `0.9 ms` and to `150 m` buys `1.9 ms`, against `9.59` and `20.35 ms` before.
+The range was expensive because the caster was expensive.
+
+The cost is in the shape. A lathe cone casts one solid blob where a branched crown casts a
+dappled one, so shadows under a close tree lose their leaf gaps.
 
 ### Card area is the near cost, and plane count is not (2026-09-21)
 

@@ -87,6 +87,7 @@ func run():
 		nodes += patch.get_child_count()
 		assert(patch.get_meta("surface_generation") == 7)
 		assert(patch.get_meta("understory"))
+		assert(patch.get_meta("near_band"))
 		# The levels of one species measure their visibility range from one bounds, or the
 		# complementary near and distant ranges stop and start at different distances and
 		# drop the trees in between. A single-level species keeps its own bounds. The dummy
@@ -106,12 +107,21 @@ func run():
 		for species in species_bounds:
 			var union: AABB = species_union[species]
 			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
+		var shadow_proxies := {}
+		var distant := {}
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
+			var species: int = instance.get_meta("species")
+			if instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
+				assert(species in [Species.CONIFER, Species.BROADLEAF])
+				assert(not shadow_proxies.has(species))
+				shadow_proxies[species] = mm
+				assert(instance.visibility_range_begin == 0.0)
+				continue
+			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
 			# Only the near band carries instance colours; see the renderer's distant level.
 			assert(mm.use_colors == (int(instance.get_meta("lod")) == 0))
 			resident += mm.instance_count
-			var species: int = instance.get_meta("species")
 			var lod: int = instance.get_meta("lod")
 			var near_band: bool = patch.get_meta("near_band")
 			var variant: int = instance.get_meta("variant")
@@ -124,8 +134,8 @@ func run():
 			assert(instance.visibility_range_begin == expected.x)
 			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
-			assert(instance.cast_shadow == vegetation._shadow_setting(species, lod))
 			if lod > 0:
+				distant[species] = mm
 				# One distant instance per species; which crown mesh it carries is the
 				# patch's distance choice, not a second instance.
 				assert(lod == 1)
@@ -134,21 +144,31 @@ func run():
 			else:
 				assert(mm.mesh == vegetation.meshes[species][variant][0])
 				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
+		assert(shadow_proxies.size() == 2)
+		for species in [Species.CONIFER, Species.BROADLEAF]:
+			assert(is_same(shadow_proxies[species], distant[species]))
 	positions.sort()
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()
 	var digest := "\n".join(positions).sha256_text()
-	assert(nodes == 152 and resident == 20480)
+	assert(nodes == 160 and resident == 20480)
 	assert(vegetation.tree_count == 16384)
 	print("FIXTURE ", JSON.stringify({"catalogue_ms":catalogue_ms, "geometry":geometry, "crown_colors":crown_colors, "metrics":vegetation.metrics(), "nodes_per_patch":nodes / 4, "total_nodes":nodes, "resident_instances":resident, "position_sha256":digest, "appearance_sha256":appearance_digest}))
+	# The toggle has to reach the proxy, which is the only caster left. Restored straight
+	# away: the far patch built below is meant to be checked in the shipped shadow state.
+	vegetation.set_cast_shadows(false)
+	for patch in vegetation.patches.values():
+		for instance in patch.get_children():
+			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+	vegetation.set_cast_shadows(true)
 	# Out of the near band a patch drops the variant split, the tints and the understory,
-	# keeping one distant instance per canopy species over the whole species population.
+	# keeping one distant instance and its shadow proxy per canopy species.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
 	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
 	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
 	assert(far_patch.get_meta("distant_lod") == 2)
-	assert(far_patch.get_child_count() == 2)
+	assert(far_patch.get_child_count() == 4)
 	for instance in far_patch.get_children():
 		var species: int = instance.get_meta("species")
 		assert(instance.get_meta("lod") == 1)

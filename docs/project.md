@@ -12,8 +12,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   forest that took resident patches from 2518 to 415 and frame time from `27.66 ms` to `13.01 ms`
   with the GPU unchanged. The near band is back at `800 m` after `200 m` proved to be tuned on a
   brush-painted worst case. Foliage cards are cropped to their own alpha bounds, worth about
-  `1.1 ms` of GPU from inside a dense stand. Shadow cost at close range and a finer near tier are
-  measured but not yet acted on. See [the measurements and the reductions that failed](terrain.md#the-forest-was-a-cpu-cost-pretending-to-be-a-gpu-one-2026-09-21).
+  `1.1 ms` of GPU from inside a dense stand. Trees now cast from the lathe crown rather than
+  from the branched tree, worth `26.4 ms` of a close dense forest frame. A finer near tier and
+  a level between the branched tree and the lathe are still open. See
+  [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 
 - **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated
   per-asset city scans; Rust shares the editor's screen-size policy, variable chains and hysteresis.
