@@ -505,8 +505,32 @@ The sweep also loses its point, which corroborates the diagnosis: shortening the
 `250 m` now buys `0.9 ms` and to `150 m` buys `1.9 ms`, against `9.59` and `20.35 ms` before.
 The range was expensive because the caster was expensive.
 
-The cost is in the shape. A lathe cone casts one solid blob where a branched crown casts a
-dappled one, so shadows under a close tree lose their leaf gaps.
+The cost is in the shape, and up close it was not acceptable. A proxy is a solid volume
+standing exactly where the branched crown stands, so every foliage card is inside its own
+caster and receives its shadow: close trees came out banded with hard dark streaks across
+the crown, and a dense clump went dark through its lower half. The proxy's trunk is a `3.1`
+to `5.0 m` stub against the real tree's full trunk, so at `SHADOW_NORMAL_BIAS 1.25` and
+`SHADOW_BLUR 1.80` the stem shadow disappeared entirely and a tree cast a bare ellipse.
+
+So the proxy is a shadow LOD, not a replacement, which is also how it is done elsewhere.
+Inside `SHADOW_PROXY_M` a patch casts from the branched tree exactly as before and builds no
+proxy at all; between that and the sun's own range it casts from the proxy; past the range it
+casts nothing, because nothing it holds can reach a cascade. The choice is one value per
+patch, rebuilt on the same sweep that already rebuilds on the near band and the understory,
+and it is deliberately independent of the runtime shadow toggle so that toggle never has to
+rebuild a placement.
+
+`SHADOW_PROXY_M` at `120 m` costs `6.8 ms` of the `26.4 ms`:
+
+| build | GPU p50 | draws | primitives | tree shadow cost |
+|---|---:|---:|---:|---:|
+| branched tree casts everywhere | `85.33` | 7316 | `106.0 M` | `37.72` |
+| proxy casts everywhere | `58.92` | 3652 | `44.59 M` | `11.06` |
+| **proxy past `120 m`** | **`65.69`** | — | `62.13 M` | `18.09` |
+
+The trees-do-not-cast control came in at `48.13`, `48.24` and `48.00 ms` across the three
+separate processes, which is what licenses comparing them. `19.6 ms` of the `26.4 ms` survives
+the gate, and the two nearest of the four cascades keep the correct caster.
 
 ### Card area is the near cost, and plane count is not (2026-09-21)
 

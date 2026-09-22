@@ -107,22 +107,21 @@ func run():
 		for species in species_bounds:
 			var union: AABB = species_union[species]
 			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
-		var shadow_proxies := {}
-		var distant := {}
+		# These patches sit inside SHADOW_PROXY_M, where the branched tree is still the
+		# caster and no proxy is built. A proxy is a solid volume standing exactly where the
+		# crown stands, so this close it shadows the foliage cards inside itself.
+		assert(patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NEAR)
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
 			var species: int = instance.get_meta("species")
-			if instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
-				assert(species in [Species.CONIFER, Species.BROADLEAF])
-				assert(not shadow_proxies.has(species))
-				shadow_proxies[species] = mm
-				assert(instance.visibility_range_begin == 0.0)
-				continue
-			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
-			# Only the near band carries instance colours; see the renderer's distant level.
-			assert(mm.use_colors == (int(instance.get_meta("lod")) == 0))
-			resident += mm.instance_count
 			var lod: int = instance.get_meta("lod")
+			assert(not instance.get_meta("shadow_proxy"))
+			var casts := lod == 0 and species != Species.BUSH and species != Species.ROCK
+			assert(instance.cast_shadow == (GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
+			# Only the near band carries instance colours; see the renderer's distant level.
+			assert(mm.use_colors == (lod == 0))
+			resident += mm.instance_count
 			var near_band: bool = patch.get_meta("near_band")
 			var variant: int = instance.get_meta("variant")
 			# The understory staggers its cutoff by variant and the canopy switches on a
@@ -135,7 +134,6 @@ func run():
 			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			if lod > 0:
-				distant[species] = mm
 				# One distant instance per species; which crown mesh it carries is the
 				# patch's distance choice, not a second instance.
 				assert(lod == 1)
@@ -144,31 +142,63 @@ func run():
 			else:
 				assert(mm.mesh == vegetation.meshes[species][variant][0])
 				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
-		assert(shadow_proxies.size() == 2)
-		for species in [Species.CONIFER, Species.BROADLEAF]:
-			assert(is_same(shadow_proxies[species], distant[species]))
 	positions.sort()
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()
 	var digest := "\n".join(positions).sha256_text()
-	assert(nodes == 160 and resident == 20480)
+	assert(nodes == 152 and resident == 20480)
 	assert(vegetation.tree_count == 16384)
 	print("FIXTURE ", JSON.stringify({"catalogue_ms":catalogue_ms, "geometry":geometry, "crown_colors":crown_colors, "metrics":vegetation.metrics(), "nodes_per_patch":nodes / 4, "total_nodes":nodes, "resident_instances":resident, "position_sha256":digest, "appearance_sha256":appearance_digest}))
-	# The toggle has to reach the proxy, which is the only caster left. Restored straight
-	# away: the far patch built below is meant to be checked in the shipped shadow state.
+	# Past SHADOW_PROXY_M and still inside the sun's range, the patch hands its casting to
+	# one shadows-only lathe instance per canopy species. The patch is still in the near
+	# band here, which is the case the proxy exists for: the branched trees are drawn and
+	# something cheaper casts for them.
+	camera.global_position = Vector3(345.0, 0.0, -255.0)
+	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	var proxy_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
+	assert(proxy_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.PROXY)
+	assert(proxy_patch.get_meta("near_band"))
+	var proxies := {}
+	var distant := {}
+	for instance in proxy_patch.get_children():
+		var species: int = instance.get_meta("species")
+		if instance.get_meta("shadow_proxy"):
+			assert(species == Species.CONIFER or species == Species.BROADLEAF)
+			assert(not proxies.has(species))
+			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+			# A range-culled instance does not cast, so the proxy covers the whole patch life.
+			assert(instance.visibility_range_begin == 0.0)
+			proxies[species] = instance.multimesh
+			continue
+		assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+		if int(instance.get_meta("lod")) > 0:
+			distant[species] = instance.multimesh
+	assert(proxies.size() == 2)
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		# The same buffer, not a copy of it: the proxy adds no transforms and no upload, and
+		# follows the distant level's mid/far mesh swap for free.
+		assert(is_same(proxies[species], distant[species]))
+	# The toggle has to reach the proxy, and a silent proxy has to be hidden as well as
+	# silenced, or an OFF proxy would draw over the crown it stands inside.
 	vegetation.set_cast_shadows(false)
-	for patch in vegetation.patches.values():
-		for instance in patch.get_children():
-			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+	for instance in proxy_patch.get_children():
+		assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+		assert(instance.visible != bool(instance.get_meta("shadow_proxy")))
 	vegetation.set_cast_shadows(true)
+	for instance in proxy_patch.get_children():
+		assert(instance.visible)
+		assert((instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+			== bool(instance.get_meta("shadow_proxy")))
 	# Out of the near band a patch drops the variant split, the tints and the understory,
-	# keeping one distant instance and its shadow proxy per canopy species.
+	# keeping one distant instance per canopy species. It is also past the sun's range, so
+	# nothing it holds can reach a cascade and it carries no proxy either.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
 	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
 	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
+	assert(far_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NONE)
 	assert(far_patch.get_meta("distant_lod") == 2)
-	assert(far_patch.get_child_count() == 4)
+	assert(far_patch.get_child_count() == 2)
 	for instance in far_patch.get_children():
 		var species: int = instance.get_meta("species")
 		assert(instance.get_meta("lod") == 1)

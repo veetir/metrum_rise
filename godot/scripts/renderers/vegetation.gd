@@ -9,6 +9,8 @@
 extends Node3D
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
+# The shadow caster choice is bounded by the sun's own range; see _shadow_caster_wanted.
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 
 # Per-species draw ranges. Canopy trees carry three levels because they are the silhouette
 # of the landscape at every distance. Understory reads only close up, so it gets one level
@@ -45,6 +47,15 @@ const SPECIES_MASK := 3
 # It only pays in a brush-painted stand of about 531 stems/ha, and the answer to that stand
 # is its stem count, not a band every normal view has to look at.
 const TREE_NEAR_FLOOR_M := 800.0
+# Distance beyond which a patch casts from the lathe proxy instead of from the branched tree.
+# The proxy is ten times cheaper but it is a solid volume standing exactly where the branched
+# crown stands, so every foliage card inside it receives its shadow: up close that reads as
+# hard dark bands across the crown, and the proxy's short trunk stub casts no stem shadow
+# where the real trunk did. Both are only invisible once the tree is small enough that its
+# self-shading is not resolvable. At 120 m a 15 m tree covers 88 pixels, and this lands just
+# past the second of the four shadow cascades, so the two nearest cascades keep the correct
+# caster and the two that cover almost all of the ground take the cheap one.
+const SHADOW_PROXY_M := 120.0
 const TREE_MID_M := 2000.0
 const TREE_FAR_M := 4500.0
 const BUSH_RANGE_M := 420.0
@@ -78,6 +89,10 @@ const CANOPY_SWITCH_JITTER_FRACTION := 0.2
 # conservative. Subdividing raises the distant instance count by its square, which is the
 # cost this buys the near band's area reduction with.
 const PATCH_SUBDIVISION := 4
+
+## Which level a patch casts its shadows from. NEAR is correct and expensive, PROXY is cheap
+## and wrong up close, NONE is for patches the sun's shadow range does not reach at all.
+enum ShadowCaster { NONE, NEAR, PROXY }
 
 var enabled := true
 var density_fraction := 1.0
@@ -297,6 +312,7 @@ func _process(_delta: float) -> void:
 				_is_patch_stale(key, owner_generations)
 				or _understory_wanted(distance, key_span) != bool(patch.get_meta("understory"))
 				or _near_band_wanted(distance, key_span) != bool(patch.get_meta("near_band"))
+				or _shadow_caster_wanted(distance, key_span) != int(patch.get_meta("shadow_caster"))
 			):
 				queue.append(key)
 	# The budget is an area, not a count. One upload per frame was one terrain patch per
@@ -386,13 +402,16 @@ func set_cast_shadows(value: bool) -> void:
 	cast_shadows = value
 	for store in [patches, cache]:
 		for patch in store.values():
+			var caster: int = patch.get_meta("shadow_caster")
 			for instance in patch.get_children():
-				var shadow_proxy: bool = instance.get_meta("shadow_proxy")
+				var is_proxy: bool = instance.get_meta("shadow_proxy")
 				instance.cast_shadow = _shadow_setting(
-					int(instance.get_meta("species")), shadow_proxy
+					int(instance.get_meta("species")), int(instance.get_meta("lod")),
+					is_proxy, caster
 				)
-				# OFF permits colour drawing, so a disabled proxy must also be hidden.
-				instance.visible = not shadow_proxy or cast_shadows
+				# OFF permits colour drawing, so a silent proxy must also be hidden.
+				instance.visible = (not is_proxy
+					or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
 
 ## Takes a patch out of the drawn set. A patch still inside the scatter radius is hidden and
 ## kept, because terrain residency is frustum-derived and will very likely ask for it again
@@ -458,6 +477,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	var distance := _patch_distance(key, world, _camera_xz())
 	var understory := _understory_wanted(distance, span)
 	var near_band := _near_band_wanted(distance, span)
+	var caster := _shadow_caster_wanted(distance, span)
 	var distant_lod := _distant_lod(distance)
 	var switch_m := canopy_switch_m(key)
 	var origin := Vector2(key.x, key.y) * span - world * 0.5
@@ -535,7 +555,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
 					near_mm.set_instance_color(i, near_tints[i])
-				_add_instance(patch, near_mm, species, 0, variant, near_band, switch_m)
+				_add_instance(patch, near_mm, species, 0, variant, near_band, switch_m, caster)
 		# Only the near level pays for variants. Mid and far share variant zero's mesh and the
 		# whole species population, so distance does not multiply draw calls. They also share
 		# one instance: the two levels draw the same transforms with a different mesh, so the
@@ -555,16 +575,19 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				for i in range(far_transforms.size()):
 					far_mm.set_instance_transform(slot, far_transforms[i])
 					slot += 1
-			_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m)
-			if species != TreeSpecies.BUSH and species != TreeSpecies.ROCK:
-				# Share the uploaded buffer so mesh swaps also update the shadow crown.
-				_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m, true)
+			_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m, caster)
+			if caster == ShadowCaster.PROXY:
+				# Share the uploaded buffer so mesh swaps also update the shadow crown. Built
+				# only where it is the caster: nearer than that the branched tree casts, and
+				# further than the sun's range nothing in the patch reaches a cascade.
+				_add_instance(patch, far_mm, species, 1, 0, near_band, switch_m, caster, true)
 	_share_patch_bounds(patch)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
 	patch.set_meta("vegetation_generation", vegetation_generation)
 	patch.set_meta("understory", understory)
 	patch.set_meta("near_band", near_band)
+	patch.set_meta("shadow_caster", caster)
 	patch.set_meta("distant_lod", distant_lod)
 	# Replace in place. The previous node stays visible until this one is in the tree,
 	# so an edit does not blank the surrounding forest for a frame.
@@ -612,20 +635,22 @@ func _share_patch_bounds(patch: Node3D) -> void:
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,
-	near_band: bool, switch_m: float, shadow_proxy: bool = false
+	near_band: bool, switch_m: float, caster: int, is_proxy: bool = false
 ) -> void:
 	var instance := MultiMeshInstance3D.new()
 	instance.multimesh = mm
 	instance.set_meta("species", species)
 	instance.set_meta("lod", lod)
-	instance.set_meta("shadow_proxy", shadow_proxy)
+	instance.set_meta("shadow_proxy", is_proxy)
 	# The distant level stands for every variant of its species and carries variant zero's
 	# mesh, so the variant it records is the mesh it draws, not a subset of the population.
 	instance.set_meta("variant", variant)
-	instance.cast_shadow = _shadow_setting(species, shadow_proxy)
-	instance.visible = not shadow_proxy or cast_shadows
+	instance.cast_shadow = _shadow_setting(species, lod, is_proxy, caster)
+	# A proxy is SHADOWS_ONLY when it casts and OFF when it does not, and OFF would let it
+	# draw over the crown it stands inside, so a silent proxy has to be hidden outright.
+	instance.visible = not is_proxy or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var range_m := lod_range(species, lod, variant, near_band, switch_m)
-	if shadow_proxy:
+	if is_proxy:
 		# Range-culled instances cannot cast, so the proxy must also cover the near band.
 		range_m = Vector2(0.0, canopy_far_m())
 	# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, and
@@ -690,8 +715,30 @@ func _instance_transform(
 	)
 	return Transform3D(basis, Vector3(x, data[i + 1], z))
 
-func _shadow_setting(species: int, shadow_proxy: bool) -> int:
-	# Only the lathe proxy casts; branched crowns and foliage cards cost four cascades.
-	if cast_shadows and shadow_proxy and species != TreeSpecies.ROCK and species != TreeSpecies.BUSH:
-		return GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+## What one instance does in the shadow pass, from the patch's caster choice and whether this
+## instance is the proxy. Understory is never a caster: it is the densest species and the key
+## light runs four cascades, so each bush would be submitted up to five times while its own
+## shadow sits under a canopy shadow that already darkens the same ground.
+func _shadow_setting(species: int, lod: int, is_proxy: bool, caster: int) -> int:
+	if not cast_shadows or species == TreeSpecies.ROCK or species == TreeSpecies.BUSH:
+		return GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if is_proxy:
+		return (GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+			if caster == ShadowCaster.PROXY else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+	if caster == ShadowCaster.NEAR and lod == 0:
+		return GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	return GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+## Which level a patch casts from. Measured from the patch's nearest corner, so a patch with
+## any part of it inside a boundary is treated as whole: one patch is one instance and cannot
+## split. Beyond the sun's own range nothing it holds can reach a cascade, so it casts nothing.
+func _shadow_caster_wanted(distance: float, span: float) -> int:
+	# Deliberately independent of cast_shadows. This chooses which instances a patch holds, and
+	# the runtime toggle must be able to turn casting back on without rebuilding a placement.
+	var reach := distance - span * PATCH_HALF_DIAGONAL
+	# With no camera every patch is a near caster, which is what a headless caller wants.
+	if distance < 0.0 or reach <= SHADOW_PROXY_M:
+		return ShadowCaster.NEAR
+	if reach <= SceneLightingConfig.shadow_max_distance_m():
+		return ShadowCaster.PROXY
+	return ShadowCaster.NONE
