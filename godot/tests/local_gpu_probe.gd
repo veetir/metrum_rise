@@ -13,6 +13,8 @@
 ## E18 prices the near canopy's foliage card area in one painted stand, seen from inside it.
 ## E19 prices shadow work at that same pose: what the trees cost as casters and what
 ## shortening the directional shadow range buys.
+## E20 prices the near canopy as drawn geometry at that pose: what the branched tree costs
+## across its band in a painted stand, and what a finer near grid does there.
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
 
@@ -159,6 +161,17 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E20":
+		# What the near canopy costs to DRAW in a painted stand, which is the quantity a level
+		# between the branched tree and the lathe would compete for. E17 swept the same band at
+		# the generator's own density and found 200 m to 800 m worth 0.94 ms; the painted stand
+		# is about seventeen times denser, and nobody has priced it there. The subdivision trial
+		# rides along because the grid is a free override and the question is open.
+		paint_dense_forest()
+		trials = ["nearsweep_near800_f4", "nearsweep_near400_f4", "nearsweep_near800_f4_b",
+			"nearsweep_near200_f4", "nearsweep_near800_f4_c", "nearsweep_near800_f8",
+			"nearsweep_near800_f4_d"]
+		radii = [30.0]
 	elif experiment == "E19":
 		# Restoring the near band to 800 m grew the shadow casting set from the 200 m disc it
 		# had been tuned against to the full SHADOW_MAX_DISTANCE_M disc, which is 4.4 times the
@@ -314,6 +327,15 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
+			elif experiment == "E20":
+				vegetation.enabled = true
+				vegetation.density_fraction = 1.0
+				# Shipped shadow configuration throughout, so the only thing that moves is the
+				# band the branched tree is drawn in and the grid it is carried on.
+				vegetation.cast_shadows = true
+				vegetation.patch_subdivision_override = trial_grid_value(trial, "f")
+				vegetation.near_range_override_m = float(trial_grid_value(trial, "near"))
+				vegetation.rebuild_from_simulation_state()
 			elif experiment == "E19":
 				vegetation.enabled = true
 				vegetation.density_fraction = 1.0
@@ -413,7 +435,11 @@ func run() -> void:
 func settle_view() -> bool:
 	var started := Time.get_ticks_msec()
 	var stable := 0
-	while Time.get_ticks_msec() - started < 120000:
+	# Five minutes, not two. Terrain streaming after a dense paint sits close to the old
+	# budget and fails it about as often as it clears it, and a settle that times out costs a
+	# whole run. The loop still leaves as soon as the scene is quiet, so a healthy run is
+	# no slower for this.
+	while Time.get_ticks_msec() - started < 300000:
 		await process_frame
 		if not terrain.has_pending_render_work(false) and not main.get_node("Water").has_pending_render_work(false) and not vegetation.has_pending_work():
 			stable += 1
@@ -421,7 +447,15 @@ func settle_view() -> bool:
 			stable = 0
 		if stable >= 30:
 			return true
-	push_error("Camera view did not settle")
+	# Which of the three is still working, so a settle failure names its cause instead of
+	# sending the reader back to the renderer to guess.
+	push_error("Camera view did not settle: terrain=%s water=%s vegetation=%s\n  terrain queues %s\n  blocked %s\n  vegetation %s" % [
+		str(terrain.has_pending_render_work(false)),
+		str(main.get_node("Water").has_pending_render_work(false)),
+		str(vegetation.has_pending_work()),
+		JSON.stringify(terrain.get_pending_render_work_counts()),
+		JSON.stringify(terrain.get_blocked_dirty_patch_failures()),
+		JSON.stringify(vegetation.metrics())])
 	return false
 
 func prepare_micro_shader() -> void:
@@ -600,7 +634,8 @@ func trial_grid_value(trial: String, prefix: String) -> int:
 	return 0
 
 func apply_horizon_view(trial: String) -> void:
-	if trial.begins_with("cards_") or trial.begins_with("shadowsweep_"):
+	if (trial.begins_with("cards_") or trial.begins_with("shadowsweep_")
+		or trial.begins_with("nearsweep_")):
 		# In the painted stand, at crown height, looking into the nearest trees.
 		camera.position = pivot + Vector3(0.0, 12.0, 30.0)
 		camera.rotation = Vector3(-0.04, 0.0, 0.0)

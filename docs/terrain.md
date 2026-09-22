@@ -532,6 +532,33 @@ The trees-do-not-cast control came in at `48.13`, `48.24` and `48.00 ms` across 
 separate processes, which is what licenses comparing them. `19.6 ms` of the `26.4 ms` survives
 the gate, and the two nearest of the four cascades keep the correct caster.
 
+### The near band is the last big cost, and the grid is a free 13 ms (2026-09-22)
+
+With the shadow proxy in, `18 ms` of the close pose is tree shadows and about `44 ms` is
+vegetation drawn. E20 prices that at the E19 pose and the painted density, sweeping the band
+the branched tree is drawn in and the grid it is carried on. Baselines ran at positions 1, 3,
+5 and 7 and came in at `65.84`, `66.34`, `70.38` and `69.97 ms`, a `6.3%` drift that is fitted
+out below.
+
+| trial | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| near band `800 m`, subdivision 4 | `65.84` | – | – | 4708 | `62.19 M` |
+| near band `400 m` | `43.74` | `66.49` | `22.75` | 3399 | `43.03 M` |
+| near band `200 m` | `34.67` | `68.13` | **`33.46`** | 2839 | `33.85 M` |
+| subdivision 8 | `56.05` | `69.78` | **`13.73`** | 10960 | `47.40 M` |
+
+**The branched tree drawn from `200 m` to `800 m` costs `33.5 ms`.** E17 priced the same band
+at the generator's own density at `0.94 ms`, so this is the painted stand's own cost and
+nothing else. It is now larger than the shadow cost, and it is the ceiling on what a level
+between the branched tree and the lathe could win.
+
+**Subdivision 8 is worth `13.7 ms` and nothing on the CPU.** It cuts primitives by `24%` while
+raising draw calls from 4708 to 10960, and the frame-to-GPU overhang stayed between `0.13` and
+`0.25 ms` in every trial including that one, so the finer cull pays for its own draw calls
+several times over on this GPU. The pose is static, though, and patch churn while the camera
+moves is what made subdivision expensive before the two-tier grid, so this wants a moving
+camera before it ships.
+
 ### Card area is the near cost, and plane count is not (2026-09-21)
 
 Seen from a distance a dense stand is cheap; flown into, the same stand pins the GPU. The near
