@@ -557,7 +557,58 @@ raising draw calls from 4708 to 10960, and the frame-to-GPU overhang stayed betw
 `0.25 ms` in every trial including that one, so the finer cull pays for its own draw calls
 several times over on this GPU. The pose is static, though, and patch churn while the camera
 moves is what made subdivision expensive before the two-tier grid, so this wants a moving
-camera before it ships.
+camera before it ships. It did not survive one; see the next section.
+
+### The finer grid does not survive a moving camera (2026-09-22)
+
+E21 pans the E20 pose `800 m` in `20 seconds`, through the middle of the `1600 m` painted
+square so the whole traversal stays inside the stand. E22 repeats the pan and caps the
+per-frame upload budget instead of deriving it from the subdivision. Both ran against the
+release library, which is the build the CPU side has to be judged on.
+
+**The GPU saving is real and it reproduces while moving.** Subdivision 8 came in `10.40 ms`
+below subdivision 4 back to back at the standing pose, and `10.33` and `10.04 ms` below the
+fitted baseline across the two panning trials.
+
+**The frame does not follow the GPU.** The quantity that decides this is the frame time minus
+the GPU time at the same percentile: it is what the CPU adds after the GPU has finished.
+
+| trial | grid | budget | GPU p99 | frame p99 | overhang | frame p999 |
+|---|---:|---:|---:|---:|---:|---:|
+| E21 pan a | 4 | 16 | `68.65` | `70.19` | `1.54` | `75.24` |
+| E21 pan b | 4 | 16 | `72.14` | `72.76` | `0.62` | `74.20` |
+| E21 pan c | 4 | 16 | `70.56` | `71.16` | `0.60` | `75.43` |
+| E21 pan | 8 | 64 | `66.85` | `75.14` | **`8.29`** | `89.33` |
+| E21 pan | 8 | 64 | `66.74` | `77.01` | **`10.27`** | `87.79` |
+| E22 pan a | 4 | 16 | `69.50` | `70.12` | `0.62` | `70.55` |
+| E22 pan b | 4 | 16 | `70.99` | `71.38` | `0.39` | `72.28` |
+| E22 pan c | 4 | 16 | `68.03` | `69.05` | `1.02` | `70.60` |
+| E22 pan | 8 | 64 | `63.78` | `84.80` | **`21.02`** | `90.95` |
+| E22 pan | 8 | 16 | `61.26` | `88.08` | **`26.82`** | `95.19` |
+| E22 pan | 8 | 8 | `65.96` | `70.67` | **`4.71`** | `91.81` |
+
+Six subdivision 4 trials hold the overhang at or below `1.54 ms`. Five subdivision 8 trials
+put it between `4.71` and `26.82 ms`. The tail figure itself is noisy from run to run, and the
+direction is not: the finer grid buys `10 ms` of GPU median and hands back more than that in
+CPU spikes, which is a stutter rather than a throughput gain.
+
+**The per-frame upload budget is not the cause.** The budget is the subdivision squared, so a
+finer grid also lets one frame build four times as many sub-patches, which was the obvious
+suspect. Capping it at 16 made the tail worse, not better, and raised the frames carrying
+vegetation work from 10 to 46. Capping it at 8 pulled p99 back to `70.67 ms` but left p999 at
+`91.81` and 116 frames carrying work. The spike is somewhere else.
+
+**The residency sweep is what scales.** The sweep rebuilds `wanted` from every resident
+terrain block by expanding each into the sub-patches it owns, which is the subdivision squared
+per block, then retires, restores and sorts against that set. It runs when the camera changes
+cell, which during a pan is often. Resident vegetation patches went from 483 to 1347 between
+the two grids. The steady per-frame scan under `if queue.is_empty()` is not the problem: at the
+median the frame tracks the GPU within `0.4 ms` at both subdivisions.
+
+**Subdivision 8 is therefore not taken.** `PATCH_SUBDIVISION` stays at 4. Taking the `10 ms`
+needs the sweep made incremental, so that crossing a cell costs the difference between two
+residency sets instead of a fresh construction of the whole one. That is real work and it is
+not a constant change.
 
 ### Card area is the near cost, and plane count is not (2026-09-21)
 

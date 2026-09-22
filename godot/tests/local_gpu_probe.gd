@@ -44,6 +44,10 @@ var variant_shaders: Dictionary = {}
 var pan_route_m := 0.0
 var pan_axis := Vector3.RIGHT
 var pan_origin := Vector3.ZERO
+# Pivot the current pose is built around: `pivot` while the camera stands still, and the
+# lerped route position during a pan. A pose that reads `pivot` directly snaps back to the
+# centre of the route on every frame, which makes a panning trial measure nothing.
+var view_pivot := Vector3.ZERO
 # Slower machines need a longer window to collect a comparable number of samples.
 # Applies to stationary trials only; pan trials carry their own durations.
 var capture_seconds := 8.0
@@ -161,6 +165,33 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E22":
+		# Whether the finer grid's hitch is the grid or the budget it derives. E21 found
+		# subdivision 8 worth 10.2 ms of GPU time while panning and 4 to 5 ms WORSE at frame
+		# p99, with the frame running 8 to 10 ms past its own GPU time at that percentile.
+		# The per-frame upload budget is the subdivision squared, so a finer grid also lets
+		# one frame build four times as many sub-patches. That is a budget choice, not a
+		# property of the grid. These trials hold the grid at 8 and cap the budget instead.
+		paint_dense_forest()
+		trials = ["pan_nearsweep_near800_f4", "pan_nearsweep_near800_f8_b16",
+			"pan_nearsweep_near800_f4_b", "pan_nearsweep_near800_f8_b8",
+			"pan_nearsweep_near800_f4_c", "pan_nearsweep_near800_f8"]
+		radii = [30.0]
+	elif experiment == "E21":
+		# Whether the finer near grid survives motion. E20 priced subdivision 8 at 13.73 ms
+		# cheaper from a standing camera, but a standing camera never crosses a patch
+		# boundary, and patch churn while moving is the cost the two-tier grid was built to
+		# contain. Subdividing raises the resident instance count by the square, so every
+		# crossing builds four times the instances it used to. The route runs 800 m through
+		# the middle of the 1600 m painted square, so the whole traversal stays inside the
+		# stand. Frame p99 and the vegetation generation peak answer the question; the GPU
+		# median only confirms the E20 saving reproduces in this process.
+		paint_dense_forest()
+		trials = ["nearsweep_near800_f4", "nearsweep_near800_f8",
+			"pan_nearsweep_near800_f4", "pan_nearsweep_near800_f8",
+			"pan_nearsweep_near800_f4_b", "pan_nearsweep_near800_f8_b",
+			"pan_nearsweep_near800_f4_c"]
+		radii = [30.0]
 	elif experiment == "E20":
 		# What the near canopy costs to DRAW in a painted stand, which is the quantity a level
 		# between the branched tree and the lathe would compete for. E17 swept the same band at
@@ -327,7 +358,7 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
-			elif experiment == "E20":
+			elif experiment in ["E20", "E21", "E22"]:
 				vegetation.enabled = true
 				vegetation.density_fraction = 1.0
 				# Shipped shadow configuration throughout, so the only thing that moves is the
@@ -335,6 +366,7 @@ func run() -> void:
 				vegetation.cast_shadows = true
 				vegetation.patch_subdivision_override = trial_grid_value(trial, "f")
 				vegetation.near_range_override_m = float(trial_grid_value(trial, "near"))
+				vegetation.upload_budget_override = trial_grid_value(trial, "b")
 				vegetation.rebuild_from_simulation_state()
 			elif experiment == "E19":
 				vegetation.enabled = true
@@ -389,7 +421,8 @@ func run() -> void:
 				set_micro_shader(terrain, trial.contains("skip_invisible_micro"))
 			elif not variant_shaders.is_empty():
 				apply_terrain_shader(terrain, variant_shaders.get(trial))
-			camera.focus_on(trial_start_pivot(trial), camera_radius)
+			view_pivot = trial_start_pivot(trial)
+			camera.focus_on(view_pivot, camera_radius)
 			apply_far_lever(trial)
 			apply_horizon_view(trial)
 			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16", "E18", "E19"] and not await settle_view():
@@ -561,6 +594,11 @@ func trial_start_pivot(trial: String) -> Vector3:
 ## patch ring; long routes deliberately outrun it so streaming cost is separable.
 func pan_plan(trial: String) -> Dictionary:
 	var span: float = maxf(terrain.get_render_patch_span_m(), 1.0)
+	if trial.begins_with("pan_nearsweep_"):
+		# Half the painted extent, so both ends and everything between them carry painted
+		# stems. Twenty seconds over 800 m is 40 m/s, which is a fast drag rather than a
+		# teleport: the grid has to keep up rather than being handed a settled view.
+		return {"from": pivot - pan_axis * 400.0, "to": pivot + pan_axis * 400.0, "seconds": 20.0}
 	if trial.begins_with("pan_horizon_"):
 		return {"from": pivot - Vector3(span * 2, 0, 0), "to": pivot + Vector3(span * 2, 0, 0), "seconds": 20.0}
 	var short_route := span * 4.0
@@ -635,9 +673,9 @@ func trial_grid_value(trial: String, prefix: String) -> int:
 
 func apply_horizon_view(trial: String) -> void:
 	if (trial.begins_with("cards_") or trial.begins_with("shadowsweep_")
-		or trial.begins_with("nearsweep_")):
+		or trial.contains("nearsweep_")):
 		# In the painted stand, at crown height, looking into the nearest trees.
-		camera.position = pivot + Vector3(0.0, 12.0, 30.0)
+		camera.position = view_pivot + Vector3(0.0, 12.0, 30.0)
 		camera.rotation = Vector3(-0.04, 0.0, 0.0)
 		return
 	if (
@@ -789,7 +827,8 @@ func capture(trial: String) -> void:
 		if trial == "pan":
 			camera.focus_on(pivot + Vector3(progress * 400.0, 0, 0), camera_radius)
 		elif plan.has("from"):
-			camera.focus_on((plan["from"] as Vector3).lerp(plan["to"] as Vector3, progress), camera_radius)
+			view_pivot = (plan["from"] as Vector3).lerp(plan["to"] as Vector3, progress)
+			camera.focus_on(view_pivot, camera_radius)
 			apply_horizon_view(trial)
 			if not variant_shaders.is_empty():
 				active_material_count = 0
@@ -824,6 +863,7 @@ func capture(trial: String) -> void:
 	var entry := {"trial": trial, "camera_radius": camera_radius, "terrain_material_instances": active_material_count, "frame_ms": summarize(frames), "gpu_ms": summarize(gpu), "render_cpu_ms": summarize(cpu), "samples_frame_gpu_cpu_pending": raw,
 		"vegetation": vegetation.metrics(),
 		"patch_subdivision_override": vegetation.patch_subdivision_override,
+		"upload_budget_override": vegetation.upload_budget_override,
 		"near_range_override_m": vegetation.near_range_override_m,
 		"vegetation_at_start": vegetation_before,
 		"vegetation_pending_frames": vegetation_pending_frames,

@@ -14,8 +14,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   brush-painted worst case. Foliage cards are cropped to their own alpha bounds, worth about
   `1.1 ms` of GPU from inside a dense stand. Past `SHADOW_PROXY_M` trees cast from the lathe
   crown rather than from the branched tree, worth `19.6 ms` of a close dense forest frame;
-  inside it the branched tree still casts, because a proxy shadows the crown it stands in. A
-  finer near tier and a level between the branched tree and the lathe are still open. See
+  inside it the branched tree still casts, because a proxy shadows the crown it stands in.
+  Subdividing the near grid to 8 is worth `10 ms` of GPU and was rejected: it costs more than
+  that in CPU spikes while the camera moves, because the residency sweep scales with the square
+  of the subdivision. A level between the branched tree and the lathe is still open, and the
+  band it would compete for costs `33.5 ms` in a painted stand. See
   [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 
 - **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated

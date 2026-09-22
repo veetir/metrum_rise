@@ -105,6 +105,10 @@ var far_range_override_m := 0.0
 var near_range_override_m := 0.0
 # Probe override for PATCH_SUBDIVISION. Values below one keep the authored subdivision.
 var patch_subdivision_override := 0
+# Probe override for the per-frame upload budget, in sub-patch builds. Values below one keep
+# the area budget the subdivision derives. Separates "how fine is the grid" from "how much
+# work may one frame do", which the derived budget ties together.
+var upload_budget_override := 0
 # Vegetation patch span in metres, cached from the last residency pass so the range
 # accessors can answer without a terrain call. Zero until the first patch is built.
 var patch_span_m := 0.0
@@ -319,7 +323,7 @@ func _process(_delta: float) -> void:
 	# frame, and a sub-patch covers a square of that, so the same ground per frame is
 	# PATCH_SUBDIVISION squared of them. Holding the count instead would make the time to
 	# settle grow with the square of the subdivision, and in a dense forest that is minutes.
-	var budget := divisor * divisor
+	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor
 	while budget > 0 and not queue.is_empty():
 		var next: Vector3i = queue.pop_back()
 		_upload_patch(next, _key_span(next))
