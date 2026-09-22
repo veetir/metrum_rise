@@ -88,10 +88,24 @@ patch enters the scene tree before the previous patch is freed.
 Geometry levels switch at a hard distance boundary with no crossfade. A visibility fade
 applies to a whole `MultiMeshInstance3D`, and one instance carries a whole terrain patch, so
 a fade band made every plant in a `510 m` patch translucent together and moved the patch into
-the transparent pass. Two invariants follow from the same fact and set the bands below: a band
-must exceed the patch diagonal (`721 m`), and a range must exceed the patch half-diagonal
-(`361 m`). Trees more than about 2 km away are narrower than three pixels at 720p and still
-alias.
+the transparent pass. Two invariants follow from the same fact: a band must exceed the patch
+diagonal, and a range must exceed the patch half-diagonal. Both are a tax on the patch size,
+which is why the vegetation grid is no longer the terrain grid. Trees more than about 2 km
+away are narrower than three pixels at 720p and still alias.
+
+The scatter runs on two grids. A terrain block with any part of it inside `_fine_tier_radius()`
+(the longer of the near canopy and the understory) is carried as `PATCH_SUBDIVISION` squared
+sub-patches of `127.5 m`; every block beyond it stays one `510 m` terrain patch. Only the near
+canopy and the understory have bands narrower than a terrain patch, so only they need the fine
+grid. Everything past the near band draws one distant crown mesh that distance picks per patch,
+which needs no band at all. A patch key therefore carries the grid divisor it belongs to:
+without it a coarse key and a fine key name the same square, and a block changing tier collides
+with its own cached patch. `_key_span()` turns that divisor back into a span, so a caller
+cannot measure a distance on one grid and a range on another.
+
+`TREE_NEAR_FLOOR_M` is a quality floor, not a budget. At `800 m` a 15 m tree covers 13 pixels,
+which is where the branched crown and its cards stop reading as a tree and the lathe cone can
+take over unnoticed. The grid no longer sets it.
 
 Distant crowns, bushes and rocks are each one surface of revolution built from a radius
 profile, with a per-ring and per-segment radius perturbation, flat shading, end caps, and a
@@ -388,6 +402,62 @@ them, not that the GPU stops drawing them.
 Canopy density is still roughly one tree per 330 m2 against about one per 10 m2 in a real
 stand, and closing that gap needs a canopy representation for mid and far distance rather
 than more instances.
+
+### The forest was a CPU cost pretending to be a GPU one (2026-09-21)
+
+The player reported that a brush-painted stand destroyed performance, that the tree grid read
+as visible blocks, and asked for more LOD levels. All three have one root cause: a vegetation
+patch was a terrain render patch. A `510 m` patch puts a `721 m` floor under the near band,
+which is the only reason the near cards were drawn out to `800 m`.
+
+Cutting the vegetation grid off the terrain grid removed that floor, and the near band was
+then set to `200 m` on the strength of a brush-painted stand, where the band is the largest
+single GPU cost. That was wrong. **A painted stand is about 531 stems/ha against the
+generator's 30.47, so it is the worst case by construction, not the normal one.** Experiment
+E17 swept the band at the generator's own density: `200 m` to `800 m` costs `0.94 ms` of GPU.
+The short band bought nothing in normal play and made every tree past `200 m` a smooth cone at
+53 pixels, which the player saw immediately. The floor is back at `800 m`, and the answer to a
+painted stand is its stem count, not a band every normal view has to look at.
+
+With the band restored, E17 showed the frame spending `27.66 ms` while the GPU spent `12.54 ms`.
+The scatter had become a CPU cost. Two things caused it, both consequences of subdividing:
+
+- The staleness sweep read two generations across the language boundary per sub-patch. Sixteen
+  sub-patches share one terrain owner, so fifteen of every sixteen reads repeated an answer the
+  sweep already had: 5650 calls a frame at 2518 resident patches. The sweep now caches the pair
+  per owner. `_is_patch_stale` and `_upload_patch` called from anywhere else still read live
+  values, because their answer is about the moment they are asked, and `_upload_patch` stamps
+  what it reads, so a cached value there loses an edit.
+- Subdivision applied to the whole `4500 m` scatter when only the near canopy and understory
+  need it. Restricting it to `_fine_tier_radius()` took resident patches from 2518 to 415 and
+  frame time from `27.66 ms` to `13.01 ms` with the GPU unchanged. The overhang between frame
+  time and GPU time went from `15.1 ms` to `0.22 ms`.
+
+### Card area is the near cost, and plane count is not (2026-09-21)
+
+Seen from a distance a dense stand is cheap; flown into, the same stand pins the GPU. The near
+canopy's foliage cards are where that goes, so two reductions were measured against each other
+in experiment E18, from inside a painted stand.
+
+**Cropping the card quads to their own alpha bounds works.** Each atlas cell is 43 to 50 percent
+opaque at the `0.4` scissor threshold, and 12 to 24 percent of each cell is margin no pixel
+survives. Cropping the quad and its UVs by one affine map took GPU p50 from `31.35 ms` to
+`30.51 ms`, bracketed by a repeated first trial at `31.91 ms`, with no visible change and a
+level-match ratio that improved to `1.013` and `0.999`.
+
+**Dropping the third of the three crossed planes does not work, and the reason is the useful
+part.** Gating that plane out by screen size left GPU p50 at `29.99 ms` against `29.87 ms` for
+cropping alone, inside the drift bracket, and `primitives` was byte-identical across trials
+because collapsing a triangle to a point still submits it. The gate was also mistuned: measured
+against the built tuft radii it removed the plane beyond `3.7 m` to `12.4 m`, so in practice it
+was an unconditional removal wearing a threshold. It was not taken.
+
+The reason it saved nothing is that `rendering/driver/depth_prepass/enable` is on, and these
+cards are alpha scissored into the opaque pass. Early-Z already rejects the planes stacked
+behind one another, so removing a plane that was mostly hidden removes work the GPU was not
+doing. **The cards cost what they cover, not how many of them there are, and they pay it twice,
+once in the prepass and once in the colour pass.** Reductions that shrink covered area keep
+paying; reductions that only lower plane count do not.
 
 ### The crowns lost half their ground cover at the LOD switch (2026-09-13)
 
