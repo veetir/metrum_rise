@@ -26,7 +26,6 @@ import sys
 import tempfile
 import zlib
 
-import bpy
 import numpy as np
 
 # 256 px per cell. The shader samples only alpha, so the three constant-white RGB bytes
@@ -136,6 +135,8 @@ def cluster(vertices, faces, column, conifer):
 
 
 def render_alpha():
+    import bpy
+
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.engine = 'CYCLES'
@@ -259,10 +260,12 @@ def mip_chain(alpha):
 
 def write_dds(path, levels):
     # Legacy uncompressed RGBA8 DDS with an explicit complete mip chain.
-    header = [124, 0x2100F, SIZE, SIZE, SIZE * 4, 0, len(levels)] + [0] * 11
+    height, width = levels[0].shape[:2]
+    header = [124, 0x2100F, height, width, width * 4, 0, len(levels)] + [0] * 11
     header += [32, 0x41, 0, 32, 0xFF, 0xFF00, 0xFF0000, 0xFF000000]
     header += [0x401008, 0, 0, 0, 0]
-    path.write_bytes(b'DDS ' + struct.pack('<31I', *header) + b''.join(rgba(level) for level in levels))
+    path.write_bytes(b'DDS ' + struct.pack('<31I', *header) + b''.join(
+        rgba(level) if level.ndim == 2 else level.astype(np.uint8).tobytes() for level in levels))
 
 
 def main():

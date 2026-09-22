@@ -22,22 +22,12 @@ const ASPEN_PALE := Color(0.335, 0.330, 0.260)
 const PINE_LOW_BARK := Color(0.150, 0.115, 0.085)
 const PINE_CROWN_BARK := Color(0.360, 0.185, 0.080)
 
-# Hash coverage per species, conifer first, calibrated so the distant crown covers as much
+# Hash coverage per species, conifer first, calibrated so the shadow-proxy crown covers as much
 # ground as the measured near crown. The broadleaf figure is the higher of the two because a
 # near broadleaf carries cards that stand out of the crown in depth as well as across it, and
 # a surface of revolution has no depth to spare: its projected extent is already its width.
 # See docs/terrain.md for the instrument.
 const DISTANT_COVERAGE := [0.50, 0.82]
-# Share of its own albedo a distant crown keeps, per species, so that the two levels render to one
-# luminance. Fitted, not derived: the tone map makes rendered luminance a sublinear function of
-# albedo, so the value is read off a sweep rather than taken as the luminance ratio itself. The
-# calibration follows the near crown's volume normals, including preserving their direction
-# on the backs of foliage cards. See `distant_radiance_match` in vegetation_distant.gdshader.
-const DISTANT_RADIANCE_MATCH := [0.97, 0.89]
-# Diffuse wrap per species, conifer first. Fitted with DISTANT_RADIANCE_MATCH to the least
-# worst-case luminance error over 36 sun and camera poses. See `crown_wrap` in
-# vegetation_distant.gdshader.
-const DISTANT_CROWN_WRAP := [0.75, 0.25]
 
 # foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
 # Half-open pixel bounds within each 256x256 cell: (5,5)-(245,244),
@@ -50,13 +40,22 @@ const FOLIAGE_ALPHA_RECTS := [
 	Rect2(14.0/256.0, 9.0/256.0, 237.0/256.0, 211.0/256.0),
 ]
 
+# Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
+# level's luminance. Fitted over the 36 poses of vegetation_level_match_test.gd.
+const IMPOSTOR_RADIANCE_MATCH := [1.0, 0.97]
+const IMPOSTOR_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
+
 static var _material: StandardMaterial3D
 static var _wind_material: ShaderMaterial
 static var _card_material: ShaderMaterial
 static var _card_texture: Texture2D
+
+static var _impostor_metadata: Dictionary = {}
+static var _impostor_materials: Array[ShaderMaterial] = [null, null]
+static var _impostor_quad: QuadMesh
 static var _distant_materials: Array[ShaderMaterial] = [null, null]
 
-## Meshes indexed by species, variant, then level (near to far).
+## Meshes indexed by species, variant, then level (full, reduced, shadow proxy).
 static func build_meshes() -> Array:
 	var meshes: Array = []
 	meshes.resize(SPECIES_COUNT)
@@ -73,7 +72,7 @@ static func build_meshes() -> Array:
 				ROCK:
 					variants[variant] = [_rock(variant)]
 		if species < BUSH:
-			# The scatter uses variant zero at distance for the entire species. Integrate
+			# The shadow proxy uses variant zero for the entire species. Integrate
 			# all near variants, including the birch mix, once at startup: O(triangles).
 			var integral := Vector4.ZERO
 			var envelope := Vector3.ZERO
@@ -84,20 +83,63 @@ static func build_meshes() -> Array:
 			crown.a = 1.0
 			envelope /= float(variants.size())
 			for variant in range(variants.size()):
-				# Lathe shape indices stay 1/2; appended catalogue levels are now 2/3.
-				for lod in [1, 2]:
-					variants[variant].append(_conifer(lod, variant, crown, envelope)
-						if species == CONIFER else _broadleaf(lod, variant, crown, envelope))
+				variants[variant].append(_conifer(variant, crown, envelope)
+					if species == CONIFER else _broadleaf(variant, crown, envelope))
 		meshes[species] = variants
 	return meshes
+
+## Texture-array layer for the same variant (including brush pins) as the near tree.
+static func impostor_layer(species: int, variant: int) -> int:
+	return 0 if (_is_pine(variant) if species == CONIFER else _is_birch(variant)) else 1
+
+## One quad shared by every form; the shader reconstructs its object-space vertices.
+static func impostor_mesh() -> QuadMesh:
+	if _impostor_quad == null:
+		_impostor_quad = QuadMesh.new()
+	return _impostor_quad
+
+## Baked bounds and source digest, loaded once alongside the texture arrays.
+static func impostor_metadata() -> Dictionary:
+	if _impostor_metadata.is_empty():
+		_impostor_metadata = JSON.parse_string(FileAccess.get_file_as_string(
+			"res://assets/textures/vegetation/tree_impostors.json"))
+	return _impostor_metadata
+
+## Each species shares two texture arrays and one material across all resident patches.
+static func impostor_material(species: int) -> ShaderMaterial:
+	if _impostor_materials[species] == null:
+		var metadata := impostor_metadata()
+		var material := ShaderMaterial.new()
+		material.shader = preload("res://scripts/shaders/vegetation_impostor.gdshader")
+		for channel in ["albedo", "normal"]:
+			var images: Array[Image] = []
+			for form in IMPOSTOR_FORMS[species]:
+				var texture: Texture2D = load(
+					"res://assets/textures/vegetation/tree_impostor_%s_%s.dds" % [form, channel])
+				images.append(texture.get_image())
+			var array := Texture2DArray.new()
+			var error := array.create_from_images(images)
+			assert(error == OK, "Cannot create tree impostor texture array")
+			material.set_shader_parameter(channel + "_atlas", array)
+		var centres := PackedVector3Array()
+		var sizes := PackedFloat32Array()
+		for form in IMPOSTOR_FORMS[species]:
+			var bounds: Dictionary = metadata.forms[form]
+			centres.append(Vector3(bounds.centre[0], bounds.centre[1], bounds.centre[2]))
+			sizes.append(bounds.size)
+		material.set_shader_parameter("bounds_centre", centres)
+		material.set_shader_parameter("bounds_size", sizes)
+		material.set_shader_parameter("impostor_radiance_match", IMPOSTOR_RADIANCE_MATCH[species])
+		_apply_canopy_shading(material)
+		_impostor_materials[species] = material
+	return _impostor_materials[species]
 
 # Two of each three broadleaf variants are birch: 0, 1, 3, 4, 6, 7, 9, 10.
 static func _is_birch(variant: int) -> bool:
 	return variant % 3 != 2
 
 # Two of each three conifer variants are pine, which matches the order of Finnish growing
-# stock: pine leads, spruce follows. The remaining third are spruce. Only the near level
-# pays for variants, so this split reads out to TREE_NEAR_M and no further; see RENDER-02.
+# stock: pine leads, spruce follows. The impostor retains this form split at distance.
 static func _is_pine(variant: int) -> bool:
 	return variant % 3 != 2
 
@@ -689,11 +731,11 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 			surface.set_uv(uv_origin + local_uv * 0.5)
 			surface.add_vertex(position)
 
-## Spruce with swept near branches and the continuous ragged crown at distance.
-static func _conifer(lod: int, variant: int, crown: Color, envelope: Vector3) -> ArrayMesh:
-	var segments: int = [9, 6, 4][lod]
-	var rings: int = [9, 6, 3][lod]
-	var ragged: float = [0.15, 0.11, 0.0][lod] * lerpf(0.8, 1.2, _noise(variant, 101))
+## Conifer shadow proxy retaining the former level-2 lathe geometry.
+static func _conifer(variant: int, crown: Color, envelope: Vector3) -> ArrayMesh:
+	var segments := 6
+	var rings := 6
+	var ragged: float = 0.11 * lerpf(0.8, 1.2, _noise(variant, 101))
 	# Sized to the near crown's own foliage extent, with no per-variant spread: the scatter draws
 	# variant zero's distant mesh for the whole species, so a spread produces no variety and only
 	# moves this one crown off the envelope it is meant to match. The base matters as much as the
@@ -706,10 +748,9 @@ static func _conifer(lod: int, variant: int, crown: Color, envelope: Vector3) ->
 	var taper := lerpf(0.75, 1.05, _noise(variant, 127))
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	if lod < 2:
-		_lathe(surface, _trunk_profile(lerpf(3.1, 3.7, _noise(variant, 131)),
-			lerpf(0.26, 0.34, _noise(variant, 139))), maxi(segments - 4, 3),
-			Color(0.115, 0.085, 0.062), 0.10, 11 + variant * 61)
+	_lathe(surface, _trunk_profile(lerpf(3.1, 3.7, _noise(variant, 131)),
+		lerpf(0.26, 0.34, _noise(variant, 139))), maxi(segments - 4, 3),
+		Color(0.115, 0.085, 0.062), 0.10, 11 + variant * 61)
 	var profile := PackedVector2Array()
 	for ring in range(rings + 1):
 		var t := float(ring) / float(rings)
@@ -721,36 +762,27 @@ static func _conifer(lod: int, variant: int, crown: Color, envelope: Vector3) ->
 	_lathe(surface, profile, segments, crown, ragged, 3 + variant * 61)
 	return _finish(surface, _distant_crown_material(true))
 
-## Birch and generic broadleaf share the catalogue slot and distant species mean.
-static func _broadleaf(lod: int, variant: int, crown: Color, envelope: Vector3) -> ArrayMesh:
-	var segments: int = [9, 6, 4][lod]
-	var rings: int = [7, 5, 3][lod]
-	var ragged: float = [0.14, 0.10, 0.0][lod] * lerpf(0.8, 1.2, _noise(variant, 149))
+## Broadleaf shadow proxy sized to the mixed near catalogue.
+static func _broadleaf(variant: int, crown: Color, envelope: Vector3) -> ArrayMesh:
+	var segments := 6
+	var rings := 5
+	var ragged: float = 0.10 * lerpf(0.8, 1.2, _noise(variant, 149))
 	var crown_base := envelope.z
-	# See _conifer: the near crown's own foliage extent. The birch narrowing that used to apply
-	# here is already in that measurement, because the envelope is a mean over all twelve near
-	# variants and eight of them are birch. Narrowing again also split the two distant levels,
-	# which both stand for the same mixed stand: variant zero is birch and is the variant the
-	# scatter draws at distance, so mid came out 91% of the near crown and far 111%.
+	# The measured envelope already includes the narrower birch forms.
 	var crown_radius := envelope.x
 	var crown_height := envelope.y - envelope.z
-	# Snapped to a ring the profile actually samples. A broadleaf dome is widest across its
-	# middle, and the far level has three rings at t = 0, 1/3, 2/3 and 1: an authored 0.38-0.49
-	# falls between two of them, so the widest point of the crown was never built and the far
-	# footprint measured 75% of the near crown against the mid level's 90%. Snapping costs no
-	# geometry, and the ring count is what the appearance test pins.
+	# Snap the widest point onto a sampled ring so the proxy reaches its full radius.
 	var widest := roundf(lerpf(0.38, 0.49, _noise(variant, 167)) * rings) / float(rings)
 	var taper := lerpf(0.85, 1.15, _noise(variant, 173))
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	if lod < 2:
-		if _is_birch(variant):
-			_banded_trunk(surface, lerpf(4.2, 5.0, _noise(variant, 179)),
-				lerpf(0.21, 0.27, _noise(variant, 181)), maxi(segments - 4, 3), variant, false, true)
-		else:
-			_lathe(surface, _trunk_profile(lerpf(4.2, 5.0, _noise(variant, 179)),
-				lerpf(0.21, 0.27, _noise(variant, 181))), maxi(segments - 4, 3),
-				Color(0.185, 0.170, 0.150), 0.08, 23 + variant * 61)
+	if _is_birch(variant):
+		_banded_trunk(surface, lerpf(4.2, 5.0, _noise(variant, 179)),
+			lerpf(0.21, 0.27, _noise(variant, 181)), maxi(segments - 4, 3), variant, false, true)
+	else:
+		_lathe(surface, _trunk_profile(lerpf(4.2, 5.0, _noise(variant, 179)),
+			lerpf(0.21, 0.27, _noise(variant, 181))), maxi(segments - 4, 3),
+			Color(0.185, 0.170, 0.150), 0.08, 23 + variant * 61)
 	var profile := PackedVector2Array()
 	for ring in range(rings + 1):
 		var t := float(ring) / float(rings)
@@ -761,7 +793,7 @@ static func _broadleaf(lod: int, variant: int, crown: Color, envelope: Vector3) 
 	_lathe(surface, profile, segments, crown, ragged, 7 + variant * 61)
 	return _finish(surface, _distant_crown_material(false))
 
-# One material per species, shared by both distant levels; still one surface per mesh.
+# One shadow-proxy material per species; still one surface per mesh.
 # The two need different hash coverage to reach the same silhouette fill as their own
 # near crowns, because a solid spruce cone fills far more of its bounding box than a
 # broadleaf dome fills its own. Placement already draws the species separately, so the
@@ -772,9 +804,6 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
-		material.set_shader_parameter("distant_radiance_match", DISTANT_RADIANCE_MATCH[index])
-		material.set_shader_parameter("crown_wrap", DISTANT_CROWN_WRAP[index])
-		_apply_canopy_shading(material)
 		_distant_materials[index] = material
 	return _distant_materials[index]
 

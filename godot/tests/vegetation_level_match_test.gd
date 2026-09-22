@@ -57,18 +57,27 @@ func _scatter(count: int, extent: float) -> Array[Transform3D]:
 		out.append(placed.scaled_local(Vector3.ONE * (0.85 + h2 * 0.3)))
 	return out
 
-func _add(holder: Node3D, mesh: Mesh, transforms: Array[Transform3D], tinted: bool) -> void:
+func _add(holder: Node3D, mesh: Mesh, transforms: Array[Transform3D], tinted: bool, species: int = -1) -> void:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = tinted
+	mm.use_custom_data = not tinted
 	mm.mesh = mesh
 	mm.instance_count = transforms.size()
 	for i in range(transforms.size()):
 		mm.set_instance_transform(i, transforms[i])
 		if tinted:
 			mm.set_instance_color(i, Color.WHITE)
+		else:
+			var variant: int = i % Species.VARIANT_COUNTS[species]
+			mm.set_instance_custom_data(i, Color(float(Species.impostor_layer(species, variant)), 0, 0, 0))
 	var node := MultiMeshInstance3D.new()
 	node.multimesh = mm
+	if not tinted:
+		node.material_override = Species.impostor_material(species)
+		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		# Covers this fixed 120 m stand and the reconstructed quad under every pose.
+		node.custom_aabb = AABB(Vector3(-100, -40, -100), Vector3(200, 120, 200))
 	holder.add_child(node)
 
 func _shot() -> Image:
@@ -157,7 +166,7 @@ func _level_luminance(catalogue: Array, species: int, transforms: Array[Transfor
 			if not subset.is_empty():
 				_add(holder, catalogue[species][variant][0], subset, true)
 	else:
-		_add(holder, catalogue[species][0][2], transforms, false)
+		_add(holder, Species.impostor_mesh(), transforms, false, species)
 	var color := await _crown_color(holder)
 	holder.queue_free()
 	await process_frame

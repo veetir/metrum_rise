@@ -165,6 +165,14 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E24":
+		# Impostors against the lathe, over the painted stand. Run once per build: the lathe
+		# build is the baseline and the impostor build the candidate, both at their shipped
+		# bands (800 m and 250 m). The aerial pose is the view the lathe failed in: from
+		# altitude the whole stand past the handover was one flat colour.
+		paint_dense_forest()
+		trials = ["nearsweep_a", "aerial_a", "nearsweep_b", "aerial_b", "nearsweep_c", "aerial_c"]
+		radii = [30.0]
 	elif experiment == "E23":
 		# What the reduced near level is actually worth. It keeps every foliage card and cuts
 		# only interior wood, and E18 found the near cost follows card area rather than plane
@@ -371,6 +379,14 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
+			elif experiment == "E24":
+				# The shipped configuration of whichever build runs this.
+				vegetation.enabled = true
+				vegetation.density_fraction = 1.0
+				vegetation.cast_shadows = true
+				vegetation.patch_subdivision_override = 0
+				vegetation.near_range_override_m = 0.0
+				vegetation.rebuild_from_simulation_state()
 			elif experiment in ["E20", "E21", "E22", "E23"]:
 				vegetation.enabled = true
 				vegetation.density_fraction = 1.0
@@ -444,6 +460,11 @@ func run() -> void:
 			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16", "E18", "E19"] and not await settle_view():
 				quit(1)
 				return
+			# Terrain streaming never quiets after a dense paint, so E24 waits on the one system
+			# it compares: both builds must have uploaded the pose's whole canopy.
+			if experiment == "E24" and not await settle_vegetation():
+				quit(1)
+				return
 			await create_timer(4.0).timeout
 			# Panning trials must start from a settled view so the capture measures
 			# traversal work rather than leftover approach work.
@@ -480,6 +501,17 @@ func run() -> void:
 	file.close()
 	print("GPU_PROBE_OUTPUT " + output_dir)
 	quit()
+
+func settle_vegetation() -> bool:
+	var started := Time.get_ticks_msec()
+	var stable := 0
+	while Time.get_ticks_msec() - started < 120000:
+		await process_frame
+		stable = 0 if vegetation.has_pending_work() else stable + 1
+		if stable >= 30:
+			return true
+	push_error("Vegetation did not settle")
+	return false
 
 func settle_view() -> bool:
 	var started := Time.get_ticks_msec()
@@ -693,6 +725,12 @@ func apply_horizon_view(trial: String) -> void:
 		# In the painted stand, at crown height, looking into the nearest trees.
 		camera.position = view_pivot + Vector3(0.0, 12.0, 30.0)
 		camera.rotation = Vector3(-0.04, 0.0, 0.0)
+		return
+	if trial.begins_with("aerial_"):
+		# Over the painted stand from about the height of the reference captures, looking
+		# 35 degrees down across it, so the view holds both bands and the handover between.
+		camera.position = view_pivot + Vector3(0.0, 350.0, 450.0)
+		camera.rotation = Vector3(deg_to_rad(-35.0), 0.0, 0.0)
 		return
 	if (
 		not trial.contains("horizon")

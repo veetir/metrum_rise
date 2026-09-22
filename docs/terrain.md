@@ -668,6 +668,70 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Distant trees are impostors of the near tree (2026-09-22)
+
+The lathe fix in the next section matched the distant level's brightness, and a capture from
+altitude (`imgs/reference/game/22-09-lod-mush.png`) still showed the switch as a line: textured
+crowns on one side and a flat grey-green blanket on the other. A smooth lathe carries no
+structure at the scale of one tree, so the step was in detail, not in colour. The visible
+distant level is now a hemi-octahedral impostor: one camera-facing quad per tree, drawn from
+a baked picture of the full near tree. The lathe stays only as the shadow caster.
+
+**The bake is offline and on the CPU.** `tools/bake_tree_impostors.py` rasterises level 0 of
+four source forms (pine, spruce, birch, aspen) from the headless catalogue export, over an
+8 x 8 grid of views across the upper hemisphere at 128 px per view, 4 x 4 supersampled. It
+writes albedo and object-space normals as RGBA8 DDS with full mips, and
+`tree_impostors.json` records the bounds, the per-mip coverage and a SHA-256 of the source
+meshes. `vegetation_appearance_test` fails when the catalogue no longer matches that hash,
+so a change to `tree_species.gd` must be re-baked. Two runs are byte-identical.
+
+Three details in the mips decide how the impostor looks at distance:
+
+- Alpha coverage is corrected per view and per level, as in the foliage atlas, so a sparse
+  crown does not thin out with distance.
+- Colour and normal mips are weighted by coverage. An unweighted mean mixed the "up" normal
+  that fills empty texels into every crown edge, and the distant impostors brightened with
+  sun elevation.
+- The normal mips are stored unnormalised. The length records how far the normals under one
+  texel disagree. The shader lifts scattered texels toward up and wraps their diffuse, with
+  specular off. This is the same volume response the lathe needed. Without it a distant
+  crown lights by the one normal that faces the camera, which is a closed shell again.
+
+**The runtime.** `vegetation_impostor.gdshader` blends the three nearest views by their
+barycentric weights and reprojects the quad onto each view, so a tree does not jump as the
+camera turns. Each species has one `Texture2DArray` per channel, and the form is a per-instance
+layer in MultiMesh custom data. The distant placement loop computes the variant with
+`_variant_index`, so a brush pin keeps its species at every distance. The distant buffer is
+built as one packed array. The shadow proxy uses the same array as its own MultiMesh, with no
+copy. Catalogue index 3 and the `TREE_MID_M` swap are removed.
+
+**The switch moves from 800 m to 250 m.** A 15 m tree covers about 42 px at 250 m (1080p, 75
+degree FOV), which a smooth cone could not stand in for and a picture of the tree can.
+Lowering the floor below the coarse patch diagonal exposed a latent fault: `canopy_near_m`
+read `patch_span_m`, which each upload sets to its own key's span. The band then flipped
+between 250 m and 721 m with every upload, patches near the switch disagreed with their own
+record on the next frame, and the forest rebuilt itself without end at about 3 frames per
+second. The band now reads the fine grid span from `terrain_span_m`, and the appearance test
+asserts that an upload does not move it. The assertion fails with the old accessor.
+
+**Brightness over 36 poses.** `vegetation_level_match_test` now compares the near level with
+the impostor. A grid over lift gain, wrap gain and specular picked lift 3.0, wrap 1.5 and no
+specular for both species. `IMPOSTOR_RADIANCE_MATCH` is `1.0 / 0.97`. The ratio is
+`0.895-1.117` for conifer and `0.893-1.119` for broadleaf, within the `0.12` tolerance.
+
+**E24 prices it.** The painted 1.6 km stand at subdivision 4, each build at its shipped band,
+three interleaved trials per pose, release library `d9ca4c5b`, GTX 1060 3GB. The baseline is
+`eaa222e1` in a separate worktree, with a byte-identical probe.
+
+| pose | lathe GPU p50 | impostor GPU p50 | draws | primitives |
+|---|---:|---:|---:|---:|
+| in the stand, crown height | `40.00-40.31` | `23.59-23.61` | 4708 → 3569 | `34.27 M` → `22.01 M` |
+| aerial, 350 m up, 35 degrees down | `52.00-52.80` | `16.45-16.49` | 4462 → 2048 | `31.93 M` → `5.92 M` |
+
+The frame follows the GPU within about 0.2 ms at p50 in every trial. Video memory rises by
+about `43 MB`, which is the eight atlases. The maximum patch upload on the headless fixture
+went from `19.9` to `20.8-23.1 ms`, about one millisecond, inside run-to-run noise.
+
 ### The distant crown was fitted at one sun (2026-09-22)
 
 A capture from altitude (`imgs/reference/game/22-09-lod-lighting-maybe.png`) shows the forest
@@ -708,10 +772,8 @@ passed the shipped shader while the back-lit ratio was `0.49`. The shader change
 matrix column, one mix and one normalize per distant fragment and removes the specular term.
 It adds no vertex attribute, texture fetch, surface or draw. The mesh is unchanged.
 
-**What is left.** The remaining error follows camera elevation more than the sun: from a low
-camera the near crown shows its lit side, which a view-independent normal cannot. The next step
-is to price pulling `TREE_NEAR_FLOOR_M` in from `800 m` now that the switch should no longer
-show as a colour step.
+**Superseded the same day.** The lathe is no longer drawn: the section above replaces it with
+impostors and keeps it only as the shadow caster, so these constants were removed with it.
 
 ### Card area is the near cost, and plane count is not (2026-09-21)
 

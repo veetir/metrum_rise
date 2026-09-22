@@ -5,6 +5,7 @@
 ## FIXTURE reports the maximum of 24 uploads after four warmups, excluding mesh setup.
 extends SceneTree
 const Vegetation = preload("res://scripts/renderers/vegetation.gd")
+const MeshExport = preload("res://tests/vegetation_lod_measure.gd")
 const Species = preload("res://scripts/renderers/tree_species.gd")
 const SceneLightingConfig = preload("res://scripts/core/scene_lighting.gd")
 const SPAN = 510.0
@@ -24,6 +25,18 @@ class Simulation extends Node:
 	func get_vegetation_patch_generation(_key): return 0
 	func get_terrain_world_size(): return Vector2(1020, 1020)
 	func get_decorative_tree_patch(_origin, _span, _understory): return data
+# Inspect the CPU buffer during actual uploads; the dummy backend cannot read it back.
+# Used only for four pinned trees outside the timed fixture.
+class BufferProbe extends Vegetation:
+	var written := 0
+	func _ready() -> void: pass
+	func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float) -> void:
+		super._write_impostor(buffer, offset, placed, layer)
+		var expected := 1.0 if int(placed.origin.x) % 20 == 0 else 0.0
+		assert(buffer[offset + 12] == expected)
+		assert(buffer[offset + 3] == placed.origin.x)
+		written += 1
+
 func _initialize(): call_deferred("run")
 func run():
 	var host := Node3D.new()
@@ -44,6 +57,7 @@ func run():
 	var catalogue_ms := float(Time.get_ticks_usec() - catalogue_start) / 1000.0
 	var geometry := _geometry_counts(vegetation.meshes)
 	_check_geometry_budget(geometry)
+	_check_impostors(vegetation)
 	_check_crown_integral()
 	var crown_colors := _check_crown_colors(vegetation.meshes)
 	_check_birch(vegetation.meshes[Species.BROADLEAF])
@@ -91,13 +105,14 @@ func run():
 		# The levels of one species measure their visibility range from one bounds, or the
 		# complementary near and distant ranges stop and start at different distances and
 		# drop the trees in between. A single-level species keeps its own bounds. The dummy
-		# renderer reports empty multimesh bounds, so here every shared value is the engine
-		# default; the contract is that a species with two levels shares one box.
+		# renderer reports empty automatic bounds; explicit impostor bounds remain available.
 		var species_bounds: Dictionary = {}
 		var species_union: Dictionary = {}
 		for instance in patch.get_children():
 			var species: int = instance.get_meta("species")
-			var box: AABB = instance.get_aabb()
+			var box: AABB = instance.multimesh.custom_aabb
+			if box.size == Vector3.ZERO:
+				box = instance.get_aabb()
 			species_union[species] = (
 				box if not species_union.has(species) else (species_union[species] as AABB).merge(box)
 			)
@@ -121,6 +136,7 @@ func run():
 				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
 			# Only the near band carries instance colours; see the renderer's distant level.
 			assert(mm.use_colors == (lod == 0))
+			assert(mm.use_custom_data == (lod == 2))
 			resident += mm.instance_count
 			var near_band: bool = patch.get_meta("near_band")
 			var variant: int = instance.get_meta("variant")
@@ -134,14 +150,13 @@ func run():
 			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			if lod >= 2:
-				# One distant instance per species; which crown mesh it carries is the
-				# patch's distance choice, not a second instance.
+				# One shared quad and material per species, with a custom form per tree.
 				assert(lod == 2)
-				assert(mm.mesh == vegetation.meshes[species][0][patch.get_meta("distant_lod")])
+				assert(mm.mesh == Species.impostor_mesh())
+				assert(instance.material_override == Species.impostor_material(species))
 				assert(mm.instance_count == 512)
 			else:
-				# Which of the two branched levels this instance holds is the patch's
-				# distance choice, the same way the distant instance picks its crown.
+				# The near mesh remains a per-patch distance choice.
 				var detail: int = patch.get_meta("near_detail_lod") if species < Species.BUSH else 0
 				assert(mm.mesh == vegetation.meshes[species][variant][detail])
 				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
@@ -191,9 +206,14 @@ func run():
 			distant[species] = instance.multimesh
 	assert(proxies.size() == 2)
 	for species in [Species.CONIFER, Species.BROADLEAF]:
-		# The same buffer, not a copy of it: the proxy adds no transforms and no upload, and
-		# follows the distant level's mid/far mesh swap for free.
-		assert(is_same(proxies[species], distant[species]))
+		assert(not is_same(proxies[species], distant[species]))
+		assert(proxies[species].mesh == vegetation.meshes[species][0][2])
+		# Shares the impostor buffer, custom lane included, rather than copying it.
+		assert(proxies[species].use_custom_data and not proxies[species].use_colors)
+		assert(proxies[species].buffer == distant[species].buffer)
+		assert(proxies[species].instance_count == distant[species].instance_count)
+		assert(proxies[species].custom_aabb == distant[species].custom_aabb)
+	assert(proxy_patch.get_child_count() == 40)
 	# The toggle has to reach the proxy, and a silent proxy has to be hidden as well as
 	# silenced, or an OFF proxy would draw over the crown it stands inside.
 	vegetation.set_cast_shadows(false)
@@ -213,31 +233,82 @@ func run():
 	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
 	assert(far_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NONE)
-	assert(far_patch.get_meta("distant_lod") == 3)
 	assert(far_patch.get_child_count() == 2)
 	for instance in far_patch.get_children():
 		var species: int = instance.get_meta("species")
 		assert(instance.get_meta("lod") == 2)
 		assert(species == Species.CONIFER or species == Species.BROADLEAF)
-		assert(instance.multimesh.mesh == vegetation.meshes[species][0][3])
+		assert(instance.multimesh.mesh == Species.impostor_mesh())
+		assert(instance.multimesh.use_custom_data)
+		assert(instance.material_override == Species.impostor_material(species))
+		assert(instance.custom_aabb.size != Vector3.ZERO)
 		assert(instance.multimesh.instance_count == 512)
 		assert(not instance.multimesh.use_colors)
-	# Crossing back over the mid boundary swaps the mesh on the buffer already uploaded.
-	vegetation._refresh_distant_lod(far_patch, 1500.0)
-	assert(far_patch.get_meta("distant_lod") == 2)
-	for instance in far_patch.get_children():
-		assert(instance.multimesh.mesh == vegetation.meshes[instance.get_meta("species")][0][2])
-		assert(instance.multimesh.instance_count == 512)
+	# The near band must not follow the span of whichever patch uploaded last. It once did, and
+	# with the floor below the coarse diagonal every upload flipped it between 250 m and 721 m,
+	# so resident patches disagreed with their own record each frame and rebuilt without end.
+	vegetation._upload_patch(Vector3i(0, 0, Vegetation.PATCH_SUBDIVISION), SPAN / Vegetation.PATCH_SUBDIVISION)
+	var fine_near: float = vegetation.canopy_near_m()
+	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	assert(vegetation.canopy_near_m() == fine_near)
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
 	vegetation.density_fraction = 0.0
 	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
 	assert(vegetation.patches[Vector3i(0, 0, 1)].get_child_count() == 0)
 	assert(vegetation.patches[Vector3i(0, 0, 1)].get_meta("tree_count") == 0)
+	# Exercise both bucketed near uploads and the far-only placement loop with pins.
+	var probe := BufferProbe.new()
+	probe.meshes = vegetation.meshes
+	probe.set_process(false)
+	host.add_child(probe)
+	simulation.data = PackedFloat32Array([
+		10, 0, 10, 0, 1, 4, 20, 0, 10, 0, 1, 12,
+		30, 0, 10, 0, 1, 5, 40, 0, 10, 0, 1, 13,
+	])
+	for x in [0.0, 2000.0]:
+		camera.global_position = Vector3(x, 0, 0)
+		probe.written = 0
+		probe._upload_patch(Vector3i(0, 0, 1), SPAN)
+		assert(probe.written == 4)
+		assert(probe.patches[Vector3i(0, 0, 1)].get_meta("near_band") == (x == 0.0))
 	await process_frame
 	host.free()
 	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
+
+func _check_impostors(vegetation: Node3D) -> void:
+	var metadata := Species.impostor_metadata()
+	assert(metadata.frames == 8 and metadata.frame_px == 128)
+	assert(MeshExport.impostor_source_json(vegetation.meshes).sha256_text() == metadata.source_sha256,
+		"Tree impostor bake is stale: re-export and run tools/bake_tree_impostors.py")
+	assert(Species.impostor_mesh() is QuadMesh)
+	assert(Vegetation.TREE_NEAR_FLOOR_M == 250.0)
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		var material := Species.impostor_material(species)
+		assert(material == Species.impostor_material(species))
+		assert(material.shader == preload("res://scripts/shaders/vegetation_impostor.gdshader"))
+		assert(material.get_shader_parameter("impostor_radiance_match") == Species.IMPOSTOR_RADIANCE_MATCH[species])
+		assert(material.get_shader_parameter("canopy_shade_end_m") == SceneLightingConfig.shadow_max_distance_m())
+		for channel in ["albedo", "normal"]:
+			var texture: Texture2DArray = material.get_shader_parameter(channel + "_atlas")
+			assert(texture.get_layers() == 2 and texture.get_width() == 1024)
+			assert(texture.get_height() == 1024 and texture.has_mipmaps())
+		for variant in range(Species.VARIANT_COUNTS[species]):
+			var expected := 0 if variant % 3 != 2 else 1
+			assert(Species.impostor_layer(species, variant) == expected)
+			# Every brush pin overrides the seed, even in the distant placement path.
+			var pinned: int = vegetation._variant_index(species, 123456, variant + 1)
+			assert(pinned == variant and Species.impostor_layer(species, pinned) == expected)
+	# The dummy renderer discards GPU buffers. Verify the exact CPU layout before upload,
+	# with off-diagonal basis entries and translation to detect row/column transposition.
+	var buffer := PackedFloat32Array()
+	buffer.resize(32)
+	var transform := Transform3D(Basis(Vector3(1, 2, 3), Vector3(4, 5, 6), Vector3(7, 8, 9)), Vector3(10, 11, 12))
+	vegetation._write_impostor(buffer, 0, transform, 1.0)
+	vegetation._write_impostor(buffer, 16, transform.translated(Vector3(3, 4, 5)), 0.0)
+	assert(buffer.slice(0, 12) == PackedFloat32Array([1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12]))
+	assert(buffer[12] == 1.0 and buffer[28] == 0.0)
 
 func _geometry_counts(meshes: Array) -> Array:
 	var result := []
@@ -271,8 +342,7 @@ func _check_geometry_budget(counts: Array) -> void:
 			assert(levels[0][0] <= before * (2 if species < Species.BUSH else 1))
 			if species < Species.BUSH:
 				assert(levels[2][0] <= [296, 274][species])
-				assert(levels[3][0] <= [77, 92][species])
-				assert(levels[2][1] == [102, 96][species] and levels[3][1] == [28, 32][species])
+				assert(levels[2][1] == [102, 96][species])
 
 func _check_crown_cohesion(meshes: Array) -> void:
 	# Both foliage surfaces must carry volume lighting, not flat normals or random
@@ -322,7 +392,7 @@ func _check_crown_colors(meshes: Array) -> Array:
 			integral += Species._crown_integral(levels[0])
 		var mean := Vector3(integral.x, integral.y, integral.z) / integral.w
 		for levels in meshes[species]:
-			for lod in [2, 3]:
+			for lod in [2]:
 				var colors: PackedColorArray = levels[lod].surface_get_arrays(0)[Mesh.ARRAY_COLOR]
 				for color in colors:
 					if color.g > color.r:
@@ -383,15 +453,12 @@ func _check_meshes(meshes: Array) -> void:
 		assert(material.shader == preload("res://scripts/shaders/vegetation_distant.gdshader"))
 	assert(shared_distant[0].get_shader_parameter("crown_coverage")
 		!= shared_distant[1].get_shader_parameter("crown_coverage"))
-	for material in [shared_wind, shared_cards, shared_distant[0], shared_distant[1]]:
+	for material in [shared_wind, shared_cards]:
 		assert(material.get_shader_parameter("canopy_shade_end_m")
 			== SceneLightingConfig.shadow_max_distance_m())
 		assert(material.get_shader_parameter("canopy_shade_begin_m")
 			< material.get_shader_parameter("canopy_shade_end_m"))
 	var distant_code: String = shared_distant[0].shader.code
-	# No trailing semicolon: the distant crown scales this by the canopy shade term. The
-	# contract is that it still routes backlight through the shared helper on its own colour.
-	assert(distant_code.contains("BACKLIGHT = vegetation_backlight(COLOR.rgb)"))
 	assert(distant_code.contains("ALPHA_SCISSOR_THRESHOLD = 0.4;"))
 	assert(distant_code.contains("COLOR.g > COLOR.r"))
 	# Source contracts only: the dummy renderer cannot compile shaders or prove pass routing.
@@ -410,7 +477,7 @@ func _check_meshes(meshes: Array) -> void:
 		var min_height := INF
 		var max_height := 0.0
 		for levels in meshes[species]:
-			assert(levels.size() == (4 if species < Species.BUSH else 1))
+			assert(levels.size() == (3 if species < Species.BUSH else 1))
 			var bounds: AABB = levels[0].get_aabb()
 			silhouettes[bounds] = true
 			min_height = minf(min_height, bounds.size.y)

@@ -22,10 +22,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   triangles and `25.8 ms` of a close painted-stand frame. A patch picks between the two the
   way it already picks its crown, by swapping the mesh on the instance it has uploaded, so it
   costs no extra instance and no extra draw. `TREE_NEAR_DETAIL_M` is `45 m` and wants a
-  rendered sweep; past `45 m` a nearer handover buys nothing. The distant crown now lights as a
-  volume rather than a shell, so the far forest no longer darkens when the camera faces the sun:
-  the distant/near ratio went from `0.49-1.23` to `0.90-1.10` over 36 camera and sun poses. See
-  [the distant crown sweep](terrain.md#the-distant-crown-was-fitted-at-one-sun-2026-09-22),
+  rendered sweep; past `45 m` a nearer handover buys nothing. Past `250 m` every tree is now a
+  hemi-octahedral impostor baked offline from the near tree, and the lathe only casts shadows.
+  The painted stand drops from `40.0` to `23.6 ms` of GPU in the stand and from `52.0` to
+  `16.5 ms` from the air. See
+  [the impostors](terrain.md#distant-trees-are-impostors-of-the-near-tree-2026-09-22),
   [the intermediate canopy measurements](terrain.md#the-branched-tree-at-half-the-wood-is-worth-26-ms-2026-09-22) and
   [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 

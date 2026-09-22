@@ -22,34 +22,50 @@ func _initialize() -> void:
 				if lod >= 2 and variant > 0:
 					continue
 				var mesh: ArrayMesh = catalogue[species][variant][lod]
-				var surfaces := []
-				for surface in range(mesh.get_surface_count()):
-					var arrays := mesh.surface_get_arrays(surface)
-					var material := mesh.surface_get_material(surface)
-					var data := {"vertices": [], "normals": [], "colors": [], "uv": [],
-						"indices": Array(arrays[Mesh.ARRAY_INDEX]), "shader": "standard"}
-					for v in arrays[Mesh.ARRAY_VERTEX]:
-						data.vertices.append([v.x, v.y, v.z])
-					for n in arrays[Mesh.ARRAY_NORMAL]:
-						data.normals.append([n.x, n.y, n.z])
-					for c in arrays[Mesh.ARRAY_COLOR]:
-						data.colors.append([c.r, c.g, c.b, c.a])
-					if arrays[Mesh.ARRAY_TEX_UV] != null:
-						for uv in arrays[Mesh.ARRAY_TEX_UV]:
-							data.uv.append([uv.x, uv.y])
-					if material is ShaderMaterial:
-						data.shader = material.shader.resource_path.get_file()
-						data.parameters = {}
-						for uniform in material.shader.get_shader_uniform_list():
-							var value = material.get_shader_parameter(uniform.name)
-							if value is float or value is int:
-								data.parameters[uniform.name] = value
-					surfaces.append(data)
-				meshes.append({"species": species, "variant": variant, "lod": lod,
-					"surfaces": surfaces})
+				meshes.append(export_mesh(mesh, species, variant, lod))
 	var file := FileAccess.open(args[0], FileAccess.WRITE)
 	if file == null:
 		quit(3)
 		return
-	file.store_string(JSON.stringify({"build_us": build_us, "meshes": meshes}))
+	file.store_string(JSON.stringify({"build_us": build_us, "meshes": meshes,
+		"impostor_source_json": impostor_source_json(catalogue)}))
 	quit()
+
+
+## Canonical mesh payload shared by the CPU bake and the stale-bake regression.
+static func export_mesh(mesh: ArrayMesh, species: int, variant: int, lod: int) -> Dictionary:
+	var surfaces := []
+	for surface in range(mesh.get_surface_count()):
+		var arrays := mesh.surface_get_arrays(surface)
+		var material := mesh.surface_get_material(surface)
+		var data := {"vertices": [], "normals": [], "colors": [], "uv": [],
+			"indices": Array(arrays[Mesh.ARRAY_INDEX]), "shader": "standard"}
+		for v in arrays[Mesh.ARRAY_VERTEX]:
+			data.vertices.append([v.x, v.y, v.z])
+		for n in arrays[Mesh.ARRAY_NORMAL]:
+			data.normals.append([n.x, n.y, n.z])
+		for c in arrays[Mesh.ARRAY_COLOR]:
+			data.colors.append([c.r, c.g, c.b, c.a])
+		if arrays[Mesh.ARRAY_TEX_UV] != null:
+			for uv in arrays[Mesh.ARRAY_TEX_UV]:
+				data.uv.append([uv.x, uv.y])
+		if material is ShaderMaterial:
+			data.shader = material.shader.resource_path.get_file()
+			data.parameters = {}
+			for uniform in material.shader.get_shader_uniform_list():
+				var value = material.get_shader_parameter(uniform.name)
+				if value is float or value is int:
+					data.parameters[uniform.name] = value
+		surfaces.append(data)
+	var bounds := mesh.get_aabb()
+	var centre := bounds.get_center()
+	return {"species": species, "variant": variant, "lod": lod, "surfaces": surfaces,
+		"centre": [centre.x, centre.y, centre.z], "size": bounds.size.length()}
+
+## Hash the exact full-precision JSON bytes, avoiding cross-language float formatting.
+static func impostor_source_json(catalogue: Array) -> String:
+	var sources := []
+	for source in [[Species.CONIFER, 0], [Species.CONIFER, 2],
+		[Species.BROADLEAF, 0], [Species.BROADLEAF, 2]]:
+		sources.append(export_mesh(catalogue[source[0]][source[1]][0], source[0], source[1], 0))
+	return JSON.stringify(sources, "", true, true)
