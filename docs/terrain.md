@@ -668,6 +668,51 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### The distant crown was fitted at one sun (2026-09-22)
+
+A capture from altitude (`imgs/reference/game/22-09-lod-lighting-maybe.png`) shows the forest
+past the canopy switch much darker than the forest inside it. The distant level was lit, and
+it matched the near level at the one pose `vegetation_level_match_test` checked, with the sun
+behind the camera. A rendered sweep over camera elevation (20, 35, 55 and 80 degrees), sun
+elevation (15, 35 and 60 degrees) and sun azimuth relative to the view (behind the camera, to
+the side, in front of it) measured the distant/near luminance ratio at `0.49` to `1.15` for
+conifer and `0.60` to `1.23` for broadleaf. The low end is always the sun in front of the
+camera.
+
+**The near crown hardly responds to where the sun is, and the lathe does.** At a 35 degree
+camera and sun, moving the sun from behind the camera to in front of it takes the near conifer
+from `0.243` to `0.213` luminance and the distant conifer from `0.256` to `0.114`. The near
+crown is seen through: its gaps show cards on the far side of the crown, whose volume normals
+face every way. The lathe is a closed shell and shows only the half that faces the camera, so a
+camera that looks toward the sun sees the unlit half. One `DISTANT_RADIANCE_MATCH` cannot fix
+a ratio that changes by a factor of two with the view.
+
+**The distant shader now lights the crown as a volume.** It tilts the shell normals toward
+world up by `CROWN_NORMAL_LIFT` (`0.8`), which removes most of the dependence on the sun's
+azimuth. It turns specular off: with specular on and the normal fully lifted, a low sun in front of a
+low camera rendered the lathe at `1.33x` the near crown and a low sun behind it at `0.82x`. It uses `diffuse_lambert_wrap` with a per-species wrap,
+`DISTANT_CROWN_WRAP`, to match the near crown's response to sun elevation, which is flatter for
+a conifer than for a broadleaf. A grid of lift `0.5` to `1.0` and wrap `0` to `1` over the 36
+poses picked the pair with the least worst-case error: lift `0.8` for both species, wrap `0.75`
+for conifer and `0.25` for broadleaf. `DISTANT_RADIANCE_MATCH` was then refitted to centre the
+ratio, from `0.72 / 0.90` to `0.97 / 0.89`.
+
+| species | ratio before | ratio after | largest distance from 1 after |
+|---|---:|---:|---:|
+| conifer | `0.49` to `1.15` | `0.897` to `1.095` | `0.103` |
+| broadleaf | `0.60` to `1.23` | `0.919` to `1.098` | `0.098` |
+
+**The regression now checks every pose.** `vegetation_level_match_test` runs the 36 poses for
+both species at `384 px` and holds each ratio within `0.12` of one. The single-pose version
+passed the shipped shader while the back-lit ratio was `0.49`. The shader change adds one
+matrix column, one mix and one normalize per distant fragment and removes the specular term.
+It adds no vertex attribute, texture fetch, surface or draw. The mesh is unchanged.
+
+**What is left.** The remaining error follows camera elevation more than the sun: from a low
+camera the near crown shows its lit side, which a view-independent normal cannot. The next step
+is to price pulling `TREE_NEAR_FLOOR_M` in from `800 m` now that the switch should no longer
+show as a colour step.
+
 ### Card area is the near cost, and plane count is not (2026-09-21)
 
 Seen from a distance a dense stand is cheap; flown into, the same stand pins the GPU. The near

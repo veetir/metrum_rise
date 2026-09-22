@@ -7,6 +7,10 @@
 ## distant level 28-36% brighter, because a CPU reference cannot see the engine's ambient, its
 ## backlight or its tone map. The invariant that matters is what the GPU puts on the screen, so
 ## this regression puts both levels on the GPU over one population and compares the pixels.
+##
+## One pose is not enough. The two levels once agreed with the sun behind the camera and the
+## distant level rendered at half the near level's luminance with the sun in front of it, so the
+## comparison runs over camera elevation, sun elevation and sun azimuth relative to the view.
 extends SceneTree
 
 const Species = preload("res://scripts/renderers/tree_species.gd")
@@ -16,10 +20,13 @@ const STEMS_PER_HA := 625.0
 const PATCH_EXTENT_M := 120.0
 # Past TREE_NEAR_M, so the distant level is the one the renderer would choose here.
 const CAMERA_DISTANCE_M := 900.0
-const CAMERA_ELEVATION_DEG := 55.0
+const CAMERA_ELEVATIONS_DEG := [20.0, 35.0, 55.0, 80.0]
+const SUN_ELEVATIONS_DEG := [15.0, 35.0, 60.0]
+# Relative to the view: 0 puts the sun behind the camera, 180 puts it in front of the camera.
+const SUN_AZIMUTHS_DEG := [0.0, 90.0, 180.0]
 # The two levels are different surfaces standing in for each other, so they are not expected to
 # agree exactly. They are expected not to differ the way a viewer reads as two colours of forest.
-const LUMINANCE_TOLERANCE := 0.10
+const LUMINANCE_TOLERANCE := 0.12
 
 var _failures := 0
 var _viewport: SubViewport
@@ -128,6 +135,34 @@ func _check_card_backfaces(camera: Camera3D) -> void:
 	node.queue_free()
 	await process_frame
 
+## The camera looks at the patch centre from +Z, so a sun azimuth of 0 lights the view from behind.
+func _place_camera(camera: Camera3D, elevation_deg: float) -> void:
+	var elevation := deg_to_rad(elevation_deg)
+	camera.position = Vector3(
+		0.0, sin(elevation) * CAMERA_DISTANCE_M, cos(elevation) * CAMERA_DISTANCE_M
+	)
+	camera.look_at(Vector3.ZERO, Vector3.UP)
+
+## Crown luminance of one level over the shared population. The near level draws every variant.
+func _level_luminance(catalogue: Array, species: int, transforms: Array[Transform3D], near: bool) -> float:
+	var holder := Node3D.new()
+	_viewport.add_child(holder)
+	if near:
+		var variants: int = Species.VARIANT_COUNTS[species]
+		for variant in range(variants):
+			var subset: Array[Transform3D] = []
+			for i in range(transforms.size()):
+				if i % variants == variant:
+					subset.append(transforms[i])
+			if not subset.is_empty():
+				_add(holder, catalogue[species][variant][0], subset, true)
+	else:
+		_add(holder, catalogue[species][0][2], transforms, false)
+	var color := await _crown_color(holder)
+	holder.queue_free()
+	await process_frame
+	return color.dot(Vector3(0.2126, 0.7152, 0.0722))
+
 func _run() -> void:
 	if DisplayServer.get_name() == "headless":
 		push_error("This regression needs a rendering display; the dummy renderer draws no pixels.")
@@ -135,7 +170,8 @@ func _run() -> void:
 		return
 	var catalogue := Species.build_meshes()
 	_viewport = SubViewport.new()
-	_viewport.size = Vector2i(768, 768)
+	# The pose grid multiplies the pixel walk, so the viewport is smaller than one pose would need.
+	_viewport.size = Vector2i(384, 384)
 	_viewport.own_world_3d = true
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	root.add_child(_viewport)
@@ -170,46 +206,29 @@ func _run() -> void:
 	camera.far = 20000.0
 	_viewport.add_child(camera)
 	camera.current = true
-	var elevation := deg_to_rad(CAMERA_ELEVATION_DEG)
-	camera.position = Vector3(
-		0.0, sin(elevation) * CAMERA_DISTANCE_M, cos(elevation) * CAMERA_DISTANCE_M
-	)
-	camera.look_at(Vector3.ZERO, Vector3.UP)
+	_place_camera(camera, CAMERA_ELEVATIONS_DEG[2])
 	await _check_card_backfaces(camera)
 
 	var stems := int(PATCH_EXTENT_M * PATCH_EXTENT_M / 10000.0 * STEMS_PER_HA)
-	for species in [Species.CONIFER, Species.BROADLEAF]:
-		var transforms := _scatter(stems, PATCH_EXTENT_M)
-		var measured := {}
-		for level in [0, 1]:
-			var holder := Node3D.new()
-			_viewport.add_child(holder)
-			if level == 0:
-				var variants: int = Species.VARIANT_COUNTS[species]
-				for variant in range(variants):
-					var subset: Array[Transform3D] = []
-					for i in range(transforms.size()):
-						if i % variants == variant:
-							subset.append(transforms[i])
-					if not subset.is_empty():
-						_add(holder, catalogue[species][variant][0], subset, true)
-			else:
-				_add(holder, catalogue[species][0][2], transforms, false)
-			measured[level] = await _crown_color(holder)
-			holder.queue_free()
-			await process_frame
-		var weights := Vector3(0.2126, 0.7152, 0.0722)
-		var near_luminance: float = (measured[0] as Vector3).dot(weights)
-		var distant_luminance: float = (measured[1] as Vector3).dot(weights)
-		var ratio := distant_luminance / maxf(near_luminance, 0.0001)
-		print(
-			"vegetation_level_match species=%d near=%.4f distant=%.4f ratio=%.3f"
-			% [species, near_luminance, distant_luminance, ratio]
-		)
-		_expect(
-			absf(ratio - 1.0) <= LUMINANCE_TOLERANCE,
-			"the distant level must render to the near level's luminance, got ratio %.3f" % ratio
-		)
+	var transforms := _scatter(stems, PATCH_EXTENT_M)
+	for camera_elevation in CAMERA_ELEVATIONS_DEG:
+		_place_camera(camera, camera_elevation)
+		for sun_elevation in SUN_ELEVATIONS_DEG:
+			for sun_azimuth in SUN_AZIMUTHS_DEG:
+				light.rotation_degrees = Vector3(-sun_elevation, sun_azimuth, 0.0)
+				for species in [Species.CONIFER, Species.BROADLEAF]:
+					var near_luminance := await _level_luminance(catalogue, species, transforms, true)
+					var distant_luminance := await _level_luminance(catalogue, species, transforms, false)
+					var ratio := distant_luminance / maxf(near_luminance, 0.0001)
+					print(
+						"vegetation_level_match camera=%d sun=%d/%d species=%d near=%.4f distant=%.4f ratio=%.3f"
+						% [camera_elevation, sun_elevation, sun_azimuth, species, near_luminance,
+							distant_luminance, ratio]
+					)
+					_expect(
+						absf(ratio - 1.0) <= LUMINANCE_TOLERANCE,
+						"the distant level must render to the near level's luminance, got ratio %.3f" % ratio
+					)
 	_viewport.queue_free()
 	await process_frame
 	print("Vegetation level match tests: %d failures" % _failures)

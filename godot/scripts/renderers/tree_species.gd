@@ -33,7 +33,11 @@ const DISTANT_COVERAGE := [0.50, 0.82]
 # albedo, so the value is read off a sweep rather than taken as the luminance ratio itself. The
 # calibration follows the near crown's volume normals, including preserving their direction
 # on the backs of foliage cards. See `distant_radiance_match` in vegetation_distant.gdshader.
-const DISTANT_RADIANCE_MATCH := [0.72, 0.90]
+const DISTANT_RADIANCE_MATCH := [0.97, 0.89]
+# Diffuse wrap per species, conifer first. Fitted with DISTANT_RADIANCE_MATCH to the least
+# worst-case luminance error over 36 sun and camera poses. See `crown_wrap` in
+# vegetation_distant.gdshader.
+const DISTANT_CROWN_WRAP := [0.75, 0.25]
 
 # foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
 # Half-open pixel bounds within each 256x256 cell: (5,5)-(245,244),
@@ -769,6 +773,7 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
 		material.set_shader_parameter("distant_radiance_match", DISTANT_RADIANCE_MATCH[index])
+		material.set_shader_parameter("crown_wrap", DISTANT_CROWN_WRAP[index])
 		_apply_canopy_shading(material)
 		_distant_materials[index] = material
 	return _distant_materials[index]
