@@ -10,12 +10,14 @@
 ## patch grid and the near canopy band swept together over that same painted forest), E17
 ## (the near canopy band swept at the generator's own density instead) or E16
 ## (what is left in the frame once E15 has picked the grid: shadows, band and far range).
+## E18 prices the near canopy's foliage card area in one painted stand, seen from inside it.
 ## METRUM_GPU_PROBE_VIEWS selects the camera radius sweep.
 extends SceneTree
 
 # Matches the renderers' idiom. A bare SceneLighting class_name reference needs
 # Godot's global class cache, which a freshly cloned checkout has not built yet.
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const DayCycleConfig := preload("res://scripts/core/day_cycle.gd")
 
 # Mid-morning: a raking sun that produces real shadow work, rather than the flattest or the
@@ -48,6 +50,8 @@ const PAINT_PRESET := 8
 var painted_plants := 0
 var painted_extent_m := 1600.0
 var painted_ms := 0.0
+var card_catalogues: Dictionary = {}
+var card_probe_scripts: Array[GDScript] = []
 
 func _initialize() -> void:
 	call_deferred("run")
@@ -153,6 +157,14 @@ func run() -> void:
 		trials.append("eye_horizon_yaw180_off_hi")
 		trials.append("eye_horizon_yaw180_full_hi")
 		radii = [300.0]
+	elif experiment == "E18":
+		# Card fill, measured from inside the stand rather than above it. The cards are
+		# alpha scissored into the opaque pass, so their cost follows the area they cover,
+		# not the number of planes stacked behind one another.
+		paint_dense_forest()
+		prepare_card_trials()
+		trials = ["cards_original", "cards_trimmed", "cards_original_repeat"]
+		radii = [30.0]
 	elif experiment == "E17":
 		# The near band swept at the density the generator makes, not the one the brush
 		# paints. Every earlier band number came from a painted stand of about 531 stems/ha,
@@ -286,6 +298,14 @@ func run() -> void:
 				vegetation.density_fraction = 0.5 if trial.contains("half") else 1.0
 				vegetation.cast_shadows = trial.contains("shadows")
 				vegetation.rebuild_from_simulation_state()
+			elif experiment == "E18":
+				vegetation.enabled = true
+				vegetation.density_fraction = 1.0
+				vegetation.cast_shadows = true
+				vegetation.patch_subdivision_override = 4
+				vegetation.near_range_override_m = 200.0
+				vegetation.meshes = card_catalogues[trial.trim_suffix("_repeat")]
+				vegetation.rebuild_from_simulation_state()
 			elif experiment in ["E15", "E16", "E17"]:
 				vegetation.enabled = not trial.contains("_off")
 				vegetation.density_fraction = 1.0
@@ -322,7 +342,7 @@ func run() -> void:
 			camera.focus_on(trial_start_pivot(trial), camera_radius)
 			apply_far_lever(trial)
 			apply_horizon_view(trial)
-			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16"] and not await settle_view():
+			if experiment in ["E07", "E08", "E09", "E10", "E12", "E13", "E14", "E15", "E16", "E18"] and not await settle_view():
 				quit(1)
 				return
 			await create_timer(4.0).timeout
@@ -336,6 +356,9 @@ func run() -> void:
 		"godot": Engine.get_version_info(), "gpu": RenderingServer.get_video_adapter_name(),
 		"cpu": OS.get_processor_name(), "world": world, "world_sha256": FileAccess.get_sha256(world),
 		"binary_sha256": FileAccess.get_sha256("res://bin/libmetrum_rise.so"),
+		"card_shader_sha256": FileAccess.get_sha256("res://scripts/shaders/vegetation_wind_cards.gdshader"),
+		"tree_species_sha256": FileAccess.get_sha256("res://scripts/renderers/tree_species.gd"),
+		"depth_prepass_enabled": ProjectSettings.get_setting("rendering/driver/depth_prepass/enable"),
 		"probe_sha256": FileAccess.get_sha256(get_script().resource_path),
 		"experiment": OS.get_environment("METRUM_GPU_PROBE_EXPERIMENT"),
 		"views": OS.get_environment("METRUM_GPU_PROBE_VIEWS"),
@@ -520,6 +543,25 @@ func paint_dense_forest() -> void:
 	])
 	vegetation.rebuild_from_simulation_state()
 
+## The untrimmed card generator, rebuilt from the shipped source with the crop removed. The
+## comparison lives only here: production carries one card geometry, not a switch between two.
+func prepare_card_trials() -> void:
+	var source := FileAccess.get_file_as_string("res://scripts/renderers/tree_species.gd")
+	var crop_line := "var trim: Rect2 = FOLIAGE_ALPHA_RECTS[quadrant]"
+	assert(source.contains(crop_line))
+	card_catalogues["cards_trimmed"] = vegetation.meshes
+	var script := GDScript.new()
+	script.source_code = source.replace(crop_line, "var trim := Rect2(0, 0, 1, 1)")
+	assert(script.reload() == OK)
+	card_probe_scripts.append(script)
+	var meshes: Array = script.build_meshes()
+	# Hold the distant meshes fixed: the experiment isolates the near cards only.
+	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
+		for variant in range(meshes[species].size()):
+			for level in [1, 2]:
+				meshes[species][variant][level] = vegetation.meshes[species][variant][level]
+	card_catalogues["cards_original"] = meshes
+
 ## Integer a grid trial carries after `prefix`, as in "f4" or "near200". Returns zero when
 ## the trial names none, which is what both renderer overrides read as "keep the authored
 ## value" -- so `grid_off` and every non-E15 trial leave the shipped geometry alone.
@@ -530,6 +572,11 @@ func trial_grid_value(trial: String, prefix: String) -> int:
 	return 0
 
 func apply_horizon_view(trial: String) -> void:
+	if trial.begins_with("cards_"):
+		# In the painted stand, at crown height, looking into the nearest trees.
+		camera.position = pivot + Vector3(0.0, 12.0, 30.0)
+		camera.rotation = Vector3(-0.04, 0.0, 0.0)
+		return
 	if (
 		not trial.contains("horizon")
 		and not trial.begins_with("grid_")
@@ -738,8 +785,9 @@ func capture(trial: String) -> void:
 		"primitives": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 		"video_memory_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED)}
 	results.append(entry)
-	print("GPU_PROBE_RESULT %s frame=%s gpu=%s pending_frames=%d/%d resident=%d" % [
-		trial, entry.frame_ms, entry.gpu_ms, pending_frames, frames.size(), entry.resident_patches_at_end,
+	print("GPU_PROBE_RESULT %s frame=%s gpu=%s draws=%d primitives=%d pending_frames=%d/%d resident=%d" % [
+		trial, entry.frame_ms, entry.gpu_ms, entry.draw_calls, entry.primitives,
+		pending_frames, frames.size(), entry.resident_patches_at_end,
 	])
 
 ## Compass yaw in degrees from a trial that names one as "yaw090". Trials without a

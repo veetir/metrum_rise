@@ -456,7 +456,29 @@ func _check_atlas_cells() -> void:
 			var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
 			assert(uvs.size() == 18)
 			var origin := Vector2(float(seed & 1) if conifer else float(kind), 1.0 if conifer else 0.0) * 0.5
-			var corners := [origin + Vector2(0, 0.5), origin + Vector2(0.5, 0.5),
-				origin + Vector2(0.5, 0), origin]
+			var quadrant := int(origin.x * 2.0) + int(origin.y * 2.0) * 2
+			var trim: Rect2 = Species.FOLIAGE_ALPHA_RECTS[quadrant]
+			var corners := [origin + Vector2(trim.position.x, trim.end.y) * 0.5,
+				origin + trim.end * 0.5, origin + Vector2(trim.end.x, trim.position.y) * 0.5,
+				origin + trim.position * 0.5]
+			# The baked rect is only worth trusting if it still matches the atlas it was
+			# measured from, so it is checked against the alpha threshold itself.
+			var cell := Vector2i(origin * size)
+			var found := Rect2i()
+			for y in range(size / 2):
+				for x in range(size / 2):
+					if image.get_pixel(cell.x + x, cell.y + y).a >= 0.4:
+						var pixel := Rect2i(x, y, 1, 1)
+						found = pixel if not found.has_area() else found.merge(pixel)
+			assert(Rect2(found) == Rect2(trim.position * (size / 2), trim.size * (size / 2)))
+			var positions: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var axis := (Vector3.UP + Vector3.RIGHT * 0.35).normalized()
+			var top := Vector3.UP + axis
+			var bottom := Vector3.UP - axis * (0.5 if conifer else 0.72)
 			for vertex in range(18):
 				assert(uvs[vertex] == corners[[0, 2, 1, 0, 3, 2][vertex % 6]])
+				# The crop is one affine map, so a corner must sit where its own UV says.
+				var uv := (uvs[vertex] - origin) * 2.0
+				var radial := Vector3.RIGHT.cross(axis).normalized().rotated(axis,
+					Species._noise(seed, 307) * PI + float(vertex / 6) * PI / 3.0)
+				assert(positions[vertex].is_equal_approx(top.lerp(bottom, uv.y) + radial * (2.0 * uv.x - 1.0)))

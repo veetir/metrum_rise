@@ -35,6 +35,17 @@ const DISTANT_COVERAGE := [0.50, 0.82]
 # on the backs of foliage cards. See `distant_radiance_match` in vegetation_distant.gdshader.
 const DISTANT_RADIANCE_MATCH := [0.72, 0.90]
 
+# foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
+# Half-open pixel bounds within each 256x256 cell: (5,5)-(245,244),
+# (16,15)-(251,246), (8,7)-(251,221), (14,9)-(251,220).
+# UV and position use the SAME affine crop, retaining the opaque content's size/location.
+const FOLIAGE_ALPHA_RECTS := [
+	Rect2(5.0/256.0, 5.0/256.0, 240.0/256.0, 239.0/256.0),
+	Rect2(16.0/256.0, 15.0/256.0, 235.0/256.0, 231.0/256.0),
+	Rect2(8.0/256.0, 7.0/256.0, 243.0/256.0, 214.0/256.0),
+	Rect2(14.0/256.0, 9.0/256.0, 237.0/256.0, 211.0/256.0),
+]
+
 static var _material: StandardMaterial3D
 static var _wind_material: ShaderMaterial
 static var _card_material: ShaderMaterial
@@ -96,12 +107,14 @@ static func _leaf_color(conifer: bool, birch: bool) -> Color:
 
 # Sum area * mean(vertex RGB), plus area in w. Read the actual quantized mesh colours.
 # Include the whole opaque core surface (wood and foliage) plus the cards, as emitted.
-# Cards use geometric area, not alpha coverage; this is albedo, not a lighting estimate.
+# Cards retain their original geometric area for calibration; cropping empty margin must
+# not retune the distant level. This is albedo, not a lighting estimate.
 static func _crown_integral(mesh: ArrayMesh) -> Vector4:
 	var result := Vector4.ZERO
 	for surface in range(mesh.get_surface_count()):
 		var arrays := mesh.surface_get_arrays(surface)
-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var vertices: PackedVector3Array = (_uncropped_card_vertices(arrays)
+			if mesh.surface_get_material(surface) == _foliage_material() else arrays[Mesh.ARRAY_VERTEX])
 		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
 		for triangle in range(0, indices.size(), 3):
@@ -128,7 +141,7 @@ static func _crown_envelope(mesh: ArrayMesh) -> Vector3:
 		# Foliage only. The trunk runs the full height and would set the extent from bare wood.
 		if mesh.surface_get_material(surface) != _foliage_material():
 			continue
-		var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
+		var vertices := _uncropped_card_vertices(mesh.surface_get_arrays(surface))
 		for vertex in vertices:
 			# Axis-aligned, not radial. A lathe ring puts vertices on both axes, so its radius
 			# becomes the half width of the bounding box; the radial reach of a near crown is
@@ -136,6 +149,28 @@ static func _crown_envelope(mesh: ArrayMesh) -> Vector3:
 			envelope = Vector3(maxf(envelope.x, maxf(absf(vertex.x), absf(vertex.z))),
 				maxf(envelope.y, vertex.y), minf(envelope.z, vertex.y))
 	return envelope
+
+# Preserve the established distant crown calibration when removing invisible card margin.
+# Reconstruct the original four corners from the affine UV/position map, startup only,
+# O(card vertices). No extra mesh or per-frame catalogue is needed.
+static func _uncropped_card_vertices(arrays: Array) -> PackedVector3Array:
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX].duplicate()
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	for i in range(0, indices.size(), 6):
+		var a := indices[i]
+		var b := indices[i + 2]
+		var c := indices[i + 1]
+		var d := indices[i + 4]
+		var across := (vertices[b] - vertices[a]) / (uvs[b].x - uvs[a].x)
+		var down := (vertices[a] - vertices[d]) / (uvs[a].y - uvs[d].y)
+		var origin := ((uvs[a] + uvs[c]) * 0.5 * 2.0).floor() * 0.5
+		var bottom_left := vertices[a] + across * (origin.x - uvs[a].x) + down * (origin.y + 0.5 - uvs[a].y)
+		vertices[a] = bottom_left
+		vertices[b] = bottom_left + across * 0.5
+		vertices[c] = bottom_left + (across - down) * 0.5
+		vertices[d] = bottom_left - down * 0.5
+	return vertices
 
 # Distant crowns and low vegetation use ragged radius profiles; near trees distribute
 # foliage along a bounded, two-level branch skeleton.
@@ -615,15 +650,15 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 	# Top left generic broadleaf, top right birch; bottom row seeded conifer sprays.
 	var uv_origin := Vector2(float(seed & 1) if conifer else (1.0 if birch else 0.0),
 		1.0 if conifer else 0.0) * 0.5
-	var uvs := [uv_origin + Vector2(0.0, 0.5), uv_origin + Vector2(0.5, 0.5),
-		uv_origin + Vector2(0.5, 0.0), uv_origin]
+	var quadrant := int(uv_origin.x * 2.0) + int(uv_origin.y * 2.0) * 2
+	var trim: Rect2 = FOLIAGE_ALPHA_RECTS[quadrant]
+	var local_uvs := [Vector2(trim.position.x, trim.end.y), trim.end,
+		Vector2(trim.end.x, trim.position.y), trim.position]
 	for plane in range(3):
 		var radial := right.rotated(axis, phase + float(plane) * PI / 3.0)
 		var half_width := lerpf(size.x, size.z, float(plane) / 2.0)
 		var bottom := centre - axis * size.y * (0.50 if conifer else 0.72)
 		var top := centre + axis * size.y
-		var corners := [bottom - radial * half_width, bottom + radial * half_width,
-			top + radial * half_width, top - radial * half_width]
 		# Preserve the former mean albedo, but stop crossed tree cards from looking like
 		# separate bright scraps. Ground plants retain their own colour and normal treatment.
 		var face := color * 1.105 if tree_foliage else color.lerp(color * 1.35, _noise(seed + plane, 271) * 0.60)
@@ -632,7 +667,8 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 		surface.set_color(face)
 		surface.set_normal(normal)
 		for vertex in [0, 2, 1, 0, 3, 2]:
-			var position: Vector3 = corners[vertex]
+			var local_uv: Vector2 = local_uvs[vertex]
+			var position := top.lerp(bottom, local_uv.y) + radial * half_width * (2.0 * local_uv.x - 1.0)
 			if tree_foliage:
 				surface.set_normal((position - crown_centre).normalized())
 			if sway_per_m >= 0.0:
@@ -640,7 +676,7 @@ static func _foliage_cards(surface: SurfaceTool, centre: Vector3, crown_centre: 
 				position.y = maxf(position.y, 0.0)
 				face.a = clampf(position.y * sway_per_m, 0.0, 0.8)
 				surface.set_color(face)
-			surface.set_uv(uvs[vertex])
+			surface.set_uv(uv_origin + local_uv * 0.5)
 			surface.add_vertex(position)
 
 ## Spruce with swept near branches and the continuous ragged crown at distance.
