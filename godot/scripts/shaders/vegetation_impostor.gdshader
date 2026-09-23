@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled, diffuse_lambert_wrap;
+render_mode cull_disabled;
 
 #include "res://scripts/shaders/vegetation_wind.gdshaderinc"
 
@@ -13,9 +13,10 @@ uniform float impostor_radiance_match = 1.0;
 // light a whole distant crown by the one normal facing the camera, which is a closed shell,
 // and a shell halves in brightness when the camera faces the sun. The near crown is seen
 // through, so its response hardly depends on the view. Scattered texels therefore lift toward
-// up and wrap their diffuse, which is the volume response the near crown has. Both gains and
-// the specular-free material were fitted together over 36 camera and sun poses; see
-// vegetation_level_match_test.gd.
+// up and wrap their diffuse, which is the volume response the near crown has. Both gains were
+// fitted over 36 camera and sun poses; see vegetation_level_match_test.gd. Roughness stays at
+// the near crown's one, so the impostor reflects as much sky as the cards it replaces: a
+// specular-free impostor lacked that blue and read as a warmer forest than the near band.
 const float VOLUME_LIFT_GAIN = 3.0;
 const float VOLUME_WRAP_GAIN = 1.5;
 
@@ -28,6 +29,8 @@ varying flat vec2 cell2;
 varying flat vec3 weights;
 varying flat float form_layer;
 varying float canopy_light;
+varying float shadow_keep;
+varying float volume_wrap;
 
 vec3 hemi_decode(vec2 uv) {
 	vec2 p = vec2(uv.x + uv.y, uv.x - uv.y) * 0.5;
@@ -77,7 +80,9 @@ void vertex() {
 	frame_uv1 = project_frame(offset, cell1);
 	frame_uv2 = project_frame(offset, cell2);
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, distance(world, CAMERA_POSITION_WORLD));
+	float view_distance_m = distance(world, CAMERA_POSITION_WORLD);
+	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
+	shadow_keep = vegetation_shadow_keep(view_distance_m);
 }
 
 // Limit sampling to the last independent frame mip. Its coarser trilinear tap
@@ -108,11 +113,18 @@ void fragment() {
 	float spread = 1.0 - clamp(length(n), 0.0, 1.0);
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(VOLUME_LIFT_GAIN * spread, 0.0, 1.0)));
 	NORMAL = normalize(mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX * object_normal);
-	// diffuse_lambert_wrap reads its wrap from ROUGHNESS; with specular off nothing else does.
-	SPECULAR = 0.0;
 	ALBEDO = albedo.rgb * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(albedo.rgb) * canopy_light * impostor_radiance_match;
-	ROUGHNESS = clamp(VOLUME_WRAP_GAIN * spread, 0.0, 1.0);
+	ROUGHNESS = 1.0;
+	volume_wrap = clamp(VOLUME_WRAP_GAIN * spread, 0.0, 1.0);
 	ALPHA = albedo.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
+}
+
+void light() {
+	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
+	// No sun highlight. A lifted normal faces the sky, and against a low sun ahead the grazing
+	// Fresnel term lit the impostor 47% above the near crown, whose normals mostly face away.
+	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT,
+		volume_wrap);
 }

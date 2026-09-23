@@ -42,9 +42,11 @@ const SPECIES_MASK := 3
 # FOV a 15 m tree is about 42 px there (15 / 250 * 703.7). The grid floor still applies.
 const TREE_NEAR_FLOOR_M := 250.0
 # Distance beyond which a patch draws its near canopy from the reduced level, which carries
-# every foliage card and none of the interior wood: no child branch tubes, no solid tufts
-# behind the cards, four trunk sides instead of five. That is 41% to 50% of the triangles and
-# it cost 26.0 ms of a close painted-stand frame to keep. This is a per-patch mesh swap on the
+# every foliage card and none of the interior wood: no child branch tubes and no solid tufts
+# behind the cards. That was 41% to 50% of the triangles with a four-sided trunk, and it cost
+# 26.0 ms of a close painted-stand frame to keep. The trunk keeps its five sides: a four-sided
+# trunk reshaded every trunk in the patch under the camera, which was half of what the swap
+# changed on screen. This is a per-patch mesh swap on the
 # instance already uploaded, so it needs no band wider than a patch and costs no second draw.
 # At 1080p and the default 75-degree vertical FOV the projection is 703.7 px/rad, so a 15 m
 # tree covers 15 / d * 703.7 pixels: about 235 px here. Starting point for a rendered sweep.
@@ -57,7 +59,8 @@ const TREE_NEAR_DETAIL_M := 45.0
 # self-shading is not resolvable. At 120 m a 15 m tree covers 88 pixels, and this lands just
 # past the second of the four shadow cascades, so the two nearest cascades keep the correct
 # caster and the two that cover almost all of the ground take the cheap one.
-const SHADOW_PROXY_M := 120.0
+# Trees stop receiving cast shadows over the same distance, so a tree inside a proxy never sees it.
+const SHADOW_PROXY_M := TreeSpecies.TREE_SHADOW_END_M
 const TREE_FAR_M := 4500.0
 const BUSH_RANGE_M := 420.0
 const ROCK_RANGE_M := 420.0

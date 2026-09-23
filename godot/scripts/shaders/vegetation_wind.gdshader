@@ -4,6 +4,7 @@ render_mode world_vertex_coords;
 #include "res://scripts/shaders/vegetation_wind.gdshaderinc"
 
 varying float canopy_light;
+varying float shadow_keep;
 
 void vertex() {
 	// Measured before the displacement, which is bounded by half a metre and cannot change
@@ -12,6 +13,7 @@ void vertex() {
 	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, TIME,
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
+	shadow_keep = vegetation_shadow_keep(view_distance_m);
 }
 
 void fragment() {
@@ -19,4 +21,11 @@ void fragment() {
 	ALBEDO = COLOR.rgb * canopy_light;
 	ROUGHNESS = 1.0;
 	BACKLIGHT = vegetation_backlight(COLOR.rgb) * canopy_light;
+}
+
+void light() {
+	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
+	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT, 0.0);
+	SPECULAR_LIGHT += vegetation_specular_light(NORMAL, LIGHT, VIEW, LIGHT_COLOR, shadow,
+		SPECULAR_AMOUNT);
 }

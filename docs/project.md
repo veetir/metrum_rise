@@ -25,7 +25,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   rendered sweep; past `45 m` a nearer handover buys nothing. Past `250 m` every tree is now a
   hemi-octahedral impostor baked offline from the near tree, and the lathe only casts shadows.
   The painted stand drops from `40.0` to `23.6 ms` of GPU in the stand and from `52.0` to
-  `16.5 ms` from the air. See
+  `16.5 ms` from the air. Trees stop receiving cast shadows past `120 m`, where every caster
+  is a solid proxy that shadowed the trees inside it. See
+  [the shadow fade](terrain.md#trees-stop-receiving-the-shadows-of-the-proxies-they-stand-in-2026-09-23),
   [the impostors](terrain.md#distant-trees-are-impostors-of-the-near-tree-2026-09-22),
   [the intermediate canopy measurements](terrain.md#the-branched-tree-at-half-the-wood-is-worth-26-ms-2026-09-22) and
   [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).

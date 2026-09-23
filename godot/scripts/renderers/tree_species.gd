@@ -28,6 +28,12 @@ const PINE_CROWN_BARK := Color(0.360, 0.185, 0.080)
 # a surface of revolution has no depth to spare: its projected extent is already its width.
 # See docs/terrain.md for the instrument.
 const DISTANT_COVERAGE := [0.50, 0.82]
+# Distances over which trees stop receiving cast shadows; see vegetation_wind.gdshaderinc. Every
+# fragment nearer than the end belongs to a patch that casts from its own branched trees, which is
+# what vegetation.gd's SHADOW_PROXY_M reads from here. Past it the casters are lathe proxies,
+# which shadow whatever is drawn inside them.
+const TREE_SHADOW_BEGIN_M := 90.0
+const TREE_SHADOW_END_M := 120.0
 
 # foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
 # Half-open pixel bounds within each 256x256 cell: (5,5)-(245,244),
@@ -42,7 +48,7 @@ const FOLIAGE_ALPHA_RECTS := [
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
 # level's luminance. Fitted over the 36 poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [1.0, 0.97]
+const IMPOSTOR_RADIANCE_MATCH := [0.99, 0.973]
 const IMPOSTOR_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
 
 static var _material: StandardMaterial3D
@@ -386,9 +392,8 @@ static func _wind_branch_material() -> ShaderMaterial:
 		_apply_wind_visibility(_wind_material)
 	return _wind_material
 
-## Ties the canopy shading ramp to the shadow cascades. The term replaces the darkening the
-## cascades stop supplying, so it has to begin where they begin to fade and reach full strength
-## where they end. Reading the range through the accessor keeps the probe override in step.
+## Ties the canopy shading ramp to the distance trees stop receiving cast shadows. The term
+## replaces the darkening those shadows stop supplying, so both use one pair of distances.
 ## Every material is built once at startup, so this is not on a per-frame path.
 ## Vertical field of view of the player camera, in degrees. Nothing in the project assigns
 ## `Camera3D.fov`, so the camera runs on the engine default and this is that value. It feeds the
@@ -405,11 +410,8 @@ static func _apply_wind_visibility(material: ShaderMaterial) -> void:
 	)
 
 static func _apply_canopy_shading(material: ShaderMaterial) -> void:
-	var far_m := SceneLightingConfig.shadow_max_distance_m()
-	material.set_shader_parameter(
-		"canopy_shade_begin_m", far_m * SceneLightingConfig.SHADOW_FADE_START
-	)
-	material.set_shader_parameter("canopy_shade_end_m", far_m)
+	material.set_shader_parameter("tree_shadow_begin_m", TREE_SHADOW_BEGIN_M)
+	material.set_shader_parameter("tree_shadow_end_m", TREE_SHADOW_END_M)
 	material.set_shader_parameter("canopy_shade", SceneLightingConfig.canopy_shade_strength())
 
 ## One cached atlas serves every card; DDS retains the baked coverage-corrected mips.
@@ -457,7 +459,7 @@ static func _branched_tree(species: int, variant: int, level: int) -> ArrayMesh:
 	cards.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Cards face out of the crown they sit in, and a pine crown sits far higher than the rest.
 	var crown_centre := Vector3.UP * height * (0.80 if pine else (0.56 if conifer else 0.66))
-	var trunk_sides := 5 if level == 0 else 4
+	var trunk_sides := 5
 	if birch or aspen:
 		_banded_trunk(surface, height, radius, trunk_sides, variant, true, birch)
 	elif pine:

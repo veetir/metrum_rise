@@ -7,7 +7,6 @@ extends SceneTree
 const Vegetation = preload("res://scripts/renderers/vegetation.gd")
 const MeshExport = preload("res://tests/vegetation_lod_measure.gd")
 const Species = preload("res://scripts/renderers/tree_species.gd")
-const SceneLightingConfig = preload("res://scripts/core/scene_lighting.gd")
 const SPAN = 510.0
 class Terrain extends Node:
 	func get_patch_surface_generation(_key): return 7
@@ -289,7 +288,7 @@ func _check_impostors(vegetation: Node3D) -> void:
 		assert(material == Species.impostor_material(species))
 		assert(material.shader == preload("res://scripts/shaders/vegetation_impostor.gdshader"))
 		assert(material.get_shader_parameter("impostor_radiance_match") == Species.IMPOSTOR_RADIANCE_MATCH[species])
-		assert(material.get_shader_parameter("canopy_shade_end_m") == SceneLightingConfig.shadow_max_distance_m())
+		assert(material.get_shader_parameter("tree_shadow_end_m") == Vegetation.SHADOW_PROXY_M)
 		for channel in ["albedo", "normal"]:
 			var texture: Texture2DArray = material.get_shader_parameter(channel + "_atlas")
 			assert(texture.get_layers() == 2 and texture.get_width() == 1024)
@@ -453,11 +452,11 @@ func _check_meshes(meshes: Array) -> void:
 		assert(material.shader == preload("res://scripts/shaders/vegetation_distant.gdshader"))
 	assert(shared_distant[0].get_shader_parameter("crown_coverage")
 		!= shared_distant[1].get_shader_parameter("crown_coverage"))
+	# A tree stops receiving cast shadows before its patch can cast from a proxy standing in it.
 	for material in [shared_wind, shared_cards]:
-		assert(material.get_shader_parameter("canopy_shade_end_m")
-			== SceneLightingConfig.shadow_max_distance_m())
-		assert(material.get_shader_parameter("canopy_shade_begin_m")
-			< material.get_shader_parameter("canopy_shade_end_m"))
+		assert(material.get_shader_parameter("tree_shadow_end_m") == Vegetation.SHADOW_PROXY_M)
+		assert(material.get_shader_parameter("tree_shadow_begin_m")
+			< material.get_shader_parameter("tree_shadow_end_m"))
 	var distant_code: String = shared_distant[0].shader.code
 	assert(distant_code.contains("ALPHA_SCISSOR_THRESHOLD = 0.4;"))
 	assert(distant_code.contains("COLOR.g > COLOR.r"))

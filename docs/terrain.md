@@ -668,6 +668,54 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Trees stop receiving the shadows of the proxies they stand in (2026-09-23)
+
+In play the impostor build showed a bright or dark block of forest near the camera, and blocks
+that changed brightness as the camera moved. Two causes were found, and both were measured on a
+low aerial view over the painted stand (140 m up, 35 degrees down, 07:30), as the mean colour
+on each side of the `250 m` switch.
+
+**The proxy shadowed whatever stood inside it.** Past `SHADOW_PROXY_M` a patch casts from the
+lathe proxy, a solid volume where the crown stands. The near cards of a `120-250 m` patch and
+the whole quad of every impostor are drawn inside that volume, so they received its shadow.
+A patch that changed caster changed brightness, and the distant forest read darker than the
+near one. The tree shaders now use a custom `light()` that restates the engine's Lambert,
+backlight and roughness-one GGX terms, and fades the directional shadow out over
+`TREE_SHADOW_BEGIN_M` to `TREE_SHADOW_END_M` (`90-120 m`). `SHADOW_PROXY_M` reads the end of that
+fade, so every fragment that still receives a shadow sits in a patch that casts from its own
+trees. The ground still receives the proxies. The canopy shade term now fades in over the same
+`90-120 m` instead of at the cascade edge. With the fade off, the custom light matches the
+built-in light to `0.001` luminance on both sides of the switch.
+
+**The impostor was specular-free.** The near cards reflect the sky and the impostor did not,
+so the impostor forest read warmer. It now keeps roughness one, as the cards do, and takes the
+wrap through a varying. It takes no direct sun highlight: against a low sun ahead, the grazing
+Fresnel term on its lifted normals rendered it up to `1.47x` the near level. The 36-pose test
+then holds `0.893-1.118` for conifer and `0.884-1.112` for broadleaf, with
+`IMPOSTOR_RADIANCE_MATCH` refitted to `0.99 / 0.973`.
+
+| near / impostor at the switch | near | impostor |
+|---|---|---|
+| `3e761ca2` | `0.289` | `0.252` |
+| shadow fade, sky reflection, no sun highlight | `0.326` | `0.299` |
+
+**The reduced tree kept four trunk sides.** A probe renders each camera pose twice, once with
+the vegetation state of that pose and once with the state of the next pose, with the wind
+frozen. Every difference is a switch the renderer made, and nothing else. On a low pan through
+a sparse stand (35 m up, 30 steps of 4 m), the patch under the camera crossed
+`TREE_NEAR_DETAIL_M` and changed `11,687` pixels by more than `0.03` luminance. Half of that was
+the fifth trunk side, which reshaded every trunk in the patch. The reduced tree now keeps five
+sides, and the swap changes `5,460` pixels, which are thin child branches. Two alternatives were
+priced and rejected on E24. Collapsing the extra wood per tree in the vertex shader cost
+`38.7-40.5 ms` in the stand, because the collapsed vertices are still shaded. A hybrid that
+kept full detail while any patch corner was within `45 m` cost `29.3-29.5 ms`. The other
+switches on that pan fell from `2,338`, `2,607` and `6,706` pixels to `98`, `988` and `834`.
+
+E24 on the fixes: `23.8-24.1 ms` in the stand and `16.1-16.2 ms` from the air, against
+`23.6 ms` and `16.5 ms` at `3e761ca2`. A motion measurement of shadow flicker is not in this
+entry: at this texture density a `0.1 m` step already moves about a pixel, so frame differences
+do not separate shadow change from motion.
+
 ### Distant trees are impostors of the near tree (2026-09-22)
 
 The lathe fix in the next section matched the distant level's brightness, and a capture from
