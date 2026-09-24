@@ -73,6 +73,7 @@ func run():
 		await process_frame
 	var nodes := 0
 	var resident := 0
+	var proxies_seen := 0
 	var positions: Array[String] = []
 	var appearance: Array[String] = []
 	var expected_buckets := {}
@@ -121,15 +122,20 @@ func run():
 		for species in species_bounds:
 			var union: AABB = species_union[species]
 			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
-		# These patches sit inside SHADOW_PROXY_M, where the branched tree is still the
-		# caster and no proxy is built. A proxy is a solid volume standing exactly where the
-		# crown stands, so this close it shadows the foliage cards inside itself.
+		# These patches sit inside SHADOW_PROXY_M, where the branched tree is the caster. The
+		# proxy is built as well and casts only past switch_m, where the branched trees are
+		# range-culled and cast nothing: exactly one of the two casts at any distance.
 		assert(patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NEAR)
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
 			var species: int = instance.get_meta("species")
 			var lod: int = instance.get_meta("lod")
-			assert(not instance.get_meta("shadow_proxy"))
+			if instance.get_meta("shadow_proxy"):
+				assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+				assert(is_equal_approx(instance.visibility_range_begin, vegetation.canopy_switch_m(key)))
+				assert(instance.visibility_range_end == vegetation.canopy_far_m())
+				proxies_seen += 1
+				continue
 			var casts := lod == 0 and species != Species.BUSH and species != Species.ROCK
 			assert(instance.cast_shadow == (GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
@@ -163,7 +169,9 @@ func run():
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()
 	var digest := "\n".join(positions).sha256_text()
-	assert(nodes == 152 and resident == 20480)
+	# One proxy per canopy species in each of the four patches.
+	assert(proxies_seen == 8)
+	assert(nodes == 160 and resident == 20480)
 	assert(vegetation.tree_count == 16384)
 	# Crossing the detail distance swaps the near mesh on the buffer already uploaded, which
 	# is why the reduced level costs no second instance and no second draw.

@@ -711,6 +711,14 @@ priced and rejected on E24. Collapsing the extra wood per tree in the vertex sha
 kept full detail while any patch corner was within `45 m` cost `29.3-29.5 ms`. The other
 switches on that pan fell from `2,338`, `2,607` and `6,706` pixels to `98`, `988` and `834`.
 
+**A near-caster patch dropped its shadows short of the camera (2026-09-24).** A patch whose
+nearest corner is inside `SHADOW_PROXY_M` casts from its branched trees and built no proxy.
+That reaches patch centres near `210 m`, but Godot range-culls the branched trees at the
+jittered switch, measured in 3D from the shared bounds, and a range-culled instance casts
+nothing. The patch then showed impostors with no shadows until the camera closed in, and every
+shadow in it appeared at once. The proxy is now built for near-caster patches too, with the
+visibility range `(switch_m, far)` on the same shared bounds, so exactly one of the two casts.
+
 E24 on the fixes: `23.8-24.1 ms` in the stand and `16.1-16.2 ms` from the air, against
 `23.6 ms` and `16.5 ms` at `3e761ca2`. A motion measurement of shadow flicker is not in this
 entry: at this texture density a `0.1 m` step already moves about a pixel, so frame differences

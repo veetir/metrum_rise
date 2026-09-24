@@ -638,7 +638,10 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 			var bounds := AABB(low, high - low).grow(reach * sqrt(scale_squared))
 			far_mm.custom_aabb = bounds
 			_add_instance(patch, far_mm, species, 2, 0, near_band, switch_m, caster)
-			if caster == ShadowCaster.PROXY:
+			# A near-caster patch needs the proxy too. Its branched trees are range-culled past
+			# switch_m, and a range-culled instance casts nothing, so without a proxy the patch
+			# dropped every shadow until the camera closed in, then cast them all at once.
+			if caster != ShadowCaster.NONE:
 				# The same buffer, custom lane included, which the lathe shader never reads.
 				# Packed arrays are copy-on-write, so this shares the data instead of copying it.
 				var proxy := MultiMesh.new()
@@ -740,8 +743,10 @@ func _add_instance(
 	instance.visible = not is_proxy or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var range_m := lod_range(species, lod, variant, near_band, switch_m)
 	if is_proxy:
-		# Range-culled instances cannot cast, so the proxy must also cover the near band.
-		range_m = Vector2(0.0, canopy_far_m())
+		# Range-culled instances cannot cast. Behind branched casters the proxy takes over on
+		# the distance they stop on, measured from the same shared bounds, so exactly one of
+		# the two casts. Behind a cheap caster it covers the whole patch life.
+		range_m = Vector2(switch_m if caster == ShadowCaster.NEAR else 0.0, canopy_far_m())
 	# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, and
 	# the instance is a whole patch: it made every plant in a patch translucent
 	# whenever the patch centre sat in a band, however close the plant itself was,
@@ -813,7 +818,7 @@ func _shadow_setting(species: int, lod: int, is_proxy: bool, caster: int) -> int
 		return GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	if is_proxy:
 		return (GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
-			if caster == ShadowCaster.PROXY else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+			if caster != ShadowCaster.NONE else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
 	if caster == ShadowCaster.NEAR and lod == 0:
 		return GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	return GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
