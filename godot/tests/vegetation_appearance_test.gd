@@ -29,9 +29,11 @@ class Simulation extends Node:
 class BufferProbe extends Vegetation:
 	var written := 0
 	func _ready() -> void: pass
-	func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float) -> void:
-		super._write_impostor(buffer, offset, placed, layer)
-		var expected := 1.0 if int(placed.origin.x) % 20 == 0 else 0.0
+	func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float,
+		tint: Color) -> void:
+		super._write_impostor(buffer, offset, placed, layer, tint)
+		# The pins below name variants 0 and 2, and the layer is the variant.
+		var expected := 2.0 if int(placed.origin.x) % 20 == 0 else 0.0
 		assert(buffer[offset + 12] == expected)
 		assert(buffer[offset + 3] == placed.origin.x)
 		written += 1
@@ -286,7 +288,7 @@ func run():
 
 func _check_impostors(vegetation: Node3D) -> void:
 	var metadata := Species.impostor_metadata()
-	assert(metadata.frames == 8 and metadata.frame_px == 128)
+	assert(metadata.frames == 8 and metadata.frame_px == 64)
 	assert(MeshExport.impostor_source_json(vegetation.meshes).sha256_text() == metadata.source_sha256,
 		"Tree impostor bake is stale: re-export and run tools/bake_tree_impostors.py")
 	assert(Species.impostor_mesh() is QuadMesh)
@@ -299,23 +301,23 @@ func _check_impostors(vegetation: Node3D) -> void:
 		assert(material.get_shader_parameter("tree_shadow_end_m") == Vegetation.SHADOW_PROXY_M)
 		for channel in ["albedo", "normal"]:
 			var texture: Texture2DArray = material.get_shader_parameter(channel + "_atlas")
-			assert(texture.get_layers() == 2 and texture.get_width() == 1024)
-			assert(texture.get_height() == 1024 and texture.has_mipmaps())
+			# One layer per near variant, so a tree keeps its own shape across the handover.
+			assert(texture.get_layers() == Species.VARIANT_COUNTS[species])
+			assert(texture.get_width() == 512 and texture.get_height() == 512 and texture.has_mipmaps())
 		for variant in range(Species.VARIANT_COUNTS[species]):
-			var expected := 0 if variant % 3 != 2 else 1
-			assert(Species.impostor_layer(species, variant) == expected)
+			assert(metadata.forms.has(Species.impostor_form(species, variant)))
 			# Every brush pin overrides the seed, even in the distant placement path.
-			var pinned: int = vegetation._variant_index(species, 123456, variant + 1)
-			assert(pinned == variant and Species.impostor_layer(species, pinned) == expected)
+			assert(vegetation._variant_index(species, 123456, variant + 1) == variant)
 	# The dummy renderer discards GPU buffers. Verify the exact CPU layout before upload,
 	# with off-diagonal basis entries and translation to detect row/column transposition.
 	var buffer := PackedFloat32Array()
 	buffer.resize(32)
 	var transform := Transform3D(Basis(Vector3(1, 2, 3), Vector3(4, 5, 6), Vector3(7, 8, 9)), Vector3(10, 11, 12))
-	vegetation._write_impostor(buffer, 0, transform, 1.0)
-	vegetation._write_impostor(buffer, 16, transform.translated(Vector3(3, 4, 5)), 0.0)
+	vegetation._write_impostor(buffer, 0, transform, 1.0, Color(0.25, 0.5, 0.75))
+	vegetation._write_impostor(buffer, 16, transform.translated(Vector3(3, 4, 5)), 0.0, Color.WHITE)
 	assert(buffer.slice(0, 12) == PackedFloat32Array([1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12]))
-	assert(buffer[12] == 1.0 and buffer[28] == 0.0)
+	# Custom lane: variant layer, then the near tint the impostor multiplies its albedo by.
+	assert(buffer.slice(12, 16) == PackedFloat32Array([1.0, 0.25, 0.5, 0.75]) and buffer[28] == 0.0)
 
 func _geometry_counts(meshes: Array) -> Array:
 	var result := []

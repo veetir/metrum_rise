@@ -48,8 +48,10 @@ const FOLIAGE_ALPHA_RECTS := [
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
 # level's luminance. Fitted over the 36 poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [0.99, 0.973]
-const IMPOSTOR_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
+const IMPOSTOR_RADIANCE_MATCH := [0.98, 0.973]
+# One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
+# shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
+const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
 
 static var _material: StandardMaterial3D
 static var _wind_material: ShaderMaterial
@@ -94,9 +96,9 @@ static func build_meshes() -> Array:
 		meshes[species] = variants
 	return meshes
 
-## Texture-array layer for the same variant (including brush pins) as the near tree.
-static func impostor_layer(species: int, variant: int) -> int:
-	return 0 if (_is_pine(variant) if species == CONIFER else _is_birch(variant)) else 1
+## Baked form name of one near variant, as the bake tool and the texture files spell it.
+static func impostor_form(species: int, variant: int) -> String:
+	return "%s_%02d" % [IMPOSTOR_SPECIES_NAMES[species], variant]
 
 ## One quad shared by every form; the shader reconstructs its object-space vertices.
 static func impostor_mesh() -> QuadMesh:
@@ -111,7 +113,8 @@ static func impostor_metadata() -> Dictionary:
 			"res://assets/textures/vegetation/tree_impostors.json"))
 	return _impostor_metadata
 
-## Each species shares two texture arrays and one material across all resident patches.
+## Each species shares two texture arrays and one material across all resident patches. The
+## array layer is the near variant.
 static func impostor_material(species: int) -> ShaderMaterial:
 	if _impostor_materials[species] == null:
 		var metadata := impostor_metadata()
@@ -119,9 +122,9 @@ static func impostor_material(species: int) -> ShaderMaterial:
 		material.shader = preload("res://scripts/shaders/vegetation_impostor.gdshader")
 		for channel in ["albedo", "normal"]:
 			var images: Array[Image] = []
-			for form in IMPOSTOR_FORMS[species]:
-				var texture: Texture2D = load(
-					"res://assets/textures/vegetation/tree_impostor_%s_%s.dds" % [form, channel])
+			for variant in range(VARIANT_COUNTS[species]):
+				var texture: Texture2D = load("res://assets/textures/vegetation/tree_impostor_%s_%s.dds"
+					% [impostor_form(species, variant), channel])
 				images.append(texture.get_image())
 			var array := Texture2DArray.new()
 			var error := array.create_from_images(images)
@@ -129,8 +132,8 @@ static func impostor_material(species: int) -> ShaderMaterial:
 			material.set_shader_parameter(channel + "_atlas", array)
 		var centres := PackedVector3Array()
 		var sizes := PackedFloat32Array()
-		for form in IMPOSTOR_FORMS[species]:
-			var bounds: Dictionary = metadata.forms[form]
+		for variant in range(VARIANT_COUNTS[species]):
+			var bounds: Dictionary = metadata.forms[impostor_form(species, variant)]
 			centres.append(Vector3(bounds.centre[0], bounds.centre[1], bounds.centre[2]))
 			sizes.append(bounds.size)
 		material.set_shader_parameter("bounds_centre", centres)
@@ -145,7 +148,7 @@ static func _is_birch(variant: int) -> bool:
 	return variant % 3 != 2
 
 # Two of each three conifer variants are pine, which matches the order of Finnish growing
-# stock: pine leads, spruce follows. The impostor retains this form split at distance.
+# stock: pine leads, spruce follows.
 static func _is_pine(variant: int) -> bool:
 	return variant % 3 != 2
 

@@ -70,7 +70,7 @@ func _add(holder: Node3D, mesh: Mesh, transforms: Array[Transform3D], tinted: bo
 			mm.set_instance_color(i, Color.WHITE)
 		else:
 			var variant: int = i % Species.VARIANT_COUNTS[species]
-			mm.set_instance_custom_data(i, Color(float(Species.impostor_layer(species, variant)), 0, 0, 0))
+			mm.set_instance_custom_data(i, Color(float(variant), 1.0, 1.0, 1.0))
 	var node := MultiMeshInstance3D.new()
 	node.multimesh = mm
 	if not tinted:
@@ -164,7 +164,8 @@ func _level_luminance(catalogue: Array, species: int, transforms: Array[Transfor
 				if i % variants == variant:
 					subset.append(transforms[i])
 			if not subset.is_empty():
-				_add(holder, catalogue[species][variant][0], subset, true)
+				# The reduced level: it is what the impostor replaces at the switch.
+				_add(holder, catalogue[species][variant][1], subset, true)
 	else:
 		_add(holder, Species.impostor_mesh(), transforms, false, species)
 	var color := await _crown_color(holder)

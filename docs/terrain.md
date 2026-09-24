@@ -668,6 +668,25 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### One impostor per near variant (2026-09-24)
+
+Four baked forms (pine, spruce, birch, aspen) stood in for 24 near variants. A tree therefore
+became another tree at the switch: in play, a tall sparse pine drew as a dense bushy pine with
+orange bark in its crown at distance, and turned dark and sparse as the camera closed in. A
+paired render of one view with every tree branched and with every tree an impostor showed the
+two as different trees. The bake now makes one form per variant, from the reduced tree, which
+is the level the impostor replaces at the switch. The texture-array layer is the variant, and
+the custom data carries the near instance tint, which the impostor multiplies its albedo by.
+Frames drop from `128` to `64` px, so 24 forms take `65 MB` against `45 MB` for the four forms.
+A 15 m tree covers about 42 px at the `250 m` switch. The level-match test now compares against
+the reduced tree. `VOLUME_LIFT_GAIN` drops from `3.0` to `2.0` and `IMPOSTOR_RADIANCE_MATCH` is
+`0.98 / 0.973`, which holds `0.882-1.120` and `0.896-1.112` over the 36 poses.
+
+E24: `23.7-23.8 ms` in the stand, unchanged. From the air the frame costs `20.1-20.2 ms`, up from
+`16.1-16.2 ms`, with `1.33 M` more primitives and 31 more draws. The textures add no primitives:
+this is the proxy that near-caster patches now build, casting for branched trees that are
+range-culled from `350 m` up. Those patches cast no shadows at all before that fix.
+
 ### Trees stop receiving the shadows of the proxies they stand in (2026-09-23)
 
 In play the impostor build showed a bright or dark block of forest near the camera, and blocks

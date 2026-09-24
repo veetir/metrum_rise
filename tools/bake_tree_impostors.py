@@ -4,7 +4,8 @@
 
 Usage: python3 tools/bake_tree_impostors.py /tmp/tree-meshes.json
 Export with Godot's tests/vegetation_lod_measure.gd first. NumPy is the only
-non-stdlib dependency. Four independent forms run in separate worker processes.
+non-stdlib dependency. One form per near variant, baked from the reduced tree that the
+impostor replaces; forms run in separate worker processes.
 No lighting is baked. Colours are filtered in linear space and stored as sRGB;
 normals retain the authored object-space direction on both sides of a card.
 """
@@ -21,9 +22,9 @@ import numpy as np
 from bake_foliage_atlas import correct, coverage, write_dds
 from vegetation_lod_measure import ROOT, atlas_mips, prepare, sample_alpha
 
-FORMS = ("pine", "spruce", "birch", "aspen")
+SPECIES_NAMES = ("conifer", "broadleaf")
 FRAMES = 8
-FRAME_PX = 128
+FRAME_PX = 64
 
 
 def hemi_decode(uv):
@@ -190,11 +191,13 @@ def main():
     data = json.loads(args.export.read_text())
     source = data["impostor_source_json"]
     meshes = json.loads(source)
-    assert [(m["species"], m["variant"], m["lod"]) for m in meshes] == [(0, 0, 0), (0, 2, 0), (1, 0, 0), (1, 2, 0)]
+    # Form names match tree_species.gd impostor_form().
+    names = [f"{SPECIES_NAMES[m['species']]}_{m['variant']:02d}" for m in meshes]
+    assert all(m["lod"] == 1 for m in meshes) and len(set(names)) == len(names)
     args.output.mkdir(parents=True, exist_ok=True)
     with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as pool:
-        pending = [pool.submit(bake_form, form, mesh, args.output) for form, mesh in zip(FORMS, meshes)]
-        forms = {form: future.result() for form, future in zip(FORMS, pending)}
+        pending = [pool.submit(bake_form, form, mesh, args.output) for form, mesh in zip(names, meshes)]
+        forms = {form: future.result() for form, future in zip(names, pending)}
     metadata = dict(frames=FRAMES, frame_px=FRAME_PX, supersample=4,
                     source_sha256=hashlib.sha256(source.encode()).hexdigest(), forms=forms)
     (args.output / "tree_impostors.json").write_text(json.dumps(metadata, indent=2) + "\n")

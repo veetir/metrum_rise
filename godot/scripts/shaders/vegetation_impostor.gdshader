@@ -5,8 +5,9 @@ render_mode cull_disabled;
 
 uniform sampler2DArray albedo_atlas : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray normal_atlas : filter_linear_mipmap, repeat_disable;
-uniform vec3 bounds_centre[2];
-uniform float bounds_size[2];
+// One baked form per near variant; the layer is the variant.
+uniform vec3 bounds_centre[12];
+uniform float bounds_size[12];
 uniform float impostor_radiance_match = 1.0;
 // A mip texel averages the normals under it, and the bake keeps that mean unnormalized: its
 // shortfall from unit length measures how far those normals disagreed. Renormalizing it would
@@ -17,7 +18,7 @@ uniform float impostor_radiance_match = 1.0;
 // fitted over 36 camera and sun poses; see vegetation_level_match_test.gd. Roughness stays at
 // the near crown's one, so the impostor reflects as much sky as the cards it replaces: a
 // specular-free impostor lacked that blue and read as a warmer forest than the near band.
-const float VOLUME_LIFT_GAIN = 3.0;
+const float VOLUME_LIFT_GAIN = 2.0;
 const float VOLUME_WRAP_GAIN = 1.5;
 
 varying vec2 frame_uv0;
@@ -28,6 +29,7 @@ varying flat vec2 cell1;
 varying flat vec2 cell2;
 varying flat vec3 weights;
 varying flat float form_layer;
+varying flat vec3 instance_tint;
 varying float canopy_light;
 varying float shadow_keep;
 varying float volume_wrap;
@@ -53,6 +55,7 @@ vec2 project_frame(vec3 offset, vec2 cell) {
 void vertex() {
 	int layer = int(INSTANCE_CUSTOM.x);
 	form_layer = float(layer);
+	instance_tint = INSTANCE_CUSTOM.yzw;
 	vec3 centre = bounds_centre[layer];
 	vec3 camera_object = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
 	vec3 view = normalize(camera_object - centre);
@@ -85,15 +88,18 @@ void vertex() {
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 }
 
+// Pixels per baked view.
+const float FRAME_PX = 64.0;
+
 // Limit sampling to the last independent frame mip. Its coarser trilinear tap
 // determines the inset, so even a minified frame cannot sample an adjacent view.
 float frame_lod(vec2 uv) {
-	float footprint = max(length(dFdx(uv)), length(dFdy(uv))) * 128.0;
-	return clamp(log2(max(footprint, 1.0)), 0.0, 7.0);
+	float footprint = max(length(dFdx(uv)), length(dFdy(uv))) * FRAME_PX;
+	return clamp(log2(max(footprint, 1.0)), 0.0, log2(FRAME_PX));
 }
 
 vec3 atlas_uv(vec2 uv, vec2 cell, float lod) {
-	float inset = 0.5 * exp2(ceil(lod)) / 128.0;
+	float inset = 0.5 * exp2(ceil(lod)) / FRAME_PX;
 	return vec3((cell + clamp(uv, vec2(inset), vec2(1.0 - inset))) / 8.0, form_layer);
 }
 
@@ -113,8 +119,10 @@ void fragment() {
 	float spread = 1.0 - clamp(length(n), 0.0, 1.0);
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(VOLUME_LIFT_GAIN * spread, 0.0, 1.0)));
 	NORMAL = normalize(mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX * object_normal);
-	ALBEDO = albedo.rgb * canopy_light * impostor_radiance_match;
-	BACKLIGHT = vegetation_backlight(albedo.rgb) * canopy_light * impostor_radiance_match;
+	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
+	vec3 tinted = albedo.rgb * instance_tint;
+	ALBEDO = tinted * canopy_light * impostor_radiance_match;
+	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
 	volume_wrap = clamp(VOLUME_WRAP_GAIN * spread, 0.0, 1.0);
 	ALPHA = albedo.a;

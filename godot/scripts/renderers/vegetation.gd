@@ -522,7 +522,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	# placement loop needs no slot bookkeeping, index chains or scratch arrays. Appending
 	# into a local typed array is what keeps this loop cheap: routing each placement through
 	# a nested untyped Array instead cost 3.8 ms per patch on a 4096-placement fixture.
-	# Out of the near band there is one transform bucket with a packed form layer per tree.
+	# Out of the near band there is one transform bucket, with a variant and tint per tree.
 	# Work and storage remain O(placements) at upload; impostors add no per-frame CPU work.
 	var count := 0
 	for species in range(TreeSpecies.SPECIES_COUNT):
@@ -533,11 +533,12 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 		# Two placement loops rather than one loop with two branches in it. The branches
 		# would run once per placement, and per-placement interpreted work is what this
 		# function is made of: the same reason the variant index reads seed bits instead of
-		# hashing. The distant loop retains brush pins but needs no tint.
+		# hashing. The distant loop keeps brush pins and the tint, which the impostor draws too.
 		var variant_transforms: Array = []
 		var variant_tints: Array = []
 		var species_count := 0
 		var flat_layers := PackedFloat32Array()
+		var flat_tints: Array[Color] = []
 		if near_band:
 			var variant_count: int = TreeSpecies.VARIANT_COUNTS[species]
 			variant_transforms.resize(variant_count)
@@ -570,7 +571,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				var seed := _appearance_seed(data, i)
 				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
 				flat.append(_instance_transform(data, i, species, seed))
-				flat_layers.append(TreeSpecies.impostor_layer(species, variant))
+				flat_layers.append(variant)
+				flat_tints.append(_instance_tint(seed))
 			species_count = flat.size()
 			variant_transforms.append(flat)
 		if species_count == 0:
@@ -593,7 +595,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 					near_mm.set_instance_color(i, near_tints[i])
 				_add_instance(patch, near_mm, species, 0, variant, near_band, switch_m, caster)
 		# One buffer assignment per species, with transform rows followed by custom RGBA.
-		# Near buckets already encode the variant; far-only placements supply their pin's layer.
+		# Near buckets already encode the variant; far-only placements supply their own.
 		if levels.size() > 1:
 			var far_mm := MultiMesh.new()
 			far_mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -625,10 +627,13 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 			var slot := 0
 			for variant in range(variant_transforms.size()):
 				var far_transforms: Array[Transform3D] = variant_transforms[variant]
-				var layer := TreeSpecies.impostor_layer(species, variant)
+				# The near buckets are the variants themselves; out of the band one bucket holds
+				# every tree with its variant and tint alongside.
+				var far_tints: Array[Color] = variant_tints[variant] if near_band else flat_tints
 				for i in range(far_transforms.size()):
 					var placed := far_transforms[i]
-					_write_impostor(buffer, slot * 16, placed, float(layer) if near_band else flat_layers[i])
+					_write_impostor(buffer, slot * 16, placed,
+						float(variant) if near_band else flat_layers[i], far_tints[i])
 					low = low.min(placed.origin)
 					high = high.max(placed.origin)
 					scale_squared = maxf(scale_squared,
@@ -672,7 +677,9 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 
 # Godot's 3D MultiMesh buffer stores three ROWS, each ending with one origin component.
 # Packed arrays are passed by reference; this writes the preallocated buffer without a copy.
-func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float) -> void:
+# The custom lane is the texture layer, which is the near variant, then the near tint.
+func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float,
+	tint: Color) -> void:
 	buffer[offset] = placed.basis.x.x
 	buffer[offset + 1] = placed.basis.y.x
 	buffer[offset + 2] = placed.basis.z.x
@@ -686,6 +693,9 @@ func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3
 	buffer[offset + 10] = placed.basis.z.z
 	buffer[offset + 11] = placed.origin.z
 	buffer[offset + 12] = layer
+	buffer[offset + 13] = tint.r
+	buffer[offset + 14] = tint.g
+	buffer[offset + 15] = tint.b
 
 ## Gives every level in a patch one set of bounds, so they all change level on one distance.
 ## Godot measures a visibility range from the instance bounds, not from the node origin: a

@@ -65,7 +65,8 @@ static func export_mesh(mesh: ArrayMesh, species: int, variant: int, lod: int) -
 ## Hash the exact full-precision JSON bytes, avoiding cross-language float formatting.
 static func impostor_source_json(catalogue: Array) -> String:
 	var sources := []
-	for source in [[Species.CONIFER, 0], [Species.CONIFER, 2],
-		[Species.BROADLEAF, 0], [Species.BROADLEAF, 2]]:
-		sources.append(export_mesh(catalogue[source[0]][source[1]][0], source[0], source[1], 0))
+	# Every variant, from the reduced level: that is the tree the impostor replaces at the switch.
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		for variant in range(Species.VARIANT_COUNTS[species]):
+			sources.append(export_mesh(catalogue[species][variant][1], species, variant, 1))
 	return JSON.stringify(sources, "", true, true)
