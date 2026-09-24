@@ -4,14 +4,24 @@ shader_type spatial;
 // level is the impostor. Nothing here is lit or seen, so the material carries only the crown
 // coverage that shapes the shadow.
 
+#include "res://scripts/shaders/vegetation_wind.gdshaderinc"
+
 // Filtered-mask retention measured against the unchanged near crowns at 16 px.
 // Lower than the former .22 point mask; no extra surfaces or texture fetches.
 uniform float crown_coverage : hint_range(0.0, 1.0) = 0.18;
 varying vec3 crown_position;
+// Behind branched casters a proxy casts only for trees whose handover has ended, which is when
+// the branched tree stops casting; behind a cheap caster it casts for every tree. Set per patch
+// instance by vegetation.gd.
+instance uniform float cast_every_tree = 1.0;
 
 void vertex() {
 	// Object space: the hash below must follow the crown, not the world or the light.
 	crown_position = VERTEX;
+	if (cast_every_tree < 0.5
+		&& vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) < 1.0) {
+		VERTEX = vec3(0.0);
+	}
 }
 
 // Power-of-two object-space cells follow the fragment footprint.

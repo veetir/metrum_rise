@@ -33,6 +33,7 @@ varying flat vec3 instance_tint;
 varying float canopy_light;
 varying float shadow_keep;
 varying float volume_wrap;
+varying flat float crossfade;
 
 vec3 hemi_decode(vec2 uv) {
 	vec2 p = vec2(uv.x + uv.y, uv.x - uv.y) * 0.5;
@@ -86,6 +87,11 @@ void vertex() {
 	float view_distance_m = distance(world, CAMERA_POSITION_WORLD);
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
+	crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	// A tree still wholly branched draws no impostor.
+	if (crossfade <= 0.0) {
+		VERTEX = vec3(0.0);
+	}
 }
 
 // Pixels per baked view.
@@ -125,7 +131,7 @@ void fragment() {
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
 	volume_wrap = clamp(VOLUME_WRAP_GAIN * spread, 0.0, 1.0);
-	ALPHA = albedo.a;
+	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, crossfade, true) ? albedo.a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
 }
 

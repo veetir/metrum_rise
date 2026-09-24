@@ -1,3 +1,29 @@
+// Handover from the branched tree to its impostor. Each tree dissolves from one into the other
+// by its own distance, so no patch changes level as a block. Set from tree_species.gd.
+uniform float tree_crossfade_begin_m = 150.0;
+uniform float tree_crossfade_end_m = 200.0;
+
+// Share of one tree drawn as its impostor. Measured to the main camera and not the rendering
+// one, so the shadow pass hands over the same tree at the same moment as the colour pass.
+float vegetation_crossfade(vec3 tree_origin, vec3 main_camera) {
+	return smoothstep(tree_crossfade_begin_m, tree_crossfade_end_m, distance(tree_origin, main_camera));
+}
+
+// Whether this vertex is drawn for a shadow map. Only the colour pass renders from the main
+// camera; a directional shadow camera stands far off along the light.
+bool vegetation_shadow_pass(vec3 camera, vec3 main_camera) {
+	return distance(camera, main_camera) > 0.01;
+}
+
+// Whether one pixel of one representation survives the handover. The branched level keeps the
+// pixels whose threshold is at or above the impostor share and the impostor keeps the rest, so
+// together they cover each pixel once. Screen space is the only space the cards and the quad
+// share. Interleaved gradient noise spreads the threshold evenly over small pixel blocks.
+bool vegetation_crossfade_keeps(vec2 pixel, float impostor_share, bool impostor) {
+	float threshold = fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+	return impostor ? threshold < impostor_share : threshold >= impostor_share;
+}
+
 // World XZ direction; zero direction disables displacement without a normalization NaN.
 uniform vec2 wind_direction = vec2(1.0, 0.35);
 uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
@@ -44,7 +70,10 @@ float vegetation_wind_visibility(float distance_m, vec2 viewport) {
 	// Pixels one world metre covers at this depth.
 	float px_per_m = camera_projection_scale * viewport.y * 0.5 / max(distance_m, 0.001);
 	float ramp = smoothstep(WIND_FADE_MIN_PX, WIND_FADE_FULL_PX, WIND_MAX_OFFSET_M * px_per_m);
-	return pow(ramp, WIND_FADE_EXPONENT);
+	// The impostor does not sway, so the sway is gone before a tree starts to become one.
+	float before_handover = 1.0 - smoothstep(tree_crossfade_begin_m - 50.0, tree_crossfade_begin_m,
+		distance_m);
+	return pow(ramp, WIND_FADE_EXPONENT) * before_handover;
 }
 
 // O(1) per near vertex: three sine terms, no textures or inverse transforms.

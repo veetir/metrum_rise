@@ -34,6 +34,11 @@ const DISTANT_COVERAGE := [0.50, 0.82]
 # which shadow whatever is drawn inside them.
 const TREE_SHADOW_BEGIN_M := 90.0
 const TREE_SHADOW_END_M := 120.0
+# Distances over which each tree hands over from its branched level to its impostor, by its own
+# distance to the camera; see vegetation_wind.gdshaderinc. At 1080p and a 75-degree field of view
+# a 15 m tree covers 70 px at the start and 53 px at the end, against 64 px baked views.
+const TREE_CROSSFADE_M := 50.0
+const TREE_CROSSFADE_END_M := 200.0
 
 # foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
 # Half-open pixel bounds within each 256x256 cell: (5,5)-(245,244),
@@ -142,6 +147,18 @@ static func impostor_material(species: int) -> ShaderMaterial:
 		_apply_canopy_shading(material)
 		_impostor_materials[species] = material
 	return _impostor_materials[species]
+
+## Moves the handover of every tree material to end on `end_m`. The renderer calls this with its
+## own near range, so a probe override moves the shaders with the patch ranges.
+static func set_crossfade(end_m: float) -> void:
+	for material in [_wind_material, _card_material, _impostor_materials[0], _impostor_materials[1],
+		_distant_materials[0], _distant_materials[1]]:
+		if material != null:
+			_apply_crossfade(material, end_m)
+
+static func _apply_crossfade(material: ShaderMaterial, end_m: float) -> void:
+	material.set_shader_parameter("tree_crossfade_begin_m", end_m - TREE_CROSSFADE_M)
+	material.set_shader_parameter("tree_crossfade_end_m", end_m)
 
 # Two of each three broadleaf variants are birch: 0, 1, 3, 4, 6, 7, 9, 10.
 static func _is_birch(variant: int) -> bool:
@@ -413,6 +430,7 @@ static func _apply_wind_visibility(material: ShaderMaterial) -> void:
 	)
 
 static func _apply_canopy_shading(material: ShaderMaterial) -> void:
+	_apply_crossfade(material, TREE_CROSSFADE_END_M)
 	material.set_shader_parameter("tree_shadow_begin_m", TREE_SHADOW_BEGIN_M)
 	material.set_shader_parameter("tree_shadow_end_m", TREE_SHADOW_END_M)
 	material.set_shader_parameter("canopy_shade", SceneLightingConfig.canopy_shade_strength())
@@ -809,6 +827,7 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
+		_apply_crossfade(material, TREE_CROSSFADE_END_M)
 		_distant_materials[index] = material
 	return _distant_materials[index]
 

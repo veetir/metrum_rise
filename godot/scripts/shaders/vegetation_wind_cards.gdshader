@@ -7,6 +7,11 @@ uniform sampler2D foliage_mask : source_color, filter_linear_mipmap, repeat_enab
 
 varying float canopy_light;
 varying float shadow_keep;
+varying flat float crossfade;
+varying flat float dither;
+// One for canopy trees, which have impostors to hand over to. Understory shares these materials
+// and keeps its own ranges, so it stays at zero. Set per instance by vegetation.gd.
+instance uniform float hands_over = 0.0;
 
 void vertex() {
 	// Measured before the displacement, which is bounded by half a metre and cannot change
@@ -16,6 +21,16 @@ void vertex() {
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
+	crossfade = hands_over > 0.5
+		? vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) : 0.0;
+	// The shadow hands over whole at the end of the handover, to the proxy: dithering it too
+	// would draw every proxy from the start of the handover, over the whole near band.
+	dither = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz)
+		? 0.0 : crossfade;
+	// A tree fully handed over to its impostor collapses to a point and is never rasterised.
+	if (crossfade >= 1.0) {
+		VERTEX = MODEL_MATRIX[3].xyz;
+	}
 }
 
 void fragment() {
@@ -25,7 +40,7 @@ void fragment() {
 	ALBEDO = COLOR.rgb * canopy_light;
 	ROUGHNESS = 1.0;
 	BACKLIGHT = vegetation_backlight(COLOR.rgb) * canopy_light;
-	ALPHA = texture(foliage_mask, UV).a;
+	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, dither, false) ? texture(foliage_mask, UV).a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
 }
 

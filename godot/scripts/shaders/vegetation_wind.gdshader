@@ -5,6 +5,9 @@ render_mode world_vertex_coords;
 
 varying float canopy_light;
 varying float shadow_keep;
+// One for canopy trees, which have impostors to hand over to. Understory shares these materials
+// and keeps its own ranges, so it stays at zero. Set per instance by vegetation.gd.
+instance uniform float hands_over = 0.0;
 
 void vertex() {
 	// Measured before the displacement, which is bounded by half a metre and cannot change
@@ -14,6 +17,16 @@ void vertex() {
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
+	float crossfade = hands_over > 0.5
+		? vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) : 0.0;
+	// Wood takes no dither: a discard would move every trunk off the opaque fast path, and a
+	// trunk in the handover is about two pixels wide. It leaves at the middle of its tree's
+	// handover, when the impostor has drawn half the pixels and its own baked trunk. Its
+	// shadow stays to the end, where the proxy takes over, as the cards' shadow does.
+	bool shadow_pass = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	if (crossfade >= (shadow_pass ? 1.0 : 0.5)) {
+		VERTEX = MODEL_MATRIX[3].xyz;
+	}
 }
 
 void fragment() {

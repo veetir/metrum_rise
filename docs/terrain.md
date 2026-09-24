@@ -668,6 +668,41 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Each tree hands over to its impostor on its own distance (2026-09-24)
+
+Every level decision was made per patch. Godot measures a visibility range once per
+`MultiMeshInstance3D`, and a patch is `127.5 m` across, so at the switch every tree in a patch
+changed at once. A per-patch jitter only moved the staircase around. The handover now happens
+per tree, in the shaders, and the patch ranges only bound which patches take part.
+
+- Each tree's impostor share is `smoothstep(150 m, 200 m)` of its origin's distance to the main
+  camera (`TREE_CROSSFADE_END_M`, `TREE_CROSSFADE_M`). The branched cards keep the screen pixels
+  whose interleaved-gradient threshold is at or above the share, and the impostor keeps the
+  rest, so the two cover each pixel once. Screen space is the only space both surfaces share.
+- A representation whose share is spent collapses to a point in the vertex stage, so it is not
+  rasterised. Wood takes no dither: a discard would move every trunk off the opaque fast path.
+  It collapses at the middle of its tree's handover.
+- Shadows hand over whole at `200 m`, per tree: the branched tree casts until then and the proxy
+  casts after. Dithering the shadow as well drew every proxy from `60 m` and cost `2.1 ms` in the
+  stand. `cast_every_tree` keeps the proxy casting for every tree behind cheap casters.
+- Understory shares the tree materials and keeps its own ranges; `hands_over` gates the handover
+  to canopy instances.
+- Wind fades out over the `50 m` before the handover begins, because the impostor does not sway.
+- A patch draws its branched level to `canopy_near_m()` plus the farthest tree origin from the
+  centre of its shared bounds, and its impostor from the handover start less the same margin.
+  `canopy_near_m()` no longer needs to clear the patch diagonal, so the grid floor is gone.
+
+E24, GTX 1060, same method as above:
+
+| pose | per-patch switch | per-tree handover | primitives |
+|---|---:|---:|---:|
+| in the stand, crown height | `23.7-23.8 ms` | `26.3-26.7 ms` | `22.03 M` → `24.40 M` |
+| aerial, 350 m up | `20.1-20.2 ms` | `20.3-20.5 ms` | `7.22 M` → `7.21 M` |
+
+The cost in the stand is the overlap: a patch holds both levels while any of its trees is in the
+band, which is the band plus the patch reach. Stills of the dense stand from altitude and from
+crown height show no patch-shaped block. Moving-camera dither shimmer is not measured.
+
 ### One impostor per near variant (2026-09-24)
 
 Four baked forms (pine, spruce, birch, aspen) stood in for 24 near variants. A tree therefore

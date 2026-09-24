@@ -37,10 +37,6 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const SPECIES_BITS := 2
 const SPECIES_MASK := 3
 
-# The lathe needed 800 m: a smooth cone cannot replace a 53 px tree at 200 m.
-# An impostor is a picture of the tree, allowing a 250 m handover: at 1080p / 75-degree
-# FOV a 15 m tree is about 42 px there (15 / 250 * 703.7). The grid floor still applies.
-const TREE_NEAR_FLOOR_M := 250.0
 # Distance beyond which a patch draws its near canopy from the reduced level, which carries
 # every foliage card and none of the interior wood: no child branch tubes and no solid tufts
 # behind the cards. That was 41% to 50% of the triangles with a four-sided trunk, and it cost
@@ -75,13 +71,6 @@ const PATCH_HALF_DIAGONAL := 0.7071067811865476
 # instead ends every plant of one patch on one line, and a camera above the canopy reads
 # that line as a straight edge between forest floor and bare ground.
 const UNDERSTORY_STAGGER_MIN := 0.75
-# What share of the near band a patch may swap its canopy early by. The switch is a
-# per-patch decision, so on one distance every patch switches on one circle and the boundary
-# reads as a staircase of squares. Giving each patch its own
-# share of this breaks the staircase up. The offset is negative only: a patch may switch
-# early, never late, so the near band stays the conservative superset it already is, no patch
-# builds near meshes it did not build before, and the near level draws over less ground.
-const CANOPY_SWITCH_JITTER_FRACTION := 0.2
 
 # How many vegetation patches one terrain render patch is cut into along each axis. The
 # vegetation grid WAS the terrain grid, and that is what set every distance above: a patch is
@@ -104,8 +93,8 @@ var cast_shadows := true
 # Probe override for the canopy far range, in metres. Values at or below zero keep the
 # authored TREE_FAR_M. Must exceed the near range to leave a distant band.
 var far_range_override_m := 0.0
-# Probe override for the canopy near range, in metres. Values at or below zero keep the
-# range canopy_near_m() derives from the patch span.
+# Probe override for the canopy near range, in metres: the distance the handover to the
+# impostor ends on. Values at or below zero keep TreeSpecies.TREE_CROSSFADE_END_M.
 var near_range_override_m := 0.0
 # Probe override for PATCH_SUBDIVISION. Values below one keep the authored subdivision.
 var patch_subdivision_override := 0
@@ -152,14 +141,19 @@ func _ready() -> void:
 	TreeSpecies.impostor_mesh()
 	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
 		TreeSpecies.impostor_material(species)
+	TreeSpecies.set_crossfade(canopy_near_m())
 
 ## Draw range for one species level as (begin_m, end_m). `near_band` says whether the patch
-## also carries the near per-variant instances, and `switch_m` is the distance this patch
-## swaps its canopy on. `variant` staggers the understory and is ignored by the canopy. A patch built far away carries none, and then
-## the distant instance must begin at zero: it is the only thing in the patch, so a begin of
-## the near range empties the patch the moment the camera reaches that distance. The rebuild that
-## adds the near band is queued at one patch per frame, so a fast approach outruns it.
-func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: float) -> Vector2:
+## also carries the near per-variant instances, and `reach_m` is how far a tree of the patch can
+## stand from the centre of its shared bounds, which is where Godot measures a range from.
+## `variant` staggers the understory and is ignored by the canopy.
+##
+## The canopy ranges are outer bounds only. Each tree hands over from its branched level to its
+## impostor by its own distance, in the shaders (see vegetation_wind.gdshaderinc), so a patch
+## draws a level while any of its trees may still show some of it. A patch built far away
+## carries no near band, and then the impostor must begin at zero: it is the only thing in the
+## patch, and the rebuild that adds the near band can lag a fast approach.
+func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: float) -> Vector2:
 	if species == TreeSpecies.BUSH:
 		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
 	if species == TreeSpecies.ROCK:
@@ -167,9 +161,17 @@ func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: 
 	# Both branched levels ride the same instance, which is built as level zero whichever
 	# mesh it holds, so there is no second range here for the reduced one.
 	if lod == 0:
-		return Vector2(0.0, switch_m)
-	# One impostor instance per species covers the whole distant band.
-	return Vector2(switch_m if near_band else 0.0, canopy_far_m())
+		return Vector2(0.0, canopy_near_m() + reach_m)
+	return Vector2(maxf(canopy_crossfade_begin_m() - reach_m, 0.0) if near_band else 0.0,
+		canopy_far_m())
+
+## Draw range of a patch's shadow proxy. Behind branched casters it casts, tree by tree, for
+## the trees whose handover has ended, so it must be drawn wherever one may have. Behind a cheap
+## caster it casts for every tree and covers the whole patch life.
+func proxy_range(caster: int, reach_m: float) -> Vector2:
+	if caster == ShadowCaster.NEAR:
+		return Vector2(maxf(canopy_near_m() - reach_m, 0.0), canopy_far_m())
+	return Vector2(0.0, canopy_far_m())
 
 ## Share of its range one understory variant keeps. A low-discrepancy sequence rather than a
 ## hash: twelve variants then spread evenly across the band, where twelve samples of a hash
@@ -177,42 +179,21 @@ func lod_range(species: int, lod: int, variant: int, near_band: bool, switch_m: 
 func _understory_stagger(variant: int) -> float:
 	return lerpf(UNDERSTORY_STAGGER_MIN, 1.0, fmod(float(variant) * 0.6180339887498949, 1.0))
 
-## Distance at which one patch swaps its near canopy for the distant level. See
-## CANOPY_SWITCH_JITTER_FRACTION. Keyed on the patch, so a rebuild reproduces the same distance and
-## the switch does not move when a terrain edit regenerates the patch.
-func canopy_switch_m(key: Vector3i) -> float:
-	var near_m := canopy_near_m()
-	return near_m - near_m * CANOPY_SWITCH_JITTER_FRACTION * _patch_hash01(key)
-
-## Deterministic value in [0,1) for one patch key. The mix the vegetation shaders use for
-## their cell hashes. GDScript integers are 64-bit and signed, so the multiplies wrap into
-## negative values; the mask at the end is what brings the result back into range.
-func _patch_hash01(key: Vector3i) -> float:
-	var h := key.x * 374761393 + key.y * 668265263 + key.z * 2246822519
-	h = (h ^ (h >> 13)) * 1274126177
-	return float((h ^ (h >> 16)) & 0xFFFFFF) / 16777216.0
-
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
 func canopy_far_m() -> float:
 	return far_range_override_m if far_range_override_m > canopy_near_m() else TREE_FAR_M
 
-## Distance the near canopy hands its cards over to the impostor on. Derived from the
-## patch span rather than authored, because the binding constraint is the grid and not the
-## tree: the band has to stay wider than the patch diagonal or one patch straddles the
-## switch and draws the wrong level for most of what it holds. The floor is what the trees
-## themselves ask for, and a patch small enough to reach it stops paying the grid's tax.
-##
-## The span is the fine grid's, from the terrain span, and never `patch_span_m`: an upload sets
-## that to its own key's span, so it read 510 m after a coarse patch and 127.5 m after a fine
-## one. While the floor sat above both diagonals the answer did not move. Below them, the band
-## flipped between 721 m and 250 m with every upload, every patch near the switch disagreed
-## with its own record on the next frame, and the forest rebuilt itself without end.
+## Distance every tree has finished its handover to the impostor by. The handover is per tree,
+## so this no longer has to clear the patch diagonal; the patch ranges above pay for that
+## instead. It never reads `patch_span_m`: an upload sets that to its own key's span, and a
+## band read from it once flipped with every upload and rebuilt the forest without end.
 func canopy_near_m() -> float:
-	if near_range_override_m > 0.0:
-		return near_range_override_m
-	var fine_span := terrain_span_m / float(patch_subdivision())
-	return maxf(TREE_NEAR_FLOOR_M, fine_span * PATCH_HALF_DIAGONAL * 2.0)
+	return near_range_override_m if near_range_override_m > 0.0 else TreeSpecies.TREE_CROSSFADE_END_M
+
+## Distance a tree begins its handover to the impostor on.
+func canopy_crossfade_begin_m() -> float:
+	return canopy_near_m() - TreeSpecies.TREE_CROSSFADE_M
 
 ## Distance the branched tree hands over to the reduced near level. One accessor so the two
 ## bands can never disagree about where they meet.
@@ -247,6 +228,7 @@ func _fine_tier_radius() -> float:
 	return maxf(canopy_near_m(), maxf(BUSH_RANGE_M, ROCK_RANGE_M))
 
 func rebuild_from_simulation_state() -> void:
+	TreeSpecies.set_crossfade(canopy_near_m())
 	for patch in patches.values():
 		patch.queue_free()
 	patches.clear()
@@ -511,7 +493,6 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	var near_band := _near_band_wanted(distance, span)
 	var caster := _shadow_caster_wanted(distance, span)
 	var near_detail_lod := _near_detail_lod(distance)
-	var switch_m := canopy_switch_m(key)
 	var origin := Vector2(key.x, key.y) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
 	var patch := Node3D.new()
@@ -525,6 +506,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	# Out of the near band there is one transform bucket, with a variant and tint per tree.
 	# Work and storage remain O(placements) at upload; impostors add no per-frame CPU work.
 	var count := 0
+	# Tree origins of each canopy species, which is what the handover measures distance from.
+	var origins: Dictionary = {}
 	for species in range(TreeSpecies.SPECIES_COUNT):
 		var levels: Array = meshes[species][0]
 		# Bush and rock have only a near level, so out of the near band they draw nothing.
@@ -593,7 +576,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
 					near_mm.set_instance_color(i, near_tints[i])
-				_add_instance(patch, near_mm, species, 0, variant, near_band, switch_m, caster)
+				_add_instance(patch, near_mm, species, 0, variant, caster)
 		# One buffer assignment per species, with transform rows followed by custom RGBA.
 		# Near buckets already encode the variant; far-only placements supply their own.
 		if levels.size() > 1:
@@ -640,12 +623,13 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 						maxf(placed.basis.x.length_squared(), placed.basis.y.length_squared()))
 					slot += 1
 			far_mm.buffer = buffer
+			origins[species] = AABB(low, high - low)
 			var bounds := AABB(low, high - low).grow(reach * sqrt(scale_squared))
 			far_mm.custom_aabb = bounds
-			_add_instance(patch, far_mm, species, 2, 0, near_band, switch_m, caster)
-			# A near-caster patch needs the proxy too. Its branched trees are range-culled past
-			# switch_m, and a range-culled instance casts nothing, so without a proxy the patch
-			# dropped every shadow until the camera closed in, then cast them all at once.
+			_add_instance(patch, far_mm, species, 2, 0, caster)
+			# A near-caster patch needs the proxy too. Its branched trees stop casting as the
+			# handover gives them to the impostor, so without a proxy the patch dropped those
+			# shadows until the camera closed in, then cast them all at once.
 			if caster != ShadowCaster.NONE:
 				# The same buffer, custom lane included, which the lathe shader never reads.
 				# Packed arrays are copy-on-write, so this shares the data instead of copying it.
@@ -656,8 +640,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				proxy.instance_count = species_count
 				proxy.buffer = buffer
 				proxy.custom_aabb = bounds
-				_add_instance(patch, proxy, species, 2, 0, near_band, switch_m, caster, true)
-	_share_patch_bounds(patch)
+				_add_instance(patch, proxy, species, 2, 0, caster, true)
+	_share_patch_bounds(patch, near_band, caster, origins)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
 	patch.set_meta("vegetation_generation", vegetation_generation)
@@ -715,7 +699,7 @@ func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3
 ##
 ## One pass over the patch's own children, at upload, and nothing per frame. The dummy renderer
 ## reports empty automatic bounds; explicit impostor bounds also work headlessly.
-func _share_patch_bounds(patch: Node3D) -> void:
+func _share_patch_bounds(patch: Node3D, near_band: bool, caster: int, origins: Dictionary) -> void:
 	var bounds: Dictionary = {}
 	var levels: Dictionary = {}
 	for instance in patch.get_children():
@@ -733,10 +717,25 @@ func _share_patch_bounds(patch: Node3D) -> void:
 		if box.size != Vector3.ZERO and ((levels[species] as Dictionary).size() > 1
 			or instance.multimesh.use_custom_data):
 			instance.custom_aabb = box
+		# How far a tree origin stands from the box centre the range is measured from: its
+		# farthest corner. The box is padded for crowns and quads, which the handover ignores.
+		var reach := 0.0
+		if origins.has(species):
+			var spread: AABB = origins[species]
+			for corner in range(8):
+				reach = maxf(reach, spread.get_endpoint(corner).distance_to(box.get_center()))
+		var range_m: Vector2 = (proxy_range(caster, reach) if instance.get_meta("shadow_proxy")
+			else lod_range(species, int(instance.get_meta("lod")), int(instance.get_meta("variant")),
+				near_band, reach))
+		# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, which is a
+		# whole patch, and moves it out of the depth pre-pass. The canopy hands over per tree in
+		# its shaders instead, and these ranges only bound the patches that take part.
+		instance.visibility_range_begin = range_m.x
+		instance.visibility_range_end = range_m.y
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,
-	near_band: bool, switch_m: float, caster: int, is_proxy: bool = false
+	caster: int, is_proxy: bool = false
 ) -> void:
 	var instance := MultiMeshInstance3D.new()
 	instance.multimesh = mm
@@ -751,20 +750,13 @@ func _add_instance(
 	# A proxy is SHADOWS_ONLY when it casts and OFF when it does not, and OFF would let it
 	# draw over the crown it stands inside, so a silent proxy has to be hidden outright.
 	instance.visible = not is_proxy or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var range_m := lod_range(species, lod, variant, near_band, switch_m)
+	if lod == 0 and species < TreeSpecies.BUSH:
+		instance.set_instance_shader_parameter("hands_over", 1.0)
 	if is_proxy:
-		# Range-culled instances cannot cast. Behind branched casters the proxy takes over on
-		# the distance they stop on, measured from the same shared bounds, so exactly one of
-		# the two casts. Behind a cheap caster it covers the whole patch life.
-		range_m = Vector2(switch_m if caster == ShadowCaster.NEAR else 0.0, canopy_far_m())
-	# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, and
-	# the instance is a whole patch: it made every plant in a patch translucent
-	# whenever the patch centre sat in a band, however close the plant itself was,
-	# and it moved the geometry out of the depth pre-pass to do it. The bands above
-	# are now wider than a patch, so the switch is a step at a distance where one
-	# patch changing silhouette is not readable.
-	instance.visibility_range_begin = range_m.x
-	instance.visibility_range_end = range_m.y
+		# Behind branched casters the proxy casts only for trees the handover has given to
+		# the impostor; behind a cheap caster it casts for all of them.
+		instance.set_instance_shader_parameter("cast_every_tree",
+			1.0 if caster == ShadowCaster.PROXY else 0.0)
 	patch.add_child(instance)
 
 ## Near mesh choice. A brush that plants one named tree passes a `pin` biased by one and that

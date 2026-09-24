@@ -125,8 +125,8 @@ func run():
 			var union: AABB = species_union[species]
 			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
 		# These patches sit inside SHADOW_PROXY_M, where the branched tree is the caster. The
-		# proxy is built as well and casts only past switch_m, where the branched trees are
-		# range-culled and cast nothing: exactly one of the two casts at any distance.
+		# proxy is built as well and casts, tree by tree, the share of each tree the handover has
+		# given to the impostor: the two casters split every tree between them.
 		assert(patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NEAR)
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
@@ -134,8 +134,12 @@ func run():
 			var lod: int = instance.get_meta("lod")
 			if instance.get_meta("shadow_proxy"):
 				assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
-				assert(is_equal_approx(instance.visibility_range_begin, vegetation.canopy_switch_m(key)))
+				# Drawn from where the first of its trees can have ended its handover.
+				assert(instance.visibility_range_begin <= vegetation.canopy_near_m())
+				assert(instance.visibility_range_begin >= vegetation.canopy_near_m()
+					- instance.custom_aabb.size.length() * 0.5)
 				assert(instance.visibility_range_end == vegetation.canopy_far_m())
+				assert(instance.get_instance_shader_parameter("cast_every_tree") == 0.0)
 				proxies_seen += 1
 				continue
 			var casts := lod == 0 and species != Species.BUSH and species != Species.ROCK
@@ -147,14 +151,26 @@ func run():
 			resident += mm.instance_count
 			var near_band: bool = patch.get_meta("near_band")
 			var variant: int = instance.get_meta("variant")
-			# The understory staggers its cutoff by variant and the canopy switches on a
-			# distance this patch keeps, so both arguments come from the instance, not from
-			# the constants. See CANOPY_SWITCH_JITTER_M and UNDERSTORY_STAGGER_MIN.
-			var expected := vegetation.lod_range(
-				species, lod, variant, near_band, vegetation.canopy_switch_m(key)
-			)
-			assert(instance.visibility_range_begin == expected.x)
-			assert(instance.visibility_range_end == expected.y)
+			# The understory staggers its cutoff by variant. A canopy range reaches past the
+			# handover by how far a tree origin stands from the centre of the shared bounds,
+			# which is at most half their diagonal.
+			var half: float = instance.custom_aabb.size.length() * 0.5
+			if species >= Species.BUSH:
+				assert(Vector2(instance.visibility_range_begin, instance.visibility_range_end)
+					== vegetation.lod_range(species, lod, variant, near_band, 0.0))
+			elif lod == 0:
+				assert(instance.visibility_range_begin == 0.0)
+				assert(instance.visibility_range_end >= vegetation.canopy_near_m())
+				assert(instance.visibility_range_end <= vegetation.canopy_near_m() + half)
+			else:
+				var begin: float = vegetation.canopy_crossfade_begin_m()
+				assert(instance.visibility_range_begin <= begin)
+				assert(instance.visibility_range_begin >= begin - half)
+				assert(instance.visibility_range_end == vegetation.canopy_far_m())
+			# Only canopy trees hand over; the understory shares their materials and does not.
+			if lod == 0:
+				assert(instance.get_instance_shader_parameter("hands_over")
+					== (1.0 if species < Species.BUSH else null))
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			if lod >= 2:
 				# One shared quad and material per species, with a custom form per tree.
@@ -193,7 +209,9 @@ func run():
 	# one shadows-only lathe instance per canopy species. The patch is still in the near
 	# band here, which is the case the proxy exists for: the branched trees are drawn and
 	# something cheaper casts for them.
-	camera.global_position = Vector3(345.0, 0.0, -255.0)
+	# 520 m from the patch centre: past SHADOW_PROXY_M from its nearest corner, and inside the
+	# near band, which reaches the patch half-diagonal past canopy_near_m().
+	camera.global_position = Vector3(265.0, 0.0, -255.0)
 	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
 	var proxy_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(proxy_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.PROXY)
@@ -206,8 +224,9 @@ func run():
 			assert(species == Species.CONIFER or species == Species.BROADLEAF)
 			assert(not proxies.has(species))
 			assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
-			# A range-culled instance does not cast, so the proxy covers the whole patch life.
+			# Behind cheap casters the proxy casts every tree for the whole patch life.
 			assert(instance.visibility_range_begin == 0.0)
+			assert(instance.get_instance_shader_parameter("cast_every_tree") == 1.0)
 			proxies[species] = instance.multimesh
 			continue
 		assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
@@ -292,7 +311,7 @@ func _check_impostors(vegetation: Node3D) -> void:
 	assert(MeshExport.impostor_source_json(vegetation.meshes).sha256_text() == metadata.source_sha256,
 		"Tree impostor bake is stale: re-export and run tools/bake_tree_impostors.py")
 	assert(Species.impostor_mesh() is QuadMesh)
-	assert(Vegetation.TREE_NEAR_FLOOR_M == 250.0)
+	assert(vegetation.canopy_near_m() == Species.TREE_CROSSFADE_END_M)
 	for species in [Species.CONIFER, Species.BROADLEAF]:
 		var material := Species.impostor_material(species)
 		assert(material == Species.impostor_material(species))
@@ -473,7 +492,7 @@ func _check_meshes(meshes: Array) -> void:
 	# Source contracts only: the dummy renderer cannot compile shaders or prove pass routing.
 	var card_code: String = shared_cards.shader.code
 	assert(card_code.contains("render_mode world_vertex_coords, cull_disabled;"))
-	assert(card_code.contains("ALPHA = texture(foliage_mask, UV).a;"))
+	assert(card_code.contains("? texture(foliage_mask, UV).a : 0.0;"))
 	assert(card_code.contains("ALPHA_SCISSOR_THRESHOLD = 0.4;"))
 	for code in [shared_wind.shader.code, card_code, distant_code]:
 		for forbidden in ["blend_", "depth_draw_", "depth_prepass_alpha", "depth_test_",
