@@ -128,7 +128,10 @@ impl SimulationNode {
         generations.as_slice() == land_cover::generations(&self.lock_core(), key)
     }
 
-    /// Returns scatter records `[local x, height, local z, yaw, scale, species]` for a patch.
+    /// Returns scatter records `[x, height, z, yaw, scale, species]` for a patch, in world
+    /// coordinates. The renderer draws one plant from patches of more than one size, and its
+    /// cosmetic seed is keyed on the position it receives here; a position relative to the patch
+    /// gave the same plant a different form in each.
     ///
     /// Species are 0 conifer, 1 broadleaf, 2 bush, 3 rock. Both grids are sized by the world's
     /// saved [`VegetationGenerator`], so the same save generates the same plants everywhere. The
@@ -674,9 +677,9 @@ pub(super) fn scatter_layer(
             }
             let y = core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE;
             packed.extend_from_slice(&[
-                x - origin.x,
+                x,
                 y - 0.25,
-                z - origin.y,
+                z,
                 yaw,
                 scale,
                 pack_species_variant(species, variant),

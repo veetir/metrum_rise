@@ -17,14 +17,22 @@ fn scatter(core: &SimCore, canopy: bool) -> Vec<f32> {
         VegetationLayer::Understory
     };
     let (cell_m, _) = grid(core, layer);
-    scatter_layer(
+    let origin = Vector2::new(-255.0, -255.0);
+    // Relative to the patch, which is what every assertion here was written against. The
+    // f32 subtraction is the one the packing itself did before it packed world positions.
+    let mut records = scatter_layer(
         core,
-        Vector2::new(-255.0, -255.0),
+        origin,
         510.0,
         cell_m,
         if canopy { CANOPY_SALT } else { UNDERSTORY_SALT },
         canopy,
-    )
+    );
+    for record in records.chunks_exact_mut(6) {
+        record[0] -= origin.x;
+        record[2] -= origin.y;
+    }
+    records
 }
 
 fn first_candidate(core: &SimCore, accepted: bool) -> Plant {
@@ -193,7 +201,7 @@ fn vegetation_authored_boundary_plant_belongs_to_exactly_one_patch_even_when_dis
     assert!(query(left).is_empty());
     let records = query(right);
     assert_eq!(records.len(), 6);
-    assert_eq!(records[0], 0.0);
+    assert_eq!(records[0], 3.25);
     assert_eq!(records[5], 2.0);
 }
 

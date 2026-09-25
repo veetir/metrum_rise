@@ -23,7 +23,13 @@ class Simulation extends Node:
 			data[i*6+5] = [0, 1, 2, 2, 2, 2, 3, 3][i % 8]
 	func get_vegetation_patch_generation(_key): return 0
 	func get_terrain_world_size(): return Vector2(1020, 1020)
-	func get_decorative_tree_patch(_origin, _span, _understory): return data
+	# Rust packs world positions; the fixture is authored relative to the patch it is fetched for.
+	func get_decorative_tree_patch(origin, _span, _understory):
+		var world := data.duplicate()
+		for i in range(0, world.size(), 6):
+			world[i] += origin.x
+			world[i + 2] += origin.y
+		return world
 # Inspect the CPU buffer during actual uploads; the dummy backend cannot read it back.
 # Used only for four pinned trees outside the timed fixture.
 class BufferProbe extends Vegetation:
@@ -78,7 +84,6 @@ func run():
 	var proxies_seen := 0
 	var positions: Array[String] = []
 	var appearance: Array[String] = []
-	var expected_buckets := {}
 	# The headless dummy renderer does not retain uploaded transforms/colours. Check
 	# deterministic inputs here and validate actual bucket populations on the nodes.
 	for offset in range(0, simulation.data.size(), 6):
@@ -91,15 +96,24 @@ func run():
 		assert(minf(tint.r, minf(tint.g, tint.b)) >= 0.90)
 		assert(maxf(tint.r, maxf(tint.g, tint.b)) <= 1.10)
 		assert(variant >= 0 and variant < Species.VARIANT_COUNTS[species])
-		var t: Transform3D = vegetation._instance_transform(simulation.data, offset, species, seed)
+		var t: Transform3D = vegetation._instance_transform(simulation.data, offset, species, seed, Vector2.ZERO)
 		var expected := Vector3(simulation.data[offset], simulation.data[offset + 1], simulation.data[offset + 2])
 		assert(var_to_bytes(t.origin) == var_to_bytes(expected))
 		positions.append(var_to_bytes([species, t.origin]).hex_encode())
 		appearance.append(var_to_bytes([t.origin, species, variant, tint]).hex_encode())
-		var bucket := Vector2i(species, variant)
-		expected_buckets[bucket] = int(expected_buckets.get(bucket, 0)) + 1
 	for key in vegetation.patches:
 		var patch: Node3D = vegetation.patches[key]
+		# Seeds are keyed on world position, so each patch of the one fixture splits its
+		# variants differently.
+		var expected_buckets := {}
+		var world_data: PackedFloat32Array = simulation.get_decorative_tree_patch(
+			Vector2(key.x, key.y) * SPAN - simulation.get_terrain_world_size() * 0.5, SPAN, true)
+		for offset in range(0, world_data.size(), 6):
+			var packed := int(world_data[offset + 5])
+			var species := packed & Vegetation.SPECIES_MASK
+			var bucket := Vector2i(species, vegetation._variant_index(species,
+				vegetation._appearance_seed(world_data, offset), packed >> Vegetation.SPECIES_BITS))
+			expected_buckets[bucket] = int(expected_buckets.get(bucket, 0)) + 1
 		nodes += patch.get_child_count()
 		assert(patch.get_meta("surface_generation") == 7)
 		assert(patch.get_meta("understory"))

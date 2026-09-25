@@ -540,7 +540,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 					continue
 				var seed := _appearance_seed(data, i)
 				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
-				variant_transforms[variant].append(_instance_transform(data, i, species, seed))
+				variant_transforms[variant].append(_instance_transform(data, i, species, seed, origin))
 				variant_tints[variant].append(_instance_tint(seed))
 				species_count += 1
 		else:
@@ -553,7 +553,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 					continue
 				var seed := _appearance_seed(data, i)
 				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
-				flat.append(_instance_transform(data, i, species, seed))
+				flat.append(_instance_transform(data, i, species, seed, origin))
 				flat_layers.append(variant)
 				flat_tints.append(_instance_tint(seed))
 			species_count = flat.size()
@@ -778,18 +778,22 @@ func _instance_tint(appearance_seed: int) -> Color:
 	var warmth := lerpf(-0.035, 0.035, float((appearance_seed >> 27) & 0xFFF) / 4096.0)
 	return Color(value * (1.0 + warmth), value, value * (1.0 - warmth), 1.0)
 
-## Default cosmetic seed from packed placement; never feeds simulation state.
+## Default cosmetic seed from packed placement; never feeds simulation state. Keyed on the world
+## position Rust packs, not on one relative to the patch: one plant is drawn by a fine patch near
+## the camera and by a coarse one farther out, and a patch-relative key gave it a different form,
+## size and tint in each, so a whole terrain patch of trees changed as it crossed the fine radius.
 func _appearance_seed(data: PackedFloat32Array, i: int) -> int:
 	return hash(Vector2(data[i], data[i + 2]))
 
 ## Per-instance appearance. Yaw alone is nearly invisible on a near-symmetric lathe, so the
 ## variation that reads is the height/width ratio and a small lean off vertical.
 ## A caller can reroll those proportions with a different seed at the same placement.
+## `origin` is the patch origin the transform is made relative to.
 func _instance_transform(
-	data: PackedFloat32Array, i: int, species: int, appearance_seed: int
+	data: PackedFloat32Array, i: int, species: int, appearance_seed: int, origin: Vector2
 ) -> Transform3D:
-	var x := data[i]
-	var z := data[i + 2]
+	var x := data[i] - origin.x
+	var z := data[i + 2] - origin.y
 	var scale := data[i + 4]
 	# The four jitters below are the old _jitter() helper written out. Each of them ran once
 	# per placement, and the call alone cost 2.6 ms per patch on a 4096-placement fixture --

@@ -668,6 +668,25 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### A tree keeps its form across the patch grids (2026-09-25)
+
+A terrain patch is drawn as sixteen `127.5 m` vegetation patches inside the fine radius and as
+one `510 m` patch past it. Rust packed each plant relative to the patch it was fetched for, and
+the renderer keyed the cosmetic seed of a plant on that position: variant, tint, height, width
+and lean. The same plant therefore had one form in the fine patch and another in the coarse one,
+and every tree of a terrain patch changed form at once when the patch crossed the fine radius,
+about `420 m` out. In play that reads as a block of trees switching to similar trees.
+
+`get_decorative_tree_patch` now packs world positions, and the renderer subtracts the patch
+origin for the transform. The seed and the density subset read the world position, which is the
+same bits in both grids. A same-pose probe renders one pose with the vegetation state of the
+previous pose and with its own, wind frozen, along a `320 m` sideways flight at `150 m` over
+the Kuopio forest in `8 m` steps. The two grid changes on that path changed `9405` and `670`
+pixels before and `5` and `7` after. What still changes on that path: the per-patch shadow
+caster switch at `SHADOW_PROXY_M` (up to `668` pixels in one step), and the understory, which is
+built only in near-band patches and so ends at the near-band patch edge (`100-200` pixels of
+rocks and bushes per step), short of its own `420 m` range.
+
 ### Each tree hands over to its impostor on its own distance (2026-09-24)
 
 Every level decision was made per patch. Godot measures a visibility range once per
