@@ -22,6 +22,7 @@ signal patches_will_reset
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
@@ -999,6 +1000,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	)
 	SceneLightingConfig.apply_ground_shadow_parameters(material)
 	SceneLightingConfig.apply_canopy_floor_shading(material)
+	TreeSpecies.apply_far_canopy(material)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))

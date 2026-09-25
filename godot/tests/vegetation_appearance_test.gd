@@ -180,7 +180,8 @@ func run():
 				var begin: float = vegetation.canopy_crossfade_begin_m()
 				assert(instance.visibility_range_begin <= begin)
 				assert(instance.visibility_range_begin >= begin - half)
-				assert(instance.visibility_range_end == vegetation.canopy_far_m())
+				assert(instance.visibility_range_end >= vegetation.canopy_far_m())
+				assert(instance.visibility_range_end <= vegetation.canopy_far_m() + half)
 			# Only canopy trees hand over; the understory shares their materials and does not.
 			if lod == 0:
 				assert(instance.get_instance_shader_parameter("hands_over")

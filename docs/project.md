@@ -31,7 +31,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   now keeps its form when its terrain patch changes between the fine and the coarse patch grid,
   and changes its shadow caster by its own distance rather than its patch's. The impostor is
   now lit by each tree's own yaw; see
-  [the impostor lighting](terrain.md#each-impostor-is-lit-by-its-own-yaw-2026-09-25).
+  [the impostor lighting](terrain.md#each-impostor-is-lit-by-its-own-yaw-2026-09-25). Past
+  `4.5 km` the ground stands in for the trees at their seen density; see
+  [the far range](terrain.md#the-ground-stands-in-for-the-trees-past-the-far-range-2026-09-25).
   See [the grid fix](terrain.md#a-tree-keeps-its-form-across-the-patch-grids-2026-09-25),
   [the per-tree handover](terrain.md#each-tree-hands-over-to-its-impostor-on-its-own-distance-2026-09-24),
   [the shadow fade](terrain.md#trees-stop-receiving-the-shadows-of-the-proxies-they-stand-in-2026-09-23),

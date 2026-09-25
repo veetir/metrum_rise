@@ -668,7 +668,33 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
-### Each impostor is lit by its own yaw (2026-09-25)
+### The ground stands in for the trees past the far range (2026-09-25)
+
+Past `TREE_FAR_M` (`4500 m`) no tree is drawn, and the only trace of a stand was the forest-floor
+hue and the floor shade, both weighted by the published crown coverage: the share of the ground
+the crowns cover seen from above. A far stand is seen at a few degrees, where crowns hide far more
+ground than they cover from above, so in play an island that read as forest turned pale meadow
+when the camera pulled back past it (`imgs/reference/game/25-09-far-away-*.png`). The patch
+visibility range also ended the trees a whole coarse patch at a time.
+
+The terrain shader now mixes the ground toward one crown albedo by the share of each sight line a
+random stand of that coverage stops: a sight line at elevation angle `a` reaches the ground with
+probability `(1 - cover) ^ (1 + side_ratio * cot(a))`, where `side_ratio` is a crown's side
+area over its top area. The term fades in over `4000-4500 m` while each impostor dissolves by its
+own distance over the same band, with the same screen-space threshold as the handover, and the
+impostor range reaches past `TREE_FAR_M` by the patch reach so the trees dissolve instead of
+ending with their patch. `CANOPY_FAR_SIDE_RATIO` is `1.0` and `CANOPY_FAR_ALBEDO` is the mean
+baked impostor albedo after canopy shade and radiance match, `(0.12, 0.13, 0.045)`.
+
+Calibration moved the tree range to `1500 m` so the term covered most of the view, and compared
+it with the same view with trees drawn to `12 km`, on `16 px` tiles that the trees change, from
+`700 m` up at `16 degrees` down and from `300 m` up at `7 degrees`. Without the term the ground
+there was `12.3%` and `16.4%` brighter than the trees; with it, `-1.5%` and `+1.5%`, while tiles
+without trees moved by `0.002` luminance or less. A side ratio of `2` already reads `7%` dark.
+At the shipped range from the same poses the error on the tiles past it falls from `2.8%` to
+`1.6%` and from `2.3%` to `1.9%`; those poses hold only `9-13` such tiles. GPU p50 at those two
+far poses on the GTX 1060, same session: `6.14` to `6.16 ms` and `7.53` to `7.52-7.57 ms`.
+
 
 In play a birch changed its lighting as it handed over, from a crown lit on one side to one lit
 on the other. A same-pose render in the game, every tree near against every tree an impostor,

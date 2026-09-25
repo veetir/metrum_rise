@@ -57,7 +57,7 @@ const TREE_NEAR_DETAIL_M := 45.0
 # caster and the two that cover almost all of the ground take the cheap one.
 # Trees stop receiving cast shadows over the same distance, so a tree inside a proxy never sees it.
 const SHADOW_PROXY_M := TreeSpecies.TREE_SHADOW_END_M
-const TREE_FAR_M := 4500.0
+const TREE_FAR_M := TreeSpecies.TREE_FAR_M
 const BUSH_RANGE_M := 420.0
 const ROCK_RANGE_M := 420.0
 # Half the diagonal of a square patch, per metre of span. A patch is one instance, so every
@@ -142,6 +142,7 @@ func _ready() -> void:
 	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
 		TreeSpecies.impostor_material(species)
 	TreeSpecies.set_crossfade(canopy_near_m())
+	TreeSpecies.set_far(canopy_far_m())
 
 ## Draw range for one species level as (begin_m, end_m). `near_band` says whether the patch
 ## also carries the near per-variant instances, and `reach_m` is how far a tree of the patch can
@@ -162,8 +163,9 @@ func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: f
 	# mesh it holds, so there is no second range here for the reduced one.
 	if lod == 0:
 		return Vector2(0.0, canopy_near_m() + reach_m)
+	# Each tree dissolves by its own distance before canopy_far_m, so the patch reaches past it.
 	return Vector2(maxf(canopy_crossfade_begin_m() - reach_m, 0.0) if near_band else 0.0,
-		canopy_far_m())
+		canopy_far_m() + reach_m)
 
 ## Draw range of a patch's shadow proxy. Behind branched casters it casts, tree by tree, for
 ## the trees past SHADOW_PROXY_M, so it must be drawn wherever one may be. Behind a cheap caster
@@ -229,6 +231,7 @@ func _fine_tier_radius() -> float:
 
 func rebuild_from_simulation_state() -> void:
 	TreeSpecies.set_crossfade(canopy_near_m())
+	TreeSpecies.set_far(canopy_far_m())
 	for patch in patches.values():
 		patch.queue_free()
 	patches.clear()

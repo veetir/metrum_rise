@@ -58,6 +58,13 @@ uniform float canopy_floor_shade_begin_m = 327.6;
 uniform float canopy_floor_shade_end_m = 420.0;
 uniform float canopy_floor_shade_floor : hint_range(0.0, 1.0) = 0.51;
 uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
+// Past the distance the trees stop being drawn, the ground stands in for the crowns on it. Set
+// from tree_species.gd; the defaults leave the term off.
+uniform float canopy_far_begin_m = 1.0e9;
+uniform float canopy_far_end_m = 1.0e9;
+// Crown area seen from the side over crown area seen from above.
+uniform float canopy_far_side_ratio = 1.0;
+uniform vec3 canopy_far_albedo = vec3(0.12, 0.13, 0.05);
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
@@ -901,6 +908,20 @@ void fragment() {
 		) * canopy_floor_shade;
 		float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
 		color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
+		// Past the trees the ground stands in for them, and what a viewer sees of a stand there
+		// is not the ground its crowns cover from above. A sight line at elevation angle a
+		// crosses the side of every crown in a strip cot(a) times longer than the crown is wide,
+		// so for a random stand the chance it reaches the ground falls from (1 - cover) to
+		// (1 - cover) ^ (1 + side_ratio * cot(a)). At a few degrees a stand that covers a tenth
+		// of the ground from above hides most of it. O(1): one pow, on a fetch already made.
+		float far_ramp = smoothstep(canopy_far_begin_m, canopy_far_end_m, var_view_distance_m);
+		if (far_ramp > 0.0) {
+			vec3 to_camera = CAMERA_POSITION_WORLD - var_world_pos;
+			float cot_elevation = length(to_camera.xz) / max(to_camera.y, 0.001);
+			float gap = pow(1.0 - min(land_cover, 0.999),
+				1.0 + canopy_far_side_ratio * cot_elevation);
+			color = mix(color, canopy_far_albedo, (1.0 - gap) * far_ramp);
+		}
 		vec2 world_uv = clamp(
 			vec2(
 				var_world_pos.x / max(world_size.x, 0.001),

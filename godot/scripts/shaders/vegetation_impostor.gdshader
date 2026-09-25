@@ -9,6 +9,10 @@ uniform sampler2DArray normal_atlas : filter_linear_mipmap, repeat_disable;
 uniform vec3 bounds_centre[12];
 uniform float bounds_size[12];
 uniform float impostor_radiance_match = 1.0;
+// Distances over which each tree dissolves before no tree is drawn, while the ground takes the
+// stand over; see TREE_FAR_M in tree_species.gd. Set from tree_species.gd.
+uniform float tree_far_begin_m = 4000.0;
+uniform float tree_far_end_m = 4500.0;
 // A mip texel averages the normals under it, and the bake keeps that mean unnormalized: its
 // shortfall from unit length measures how far those normals disagreed. Renormalizing it would
 // light a whole distant crown by the one normal facing the camera, which is a closed shell,
@@ -38,6 +42,7 @@ varying float canopy_light;
 varying float shadow_keep;
 varying float volume_wrap;
 varying flat float crossfade;
+varying flat float far_fade;
 // Baked object-space normals to view space, for this instance. The fragment stage of a
 // MultiMesh sees the node's MODEL_NORMAL_MATRIX, not the instance's, so a normal transformed
 // there ignored each tree's own yaw: every impostor was lit as if it faced one way, and over a
@@ -98,8 +103,10 @@ void vertex() {
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 	crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
-	// A tree still wholly branched draws no impostor.
-	if (crossfade <= 0.0) {
+	far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
+		distance(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz));
+	// A tree still wholly branched, or wholly given to the ground, draws no impostor.
+	if (crossfade <= 0.0 || far_fade >= 1.0) {
 		VERTEX = vec3(0.0);
 	}
 }
@@ -141,7 +148,10 @@ void fragment() {
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
 	volume_wrap = clamp(volume_wrap_floor + volume_wrap_gain * spread, 0.0, 1.0);
-	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, crossfade, true) ? albedo.a : 0.0;
+	// The far fade drops the pixels whose threshold is under its share, the same threshold the
+	// handover keeps below its own, so the two never compete for one pixel.
+	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, crossfade, true)
+		&& !vegetation_crossfade_keeps(FRAGCOORD.xy, far_fade, true) ? albedo.a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
 }
 

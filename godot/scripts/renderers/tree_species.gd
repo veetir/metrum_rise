@@ -38,6 +38,19 @@ const TREE_SHADOW_END_M := 120.0
 # distance to the camera; see vegetation_wind.gdshaderinc. At 1080p and a 75-degree field of view
 # a 15 m tree covers 70 px at the start and 53 px at the end, against 64 px baked views.
 const TREE_CROSSFADE_M := 50.0
+# Distance past which no tree is drawn, and the band each tree dissolves over before it. The
+# ground takes the stand over across the same band; see CANOPY_FAR_SIDE_RATIO.
+const TREE_FAR_M := 4500.0
+const TREE_FAR_FADE_M := 500.0
+# Past the trees the terrain shader stands in for them by mixing toward one crown albedo by the
+# share of each sight line a random stand of the published crown coverage would stop; see
+# terrain.gdshader. The ratio is a crown's side area over its top area, which is near one for
+# these crowns, and the albedo is the mean of the baked impostor albedo after canopy shade and
+# radiance match. Both were checked against the same view with trees drawn to 12 km from 700 m
+# and from 300 m up: the old ground was 12% and 16% brighter than the trees it replaced, and
+# with this term it is within 1.5% either way.
+const CANOPY_FAR_SIDE_RATIO := 1.0
+const CANOPY_FAR_ALBEDO := Vector3(0.12, 0.13, 0.045)
 const TREE_CROSSFADE_END_M := 200.0
 
 # foliage_atlas.dds mip 0, alpha >= 102/255 (0.4), measured 2026-09-21.
@@ -154,8 +167,27 @@ static func impostor_material(species: int) -> ShaderMaterial:
 		material.set_shader_parameter("volume_wrap_floor", volume.y)
 		material.set_shader_parameter("volume_wrap_gain", volume.z)
 		_apply_canopy_shading(material)
+		_apply_far(material, TREE_FAR_M)
 		_impostor_materials[species] = material
 	return _impostor_materials[species]
+
+## Moves the far fade of the impostors to end on `end_m`, as set_crossfade does for the handover.
+## The ground term keeps TREE_FAR_M, so a probe that draws trees farther also draws both there.
+static func set_far(end_m: float) -> void:
+	for material in _impostor_materials:
+		if material != null:
+			_apply_far(material, end_m)
+
+static func _apply_far(material: ShaderMaterial, end_m: float) -> void:
+	material.set_shader_parameter("tree_far_begin_m", end_m - TREE_FAR_FADE_M)
+	material.set_shader_parameter("tree_far_end_m", end_m)
+
+## The ground half of the far fade, for one terrain material.
+static func apply_far_canopy(material: ShaderMaterial) -> void:
+	material.set_shader_parameter("canopy_far_begin_m", TREE_FAR_M - TREE_FAR_FADE_M)
+	material.set_shader_parameter("canopy_far_end_m", TREE_FAR_M)
+	material.set_shader_parameter("canopy_far_side_ratio", CANOPY_FAR_SIDE_RATIO)
+	material.set_shader_parameter("canopy_far_albedo", CANOPY_FAR_ALBEDO)
 
 ## Moves the handover of every tree material to end on `end_m`. The renderer calls this with its
 ## own near range, so a probe override moves the shaders with the patch ranges.
