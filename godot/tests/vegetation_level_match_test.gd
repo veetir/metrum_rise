@@ -11,6 +11,12 @@
 ## One pose is not enough. The two levels once agreed with the sun behind the camera and the
 ## distant level rendered at half the near level's luminance with the sun in front of it, so the
 ## comparison runs over camera elevation, sun elevation and sun azimuth relative to the view.
+##
+## Nor is one distance. The poses once all stood at 900 m and 20 degrees or more above the
+## stand, and the impostor passed there while every tree was lit as if it faced one way: over a
+## stand of random yaws that averages out. From near the ground at the handover distance, where
+## a player watches one tree change, the same impostor rendered 26% dark with the sun behind the
+## camera and 24% bright with it ahead. So a second set of poses stands there.
 extends SceneTree
 
 const Species = preload("res://scripts/renderers/tree_species.gd")
@@ -24,6 +30,10 @@ const CAMERA_ELEVATIONS_DEG := [20.0, 35.0, 55.0, 80.0]
 const SUN_ELEVATIONS_DEG := [15.0, 35.0, 60.0]
 # Relative to the view: 0 puts the sun behind the camera, 180 puts it in front of the camera.
 const SUN_AZIMUTHS_DEG := [0.0, 90.0, 180.0]
+# The middle of the handover, from about eye height to the height of a low aerial view.
+const HANDOVER_DISTANCE_M := Species.TREE_CROSSFADE_END_M - Species.TREE_CROSSFADE_M * 0.5
+const HANDOVER_CAMERA_ELEVATIONS_DEG := [3.0, 10.0, 20.0]
+const HANDOVER_SUN_ELEVATIONS_DEG := [15.0, 35.0]
 # The two levels are different surfaces standing in for each other, so they are not expected to
 # agree exactly. They are expected not to differ the way a viewer reads as two colours of forest.
 const LUMINANCE_TOLERANCE := 0.12
@@ -145,11 +155,9 @@ func _check_card_backfaces(camera: Camera3D) -> void:
 	await process_frame
 
 ## The camera looks at the patch centre from +Z, so a sun azimuth of 0 lights the view from behind.
-func _place_camera(camera: Camera3D, elevation_deg: float) -> void:
+func _place_camera(camera: Camera3D, elevation_deg: float, distance_m: float) -> void:
 	var elevation := deg_to_rad(elevation_deg)
-	camera.position = Vector3(
-		0.0, sin(elevation) * CAMERA_DISTANCE_M, cos(elevation) * CAMERA_DISTANCE_M
-	)
+	camera.position = Vector3(0.0, sin(elevation) * distance_m, cos(elevation) * distance_m)
 	camera.look_at(Vector3.ZERO, Vector3.UP)
 
 ## Crown luminance of one level over the shared population. The near level draws every variant.
@@ -216,29 +224,37 @@ func _run() -> void:
 	camera.far = 20000.0
 	_viewport.add_child(camera)
 	camera.current = true
-	_place_camera(camera, CAMERA_ELEVATIONS_DEG[2])
+	_place_camera(camera, CAMERA_ELEVATIONS_DEG[2], CAMERA_DISTANCE_M)
 	await _check_card_backfaces(camera)
+	# Every impostor drawn whole: the stand reaches inside the handover from the nearer poses,
+	# and the comparison is between two whole levels. The near level here takes no handover.
+	# The materials must exist first: set_crossfade moves only the ones already built.
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		Species.impostor_material(species)
+	Species.set_crossfade(1.0)
 
 	var stems := int(PATCH_EXTENT_M * PATCH_EXTENT_M / 10000.0 * STEMS_PER_HA)
 	var transforms := _scatter(stems, PATCH_EXTENT_M)
-	for camera_elevation in CAMERA_ELEVATIONS_DEG:
-		_place_camera(camera, camera_elevation)
-		for sun_elevation in SUN_ELEVATIONS_DEG:
-			for sun_azimuth in SUN_AZIMUTHS_DEG:
-				light.rotation_degrees = Vector3(-sun_elevation, sun_azimuth, 0.0)
-				for species in [Species.CONIFER, Species.BROADLEAF]:
-					var near_luminance := await _level_luminance(catalogue, species, transforms, true)
-					var distant_luminance := await _level_luminance(catalogue, species, transforms, false)
-					var ratio := distant_luminance / maxf(near_luminance, 0.0001)
-					print(
-						"vegetation_level_match camera=%d sun=%d/%d species=%d near=%.4f distant=%.4f ratio=%.3f"
-						% [camera_elevation, sun_elevation, sun_azimuth, species, near_luminance,
-							distant_luminance, ratio]
-					)
-					_expect(
-						absf(ratio - 1.0) <= LUMINANCE_TOLERANCE,
-						"the distant level must render to the near level's luminance, got ratio %.3f" % ratio
-					)
+	for poses in [[CAMERA_DISTANCE_M, CAMERA_ELEVATIONS_DEG, SUN_ELEVATIONS_DEG],
+			[HANDOVER_DISTANCE_M, HANDOVER_CAMERA_ELEVATIONS_DEG, HANDOVER_SUN_ELEVATIONS_DEG]]:
+		for camera_elevation in poses[1]:
+			_place_camera(camera, camera_elevation, poses[0])
+			for sun_elevation in poses[2]:
+				for sun_azimuth in SUN_AZIMUTHS_DEG:
+					light.rotation_degrees = Vector3(-sun_elevation, sun_azimuth, 0.0)
+					for species in [Species.CONIFER, Species.BROADLEAF]:
+						var near_luminance := await _level_luminance(catalogue, species, transforms, true)
+						var distant_luminance := await _level_luminance(catalogue, species, transforms, false)
+						var ratio := distant_luminance / maxf(near_luminance, 0.0001)
+						print(
+							"vegetation_level_match distance=%d camera=%d sun=%d/%d species=%d near=%.4f distant=%.4f ratio=%.3f"
+							% [poses[0], camera_elevation, sun_elevation, sun_azimuth, species, near_luminance,
+								distant_luminance, ratio]
+						)
+						_expect(
+							absf(ratio - 1.0) <= LUMINANCE_TOLERANCE,
+							"the distant level must render to the near level's luminance, got ratio %.3f" % ratio
+						)
 	_viewport.queue_free()
 	await process_frame
 	print("Vegetation level match tests: %d failures" % _failures)

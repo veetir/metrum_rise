@@ -52,8 +52,13 @@ const FOLIAGE_ALPHA_RECTS := [
 ]
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
-# level's luminance. Fitted over the 36 poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [0.98, 0.973]
+# level's luminance. Fitted over the poses of vegetation_level_match_test.gd.
+const IMPOSTOR_RADIANCE_MATCH := [1.083, 1.025]
+# Volume response of an impostor, conifer first, as (lift gain, wrap floor, wrap gain); see
+# vegetation_impostor.gdshader. Fitted with the radiance match above over the same poses. The
+# conifer is a stack of dense whorls that scatters the sun at any distance, so its wrap is
+# a constant; the broadleaf crown is more open and keeps the mip-driven wrap.
+const IMPOSTOR_VOLUME := [Vector3(0.5, 1.0, 0.0), Vector3(1.0, 0.0, 1.5)]
 # One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
 # shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
 const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
@@ -144,6 +149,10 @@ static func impostor_material(species: int) -> ShaderMaterial:
 		material.set_shader_parameter("bounds_centre", centres)
 		material.set_shader_parameter("bounds_size", sizes)
 		material.set_shader_parameter("impostor_radiance_match", IMPOSTOR_RADIANCE_MATCH[species])
+		var volume: Vector3 = IMPOSTOR_VOLUME[species]
+		material.set_shader_parameter("volume_lift_gain", volume.x)
+		material.set_shader_parameter("volume_wrap_floor", volume.y)
+		material.set_shader_parameter("volume_wrap_gain", volume.z)
 		_apply_canopy_shading(material)
 		_impostor_materials[species] = material
 	return _impostor_materials[species]

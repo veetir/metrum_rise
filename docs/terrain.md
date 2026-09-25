@@ -668,7 +668,36 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
-### A tree keeps its form across the patch grids (2026-09-25)
+### Each impostor is lit by its own yaw (2026-09-25)
+
+In play a birch changed its lighting as it handed over, from a crown lit on one side to one lit
+on the other. A same-pose render in the game, every tree near against every tree an impostor,
+showed the cause as lighting and not shape: a birch at `80 m` had a lit crown and a white
+trunk as the near tree and a dark crown and a blue-grey trunk as the impostor.
+
+The impostor shader turned its baked object-space normal into view space in `fragment()` with
+`MODEL_NORMAL_MATRIX`. For a MultiMesh that is the node's matrix there, not the instance's, so
+each tree's own yaw was ignored and every impostor was lit as if it faced one way. Over a stand of
+random yaws the response to the sun's direction then averages out: at `175 m` from `3 degrees`
+the broadleaf impostor measured `0.302`, `0.313` and `0.320` with the sun behind, beside and
+ahead of the camera, while the near stand measured `0.413`, `0.311` and `0.258`.
+`vegetation_level_match_test` compares whole stands from `900 m` and `20 degrees` or more, where
+the average matched, so it passed. The vertex stage now builds the view-space normal matrix of
+the instance and passes it flat.
+
+The volume response had been fitted around the defect, so it was refitted. The lift toward up
+and the diffuse wrap are now per species, and the wrap takes a floor that does not depend on the
+mip, because at the handover the frames are sampled near full resolution, where their normals
+barely disagree, and a crown of cards still scatters light through itself. The conifer takes
+lift `0.5` and a constant full wrap; the broadleaf keeps lift `1.0` and the mip-driven wrap.
+`IMPOSTOR_RADIANCE_MATCH` becomes `1.083` and `1.025`. The test adds a second pose set at the
+middle of the handover, `175 m` from `3`, `10` and `20 degrees` under a `15` and a `35 degree`
+sun, and all `108` comparisons fall within `0.881-1.111` (tolerance `0.12`); the worst low pose
+before was `0.733`. The margin is small at both ends, because the near level still takes a sun
+highlight against a low sun ahead that the impostor does not. E24 on the GTX 1060, GPU p50:
+`27.1-27.2 ms` in the stand and `20.5 ms` from the air, against `26.8-27.2` and `20.3-20.5 ms`
+for the previous commit, which is inside the run-to-run spread.
+
 
 A terrain patch is drawn as sixteen `127.5 m` vegetation patches inside the fine radius and as
 one `510 m` patch past it. Rust packed each plant relative to the patch it was fetched for, and

@@ -14,12 +14,16 @@ uniform float impostor_radiance_match = 1.0;
 // light a whole distant crown by the one normal facing the camera, which is a closed shell,
 // and a shell halves in brightness when the camera faces the sun. The near crown is seen
 // through, so its response hardly depends on the view. Scattered texels therefore lift toward
-// up and wrap their diffuse, which is the volume response the near crown has. Both gains were
-// fitted over 36 camera and sun poses; see vegetation_level_match_test.gd. Roughness stays at
-// the near crown's one, so the impostor reflects as much sky as the cards it replaces: a
-// specular-free impostor lacked that blue and read as a warmer forest than the near band.
-const float VOLUME_LIFT_GAIN = 2.0;
-const float VOLUME_WRAP_GAIN = 1.5;
+// up and wrap their diffuse, which is the volume response the near crown has. The wrap also
+// takes a floor that does not depend on the mip: a crown of cards scatters light through itself
+// at the handover distance, where the frames are sampled near their full resolution and their
+// normals barely disagree. All three are per species and fitted; see IMPOSTOR_VOLUME in
+// tree_species.gd. Roughness stays at the near crown's one, so the impostor reflects as much sky
+// as the cards it replaces: a specular-free impostor lacked that blue and read as a warmer
+// forest than the near band.
+uniform float volume_lift_gain = 2.0;
+uniform float volume_wrap_floor = 0.0;
+uniform float volume_wrap_gain = 1.5;
 
 varying vec2 frame_uv0;
 varying vec2 frame_uv1;
@@ -34,6 +38,11 @@ varying float canopy_light;
 varying float shadow_keep;
 varying float volume_wrap;
 varying flat float crossfade;
+// Baked object-space normals to view space, for this instance. The fragment stage of a
+// MultiMesh sees the node's MODEL_NORMAL_MATRIX, not the instance's, so a normal transformed
+// there ignored each tree's own yaw: every impostor was lit as if it faced one way, and over a
+// stand of random yaws its response to the sun's direction averaged out to nothing.
+varying flat mat3 normal_to_view;
 
 vec3 hemi_decode(vec2 uv) {
 	vec2 p = vec2(uv.x + uv.y, uv.x - uv.y) * 0.5;
@@ -80,6 +89,7 @@ void vertex() {
 	vec3 offset = right * (UV.x - 0.5) + up * (0.5 - UV.y);
 	VERTEX = centre + offset * bounds_size[layer];
 	NORMAL = view;
+	normal_to_view = mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX;
 	frame_uv0 = project_frame(offset, cell0);
 	frame_uv1 = project_frame(offset, cell1);
 	frame_uv2 = project_frame(offset, cell2);
@@ -123,14 +133,14 @@ void fragment() {
 		+ textureLod(normal_atlas, uv1, lod1).xyz * weights.y
 		+ textureLod(normal_atlas, uv2, lod2).xyz * weights.z) * 2.0 - 1.0;
 	float spread = 1.0 - clamp(length(n), 0.0, 1.0);
-	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(VOLUME_LIFT_GAIN * spread, 0.0, 1.0)));
-	NORMAL = normalize(mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX * object_normal);
+	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(volume_lift_gain * spread, 0.0, 1.0)));
+	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
 	vec3 tinted = albedo.rgb * instance_tint;
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
-	volume_wrap = clamp(VOLUME_WRAP_GAIN * spread, 0.0, 1.0);
+	volume_wrap = clamp(volume_wrap_floor + volume_wrap_gain * spread, 0.0, 1.0);
 	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, crossfade, true) ? albedo.a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
 }
