@@ -114,6 +114,15 @@ float vegetation_shadow_keep(float distance_m) {
 	return 1.0 - smoothstep(tree_shadow_begin_m, tree_shadow_end_m, distance_m);
 }
 
+// Whether a tree casts from its branched level rather than from its proxy. Decided per tree at
+// the end of the receive fade, which is SHADOW_PROXY_M in vegetation.gd: the patch distance past
+// which every tree casts from its proxy. A patch that casts from branched trees then hands each
+// tree to its proxy on the same distance, so a patch changing its caster changes no shadow.
+// Measured to the main camera, as the shadow pass renders from the light.
+bool vegetation_casts_branched(vec3 tree_origin, vec3 main_camera) {
+	return distance(tree_origin, main_camera) < tree_shadow_end_m;
+}
+
 // Cast shadow a tree receives from one light. Directional attenuation is the shadow alone; other
 // lights keep theirs.
 float vegetation_shadow(float attenuation, bool directional, float shadow_keep) {

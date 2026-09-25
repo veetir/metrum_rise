@@ -166,11 +166,11 @@ func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: f
 		canopy_far_m())
 
 ## Draw range of a patch's shadow proxy. Behind branched casters it casts, tree by tree, for
-## the trees whose handover has ended, so it must be drawn wherever one may have. Behind a cheap
-## caster it casts for every tree and covers the whole patch life.
+## the trees past SHADOW_PROXY_M, so it must be drawn wherever one may be. Behind a cheap caster
+## it casts for every tree and covers the whole patch life.
 func proxy_range(caster: int, reach_m: float) -> Vector2:
 	if caster == ShadowCaster.NEAR:
-		return Vector2(maxf(canopy_near_m() - reach_m, 0.0), canopy_far_m())
+		return Vector2(maxf(SHADOW_PROXY_M - reach_m, 0.0), canopy_far_m())
 	return Vector2(0.0, canopy_far_m())
 
 ## Share of its range one understory variant keeps. A low-discrepancy sequence rather than a

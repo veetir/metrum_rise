@@ -151,8 +151,7 @@ static func impostor_material(species: int) -> ShaderMaterial:
 ## Moves the handover of every tree material to end on `end_m`. The renderer calls this with its
 ## own near range, so a probe override moves the shaders with the patch ranges.
 static func set_crossfade(end_m: float) -> void:
-	for material in [_wind_material, _card_material, _impostor_materials[0], _impostor_materials[1],
-		_distant_materials[0], _distant_materials[1]]:
+	for material in [_wind_material, _card_material, _impostor_materials[0], _impostor_materials[1]]:
 		if material != null:
 			_apply_crossfade(material, end_m)
 
@@ -827,7 +826,8 @@ static func _distant_crown_material(conifer: bool) -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = preload("res://scripts/shaders/vegetation_distant.gdshader")
 		material.set_shader_parameter("crown_coverage", DISTANT_COVERAGE[index])
-		_apply_crossfade(material, TREE_CROSSFADE_END_M)
+		# The proxy takes a tree's shadow where the branched level gives it up.
+		material.set_shader_parameter("tree_shadow_end_m", TREE_SHADOW_END_M)
 		_distant_materials[index] = material
 	return _distant_materials[index]
 

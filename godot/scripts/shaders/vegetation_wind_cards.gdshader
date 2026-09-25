@@ -23,12 +23,14 @@ void vertex() {
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 	crossfade = hands_over > 0.5
 		? vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) : 0.0;
-	// The shadow hands over whole at the end of the handover, to the proxy: dithering it too
-	// would draw every proxy from the start of the handover, over the whole near band.
-	dither = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz)
-		? 0.0 : crossfade;
-	// A tree fully handed over to its impostor collapses to a point and is never rasterised.
-	if (crossfade >= 1.0) {
+	// The shadow hands over whole, per tree, to the proxy; see vegetation_casts_branched.
+	bool shadow_pass = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	dither = shadow_pass ? 0.0 : crossfade;
+	// A tree fully handed over collapses to a point and is never rasterised.
+	if (shadow_pass
+			? hands_over > 0.5 && !vegetation_casts_branched(MODEL_MATRIX[3].xyz,
+				MAIN_CAM_INV_VIEW_MATRIX[3].xyz)
+			: crossfade >= 1.0) {
 		VERTEX = MODEL_MATRIX[3].xyz;
 	}
 }

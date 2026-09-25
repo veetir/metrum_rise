@@ -22,9 +22,12 @@ void vertex() {
 	// Wood takes no dither: a discard would move every trunk off the opaque fast path, and a
 	// trunk in the handover is about two pixels wide. It leaves at the middle of its tree's
 	// handover, when the impostor has drawn half the pixels and its own baked trunk. Its
-	// shadow stays to the end, where the proxy takes over, as the cards' shadow does.
+	// shadow goes to the proxy with the cards' shadow; see vegetation_casts_branched.
 	bool shadow_pass = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
-	if (crossfade >= (shadow_pass ? 1.0 : 0.5)) {
+	if (shadow_pass
+			? hands_over > 0.5 && !vegetation_casts_branched(MODEL_MATRIX[3].xyz,
+				MAIN_CAM_INV_VIEW_MATRIX[3].xyz)
+			: crossfade >= 0.5) {
 		VERTEX = MODEL_MATRIX[3].xyz;
 	}
 }

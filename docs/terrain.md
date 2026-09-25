@@ -687,6 +687,20 @@ caster switch at `SHADOW_PROXY_M` (up to `668` pixels in one step), and the unde
 built only in near-band patches and so ends at the near-band patch edge (`100-200` pixels of
 rocks and bushes per step), short of its own `420 m` range.
 
+The caster switch is taken the same day. A patch whose nearest corner is inside `SHADOW_PROXY_M`
+cast each tree from its branched level until that tree's handover ended at `200 m`; a patch past
+it casts every tree from the proxy. When a patch crossed, its trees between `120` and `200 m`
+changed shadow shape at once. A tree now casts from its branched level exactly while it is
+nearer than `SHADOW_PROXY_M`, and from its proxy past it, in either kind of patch, so the patch
+decision no longer changes a shadow. On a second flight, `120 m` up in `16 m` steps, the steps
+with a caster change went from `1394-2422` changed pixels to `10-17`. Paired E24 on the GTX 1060,
+same session, GPU p50: `26.4-26.8` → `26.8-27.2 ms` in the stand, `20.3-20.4` → `20.3-20.5 ms`
+from the air. The proxies of a near-caster patch are now drawn from `SHADOW_PROXY_M` less the
+patch reach instead of from `200 m` less it, and submitting them costs more than the branched
+shadows it removes. What that flight still shows: `400-700` faint pixels where a patch leaves
+the shadow range and stops casting while a low sun still throws its trees' shadows inside it,
+and the understory edge above.
+
 ### Each tree hands over to its impostor on its own distance (2026-09-24)
 
 Every level decision was made per patch. Godot measures a visibility range once per

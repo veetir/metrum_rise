@@ -28,7 +28,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   `16.5 ms` from the air. Trees stop receiving cast shadows past `120 m`, where every caster
   is a solid proxy that shadowed the trees inside it. Each tree now hands over to its own baked
   impostor by its own distance, dithered over `150-200 m`, instead of a patch at a time. A tree
-  now keeps its form when its terrain patch changes between the fine and the coarse patch grid.
+  now keeps its form when its terrain patch changes between the fine and the coarse patch grid,
+  and changes its shadow caster by its own distance rather than its patch's.
   See [the grid fix](terrain.md#a-tree-keeps-its-form-across-the-patch-grids-2026-09-25),
   [the per-tree handover](terrain.md#each-tree-hands-over-to-its-impostor-on-its-own-distance-2026-09-24),
   [the shadow fade](terrain.md#trees-stop-receiving-the-shadows-of-the-proxies-they-stand-in-2026-09-23),

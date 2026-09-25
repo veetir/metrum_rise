@@ -148,9 +148,9 @@ func run():
 			var lod: int = instance.get_meta("lod")
 			if instance.get_meta("shadow_proxy"):
 				assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
-				# Drawn from where the first of its trees can have ended its handover.
-				assert(instance.visibility_range_begin <= vegetation.canopy_near_m())
-				assert(instance.visibility_range_begin >= vegetation.canopy_near_m()
+				# Drawn from where the first of its trees can cast from it.
+				assert(instance.visibility_range_begin <= Vegetation.SHADOW_PROXY_M)
+				assert(instance.visibility_range_begin >= Vegetation.SHADOW_PROXY_M
 					- instance.custom_aabb.size.length() * 0.5)
 				assert(instance.visibility_range_end == vegetation.canopy_far_m())
 				assert(instance.get_instance_shader_parameter("cast_every_tree") == 0.0)
