@@ -52,12 +52,14 @@ uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform float ground_shadow_ambient = 0.64;
 uniform float ground_shadow_sun_strength = 0.36;
 uniform float ground_shadow_min_visibility = 0.10;
-// Forest-floor shading past the shadow cascades. See CANOPY_FLOOR_SHADE_FLOOR in
-// scene_lighting.gd; the crown half of the same term lives in vegetation_wind.gdshaderinc.
+// Forest-floor shading past the shadow cascades; the crown half of the same term lives in
+// vegetation_wind.gdshaderinc.
 uniform float canopy_floor_shade_begin_m = 327.6;
 uniform float canopy_floor_shade_end_m = 420.0;
-uniform float canopy_floor_shade_floor : hint_range(0.0, 1.0) = 0.51;
 uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
+// Share of the sky light a floor under closed crowns still receives, through and off the
+// crowns. See CANOPY_FLOOR_SKY_TRANSMISSION in scene_lighting.gd.
+uniform float canopy_floor_sky_transmission : hint_range(0.0, 1.0) = 1.0;
 // Past the distance the trees stop being drawn, the ground stands in for the crowns on it. Set
 // from tree_species.gd; the defaults leave the term off.
 uniform float canopy_far_begin_m = 1.0e9;
@@ -824,6 +826,13 @@ void fragment() {
 	vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
 		/ max(land_cover_world_bounds.zw, vec2(0.001));
 	float land_cover = texture(land_cover_texture, cover_uv).r;
+	// Sky light that reaches the ground under the published crown coverage. A crown blocks a
+	// sight line to the sky as it blocks one from a far camera (see the far canopy term below),
+	// and averaging that gap over the cosine-weighted sky gives (1 - cover) squared to within
+	// 0.3 of the exponent for any coverage. Crowns are not opaque to sky light, so a closed
+	// canopy still passes its transmission share.
+	float sky_gap = (1.0 - land_cover) * (1.0 - land_cover);
+	float floor_sky = mix(canopy_floor_sky_transmission, 1.0, sky_gap);
 	float world_elevation = h * height_scale;
 	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);
@@ -886,9 +895,9 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 		color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
-		// Litter, moss and duff replace grass hue at the same albedo luminance. Inside shadow
-		// range the trees themselves supply every bit of the darkness, so coverage changes
-		// hue only and never adds any of its own.
+		// Litter, moss and duff replace grass hue at the same albedo luminance. The floor is
+		// darker than a meadow because of the light that reaches it, not because of its albedo:
+		// the tree shadows remove the sun, and the sky term below removes the sky the crowns hide.
 		vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
 		vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
 		forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
@@ -906,7 +915,13 @@ void fragment() {
 			canopy_floor_shade_end_m,
 			var_view_distance_m
 		) * canopy_floor_shade;
-		float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
+		// Ground lit by sky s and sun keeps A * s + S of its light. A share of it equal to the
+		// coverage lies in crown shadow and keeps only the minimum visibility m of the sun, so
+		// the floor keeps (A * s + S * (1 - cover * (1 - m))) of it; the shade is that ratio.
+		float sun_lost = ground_shadow_sun_strength * land_cover
+			* (1.0 - clamp(ground_shadow_min_visibility, 0.0, 1.0));
+		float floor_shade = 1.0 - sun_lost / max(
+			ground_shadow_ambient * floor_sky + ground_shadow_sun_strength, 0.001);
 		color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
 		// Past the trees the ground stands in for them, and what a viewer sees of a stand there
 		// is not the ground its crowns cover from above. A sight line at elevation angle a
@@ -1050,7 +1065,8 @@ void fragment() {
 		// with the ambient floor rather than staying vivid against a grey ground.
 		color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
 		ALBEDO = color;
-		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
+		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * floor_sky
+			* scene_ambient_light.rgb;
 		ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 		SPECULAR = 0.08;
 	}

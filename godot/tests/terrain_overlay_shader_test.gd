@@ -87,48 +87,63 @@ func _run() -> void:
 		print("terrain_overlay_edge pixels=%s difference=%.6f" % [pair, difference])
 		_expect(difference < 0.02, "world edges must clamp to their adjacent overlay texel")
 
-	# The forest floor darkens where the shadow cascades stop reaching it, and only under
-	# accepted crown coverage. See CANOPY_FLOOR_SHADE_FLOOR in scene_lighting.gd. The camera
-	# moves rather than the ramp, so the shipped begin and end distances are what is measured,
-	# and the term is compared against itself disabled rather than against bare ground, because
-	# the litter hue the coverage also swaps in changes the colour without changing its
-	# luminance.
+	# The forest floor loses the sky its crowns hide at every distance, and past the shadow
+	# cascades it also loses the sun their shadows no longer take. The camera moves rather than
+	# the ramp, so the shipped begin and end distances are what is measured, and covered ground
+	# is compared only with covered ground, because the litter hue the coverage swaps in
+	# changes the colour without changing its luminance. The scene has no light, so the
+	# ground shows its sky term alone. The capture crushes dark values to black, so the sky
+	# share is measured at one half rather than at the shipped constant, and the sky at one.
+	var ambient := 1.0
+	var sun := 0.5
+	var sun_lost := sun * (1.0 - 0.02)
+	material.set_shader_parameter("ground_shadow_ambient", ambient)
+	material.set_shader_parameter("ground_shadow_sun_strength", sun)
+	material.set_shader_parameter("ground_shadow_min_visibility", 0.02)
+	var sky_share := 0.5
 	material.set_shader_parameter("overlay_mode", 0)
 	material.set_shader_parameter("land_cover_world_bounds", Vector4(-1.0, -1.0, 2.0, 2.0))
 	var floor_shade_samples := {}
 	for cover in [0.0, 1.0]:
 		material.set_shader_parameter("land_cover_texture", _texture(Color(cover, cover, cover)))
-		for strength in [0.0, 1.0]:
-			material.set_shader_parameter("canopy_floor_shade", strength)
-			for height in [10.0, 600.0]:
-				camera.position = Vector3(0.0, height, 0.0)
-				camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
-				var shade_image := await _capture(viewport)
-				var shade := _rgb(shade_image.get_pixel(32, 32)).length()
-				floor_shade_samples[Vector3(cover, strength, height)] = shade
-				print(
-					"terrain_floor_shade cover=%.1f strength=%.1f height=%.0f shade=%.6f"
-					% [cover, strength, height, shade]
-				)
-	var bare_near: float = floor_shade_samples[Vector3(0.0, 1.0, 10.0)]
-	var bare_far: float = floor_shade_samples[Vector3(0.0, 1.0, 600.0)]
-	var covered_near: float = floor_shade_samples[Vector3(1.0, 1.0, 10.0)]
-	var covered_far: float = floor_shade_samples[Vector3(1.0, 1.0, 600.0)]
-	var unshaded_near: float = floor_shade_samples[Vector3(1.0, 0.0, 10.0)]
-	var unshaded_far: float = floor_shade_samples[Vector3(1.0, 0.0, 600.0)]
+		for transmission in [1.0, sky_share]:
+			material.set_shader_parameter("canopy_floor_sky_transmission", transmission)
+			for strength in [0.0, 1.0]:
+				material.set_shader_parameter("canopy_floor_shade", strength)
+				for height in [10.0, 600.0]:
+					camera.position = Vector3(0.0, height, 0.0)
+					camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
+					var shade_image := await _capture(viewport)
+					var shade := _rgb(shade_image.get_pixel(32, 32)).length()
+					floor_shade_samples[Vector4(cover, transmission, strength, height)] = shade
+					print(
+						"terrain_floor_shade cover=%.1f sky=%.2f strength=%.1f height=%.0f shade=%.6f"
+						% [cover, transmission, strength, height, shade]
+					)
+	var bare_near: float = floor_shade_samples[Vector4(0.0, sky_share, 1.0, 10.0)]
+	var bare_far: float = floor_shade_samples[Vector4(0.0, sky_share, 1.0, 600.0)]
+	var open_sky_near: float = floor_shade_samples[Vector4(1.0, 1.0, 1.0, 10.0)]
+	var covered_near: float = floor_shade_samples[Vector4(1.0, sky_share, 1.0, 10.0)]
+	var covered_far: float = floor_shade_samples[Vector4(1.0, sky_share, 1.0, 600.0)]
+	var unshaded_near: float = floor_shade_samples[Vector4(1.0, sky_share, 0.0, 10.0)]
+	var unshaded_far: float = floor_shade_samples[Vector4(1.0, sky_share, 0.0, 600.0)]
 	_expect(
 		absf(bare_far - bare_near) < 0.002,
 		"ground with no crown over it must not darken with distance"
 	)
 	_expect(
 		absf(covered_near - unshaded_near) < 0.002,
-		"inside shadow range the tree shadows supply the darkness, so nothing may change"
+		"inside shadow range the tree shadows take the sun, so the far term may change nothing"
 	)
-	# The capture is tone mapped, so the measured ratio trails the linear floor slightly.
-	var expected := unshaded_far * SceneLightingConfig.CANOPY_FLOOR_SHADE_FLOOR
+	# The capture is tone mapped, so the measured ratios trail the linear ones slightly.
+	_expect(
+		absf(covered_near - open_sky_near * sky_share) < 0.02,
+		"a closed canopy must pass only its transmission share of the sky to its floor"
+	)
+	var expected := unshaded_far * (1.0 - sun_lost / (ambient * sky_share + sun))
 	_expect(
 		absf(covered_far - expected) < 0.02,
-		"covered ground past the cascades must keep about CANOPY_FLOOR_SHADE_FLOOR of its light"
+		"covered ground past the cascades must lose the sun its crowns would shade"
 	)
 	material.set_shader_parameter("canopy_floor_shade", 1.0)
 	viewport.queue_free()

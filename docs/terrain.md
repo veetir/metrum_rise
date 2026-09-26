@@ -668,6 +668,33 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### The forest floor loses the sky its crowns hide (2026-09-26)
+
+Inside a painted stand the floor read lighter than the meadow beside it
+(`imgs/reference/game/26-09-tree-planting-grid.png`). The floor takes the grass luminance with a
+litter hue, and its only darkening inside shadow range came from tree shadows, which remove the
+sun. The sky term, `GROUND_SHADOW_AMBIENT`, reached a floor under closed crowns in full. In
+shade the floor therefore kept the light of open ground in the shade of a house, and the pale,
+less saturated litter hue read as brighter than the grass. A same-pose render inside a
+`625` stems/ha pine stand measured the shaded floor at `88` in 8-bit luminance against `52`
+for the shaded trunks standing on it.
+
+The terrain now scales its sky term by the sky the published crown coverage leaves open. The
+far-range gap model, averaged over the cosine-weighted sky, gives an open share of
+`(1 - cover) ^ 2` to within `0.3` of the exponent at any coverage. Crowns pass and scatter
+some sky light, so a closed canopy keeps `CANOPY_FLOOR_SKY_TRANSMISSION`. Past the cascades the
+floor shade that replaces the tree shadows now uses the same sky share, so the ground keeps
+the same light on both sides of the cascade edge.
+
+Only the terrain takes this term. Trunks and understory keep the full sky, and a floor darker
+than the trunks on it reads as burnt ground. The share is therefore set against the trunks, not
+against a measured canopy: at `0.20` the floor rendered at `40`, and a clearing rim seen from
+the air went to `20`. At the shipped `0.40` the floor renders at `57`, just above the trunks,
+and the rim keeps its old brightness. Ground without coverage is unchanged. The cost is two
+multiplies and a mix on a coverage fetch the shader already made; no frame time was measured.
+`terrain_overlay_shader_test` holds the sky share inside the cascades and the combined shade
+past them.
+
 ### The ground stands in for the trees past the far range (2026-09-25)
 
 Past `TREE_FAR_M` (`4500 m`) no tree is drawn, and the only trace of a stand was the forest-floor
