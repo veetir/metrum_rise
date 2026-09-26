@@ -6,6 +6,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Vegetation painting now uses live, clumped darts with separate tree, ground-cover and rock spacing, repeat-stamp stability, and single-plant bulldozing ([VEG-05 details and verification](terrain.md#natural-brush-proposals-and-independent-occupancy--veg-05-2026-09-26)).
+
 - **Vegetation grid and near canopy (in progress)**: the vegetation scatter no longer rides the
   terrain grid. A two-tier grid subdivides only ground inside the near canopy and understory, and
   the per-frame staleness sweep caches its generation reads per owner. In a generator-density

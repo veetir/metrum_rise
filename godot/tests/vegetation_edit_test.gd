@@ -79,7 +79,7 @@ func _run() -> void:
 		# This tiny disc covers only the generator candidate: its standing tree must not
 		# acquire a duplicate when repainted.
 		_expect(simulation.paint_vegetation(second, 0.01, 0, 0) == 0, "a standing tree must not be repainted")
-	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) > 750, "brush must fill its dense lattice across existing forest")
+	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) > 400, "brush must add a spaced stand across existing forest")
 	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) == 0, "repeated brush must not stack plants")
 
 	var tool := VegetationTool.new()
@@ -124,6 +124,10 @@ func _run() -> void:
 	tool.mode = VegetationTool.Mode.PLANT
 	_expect(tool.radius == 256.0, "switching to planting must clamp the preview radius")
 	_expect(simulation.paint_vegetation(Vector2.ZERO, 256.01, 0, 0) == 0, "native brush must reject oversized stamps")
+	tool.option_index = 4
+	_expect(tool.radius == 64.0, "bush selection must clamp to the native ground-cover budget")
+	_expect(simulation.paint_vegetation(Vector2.ZERO, 64.01, 2, 0) == 0, "native ground-cover cap must reject oversized stamps")
+	tool.option_index = 0
 	# An open species dropdown is an embedded subwindow holding the input grab, and the click
 	# that dismisses it also reaches the tool. That click must dismiss and nothing else, or
 	# picking a species costs the player a tree wherever the cursor happened to rest.

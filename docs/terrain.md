@@ -668,6 +668,70 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Natural brush proposals and independent occupancy — VEG-05 (2026-09-26)
+
+Live painting now uses two hashed darts per conceptual cell of size `r / sqrt(2)`.
+Tree stems exclude other trees within `2.5 m`, ground cover excludes ground cover within
+`0.8 m`, and rocks exclude rocks within `3 m`. Tree crowns may overlap. The tree spacing
+permits clumps within the approximately 400–700 stems/ha managed-stand range; preset
+acceptance sets the mean density. Low plants can occupy the same ground as a tree.
+The `40 m` smoothed value-noise field modulates acceptance, and smoothstep thins the outer
+20% of each brush radius. Position, yaw, size, species, thinning and priority have separate
+hash salts from world seed and integer proposal identity. No new random state is saved.
+
+Each call evaluates proposals with Rayon, sorts by source priority, hash and integer ties,
+then accepts serially against the existing cells in both generator layers. Calls remain
+ordered input, so a dragged stroke stays visible as it happens. Repeating an identical
+stamp adds nothing; overlapping stamps do not reroll acceptance, although a later interior
+can fill an earlier soft edge. Existing generated plants participate when visible and not
+tombstoned; hidden authored plants continue to reserve space. Existing saves keep their
+positions even if their old placements do not satisfy the new minimum distance.
+
+The canopy owner cells, authored record, tombstones, stroke undo and SQLite schema are
+unchanged. Matching unpinned repaint restores an exact generated plant, subject to spacing;
+named or different-species repaint retains the tombstone and authors its chosen plant.
+Only tombstones propose generator positions: empty generator slots no longer form a second
+planting lattice. Understory tombstones restore/replace only their own occupancy class.
+Point placement obeys the same spacing. Authored bushes and rocks now use their small
+footprint when placing, rendering and picking, rather than the canopy footprint implied by
+their storage cell. Picking ties use layer, cell and insertion order; bulldoze validates the
+selected source and full plant value and removes one entry. Area clearing still removes
+all classes. Removing one coincident class does not authorize a queued command to remove
+another class at that position.
+
+Trees and rocks retain the `256 m` radius cap; ground cover is capped at `64 m`, including
+the tool's existing radius preview. Dart bounds are 169,362 trees, 103,968 ground-cover
+proposals and 118,098 rocks. At the minimum generator spacings, tombstone visits add at most
+4,225 canopy cells for trees, 289 canopy plus 4,225 understory cells for ground cover, and
+4,225 canopy plus 66,049 understory cells for rocks. The largest total is 188,372 proposal
+or tombstone visits for rock. These are bounding-square counts, before disc rejection.
+
+For `P` proposals, at most `G = 20` nearby owner cells per candidate, and `Q` authored entries
+inspected there, a call costs `O(P log P + P G + Q + local clearance)` and `O(P)` temporary
+memory, plus undo snapshots of changed cells. Dense legacy cell vectors can increase `Q`;
+there is no world-edit scan or new persistent spatial index. Proposal evaluation allocates
+nothing per candidate. Owner vectors are reserved before acceptance, and undo clones each
+changed cell only once per call. Serial acceptance is required because each accepted plant
+constrains later proposals.
+
+Preset acceptances are recalibrated for the darts, because the old values thinned a 4 m
+lattice. Density over clear ground, measured by the Rust suite: `602` stems/ha for each named
+tree, `523` for the managed-stand mix, `58` for scattered trees and `228` for small trees.
+Clumping moves the local density around those means; spacing caps it at the densest packing.
+
+Fresh verification on this tree: the full Rust suite passes, 1872 tests with 0 failures and
+66 ignored, and the vegetation tests also pass on one Rayon worker. The headless
+`vegetation_invalidation_test`, `vegetation_edit_test`, `vegetation_appearance_test` and
+`vegetation_land_cover_test` exit clean with no `SCRIPT ERROR` or `ERROR:`. A same-pose render
+of a painted pine stand no longer shows trunk rows.
+
+The stroke costs more, measured on release builds with 4 workers, one benchmark at a time. A
+`64 m` pine stamp took `0.74 ms` for 862 plants on the lattice and takes `2.71 ms` for 744 plants
+now. A `64 m` bush stamp places 5335 plants in `12.3 ms`, and repeating it over the same ground
+costs `10.8 ms` while it adds nothing. A rock stamp takes `1.09 ms`. 100,000 remote edits change
+none of these by more than `5%`. The tool stamps once per half radius of cursor travel, so
+a wide bush stroke is an occasional hitch, not a per-frame cost.
+
 ### The forest floor loses the sky its crowns hide (2026-09-26)
 
 Inside a painted stand the floor read lighter than the meadow beside it

@@ -37,7 +37,7 @@ const LABEL_FADE_SECONDS := 0.25
 const LABEL_OFFSET_PX := 24.0
 
 # The radius is the only size control, and it also chooses between a point edit and a brush: at
-# the minimum a plant lands exactly under the cursor, and above it the disc fills a 4 m lattice.
+# the minimum a plant lands exactly under the cursor, and above it the disc scatters spaced plants.
 # The ground ring is therefore the mode readout as well as the footprint.
 const MIN_RADIUS_M := 1.0
 const MAX_RADIUS_M := 1024.0
@@ -73,7 +73,7 @@ var mode: Mode = Mode.PLANT:
 		if mode == value:
 			return
 		mode = value
-		radius = minf(radius, MAX_PAINT_RADIUS_M if mode == Mode.PLANT else MAX_RADIUS_M)
+		radius = minf(radius, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
 		_show_option_label()
 		mode_changed.emit(mode)
 var option_index := 0:
@@ -82,6 +82,7 @@ var option_index := 0:
 		if option_index == value:
 			return
 		option_index = value
+		radius = radius
 		_show_option_label()
 		option_changed.emit(option_index)
 var preset: int:
@@ -89,7 +90,7 @@ var preset: int:
 		return BRUSH_OPTIONS[option_index].preset
 var radius := MIN_RADIUS_M:
 	set(value):
-		radius = minf(value, MAX_PAINT_RADIUS_M if mode == Mode.PLANT else MAX_RADIUS_M)
+		radius = minf(value, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
 var preview: MeshInstance3D
 var _ring: TorusMesh
 var _ring_material: StandardMaterial3D
@@ -108,6 +109,10 @@ var _last_stamp := Vector2.INF
 # Where the ring sits while the pointer is on a popup instead of on the ground.
 var _last_hit := Vector3.INF
 var _menu_grab_frames := 0
+
+# This mirrors the native class budget; the preview must show the accepted footprint.
+func _paint_radius_limit() -> float:
+	return 64.0 if preset == 2 else MAX_PAINT_RADIUS_M
 
 func _ready() -> void:
 	_ring = TorusMesh.new()

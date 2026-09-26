@@ -134,6 +134,7 @@ impl VegetationEdits {
     /// Reserves batch capacity before committing edits and touched patch revisions.
     pub(crate) fn reserve(&mut self, cells: usize, patches: usize) {
         self.cells.reserve(cells);
+        self.blocks.reserve(cells);
         self.patch_generations.reserve(patches);
     }
 
@@ -164,6 +165,29 @@ impl VegetationEdits {
         self.blocks.insert(cell_block(cell));
     }
 
+    /// Reserves additions once per owner cell before the dependent acceptance pass.
+    pub(crate) fn reserve_added(&mut self, cell: VegetationCell, count: usize) {
+        self.cells.entry(cell).or_default().added.reserve(count);
+    }
+
+    /// Restores a generated plant while retaining a brush batch's reserved additions.
+    pub(crate) fn restore_reserved(&mut self, cell: VegetationCell) {
+        if let Some(edit) = self.cells.get_mut(&cell) {
+            edit.generated_removed = false;
+        }
+    }
+
+    /// Drops an unused batch reservation; empty cells have no saved or undo identity.
+    pub(crate) fn prune_empty(&mut self, cell: VegetationCell) {
+        if self
+            .cells
+            .get(&cell)
+            .is_some_and(|e| !e.generated_removed && e.added.is_empty())
+        {
+            self.cells.remove(&cell);
+        }
+    }
+
     /// Removes matching authored plants and advances the patch keys returned by the predicate.
     pub(crate) fn remove_added(
         &mut self,
@@ -192,7 +216,10 @@ impl VegetationEdits {
 
     /// Clones one cell's whole delta so an edit can be reversed, or `None` when untouched.
     pub(crate) fn snapshot_cell(&self, cell: VegetationCell) -> Option<CellEdit> {
-        self.cells.get(&cell).cloned()
+        self.cells
+            .get(&cell)
+            .filter(|edit| edit.generated_removed || !edit.added.is_empty())
+            .cloned()
     }
 
     /// Puts one cell back to a snapshot taken before an edit, in expected O(1).

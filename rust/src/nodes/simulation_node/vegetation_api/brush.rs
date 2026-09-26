@@ -29,9 +29,9 @@ struct MixEntry {
     variants: &'static [u8],
 }
 
-/// What one brush stroke plants, and how much of its lattice it keeps.
+/// What one brush stroke plants, and its candidate acceptance.
 pub(super) struct BrushPreset {
-    /// Fraction of otherwise clear lattice points that keep a plant.
+    /// Fraction of otherwise clear dart proposals that keep a plant.
     accept: f32,
     /// Instance scale band this preset places its plants in.
     scale: (f32, f32),
@@ -47,22 +47,22 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     // mesh the seed picks is only an unnamed two-to-one mix of pine and spruce and the mixes
     // below write their ratios down. They stay here because they are what the generator plants
     // and therefore what a repaint of a cleared cell has to match to collapse back to no edit.
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 3, variants: &[] }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: &[] }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: &[] }] },
+    BrushPreset { accept: 0.18, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: &[] }] },
+    BrushPreset { accept: 0.18, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 3, variants: &[] }] },
     // 4 Pine, 5 Spruce, 6 Birch, 7 Aspen: one named tree, pinned over the seed's choice.
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: SPRUCE_OR_ASPEN }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: SPRUCE_OR_ASPEN }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: PINE_OR_BIRCH }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: SPRUCE_OR_ASPEN }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: PINE_OR_BIRCH }] },
+    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: SPRUCE_OR_ASPEN }] },
     // 8, 9 and 10 are the three mixes, which the brush numbers rather than names.
     //
     // 8 is a managed stand. The weights are Finnish growing stock: pine leads, spruce follows,
-    // birch is most of the rest and aspen is an accent. At 0.85 of a 4 m lattice this is
+    // birch is most of the rest and aspen is an accent. Its calibrated acceptance targets
     // about 530 stems/ha, which is inside the real 400-700 of a managed stand.
     BrushPreset {
-        accept: 0.85,
+        accept: 0.25,
         scale: DEFAULT_SCALE,
         mix: &[
             MixEntry { weight: 50, species: 0, variants: PINE_OR_BIRCH },
@@ -75,7 +75,7 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     // rather than as a stand, at a larger scale band because a tree with room around it is
     // larger than one that grew up under a canopy.
     BrushPreset {
-        accept: 0.10,
+        accept: 0.0125,
         scale: (0.95, 1.45),
         mix: &[
             MixEntry { weight: 45, species: 1, variants: PINE_OR_BIRCH },
@@ -88,7 +88,7 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     // stems/ha and a lowered scale band. It is the density dial and the size dial moving
     // together, and it does not yet read as any particular real place.
     BrushPreset {
-        accept: 0.35,
+        accept: 0.06,
         scale: (0.45, 0.75),
         mix: &[
             MixEntry { weight: 65, species: 1, variants: PINE_OR_BIRCH },
@@ -103,18 +103,23 @@ pub(super) fn preset(index: i64) -> Option<&'static BrushPreset> {
 }
 
 impl BrushPreset {
-    /// Whether this preset keeps the lattice point at one cell of a stream's own grid.
+    /// Applies fixed per-proposal thinning to clump and brush-edge influence.
     ///
     /// The decision is a pure function of the cell and the stream's salt, so a stroke thins
-    /// to the same plants however its points are ordered and however often it is repeated.
-    pub(super) fn keeps(&self, x: i32, z: i32, salt: u32) -> bool {
-        self.accept >= 1.0 || unit(x, z, salt.wrapping_add(7)) < self.accept
+    /// to the same candidates however often the same stamp is repeated.
+    pub(super) fn keeps(&self, x: i32, z: i32, salt: u32, influence: f32) -> bool {
+        unit(x, z, salt.wrapping_add(7)) < self.accept * influence
     }
 
-    /// Picks the species and the biased variant pin for one lattice point.
+    /// Occupancy and proposal budget shared by every species in this preset.
+    pub(super) fn class(&self) -> PlantClass {
+        PlantClass::of(self.mix[0].species)
+    }
+
+    /// Picks the species and the biased variant pin for one proposal.
     pub(super) fn plant(&self, x: i32, z: i32, salt: u32) -> (u8, u8) {
         // Eight of the eleven presets offer one choice, and a weighted pick over one entry can
-        // only return that entry. Skipping it drops a hash from every lattice point of every
+        // only return that entry. Skipping it drops a hash from every proposal of every
         // named-tree stroke; the pick it replaces would land in the same place.
         if let [only] = self.mix {
             return self.pick_variant(only, x, z, salt);
@@ -138,12 +143,12 @@ impl BrushPreset {
         self.pick_variant(entry, x, z, salt)
     }
 
-    // One mix entry's species and the biased mesh pin it plants at one lattice point.
+    // One mix entry's species and the biased mesh pin it plants at one proposal.
     fn pick_variant(&self, entry: &MixEntry, x: i32, z: i32, salt: u32) -> (u8, u8) {
         if entry.variants.is_empty() {
             return (entry.species, VARIANT_FROM_SEED);
         }
-        // Indexed rather than filtered: a filter would allocate once per lattice point, and
+        // Indexed rather than filtered: a filter would allocate once per proposal, and
         // this runs for every point of every stamp. The clamp absorbs a rounded multiply that
         // reached the length.
         let last = entry.variants.len() - 1;
@@ -164,5 +169,53 @@ impl BrushPreset {
         }
         let t = (scale - DEFAULT_SCALE.0) / (DEFAULT_SCALE.1 - DEFAULT_SCALE.0);
         self.scale.0 + t * (self.scale.1 - self.scale.0)
+    }
+}
+
+/// Independent exclusion groups; generator layers remain save and rendering identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PlantClass {
+    /// Conifer and broadleaf stems; crowns may overlap.
+    Tree,
+    /// Bush catalogue, including low plants and saplings.
+    Ground,
+    /// Decorative rocks.
+    Rock,
+}
+
+impl PlantClass {
+    /// Derives occupancy without changing stored species or owner cells.
+    pub(super) fn of(species: u8) -> Self {
+        match species {
+            0 | 1 => Self::Tree,
+            2 => Self::Ground,
+            _ => Self::Rock,
+        }
+    }
+
+    /// Minimum center distance in metres for new plants of this class.
+    pub(super) fn spacing(self) -> f32 {
+        match self {
+            Self::Tree => 2.5,
+            Self::Ground => 0.8,
+            Self::Rock => 3.0,
+        }
+    }
+
+    /// Radius limit bounds two proposals per cell to at most 169,362 darts.
+    pub(super) fn max_radius(self) -> f32 {
+        match self {
+            Self::Ground => 64.0,
+            _ => 256.0,
+        }
+    }
+
+    /// Footprint appropriate to the species, independent of its saved owner layer.
+    pub(super) fn clearance_layer(self) -> crate::simulation::vegetation::edits::VegetationLayer {
+        use crate::simulation::vegetation::edits::VegetationLayer;
+        match self {
+            Self::Tree => VegetationLayer::Canopy,
+            _ => VegetationLayer::Understory,
+        }
     }
 }

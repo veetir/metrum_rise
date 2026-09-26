@@ -240,7 +240,7 @@ mod tests {
         let revisions = generations(&core, key);
         assert!(remove_at(&mut core, Vector2::ZERO, 40.0, 0) > 0);
         assert!(add_at(&mut core, Vector2::new(0.25, 1.0), 0));
-        assert!(add_at(&mut core, Vector2::new(-0.25, 1.0), 1));
+        assert!(add_at(&mut core, Vector2::new(-2.5, 1.0), 1));
         assert!(add_at(&mut core, Vector2::new(0.0, 15.0), 3));
         assert_ne!(generations(&core, key), revisions);
         let edited = check_products(&core);
