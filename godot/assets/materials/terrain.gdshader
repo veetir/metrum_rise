@@ -930,13 +930,19 @@ void fragment() {
 		// (1 - cover) ^ (1 + side_ratio * cot(a)). At a few degrees a stand that covers a tenth
 		// of the ground from above hides most of it. O(1): one pow, on a fetch already made.
 		float far_ramp = smoothstep(canopy_far_begin_m, canopy_far_end_m, var_view_distance_m);
+		float crowns_seen = 0.0;
 		if (far_ramp > 0.0) {
 			vec3 to_camera = CAMERA_POSITION_WORLD - var_world_pos;
 			float cot_elevation = length(to_camera.xz) / max(to_camera.y, 0.001);
 			float gap = pow(1.0 - min(land_cover, 0.999),
 				1.0 + canopy_far_side_ratio * cot_elevation);
-			color = mix(color, canopy_far_albedo, (1.0 - gap) * far_ramp);
+			crowns_seen = (1.0 - gap) * far_ramp;
+			color = mix(color, canopy_far_albedo, crowns_seen);
 		}
+		// The crowns this stands in for see the open sky; only the floor seen between them
+		// lies under the canopy. Taking the floor's sky share for the crowns too left a closed
+		// stand at 40% of the sky past the far range, which turned a dense stand nearly black.
+		floor_sky = mix(floor_sky, 1.0, crowns_seen);
 		vec2 world_uv = clamp(
 			vec2(
 				var_world_pos.x / max(world_size.x, 0.001),

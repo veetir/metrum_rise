@@ -790,6 +790,17 @@ multiplies and a mix on a coverage fetch the shader already made; no frame time 
 `terrain_overlay_shader_test` holds the sky share inside the cascades and the combined shade
 past them.
 
+Past the far range the same ground also stands in for the crowns, and the first version gave
+them the floor's sky share too, so a closed stand past 4.5 km turned nearly black. Only the
+floor seen between the crowns now keeps that share; the part the crown stand-in covers takes
+the open sky. A painted closed birch stand just past the far range, at 07:30 on the GTX 1060,
+measures `99.2` luminance before and `105.6` after, against `108.7` with trees drawn to 12 km;
+at 5.2 km closed mixed and birch stands go from `0.95` and `0.88` of the trees to `1.03` and
+`0.95`. The crown albedo itself was not the cause and is unchanged. `farfit` in the scratch
+probe passes the albedo as a `Color`, which reached the shader far darker than the shipped
+`Vector3`, so fits made with it do not transfer. The overlay test captures in sRGB, so its
+floor-shade ratios are now linearised before comparison; it had failed since it was written.
+
 ### The ground stands in for the trees past the far range (2026-09-25)
 
 Past `TREE_FAR_M` (`4500 m`) no tree is drawn, and the only trace of a stand was the forest-floor

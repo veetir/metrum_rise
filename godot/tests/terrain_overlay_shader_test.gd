@@ -114,7 +114,8 @@ func _run() -> void:
 					camera.position = Vector3(0.0, height, 0.0)
 					camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
 					var shade_image := await _capture(viewport)
-					var shade := _rgb(shade_image.get_pixel(32, 32)).length()
+					# The capture is sRGB encoded; the shade terms are ratios of linear light.
+					var shade := _rgb(shade_image.get_pixel(32, 32).srgb_to_linear()).length()
 					floor_shade_samples[Vector4(cover, transmission, strength, height)] = shade
 					print(
 						"terrain_floor_shade cover=%.1f sky=%.2f strength=%.1f height=%.0f shade=%.6f"
@@ -135,7 +136,6 @@ func _run() -> void:
 		absf(covered_near - unshaded_near) < 0.002,
 		"inside shadow range the tree shadows take the sun, so the far term may change nothing"
 	)
-	# The capture is tone mapped, so the measured ratios trail the linear ones slightly.
 	_expect(
 		absf(covered_near - open_sky_near * sky_share) < 0.02,
 		"a closed canopy must pass only its transmission share of the sky to its floor"
@@ -144,6 +144,25 @@ func _run() -> void:
 	_expect(
 		absf(covered_far - expected) < 0.02,
 		"covered ground past the cascades must lose the sun its crowns would shade"
+	)
+	# Past the far range the ground stands in for the crowns, and the crowns see the open sky.
+	# Under a closed canopy the floor's sky share must not reach them: it turned a dense stand
+	# nearly black. The camera looks straight down, so the stand-in covers the whole view.
+	material.set_shader_parameter("land_cover_texture", _texture(Color.WHITE))
+	material.set_shader_parameter("canopy_floor_shade", 0.0)
+	material.set_shader_parameter("canopy_far_begin_m", 0.0)
+	material.set_shader_parameter("canopy_far_end_m", 1.0)
+	camera.position = Vector3(0.0, 10.0, 0.0)
+	camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
+	var crown_sky := {}
+	for transmission in [1.0, sky_share]:
+		material.set_shader_parameter("canopy_floor_sky_transmission", transmission)
+		var crown_image := await _capture(viewport)
+		crown_sky[transmission] = _rgb(crown_image.get_pixel(32, 32).srgb_to_linear()).length()
+		print("terrain_far_crowns sky=%.2f shade=%.6f" % [transmission, crown_sky[transmission]])
+	_expect(
+		absf(crown_sky[sky_share] - crown_sky[1.0]) < 0.01 * crown_sky[1.0] + 0.002,
+		"the crowns the far ground stands in for must see the open sky, not the floor's share"
 	)
 	material.set_shader_parameter("canopy_floor_shade", 1.0)
 	viewport.queue_free()
