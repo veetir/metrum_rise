@@ -84,8 +84,11 @@ const UNDERSTORY_STAGGER_MIN := 0.75
 const PATCH_SUBDIVISION := 4
 # Retain richer content beyond its entry distance. Never delay an approaching upgrade.
 const BAND_HYSTERESIS_M := 64.0
-# A single upload is indivisible and may exceed this soft budget.
+# A single upload is indivisible and may exceed these soft budgets. A patch that draws nothing
+# yet gets the larger one: at 2 ms a camera flying over forest left up to 220 wanted patches
+# unbuilt, and the ground showed through where their trees belonged.
 const UPLOAD_BUDGET_USEC := 2000
+const MISSING_UPLOAD_BUDGET_USEC := 6000
 
 ## Which level a patch casts its shadows from. NEAR is correct and expensive, PROXY is cheap
 ## and wrong up close, NONE is for patches the sun's shadow range does not reach at all.
@@ -120,6 +123,12 @@ var cache: Dictionary = {}
 var queue: Array[Vector3i] = []
 # Membership avoids duplicate work when camera checks and edit polling overlap.
 var queued: Dictionary = {}
+# Patches no longer wanted that stay drawn until the wanted patches over their area are built.
+# A terrain block that moves between the coarse and fine grids swaps one patch for sixteen, and
+# hiding the old one first left the whole 510 m block bare until the last of them uploaded.
+var standins: Dictionary = {}
+# The wanted set of the last residency pass, which decides when a stand-in may go.
+var wanted_keys: Dictionary = {}
 # The two revision counters at the last staleness sweep; the sweep reruns when either moves.
 var stale_land_epoch := -1
 var stale_surface_revision := -1
@@ -245,6 +254,10 @@ func rebuild_from_simulation_state() -> void:
 	for patch in cache.values():
 		patch.queue_free()
 	cache.clear()
+	for patch in standins.values():
+		patch.queue_free()
+	standins.clear()
+	wanted_keys.clear()
 	queue.clear()
 	queued.clear()
 	stale_land_epoch = -1
@@ -282,9 +295,9 @@ func _process(_delta: float) -> void:
 		last_camera_cell = camera_cell
 		var wanted: Dictionary = {}
 		var world: Vector2 = simulation.get_terrain_world_size()
-		# Terrain residency is the frustum test, and it is answered on the terrain grid. Each
-		# resident terrain patch expands into the sub-patches it owns, so the frustum stays
-		# terrain-coarse while every distance below is answered on the finer grid.
+		# Terrain residency is answered on the terrain grid. Each resident terrain patch expands
+		# into the sub-patches it owns, so residency stays terrain-coarse while every distance
+		# below is answered on the finer grid.
 		var fine_radius := _fine_tier_radius()
 		for terrain_key in terrain.get_resident_patch_keys():
 			var block := Vector2i(terrain_key)
@@ -302,13 +315,24 @@ func _process(_delta: float) -> void:
 							wanted[key] = center.distance_squared_to(camera_xz)
 			elif block_distance <= canopy_far_m() + terrain_span:
 				wanted[Vector3i(block.x, block.y, 1)] = block_center.distance_squared_to(camera_xz)
+		wanted_keys = wanted
 		for key in patches.keys():
 			if not wanted.has(key):
-				_retire_patch(key, world, camera_xz)
+				var outgoing: Node3D = patches[key]
+				tree_count -= int(outgoing.get_meta("tree_count"))
+				patches.erase(key)
+				standins[key] = outgoing
 		# A cached patch outside the scatter radius will not be wanted again from here, so it
-		# is freed. This is what bounds the cache: it holds at most the patches of one disk.
+		# is freed. A cached fine patch is freed once its block is a whole terrain patch past
+		# the fine tier: residency covers every direction, so the cache only serves a camera
+		# moving back. Keeping fine patches over the whole disk held dozens of nodes each, and
+		# every vegetation node takes 16 of the 65536 instance uniform slots, so a long flight
+		# overflowed the buffer and new trees failed to draw.
+		var fine_keep := fine_radius + terrain_span * (1.0 + PATCH_HALF_DIAGONAL)
 		for key in cache.keys():
-			if _patch_distance(key, world, camera_xz) > canopy_far_m() + _key_span(key):
+			var cached_distance := _patch_distance(key, world, camera_xz)
+			if (cached_distance > canopy_far_m() + _key_span(key)
+					or (key.z > 1 and cached_distance > fine_keep)):
 				cache[key].queue_free()
 				cache.erase(key)
 		# Preserve pending edits through residency changes. Compact in O(queue size), rather
@@ -324,13 +348,25 @@ func _process(_delta: float) -> void:
 		for key in wanted:
 			if patches.has(key):
 				continue
+			if standins.has(key):
+				patches[key] = standins[key]
+				standins.erase(key)
+				tree_count += int(patches[key].get_meta("tree_count"))
+				if _is_patch_stale(key, owner_generations):
+					_queue_patch(key)
+				continue
 			if cache.has(key):
 				_restore_patch(key)
 				if _is_patch_stale(key, owner_generations):
 					_queue_patch(key)
 				continue
 			_queue_patch(key)
-		queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return wanted[a] > wanted[b])
+		# Popped from the back: patches that draw nothing yet come last, nearest last of all.
+		queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
+			var a_missing := not patches.has(a)
+			if a_missing != (not patches.has(b)):
+				return not a_missing
+			return wanted[a] > wanted[b])
 	# O(resident patches) on camera/residency changes only. Rotation about a stationary
 	# camera changes no distance; restored patches still need their mesh and band checks.
 	if residency_changed or camera_xz != last_band_camera_xz:
@@ -372,13 +408,44 @@ func _process(_delta: float) -> void:
 		_upload_patch(next, _key_span(next))
 		budget -= 1
 		uploads += 1
-		if Time.get_ticks_usec() - upload_start >= UPLOAD_BUDGET_USEC:
+		var limit := UPLOAD_BUDGET_USEC
+		if not queue.is_empty() and not patches.has(queue.back()):
+			limit = MISSING_UPLOAD_BUDGET_USEC
+		if Time.get_ticks_usec() - upload_start >= limit:
 			break
+	if not standins.is_empty():
+		_release_standins(camera_xz)
+
+## Puts away every stand-in whose area the wanted patches now cover. O(stand-ins x the
+## sub-patches of one terrain patch), and stand-ins exist only while a tier change uploads.
+func _release_standins(camera_xz: Vector2) -> void:
+	var world: Vector2 = simulation.get_terrain_world_size()
+	for key in standins.keys():
+		if _area_built(key):
+			_put_away(key, standins[key], world, camera_xz)
+			standins.erase(key)
+
+## Whether no wanted patch over this key's area is still waiting for its first upload.
+func _area_built(key: Vector3i) -> bool:
+	var divisor := patch_subdivision()
+	if key.z == 1:
+		for column in range(divisor):
+			for row in range(divisor):
+				var fine := Vector3i(key.x * divisor + column, key.y * divisor + row, divisor)
+				if wanted_keys.has(fine) and not patches.has(fine):
+					return false
+		return true
+	var coarse := Vector3i(floori(float(key.x) / divisor), floori(float(key.y) / divisor), 1)
+	return not (wanted_keys.has(coarse) and not patches.has(coarse))
 
 func _queue_patch(key: Vector3i) -> void:
 	if not queued.has(key):
 		queued[key] = true
-		queue.append(key)
+		# A patch that already draws something waits behind every patch that draws nothing.
+		if patches.has(key):
+			queue.push_front(key)
+		else:
+			queue.append(key)
 
 func _bands_changed(patch: Node3D, distance: float, span: float) -> bool:
 	var understory := bool(patch.get_meta("understory"))
@@ -485,12 +552,16 @@ func set_cast_shadows(value: bool) -> void:
 					or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
 
 ## Takes a patch out of the drawn set. A patch still inside the scatter radius is hidden and
-## kept, because terrain residency is frustum-derived and will very likely ask for it again
-## within a few frames. Only a patch that is genuinely out of range is freed.
+## kept, because a camera moving back will very likely ask for it again. Only a patch that is
+## genuinely out of range is freed.
 func _retire_patch(key: Vector3i, world: Vector2, camera_xz: Vector2) -> void:
 	var patch: Node3D = patches[key]
 	tree_count -= int(patch.get_meta("tree_count"))
 	patches.erase(key)
+	_put_away(key, patch, world, camera_xz)
+
+## Hides a patch that left the drawn set into the cache, or frees it when out of range.
+func _put_away(key: Vector3i, patch: Node3D, world: Vector2, camera_xz: Vector2) -> void:
 	if _patch_distance(key, world, camera_xz) <= canopy_far_m() + _key_span(key):
 		patch.visible = false
 		cache[key] = patch

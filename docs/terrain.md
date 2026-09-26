@@ -4299,6 +4299,16 @@ What is implemented now:
   budget with at least one per frame. Matched release runs, GTX 1060, same pose, camera still, with
   the all-direction residency above: vegetation `_process` `3.87 -> 0.014 ms`, frame `10.1 -> 7.1 ms`
   p50. One upload is indivisible and can still take `18 ms`
+- vegetation patches (2026-09-26) that leave the wanted set stay drawn as stand-ins until the
+  wanted patches over their area are built. A terrain block crossing the fine-tier radius swaps
+  one coarse patch for sixteen fine ones, and hiding the coarse one first left the whole `510 m`
+  block bare until the last fine one uploaded. Patches that draw nothing are uploaded before
+  refreshes of patches that already draw, under a `6 ms` budget instead of `2 ms`. A cached fine
+  patch is freed once its block is a whole terrain patch past the fine tier: every vegetation node
+  takes 16 of Godot's 65536 instance uniform slots, and a cache of fine patches over the whole
+  scatter disk overflowed the buffer on a long flight, so new trees failed to draw. A scripted
+  flight over 9 km of Kuopio forest: wanted patches still unbuilt peak at 26 against 220, of
+  which at most 9 show bare ground, and the cache holds 44-67 patches against over 300
 - terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
   LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
   perf captures
