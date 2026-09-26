@@ -29,25 +29,26 @@ uniform float volume_lift_gain = 2.0;
 uniform float volume_wrap_floor = 0.0;
 uniform float volume_wrap_gain = 1.5;
 
-varying vec2 frame_uv0;
-varying vec2 frame_uv1;
-varying vec2 frame_uv2;
-varying flat vec2 cell0;
-varying flat vec2 cell1;
-varying flat vec2 cell2;
+// Varyings are packed: each one takes a slot however few components it has, and some drivers
+// allow 31 slots with the built-ins included. Metal on macOS is one, and an unpacked shader
+// that used 32 failed there and drew no far trees.
+// Frame UVs 0 (xy) and 1 (zw).
+varying vec4 frame_uv01;
+// Frame UV 2 (xy) and the shadow keep (z).
+varying vec3 frame_uv2_keep;
+// Atlas cells 0 (xy) and 1 (zw).
+varying flat vec4 cells01;
+// Atlas cell 2 (xy), the form layer (z) and the handover crossfade (w).
+varying flat vec4 cell2_layer_fade;
+// Instance tint (xyz) and the far fade (w).
+varying flat vec4 tint_far;
 varying flat vec3 weights;
-varying flat float form_layer;
-varying flat vec3 instance_tint;
 // The canopy shade and its distance ramp, the height of the card above the instance origin at
 // unit scale, which stands in for the height of the surface drawn on it, and the base ramp. The height is
 // interpolated and the base term taken per fragment: the card reaches below the ground, and a
-// base term blended between its corners darkened the whole crown. One varying for the three,
-// because the shader is at the varying limit.
+// base term blended between its corners darkened the whole crown. One varying for the three.
 varying vec4 canopy_card;
-varying float shadow_keep;
 varying float volume_wrap;
-varying flat float crossfade;
-varying flat float far_fade;
 // Baked object-space normals to view space, for this instance. The fragment stage of a
 // MultiMesh sees the node's MODEL_NORMAL_MATRIX, not the instance's, so a normal transformed
 // there ignored each tree's own yaw: every impostor was lit as if it faced one way, and over a
@@ -74,14 +75,13 @@ vec2 project_frame(vec3 offset, vec2 cell) {
 
 void vertex() {
 	int layer = int(INSTANCE_CUSTOM.x);
-	form_layer = float(layer);
-	instance_tint = INSTANCE_CUSTOM.yzw;
 	vec3 centre = bounds_centre[layer];
 	vec3 camera_object = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
 	vec3 view = normalize(camera_object - centre);
 	vec2 f = (hemi_encode(view) * 0.5 + 0.5) * 8.0 - 0.5;
 	vec2 base = floor(f);
 	vec2 part = fract(f);
+	vec2 cell0;
 	if (part.x + part.y < 1.0) {
 		cell0 = base;
 		weights = vec3(1.0 - part.x - part.y, part.x, part.y);
@@ -90,8 +90,8 @@ void vertex() {
 		weights = vec3(part.x + part.y - 1.0, 1.0 - part.y, 1.0 - part.x);
 	}
 	cell0 = clamp(cell0, vec2(0.0), vec2(7.0));
-	cell1 = clamp(base + vec2(1.0, 0.0), vec2(0.0), vec2(7.0));
-	cell2 = clamp(base + vec2(0.0, 1.0), vec2(0.0), vec2(7.0));
+	vec2 cell1 = clamp(base + vec2(1.0, 0.0), vec2(0.0), vec2(7.0));
+	vec2 cell2 = clamp(base + vec2(0.0, 1.0), vec2(0.0), vec2(7.0));
 	vec3 right = cross(vec3(0.0, 1.0, 0.0), view);
 	// Exactly overhead has no preferred azimuth; keep a finite camera-facing basis.
 	right = dot(right, right) > 0.000001 ? normalize(right) : vec3(1.0, 0.0, 0.0);
@@ -100,17 +100,18 @@ void vertex() {
 	VERTEX = centre + offset * bounds_size[layer];
 	NORMAL = view;
 	normal_to_view = mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX;
-	frame_uv0 = project_frame(offset, cell0);
-	frame_uv1 = project_frame(offset, cell1);
-	frame_uv2 = project_frame(offset, cell2);
+	frame_uv01 = vec4(project_frame(offset, cell0), project_frame(offset, cell1));
+	cells01 = vec4(cell0, cell1);
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float view_distance_m = distance(world, CAMERA_POSITION_WORLD);
 	canopy_card = vec4(vegetation_canopy_shade_parts(MODEL_MATRIX[3].xz, view_distance_m), VERTEX.y,
 		vegetation_canopy_base_ramp(view_distance_m));
-	shadow_keep = vegetation_shadow_keep(view_distance_m);
-	crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
-	far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
+	frame_uv2_keep = vec3(project_frame(offset, cell2), vegetation_shadow_keep(view_distance_m));
+	float crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	float far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
 		distance(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz));
+	cell2_layer_fade = vec4(cell2, float(layer), crossfade);
+	tint_far = vec4(INSTANCE_CUSTOM.yzw, far_fade);
 	// A tree still wholly branched, or wholly given to the ground, draws no impostor.
 	if (crossfade <= 0.0 || far_fade >= 1.0) {
 		VERTEX = vec3(0.0);
@@ -129,16 +130,16 @@ float frame_lod(vec2 uv) {
 
 vec3 atlas_uv(vec2 uv, vec2 cell, float lod) {
 	float inset = 0.5 * exp2(ceil(lod)) / FRAME_PX;
-	return vec3((cell + clamp(uv, vec2(inset), vec2(1.0 - inset))) / 8.0, form_layer);
+	return vec3((cell + clamp(uv, vec2(inset), vec2(1.0 - inset))) / 8.0, cell2_layer_fade.z);
 }
 
 void fragment() {
-	float lod0 = frame_lod(frame_uv0);
-	float lod1 = frame_lod(frame_uv1);
-	float lod2 = frame_lod(frame_uv2);
-	vec3 uv0 = atlas_uv(frame_uv0, cell0, lod0);
-	vec3 uv1 = atlas_uv(frame_uv1, cell1, lod1);
-	vec3 uv2 = atlas_uv(frame_uv2, cell2, lod2);
+	float lod0 = frame_lod(frame_uv01.xy);
+	float lod1 = frame_lod(frame_uv01.zw);
+	float lod2 = frame_lod(frame_uv2_keep.xy);
+	vec3 uv0 = atlas_uv(frame_uv01.xy, cells01.xy, lod0);
+	vec3 uv1 = atlas_uv(frame_uv01.zw, cells01.zw, lod1);
+	vec3 uv2 = atlas_uv(frame_uv2_keep.xy, cell2_layer_fade.xy, lod2);
 	vec4 albedo = textureLod(albedo_atlas, uv0, lod0) * weights.x
 		+ textureLod(albedo_atlas, uv1, lod1) * weights.y
 		+ textureLod(albedo_atlas, uv2, lod2) * weights.z;
@@ -149,7 +150,7 @@ void fragment() {
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(volume_lift_gain * spread, 0.0, 1.0)));
 	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
-	vec3 tinted = albedo.rgb * instance_tint;
+	vec3 tinted = albedo.rgb * tint_far.rgb;
 	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w));
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
@@ -157,13 +158,13 @@ void fragment() {
 	volume_wrap = clamp(volume_wrap_floor + volume_wrap_gain * spread, 0.0, 1.0);
 	// The far fade drops the pixels whose threshold is under its share, the same threshold the
 	// handover keeps below its own, so the two never compete for one pixel.
-	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, crossfade, true)
-		&& !vegetation_crossfade_keeps(FRAGCOORD.xy, far_fade, true) ? albedo.a : 0.0;
+	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, cell2_layer_fade.w, true)
+		&& !vegetation_crossfade_keeps(FRAGCOORD.xy, tint_far.w, true) ? albedo.a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
 }
 
 void light() {
-	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
+	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, frame_uv2_keep.z);
 	// No sun highlight. A lifted normal faces the sky, and against a low sun ahead the grazing
 	// Fresnel term lit the impostor 47% above the near crown, whose normals mostly face away.
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT,
