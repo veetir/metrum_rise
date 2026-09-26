@@ -127,6 +127,12 @@ func _input(event):
 		return
 	if event is InputEventMouseButton:
 		_handle_zoom_wheel(event)
+	# MMB orbit turns by the exact motion of each event. The polled mouse velocity it replaces
+	# is refreshed about every 100 ms, so the turn started late and ran on after the hand stopped.
+	elif event is InputEventMouseMotion and event.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
+		var camera := get_viewport().get_camera_3d() as CameraNode
+		if camera:
+			camera.orbit(event.relative)
 
 func _handle_camera_controls(delta):
 	var camera := get_viewport().get_camera_3d() as CameraNode
@@ -141,12 +147,6 @@ func _handle_camera_controls(delta):
 	
 	if pan_dir.length_squared() > 0.0:
 		camera.pan(pan_dir, 1.0, delta)
-		
-	# MMB Orbit
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE):
-		var mouse_vel = Input.get_last_mouse_velocity()
-		if mouse_vel.length() > 0.1:
-			camera.orbit(mouse_vel * delta)
 
 func _unhandled_input(event):
 	if _ui_captures_keyboard_input():
