@@ -2,7 +2,7 @@
 
 ## Vegetation presentation reuses terrain residency; Rust owns the generated and edited state.
 ## Rust supplies deterministic patch-local placements for four species: conifer, broadleaf,
-## bush and rock. Uploads at most one terrain patch of area per frame.
+## bush and rock. Uploads use a time budget, with at least one pending upload per frame.
 ## A patch regenerates when the terrain renderer commits a newer surface generation for it,
 ## or Rust advances its independent vegetation revision. Later surface edits clear generated
 ## scatter; player placements remain authoritative.
@@ -82,6 +82,12 @@ const UNDERSTORY_STAGGER_MIN := 0.75
 # conservative. Subdividing raises the distant instance count by its square, which is the
 # cost this buys the near band's area reduction with.
 const PATCH_SUBDIVISION := 4
+# Retain richer content beyond its entry distance. Never delay an approaching upgrade.
+const BAND_HYSTERESIS_M := 64.0
+# There is no global vegetation revision API. Poll a bounded slice of resident keys instead.
+const STALE_CHECKS_PER_FRAME := 8
+# A single upload is indivisible and may exceed this soft budget.
+const UPLOAD_BUDGET_USEC := 2000
 
 ## Which level a patch casts its shadows from. NEAR is correct and expensive, PROXY is cheap
 ## and wrong up close, NONE is for patches the sun's shadow range does not reach at all.
@@ -114,6 +120,11 @@ var patches: Dictionary = {}
 # wanted again. These are hidden rather than freed, because rebuilding one costs a frame.
 var cache: Dictionary = {}
 var queue: Array[Vector3i] = []
+# Membership avoids duplicate work when camera checks and edit polling overlap.
+var queued: Dictionary = {}
+var stale_check_keys: Array = []
+var stale_check_cursor := 0
+var last_band_camera_xz := Vector2.INF
 # meshes[species][variant] is an Array[ArrayMesh], ordered near to far.
 var meshes: Array = []
 var last_revision := -1
@@ -124,12 +135,8 @@ var last_camera_cell := Vector2i(2147483647, 2147483647)
 var tree_count := 0
 var generated_patches := 0
 var generation_ms_max := 0.0
-# Both staleness generations, keyed by owner patch, for the duration of one sweep. Every
-# sub-patch of one terrain patch shares an owner, so the sweep asked the same two questions
-# across the language boundary once per sub-patch: PATCH_SUBDIVISION squared times the
-# answers it needed. Only the sweep reads it; _is_patch_stale and _upload_patch called from
-# anywhere else still cross, because their answer is about the moment they are called. The
-# dictionary is cleared, never replaced, to keep the sweep allocation-free.
+# Cache generations only while restoring patches in one residency pass. Idle polling uses
+# direct reads, so it adds no dictionary entries or allocations to the per-frame path.
 var owner_generations: Dictionary = {}
 var ready_for_world := false
 @onready var terrain = $"../Terrain"
@@ -239,6 +246,10 @@ func rebuild_from_simulation_state() -> void:
 		patch.queue_free()
 	cache.clear()
 	queue.clear()
+	queued.clear()
+	stale_check_keys.clear()
+	stale_check_cursor = 0
+	last_band_camera_xz = Vector2.INF
 	tree_count = 0
 	generated_patches = 0
 	generation_ms_max = 0.0
@@ -265,7 +276,8 @@ func _process(_delta: float) -> void:
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
-	if revision != last_revision or camera_cell != last_camera_cell:
+	var residency_changed := revision != last_revision or camera_cell != last_camera_cell
+	if residency_changed:
 		last_revision = revision
 		last_camera_cell = camera_cell
 		var wanted: Dictionary = {}
@@ -299,44 +311,82 @@ func _process(_delta: float) -> void:
 			if _patch_distance(key, world, camera_xz) > canopy_far_m() + _key_span(key):
 				cache[key].queue_free()
 				cache.erase(key)
-		queue.clear()
+		# Preserve pending edits through residency changes. Compact in O(queue size), rather
+		# than removing array entries one by one or discarding work that polling found.
+		var retained := 0
+		for key in queue:
+			if wanted.has(key):
+				queue[retained] = key
+				retained += 1
+			else:
+				queued.erase(key)
+		queue.resize(retained)
 		for key in wanted:
 			if patches.has(key):
 				continue
-			# A cached patch is already built. Showing it again costs no upload, so it does
-			# not enter the queue and does not compete with a patch that has none.
 			if cache.has(key):
 				_restore_patch(key)
+				if _is_patch_stale(key, owner_generations):
+					_queue_patch(key)
 				continue
-			queue.append(key)
+			_queue_patch(key)
 		queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return wanted[a] > wanted[b])
-	if queue.is_empty():
-		# O(resident patches) per frame: one dictionary lookup and one distance. A road,
-		# building or terrain edit advances the terrain surface generation of the patches it
-		# covered, and only those patches regenerate. The two range checks rebuild a patch
-		# when it crosses the distance where the understory or the near band starts or stops.
+		stale_check_keys = wanted.keys()
+	# O(resident patches) on camera/residency changes only. Rotation about a stationary
+	# camera changes no distance; restored patches still need their mesh and band checks.
+	if residency_changed or camera_xz != last_band_camera_xz:
+		last_band_camera_xz = camera_xz
 		var world: Vector2 = simulation.get_terrain_world_size()
 		for key in patches:
 			var patch: Node3D = patches[key]
-			var key_span := _key_span(key)
 			var distance := _patch_distance(key, world, camera_xz)
 			_refresh_near_detail(patch, distance)
-			if (
-				_is_patch_stale(key, owner_generations)
-				or _understory_wanted(distance, key_span) != bool(patch.get_meta("understory"))
-				or _near_band_wanted(distance, key_span) != bool(patch.get_meta("near_band"))
-				or _shadow_caster_wanted(distance, key_span) != int(patch.get_meta("shadow_caster"))
-			):
-				queue.append(key)
-	# The budget is an area, not a count. One upload per frame was one terrain patch per
-	# frame, and a sub-patch covers a square of that, so the same ground per frame is
-	# PATCH_SUBDIVISION squared of them. Holding the count instead would make the time to
-	# settle grow with the square of the subdivision, and in a dense forest that is minutes.
+			if _bands_changed(patch, distance, _key_span(key)):
+				_queue_patch(key)
+	# O(STALE_CHECKS_PER_FRAME) when idle, independent of city size. With stable residency
+	# every patch is checked within ceil(resident keys / STALE_CHECKS_PER_FRAME) frames.
+	# Poll even while uploads are pending, so a long upload queue cannot hide an edit.
+	for _i in range(mini(STALE_CHECKS_PER_FRAME, stale_check_keys.size())):
+		stale_check_cursor %= stale_check_keys.size()
+		var key: Vector3i = stale_check_keys[stale_check_cursor]
+		stale_check_cursor += 1
+		if patches.has(key) and _is_patch_stale(key):
+			_queue_patch(key)
+	# Retain the area/count limit as a ceiling, but stop after the first upload that exhausts
+	# the elapsed-time budget. A valid cached patch or an obsolete band request costs no upload.
 	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor
+	var upload_start := Time.get_ticks_usec()
+	var uploads := 0
 	while budget > 0 and not queue.is_empty():
 		var next: Vector3i = queue.pop_back()
+		queued.erase(next)
+		if patches.has(next):
+			var world: Vector2 = simulation.get_terrain_world_size()
+			var distance := _patch_distance(next, world, camera_xz)
+			if not _is_patch_stale(next) and not _bands_changed(patches[next], distance, _key_span(next)):
+				if uploads > 0 and Time.get_ticks_usec() - upload_start >= UPLOAD_BUDGET_USEC:
+					break
+				continue
 		_upload_patch(next, _key_span(next))
 		budget -= 1
+		uploads += 1
+		if Time.get_ticks_usec() - upload_start >= UPLOAD_BUDGET_USEC:
+			break
+
+func _queue_patch(key: Vector3i) -> void:
+	if not queued.has(key):
+		queued[key] = true
+		queue.append(key)
+
+func _bands_changed(patch: Node3D, distance: float, span: float) -> bool:
+	var understory := bool(patch.get_meta("understory"))
+	var near_band := bool(patch.get_meta("near_band"))
+	var caster := int(patch.get_meta("shadow_caster"))
+	return (
+		_understory_wanted(distance, span, understory) != understory
+		or _near_band_wanted(distance, span, near_band) != near_band
+		or _shadow_caster_wanted(distance, span, caster) != caster
+	)
 
 func _is_patch_stale(key: Vector3i, cache = null) -> bool:
 	# -1 means the terrain patch has committed no payload yet. Keep the current scatter
@@ -381,18 +431,20 @@ func _patch_distance(key: Vector3i, world: Vector2, camera_xz: Vector2) -> float
 ## Conservative by the patch half-diagonal, like the near band: a patch centre outside the
 ## longest understory range can still have a near corner inside it. On the terrain grid that
 ## slack was 361 m on a 420 m range, so nearly half of every understory patch generated was
-## never drawn.
-func _understory_wanted(distance: float, span: float) -> bool:
+## never drawn. Existing content is retained for BAND_HYSTERESIS_M beyond the entry range.
+func _understory_wanted(distance: float, span: float, previous: bool = false) -> bool:
 	var longest := maxf(BUSH_RANGE_M, ROCK_RANGE_M) + span * PATCH_HALF_DIAGONAL
-	return distance >= 0.0 and distance <= longest
+	return distance >= 0.0 and distance <= longest + (BAND_HYSTERESIS_M if previous else 0.0)
 
 ## Whether any part of this patch can fall inside the near band, and so whether the near
 ## per-variant meshes are worth building at all. A patch is one instance, so the test is
 ## conservative by the patch half-diagonal rather than by the centre. Beyond this the patch
 ## builds one distant instance per canopy species and skips the variant split and tints.
+## Existing near meshes persist through BAND_HYSTERESIS_M of retreat. Entry is unchanged.
 ## With no camera every level is built, which is what a headless caller wants.
-func _near_band_wanted(distance: float, span: float) -> bool:
-	return distance < 0.0 or distance <= canopy_near_m() + span * PATCH_HALF_DIAGONAL
+func _near_band_wanted(distance: float, span: float, previous: bool = false) -> bool:
+	return distance < 0.0 or distance <= canopy_near_m() + span * PATCH_HALF_DIAGONAL + (
+		BAND_HYSTERESIS_M if previous else 0.0)
 
 ## Which near mesh the patch's per-variant instances carry. The patch is one instance per
 ## variant, so this is a per-patch choice and needs no band wider than the patch.
@@ -443,9 +495,8 @@ func _retire_patch(key: Vector3i, world: Vector2, camera_xz: Vector2) -> void:
 		return
 	patch.queue_free()
 
-## Returns a hidden patch to the drawn set. The staleness and range tests in `_process` run
-## against it on the following frame, so a patch that was edited while it was hidden still
-## rebuilds; showing it first is what keeps the terrain from being bare in the meantime.
+## Returns a hidden patch to the drawn set. The caller checks generations and bands in the
+## same frame. Retained band content remains valid inside its hysteresis interval.
 func _restore_patch(key: Vector3i) -> void:
 	var patch: Node3D = cache[key]
 	cache.erase(key)
@@ -492,9 +543,14 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	# to agree with it before any distance is measured from it.
 	terrain_span_m = span * float(maxi(key.z, 1))
 	var distance := _patch_distance(key, world, _camera_xz())
-	var understory := _understory_wanted(distance, span)
-	var near_band := _near_band_wanted(distance, span)
-	var caster := _shadow_caster_wanted(distance, span)
+	# Preserve band history through edits and queued uploads as well as cache restoration.
+	var previous: Node3D = patches.get(key)
+	var understory := _understory_wanted(distance, span,
+		previous != null and bool(previous.get_meta("understory")))
+	var near_band := _near_band_wanted(distance, span,
+		previous != null and bool(previous.get_meta("near_band")))
+	var caster := _shadow_caster_wanted(distance, span,
+		int(previous.get_meta("shadow_caster")) if previous != null else ShadowCaster.NONE)
 	var near_detail_lod := _near_detail_lod(distance)
 	var origin := Vector2(key.x, key.y) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
@@ -834,14 +890,15 @@ func _shadow_setting(species: int, lod: int, is_proxy: bool, caster: int) -> int
 
 ## Which level a patch casts from. Measured from the patch's nearest corner, so a patch with
 ## any part of it inside a boundary is treated as whole: one patch is one instance and cannot
-## split. Beyond the sun's own range nothing it holds can reach a cascade, so it casts nothing.
-func _shadow_caster_wanted(distance: float, span: float) -> int:
+## split. Retain each richer caster through BAND_HYSTERESIS_M of retreat. Extra casters past
+## the sun's own range cannot reach a cascade; retaining them cannot remove a visible shadow.
+func _shadow_caster_wanted(distance: float, span: float, previous: int = ShadowCaster.NONE) -> int:
 	# Deliberately independent of cast_shadows. This chooses which instances a patch holds, and
 	# the runtime toggle must be able to turn casting back on without rebuilding a placement.
 	var reach := distance - span * PATCH_HALF_DIAGONAL
 	# With no camera every patch is a near caster, which is what a headless caller wants.
-	if distance < 0.0 or reach <= SHADOW_PROXY_M:
+	if distance < 0.0 or reach <= SHADOW_PROXY_M + (BAND_HYSTERESIS_M if previous == ShadowCaster.NEAR else 0.0):
 		return ShadowCaster.NEAR
-	if reach <= SceneLightingConfig.shadow_max_distance_m():
+	if reach <= SceneLightingConfig.shadow_max_distance_m() + (BAND_HYSTERESIS_M if previous != ShadowCaster.NONE else 0.0):
 		return ShadowCaster.PROXY
 	return ShadowCaster.NONE

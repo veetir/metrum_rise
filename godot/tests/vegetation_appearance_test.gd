@@ -224,9 +224,9 @@ func run():
 	# one shadows-only lathe instance per canopy species. The patch is still in the near
 	# band here, which is the case the proxy exists for: the branched trees are drawn and
 	# something cheaper casts for them.
-	# 520 m from the patch centre: past SHADOW_PROXY_M from its nearest corner, and inside the
-	# near band, which reaches the patch half-diagonal past canopy_near_m().
-	camera.global_position = Vector3(265.0, 0.0, -255.0)
+	# 550 m from the patch centre: past SHADOW_PROXY_M from its nearest corner, and inside the
+	# near band. This also clears the retained near caster's 64 m hysteresis interval.
+	camera.global_position = Vector3(295.0, 0.0, -255.0)
 	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
 	var proxy_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(proxy_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.PROXY)

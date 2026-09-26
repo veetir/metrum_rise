@@ -59,6 +59,24 @@ class MockSimulation:
 			vegetation_generations[key] = get_vegetation_patch_generation(key) + 1
 		return PackedFloat32Array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])
 
+class ProcessProbe extends VegetationScript:
+	var band_checks := 0
+	var stale_checks := 0
+	var delay_upload := false
+
+	func _bands_changed(patch: Node3D, distance: float, span: float) -> bool:
+		band_checks += 1
+		return super._bands_changed(patch, distance, span)
+
+	func _is_patch_stale(key: Vector3i, generations = null) -> bool:
+		stale_checks += 1
+		return super._is_patch_stale(key, generations)
+
+	func _upload_patch(key: Vector3i, span: float) -> void:
+		super._upload_patch(key, span)
+		if delay_upload:
+			OS.delay_usec(UPLOAD_BUDGET_USEC)
+
 var _failures := 0
 
 func _initialize() -> void:
@@ -81,7 +99,7 @@ func _run() -> void:
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
 
-	var vegetation := VegetationScript.new()
+	var vegetation := ProcessProbe.new()
 	vegetation.name = "Vegetation"
 	vegetation.set_process(false)
 	host.add_child(vegetation)
@@ -99,7 +117,7 @@ func _run() -> void:
 	)
 	vegetation.rebuild_from_simulation_state()
 
-	# One patch per frame, so both terrain patches take their sub-patch count in frames.
+	# At least one upload per frame; allow the worst case for both terrain patches.
 	for i in range(SUB_PATCHES * 2 + 1):
 		vegetation._process(0.016)
 	_expect(
@@ -114,7 +132,7 @@ func _run() -> void:
 	# A road edit dirties one patch. The terrain renderer commits it at a newer generation.
 	simulation.patch_fetches.clear()
 	terrain.generations[near] = 9
-	for i in range(SUB_PATCHES):
+	for i in range(SUB_PATCHES * 2):
 		vegetation._process(0.016)
 	_expect(
 		_sorted(simulation.patch_fetches) == _sorted(near_origins),
@@ -141,7 +159,7 @@ func _run() -> void:
 	# A vegetation edit changes no terrain generation, and only its own patch rebuilds.
 	simulation.patch_fetches.clear()
 	simulation.vegetation_generations[near] = 1
-	for i in range(SUB_PATCHES):
+	for i in range(SUB_PATCHES * 2):
 		vegetation._process(0.016)
 	_expect(
 		_sorted(simulation.patch_fetches) == _sorted(near_origins),
@@ -162,8 +180,90 @@ func _run() -> void:
 	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
 	_expect(not vegetation._is_patch_stale(probe), "a subsequent upload must settle the vegetation revision")
 
+	_check_hysteresis(vegetation)
+	# Finish the other sub-patches dirtied by the concurrent-fetch check above.
+	for _i in range(SUB_PATCHES * 2):
+		vegetation._process(0.016)
+	for _i in range(8):
+		vegetation.band_checks = 0
+		vegetation.stale_checks = 0
+		vegetation._process(0.016)
+		_expect(vegetation.band_checks == 0, "a stationary camera must not walk patch bands")
+		_expect(vegetation.stale_checks <= VegetationScript.STALE_CHECKS_PER_FRAME,
+			"idle generation polling must have a constant per-frame bound")
+
+	# This patch already carries near meshes. Restore it outside the entry distance but
+	# inside the retention interval: its content remains valid and its node must survive.
+	var patch_id: int = vegetation.patches[probe].get_instance_id()
+	var center := Vector2(probe.x, probe.y) * VEGETATION_SPAN_M - WORLD_SIZE * 0.5 + Vector2.ONE * VEGETATION_SPAN_M * 0.5
+	var retention_distance := vegetation.canopy_near_m() + VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL + VegetationScript.BAND_HYSTERESIS_M * 0.5
+	vegetation._retire_patch(probe, WORLD_SIZE, vegetation._camera_xz())
+	camera.position = Vector3(center.x + retention_distance, 200.0, center.y)
+	terrain.revision += 1
+	for _i in range(SUB_PATCHES * 2):
+		vegetation._process(0.016)
+	_expect(vegetation.patches[probe].get_instance_id() == patch_id,
+		"a restored patch in hysteresis slack must reuse its valid content")
+	_expect(vegetation.patches[probe].get_meta("near_band"), "restoration must retain near meshes in slack")
+
+	# A queued band request can become obsolete before its upload turn.
+	vegetation._queue_patch(probe)
+	vegetation._process(0.016)
+	_expect(vegetation.patches[probe].get_instance_id() == patch_id,
+		"an obsolete band request must not rebuild a valid patch")
+
+	vegetation._retire_patch(probe, WORLD_SIZE, vegetation._camera_xz())
+	simulation.vegetation_generations[near] += 1
+	terrain.revision += 1
+	for _i in range(SUB_PATCHES * 2):
+		vegetation._process(0.016)
+	_expect(vegetation.patches[probe].get_instance_id() != patch_id,
+		"a restored patch edited while hidden must rebuild")
+	_expect(not vegetation._is_patch_stale(probe), "restoration must publish the current generation")
+	_expect(vegetation.patches[probe].get_meta("near_band"), "an edit must preserve band history")
+
+	# Make each upload exceed the time budget. Two pending uploads must span two frames,
+	# even when residency changes between them, and each frame must make progress.
+	simulation.vegetation_generations[near] += 1
+	for key in _sub_keys(near):
+		vegetation._queue_patch(key)
+		vegetation._queue_patch(key)
+	_expect(vegetation.queue.size() == SUB_PATCHES, "overlapping invalidations must not duplicate queue entries")
+	vegetation.delay_upload = true
+	for _i in range(2):
+		var generated_before: int = vegetation.generated_patches
+		terrain.revision += 1
+		vegetation._process(0.016)
+		_expect(vegetation.generated_patches == generated_before + 1,
+			"the time budget must permit one upload and stop before a second")
+		_expect(not vegetation.queue.is_empty(), "residency changes must preserve pending edits")
+	vegetation.delay_upload = false
+	for _i in range(SUB_PATCHES * 2):
+		vegetation._process(0.016)
+	for key in _sub_keys(near):
+		_expect(not vegetation._is_patch_stale(key), "all pending edits must eventually settle")
+	_expect(vegetation.queue.is_empty() and vegetation.queued.is_empty(), "settling must drain both queue stores")
 	host.free()
+	if _failures == 0:
+		print("vegetation_invalidation_test: PASS")
 	quit(1 if _failures > 0 else 0)
+
+func _check_hysteresis(vegetation: Node3D) -> void:
+	var half := VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL
+	var slack := VegetationScript.BAND_HYSTERESIS_M
+	for method in ["_near_band_wanted", "_understory_wanted"]:
+		var boundary: float = (vegetation.canopy_near_m() if method == "_near_band_wanted" else maxf(VegetationScript.BUSH_RANGE_M, VegetationScript.ROCK_RANGE_M)) + half
+		_expect(vegetation.call(method, boundary, VEGETATION_SPAN_M, false), "approach must enter at the original boundary")
+		_expect(not vegetation.call(method, boundary + 1.0, VEGETATION_SPAN_M, false), "new content must retain its original entry distance")
+		_expect(vegetation.call(method, boundary + slack, VEGETATION_SPAN_M, true), "retreat must retain content through the slack interval")
+		_expect(not vegetation.call(method, boundary + slack + 1.0, VEGETATION_SPAN_M, true), "retreat must drop content beyond the slack interval")
+	for pair in [[VegetationScript.SHADOW_PROXY_M, VegetationScript.ShadowCaster.NEAR, VegetationScript.ShadowCaster.PROXY],
+		[VegetationScript.SceneLightingConfig.shadow_max_distance_m(), VegetationScript.ShadowCaster.PROXY, VegetationScript.ShadowCaster.NONE]]:
+		var boundary: float = pair[0] + half
+		_expect(vegetation._shadow_caster_wanted(boundary, VEGETATION_SPAN_M, pair[2]) == pair[1], "shadow approach must upgrade at the original boundary")
+		_expect(vegetation._shadow_caster_wanted(boundary + 1.0, VEGETATION_SPAN_M, pair[2]) == pair[2], "a cheaper shadow caster must keep its original entry distance")
+		_expect(vegetation._shadow_caster_wanted(boundary + slack, VEGETATION_SPAN_M, pair[1]) == pair[1], "shadow retreat must retain the richer caster through slack")
+		_expect(vegetation._shadow_caster_wanted(boundary + slack + 1.0, VEGETATION_SPAN_M, pair[1]) == pair[2], "shadow retreat must downgrade beyond slack")
 
 ## Every vegetation sub-patch key one terrain render patch owns.
 func _sub_keys(terrain_key: Vector2i) -> Array[Vector3i]:
