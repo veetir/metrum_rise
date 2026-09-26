@@ -191,11 +191,49 @@ float canopy_shade_noise(vec2 instance_xz) {
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Multiplier on reflected and transmitted foliage colour for one instance at one distance.
-float vegetation_canopy_shade(vec2 instance_xz, float distance_m) {
+// Share of its light the base of a trunk keeps past the fade, and the height at unit scale
+// where the trunk zone ends and the crown begins. Crowns shade the space under them from the sun
+// and most of the sky, so a stand seen from the side is bright at the top and dark toward the
+// ground. Without it the whole trunk zone of a far stand was lit like the crown tops, and the
+// stand read as a canopy floating on a band of lit trunks.
+// The term fades in over CANOPY_BASE_FADE_M from canopy_base_begin_m, which is the end of the
+// shipped handover, so the branched tree and its impostor never disagree about it while both are
+// drawn. It has its own uniform rather than following tree_crossfade_end_m, because a probe that
+// moves the handover must still compare the two levels without it.
+uniform float canopy_base_begin_m = 200.0;
+const float CANOPY_BASE_SHADE = 0.30;
+const float CANOPY_BASE_TOP_M = 8.0;
+const float CANOPY_BASE_FADE_M = 100.0;
+
+// How far the base term has faded in at one distance.
+float vegetation_canopy_base_ramp(float distance_m) {
+	return smoothstep(canopy_base_begin_m, canopy_base_begin_m + CANOPY_BASE_FADE_M, distance_m);
+}
+
+// Share of its light a surface `height_m` above the instance origin at unit scale keeps.
+float vegetation_canopy_base(float height_m, float base_ramp) {
+	return mix(1.0, mix(CANOPY_BASE_SHADE, 1.0, smoothstep(0.0, CANOPY_BASE_TOP_M, height_m)),
+		base_ramp);
+}
+
+// Multiplier on reflected and transmitted colour for one instance at one distance, before its
+// base term, and how far that distance has taken the term in. The impostor needs them apart,
+// because its base term varies across one card and must be evaluated per fragment.
+vec2 vegetation_canopy_shade_parts(vec2 instance_xz, float distance_m) {
 	float shade = mix(CANOPY_SHADE_FLOOR, 1.0, canopy_shade_noise(instance_xz));
 	float ramp = smoothstep(tree_shadow_begin_m, tree_shadow_end_m, distance_m) * canopy_shade;
-	// The clamp is what lets `canopy_shade` run past one. A strength above one extrapolates
-	// past the floor, which is how a probe asks for more darkening than the derived default.
-	return clamp(mix(1.0, shade, ramp), 0.0, 1.0);
+	return vec2(shade, ramp);
+}
+
+// The clamp is what lets `canopy_shade` run past one. A strength above one extrapolates past the
+// floor, which is how a probe asks for more darkening than the derived default.
+float vegetation_canopy_combine(vec2 parts, float base) {
+	return clamp(mix(1.0, parts.x * base, parts.y), 0.0, 1.0);
+}
+
+// Multiplier on reflected and transmitted colour for one instance at one distance, for a surface
+// `height_m` above the instance origin at unit scale.
+float vegetation_canopy_shade(vec2 instance_xz, float distance_m, float height_m) {
+	return vegetation_canopy_combine(vegetation_canopy_shade_parts(instance_xz, distance_m),
+		vegetation_canopy_base(height_m, vegetation_canopy_base_ramp(distance_m)));
 }

@@ -668,6 +668,37 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### A far stand is dark under its crowns (2026-09-26)
+
+A dense painted stand seen from about a kilometre read as floating
+(`imgs/reference/game/26-09-dense-floating.png`): a dark canopy over a band of lit trunks,
+standing on bright meadow. Past `120 m` no tree receives a cast shadow, and the canopy shade
+term that replaces those shadows was one value per instance, so the trunk zone of every far tree
+was lit like its crown top. In a real stand the crowns shade the space under them, and a stand
+seen from the side is bright at the top and dark toward the ground
+(`imgs/reference/aerial-kuopio-1.png`).
+
+The canopy shade now takes a base term. A surface at the instance origin keeps
+`CANOPY_BASE_SHADE` (`0.30`) of its light, rising by smoothstep to full at
+`CANOPY_BASE_TOP_M` (`8 m`) at unit scale. It applies only to canopy trees, because
+understory is ground cover and not a trunk under a crown. It fades in over `200-300 m`, which
+begins where the shipped handover ends, so the branched tree and its impostor never disagree
+about it while both are drawn. The impostor evaluates the term per fragment from the height of
+its card. A term taken at the card's corners and blended between them darkened the whole crown,
+because the card reaches below the ground, and it cost `0.05-0.08` of level match at the
+handover poses. From above, the card's height stays above the trunk zone, so a crown seen from
+above keeps the shade of the branched crown.
+
+`vegetation_level_match_test` passes over the same range as before, `0.881-1.111`. Its
+`900 m` poses take the term on both levels and moved by at most `0.006`. GPU p50 at two far
+poses on the GTX 1060 measures `7.77` and `6.72 ms` against `7.80` and `6.71 ms` without the
+term. The impostor bake was re-exported, because its source hash covers every float shader
+parameter; the atlases are byte-identical.
+
+A terrain term that reads the published coverage toward the sun, so a far stand shades the
+ground on its far side, was also tried. It changed a far stand's edge by `2.5` in 8-bit
+luminance and cost `0.05-0.10 ms`, so it was not kept.
+
 ### Natural brush proposals and independent occupancy — VEG-05 (2026-09-26)
 
 Live painting now uses two hashed darts per conceptual cell of size `r / sqrt(2)`.

@@ -471,6 +471,7 @@ static func _apply_wind_visibility(material: ShaderMaterial) -> void:
 
 static func _apply_canopy_shading(material: ShaderMaterial) -> void:
 	_apply_crossfade(material, TREE_CROSSFADE_END_M)
+	material.set_shader_parameter("canopy_base_begin_m", TREE_CROSSFADE_END_M)
 	material.set_shader_parameter("tree_shadow_begin_m", TREE_SHADOW_BEGIN_M)
 	material.set_shader_parameter("tree_shadow_end_m", TREE_SHADOW_END_M)
 	material.set_shader_parameter("canopy_shade", SceneLightingConfig.canopy_shade_strength())

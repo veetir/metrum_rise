@@ -39,6 +39,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   The forest floor now loses the sky its crowns hide, so a stand's floor in shade is no longer
   lighter than the meadow; see
   [the floor sky](terrain.md#the-forest-floor-loses-the-sky-its-crowns-hide-2026-09-26).
+  Past the handover a tree's trunk zone is shaded, so a far stand no longer floats on lit
+  trunks; see [the far stand](terrain.md#a-far-stand-is-dark-under-its-crowns-2026-09-26).
   See [the grid fix](terrain.md#a-tree-keeps-its-form-across-the-patch-grids-2026-09-25),
   [the per-tree handover](terrain.md#each-tree-hands-over-to-its-impostor-on-its-own-distance-2026-09-24),
   [the shadow fade](terrain.md#trees-stop-receiving-the-shadows-of-the-proxies-they-stand-in-2026-09-23),

@@ -38,7 +38,12 @@ varying flat vec2 cell2;
 varying flat vec3 weights;
 varying flat float form_layer;
 varying flat vec3 instance_tint;
-varying float canopy_light;
+// The canopy shade and its distance ramp, the height of the card above the instance origin at
+// unit scale, which stands in for the height of the surface drawn on it, and the base ramp. The height is
+// interpolated and the base term taken per fragment: the card reaches below the ground, and a
+// base term blended between its corners darkened the whole crown. One varying for the three,
+// because the shader is at the varying limit.
+varying vec4 canopy_card;
 varying float shadow_keep;
 varying float volume_wrap;
 varying flat float crossfade;
@@ -100,7 +105,8 @@ void vertex() {
 	frame_uv2 = project_frame(offset, cell2);
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float view_distance_m = distance(world, CAMERA_POSITION_WORLD);
-	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
+	canopy_card = vec4(vegetation_canopy_shade_parts(MODEL_MATRIX[3].xz, view_distance_m), VERTEX.y,
+		vegetation_canopy_base_ramp(view_distance_m));
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 	crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
 	far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
@@ -144,6 +150,7 @@ void fragment() {
 	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
 	vec3 tinted = albedo.rgb * instance_tint;
+	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w));
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;

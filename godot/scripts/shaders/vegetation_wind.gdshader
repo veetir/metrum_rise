@@ -15,7 +15,9 @@ void vertex() {
 	float view_distance_m = distance(VERTEX, CAMERA_POSITION_WORLD);
 	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, TIME,
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
-	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m);
+	// Understory is ground cover rather than a trunk under a crown, so it takes no base shade.
+	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m, hands_over > 0.5
+		? (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz) : CANOPY_BASE_TOP_M);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 	float crossfade = hands_over > 0.5
 		? vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) : 0.0;
