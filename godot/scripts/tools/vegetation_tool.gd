@@ -109,6 +109,8 @@ var _last_stamp := Vector2.INF
 # Where the ring sits while the pointer is on a popup instead of on the ground.
 var _last_hit := Vector3.INF
 var _menu_grab_frames := 0
+# Unspent part of a two-finger scroll, in the gesture's own units. One unit is one step.
+var _gesture_steps := 0.0
 
 # This mirrors the native class budget; the preview must show the accepted footprint.
 func _paint_radius_limit() -> float:
@@ -196,19 +198,9 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not active:
 		return
-	if event is InputEventMouseButton and event.pressed and (event.ctrl_pressed or event.shift_pressed):
-		var direction := 0
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			direction = 1
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			direction = -1
-		if direction != 0:
-			if event.ctrl_pressed:
-				step_radius(direction)
-			else:
-				step_option(direction)
-			get_viewport().set_input_as_handled()
-			return
+	if apply_brush_gesture(event):
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			# This click is the one that dismisses an open popup. Dismissing is all it does.
@@ -229,6 +221,35 @@ func _unhandled_input(event: InputEvent) -> void:
 	# one native call per pixel; the discs still overlap, so the stroke has no gaps.
 	elif event is InputEventMouseMotion and _painting:
 		_stamp()
+
+## Applies Ctrl (radius) or Shift (option) with a wheel or a two-finger scroll, and reports
+## whether the event was one. macOS turns Shift with a vertical scroll into a horizontal one, so
+## wheel left and right step like up and down, and a scroll takes its larger axis.
+func apply_brush_gesture(event: InputEvent) -> bool:
+	if not (event is InputEventWithModifiers and (event.ctrl_pressed or event.shift_pressed)):
+		return false
+	var direction := 0
+	if event is InputEventMouseButton and event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT:
+				direction = 1
+			MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_RIGHT:
+				direction = -1
+	elif event is InputEventPanGesture:
+		var delta: Vector2 = event.delta
+		# A scroll arrives in fractions; whole steps are taken as the swipe accumulates.
+		_gesture_steps -= delta.y if absf(delta.y) >= absf(delta.x) else delta.x
+		direction = int(_gesture_steps)
+		_gesture_steps -= direction
+		if direction == 0:
+			return true
+	if direction == 0:
+		return false
+	if event.ctrl_pressed:
+		step_radius(direction)
+	else:
+		step_option(direction)
+	return true
 
 ## Cycles the ordered brush options, including when the dropdown holds the input grab.
 func step_option(direction: int) -> void:
