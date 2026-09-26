@@ -100,6 +100,16 @@ impl SimulationNode {
             .payload(land_cover::generations(&core, key))
     }
 
+    /// Advances whenever any terrain payload generation or vegetation patch generation does, so
+    /// a renderer can skip its per-patch currency checks while it is unchanged. O(1). Only
+    /// comparable within one loaded world: a load restarts both counters.
+    #[func]
+    pub fn get_land_cover_epoch(&self) -> i64 {
+        let core = self.lock_core();
+        core.terrain_payload_generation_counter
+            .wrapping_add(core.vegetation_edits.epoch()) as i64
+    }
+
     /// Compares the two existing revision streams, including neighboring crown contributors.
     /// Performs nine bounded revision lookups without allocating or evaluating any plants.
     #[func]

@@ -97,12 +97,19 @@ pub struct VegetationEdits {
     cells: HashMap<VegetationCell, CellEdit>,
     patch_generations: HashMap<i64, u64>,
     blocks: HashSet<(VegetationLayer, i32, i32)>,
+    // Advances with every patch generation, so one comparison says whether any moved.
+    epoch: u64,
 }
 
 impl VegetationEdits {
     /// Returns the revision of one packed render-patch key, or zero when untouched.
     pub fn patch_generation(&self, key: i64) -> u64 {
         self.patch_generations.get(&key).copied().unwrap_or(0)
+    }
+
+    /// Advances whenever any patch generation does, and never otherwise.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Whether any edited cell of one layer falls in an inclusive cell range, in O(blocks).
@@ -142,6 +149,7 @@ impl VegetationEdits {
     pub(crate) fn bump_patch(&mut self, key: i64) {
         let generation = self.patch_generations.entry(key).or_default();
         *generation = generation.wrapping_add(1);
+        self.epoch = self.epoch.wrapping_add(1);
     }
 
     /// Sets a generated-cell tombstone, pruning a restored cell with no additions.
@@ -202,6 +210,7 @@ impl VegetationEdits {
             if let Some(key) = remove(plant) {
                 let generation = self.patch_generations.entry(key).or_default();
                 *generation = generation.wrapping_add(1);
+                self.epoch = self.epoch.wrapping_add(1);
                 false
             } else {
                 true

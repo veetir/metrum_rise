@@ -4277,6 +4277,20 @@ What is implemented now:
   with camera-prioritized patch order; water follows terrain's resident-set revision for the
   steady-state no-change path, and terrain/water mesh-LOD refreshes plus terrain-to-water texture
   sync drain through time-budgeted queues instead of sweeping every resident patch in one frame
+- terrain residency (2026-09-26) is every patch within the cull distance in every direction, not
+  the ground footprint of the view, and the patches in view load first. The frustum-derived set
+  dropped what a turn brought into view: a quick 90 degree turn at a low far-looking orbit then
+  built about 300 patches at about 5 per frame, so the distance filled in for about 2.5 s. Now a
+  turn loads nothing, and the set changes only when the camera crosses a patch. On the 18 km
+  Kuopio world every one of the 1296 patches is resident, which is what one look around already
+  held, because a patch that left the view was hidden, not freed. Water and vegetation follow the
+  same set. Terrain and water patch nodes now cull by their own footprint plus 64 m, with the
+  `4096 m` margin kept only vertically, since the shader moves vertices by the heightmap: the
+  margin on every axis kept patches `4 km` behind the camera drawn. Land cover currency is gated by
+  one Rust epoch (`get_land_cover_epoch`, the terrain payload generation counter plus the
+  vegetation edit epoch), so an unchanged world skips the per-patch walk. Matched release runs,
+  GTX 1060, same pose, camera still: terrain `_process` `1.35 -> 0.14 ms`, draw calls
+  `2566 -> 2490`, GPU `6.70 -> 6.65 ms` p50, video memory `697 -> 745 MB`
 - terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
   LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
   perf captures
