@@ -4291,6 +4291,14 @@ What is implemented now:
   vegetation edit epoch), so an unchanged world skips the per-patch walk. Matched release runs,
   GTX 1060, same pose, camera still: terrain `_process` `1.35 -> 0.14 ms`, draw calls
   `2566 -> 2490`, GPU `6.70 -> 6.65 ms` p50, video memory `697 -> 745 MB`
+- vegetation `_process` (2026-09-26) walks its patch bands only when the camera or residency moved,
+  and its staleness sweep only when `get_land_cover_epoch` or the terrain's
+  `get_surface_commit_revision` moved, so an idle frame checks no patch and an edit is found on the
+  frame it lands. Richer band content is kept `64 m` past each band's entry distance, so an orbit
+  near a threshold no longer rebuilds a patch back and forth, and uploads stop after a `2 ms`
+  budget with at least one per frame. Matched release runs, GTX 1060, same pose, camera still, with
+  the all-direction residency above: vegetation `_process` `3.87 -> 0.014 ms`, frame `10.1 -> 7.1 ms`
+  p50. One upload is indivisible and can still take `18 ms`
 - terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
   LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
   perf captures

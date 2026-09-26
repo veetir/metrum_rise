@@ -186,6 +186,8 @@ var handled_bad_cdt_patch_failures: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 var patch_prewarm_queue: Array[Vector2i] = []
+# Count of payload commits over all patches. See get_surface_commit_revision.
+var _surface_commit_revision := 0
 # Land cover epoch at which every built patch was last found current, or -1 for none.
 var _land_cover_clean_epoch := -1
 var patch_lod_refresh_queue: Array[Vector2i] = []
@@ -555,6 +557,12 @@ func get_visibility_cull_far_m(camera: Camera3D) -> float:
 
 func get_render_patch_span_m() -> float:
 	return patch_span_m
+
+## Advances whenever any patch commits a payload, so a consumer of get_patch_surface_generation
+## can skip its per-patch comparison while this is unchanged. Never reset: an old value can
+## only cause one redundant comparison, never a missed one.
+func get_surface_commit_revision() -> int:
+	return _surface_commit_revision
 
 func get_patch_surface_generation(key: Vector2i) -> int:
 	# The generation stamped on the payload this patch last committed. It advances only
@@ -1143,6 +1151,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"engineered_bad_cdt_blocked": false,
 		"last_patch_data": patch_data,
 	}
+	_surface_commit_revision += 1
 
 	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
 	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
@@ -1340,6 +1349,7 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture_width"] = old_texture_width
 	patch["spare_height_texture_height"] = old_texture_height
 	patch["last_patch_data"] = patch_data
+	_surface_commit_revision += 1
 	_commit_patch_land_cover(patch, stage["land_cover"])
 	patch["engineered_bad_cdt_blocked"] = false
 	_clear_bad_cdt_generation_handled(key)
@@ -1427,6 +1437,7 @@ func _commit_staged_patch_data(
 func _block_engineered_patch_until_valid_cdt(patch: Dictionary) -> void:
 	patch["engineered_bad_cdt_blocked"] = true
 	patch["last_patch_data"] = {}
+	_surface_commit_revision += 1
 	patch["height_is_baked"] = true
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 	if patch_node != null:

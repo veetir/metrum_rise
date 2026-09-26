@@ -84,8 +84,6 @@ const UNDERSTORY_STAGGER_MIN := 0.75
 const PATCH_SUBDIVISION := 4
 # Retain richer content beyond its entry distance. Never delay an approaching upgrade.
 const BAND_HYSTERESIS_M := 64.0
-# There is no global vegetation revision API. Poll a bounded slice of resident keys instead.
-const STALE_CHECKS_PER_FRAME := 8
 # A single upload is indivisible and may exceed this soft budget.
 const UPLOAD_BUDGET_USEC := 2000
 
@@ -122,8 +120,9 @@ var cache: Dictionary = {}
 var queue: Array[Vector3i] = []
 # Membership avoids duplicate work when camera checks and edit polling overlap.
 var queued: Dictionary = {}
-var stale_check_keys: Array = []
-var stale_check_cursor := 0
+# The two revision counters at the last staleness sweep; the sweep reruns when either moves.
+var stale_land_epoch := -1
+var stale_surface_revision := -1
 var last_band_camera_xz := Vector2.INF
 # meshes[species][variant] is an Array[ArrayMesh], ordered near to far.
 var meshes: Array = []
@@ -135,8 +134,9 @@ var last_camera_cell := Vector2i(2147483647, 2147483647)
 var tree_count := 0
 var generated_patches := 0
 var generation_ms_max := 0.0
-# Cache generations only while restoring patches in one residency pass. Idle polling uses
-# direct reads, so it adds no dictionary entries or allocations to the per-frame path.
+# Both staleness generations, keyed by owner patch, for one frame's residency pass and
+# staleness sweep. Every sub-patch of one terrain patch shares an owner, so this crosses into
+# Rust once per owner instead of once per sub-patch. Cleared, never replaced, each frame.
 var owner_generations: Dictionary = {}
 var ready_for_world := false
 @onready var terrain = $"../Terrain"
@@ -247,8 +247,8 @@ func rebuild_from_simulation_state() -> void:
 	cache.clear()
 	queue.clear()
 	queued.clear()
-	stale_check_keys.clear()
-	stale_check_cursor = 0
+	stale_land_epoch = -1
+	stale_surface_revision = -1
 	last_band_camera_xz = Vector2.INF
 	tree_count = 0
 	generated_patches = 0
@@ -331,7 +331,6 @@ func _process(_delta: float) -> void:
 				continue
 			_queue_patch(key)
 		queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return wanted[a] > wanted[b])
-		stale_check_keys = wanted.keys()
 	# O(resident patches) on camera/residency changes only. Rotation about a stationary
 	# camera changes no distance; restored patches still need their mesh and band checks.
 	if residency_changed or camera_xz != last_band_camera_xz:
@@ -343,15 +342,18 @@ func _process(_delta: float) -> void:
 			_refresh_near_detail(patch, distance)
 			if _bands_changed(patch, distance, _key_span(key)):
 				_queue_patch(key)
-	# O(STALE_CHECKS_PER_FRAME) when idle, independent of city size. With stable residency
-	# every patch is checked within ceil(resident keys / STALE_CHECKS_PER_FRAME) frames.
-	# Poll even while uploads are pending, so a long upload queue cannot hide an edit.
-	for _i in range(mini(STALE_CHECKS_PER_FRAME, stale_check_keys.size())):
-		stale_check_cursor %= stale_check_keys.size()
-		var key: Vector3i = stale_check_keys[stale_check_cursor]
-		stale_check_cursor += 1
-		if patches.has(key) and _is_patch_stale(key):
-			_queue_patch(key)
+	# O(1) while no revision moved. A patch is stale only when its terrain owner committed a
+	# newer surface or Rust advanced its vegetation revision, and each of those moves one of
+	# these two counters, so the O(resident patches) sweep runs on the frame an edit lands.
+	# It runs even while uploads are pending, so a long upload queue cannot hide an edit.
+	var land_epoch: int = simulation.get_land_cover_epoch()
+	var surface_revision: int = terrain.get_surface_commit_revision()
+	if land_epoch != stale_land_epoch or surface_revision != stale_surface_revision:
+		stale_land_epoch = land_epoch
+		stale_surface_revision = surface_revision
+		for key in patches:
+			if _is_patch_stale(key, owner_generations):
+				_queue_patch(key)
 	# Retain the area/count limit as a ceiling, but stop after the first upload that exhausts
 	# the elapsed-time budget. A valid cached patch or an obsolete band request costs no upload.
 	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor

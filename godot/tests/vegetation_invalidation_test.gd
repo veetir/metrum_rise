@@ -36,6 +36,10 @@ class MockTerrain:
 	func get_patch_surface_generation(key: Vector2i) -> int:
 		return int(generations.get(key, -1))
 
+	# Moves whenever any generation does, which is the contract of the real counter.
+	func get_surface_commit_revision() -> int:
+		return generations.hash()
+
 class MockSimulation:
 	extends Node
 
@@ -46,6 +50,9 @@ class MockSimulation:
 
 	func get_vegetation_patch_generation(key: Vector2i) -> int:
 		return int(vegetation_generations.get(key, 0))
+
+	func get_land_cover_epoch() -> int:
+		return vegetation_generations.hash()
 
 	func get_terrain_world_size() -> Vector2:
 		return WORLD_SIZE
@@ -189,8 +196,8 @@ func _run() -> void:
 		vegetation.stale_checks = 0
 		vegetation._process(0.016)
 		_expect(vegetation.band_checks == 0, "a stationary camera must not walk patch bands")
-		_expect(vegetation.stale_checks <= VegetationScript.STALE_CHECKS_PER_FRAME,
-			"idle generation polling must have a constant per-frame bound")
+		_expect(vegetation.stale_checks == 0,
+			"an idle frame with no revision change must check no patch generation")
 
 	# This patch already carries near meshes. Restore it outside the entry distance but
 	# inside the retention interval: its content remains valid and its node must survive.
