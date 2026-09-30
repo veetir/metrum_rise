@@ -24,8 +24,10 @@ const DEEP_WATER_COLOR := Color(0.012, 0.052, 0.075, 0.97)
 const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
 const SKY_REFLECTION_COLOR := Color(0.22, 0.33, 0.44, 1.0)
 const WATER_DEEP_COLOR_DEPTH_M := 1.8
-const WATER_FRESNEL_STRENGTH := 0.30
-const WATER_FRESNEL_POWER := 2.8
+# Schlick with the ~0.02 base reflectance of water left out: about 25% reflected at 75 degrees
+# from vertical and nearly all of it at the horizon. Weaker, the reflection never showed.
+const WATER_FRESNEL_STRENGTH := 1.0
+const WATER_FRESNEL_POWER := 5.0
 const WATER_WAVE_COLOR_STRENGTH := 0.052
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.024
 const WATER_WAVE_NORMAL_STRENGTH := 0.42
@@ -33,7 +35,6 @@ const WATER_SUN_GLITTER_STRENGTH := 0.38
 const WATER_REFRACTION_STRENGTH := 0.010
 const WATER_REFRACTION_MIX := 0.13
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
-const WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS := 1.0
 const WATER_MIN_VISIBLE_DEPTH_M := 0.001
 const WATER_BORDER_MIN_DEPTH_M := 0.02
 const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
@@ -628,7 +629,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		SceneLightingConfig.shadow_split_distances()
 	)
 	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
-	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
 	material.set_shader_parameter("water_visual_debug_mode", _water_visual_debug_mode)
 	material.set_shader_parameter("water_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("water_debug_lod_step", float(initial_lod_step))

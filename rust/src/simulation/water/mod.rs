@@ -14,7 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
-const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
+// Two texels: the water shader levels its surface over a 5 x 5 block of samples, and a vertex on
+// a patch edge must read the same samples from either patch or the two patches split apart there.
+const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 2;
 const WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 
 /// One deterministic render-patch snapshot of visible water.
@@ -531,26 +533,27 @@ mod tests {
         assert_eq!(patch.patch_z, 1);
         assert_eq!(patch.sample_width, 4);
         assert_eq!(patch.sample_height, 4);
-        assert_eq!(patch.texture_width, 6);
-        assert_eq!(patch.texture_height, 6);
-        assert_eq!(patch.inner_offset_x, 1);
-        assert_eq!(patch.inner_offset_z, 1);
+        // Two border texels each side, which the corner sample fills by edge clamping.
+        assert_eq!(patch.texture_width, 8);
+        assert_eq!(patch.texture_height, 8);
+        assert_eq!(patch.inner_offset_x, 2);
+        assert_eq!(patch.inner_offset_z, 2);
         assert!((patch.world_origin_x + 10.0).abs() < 0.0001);
         assert!((patch.world_origin_z + 10.0).abs() < 0.0001);
         assert!((patch.world_size_x - 30.0).abs() < 0.0001);
         assert!((patch.world_size_z - 30.0).abs() < 0.0001);
         assert_eq!(patch.depth_data[0], 5.0);
         assert_eq!(patch.depth_data[patch.texture_width + 1], 5.0);
-        assert_eq!(patch.depth_nonzero_count, 4);
+        assert_eq!(patch.depth_nonzero_count, 9);
 
         let stats = water
             .patch_depth_stats(1, 1)
             .expect("patch (1,1) should exist on a 9x9 water grid");
 
-        assert_eq!(stats.total_samples, 36);
-        assert_eq!(stats.baseline_nonzero, 4);
+        assert_eq!(stats.total_samples, 64);
+        assert_eq!(stats.baseline_nonzero, 9);
         assert!((stats.baseline_max - 5.0).abs() < 0.0001);
-        assert!((stats.baseline_sum - 20.0).abs() < 0.0001);
+        assert!((stats.baseline_sum - 45.0).abs() < 0.0001);
     }
 
     #[test]

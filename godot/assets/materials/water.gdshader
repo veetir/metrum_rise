@@ -4,6 +4,7 @@ render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
+uniform sampler2D depth_texture : hint_depth_texture, repeat_disable, filter_nearest;
 uniform float height_scale = 10.0;
 uniform vec4 shallow_water_color : source_color = vec4(0.10, 0.28, 0.40, 0.62);
 uniform vec4 deep_water_color : source_color = vec4(0.018, 0.09, 0.18, 0.90);
@@ -21,7 +22,6 @@ uniform float water_sun_glitter_strength = 0.38;
 uniform float water_refraction_strength = 0.010;
 uniform float water_refraction_mix = 0.13;
 uniform float water_surface_smoothing = 0.94;
-uniform float water_surface_blend_radius_texels = 1.0;
 uniform int water_visual_debug_mode = 0;
 global uniform vec3 scene_sun_direction;
 global uniform vec4 scene_sun_color : source_color;
@@ -44,6 +44,8 @@ varying vec3 var_world_pos;
 varying vec3 var_sun_direction_view;
 varying vec3 var_view_direction;
 varying float var_view_distance_m;
+// Water surface height in the patch's own space, which the terrain samples share.
+varying float var_surface_m;
 
 vec2 centered_uv(vec2 uv) {
 	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
@@ -59,76 +61,52 @@ float sample_raw_water_depth(vec2 uv) {
 	return texture(watermap, uv).r;
 }
 
-float sample_contour_water_depth(vec2 uv) {
-	// The watermap sampler uses linear filtering. Sampling it between texel
-	// centers yields a contour-style shoreline field on top of the authored
-	// grid instead of exposing whole-cell steps directly.
-	return sample_raw_water_depth(uv);
-}
+// Metres a vertex with no water near it sinks below the terrain, so the triangles that reach it
+// from the shore slope away underground instead of climbing the bank.
+const float WATER_BURY_M = 2.0;
 
-float sample_display_water_depth(vec2 uv) {
-	float center_terrain = sample_terrain_world_height(uv);
+// Water surface elevation for a vertex: the mean surface of the wet samples on a 5 x 5 block
+// of texels, weighting the centre double and keeping part of a wet centre's own
+// surface. Two spacings of reach keep a flat, marshy shore level until the terrain rises through
+// it; with one, the surface was buried along a mesh edge and drew the shore as a straight line.
+// A dry vertex beside a lake takes the lake's level, so the lake stays one flat plane out
+// under its bank and the terrain cuts the shoreline where it rises through that plane. Taking
+// the dry vertex's own terrain height instead tilted every shore triangle up the bank, which
+// drew water as sloped planes climbing the land. `found` is false with no water within reach.
+float water_display_surface(vec2 uv, out bool found) {
 	float center_depth = sample_raw_water_depth(uv);
-	float center_surface = center_terrain + center_depth;
+	float center_surface = sample_terrain_world_height(uv) + center_depth;
+	// One texel, not one vertex spacing: the block has to stay inside the patch texture's border.
 	vec2 texel = vec2(1.0) / max(watermap_texture_size, vec2(1.0, 1.0));
-	vec2 dx = vec2(texel.x * max(water_surface_blend_radius_texels, 0.5), 0.0);
-	vec2 dz = vec2(0.0, texel.y * max(water_surface_blend_radius_texels, 0.5));
 	float accum_surface = 0.0;
 	float accum_weight = 0.0;
-
-	if (center_depth > 0.001) {
-		accum_surface += center_surface * 2.0;
-		accum_weight += 2.0;
+	for (int z = -2; z <= 2; z++) {
+		for (int x = -2; x <= 2; x++) {
+			vec2 at = uv + vec2(float(x), float(z)) * texel;
+			float depth = sample_raw_water_depth(at);
+			if (depth > 0.001) {
+				float weight = (x == 0 && z == 0) ? 2.0 : 1.0;
+				accum_surface += (sample_terrain_world_height(at) + depth) * weight;
+				accum_weight += weight;
+			}
+		}
 	}
-
-	float left_depth = sample_raw_water_depth(uv - dx);
-	if (left_depth > 0.001) {
-		accum_surface += sample_terrain_world_height(uv - dx) + left_depth;
-		accum_weight += 1.0;
-	}
-
-	float right_depth = sample_raw_water_depth(uv + dx);
-	if (right_depth > 0.001) {
-		accum_surface += sample_terrain_world_height(uv + dx) + right_depth;
-		accum_weight += 1.0;
-	}
-
-	float top_depth = sample_raw_water_depth(uv - dz);
-	if (top_depth > 0.001) {
-		accum_surface += sample_terrain_world_height(uv - dz) + top_depth;
-		accum_weight += 1.0;
-	}
-
-	float bottom_depth = sample_raw_water_depth(uv + dz);
-	if (bottom_depth > 0.001) {
-		accum_surface += sample_terrain_world_height(uv + dz) + bottom_depth;
-		accum_weight += 1.0;
-	}
-
-	if (accum_weight <= 0.0) {
+	found = accum_weight > 0.0;
+	if (!found) {
 		return 0.0;
 	}
-
 	float average_surface = accum_surface / accum_weight;
-	float display_surface = average_surface;
-	if (center_depth > 0.001) {
-		display_surface = mix(
-			center_surface,
-			average_surface,
-			clamp(water_surface_smoothing, 0.0, 1.0)
-		);
-	}
-	return max(display_surface - center_terrain, 0.0);
+	return center_depth > 0.001
+		? mix(center_surface, average_surface, clamp(water_surface_smoothing, 0.0, 1.0))
+		: average_surface;
 }
 
 void vertex() {
 	var_centered_uv = centered_uv(UV);
-	float terrain_height = texture(heightmap, var_centered_uv).r;
-	float water_depth = sample_display_water_depth(var_centered_uv);
-	
-	// Terrain samples are still in pre-scaled storage units, but water depth is
-	// already world-space metres. Only the terrain sample should use height_scale.
-	VERTEX.y += terrain_height * height_scale + water_depth + 0.05;
+	bool found;
+	float surface = water_display_surface(var_centered_uv, found);
+	VERTEX.y += found ? surface + 0.05 : sample_terrain_world_height(var_centered_uv) - WATER_BURY_M;
+	var_surface_m = VERTEX.y - 0.05;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	var_sun_direction_view = normalize((MODELVIEW_MATRIX * vec4(normalize(scene_sun_direction), 0.0)).xyz);
 	vec3 view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -230,6 +208,84 @@ float water_sun_glitter(vec3 view_normal, float breakup) {
 		0.0,
 		1.0
 	);
+}
+
+// Screen-space reflection of the opaque scene in the water. Godot's own SSR skips transparent
+// materials, so the water reflected only a flat sky colour: no shore, no trees, no buildings.
+// The reflected view ray is marched through the opaque depth buffer in geometrically growing
+// steps and refined by bisection on a hit. O(REFLECTION_STEPS + REFLECTION_REFINE) texture
+// reads per water pixel. `weight` is zero when the ray finds neither scene nor sky on screen, and
+// fades toward the screen edge, where what the ray would meet is not on screen.
+const int REFLECTION_STEPS = 24;
+const int REFLECTION_REFINE = 5;
+
+vec3 water_view_at(vec2 uv, mat4 inv_projection) {
+	float depth = texture(depth_texture, uv).r;
+	vec4 view = inv_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+	return view.xyz / view.w;
+}
+
+vec2 water_screen_at(vec3 view, mat4 projection) {
+	vec4 clip = projection * vec4(view, 1.0);
+	return clip.xy / clip.w * 0.5 + 0.5;
+}
+
+// A ray that meets no scene reflects the sky at infinity along it: the screen point its direction
+// projects to, where the sky is drawn. That is continuous from pixel to pixel, which the last sky
+// sample along each march was not: neighbouring rays stopped on different steps and banded.
+vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv_projection,
+		out float weight) {
+	weight = 0.0;
+	vec3 direction = reflect(normalize(view_pos), view_normal);
+	// A ray turning back toward the camera leaves the screen at once.
+	if (direction.z > -0.02) {
+		return vec3(0.0);
+	}
+	float near_t = 0.0;
+	float far_t = max(length(view_pos) * 0.02, 0.5);
+	for (int i = 0; i < REFLECTION_STEPS; i++) {
+		vec3 sample_view = view_pos + direction * far_t;
+		vec2 uv = water_screen_at(sample_view, projection);
+		if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+			break;
+		}
+		float scene_depth = texture(depth_texture, uv).r;
+		vec4 scene = inv_projection * vec4(uv * 2.0 - 1.0, scene_depth, 1.0);
+		float scene_z = scene.z / scene.w;
+		// Behind a drawn surface and not far behind it: the ray passed through that surface.
+		if (scene_depth > 0.0 && scene_depth < 1.0 && sample_view.z < scene_z
+				&& scene_z - sample_view.z < max(far_t * 0.35, 3.0)) {
+			for (int r = 0; r < REFLECTION_REFINE; r++) {
+				float mid_t = (near_t + far_t) * 0.5;
+				vec3 mid_view = view_pos + direction * mid_t;
+				if (mid_view.z < water_view_at(water_screen_at(mid_view, projection), inv_projection).z) {
+					far_t = mid_t;
+				} else {
+					near_t = mid_t;
+				}
+			}
+			uv = water_screen_at(view_pos + direction * far_t, projection);
+			vec2 edge = min(uv, vec2(1.0) - uv);
+			weight = smoothstep(0.0, 0.08, min(edge.x, edge.y));
+			return textureLod(screen_texture, uv, 0.0).rgb;
+		}
+		near_t = far_t;
+		far_t *= 1.38;
+	}
+	// Off screen the sky continues from the screen's own edge: a steep ray leaves through the top
+	// and meets the top row, which is near the zenith that real water reflects there. One row
+	// repeated draws its clouds as streaks, so the farther off screen, the blurrier the mip.
+	vec4 infinity = projection * vec4(direction, 0.0);
+	vec2 unclamped = infinity.xy / infinity.w * 0.5 + 0.5;
+	vec2 sky_uv = clamp(unclamped, vec2(0.002), vec2(0.998));
+	float sky_depth = texture(depth_texture, sky_uv).r;
+	// Nothing drawn there but sky: the far plane in either depth convention.
+	if (sky_depth <= 0.0 || sky_depth >= 1.0) {
+		weight = 1.0;
+		float off_screen = length(unclamped - sky_uv);
+		return textureLod(screen_texture, sky_uv, smoothstep(0.0, 0.4, off_screen) * 6.0).rgb;
+	}
+	return vec3(0.0);
 }
 
 float water_debug_patch_border(vec2 patch_uv) {
@@ -339,7 +395,10 @@ vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 }
 
 void fragment() {
-	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
+	// The water column under this pixel: the level surface above the terrain. The shoreline
+	// fades where the terrain rises through the surface, so it follows the terrain's own contour
+	// rather than the straight segments of the filtered watermap between its 10 m samples.
+	float contour_depth_m = max(var_surface_m - sample_terrain_world_height(var_centered_uv), 0.0);
 	float depth_m = contour_depth_m;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
 	float depth_factor = smoothstep(0.12, max(water_deep_color_depth_m, 0.121), depth_m);
@@ -394,7 +453,9 @@ void fragment() {
 		ROUGHNESS = 1.0;
 		SPECULAR = 0.0;
 	} else {
-		if (shore_mask < 0.001 && contour_depth_m <= 0.001) {
+		// Terrain above the level surface ends the water. Clipping at the watermap's own zero
+		// contour instead drew the grid lines through its dry samples as straight shore edges.
+		if (contour_depth_m <= 0.001) {
 			discard;
 		}
 
@@ -407,7 +468,17 @@ void fragment() {
 			refracted_scene,
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
-		final_color = mix(final_color, sky_reflection, fresnel_mix);
+		// Reflected scene where the ray finds one, the sky tint where it does not. The scene is
+		// already lit, so it is emitted rather than lit again as albedo. The flat view-space up
+		// carries a small share of the wave slope, which ripples the reflection.
+		vec3 view_up = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+		vec3 ripple_normal = perturb_water_normal(view_up, wave_slope, water_wave_normal_strength * 0.25);
+		float reflection_weight;
+		vec3 reflected_scene = water_reflection(VERTEX, ripple_normal, PROJECTION_MATRIX,
+			INV_PROJECTION_MATRIX, reflection_weight);
+		final_color = mix(final_color, sky_reflection, fresnel_mix * (1.0 - reflection_weight));
+		final_color *= 1.0 - fresnel_mix * reflection_weight;
+		EMISSION = reflected_scene * fresnel_mix * reflection_weight;
 		final_color += scene_sun_color.rgb
 			* scene_ambient_light.rgb
 			* sun_specular
@@ -418,8 +489,11 @@ void fragment() {
 			* 0.07;
 		final_color = mix(final_color, sky_reflection, topdown_ripple);
 		ALBEDO = final_color;
-		ALPHA = final_alpha;
+		// A reflection is light leaving the surface, not the lake bed seen through it.
+		ALPHA = mix(final_alpha, 1.0, fresnel_mix * shore_mask);
 		ROUGHNESS = clamp(0.08 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
-		SPECULAR = 0.72;
+		// The engine's own specular reflects the sky; where the scene is reflected instead, it
+		// would lay that sky over the reflected shore and wash it out.
+		SPECULAR = 0.72 * (1.0 - reflection_weight);
 	}
 }
