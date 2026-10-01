@@ -44,6 +44,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Past the shadow range the floor now keeps the sun the open crowns pass and takes its shade
   down the sun ray, so a stand edge no longer turns black at `420 m`; see
   [the far floor](terrain.md#the-far-forest-floor-matches-the-shadows-it-replaces-2026-10-01).
+  Pine, birch and aspen leaves are calibrated against forest photos, so a stand from the air
+  is no longer nearly as bright as the meadow; see
+  [the leaf albedo](terrain.md#leaf-albedo-of-pine-birch-and-aspen--calibrated-against-photos-2026-10-01).
   Past the handover a tree's trunk zone is shaded, so a far stand no longer floats on lit
   trunks; see [the far stand](terrain.md#a-far-stand-is-dark-under-its-crowns-2026-09-26).
   Terrain residency now covers the cull distance in every direction, so a quick turn no longer

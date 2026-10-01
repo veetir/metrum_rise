@@ -76,8 +76,10 @@ const IMPOSTOR_RADIANCE_MATCH := [1.033, 1.097]
 # the authored trees; both species fit best at the same response.
 const IMPOSTOR_VOLUME := [Vector3(2.0, 0.0, 0.75), Vector3(2.0, 0.0, 0.75)]
 # Share of the near crown's sun highlight an impostor draws, fitted with the response above.
-# Backlit by a low sun, the near cards catch a sheen the impostor otherwise lacks.
-const IMPOSTOR_SHEEN := 0.5
+# Backlit by a low sun, the near cards catch a sheen the impostor otherwise lacks. The sheen does
+# not scale with albedo, so LEAF_ALBEDO_SCALE raised its share of a backlit crown, and 0.5 left
+# the impostor at 0.853 of the near level there; 0.7 keeps all poses within 0.101, as before.
+const IMPOSTOR_SHEEN := 0.7
 # One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
 # shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
 const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
@@ -92,6 +94,14 @@ static var _card_texture: Texture2D
 # spruce, birch leads aspen). Each form has FORM_MODELS models, which its variants cycle through.
 const TREE_MODEL_DIR := "res://assets/models/vegetation/trees/"
 const CANOPY_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
+# Share of its texture-mean leaf albedo each form keeps. The texture means came from bright
+# photo foliage and put a lone pine or birch above the meadow under it: from the air a closed
+# stand rendered at 0.78-0.87 of the meadow, against 0.30-0.50 in the green-field forest-edge
+# photos, and the sun added twice the meadow's light to a lone pine. Spruce, at a leaf Y of 0.101,
+# renders at 0.35 of the meadow and anchors the set. The others keep their reflectance relative
+# to it as typical green-band leaf reflectance puts it: pine 1.4, birch 1.8 and aspen 1.7 times
+# spruce. Applied to the near cards and, per layer, to the baked impostors.
+const LEAF_ALBEDO_SCALE := {"pine": 0.596, "birch": 0.585, "aspen": 0.618}
 const FORM_MODELS := 3
 # Sway weight of the trunk top, as the procedural trunks carried it. Everything farther from the
 # trunk takes the rest in proportion to its reach, so branch tips and their cards sway fully.
@@ -207,6 +217,8 @@ static func _authored_mesh(directory: String, info_file: String, model: String,
 		var arrays := source.surface_get_arrays(surface)
 		var cards := source.surface_get_material(surface).resource_name.ends_with("_foliage")
 		var key: Array = info["leaf_mean" if cards else "bark_mean"]
+		var leaf_scale: float = LEAF_ALBEDO_SCALE.get(form, 1.0) \
+			if cards and directory == TREE_MODEL_DIR else 1.0
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 		# The authored colour is crown occlusion on the cards and a tint on the bark. Scaled by the
@@ -217,7 +229,8 @@ static func _authored_mesh(directory: String, info_file: String, model: String,
 			var weight := clampf(TRUNK_TOP_WEIGHT * at.y / bounds.end.y
 				+ (1.0 - TRUNK_TOP_WEIGHT) * Vector2(at.x, at.z).length() / reach, 0.0, 1.0) \
 				if sway_per_m < 0.0 else clampf(at.y * sway_per_m, 0.0, 0.8)
-			colors[i] = Color(colors[i].r * key[0], colors[i].g * key[1], colors[i].b * key[2], weight)
+			colors[i] = Color(colors[i].r * key[0] * leaf_scale, colors[i].g * key[1] * leaf_scale,
+				colors[i].b * key[2] * leaf_scale, weight)
 		var kept := []
 		kept.resize(Mesh.ARRAY_MAX)
 		for channel in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TEX_UV, Mesh.ARRAY_INDEX]:
@@ -292,12 +305,16 @@ static func impostor_material(species: int) -> ShaderMaterial:
 			material.set_shader_parameter(channel + "_atlas", array)
 		var centres := PackedVector3Array()
 		var sizes := PackedFloat32Array()
+		var leaf_scales := PackedFloat32Array()
 		for variant in range(VARIANT_COUNTS[species]):
 			var bounds: Dictionary = metadata.forms[impostor_form(species, variant)]
 			centres.append(Vector3(bounds.centre[0], bounds.centre[1], bounds.centre[2]))
 			sizes.append(bounds.size)
+			var model := canopy_model(species, variant)
+			leaf_scales.append(LEAF_ALBEDO_SCALE.get(model.substr(0, model.rfind("_")), 1.0))
 		material.set_shader_parameter("bounds_centre", centres)
 		material.set_shader_parameter("bounds_size", sizes)
+		material.set_shader_parameter("leaf_albedo_scale", leaf_scales)
 		material.set_shader_parameter("frame_bounds", _impostor_frame_bounds(species, metadata))
 		material.set_shader_parameter("impostor_radiance_match", IMPOSTOR_RADIANCE_MATCH[species])
 		var volume: Vector3 = IMPOSTOR_VOLUME[species]

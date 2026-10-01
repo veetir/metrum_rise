@@ -9,6 +9,9 @@ uniform sampler2DArray normal_atlas : filter_linear_mipmap, repeat_disable;
 // One baked form per near variant; the layer is the variant.
 uniform vec3 bounds_centre[12];
 uniform float bounds_size[12];
+// Leaf albedo share of each layer's form; see LEAF_ALBEDO_SCALE in tree_species.gd. The bake
+// holds the unscaled leaves, and the few trunk texels in a frame take the same share.
+uniform float leaf_albedo_scale[12];
 // Per view (x) and form (y), the frame UV rectangle that holds its coverage; see
 // vegetation_impostor.gdshaderinc.
 uniform sampler2D frame_bounds : filter_nearest, repeat_disable;
@@ -155,7 +158,7 @@ void fragment() {
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(volume_lift_gain * spread, 0.0, 1.0)));
 	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
-	vec3 tinted = albedo.rgb * tint_far.rgb;
+	vec3 tinted = albedo.rgb * tint_far.rgb * leaf_albedo_scale[int(cell2_layer_fade.z)];
 	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w));
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;

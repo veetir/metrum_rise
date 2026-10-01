@@ -863,6 +863,36 @@ term off removed the band; the crown terms barely changed it.
 `terrain_overlay_shader_test` now also checks that, past the cascades, a stand toward the sun
 shades open ground (`0.400` against `0.558`) and a stand away from it does not.
 
+### Leaf albedo of pine, birch and aspen — calibrated against photos (2026-10-01)
+
+Every earlier tree calibration matched one tree level against another, never against a real
+forest. Measured against the forest-edge photographs in `imgs/reference/vegetation/`, as
+canopy mean Y over the open green ground in the same image, so exposure cancels: Vantaa
+`0.30-0.31`, Tali `0.44`, and `0.17` over Sipoo's hay field, which is too bright to use. A
+painted mixed stand in the game at 13:00 measured `0.78` from `140 m` up and `0.87` from
+`180 m`.
+
+A render with the key light hidden split the cause. Sky light alone gives the stand `0.27-0.34`
+of the meadow, inside the photo range. The sun then added `1.38` times as much light to the
+canopy as to the meadow, and a lone pine or birch took `2.0` times the meadow's sun and
+rendered brighter than the grass under it (`1.17`). Spruce sat at `0.35`. The stored leaf
+means explain it: pine `0.238`, birch `0.312` and aspen `0.279` Y against spruce `0.101`,
+taken from bright photo foliage. Real green-band leaf reflectance puts pine at about `1.4`,
+birch `1.8` and aspen `1.7` times spruce (literature values, not measured here).
+
+`LEAF_ALBEDO_SCALE` in `tree_species.gd` scales the leaf vertex colour of the near levels and,
+through `leaf_albedo_scale[layer]`, the baked impostor of each variant: pine `0.596`, birch
+`0.585`, aspen `0.618`, spruce unchanged. After: the stand measures `0.52` from `140 m` and
+`0.60` from `180 m`, the lone pair `0.83`, the spruce `0.34`. The sun sheen does not scale with
+albedo, so its share of a backlit crown rose and the impostor fell to `0.853` of the near level
+with a low sun ahead; `IMPOSTOR_SHEEN` moved from `0.5` to `0.7`, which keeps all 108 poses of
+`vegetation_level_match_test` within `0.101`, the margin before the change.
+
+The stand is still above the photo range. What remains is sun the crowns of a dense stand
+should take from each other and do not. `CANOPY_FAR_ALBEDO` was fitted to the brighter trees
+and needs a refit once the stand is settled. A Codex (GPT-6 Astra) read-only study of the
+lighting path and the photos informed this pass.
+
 ### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
 
 **Trees.** The canopy is 24 Blender trees (`tools/model_trees.py`, run on the owner's M2 Pro
