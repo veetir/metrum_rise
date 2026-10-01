@@ -3,7 +3,10 @@
 //! File-service bridge for asset authoring. Rust owns dependency planning, staging and drafts.
 //! Godot supplies Variant serialization, user:// resolution and texture decoding validation.
 
+use crate::assets::PackManifest;
+use crate::assets::archive;
 use crate::assets::authoring::{colours, files};
+use crate::assets::pack::{PackSettings, bump_version, compare_versions};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use godot::builtin::vdict;
 use godot::classes::{Image, Json, ProjectSettings};
@@ -171,12 +174,250 @@ impl AssetAuthoringFiles {
         .into()
     }
 
+    /// Current editable `pack.toml` metadata of an installed pack.
+    #[func]
+    pub fn pack_settings(mods: GString, pack: GString) -> VarDictionary {
+        let result = files::pack_directory(&native_path(mods), &pack.to_string())
+            .and_then(|root| {
+                std::fs::read_to_string(root.join("pack.toml")).map_err(|e| e.to_string())
+            })
+            .and_then(|text| PackManifest::from_str(&text).map_err(|e| e.to_string()));
+        match result {
+            Ok(manifest) => pack_dictionary(&manifest),
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Validate and atomically rewrite pack metadata; `pack_id` cannot change.
+    #[func]
+    pub fn update_pack(mods: GString, pack: GString, settings: VarDictionary) -> GString {
+        let text = |key: &str| {
+            settings
+                .get(key)
+                .and_then(|v| v.try_to::<GString>().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let values = [
+            "display_name",
+            "version",
+            "author",
+            "license",
+            "description",
+        ]
+        .map(text);
+        let [display_name, version, author, license, description] = &values;
+        let settings = PackSettings {
+            display_name,
+            version,
+            author,
+            license,
+            description,
+        };
+        files::update_pack(&native_path(mods), &pack.to_string(), &settings)
+            .err()
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Next semantic version for `patch`, `minor` or `major`; empty when it has none.
+    #[func]
+    pub fn bumped_version(version: GString, part: GString) -> GString {
+        bump_version(&version.to_string(), &part.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Validate a pack and summarise its share archive without writing. Takes native paths
+    /// and touches no engine singleton, so it may run on a worker thread.
+    #[func]
+    pub fn inspect_pack(mods: GString, pack: GString) -> VarDictionary {
+        let result = files::pack_directory(Path::new(&mods.to_string()), &pack.to_string())
+            .and_then(|root| archive::inventory(&root));
+        match result {
+            Ok(contents) => {
+                let mut summary = pack_dictionary(&contents.pack);
+                summary.set("assets", contents.assets as i64);
+                // checksums.sha256 is generated into the archive as one more file.
+                summary.set("files", contents.files.len() as i64 + 1);
+                summary.set("bytes", contents.bytes as i64);
+                let excluded: PackedStringArray =
+                    contents.excluded.iter().map(GString::from).collect();
+                summary.set("excluded", excluded);
+                summary
+            }
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Write `<pack_id>-<version>.metrum.zip` and its `.sha256` sidecar into `destination`,
+    /// after an optional `patch`/`minor`/`major` bump (empty for none). Native paths only;
+    /// safe on a worker thread.
+    #[func]
+    pub fn export_pack(
+        mods: GString,
+        pack: GString,
+        destination: GString,
+        bump: GString,
+    ) -> VarDictionary {
+        let bump = bump.to_string();
+        match archive::export(
+            Path::new(&mods.to_string()),
+            &pack.to_string(),
+            Path::new(&destination.to_string()),
+            Some(bump.as_str()).filter(|part| !part.is_empty()),
+        ) {
+            Ok(exported) => vdict! {
+                "path": exported.path.to_string_lossy().as_ref(),
+                "sha256": exported.sha256,
+                "version": exported.version,
+            },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// SHA-256 of a file as lowercase hex. Native path; safe on a worker thread.
+    #[func]
+    pub fn file_sha256(path: GString) -> VarDictionary {
+        match archive::sha256(Path::new(&path.to_string())) {
+            Ok(sha256) => vdict! { "sha256": sha256 },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Normalised expected SHA-256 from 64 hex digits or a `sha256sum` line; empty if invalid.
+    #[func]
+    pub fn expected_sha256(text: GString) -> GString {
+        archive::expected_sha256(&text.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Verify a share archive against `expected` and stage it inside `mods` (`TOOLS-10`).
+    /// `installed` is `absent`, `identical` (nothing staged) or `different`, with `change`
+    /// relating the versions; a staged pack must be passed to `commit_import` or
+    /// `discard_import`. Native paths; worker-safe.
+    #[func]
+    pub fn stage_import(
+        mods: GString,
+        archive: GString,
+        expected: GString,
+        bundled: PackedStringArray,
+    ) -> VarDictionary {
+        let bundled: Vec<String> = bundled.as_slice().iter().map(GString::to_string).collect();
+        let result = archive::stage(
+            Path::new(&archive.to_string()),
+            &expected.to_string(),
+            Path::new(&mods.to_string()),
+            &bundled,
+        );
+        let staged = match result {
+            Ok(staged) => staged,
+            Err(error) => return vdict! { "error": error },
+        };
+        let mut summary = pack_dictionary(&staged.pack);
+        summary.set("assets", staged.assets as i64);
+        summary.set("files", staged.files as i64);
+        summary.set("bytes", staged.bytes as i64);
+        let staging = staged.staging.unwrap_or_default();
+        summary.set("staging", staging.to_string_lossy().as_ref());
+        let (installed, version) = match staged.installed {
+            archive::Installed::Absent => ("absent", None),
+            archive::Installed::Identical => ("identical", None),
+            archive::Installed::Different { version } => ("different", version),
+        };
+        // `update`, `same` or `downgrade` against the installed version; empty if unreadable.
+        let change = version
+            .as_deref()
+            .and_then(|current| compare_versions(&staged.pack.version, current))
+            .map_or("", |order| match order {
+                std::cmp::Ordering::Greater => "update",
+                std::cmp::Ordering::Equal => "same",
+                std::cmp::Ordering::Less => "downgrade",
+            });
+        summary.set("installed", installed);
+        summary.set("installed_version", version.unwrap_or_default());
+        summary.set("change", change);
+        summary
+    }
+
+    /// Rename a staged import into place; any installed copy must already be in Trash.
+    #[func]
+    pub fn commit_import(mods: GString, staging: GString) -> VarDictionary {
+        match archive::commit(
+            Path::new(&mods.to_string()),
+            Path::new(&staging.to_string()),
+        ) {
+            Ok(pack_id) => vdict! { "pack_id": pack_id },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Folder of an installed pack that may be moved to Trash; bundled ids are refused.
+    #[func]
+    pub fn inspect_pack_removal(
+        mods: GString,
+        pack: GString,
+        bundled: PackedStringArray,
+    ) -> VarDictionary {
+        let bundled: Vec<String> = bundled.as_slice().iter().map(GString::to_string).collect();
+        match files::removal_target(&native_path(mods), &pack.to_string(), &bundled) {
+            Ok(path) => vdict! { "path": path.to_string_lossy().as_ref() },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Compare an installed pack with the `checksums.sha256` its import kept (`TOOLS-11`).
+    /// Native paths; safe on a worker thread.
+    #[func]
+    pub fn verify_installed_pack(mods: GString, pack: GString) -> VarDictionary {
+        let list = |paths: Vec<String>| {
+            paths
+                .iter()
+                .map(GString::from)
+                .collect::<PackedStringArray>()
+        };
+        match archive::verify(Path::new(&mods.to_string()), &pack.to_string()) {
+            Ok(report) => vdict! {
+                "files": report.files as i64,
+                "changed": list(report.changed),
+                "missing": list(report.missing),
+                "extra": list(report.extra),
+                "invalid": report.invalid.unwrap_or_default(),
+            },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Remove import staging folders an earlier process left behind (e.g. after a crash).
+    #[func]
+    pub fn sweep_imports(mods: GString) {
+        archive::sweep(&native_path(mods));
+    }
+
+    /// Remove a staged import without installing it.
+    #[func]
+    pub fn discard_import(mods: GString, staging: GString) -> GString {
+        archive::discard(
+            Path::new(&mods.to_string()),
+            Path::new(&staging.to_string()),
+        )
+        .err()
+        .unwrap_or_default()
+        .as_str()
+        .into()
+    }
+
     /// Validate and publish a document's complete model/dependency set transactionally.
     #[func]
     pub fn publish_document(document: GString, output: GString) -> GString {
         let result = (|| {
-            let state: Value =
+            let mut state: Value =
                 serde_json::from_str(&document.to_string()).map_err(|e| e.to_string())?;
+            colours::canonical_names(&mut state)?;
             let params: ExportParams =
                 serde_json::from_value(state["params"].clone()).map_err(|e| e.to_string())?;
             let (asset, pack) = validated_tomls(&params)?;
@@ -293,6 +534,17 @@ fn colour_dependencies(state: &Value) -> Result<Vec<(String, PathBuf)>, String> 
         }
     }
     Ok(dependencies)
+}
+
+fn pack_dictionary(manifest: &PackManifest) -> VarDictionary {
+    vdict! {
+        "pack_id": manifest.pack_id.as_str(),
+        "display_name": manifest.display_name.as_str(),
+        "version": manifest.version.as_str(),
+        "author": manifest.author.as_str(),
+        "license": manifest.license.as_str(),
+        "description": manifest.description.as_deref().unwrap_or_default(),
+    }
 }
 
 fn native_path(path: GString) -> PathBuf {

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 pub(crate) const MAX_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
-type Files = BTreeMap<PathBuf, PathBuf>;
+pub(crate) type Files = BTreeMap<PathBuf, PathBuf>;
 
 pub(crate) fn create_pack(mods: &Path, id: &str, name: &str, author: &str) -> Result<(), String> {
     let manifest = crate::assets::pack::manifest_toml(id, name, "0.1.0", author, "CC0");
@@ -39,7 +39,68 @@ pub(crate) fn create_pack(mods: &Path, id: &str, name: &str, author: &str) -> Re
     Ok(())
 }
 
-fn token() -> String {
+/// Resolve an installed pack folder whose manifest is a regular file, never through links.
+pub(crate) fn pack_directory(mods: &Path, pack: &str) -> Result<PathBuf, String> {
+    let directory = mods.join(pack);
+    let manifest = directory.join("pack.toml");
+    if !crate::assets::is_valid_pack_id(pack)
+        || mods.is_symlink()
+        || directory.is_symlink()
+        || manifest.is_symlink()
+        || !manifest.is_file()
+    {
+        return Err(format!("'{pack}' is not an installed user pack"));
+    }
+    Ok(directory)
+}
+
+/// Resolve an installed pack that may be moved to Trash. Bundled packs are refused: startup
+/// seeds them back whenever they are missing, so they are disabled instead.
+pub(crate) fn removal_target(
+    mods: &Path,
+    pack: &str,
+    bundled: &[String],
+) -> Result<PathBuf, String> {
+    if bundled.iter().any(|id| id == pack) {
+        return Err(format!(
+            "'{pack}' is bundled with the game and comes back at startup; disable it instead"
+        ));
+    }
+    pack_directory(mods, pack)
+}
+
+/// Validate and atomically replace a pack's editable metadata.
+pub(crate) fn update_pack(
+    mods: &Path,
+    pack: &str,
+    settings: &crate::assets::pack::PackSettings,
+) -> Result<(), String> {
+    let path = pack_directory(mods, pack)?.join("pack.toml");
+    let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let text = crate::assets::pack::rewrite_manifest(&source, settings)?;
+    write_atomic(&path, text.as_bytes()).map_err(|e| format!("pack.toml was not changed: {e}"))
+}
+
+/// Write beside `path`, sync, then rename over it, so readers see old or new bytes only.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let temporary = parent.join(format!(".write-{}.tmp", token()));
+    let result = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|_| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+pub(crate) fn token() -> String {
     format!(
         "{}-{}",
         std::process::id(),
@@ -298,7 +359,7 @@ fn add_file(files: &mut Files, relative: &str, source: &Path) -> Result<(), Stri
         return Err(format!("Unsafe or reserved asset filename: {relative}"));
     }
     if !source.is_file() {
-        return Err(format!("Missing mesh dependency: {}", source.display()));
+        return Err(format!("Missing referenced file: {}", source.display()));
     }
     let destination = PathBuf::from(relative);
     if let Some(previous) = files.get(&destination)
@@ -449,6 +510,7 @@ pub(crate) fn publish(
     if !crate::assets::is_valid_asset_id(asset_id) {
         return Err("Invalid asset ID".into());
     }
+    let manifest = crate::assets::AssetManifest::from_str(asset_toml).map_err(|e| e.to_string())?;
     let assets = output.join("assets");
     if output.is_symlink() || assets.is_symlink() {
         return Err("Pack directories cannot be symbolic links".into());
@@ -460,13 +522,18 @@ pub(crate) fn publish(
     };
     fs::create_dir(&stage.path).map_err(|e| e.to_string())?;
     stage.preserve = false;
+    // The plan is the complete asset: files a previous publication used but this one does
+    // not are dropped, never carried forward. Sources may live in `target`, which stays
+    // intact until the staged copy is complete.
     let staged = stage.path.join("asset");
     let target = assets.join(asset_id);
-    if target.exists() || target.is_symlink() {
-        copy_directory(&target, &staged)?;
-    } else {
-        fs::create_dir(&staged).map_err(|e| e.to_string())?;
+    if target.is_symlink() {
+        return Err(format!(
+            "Cannot publish through a symbolic link: {}",
+            target.display()
+        ));
     }
+    fs::create_dir(&staged).map_err(|e| e.to_string())?;
     for (relative, source) in files {
         let destination = staged.join(relative);
         fs::create_dir_all(destination.parent().ok_or("Missing dependency parent")?)
@@ -474,6 +541,14 @@ pub(crate) fn publish(
         fs::copy(source, destination).map_err(|e| e.to_string())?;
     }
     fs::write(staged.join("asset.toml"), asset_toml).map_err(|e| e.to_string())?;
+    // Share archives package exactly what the manifest references; publishing anything
+    // else would make the installed asset disagree with its exported copy.
+    if !crate::assets::archive::asset_files(&manifest, &staged)?
+        .keys()
+        .eq(files.keys())
+    {
+        return Err("Planned files do not match the files the manifest references".into());
+    }
     let pack = output.join("pack.toml");
     let created_pack = match OpenOptions::new().write(true).create_new(true).open(&pack) {
         Ok(mut file) => {
@@ -525,23 +600,8 @@ pub(crate) fn save_draft(path: &Path, payload: &str) -> Result<(), String> {
     }
     let parent = path.parent().ok_or("Choose a draft file")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let temporary = parent.join(format!(".draft-{}.tmp", token()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|e| e.to_string())?;
-    let result = file
-        .write_all(payload.as_bytes())
-        .and_then(|_| file.sync_all())
-        .and_then(|_| {
-            drop(file);
-            fs::rename(&temporary, path)
-        });
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.map_err(|e| format!("Draft was not saved; previous file unchanged: {e}"))
+    write_atomic(path, payload.as_bytes())
+        .map_err(|e| format!("Draft was not saved; previous file unchanged: {e}"))
 }
 
 pub(crate) fn load_draft(path: &Path) -> Result<String, String> {
@@ -578,6 +638,34 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    fn prop_manifest(name: &str) -> String {
+        format!(
+            "asset_id = \"prop.test\"\ndisplay_name = \"{name}\"\n[prop]\ncategory = \"test\"\n\
+             bounding_size_m = [1.0, 1.0, 1.0]\nsnap_mode = \"free\"\nterrain_behavior = \"flat_ground\"\n\
+             [[lods]]\nfile = \"model.gltf\"\ndistance_min_m = 0.0\n"
+        )
+    }
+
+    #[test]
+    fn only_installed_user_packs_can_be_removed() {
+        let fixture = Fixture::new();
+        fixture.write("mods/user-pack/pack.toml", "");
+        fixture.write("mods/kenney/pack.toml", "");
+        let mods = fixture.0.join("mods");
+        let bundled = ["kenney".to_owned()];
+        assert_eq!(
+            removal_target(&mods, "user-pack", &bundled).unwrap(),
+            mods.join("user-pack")
+        );
+        assert!(
+            removal_target(&mods, "kenney", &bundled)
+                .unwrap_err()
+                .contains("bundled")
+        );
+        assert!(removal_target(&mods, "absent", &bundled).is_err());
+        assert!(removal_target(&mods, "../mods", &bundled).is_err());
     }
 
     #[test]
@@ -808,47 +896,44 @@ mod tests {
     }
 
     #[test]
-    fn publication_preserves_unmanaged_files_and_failed_copy_preserves_previous_asset() {
+    fn publication_replaces_unreferenced_files_and_failed_copy_preserves_previous_asset() {
         let fixture = Fixture::new();
         let model = fixture.write("source/model.gltf", "{}");
         let output = fixture.0.join("pack");
         let files = plan(&[("model.gltf".into(), model.clone())], &[]).unwrap();
-        publish(
-            &output,
-            "building.test",
-            &files,
-            "first manifest",
-            "first pack",
-        )
-        .unwrap();
-        let asset = output.join("assets/building.test");
-        fs::write(asset.join("unmanaged.txt"), "keep").unwrap();
-        publish(
-            &output,
-            "building.test",
-            &files,
-            "second manifest",
-            "replace pack?",
-        )
-        .unwrap();
+        let first = prop_manifest("First");
+        let second = prop_manifest("Second");
+        publish(&output, "prop.test", &files, &first, "first pack").unwrap();
+        let asset = output.join("assets/prop.test");
+        fs::write(asset.join("unreferenced.png"), "stale").unwrap();
+        publish(&output, "prop.test", &files, &second, "replace pack?").unwrap();
         assert_eq!(
             fs::read_to_string(output.join("pack.toml")).unwrap(),
             "first pack"
         );
-        assert_eq!(
-            fs::read_to_string(asset.join("unmanaged.txt")).unwrap(),
-            "keep"
-        );
+        assert!(!asset.join("unreferenced.png").exists());
+        assert!(asset.join("model.gltf").is_file());
+        // Republishing from sources inside the published asset itself must still work.
+        let files = plan(&[("model.gltf".into(), asset.join("model.gltf"))], &[]).unwrap();
+        publish(&output, "prop.test", &files, &second, "").unwrap();
+        assert!(asset.join("model.gltf").is_file());
+        // A plan carrying a file the manifest never references is refused.
+        let thumbnail = fixture.write("source/thumb.png", "png");
+        let extra = plan(
+            &[("model.gltf".into(), model.clone())],
+            &[("thumb.png".into(), thumbnail)],
+        )
+        .unwrap();
+        assert!(publish(&output, "prop.test", &extra, &first, "").is_err());
+        fs::write(asset.join("unreferenced.png"), "stale").unwrap();
+        let files = plan(&[("model.gltf".into(), model.clone())], &[]).unwrap();
         fs::remove_file(model).unwrap();
-        assert!(publish(&output, "building.test", &files, "bad replacement", "").is_err());
+        assert!(publish(&output, "prop.test", &files, &first, "").is_err());
         assert_eq!(
             fs::read_to_string(asset.join("asset.toml")).unwrap(),
-            "second manifest"
+            second
         );
-        assert_eq!(
-            fs::read_to_string(asset.join("unmanaged.txt")).unwrap(),
-            "keep"
-        );
+        assert!(asset.join("unreferenced.png").is_file());
         assert!(!fs::read_dir(&output).unwrap().any(|e| {
             e.unwrap()
                 .file_name()

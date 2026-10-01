@@ -52,6 +52,13 @@ copied on the next publish. The per-LOD material mapping stays explicit in the d
 the dialog preselects a tier that has a single source material and otherwise matches LOD0's
 chosen name; only a genuinely ambiguous tier is left for the author to resolve.
 
+Published colour texture names are derived from the current schemes alone (`TOOLS-08`), never
+from editing history. In manifest order (scheme, override, then albedo/ORM/normal/emission),
+each distinct source path gets `colours/<file>`; a later source with the same file name gets
+`colours/<n>_<file>`. The editor's working `<n>_` prefix, which only keeps names unique within
+one session, is stripped first, so replacing a texture keeps its plain name. Republishing an
+asset therefore normalizes names left by earlier edits.
+
 ## V1 Design Constraints
 
 The first implementation must stay narrow. The asset editor is a packaging, validation, preview, and metadata-authoring tool, not a general-purpose content pipeline for every asset type or every possible runtime behavior.
@@ -239,13 +246,12 @@ Exported asset packs must be easy to share as ordinary files.
 Distribution model:
 
 - Canonical installed form: unpacked folder in `user://mods/`
-- Common share form: `.zip` archive containing exactly one pack root folder
-- Optional nicer share extension later: something like `.mrpack.zip`, but plain `.zip` should work from day one
+- Share form: `<pack_id>-<version>.metrum.zip`, a plain zip containing exactly one pack root folder (see [Share archive format](#share-archive-format--tools-09))
 
 Editor outputs:
 
 - `Export Runtime Pack`: writes the normal unpacked runtime pack folder
-- `Export Share Archive`: writes a zip archive of the runtime pack for distribution
+- `Export pack as zip…`: writes a share archive of an installed pack to a location the creator chooses
 - Default export flow: export the runtime pack folder first, then optionally generate the share archive from that exact folder
 
 Do not make zip the only exported artifact. The unpacked runtime pack should remain the canonical installable form.
@@ -255,10 +261,10 @@ Player workflow:
 1. Creator exports a runtime pack folder from the asset editor.
 2. Creator shares that pack as:
    - the folder itself, or
-   - a `.zip` made from that folder
+   - a `.metrum.zip` exported from that folder
 3. Another player installs it by:
    - dropping the folder into `user://mods/`, or
-   - importing/selecting the `.zip` in the game or asset editor, which then unpacks it into `user://mods/`
+   - importing the `.metrum.zip` in the game, which verifies it and unpacks it into `user://mods/` (`TOOLS-10`)
 4. The game validates `pack.toml`, asset manifests, `checksums.sha256`, and `pack.index.bin` when present.
 5. The player enables or disables the pack from the content/mod manager.
 
@@ -288,12 +294,81 @@ Conflict rules:
   - enabled/disabled state
   - validation warnings
 
-Export contents:
+### Share archive format — `TOOLS-09`
+
+Export and import share one contract so the game can reject anything export would never produce.
+
+Naming:
+
+- Archive: `<pack_id>-<version>.metrum.zip`, e.g. `kuopio-0.1.0.metrum.zip`. The `.zip` ending keeps it openable with ordinary tools; `.metrum` marks it as a Metrum Rise pack. Import identifies an archive by its contents, never by its name.
+- Sidecar: `<archive_filename>.sha256`, one `sha256sum` line (`<hex>  <archive_filename>`), written next to the archive.
+
+Contents — the referenced file set, nothing else:
 
 - `pack.toml`
-- `pack.index.bin`
-- `assets/...`
-- thumbnails and any baked outputs required by the assets
+- every `assets/<asset_id>/asset.toml` that parses and validates
+- every file those manifests reference: LOD models and the files each `.gltf` loads, colour-scheme textures, the thumbnail and `attribution/`
+- `checksums.sha256`, generated into the archive only; the source pack folder is never modified
+- Derived caches such as `pack.index.bin`, editor drafts, `.blend` sources, Godot `.import` files and any other unreferenced file are excluded. The export dialog lists excluded files.
+- One Rust function, `asset_files` in `rust/src/assets/archive.rs`, derives an asset's referenced file set from its manifest. Publication refuses a staged asset whose files differ from it, export packages exactly it, and import will check against it, so they cannot disagree.
+
+Structure, enforced by export and checked by import:
+
+- Exactly one top-level folder, named after the `pack_id` in `<pack_id>/pack.toml`.
+- File entries only: no directory entries, symlinks, duplicate paths, absolute paths, `..` or `\` separators, and no two paths that differ only by letter case.
+- UTF-8 entry names; compression is `stored` (PNG, WebP, JPEG) or `deflate` (everything else).
+- `<pack_id>/checksums.sha256` lists every other entry exactly once, sorted by path, in `sha256sum` format with paths relative to the pack root.
+- Deterministic bytes: entries sorted by path, fixed timestamp (1980-01-01 00:00), fixed `0644` permissions, no extra fields. The same pack exported by the same build produces the same archive hash.
+
+Export refuses, without writing anything, when `pack.toml` or any `asset.toml` fails validation, a referenced file is missing or escapes its asset folder, the pack contains a symbolic link or a non-UTF-8 file name, an `asset.toml` lies outside `assets/<asset_id>/` or in a folder not named after its `asset_id`, or the case-collision rule fails. The runtime scanner loads every `asset.toml` in a pack, so these rules stop an archive from silently dropping an asset the creator's own game loads.
+
+Writing: the archive and then the sidecar are written to temporary files in the destination folder, synced and renamed into place. A failed export removes its temporary files, so no partial archive is left behind and an existing archive of the same name is untouched. If only the final sidecar rename fails, the error reports the archive's SHA-256; any older sidecar then mismatches, which import rejects. Inspection and export run on the `WorkerThreadPool`, and their cost is linear in the pack's file count and bytes; every archived byte is read once, except files sorting after `checksums.sha256` (only `pack.toml`), which are held in memory so their listed hash matches the written bytes.
+
+Export dialog:
+
+- Opened from `Export pack as zip…` in the library pack menu. Shows the pack's name, version, asset count, file count, total size and excluded files before writing, and warns when the open document has unsaved changes for this pack. The archive is built from disk, not from the draft.
+- Writes into a chosen folder (default: the system Documents folder, then the last one used). When the archive name already exists there, the first Export press says so and a second press replaces it.
+- Offers a patch, minor or major version bump (default: none). A bump rewrites `pack.toml` atomically before the archive is built.
+- After export, shows the archive's SHA-256 with a copy action, so the creator can publish it through a separate channel.
+
+Pack settings:
+
+- `Pack settings…` in the library pack menu edits `display_name`, `version`, `author`, `license` and `description`. Values go through `PackManifest` validation, including a semantic-version check on `version`, and `pack.toml` is rewritten atomically. `pack_id` is not editable.
+
+### Share archive import — `TOOLS-10`
+
+Entry point: `Import pack…` in Options → Mods (`godot/scripts/ui/pack_import.gd`; Rust side in `rust/src/assets/archive/import.rs`).
+
+Flow:
+
+1. A file dialog picks a `.metrum.zip`. The archive's SHA-256 starts computing on the `WorkerThreadPool` immediately.
+2. A separate prompt asks for the expected SHA-256. It accepts 64 hex characters or a pasted sidecar line (`<hex>  <file>`), ignoring case and surrounding whitespace; a `Paste` button fills it from the clipboard. A `.sha256` file next to the archive is never used to fill the field: a hash from the same source as the archive only proves the download is intact, not that it is the file the author published.
+3. A mismatch refuses the import. There is no install-anyway path.
+4. Rust inspects the archive and reports the pack's name, `pack_id`, version, author, asset count and size. When the `pack_id` is already installed:
+   - Identical contents — every entry in the archive's `checksums.sha256` matches the installed file at that path, and the installed pack has no other file the archive would carry — end the import with "Already installed": nothing is replaced, moved to Trash or re-enabled. Files an archive never carries (drafts, `.blend` sources, `.import` files, derived caches) do not affect the comparison.
+   - Otherwise the prompt shows the installed and incoming versions by semantic-version precedence: an update, a same-version import with different contents, or a downgrade, warning on the last two.
+   - During gameplay, a pack enabled in `active_packs.cfg` cannot be replaced: the running city has loaded it, so its files must not change underneath it. Return to the main menu to replace it.
+5. On confirmation, the pack is installed and appears in the pack list disabled. A fresh install also removes its `pack_id` from `active_packs.cfg`, where a previously deleted copy may still be listed as enabled. A replaced pack keeps its enabled state, and unapplied checkbox changes in the list are kept. Enabling it follows the normal apply flow; a running city is never hot-reloaded.
+
+Import refuses, without changing `user://mods/`, when:
+
+- the archive breaks any `TOOLS-09` structure rule, or the root folder differs from the `pack_id` in its `pack.toml`
+- `checksums.sha256` is missing, lists an entry that is absent or mismatched, or the archive holds an entry it does not list
+- an asset's files differ from `asset_files` for its manifest, or `pack.toml` or any `asset.toml` fails validation
+- the entry count, any entry's uncompressed size, the total uncompressed size or the compression ratio exceeds the import limits; sizes are enforced on the bytes actually decompressed, not on header values. Limits: 10,000 entries, 256 MiB per entry, 1 GiB in total, and a 200:1 ratio for entries over 1 MiB.
+- the end-of-central-directory entry count differs from the entries the reader sees (duplicate paths), or the archive is zip64
+- the `pack_id` belongs to a bundled pack (a folder in `res://bootstrap/mods`)
+- moving the installed copy to Trash fails
+
+Installing: entries are extracted into a hidden `user://mods/.import-<token>/` staging folder, verified, then renamed into place, so a failed import leaves nothing behind. The pack scanner and the pack list skip `.`-prefixed folders, so a staging folder left by a crash is never loaded. Such folders are removed at startup and before each import: staging names carry the creating process id, and a folder from another process is removed once it is an hour old, so a second game instance sharing the profile keeps the pack it is reviewing. Closing the dialog removes a staged pack. The archive is hashed again from the same open handle that is unzipped, so the verified bytes are the ones installed. A replaced pack moves to the system Trash first; if the rename then fails, the error says the previous copy is in Trash. `checksums.sha256` stays in the installed folder for post-install verification. Hashing, inspection and extraction run on the `WorkerThreadPool`; cost is linear in the archive's entries and bytes.
+
+### Installed pack actions — `TOOLS-11`
+
+Each row in Options → Mods carries three buttons (`godot/scripts/ui/pack_actions.gd`; Rust side in `rust/src/assets/archive/verify.rs` and `files::removal_target`):
+
+- `Verify` — shown only for packs that have a `checksums.sha256`, i.e. imported ones. On the `WorkerThreadPool`, every listed file is hashed (in parallel) and compared; the report lists files changed since import, missing files, and files the pack would now export that the checksums do not list (e.g. an added asset), plus the reason if the pack no longer validates. Unreferenced files such as drafts are not reported. Re-importing the archive restores the original files. Read-only; cost is O(listed files + bytes).
+- `Show folder` — opens `user://mods/<pack_id>/` in the system file manager.
+- `Remove…` — after confirmation, moves the pack folder to the system Trash and removes its `pack_id` from `active_packs.cfg`, keeping other unapplied checkbox changes. Refused for bundled packs (startup seeds them back, so they are disabled instead; the button is disabled with that reason) and, during gameplay, for packs enabled in `active_packs.cfg`. Eligibility is checked again on confirmation.
 
 ## Integrity, Corruption, And Authenticity
 
@@ -313,15 +388,15 @@ Hashing design:
 
 - Use normal `.zip` as the default share archive format. It is universal, easy to handle, and good enough for the first shipping version.
 - Every exported share archive must have a sibling SHA-256 sidecar file named `<archive_filename>.sha256`. Example:
-  - archive: `kenney_city_pack-1.0.0.zip`
-  - sidecar: `kenney_city_pack-1.0.0.zip.sha256`
+  - archive: `kenney_city_pack-1.0.0.metrum.zip`
+  - sidecar: `kenney_city_pack-1.0.0.metrum.zip.sha256`
 - Every exported pack folder must contain a per-file checksum manifest named exactly `checksums.sha256`.
 
 Verification flow:
 
-- On archive import:
+- On archive import (`TOOLS-10`, see [Share archive import](#share-archive-import--tools-10)):
   - compute archive SHA-256
-  - compare against a provided `.sha256` sidecar or trusted catalog entry if present
+  - compare against the expected hash entered by the player (later: a trusted catalog entry)
   - unpack into a temporary directory
   - verify the unpacked file set against `checksums.sha256`
   - only then move/install into the real `user://mods/` directory
@@ -1628,8 +1703,9 @@ Thumbnail generation rules:
   authored yard surfaces remain. Helper visibility and interaction are restored after the captured
   frame, before saving the image.
 - Captures live beside editor drafts, are packaged as `thumbnail.webp` (lossy, quality 0.9) on
-  runtime export, and survive draft and published-asset reopening. Publication is additive, so an
-  asset previously exported with `thumbnail.png` keeps that file until it is removed by hand.
+  runtime export, and survive draft and published-asset reopening. Publication replaces the asset
+  folder with exactly the files the document references (`TOOLS-08`), so a `thumbnail.png` left
+  by an earlier export is removed on the next publish.
 - Capture requires a rendered window; headless validation/export still works with existing thumbnail files.
 - Standardized per-class catalog-thumbnail rigs remain later work; current captures use the author's preview camera and lighting.
 
