@@ -837,6 +837,46 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Crowns in a stand lose sun to their neighbours (2026-10-01)
+
+After the leaf albedo pass a painted mixed stand at 13:00 still measured `0.53` of the meadow
+beside it from `140 m` up and `0.62` from `180 m`, against `0.30-0.44` in the forest-edge
+photographs. The cast shadows do part of the work: switching vegetation casting off brightens
+the stand by `27%` inside the shadow range and `11%` in a view that is mostly past it. The rest
+is sun the crowns of a closed stand take from each other and the renderer did not.
+
+Each canopy tree now carries a stand closure. `get_vegetation_stand_cover(origin, span)` builds
+the crown coverage of `land_cover.rs` over the patch and `16 m` around it, averages it over the
+`40 m` square around each `8 m` texel, and the renderer samples that once per tree at upload,
+gated as the forest floor is (`0.35-0.7`). Averaging over `40 m` is what keeps a lone tree out:
+a large crown fills `0.78` of its own `8 m` texel and passed the gate, which darkened a lone
+pine to `0.34` of the meadow, while over the square it fills about `0.03`. The near levels read
+the closure from instance custom data. The impostor reads it from the fraction of its layer
+lane, below one half, because its varyings are packed against the Metal limit.
+
+The shaders keep `mix(0.24, 1, exp(-0.3 * closure * depth * cot(sun elevation)))` of the sun,
+where depth is how far below a `20 m` canopy top the surface sits: the top of a crown keeps its
+sun, and a ray deep in the stand keeps what the floor keeps (`CANOPY_FLOOR_SUN_VISIBILITY`).
+Inside the shadow range it combines with the cast shadow as the darker of the two, because that
+shadow already holds the neighbours' crowns. The density `0.3` is fitted. Measured at 13:00:
+
+| View | Before | After |
+|---|---:|---:|
+| Stand from `180 m` up, canopy over meadow | `0.615` | `0.442` |
+| Stand from `140 m` up, canopy over meadow | `0.527` | `0.368` |
+| Lone pine and birch pair, crown over meadow | `0.878` | `0.876` |
+| Lone pine near the camera | `0.568` | `0.567` |
+| Lone spruce | `0.395` | `0.394` |
+
+**Cost.** Release build, 405 resident patches holding 98,541 trees around the painted stand,
+three re-uploads each (`zz_upload_probe.gd`, scratch): `2.03 ms` per patch upload before,
+`3.10 ms` after. The Rust coverage build is `0.61 ms` of that and the per-tree sampling about
+`0.44 ms` (about `1.8 us` a tree). Uploads run under the existing `2 ms` and `6 ms` frame
+budgets, so frame time does not change; a newly visible area fills about a third slower. The
+coverage build evaluates the canopy candidates that the patch fetch has just evaluated; folding
+the closure into `get_decorative_tree_patch` would remove both halves. No GPU cost was measured:
+the shader adds one `exp` per lit fragment.
+
 ### The far forest floor matches the shadows it replaces (2026-10-01)
 
 Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
@@ -880,8 +920,10 @@ means explain it: pine `0.238`, birch `0.312` and aspen `0.279` Y against spruce
 taken from bright photo foliage. Real green-band leaf reflectance puts pine at about `1.4`,
 birch `1.8` and aspen `1.7` times spruce (literature values, not measured here).
 
-`LEAF_ALBEDO_SCALE` in `tree_species.gd` scales the leaf vertex colour of the near levels and,
-through `leaf_albedo_scale[layer]`, the baked impostor of each variant: pine `0.596`, birch
+`LEAF_ALBEDO_SCALE` in `tree_species.gd` scales the leaves through the `leaf_albedo_scale`
+uniform of each form's card material and, per layer, of the baked impostor. It is a uniform and
+not the vertex colour, so the mesh the impostor bake reads, and the source digest
+`vegetation_appearance_test` checks it against, keep the unscaled leaves: pine `0.596`, birch
 `0.585`, aspen `0.618`, spruce unchanged. After: the stand measures `0.52` from `140 m` and
 `0.60` from `180 m`, the lone pair `0.83`, the spruce `0.34`. The sun sheen does not scale with
 albedo, so its share of a backlit crown rose and the impostor fell to `0.853` of the near level

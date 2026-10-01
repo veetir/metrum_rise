@@ -12,6 +12,10 @@ use brush::preset;
 
 mod brush;
 mod land_cover;
+
+// Texels on each side of the square a tree's stand closure averages over; see
+// get_vegetation_stand_cover.
+const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
 use placement::{add_at, line_at, paint_at, stamp_limit};
 
@@ -98,6 +102,22 @@ impl SimulationNode {
         );
         land_cover::Coverage::build(&core, origin, layout.span)
             .payload(land_cover::generations(&core, key))
+    }
+
+    /// Crown coverage averaged over the `40 m` square around each `8 m` texel of a world
+    /// square, without revisions. The tree renderer samples it once per tree at upload for the
+    /// tree's stand closure. The square is built `16 m` wider on every side, so a tree at its
+    /// edge averages over real neighbours. O(K + A) like the terrain payload, plus O(texels).
+    #[func]
+    pub fn get_vegetation_stand_cover(&self, origin: Vector2, span: f32) -> VarDictionary {
+        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
+            return VarDictionary::new();
+        }
+        let mut core = self.lock_core();
+        prepare_sites(&mut core);
+        let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
+        land_cover::Coverage::build(&core, origin - Vector2::splat(margin), span + 2.0 * margin)
+            .stand_grid(STAND_RADIUS_TEXELS)
     }
 
     /// Advances whenever any terrain payload generation or vegetation patch generation does, so

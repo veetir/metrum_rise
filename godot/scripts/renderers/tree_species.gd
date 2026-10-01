@@ -100,7 +100,7 @@ const CANOPY_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
 # photos, and the sun added twice the meadow's light to a lone pine. Spruce, at a leaf Y of 0.101,
 # renders at 0.35 of the meadow and anchors the set. The others keep their reflectance relative
 # to it as typical green-band leaf reflectance puts it: pine 1.4, birch 1.8 and aspen 1.7 times
-# spruce. Applied to the near cards and, per layer, to the baked impostors.
+# spruce. Applied by the near cards' material and, per layer, by the baked impostors.
 const LEAF_ALBEDO_SCALE := {"pine": 0.596, "birch": 0.585, "aspen": 0.618}
 const FORM_MODELS := 3
 # Sway weight of the trunk top, as the procedural trunks carried it. Everything farther from the
@@ -217,8 +217,6 @@ static func _authored_mesh(directory: String, info_file: String, model: String,
 		var arrays := source.surface_get_arrays(surface)
 		var cards := source.surface_get_material(surface).resource_name.ends_with("_foliage")
 		var key: Array = info["leaf_mean" if cards else "bark_mean"]
-		var leaf_scale: float = LEAF_ALBEDO_SCALE.get(form, 1.0) \
-			if cards and directory == TREE_MODEL_DIR else 1.0
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 		# The authored colour is crown occlusion on the cards and a tint on the bark. Scaled by the
@@ -229,8 +227,7 @@ static func _authored_mesh(directory: String, info_file: String, model: String,
 			var weight := clampf(TRUNK_TOP_WEIGHT * at.y / bounds.end.y
 				+ (1.0 - TRUNK_TOP_WEIGHT) * Vector2(at.x, at.z).length() / reach, 0.0, 1.0) \
 				if sway_per_m < 0.0 else clampf(at.y * sway_per_m, 0.0, 0.8)
-			colors[i] = Color(colors[i].r * key[0] * leaf_scale, colors[i].g * key[1] * leaf_scale,
-				colors[i].b * key[2] * leaf_scale, weight)
+			colors[i] = Color(colors[i].r * key[0], colors[i].g * key[1], colors[i].b * key[2], weight)
 		var kept := []
 		kept.resize(Mesh.ARRAY_MAX)
 		for channel in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TEX_UV, Mesh.ARRAY_INDEX]:
@@ -261,6 +258,10 @@ static func _form_material_pair(directory: String, info_file: String, form: Stri
 		cards.set_shader_parameter("foliage_mask", load(directory + form + "_foliage.dds"))
 		cards.set_shader_parameter("leaf_mean", Vector3(info.leaf_mean[0], info.leaf_mean[1], info.leaf_mean[2]))
 		cards.set_shader_parameter("leaf_depth_mean", info.leaf_depth_mean)
+		# A uniform rather than the vertex colour, so the mesh the impostor bake reads, and its
+		# digest, keep the unscaled leaves; the impostor takes the same share per layer.
+		if directory == TREE_MODEL_DIR:
+			cards.set_shader_parameter("leaf_albedo_scale", LEAF_ALBEDO_SCALE.get(form, 1.0))
 		for material in [wood, cards]:
 			_apply_canopy_shading(material)
 			_apply_wind_visibility(material)
