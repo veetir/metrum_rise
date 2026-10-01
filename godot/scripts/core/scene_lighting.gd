@@ -67,6 +67,13 @@ const GROUND_SHADOW_MIN_VISIBILITY := 0.02
 # where the shaded floor of a 625 stems/ha pine stand renders just above its shaded trunks, at
 # 57 against 52 in 8-bit luminance, where 0.20 put it at 40 and the old floor sat at 88.
 const CANOPY_FLOOR_SKY_TRANSMISSION := 0.40
+# Share of the sun the crowns of a closed stand pass to its floor, which the floor shade past
+# the cascades keeps. An authored crown is open, so its cascade shadow is dappled and not solid.
+# GROUND_SHADOW_MIN_VISIBILITY treated every crown as opaque and drew the far floor at half the
+# light the cascades leave it, which was a dark step in the floor of every stand at the cascade
+# edge. Fitted with the trees drawn as shadow only, over a 625 stems/ha pine stand seen
+# straight down from 300 m, inside the cascades, and from 600 m, past them.
+const CANOPY_FLOOR_SUN_VISIBILITY := 0.24
 const STATIC_CASTER_EXTRA_CULL_MARGIN_M := 32.0
 const DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M := 12.0
 const RECEIVER_EXTRA_CULL_MARGIN_M := 2.0
@@ -140,6 +147,7 @@ static func apply_canopy_floor_shading(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("canopy_floor_shade_begin_m", far_m * SHADOW_FADE_START)
 	material.set_shader_parameter("canopy_floor_shade_end_m", far_m)
 	material.set_shader_parameter("canopy_floor_sky_transmission", CANOPY_FLOOR_SKY_TRANSMISSION)
+	material.set_shader_parameter("canopy_floor_sun_visibility", CANOPY_FLOOR_SUN_VISIBILITY)
 	material.set_shader_parameter("canopy_floor_shade", canopy_shade_strength())
 
 static func apply_shadow_policy(

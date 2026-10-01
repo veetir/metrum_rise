@@ -837,6 +837,32 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### The far forest floor matches the shadows it replaces (2026-10-01)
+
+Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
+a stand in place of the tree shadows that are no longer drawn. Two errors in that term made a
+dark step at the cascade edge: a camera that moved back past it saw the stand edge turn from
+brown to near black, and the outline stayed visible from kilometres away. Turning only this
+term off removed the band; the crown terms barely changed it.
+
+- **Opaque crowns.** The term kept `GROUND_SHADOW_MIN_VISIBILITY` (`0.02`) of the sun under
+  crown cover, as if every crown were solid. The authored crowns are open and their cascade
+  shadow is dappled. With the trees drawn as shadow only, a painted pine stand seen straight
+  down measured a floor of `0.031` linear Y from `300 m` (cascades) against `0.016` from
+  `600 m` (this term), at 7, 10, 13 and 16 o'clock alike. `CANOPY_FLOOR_SUN_VISIBILITY`
+  (`0.24`) is the share of sun the crowns now pass; it is fitted, because the tone map makes
+  the response nonlinear (`0.20` gave `0.85-0.95`, `0.40` gave `1.42-1.53`). Far over near is
+  now `0.947`, `0.980` and `1.058` at 7, 10 and 16 o'clock.
+- **Shadow under the crown, not down the sun ray.** The term darkened the ground below the
+  cover. The cascades put the shadow where the sun ray through the crowns meets the ground,
+  so the sunward floor of an edge is lit and the meadow beyond the far edge is shaded. The
+  term now reads the cover once more at the point the sun ray crosses `CANOPY_SHADOW_HEIGHT_M`
+  (`15 m`, the middle of the foliage of a `20-25 m` authored tree from its impostor bounds),
+  capped at `120 m` of offset for a low sun. One extra fetch, past the cascades only.
+
+`terrain_overlay_shader_test` now also checks that, past the cascades, a stand toward the sun
+shades open ground (`0.400` against `0.558`) and a stand away from it does not.
+
 ### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
 
 **Trees.** The canopy is 24 Blender trees (`tools/model_trees.py`, run on the owner's M2 Pro
