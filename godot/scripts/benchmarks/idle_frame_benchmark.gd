@@ -7,6 +7,8 @@
 ## native profile of the same run can be cut to the idle frames.
 ## Camera paths (METRUM_IDLE_BENCH_PATHS) then move the camera a fixed step per frame, so the
 ## streaming, LOD and vegetation work a moving view causes is measured on the same frames each run.
+## METRUM_IDLE_BENCH_VSYNC=1 keeps vsync on (and METRUM_GAMEPLAY_BENCHMARK_MAX_FPS applies), so path
+## frame pacing can be compared against the display refresh rather than measured as throughput.
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
@@ -22,11 +24,14 @@ const POSES := [
 	{"name": "city_low", "offset": Vector2(0.0, 0.0), "radius": 20.0},
 ]
 # Per-frame camera paths from `from` to `to` (offsets from the world centre) with the orbit radius
-# interpolated geometrically. Steps are per frame, not per second, so every run visits the same poses.
+# interpolated geometrically. `turns` orbits the view about the moving pivot by that many full
+# turns. Steps are per frame, not per second, so every run visits the same poses.
 const PATHS := [
 	{"name": "pan_high", "from": Vector2(-3000.0, 0.0), "to": Vector2(3000.0, 0.0), "radius": [400.0, 400.0]},
 	{"name": "pan_low", "from": Vector2(-2250.0, 2000.0), "to": Vector2(-750.0, 2000.0), "radius": [120.0, 120.0]},
 	{"name": "zoom_in", "from": Vector2(0.0, 0.0), "to": Vector2(0.0, 0.0), "radius": [900.0, 30.0]},
+	{"name": "orbit_high", "from": Vector2(0.0, 0.0), "to": Vector2(0.0, 0.0), "radius": [400.0, 400.0], "turns": 1.0},
+	{"name": "orbit_low", "from": Vector2(-1500.0, 2000.0), "to": Vector2(-1500.0, 2000.0), "radius": [120.0, 120.0], "turns": 1.0},
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
@@ -41,6 +46,7 @@ var _vegetation: Node
 var _water: Node3D
 var _terrain: Node3D
 var _lighting: Node
+var _path_t := 0.0
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -50,9 +56,10 @@ func run(bench: Node) -> void:
 	_water = main.get_node("Water")
 	_terrain = main.get_node("Terrain")
 	_lighting = main.get_node("SceneLighting")
-	Engine.max_fps = 0
+	var vsync := OS.get_environment("METRUM_IDLE_BENCH_VSYNC") == "1"
+	Engine.max_fps = bench._environment_int("METRUM_GAMEPLAY_BENCHMARK_MAX_FPS", 0, 0) if vsync else 0
 	if bench.mode != "headless":
-		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED)
 		DisplayServer.window_set_title("Metrum Rise - idle frame benchmark")
 	var viewport_rid := bench.get_viewport().get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(viewport_rid, true)
@@ -63,7 +70,8 @@ func run(bench: Node) -> void:
 		"schema_version": 1, "benchmark": "idle_frame", "success": false, "mode": bench.mode,
 		"runtime": bench._runtime_metadata(), "warmup_frames": warmup_frames,
 		"capture_frames": capture_frames, "variants": variants, "phases": [], "samples": [],
-		"timing_contract": "steady-state frames with vsync and max_fps off; frame_ms is process-frame wall time, render_cpu/gpu are RenderingServer viewport measurements",
+		"vsync": vsync, "max_fps": Engine.max_fps,
+		"timing_contract": "steady-state frames with vsync and max_fps off unless vsync is set; frame_ms is process-frame wall time, render_cpu/gpu are RenderingServer viewport measurements",
 	}
 	bench._metrics = _report
 
@@ -140,9 +148,9 @@ func run(bench: Node) -> void:
 		var settle_after: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 		sample.merge({"path": path, "variant": "full", "settle_after_ms": settle_after.get("elapsed_ms", 0.0)})
 		_report.samples.append(sample)
-		print("[IDLE_BENCH] %-8s %-14s frame p50=%.2f p95=%.2f p99=%.2f max=%.2f ms  slow(>%.0fms)=%d  process p50=%.2f p95=%.2f  settle_after=%.0f ms  t_us=%d..%d" % [
+		print("[IDLE_BENCH] %-10s %-6s frame p50=%.2f p95=%.2f p99=%.2f max=%.2f ms  slow(>%.0fms)=%d  jitter p50=%.2f p95=%.2f  process p50=%.2f p95=%.2f  settle_after=%.0f ms  t_us=%d..%d" % [
 			path, "full", sample.frame_ms.p50, sample.frame_ms.p95, sample.frame_ms.p99,
-			sample.frame_ms.max, SLOW_FRAME_MS, sample.slow_frames, sample.process_ms.p50,
+			sample.frame_ms.max, SLOW_FRAME_MS, sample.slow_frames, sample.jitter_ms.p50, sample.jitter_ms.p95, sample.process_ms.p50,
 			sample.process_ms.p95, settle_after.get("elapsed_ms", 0.0), sample.t_begin_us, sample.t_end_us])
 	_report.success = true
 	var written: bool = bench._write_metrics()
@@ -153,6 +161,10 @@ func _focus_path(bench: Node, centre: Vector2, path: Dictionary, t: float) -> vo
 	var radius: float = path.radius[0] * pow(path.radius[1] / path.radius[0], t)
 	var y := float(bench.simulation_node.get_world_surface_height(xz))
 	bench.camera.focus_on(Vector3(xz.x, y, xz.y), radius)
+	# orbit() takes mouse motion, so the yaw step is divided back out of the sensitivity.
+	if t > _path_t and path.has("turns"):
+		bench.camera.orbit(Vector2(float(path.turns) * TAU * (t - _path_t) / bench.camera.sensitivity, 0.0))
+	_path_t = t
 
 ## `step`, when valid, runs before each captured frame with the frame index (camera paths).
 func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -> Dictionary:
@@ -166,6 +178,8 @@ func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -
 	var begin_us := Time.get_ticks_usec()
 	var last_us := begin_us
 	var slow_frames := 0
+	# Change between consecutive frame times: stutter that a percentile of frame time hides.
+	var jitter_ms := PackedFloat64Array()
 	for i in range(frames):
 		if step.is_valid():
 			step.call(i)
@@ -173,6 +187,8 @@ func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -
 		var now_us := Time.get_ticks_usec()
 		if float(now_us - last_us) / 1000.0 > SLOW_FRAME_MS:
 			slow_frames += 1
+		if not frame_ms.is_empty():
+			jitter_ms.append(absf(float(now_us - last_us) / 1000.0 - frame_ms[-1]))
 		frame_ms.append(float(now_us - last_us) / 1000.0)
 		last_us = now_us
 		process_ms.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
@@ -186,7 +202,8 @@ func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -
 		"t_begin_us": begin_us, "t_end_us": last_us,
 		"frame_ms": _stats(frame_ms), "process_ms": _stats(process_ms),
 		"render_cpu_ms": _stats(render_cpu_ms), "render_gpu_ms": _stats(render_gpu_ms),
-		"slow_frames": slow_frames,
+		"slow_frames": slow_frames, "jitter_ms": _stats(jitter_ms),
+		"frame_ms_series": frame_ms if step.is_valid() else PackedFloat64Array(),
 		"draw_calls": draw_calls / frames, "objects": objects / frames, "primitives": primitives / frames,
 	}
 

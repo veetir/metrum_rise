@@ -3732,6 +3732,17 @@ change costs about `0.2 ms` inside a `1 ms` budget, so after `pan_high` stopped 
 `1.78 s` to reach its LODs. Allowing 8 per frame, as water already does, cuts that to `0.075 s`
 with unchanged frame times (two runs each).
 
+Frame pacing (2026-10-02): the camera stutter while orbiting is display cadence, not slow frames.
+The `orbit_high` and `orbit_low` paths (one full turn at 400 m and 120 m) hold p99 under `18 ms`
+with vsync off. With vsync on (`METRUM_IDLE_BENCH_VSYNC=1`) on the 120 Hz built-in display, a
+Metal System Trace of the presented drawables (`ca-client-presented-handler`) shows frames of
+`9-12 ms` landing on 120 Hz vsyncs as 680 single and 747 double refreshes, changing cadence on 79%
+of frames. With `METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60`, 1,340 of 1,360 frames last exactly two
+refreshes (3% cadence changes). The paths report `jitter_ms`, the change between consecutive frame
+times (p50 `1.4-2.7 ms` at 120 Hz, `0.3-0.6 ms` capped at 60), and keep the per-frame series. The
+`50-90 ms` hitches every 5 s in these traces come from the trace itself: the same paths unprofiled
+never exceed `25 ms`.
+
 Cliff mask early-out (2026-10-02): the heightmap-derived masks (cliff face/top/toe, local relief,
 shoreline) cost about 80 texture taps per terrain pixel. Replacing all four with one fetch bounds
 what a bake could save at `1.35 ms` on `overview` (`15.01 -> 13.66 ms`), `1.1 ms` of it in
