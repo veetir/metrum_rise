@@ -3291,6 +3291,10 @@ Complexity: O(render pixels × fixed quality sample count) GPU work and O(render
 history buffers, independent of total city population. No simulation iteration, instance
 buffer expansion or clock-driven uploads are introduced. Current upstream defaults use
 half-size SSIL and quality 2. The effect also operates during daylight.
+Since `RENDER-15` (2026-10-02) gameplay enables SSIL only while the sun is below
+`8.35` degrees, the highest window threshold plus its fade, so no lit window ever lacks spill.
+By day SSIL changed measured frames by under `0.3/255` mean and cost `1.5-1.9 ms` (M2 Pro).
+`scene_lighting.gd` owns the switch; the asset editor and tests keep the resource default.
 
 Fresh verification (2026-09-26): `window_spill_test.gd` passes on Forward+, checking a
 scheduled MultiMesh emitter against both production ground shaders and a neighbouring

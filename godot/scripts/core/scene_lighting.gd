@@ -48,6 +48,10 @@ const FAR_FADE_CURVE := 2.60
 # small casters such as tree crowns rather than as softness. The full moon subtends the same
 # angle, so the cycle never has a reason to change this and the GPU probe keeps it as a lever.
 const SUN_ANGULAR_DISTANCE_DEG := 0.55
+# SSIL carries window light spill (RENDER-10). Window thresholds in `window_lighting.rs` span
+# 1-8 degrees of sun elevation with a 0.35 degree fade, so above this no window is lit. By day
+# SSIL changed the measured image by under 0.3/255 and cost 1.5-1.9 ms (RENDER-15).
+const WINDOW_LIGHT_MAX_SUN_ELEVATION_DEG := 8.35
 const SHADOW_MAX_DISTANCE_M := 420.0
 const SHADOW_SPLIT_1 := 0.10
 const SHADOW_SPLIT_2 := 0.28
@@ -81,6 +85,8 @@ const SHADOW_DEBUG_OVERLAY := "debug_overlay"
 static var _cloud_panorama_cache: Texture2D
 
 var _distance_fade_environment: Environment
+## Benchmarks clear this to measure the frame without SSIL; gameplay never changes it.
+var ssil_allowed := true
 var _distance_fade_terrain: Node
 var _distance_fade_begin_m := -1.0
 var _distance_fade_end_m := -1.0
@@ -294,6 +300,9 @@ func _apply_environment_palette(sample: DayCycleConfig.Sample) -> void:
 	# every hour instead of leaving a daytime blue curtain standing at midnight.
 	_distance_fade_environment.fog_light_color = sample.fog_color
 	_distance_fade_environment.fog_sun_scatter = sample.fog_sun_scatter
+	_distance_fade_environment.ssil_enabled = (
+		ssil_allowed and sample.sun_elevation_deg < WINDOW_LIGHT_MAX_SUN_ELEVATION_DEG
+	)
 
 func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
 	RenderingServer.global_shader_parameter_set("scene_window_clock", Vector2(sample.day_fraction * 24.0, sample.sun_elevation_deg))

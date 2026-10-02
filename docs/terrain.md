@@ -3754,6 +3754,16 @@ edges. Measured and not adopted pending a look decision: no PCSS (`light_angular
 to `-1.27 ms` in the town, fixed-width penumbrae) and no cascade blending (up to `-0.84 ms`).
 Grids: `benchmark-results/idle/suite/grid-shadow-*.png`.
 
+SSIL and glow (`RENDER-15`): by day, SSIL off changed the image by `0.02-0.54/255` mean and saved
+`1.5-1.95 ms`; at night with lit windows (`test-game-1`, 22:00) it removes the window light
+spill. Glow off saved `0.5 ms` with an exactly identical image in every pose, day and night.
+`scene_lighting.gd` now enables SSIL only while the sun is below `8.35` degrees, the highest
+window threshold (`window_lighting.rs`, 1-8 degrees) plus its fade. At 22:00 the image and frame
+time are unchanged; by day idle p50 (new asset pack installed, matched baseline): overview
+`13.73 -> 11.79`, close `11.38 -> 9.69`, ground `9.69 -> 8.09`, town `9.52 -> 8.06`, `city_low`
+`10.65 -> 9.16 ms`. The benchmark's SSIL variants go through `SceneLighting.ssil_allowed`,
+because the day cycle rewrites `ssil_enabled` every frame.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must

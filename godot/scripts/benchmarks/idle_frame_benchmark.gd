@@ -40,6 +40,7 @@ var _sun: DirectionalLight3D
 var _vegetation: Node
 var _water: Node3D
 var _terrain: Node3D
+var _lighting: Node
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -48,6 +49,7 @@ func run(bench: Node) -> void:
 	_vegetation = main.get_node("Vegetation")
 	_water = main.get_node("Water")
 	_terrain = main.get_node("Terrain")
+	_lighting = main.get_node("SceneLighting")
 	Engine.max_fps = 0
 	if bench.mode != "headless":
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
@@ -192,7 +194,8 @@ func _apply_variant(variant: String) -> void:
 	var minimal := variant == "minimal"
 	_vegetation.enabled = not (minimal or variant == "no_vegetation")
 	var effects := not (minimal or variant == "no_ssil_glow")
-	_environment.ssil_enabled = effects and variant != "no_ssil"
+	# The day cycle writes ssil_enabled every frame (on only while windows can be lit).
+	_lighting.ssil_allowed = effects and variant != "no_ssil"
 	_environment.glow_enabled = effects and variant != "no_glow"
 	_sun.shadow_enabled = not (minimal or variant == "no_shadows")
 	_water.visible = variant != "no_water"
