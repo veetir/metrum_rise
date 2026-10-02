@@ -30,7 +30,7 @@ const PATHS := [
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
-const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_shadows", "minimal", "no_water", "no_terrain"]
+const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain"]
 const DEFAULT_WARMUP_FRAMES := 120
 const DEFAULT_CAPTURE_FRAMES := 600
 
@@ -192,8 +192,8 @@ func _apply_variant(variant: String) -> void:
 	var minimal := variant == "minimal"
 	_vegetation.enabled = not (minimal or variant == "no_vegetation")
 	var effects := not (minimal or variant == "no_ssil_glow")
-	_environment.ssil_enabled = effects
-	_environment.glow_enabled = effects
+	_environment.ssil_enabled = effects and variant != "no_ssil"
+	_environment.glow_enabled = effects and variant != "no_glow"
 	_sun.shadow_enabled = not (minimal or variant == "no_shadows")
 	_water.visible = variant != "no_water"
 	_terrain.visible = variant != "no_terrain"
