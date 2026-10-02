@@ -5,6 +5,8 @@
 ## Each pose is measured once per render variant so a feature's share of the frame is a matched
 ## difference, not a profile estimate. Capture windows are printed in engine microseconds so a
 ## native profile of the same run can be cut to the idle frames.
+## Camera paths (METRUM_IDLE_BENCH_PATHS) then move the camera a fixed step per frame, so the
+## streaming, LOD and vegetation work a moving view causes is measured on the same frames each run.
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
@@ -19,6 +21,15 @@ const POSES := [
 	{"name": "city", "offset": Vector2(0.0, 0.0), "radius": 60.0},
 	{"name": "city_low", "offset": Vector2(0.0, 0.0), "radius": 20.0},
 ]
+# Per-frame camera paths from `from` to `to` (offsets from the world centre) with the orbit radius
+# interpolated geometrically. Steps are per frame, not per second, so every run visits the same poses.
+const PATHS := [
+	{"name": "pan_high", "from": Vector2(-3000.0, 0.0), "to": Vector2(3000.0, 0.0), "radius": [400.0, 400.0]},
+	{"name": "pan_low", "from": Vector2(-2250.0, 2000.0), "to": Vector2(-750.0, 2000.0), "radius": [120.0, 120.0]},
+	{"name": "zoom_in", "from": Vector2(0.0, 0.0), "to": Vector2(0.0, 0.0), "radius": [900.0, 30.0]},
+]
+const DEFAULT_PATH_FRAMES := 600
+const SLOW_FRAME_MS := 33.3
 const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_shadows", "minimal", "no_water", "no_terrain"]
 const DEFAULT_WARMUP_FRAMES := 120
 const DEFAULT_CAPTURE_FRAMES := 600
@@ -112,11 +123,37 @@ func run(bench: Node) -> void:
 				sample.render_cpu_ms.p50, sample.render_gpu_ms.p50, sample.draw_calls,
 				sample.objects, sample.primitives, sample.t_begin_us, sample.t_end_us])
 	_apply_variant("full")
+	var path_frames: int = bench._environment_int("METRUM_IDLE_BENCH_PATH_FRAMES", DEFAULT_PATH_FRAMES, 10)
+	for path in _selected(OS.get_environment("METRUM_IDLE_BENCH_PATHS"), PATHS.map(func(p): return p.name)):
+		var definition: Dictionary = PATHS.filter(func(p): return p.name == path)[0]
+		_focus_path(bench, centre, definition, 0.0)
+		var settle: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
+		if not bool(settle.get("ok", false)):
+			bench._fail("path %s did not settle at its start" % path, settle)
+			return
+		for i in range(warmup_frames):
+			await bench.get_tree().process_frame
+		var sample := await _capture(bench, viewport_rid, path_frames,
+			func(frame: int): _focus_path(bench, centre, definition, float(frame + 1) / path_frames))
+		var settle_after: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
+		sample.merge({"path": path, "variant": "full", "settle_after_ms": settle_after.get("elapsed_ms", 0.0)})
+		_report.samples.append(sample)
+		print("[IDLE_BENCH] %-8s %-14s frame p50=%.2f p95=%.2f p99=%.2f max=%.2f ms  slow(>%.0fms)=%d  process p50=%.2f p95=%.2f  settle_after=%.0f ms  t_us=%d..%d" % [
+			path, "full", sample.frame_ms.p50, sample.frame_ms.p95, sample.frame_ms.p99,
+			sample.frame_ms.max, SLOW_FRAME_MS, sample.slow_frames, sample.process_ms.p50,
+			sample.process_ms.p95, settle_after.get("elapsed_ms", 0.0), sample.t_begin_us, sample.t_end_us])
 	_report.success = true
 	var written: bool = bench._write_metrics()
 	bench.get_tree().quit(0 if written else 1)
 
-func _capture(bench: Node, viewport_rid: RID, frames: int) -> Dictionary:
+func _focus_path(bench: Node, centre: Vector2, path: Dictionary, t: float) -> void:
+	var xz: Vector2 = centre + (path.from as Vector2).lerp(path.to, t)
+	var radius: float = path.radius[0] * pow(path.radius[1] / path.radius[0], t)
+	var y := float(bench.simulation_node.get_world_surface_height(xz))
+	bench.camera.focus_on(Vector3(xz.x, y, xz.y), radius)
+
+## `step`, when valid, runs before each captured frame with the frame index (camera paths).
+func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -> Dictionary:
 	var frame_ms := PackedFloat64Array()
 	var process_ms := PackedFloat64Array()
 	var render_cpu_ms := PackedFloat64Array()
@@ -126,9 +163,14 @@ func _capture(bench: Node, viewport_rid: RID, frames: int) -> Dictionary:
 	var primitives := 0
 	var begin_us := Time.get_ticks_usec()
 	var last_us := begin_us
+	var slow_frames := 0
 	for i in range(frames):
+		if step.is_valid():
+			step.call(i)
 		await bench.get_tree().process_frame
 		var now_us := Time.get_ticks_usec()
+		if float(now_us - last_us) / 1000.0 > SLOW_FRAME_MS:
+			slow_frames += 1
 		frame_ms.append(float(now_us - last_us) / 1000.0)
 		last_us = now_us
 		process_ms.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
@@ -142,6 +184,7 @@ func _capture(bench: Node, viewport_rid: RID, frames: int) -> Dictionary:
 		"t_begin_us": begin_us, "t_end_us": last_us,
 		"frame_ms": _stats(frame_ms), "process_ms": _stats(process_ms),
 		"render_cpu_ms": _stats(render_cpu_ms), "render_gpu_ms": _stats(render_gpu_ms),
+		"slow_frames": slow_frames,
 		"draw_calls": draw_calls / frames, "objects": objects / frames, "primitives": primitives / frames,
 	}
 
@@ -176,7 +219,8 @@ func _stats(values: PackedFloat64Array) -> Dictionary:
 	var count := sorted.size()
 	return {
 		"mean": total / count, "p50": sorted[count / 2],
-		"p95": sorted[mini(count - 1, int(count * 0.95))], "max": sorted[count - 1],
+		"p95": sorted[mini(count - 1, int(count * 0.95))],
+		"p99": sorted[mini(count - 1, int(count * 0.99))], "max": sorted[count - 1],
 	}
 
 func _selected(text: String, all: Array) -> Array:
