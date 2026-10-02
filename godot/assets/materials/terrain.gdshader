@@ -496,14 +496,19 @@ vec3 cliff_masks(vec2 uv) {
 	float center = cliff_candidate(uv, along_uv);
 	float left = cliff_candidate(uv + lateral_uv, along_uv);
 	float right = cliff_candidate(uv - lateral_uv, along_uv);
+	float face = center * 0.5 + left * 0.25 + right * 0.25;
+	face = smoothstep(0.10, 0.82, face);
+	// Both edges are clamp(face - neighbours) >= 0, so they vanish with the face. Most ground is
+	// not cliff, and this skips the six neighbour candidates (36 height taps) there; exact.
+	if (face <= 0.0) {
+		return vec3(0.0);
+	}
 	float uphill = cliff_candidate(uv + along_uv, along_uv);
 	float uphill_left = cliff_candidate(uv + along_uv + lateral_uv, along_uv);
 	float uphill_right = cliff_candidate(uv + along_uv - lateral_uv, along_uv);
 	float downhill = cliff_candidate(uv - along_uv, along_uv);
 	float downhill_left = cliff_candidate(uv - along_uv + lateral_uv, along_uv);
 	float downhill_right = cliff_candidate(uv - along_uv - lateral_uv, along_uv);
-	float face = center * 0.5 + left * 0.25 + right * 0.25;
-	face = smoothstep(0.10, 0.82, face);
 	float uphill_avg = (uphill + uphill_left + uphill_right) / 3.0;
 	float downhill_avg = (downhill + downhill_left + downhill_right) / 3.0;
 	float top_edge = clamp(face - uphill_avg, 0.0, 1.0);

@@ -3732,6 +3732,16 @@ change costs about `0.2 ms` inside a `1 ms` budget, so after `pan_high` stopped 
 `1.78 s` to reach its LODs. Allowing 8 per frame, as water already does, cuts that to `0.075 s`
 with unchanged frame times (two runs each).
 
+Cliff mask early-out (2026-10-02): the heightmap-derived masks (cliff face/top/toe, local relief,
+shoreline) cost about 80 texture taps per terrain pixel. Replacing all four with one fetch bounds
+what a bake could save at `1.35 ms` on `overview` (`15.01 -> 13.66 ms`), `1.1 ms` of it in
+`cliff_masks`. Both cliff edges are `clamp(face - neighbours)` and vanish when the face does, and
+the face needs only the centre and two lateral candidates, so the six neighbour candidates (36
+taps) now run only where the face is non-zero. Exact: Kuopio screenshots are pixel-identical,
+and the town differs by under 12 pixels against 3-28 for two runs of one build. Idle p50:
+overview `14.98 -> 14.42 ms`, close `12.51 -> 12.00 ms`, ground `10.77 -> 10.30 ms`; the flat
+town is unchanged.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must
