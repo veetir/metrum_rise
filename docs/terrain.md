@@ -3725,6 +3725,13 @@ identical (200 randomized checks) and a 1,296-key sort falls `2.4 -> 0.2 ms`. Lo
 2.33 s` (idle matrix `overview`, two runs). Lifting the terrain install cap alone does not help:
 the payload-request cap and the water install cap then bound the fill.
 
+A moving camera does not cost frame time on the M2 Pro: camera paths (`METRUM_IDLE_BENCH_PATHS`,
+600 frames) hold p99 at or under `18 ms` with no frame over `33 ms`. The cost was latency. Terrain applied
+one patch LOD change per frame (`PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME`) although each
+change costs about `0.2 ms` inside a `1 ms` budget, so after `pan_high` stopped the terrain took
+`1.78 s` to reach its LODs. Allowing 8 per frame, as water already does, cuts that to `0.075 s`
+with unchanged frame times (two runs each).
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must
