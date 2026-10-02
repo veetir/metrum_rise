@@ -3714,6 +3714,17 @@ with `0.2-0.5%` of pixels above `12/255`, all on road and yard surfaces from the
 The Mac numbers locate costs; acceptance on the owner's GTX 1060 is still to be measured.
 Results and before/after grids are kept in `benchmark-results/idle/suite/`.
 
+Patch streaming cost (`TERRAIN-05`, 2026-10-02): of the `2.73 s` Kuopio load, the Rust load call
+is `0.38 s`; the rest is streaming 1,296 terrain and 768 water patches through per-frame caps
+while the world is already drawn. Rust payloads are ready far ahead of installation. During the
+fill the main thread was about 80% GDScript: terrain residency `~10 ms` per frame (half of it
+re-sorting every pending key with a GDScript comparator), vegetation `~4.7 ms`, water `~2 ms`,
+against `~4 ms` of actual patch installs. `sort_patch_keys_by_distance` in `terrain.gd` now
+packs (distance, z, x) into one int and uses the native sort for terrain and water; order is
+identical (200 randomized checks) and a 1,296-key sort falls `2.4 -> 0.2 ms`. Load `2.73 ->
+2.33 s` (idle matrix `overview`, two runs). Lifting the terrain install cap alone does not help:
+the payload-request cap and the water install cap then bound the fill.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must

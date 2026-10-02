@@ -1835,18 +1835,25 @@ func _patch_keys_in_view_first(keys: Array[Vector2i]) -> Array[Vector2i]:
 	return in_view
 
 func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
+	sort_patch_keys_by_distance(keys, _current_camera_patch_key())
+
+## Sorts patch keys in place by Manhattan distance to `origin`, then row, then column.
+## O(n log n) in a native sort: each key packs (distance, z, x) into one int, 20 bits per field,
+## so patch coordinates must lie in [0, 2^20). A GDScript comparator lambda cost about 5 ms per
+## frame while a whole world's patches were still pending.
+static func sort_patch_keys_by_distance(keys: Array[Vector2i], origin: Vector2i) -> void:
 	if keys.size() <= 1:
 		return
-	var origin: Vector2i = _current_camera_patch_key()
-	keys.sort_custom(func(a: Vector2i, b: Vector2i):
-		var distance_a: int = absi(a.x - origin.x) + absi(a.y - origin.y)
-		var distance_b: int = absi(b.x - origin.x) + absi(b.y - origin.y)
-		if distance_a == distance_b:
-			if a.y == b.y:
-				return a.x < b.x
-			return a.y < b.y
-		return distance_a < distance_b
-	)
+	var packed := PackedInt64Array()
+	packed.resize(keys.size())
+	for i in keys.size():
+		var key: Vector2i = keys[i]
+		var distance: int = absi(key.x - origin.x) + absi(key.y - origin.y)
+		packed[i] = (distance << 40) | (key.y << 20) | key.x
+	packed.sort()
+	for i in packed.size():
+		var value: int = packed[i]
+		keys[i] = Vector2i(value & 0xFFFFF, (value >> 20) & 0xFFFFF)
 
 func _current_camera_patch_key() -> Vector2i:
 	if patch_cols <= 0 or patch_rows <= 0 or patch_span_m <= 0.0:

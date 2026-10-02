@@ -1169,18 +1169,7 @@ func _water_frame_headroom_available(frame_start_us: int, start_budget_ms: float
 	return float(Time.get_ticks_usec() - frame_start_us) / 1000.0 < start_budget_ms
 
 func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
-	if keys.size() <= 1:
-		return
-	var origin: Vector2i = _current_camera_patch_key()
-	keys.sort_custom(func(a: Vector2i, b: Vector2i):
-		var distance_a: int = absi(a.x - origin.x) + absi(a.y - origin.y)
-		var distance_b: int = absi(b.x - origin.x) + absi(b.y - origin.y)
-		if distance_a == distance_b:
-			if a.y == b.y:
-				return a.x < b.x
-			return a.y < b.y
-		return distance_a < distance_b
-	)
+	TerrainRenderer.sort_patch_keys_by_distance(keys, _current_camera_patch_key())
 
 func _current_camera_patch_key() -> Vector2i:
 	if terrain_patch_cols <= 0 or terrain_patch_rows <= 0 or terrain_patch_span_m <= 0.0:
