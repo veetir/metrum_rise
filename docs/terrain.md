@@ -877,6 +877,18 @@ coverage build evaluates the canopy candidates that the patch fetch has just eva
 the closure into `get_decorative_tree_patch` would remove both halves. No GPU cost was measured:
 the shader adds one `exp` per lit fragment.
 
+**The far stand-in, refitted.** Past `4 km` the ground stands in for the trees with one crown
+albedo, `CANOPY_FAR_ALBEDO`, which was fitted before the leaf and stand changes. It is refitted
+the same way as before: the stand `5.2 km` away, seen from `450 m` and `1500 m` up, rendered as
+trees drawn to `12 km` and as ground at two albedos, solved per channel over `8 px` tiles where
+the stand-in carries the most weight. The renders are linear in albedo to `0.1%`. At `13:00` and
+at `09:00` the solutions agree, at `(0.160-0.164, 0.219-0.224, 0.061-0.065)`. The leaves are
+darker, but the far trees did not darken: from that distance the camera sees mostly the crown
+tops, which keep their sun. The old `(0.135, 0.18, 0.06)` drew those tiles `1.8%` and `2.5%`
+darker than the trees, and `0.6%` over all tiles past the range. The new `(0.162, 0.222,
+0.063)` measures `+0.1%` and `-0.0%` on the dense tiles and `0.0%` over all of them. Green over
+red matches within `2%` with either value.
+
 ### The far forest floor matches the shadows it replaces (2026-10-01)
 
 Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
@@ -931,8 +943,8 @@ with a low sun ahead; `IMPOSTOR_SHEEN` moved from `0.5` to `0.7`, which keeps al
 `vegetation_level_match_test` within `0.101`, the margin before the change.
 
 The stand is still above the photo range. What remains is sun the crowns of a dense stand
-should take from each other and do not. `CANOPY_FAR_ALBEDO` was fitted to the brighter trees
-and needs a refit once the stand is settled. A Codex (GPT-6 Astra) read-only study of the
+should take from each other and do not; see the stand section above, which also refits
+`CANOPY_FAR_ALBEDO`. A Codex (GPT-6 Astra) read-only study of the
 lighting path and the photos informed this pass.
 
 ### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
