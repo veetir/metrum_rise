@@ -77,7 +77,8 @@ void light() {
 	if (LIGHT_IS_DIRECTIONAL) {
 		shadow = min(shadow, vegetation_stand_sun(crown_height, stand_closure));
 	}
+	// No sun highlight. A card stands for a cluster of leaves under one normal, so the highlight
+	// lit a whole cluster at once and turned crowns facing the sun white. In a real crown the
+	// leaves around a leaf hide most of its grazing glint. The sky reflection stays.
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT, 0.0);
-	SPECULAR_LIGHT += vegetation_specular_light(NORMAL, LIGHT, VIEW, LIGHT_COLOR, shadow,
-		SPECULAR_AMOUNT);
 }

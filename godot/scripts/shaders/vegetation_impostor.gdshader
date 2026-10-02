@@ -40,8 +40,6 @@ uniform float crown_growth_end_m = 1.0e9;
 uniform float volume_lift_gain = 2.0;
 uniform float volume_wrap_floor = 0.0;
 uniform float volume_wrap_gain = 1.5;
-// Share of the near crown's sun highlight an impostor draws; see light().
-uniform float impostor_sheen = 0.0;
 
 // Varyings are packed: each one takes a slot however few components it has, and some drivers
 // allow 31 slots with the built-ins included. Metal on macOS is one, and an unpacked shader
@@ -64,7 +62,6 @@ varying flat vec3 weights;
 varying vec4 canopy_card;
 varying float volume_wrap;
 // Written by fragment() for light() only, so it takes no interpolant slot.
-varying vec3 sheen_normal;
 // Baked object-space normals to view space, for this instance. The fragment stage of a
 // MultiMesh sees the node's MODEL_NORMAL_MATRIX, not the instance's, so a normal transformed
 // there ignored each tree's own yaw: every impostor was lit as if it faced one way, and over a
@@ -166,7 +163,6 @@ void fragment() {
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
 	volume_wrap = clamp(volume_wrap_floor + volume_wrap_gain * spread, 0.0, 1.0);
-	sheen_normal = normalize(normal_to_view * (length(n) > 0.0001 ? n : vec3(0.0, 1.0, 0.0)));
 	// The far fade drops the pixels whose threshold is under its share, the same threshold the
 	// handover keeps below its own, so the two never compete for one pixel.
 	ALPHA = vegetation_crossfade_keeps(FRAGCOORD.xy, cell2_layer_fade.w, true)
@@ -179,12 +175,7 @@ void light() {
 	if (LIGHT_IS_DIRECTIONAL) {
 		shadow = min(shadow, vegetation_stand_sun(canopy_card.z, frame_uv2_keep.w));
 	}
-	// The highlight takes the baked normal, not the lifted one. A lifted normal faces the sky, and
-	// against a low sun ahead its grazing Fresnel term lit the impostor 47% above the near crown.
-	// Without a highlight the impostor drew backlit pines 21% darker than the near level, whose
-	// cards catch that sheen.
+	// No sun highlight, like the cards it replaces; see vegetation_wind_cards.gdshader.
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT,
 		volume_wrap);
-	SPECULAR_LIGHT += vegetation_specular_light(sheen_normal, LIGHT, VIEW, LIGHT_COLOR, shadow,
-		SPECULAR_AMOUNT) * impostor_sheen;
 }

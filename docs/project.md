@@ -50,6 +50,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Crowns inside a stand now lose sun to their neighbours by a per-tree stand closure, which
   brings a stand from the air to the photographs' range and leaves lone trees unchanged; see
   [the stand sun](terrain.md#crowns-in-a-stand-lose-sun-to-their-neighbours-2026-10-01).
+  Leaves no longer take a sun highlight, so crowns facing the sun stay green instead of turning
+  white and flat; see [the leaf highlight](terrain.md#leaves-take-no-sun-highlight-2026-10-02).
   Past the handover a tree's trunk zone is shaded, so a far stand no longer floats on lit
   trunks; see [the far stand](terrain.md#a-far-stand-is-dark-under-its-crowns-2026-09-26).
   Terrain residency now covers the cull distance in every direction, so a quick turn no longer

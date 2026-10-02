@@ -71,16 +71,12 @@ const FOLIAGE_ALPHA_RECTS := [
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
 # level's luminance. Fitted over the poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [1.033, 1.097]
+const IMPOSTOR_RADIANCE_MATCH := [1.013, 1.060]
 # Volume response of an impostor, conifer first, as (lift gain, wrap floor, wrap gain); see
 # vegetation_impostor.gdshader. Fitted with the radiance match above over the same poses, on
-# the authored trees; both species fit best at the same response.
-const IMPOSTOR_VOLUME := [Vector3(2.0, 0.0, 0.75), Vector3(2.0, 0.0, 0.75)]
-# Share of the near crown's sun highlight an impostor draws, fitted with the response above.
-# Backlit by a low sun, the near cards catch a sheen the impostor otherwise lacks. The sheen does
-# not scale with albedo, so LEAF_ALBEDO_SCALE raised its share of a backlit crown, and 0.5 left
-# the impostor at 0.853 of the near level there; 0.7 keeps all poses within 0.101, as before.
-const IMPOSTOR_SHEEN := 0.7
+# the authored trees without a sun highlight; both species fit best at a low lift and keep all
+# poses within 0.090 (conifer) and 0.066 (broadleaf) at one shared response.
+const IMPOSTOR_VOLUME := [Vector3(0.75, 0.0, 1.0), Vector3(0.75, 0.0, 1.0)]
 # One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
 # shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
 const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
@@ -323,7 +319,6 @@ static func impostor_material(species: int) -> ShaderMaterial:
 		material.set_shader_parameter("volume_lift_gain", volume.x)
 		material.set_shader_parameter("volume_wrap_floor", volume.y)
 		material.set_shader_parameter("volume_wrap_gain", volume.z)
-		material.set_shader_parameter("impostor_sheen", IMPOSTOR_SHEEN)
 		var growth_begin := SceneLightingConfig.shadow_max_distance_m()
 		material.set_shader_parameter("crown_growth", CROWN_GROWTH)
 		material.set_shader_parameter("crown_growth_begin_m", growth_begin)

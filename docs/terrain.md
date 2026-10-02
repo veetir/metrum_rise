@@ -837,6 +837,37 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Leaves take no sun highlight (2026-10-02)
+
+In play, crowns facing the sun turned pale, nearly white and flat
+(`imgs/reference/game/2-10-midday-bright.png`, `2-10-blown-out.png`). The photos and the reference
+games show no such sheet. An open stand painted on meadow (preset 8, three brush passes, seen
+from `10 m` up at `13:00`) reproduces it, and switching the leaf terms off one at a time names
+the cause. Facing the sun, the share of crown pixels that are pale and bright falls from `11.3%`
+to `0.2%` without the sun highlight, and stays at `10.8%` without the backlight. Crown saturation
+rises from `0.23` to `0.35`, and to `0.59` if the sky reflection goes too. The reference photos
+in `typical/` and `pine/` put the median saturation of foliage at about `0.30-0.50`, so the sky
+reflection stays.
+
+A card stands for a cluster of leaves under one normal, so the engine's highlight lit a whole
+cluster at once. In a real crown the leaves around a leaf hide most of its grazing glint. The
+card shader now adds no sun highlight, and the impostor drops the sheen it carried to match it,
+along with `IMPOSTOR_SHEEN`. The impostor then drew the conifer up to `1.122` of the near level
+with the sun ahead, so its response is refitted with `zz_level_fit.gd` (scratch) over 27 lift,
+floor and wrap candidates: `IMPOSTOR_VOLUME` becomes `(0.75, 0.0, 1.0)` for both species and
+`IMPOSTOR_RADIANCE_MATCH` `(1.013, 1.060)`. `vegetation_level_match_test` passes all 108 poses
+within `0.096`, against `0.101` before.
+
+| View, `13:00` | With highlight | Without |
+|---|---:|---:|
+| Stand from `180 m` up, canopy over meadow | `0.442` | `0.380` |
+| Stand from `140 m` up, canopy over meadow | `0.368` | `0.328` |
+| Lone trees, all crowns over meadow | `0.642` | `0.529` |
+| Open stand facing the sun, pale share of crown pixels | `11.3%` | `0.2%` |
+
+The stands stay inside the photo range of `0.30-0.44`. With the sun ahead some conifers now read
+slightly blue-green: that is the sky reflection, which the photos support at this strength.
+
 ### Crowns in a stand lose sun to their neighbours (2026-10-01)
 
 After the leaf albedo pass a painted mixed stand at 13:00 still measured `0.53` of the meadow
