@@ -147,8 +147,10 @@ func _apply_shadows(cheap: bool) -> void:
 		_sun.shadow_blur = SceneLightingConfig.SHADOW_BLUR
 		_sun.set("directional_shadow_mode", 2)
 		_sun.set("directional_shadow_blend_splits", true)
+		# Matches the project setting; Soft Low measured about 1 ms under Soft Medium near the
+		# ground (RENDER-15) with no visible change.
 		RenderingServer.directional_soft_shadow_filter_set_quality(
-			RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM
+			RenderingServer.SHADOW_QUALITY_SOFT_LOW
 		)
 
 # The Router swaps scenes, so cached nodes are re-resolved whenever they go away.

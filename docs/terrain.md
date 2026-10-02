@@ -3742,6 +3742,18 @@ and the town differs by under 12 pixels against 3-28 for two runs of one build. 
 overview `14.98 -> 14.42 ms`, close `12.51 -> 12.00 ms`, ground `10.77 -> 10.30 ms`; the flat
 town is unchanged.
 
+Idle frame budget and shadow filtering (`RENDER-15`, 2026-10-02): removing each feature from the
+`overview` frame (`14.45 ms`) saves: terrain `9.6 ms` (shading `5.3`, the rest per-pixel lighting
+and geometry), SSIL plus glow `2.3 ms`, sun shadows `1.9 ms`, vegetation `1.0 ms`, water nothing.
+A Metal System Trace puts terrain vertex work at about `1.4 ms` in total; shadow map rendering
+costs about `0.2 ms`, and the shadow cost is the filtered lookup in the opaque pass (`9.97 ->
+8.23 ms` without shadows). The directional soft-shadow filter goes from Soft Medium (3) to Soft
+Low (2): idle p50 overview `14.45 -> 13.76`, close `12.05 -> 11.40`, ground `10.35 -> 9.72`,
+town `10.45 -> 9.51`, `city_low` `11.62 -> 10.67 ms`, mean image difference `0.2/255` at shadow
+edges. Measured and not adopted pending a look decision: no PCSS (`light_angular_distance` 0, up
+to `-1.27 ms` in the town, fixed-width penumbrae) and no cascade blending (up to `-0.84 ms`).
+Grids: `benchmark-results/idle/suite/grid-shadow-*.png`.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must
