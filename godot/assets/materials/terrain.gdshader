@@ -139,6 +139,8 @@ varying vec2 var_water_uv;
 varying vec3 var_world_pos;
 varying float var_view_distance_m;
 
+// Position-only noise comes from the per-world bake (see terrain_world_noise.gd).
+#define GRASS_BAKED_WORLD_NOISE
 #include "res://scripts/shaders/ground_grass.gdshaderinc"
 
 vec2 watermap_centered_uv(vec2 patch_uv) {

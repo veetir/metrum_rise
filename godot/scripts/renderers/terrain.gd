@@ -24,6 +24,7 @@ const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
@@ -232,11 +233,16 @@ var _terrain_debug_last_desired_bounds: Dictionary = {}
 var _terrain_visual_debug_mode: int = 0
 var _terrain_grass_visual_debug_mode: int = 0
 
+# Per-world bake of the position-only ground noise that terrain.gdshader reads.
+var _world_noise := TerrainWorldNoise.new()
+
 func _ready() -> void:
+	add_child(_world_noise)
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state() -> void:
 	terrain_world_size = simulation_node.get_terrain_world_size()
+	_world_noise.bake(terrain_world_size)
 	var patch_layout: Dictionary = simulation_node.get_terrain_patch_layout()
 	patch_cols = int(patch_layout.get("patch_cols", 0))
 	patch_rows = int(patch_layout.get("patch_rows", 0))

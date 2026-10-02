@@ -3669,6 +3669,51 @@ does not explain all longer intervals. This repeat has no zero-mip baseline and 
 the exact speedup or the interval cause. See `roads.md` and
 `benchmark-results/stationary-mipmaps-LZ6tB3/results.txt` for the full run conditions and results.
 
+Runtime road/site texture imports (`TERRAIN-03`, 2026-10-02): the eleven remaining runtime
+textures sampled by the terrain and site shaders (`asphalt_04`, `clean_asphalt`,
+`concrete_layers_02`, `dark_rock`, `withered_grass`) imported lossless with no mipmaps, the
+same defect `TERRAIN-02` fixed for grass. They now import VRAM-compressed (high quality:
+BPTC/ASTC), with mipmaps and the normal-map flag on the `nor_gl` maps. Startup before world
+load falls `3.7 -> 1.9 s`, because WebP decode was half of it; road-heavy views gain
+`0.2-0.7 ms`. The HDRI sky stays lossless.
+
+Baked world noise (`TERRAIN-04`, 2026-10-02): the terrain fragment shader was the largest idle
+GPU cost (about `8 ms` of a `15.9 ms` overview frame on an M2 Pro), and most of it was value
+noise. Four fields depend only on world XZ: macro variation, land-variation broad and mid, and
+the meadow broad term. `terrain_world_noise.gd` renders them once per world load into one
+RGBA texture at `16 m` per texel, published through the `grass_world_noise` and
+`grass_world_noise_bounds` shader globals. The bake shader calls the include's own `*_live`
+functions, so texel centres equal the per-pixel values; their lattices are `167 m` or
+coarser, so bilinear reconstruction is not visible. `terrain.gdshader` opts in with
+`GRASS_BAKED_WORLD_NOISE`; the site-ground shader keeps the live functions. This replaces 13
+noise evaluations per terrain pixel with one fetch. Rejected in the same pass: skipping grass
+texture reads by distance (no gain, the layers stay visible at nearly every on-screen range)
+and deduplicating meadow calls (the compiler already merges them). The next candidate is a
+per-patch bake of the heightmap-derived cliff, relief and shore masks (about `1.5 ms` more);
+it needs the Rust patch payload and is not started.
+
+Measured with the idle-frame matrix (`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`, script
+`scripts/benchmarks/idle_frame_benchmark.gd`): simulation paused, V-Sync off, 1920x1080, 120
+warm-up and 300 measured frames per pose, Godot 4.7.2 Forward+ on Metal, M2 Pro, release
+extension. Kuopio poses are `overview`, `close` and `ground`; `city` and `city_low` load a
+small saved town with time of day pinned to 10:00. Frame p50, upstream `7e471302` -> both
+changes:
+
+| Pose | Before | After |
+| --- | --- | --- |
+| overview | `15.91 ms` | `15.01 ms` |
+| close | `13.28 ms` | `12.56 ms` |
+| ground | `11.41 ms` | `10.78 ms` |
+| city | `11.17 ms` | `10.43 ms` |
+| city_low | `12.73 ms` | `11.60 ms` |
+
+Repeat runs of one build differ by at most `0.05 ms`. With tree wind frozen
+(`METRUM_IDLE_BENCH_SCREENSHOT_DIR`), screenshots are pixel-identical run to run; against
+upstream the mean difference is `0.06/255` on Kuopio poses and `0.25-0.75/255` in the town,
+with `0.2-0.5%` of pixels above `12/255`, all on road and yard surfaces from the new mipmaps.
+The Mac numbers locate costs; acceptance on the owner's GTX 1060 is still to be measured.
+Results and before/after grids are kept in `benchmark-results/idle/suite/`.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must

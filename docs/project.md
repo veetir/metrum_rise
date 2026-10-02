@@ -519,6 +519,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TERRAIN-03` / `TERRAIN-04`: idle frames and startup. Eleven road/site textures now import
+  VRAM-compressed with mipmaps (startup `3.7 -> 1.9 s`), and the terrain shader reads four
+  position-only noise fields from a texture baked once per world (`terrain_world_noise.gd`)
+  instead of evaluating them per pixel. Idle p50 on an M2 Pro: overview `15.91 -> 15.01 ms`,
+  town `11.17 -> 10.43 ms`, visually unchanged. A new idle-frame benchmark matrix
+  (`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`) and `tools/xctrace_report.py` support the work. See
+  [`terrain.md`](terrain.md).
+
 - `TOOLS-11`: pack rows in Options → Mods gain `Verify` (imported packs, against the kept
   `checksums.sha256`), `Show folder` and `Remove…` (to Trash; drops the enabled entry; refused for
   bundled packs and packs a running city uses). See

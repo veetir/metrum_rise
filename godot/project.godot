@@ -49,6 +49,14 @@ scene_ambient_desaturation={
 "type": "float",
 "value": 0.0
 }
+grass_world_noise={
+"type": "sampler2D",
+"value": ""
+}
+grass_world_noise_bounds={
+"type": "vec4",
+"value": Vector4(0, 0, 1, 1)
+}
 
 [rendering]
 
