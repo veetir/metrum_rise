@@ -1197,3 +1197,47 @@ fn a_hedge_line_lays_facing_modules_once_and_only_along_a_line() {
     assert_eq!(line_at(&mut core, from, to, 4, 3), 0);
     assert_eq!(paint_at(&mut core, Vector2::new(0.0, -20.0), 8.0, 17, 4, usize::MAX), 0);
 }
+
+#[test]
+fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    // World centres of every hedge module, so a row is what one stroke added to them.
+    let centres = |core: &SimCore| -> Vec<(f32, f32)> {
+        let records = scatter(core, true);
+        let hedge = records.chunks_exact(6).filter(|r| r[5] != 0.0);
+        hedge.map(|r| (r[0] - 255.0, r[2] - 255.0)).collect()
+    };
+    let mut before = Vec::new();
+    let mut row = |core: &SimCore| -> Vec<(f32, f32)> {
+        let after = centres(core);
+        let added = after.iter().filter(|p| !before.contains(*p)).copied().collect();
+        before = after;
+        added
+    };
+    let lay = |core: &mut SimCore, from: (f32, f32), to: (f32, f32), stroke: i64| {
+        line_at(core, Vector2::new(from.0, from.1), Vector2::new(to.0, to.1), 17, stroke)
+    };
+    // 9.5 m lays ten modules whose outer faces sit exactly on the drawn ends.
+    assert_eq!(lay(&mut core, (0.0, 0.0), (9.5, 0.0), 1), 10);
+    let a = row(&core);
+    assert!(a.iter().any(|&(x, _)| (x - 0.5).abs() < 1e-4));
+    assert!(a.iter().any(|&(x, _)| (x - 9.0).abs() < 1e-4));
+    // A corner drawn 0.5 m off the row's end moves onto it and runs on by half the low hedge's
+    // 0.6 m width, so its first module's back face is flush with the first row's outer side.
+    assert_eq!(hedge_end_at(&core, Vector2::new(9.8, 0.4)), Vector2::new(9.5, 0.0));
+    assert_eq!(lay(&mut core, (9.8, 0.4), (9.5, 6.0), 2), 7);
+    let b = row(&core);
+    assert!(b.iter().all(|&(x, _)| (x - 9.5).abs() < 1e-4), "{b:?}");
+    let z_min = b.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    assert!((z_min - (-0.3 + 0.5)).abs() < 1e-4, "{b:?}");
+    // The buried corner is no longer an end: an end drawn beside the row's inner faces lands on
+    // its side, not on the nearest face, and a T-junction runs on into the row it meets.
+    assert_eq!(hedge_end_at(&core, Vector2::new(3.4, 0.5)), Vector2::new(3.4, 0.0));
+    assert_eq!(lay(&mut core, (3.4, 5.0), (3.4, 0.5), 3), 6);
+    let c = row(&core);
+    let z_min = c.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    assert!((z_min - 0.2).abs() < 1e-4, "{c:?}");
+    // Redrawing the first row snaps onto its own ends and stacks nothing.
+    assert_eq!(lay(&mut core, (0.2, 0.3), (9.3, -0.2), 4), 0);
+}

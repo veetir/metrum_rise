@@ -17,7 +17,7 @@ mod land_cover;
 // get_vegetation_stand_cover.
 const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
-use placement::{add_at, line_at, paint_at, stamp_limit};
+use placement::{add_at, hedge_end_at, line_at, paint_at, stamp_limit};
 
 // Lane five of a packed placement carries both the species ordinal and the renderer mesh
 // variant pinned over it, because widening the stride would cost the whole scatter buffer a
@@ -226,9 +226,12 @@ impl SimulationNode {
     }
 
     /// Lays a clipped hedge from `from` to `to`, one module per metre facing along the row, and
-    /// returns the number of modules planted. `option` must name a hedge preset in `brush.rs`;
-    /// any other ordinal, or a row longer than 256 m, plants nothing. O(row length). Pass the
-    /// gesture's `stroke` id so the row reverses as one undo step.
+    /// returns the number of modules planted. The row ends flush with its two ends. An end within
+    /// 1.25 m of a hedge already standing moves onto that hedge's free end or side, and where the
+    /// rows meet at an angle the new row runs on by half the old one's width to fill the corner.
+    /// `option` must name a hedge preset in `brush.rs`; any other ordinal, or a row longer than
+    /// 256 m, plants nothing. O(row length). Pass the gesture's `stroke` id so the row reverses
+    /// as one undo step.
     #[func]
     pub fn plant_vegetation_line(
         &self,
@@ -238,6 +241,14 @@ impl SimulationNode {
         stroke: i64,
     ) -> i64 {
         line_at(&mut self.lock_core(), from, to, option, stroke) as i64
+    }
+
+    /// Where a hedge end drawn at `pos` would land once `plant_vegetation_line` joins it to a
+    /// hedge already standing; `pos` itself when no hedge is near. Lets the tool preview the row
+    /// it will lay. O(k^2) in the few hedge modules within a couple of metres.
+    #[func]
+    pub fn snap_vegetation_line_end(&self, pos: Vector2) -> Vector2 {
+        hedge_end_at(&self.lock_core(), pos)
     }
 
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.

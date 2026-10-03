@@ -969,9 +969,16 @@ bush variants 6 to 14 and brush presets 11 to 19. Their occupancy class `Landsca
 them `0.5 m` apart and clears only a `0.3 m` disc around the stem, because a yard shrub or a
 hedge stands beside a kerb or a wall by design; ground cover keeps its `2.5 m` clearance. They
 are sunk `5 cm` rather than a tree's `25 cm`. `plant_vegetation_line` lays a hedge: one module
-per metre from one end to the other, never more than one module length apart, each facing along
-the row at full size, skipping a module that would stand on a surface or on the same hedge. It
-is O(row length), bounded at `256 m`, and is one undo step. The renderer draws a hedge module
+per metre from one end to the other, the end modules flush with the row's ends and the rest
+never more than one module length apart, each facing along the row at full size, skipping a
+module that would stand on a surface or on a module of the same hedge facing the same way. An end
+drawn within `1.25 m` of a hedge already standing moves onto that hedge's free end, or else onto its
+side; where the rows meet at an angle the new row runs on by half the old hedge's width, which
+closes the corner a square end would leave open (`VEG-13`). An end is free when it lies outside
+every other module's body, so a row's inner faces and an end already buried in a joint are not.
+`snap_vegetation_line_end` gives the tool the same landing point for its preview, and the hedge
+cursor is a fixed marker rather than a brush radius. It
+is O(row length) plus two joint searches over the few modules within a couple of metres, bounded at `256 m`, and is one undo step. The renderer draws a hedge module
 upright, untinted and unscaled, because any per-module spread shows each metre. A module is
 never scaled, so its scale lane carries the ground's rise across its metre instead, sampled
 when the patch is fetched, and the renderer shears the module along its row to that rise with
