@@ -519,6 +519,12 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `WATER-03`: water reflects the shore and trees, the lake bed fades with the water the view ray
+  crosses, and wind ripples move the surface. The lake had been lit as a downward-facing surface
+  (flipped back-face normal), which pinned Fresnel at its maximum; it now uses water's physical
+  Fresnel, so it is darker looking down. About `+0.5-0.9 ms` at water-filled 1080p views on the
+  M2 Pro. See [`terrain.md`](terrain.md).
+
 - `WATER-02`: lake seam slivers, hairline seam cracks and water tilting up steep banks were
   rendering faults, not the Kuopio DEM import: the water shader read terrain height with the
   watermap's layout, water borders repeated edge depth instead of the neighbour's, and shoreline
@@ -922,10 +928,9 @@ reopening requires a current reproduction, not an assumption that the old geomet
   qualified by reported desktop switching; see [`terrain.md`](terrain.md).
   Water uses a dark Baltic-blue depth palette with
   less terrain bleed and restrained
-  downward-view sky reflection through a tuned Fresnel/foam/normal material path. Grazing views
-  receive a smooth sky response that does not expose procedural normal cells, and the sun
-  reflection uses a conservative softened shoulder around its bright core; fine ripple detail is
-  deferred until it can use a seamless mipmapped normal texture. Scene lighting / shadow policy is
+  physical Fresnel from the level surface: dark looking down, reflective at grazing angles. It
+  reflects the shore and trees through a screen-space march, the engine reflects the sky and
+  sun, and analytic wind ripples, faded by pixel footprint, move the surface (`WATER-03`). Scene lighting / shadow policy is
   centralized through the Godot rendering bridge. Gameplay and WorldEditor now
   share a continuous procedural hemisphere sky with no literal horizon seam and a sun driven by
   that same directional light. A static 2K equirectangular cloud source is reduced to a restrained

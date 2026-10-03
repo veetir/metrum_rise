@@ -3604,11 +3604,22 @@ Current deterministic rules:
   and procedural wave normals remain presentation only; the wave field uses rotated aperiodic
   noise octaves with analytic gradients so high camera views do not expose periodic sine bands or
   an axis-aligned sampling grid
-- water reflection remains dark in downward views but uses a restrained grazing-angle Fresnel
-  response derived from the smooth base surface so procedural normal gradients cannot imprint
-  their source cells into the reflected sky; the sun response uses a softened glitter shoulder
-  around its bright core, while fine ripple detail remains deferred until a seamless mipmapped
-  normal texture is available
+- water reflection uses Schlick Fresnel with water's `0.02` reflectance from the level surface's
+  world-up normal: dark in downward views, near-mirror at grazing angles. Patch triangles face
+  away from a camera above them and the material disables culling, so Godot's flipped `NORMAL`
+  had lit the lake as a downward-facing surface with Fresnel pinned at its maximum; the shader
+  no longer derives lighting from the mesh normal. The engine's specular (`SPECULAR = 0.25`)
+  reflects the sky and draws the sun glint; the custom glitter is a faint broadening only
+- five analytic deep-water ripples (`0.9-7.3 m`, around one wind direction, each at its own
+  phase speed) tilt the normal, gated into gusts by slow noise and faded once a wavelength nears
+  the pixel footprint so distant water does not shimmer; half their slope bends the reflection
+  ray (`WATER-03`)
+- `WATER-03` acceptance, M2 Pro, 1920x1080 windowed, release dylib, idle-frame harness with the
+  saved camera kept (`METRUM_IDLE_BENCH_SAVE_PATH`, 300 frames, two alternating runs per side),
+  Kuopio saves: frame p50 `bd60c509` -> final was `9.50 -> 10.10 ms` (`issue-1`),
+  `9.92 -> 10.62 ms` (`issue-2`), `9.82 -> 10.71 ms` (lake view across Kallavesi) and
+  `9.08 -> 9.59 ms` (island shore view). The reflection march is the cost; with it disabled the
+  shader is within `0.1 ms` of the base. Views without water are unaffected
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
 - the visible background uses one continuous procedural hemisphere gradient; its upper and lower

@@ -19,6 +19,7 @@ uniform float water_fresnel_power = 2.8;
 uniform float water_wave_color_strength = 0.052;
 uniform float water_wave_roughness_strength = 0.024;
 uniform float water_wave_normal_strength = 0.42;
+uniform float water_ripple_strength = 1.0;
 uniform float water_sun_glitter_strength = 0.38;
 uniform float water_refraction_strength = 0.010;
 uniform float water_refraction_mix = 0.13;
@@ -225,11 +226,45 @@ vec3 water_surface_field(vec2 world_xz) {
 	return vec3(combined.x, combined.yz * 7.5);
 }
 
-vec3 perturb_water_normal(vec3 base_normal, vec2 wave_slope, float strength) {
-	vec3 axis = abs(base_normal.y) < 0.98 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-	vec3 tangent = normalize(cross(axis, base_normal));
-	vec3 bitangent = normalize(cross(base_normal, tangent));
-	return normalize(base_normal + (tangent * wave_slope.x + bitangent * wave_slope.y) * strength);
+// Wind ripples: a few deep-water waves around one wind direction. Each moves at its own phase
+// speed, sqrt(g / k), so the pattern changes rather than sliding as one sheet, and fades out once
+// its wavelength nears the pixel footprint, where it would only alias into shimmer. A slow noise
+// field gates them into gusts, leaving calm patches that mirror the shore. The broad noise field
+// above is 40-180 m across and only shades the surface; it never read as waves.
+const vec2 WATER_WIND_DIRECTION = vec2(0.8, 0.6);
+// Wavelength (m), angle from the wind (rad), steepness (amplitude x wavenumber).
+const vec3 WATER_RIPPLES[5] = {
+	vec3(7.3, 0.0, 0.010),
+	vec3(4.1, 0.62, 0.011),
+	vec3(2.6, -0.55, 0.011),
+	vec3(1.55, 1.05, 0.010),
+	vec3(0.93, -0.9, 0.009)
+};
+
+vec2 water_ripple_slope(vec2 world_xz, float footprint_m) {
+	vec2 slope = vec2(0.0);
+	for (int i = 0; i < 5; i++) {
+		vec3 ripple = WATER_RIPPLES[i];
+		float c = cos(ripple.y);
+		float s = sin(ripple.y);
+		vec2 direction = vec2(
+			WATER_WIND_DIRECTION.x * c - WATER_WIND_DIRECTION.y * s,
+			WATER_WIND_DIRECTION.x * s + WATER_WIND_DIRECTION.y * c
+		);
+		float wavenumber = TAU / ripple.x;
+		float phase = wavenumber * dot(direction, world_xz) - sqrt(9.81 * wavenumber) * TIME
+			+ float(i) * 1.7;
+		float resolved = 1.0 - smoothstep(ripple.x * 0.1, ripple.x * 0.35, footprint_m);
+		slope += direction * (ripple.z * cos(phase) * resolved);
+	}
+	float gust = smoothstep(0.3, 0.75,
+		value_noise_field(world_xz * 0.012 + TIME * vec2(0.02, 0.015)).x);
+	return slope * mix(0.35, 1.0, gust) * water_ripple_strength;
+}
+
+// View-space normal of the surface tilted by a world-space slope (dh/dx, dh/dz).
+vec3 water_view_normal(vec2 slope, mat4 view_matrix) {
+	return normalize((view_matrix * vec4(normalize(vec3(-slope.x, 1.0, -slope.y)), 0.0)).xyz);
 }
 
 vec3 water_world_normal(vec2 wave_slope) {
@@ -466,6 +501,7 @@ void fragment() {
 	float wave = surface_field.x;
 	float wave_signed = wave * 2.0 - 1.0;
 	vec2 wave_slope = surface_field.yz;
+	vec2 ripple_slope = water_ripple_slope(var_world_pos.xz, length(fwidth(var_world_pos.xz)));
 	vec3 world_normal = water_world_normal(wave_slope);
 	float normal_debug_strength = clamp(length(wave_slope) * water_wave_normal_strength * 18.0, 0.0, 1.0);
 	vec3 depth_tint = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
@@ -481,9 +517,13 @@ void fragment() {
 		* shore_mask;
 	final_alpha = clamp(final_alpha, 0.0, WATER_MAX_ALPHA);
 
-	vec3 base_view_normal = normalize(NORMAL);
-	NORMAL = perturb_water_normal(base_view_normal, wave_slope, water_wave_normal_strength);
-	float fresnel = pow(
+	// The level surface's normal is world up. NORMAL is not: the patch triangles face away from a
+	// camera above them, and with culling disabled Godot flips NORMAL on back faces, so the lake
+	// was lit as a surface facing down, with no sun and Fresnel pinned at its grazing maximum.
+	vec3 base_view_normal = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+	NORMAL = water_view_normal(wave_slope * water_wave_normal_strength + ripple_slope, VIEW_MATRIX);
+	// Schlick with water's 0.02 reflectance straight down.
+	float fresnel = 0.02 + 0.98 * pow(
 		1.0 - clamp(dot(base_view_normal, normalize(var_view_direction)), 0.0, 1.0),
 		water_fresnel_power
 	);
@@ -532,20 +572,21 @@ void fragment() {
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
 		// Reflected scene where the ray finds one, the sky where it does not. The scene is
-		// already lit, so it is emitted rather than lit again as albedo. The flat view-space up
-		// carries a small share of the wave slope, which ripples the reflection.
+		// already lit, so it is emitted rather than lit again as albedo. The ripples, and a small
+		// share of the broad wave slope, bend the reflected ray.
 		float reflection_weight = 0.0;
 		vec3 reflected_scene = vec3(0.0);
 		// Below a few percent the reflection cannot be seen, and steep views skip the march.
 		if (fresnel_mix > 0.05) {
-			vec3 view_up = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-			vec3 ripple_normal = perturb_water_normal(
-				view_up, wave_slope, water_wave_normal_strength * 0.25);
+			// Half the ripple slope: the full bend chopped reflected trees into columns.
+			vec3 ripple_normal = water_view_normal(
+				(wave_slope * water_wave_normal_strength * 0.25 + ripple_slope) * 0.5, VIEW_MATRIX);
 			reflected_scene = water_reflection(VERTEX, ripple_normal, PROJECTION_MATRIX,
 				INV_PROJECTION_MATRIX, reflection_weight);
 		}
-		final_color = mix(final_color, sky_reflection, fresnel_mix * (1.0 - reflection_weight));
-		final_color *= 1.0 - fresnel_mix * reflection_weight;
+		// The sky itself is the engine's specular reflection below; mixing a sky tint into the
+		// albedo as well counted it twice once the surface faced up.
+		final_color *= 1.0 - fresnel_mix;
 		EMISSION = reflected_scene * fresnel_mix * reflection_weight;
 		final_color += scene_sun_color.rgb
 			* scene_ambient_light.rgb
@@ -562,6 +603,8 @@ void fragment() {
 		ROUGHNESS = clamp(0.08 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
 		// The engine's own specular reflects the sky; where the scene is reflected instead, it
 		// would lay that sky over the reflected shore and wash it out.
-		SPECULAR = 0.72 * (1.0 - reflection_weight);
+		// 0.25 is Godot's encoding of water's 0.02 reflectance; the engine applies its own
+		// Fresnel on top, matching the one above.
+		SPECULAR = 0.25 * (1.0 - reflection_weight);
 	}
 }

@@ -20,18 +20,20 @@ const SHORE_FOAM_BAND_M := 0.18
 const SHALLOW_WATER_COLOR := Color(0.07, 0.19, 0.24, 0.80)
 # Boreal lakes are humic and near-black. A pale lake reads as a pool and shrinks the
 # sense of distance across it; the dark surface also lets the shoreline read as an edge.
-const DEEP_WATER_COLOR := Color(0.012, 0.052, 0.075, 0.97)
+const DEEP_WATER_COLOR := Color(0.018, 0.066, 0.092, 0.97)
 const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
 const SKY_REFLECTION_COLOR := Color(0.22, 0.33, 0.44, 1.0)
 const WATER_DEEP_COLOR_DEPTH_M := 1.8
 # Metres of humic lake water that absorb about 63% of the light from the bed behind it.
 const WATER_VISIBILITY_M := 1.2
-const WATER_FRESNEL_STRENGTH := 0.30
-const WATER_FRESNEL_POWER := 2.8
+const WATER_FRESNEL_STRENGTH := 1.0
+const WATER_FRESNEL_POWER := 5.0
 const WATER_WAVE_COLOR_STRENGTH := 0.052
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.024
 const WATER_WAVE_NORMAL_STRENGTH := 0.42
-const WATER_SUN_GLITTER_STRENGTH := 0.38
+# The engine's own specular now draws the sun glint on the up-facing surface; at full strength
+# this broad path spread it into a white blotch.
+const WATER_SUN_GLITTER_STRENGTH := 0.1
 const WATER_REFRACTION_STRENGTH := 0.010
 const WATER_REFRACTION_MIX := 0.13
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
