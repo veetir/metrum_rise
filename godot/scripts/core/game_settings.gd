@@ -103,17 +103,13 @@ static func get_road_preview_mode() -> int:
 	return value if value in [0, 1] else DEFAULT_ROAD_PREVIEW_MODE
 
 static func get_fullscreen_enabled() -> bool:
-	return bool(get_value(
-		SECTION_GRAPHICS,
-		KEY_FULLSCREEN,
-		DEFAULT_FULLSCREEN
-	))
+	return bool(_graphics_value(KEY_FULLSCREEN, DEFAULT_FULLSCREEN))
 
 static func save_fullscreen_enabled(enabled: bool) -> Error:
 	return set_value(SECTION_GRAPHICS, KEY_FULLSCREEN, enabled)
 
 static func get_building_lod_quality() -> int:
-	var value := int(get_value(SECTION_GRAPHICS, KEY_BUILDING_LOD_QUALITY, DEFAULT_BUILDING_LOD_QUALITY))
+	var value := int(_graphics_value(KEY_BUILDING_LOD_QUALITY, DEFAULT_BUILDING_LOD_QUALITY))
 	return value if value >= 0 and value <= 2 else DEFAULT_BUILDING_LOD_QUALITY
 
 static func get_vsync_enabled() -> bool:
