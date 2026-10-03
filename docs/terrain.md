@@ -837,6 +837,104 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Crowns in a stand lose sun to their neighbours (2026-10-01)
+
+After the leaf albedo pass a painted mixed stand at 13:00 still measured `0.53` of the meadow
+beside it from `140 m` up and `0.62` from `180 m`, against `0.30-0.44` in the forest-edge
+photographs. The cast shadows do part of the work: switching vegetation casting off brightens
+the stand by `27%` inside the shadow range and `11%` in a view that is mostly past it. The rest
+is sun the crowns of a closed stand take from each other and the renderer did not.
+
+Each canopy tree now carries a stand closure. `get_vegetation_stand_cover(origin, span)` builds
+the crown coverage of `land_cover.rs` over the patch and `16 m` around it, averages it over the
+`40 m` square around each `8 m` texel, and the renderer samples that once per tree at upload,
+gated as the forest floor is (`0.35-0.7`). Averaging over `40 m` is what keeps a lone tree out:
+a large crown fills `0.78` of its own `8 m` texel and passed the gate, which darkened a lone
+pine to `0.34` of the meadow, while over the square it fills about `0.03`. The near levels read
+the closure from instance custom data. The impostor reads it from the fraction of its layer
+lane, below one half, because its varyings are packed against the Metal limit.
+
+The shaders keep `mix(0.24, 1, exp(-0.3 * closure * depth * cot(sun elevation)))` of the sun,
+where depth is how far below a `20 m` canopy top the surface sits: the top of a crown keeps its
+sun, and a ray deep in the stand keeps what the floor keeps (`CANOPY_FLOOR_SUN_VISIBILITY`).
+Inside the shadow range it combines with the cast shadow as the darker of the two, because that
+shadow already holds the neighbours' crowns. The density `0.3` is fitted. Measured at 13:00:
+
+| View | Before | After |
+|---|---:|---:|
+| Stand from `180 m` up, canopy over meadow | `0.615` | `0.442` |
+| Stand from `140 m` up, canopy over meadow | `0.527` | `0.368` |
+| Lone pine and birch pair, crown over meadow | `0.878` | `0.876` |
+| Lone pine near the camera | `0.568` | `0.567` |
+| Lone spruce | `0.395` | `0.394` |
+
+**Cost.** Release build, 405 resident patches holding 98,541 trees around the painted stand,
+three re-uploads each (`zz_upload_probe.gd`, scratch): `2.03 ms` per patch upload before,
+`3.10 ms` after. The Rust coverage build is `0.61 ms` of that and the per-tree sampling about
+`0.44 ms` (about `1.8 us` a tree). Uploads run under the existing `2 ms` and `6 ms` frame
+budgets, so frame time does not change; a newly visible area fills about a third slower. The
+coverage build evaluates the canopy candidates that the patch fetch has just evaluated; folding
+the closure into `get_decorative_tree_patch` would remove both halves. No GPU cost was measured:
+the shader adds one `exp` per lit fragment.
+
+### The far forest floor matches the shadows it replaces (2026-10-01)
+
+Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
+a stand in place of the tree shadows that are no longer drawn. Two errors in that term made a
+dark step at the cascade edge: a camera that moved back past it saw the stand edge turn from
+brown to near black, and the outline stayed visible from kilometres away. Turning only this
+term off removed the band; the crown terms barely changed it.
+
+- **Opaque crowns.** The term kept `GROUND_SHADOW_MIN_VISIBILITY` (`0.02`) of the sun under
+  crown cover, as if every crown were solid. The authored crowns are open and their cascade
+  shadow is dappled. With the trees drawn as shadow only, a painted pine stand seen straight
+  down measured a floor of `0.031` linear Y from `300 m` (cascades) against `0.016` from
+  `600 m` (this term), at 7, 10, 13 and 16 o'clock alike. `CANOPY_FLOOR_SUN_VISIBILITY`
+  (`0.24`) is the share of sun the crowns now pass; it is fitted, because the tone map makes
+  the response nonlinear (`0.20` gave `0.85-0.95`, `0.40` gave `1.42-1.53`). Far over near is
+  now `0.947`, `0.980` and `1.058` at 7, 10 and 16 o'clock.
+- **Shadow under the crown, not down the sun ray.** The term darkened the ground below the
+  cover. The cascades put the shadow where the sun ray through the crowns meets the ground,
+  so the sunward floor of an edge is lit and the meadow beyond the far edge is shaded. The
+  term now reads the cover once more at the point the sun ray crosses `CANOPY_SHADOW_HEIGHT_M`
+  (`15 m`, the middle of the foliage of a `20-25 m` authored tree from its impostor bounds),
+  capped at `120 m` of offset for a low sun. One extra fetch, past the cascades only.
+
+`terrain_overlay_shader_test` now also checks that, past the cascades, a stand toward the sun
+shades open ground (`0.400` against `0.558`) and a stand away from it does not.
+
+### Leaf albedo of pine, birch and aspen — calibrated against photos (2026-10-01)
+
+Every earlier tree calibration matched one tree level against another, never against a real
+forest. Measured against the forest-edge photographs in `imgs/reference/vegetation/`, as
+canopy mean Y over the open green ground in the same image, so exposure cancels: Vantaa
+`0.30-0.31`, Tali `0.44`, and `0.17` over Sipoo's hay field, which is too bright to use. A
+painted mixed stand in the game at 13:00 measured `0.78` from `140 m` up and `0.87` from
+`180 m`.
+
+A render with the key light hidden split the cause. Sky light alone gives the stand `0.27-0.34`
+of the meadow, inside the photo range. The sun then added `1.38` times as much light to the
+canopy as to the meadow, and a lone pine or birch took `2.0` times the meadow's sun and
+rendered brighter than the grass under it (`1.17`). Spruce sat at `0.35`. The stored leaf
+means explain it: pine `0.238`, birch `0.312` and aspen `0.279` Y against spruce `0.101`,
+taken from bright photo foliage. Real green-band leaf reflectance puts pine at about `1.4`,
+birch `1.8` and aspen `1.7` times spruce (literature values, not measured here).
+
+`LEAF_ALBEDO_SCALE` in `tree_species.gd` scales the leaves through the `leaf_albedo_scale`
+uniform of each form's card material and, per layer, of the baked impostor. It is a uniform and
+not the vertex colour, so the mesh the impostor bake reads, and the source digest
+`vegetation_appearance_test` checks it against, keep the unscaled leaves: pine `0.596`, birch
+`0.585`, aspen `0.618`, spruce unchanged. After: the stand measures `0.52` from `140 m` and
+`0.60` from `180 m`, the lone pair `0.83`, the spruce `0.34`. The sun sheen does not scale with
+albedo, so its share of a backlit crown rose and the impostor fell to `0.853` of the near level
+with a low sun ahead; `IMPOSTOR_SHEEN` moved from `0.5` to `0.7`, which keeps all 108 poses of
+`vegetation_level_match_test` within `0.101`, the margin before the change.
+
+The stand is still above the photo range. What remains is sun the crowns of a dense stand
+should take from each other and do not. `CANOPY_FAR_ALBEDO` was fitted to the brighter trees
+and needs a refit once the stand is settled. A Codex (GPT-6 Astra) read-only study of the
+lighting path and the photos informed this pass.
+
 ### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
 
 **Trees.** The canopy is 24 Blender trees (`tools/model_trees.py`, run on the owner's M2 Pro

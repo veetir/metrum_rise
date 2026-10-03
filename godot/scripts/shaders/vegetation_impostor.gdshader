@@ -9,6 +9,9 @@ uniform sampler2DArray normal_atlas : filter_linear_mipmap, repeat_disable;
 // One baked form per near variant; the layer is the variant.
 uniform vec3 bounds_centre[12];
 uniform float bounds_size[12];
+// Leaf albedo share of each layer's form; see LEAF_ALBEDO_SCALE in tree_species.gd. The bake
+// holds the unscaled leaves, and the few trunk texels in a frame take the same share.
+uniform float leaf_albedo_scale[12];
 // Per view (x) and form (y), the frame UV rectangle that holds its coverage; see
 // vegetation_impostor.gdshaderinc.
 uniform sampler2D frame_bounds : filter_nearest, repeat_disable;
@@ -45,8 +48,8 @@ uniform float impostor_sheen = 0.0;
 // that used 32 failed there and drew no far trees.
 // Frame UVs 0 (xy) and 1 (zw).
 varying vec4 frame_uv01;
-// Frame UV 2 (xy) and the shadow keep (z).
-varying vec3 frame_uv2_keep;
+// Frame UV 2 (xy), the shadow keep (z) and the tree's stand closure (w).
+varying vec4 frame_uv2_keep;
 // Atlas cells 0 (xy) and 1 (zw).
 varying flat vec4 cells01;
 // Atlas cell 2 (xy), the form layer (z) and the handover crossfade (w).
@@ -114,7 +117,9 @@ void vertex() {
 	float view_distance_m = distance(world, CAMERA_POSITION_WORLD);
 	canopy_card = vec4(vegetation_canopy_shade_parts(MODEL_MATRIX[3].xz, view_distance_m), VERTEX.y,
 		vegetation_canopy_base_ramp(view_distance_m));
-	frame_uv2_keep = vec3(project_frame(offset, cell2), vegetation_shadow_keep(view_distance_m));
+	// The layer lane carries the stand closure below one half; see vegetation.gd.
+	frame_uv2_keep = vec4(project_frame(offset, cell2), vegetation_shadow_keep(view_distance_m),
+		2.0 * fract(INSTANCE_CUSTOM.x));
 	float crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
 	float far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
 		distance(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz));
@@ -155,7 +160,7 @@ void fragment() {
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(volume_lift_gain * spread, 0.0, 1.0)));
 	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
-	vec3 tinted = albedo.rgb * tint_far.rgb;
+	vec3 tinted = albedo.rgb * tint_far.rgb * leaf_albedo_scale[int(cell2_layer_fade.z)];
 	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w));
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
@@ -171,6 +176,9 @@ void fragment() {
 
 void light() {
 	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, frame_uv2_keep.z);
+	if (LIGHT_IS_DIRECTIONAL) {
+		shadow = min(shadow, vegetation_stand_sun(canopy_card.z, frame_uv2_keep.w));
+	}
 	// The highlight takes the baked normal, not the lifted one. A lifted normal faces the sky, and
 	// against a low sun ahead its grazing Fresnel term lit the impostor 47% above the near crown.
 	// Without a highlight the impostor drew backlit pines 21% darker than the near level, whose

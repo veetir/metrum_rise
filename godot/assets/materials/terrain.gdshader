@@ -70,10 +70,19 @@ uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
 uniform float canopy_floor_sky_transmission : hint_range(0.0, 1.0) = 1.0;
 // Matches RELIEF_ENCODE_MAX_M in patch_masks.rs.
 const float TERRAIN_MASK_RELIEF_MAX_M = 32.0;
+// Share of the sun the crowns of a closed stand still pass to its floor. See
+// CANOPY_FLOOR_SUN_VISIBILITY in scene_lighting.gd.
+uniform float canopy_floor_sun_visibility : hint_range(0.0, 1.0) = 0.0;
 // Crown coverage of an 8 m texel below which the floor stays meadow, and at which it becomes
 // full forest floor. A lone crown peaks near 0.45 and a closed stand near 1.
 const float CANOPY_FLOOR_OPEN_COVER = 0.35;
 const float CANOPY_FLOOR_CLOSED_COVER = 0.7;
+// Height a stand's crown shadow is cast from: the middle of the foliage of a 20-25 m tree, from
+// the authored forms' impostor bounds. The far floor shade samples the coverage this far up the
+// sun's ray, so it falls where the cascades put it. Past CANOPY_SHADOW_MAX_OFFSET_M of offset a
+// low sun would take it off the stand that casts it, so the offset stops there.
+const float CANOPY_SHADOW_HEIGHT_M = 15.0;
+const float CANOPY_SHADOW_MAX_OFFSET_M = 120.0;
 // Past the distance the trees stop being drawn, the ground stands in for the crowns on it. Set
 // from tree_species.gd; the defaults leave the term off.
 uniform float canopy_far_begin_m = 1.0e9;
@@ -677,14 +686,30 @@ void fragment() {
 				canopy_floor_shade_end_m,
 				var_view_distance_m
 			) * canopy_floor_shade;
-			// Ground lit by sky s and sun keeps A * s + S of its light. A share of it equal to the
-			// coverage lies in crown shadow and keeps only the minimum visibility m of the sun, so
-			// the floor keeps (A * s + S * (1 - cover * (1 - m))) of it; the shade is that ratio.
-			float sun_lost = ground_shadow_sun_strength * floor_cover
-				* (1.0 - clamp(ground_shadow_min_visibility, 0.0, 1.0));
-			float floor_shade = 1.0 - sun_lost / max(
-				ground_shadow_ambient * floor_sky + ground_shadow_sun_strength, 0.001);
-			color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
+			if (floor_shade_ramp > 0.0) {
+				// A crown shades the ground down its sun ray, not the ground under it. Taking the
+				// coverage overhead left the sunward edge of a stand dark and the meadow in its
+				// shadow lit, where the cascades draw the reverse, so the edge facing the camera
+				// went dark the moment it left them. One more fetch, past the cascades only.
+				vec3 to_sun = scene_sun_direction;
+				float sun_across = length(to_sun.xz);
+				float sun_reach = min(CANOPY_SHADOW_HEIGHT_M * sun_across / max(to_sun.y, 0.001),
+					CANOPY_SHADOW_MAX_OFFSET_M);
+				vec2 sun_offset = to_sun.xz / max(sun_across, 0.001) * sun_reach;
+				float caster_cover = texture(land_cover_texture,
+					cover_uv + sun_offset / max(land_cover_world_bounds.zw, vec2(0.001))).r;
+				float shadow_cover = caster_cover
+					* smoothstep(CANOPY_FLOOR_OPEN_COVER, CANOPY_FLOOR_CLOSED_COVER, caster_cover);
+				// Ground lit by sky s and sun keeps A * s + S of its light. A share of it equal to
+				// the shadowing coverage lies in crown shadow and keeps the share m of the sun the
+				// crowns pass, so the floor keeps (A * s + S * (1 - cover * (1 - m))) of it; the
+				// shade is that ratio.
+				float sun_lost = ground_shadow_sun_strength * shadow_cover
+					* (1.0 - clamp(canopy_floor_sun_visibility, 0.0, 1.0));
+				float floor_shade = 1.0 - sun_lost / max(
+					ground_shadow_ambient * floor_sky + ground_shadow_sun_strength, 0.001);
+				color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
+			}
 			// Past the trees the ground stands in for them, and what a viewer sees of a stand there
 			// is not the ground its crowns cover from above. A sight line at elevation angle a
 			// crosses the side of every crown in a strip cot(a) times longer than the crown is wide,
