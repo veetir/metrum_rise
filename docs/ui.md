@@ -145,7 +145,10 @@ scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Build
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
 sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
-layout values. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
+layout values. They also refit whenever the viewport they open on is resized (`UI-02`): leaving
+fullscreen shrinks the game window, and a window sized for the fullscreen viewport would otherwise
+hang off its edges with its footer out of reach. The refit keeps the player's size where it fits,
+holds it to 92% of the viewport and moves it back inside. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
 (a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
 (Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
 also turns off the screen-space AA pass), `Shadows` (High, or Low: plain PCF, two cascades, no

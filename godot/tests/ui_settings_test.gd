@@ -116,6 +116,10 @@ func _test_refresh(style: Script) -> void:
 	_expect(Settings.save_ui_scale(0.8) == OK, "A smaller scale must save")
 	style.refresh_scaled_font_sizes(viewport)
 	_expect(label.get_theme_font_size("font_size") == 10 and window.size == Vector2i(600, 450), "Smaller text retains the player's larger window")
+	# Leaving fullscreen shrinks the surface the window opens on; the window must shrink with it.
+	window.position = Vector2i(1300, 600)
+	viewport.size = Vector2i(500, 400)
+	_expect(window.size == Vector2i(460, 368) and window.position == Vector2i(40, 32), "A shrinking viewport refits the window inside it")
 	viewport.free()
 
 func _benchmark(style: Script) -> void:
