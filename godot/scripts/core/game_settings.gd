@@ -57,7 +57,7 @@ const DEFAULT_VIEW_DISTANCE := VIEW_DISTANCE_FULL
 const REDUCED_VIEW_DISTANCE_M := 3000.0
 const DEFAULT_UI_SCALE := 1.0
 const MIN_UI_SCALE := 0.8
-const MAX_UI_SCALE := 1.5
+const MAX_UI_SCALE := 2.0
 const UI_SCALE_STEP := 0.05
 
 static func load_config() -> ConfigFile:
@@ -145,6 +145,17 @@ static func _graphics_value(key: String, default_value: Variant) -> Variant:
 static func apply_display_settings() -> void:
 	apply_fullscreen_enabled(get_fullscreen_enabled())
 	apply_frame_settings()
+	var root := (Engine.get_main_loop() as SceneTree).root
+	apply_display_scale()
+	if not root.dpi_changed.is_connected(apply_display_scale):
+		root.dpi_changed.connect(apply_display_scale)
+
+## Scales all 2D content by the screen's backing scale (2 on a Retina Mac, 1 elsewhere), so
+## 100% UI scale is the size the OS draws its own interface. The 3D view keeps rendering at the
+## window's full pixel size. Follows the window onto screens with a different scale.
+static func apply_display_scale() -> void:
+	var root := (Engine.get_main_loop() as SceneTree).root
+	root.content_scale_factor = maxf(1.0, DisplayServer.screen_get_scale(root.current_screen))
 
 ## Applies vsync, the frame rate cap and the 3D render scale. Shadow quality and view distance
 ## belong to the world scene and are applied by its owners on the `graphics_settings` group.

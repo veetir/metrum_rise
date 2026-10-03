@@ -48,7 +48,7 @@ const HUD_SHELL_CORNER := 15
 const HUD_SHELL_PAD_X := 15
 const HUD_SHELL_PAD_Y := 10
 const WINDOW_REFERENCE_VIEWPORT := Vector2(1920.0, 1080.0)
-const MAX_WINDOW_LAYOUT_SCALE := 1.6
+const MAX_WINDOW_LAYOUT_SCALE := 2.0
 const WINDOW_MAX_VIEWPORT_COVERAGE := 0.92
 
 static func ui_scale() -> float:

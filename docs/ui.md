@@ -140,7 +140,7 @@ last active category plus size and position. The same settings file also stores 
 `layout/<id>` sections for player-adjusted floating-window sizes, positions where appropriate,
 and split-panel offsets such as Economy Overview's budget/service/policy panes. `Accessibility`
 owns the runtime-safe `UI Scale`
-setting, currently bounded to `80%..150%` in `5%` increments and applied immediately to
+setting, bounded to `80%..200%` in `5%` increments and applied immediately to
 scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Building Inspector,
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
 sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
@@ -470,7 +470,12 @@ the resident family, excluding commuting workers, and refresh with the existing 
 update. Farm housing is independent of the number of jobs (`ECON-08`).
 
 Settings recovery and scaling (`AUDIT-01-F8`) use the default UI scale for NaN/infinite input.
-Finite values retain the 0.8–1.5 clamp and 0.05 steps. Failed config reads discard the whole
+Finite values retain the 0.8–2.0 clamp and 0.05 steps. On top of this setting, the root
+window's `content_scale_factor` follows the screen's backing scale
+(`GameSettings.apply_display_scale()`, re-applied on `dpi_changed`), so 100% is the size the
+OS draws its own interface: 2x on a Retina Mac, 1x where the OS reports no scale. The 3D view
+keeps rendering at the window's full pixel size, and `Camera3D.unproject_position` and mouse
+positions both use the scaled coordinates. Failed config reads discard the whole
 partially parsed state before defaults are installed; valid reads preserve unrelated layout values.
 A font/window refresh reads the scale once and passes it through the existing tree traversal and
 size helpers. Later operations still read current settings; there is no persistent settings cache.

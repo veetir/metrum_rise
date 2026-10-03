@@ -32,7 +32,7 @@ func _run() -> void:
 	else:
 		for invalid in [NAN, INF, -INF]:
 			_expect(Settings.normalized_ui_scale(invalid) == Settings.DEFAULT_UI_SCALE, "Non-finite scale must use the default")
-		for pair in [[-1.0, 0.8], [0.8, 0.8], [1.24, 1.25], [1.5, 1.5], [2.0, 1.5]]:
+		for pair in [[-1.0, 0.8], [0.8, 0.8], [1.24, 1.25], [1.5, 1.5], [2.0, 2.0], [2.5, 2.0]]:
 			_expect(is_equal_approx(Settings.normalized_ui_scale(pair[0]), pair[1]), "Finite scale retains clamping and 0.05 steps")
 		# ConfigFile keeps values parsed before an error; recovery must reset the whole object.
 		Settings._write_defaults(cfg)
