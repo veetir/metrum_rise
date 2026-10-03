@@ -42,6 +42,8 @@ const DEFAULT_VSYNC := true
 ## 0 is unlimited.
 const MAX_FPS_CHOICES := [0, 30, 60, 120, 144]
 const DEFAULT_MAX_FPS := 0
+## The main menu draws next to nothing, so uncapped it spins at hundreds of frames per second.
+const MENU_MAX_FPS := 120
 const DEFAULT_SHOW_FPS := false
 ## 3D render scale; below 1.0 the frame is rendered smaller and upscaled with FSR 2.
 const RENDER_SCALE_CHOICES := [1.0, 0.77, 0.67, 0.5]
@@ -59,6 +61,8 @@ const DEFAULT_UI_SCALE := 1.0
 const MIN_UI_SCALE := 0.8
 const MAX_UI_SCALE := 2.0
 const UI_SCALE_STEP := 0.05
+
+static var _menu_frame_cap := false
 
 static func load_config() -> ConfigFile:
 	var cfg := ConfigFile.new()
@@ -142,6 +146,18 @@ static func _graphics_value(key: String, default_value: Variant) -> Variant:
 		return default_value
 	return get_value(SECTION_GRAPHICS, key, default_value)
 
+## Applies the player's frame rate cap, held to MENU_MAX_FPS or lower while the main menu is up.
+static func apply_max_fps() -> void:
+	var cap := get_max_fps()
+	if _menu_frame_cap:
+		cap = MENU_MAX_FPS if cap == 0 else mini(cap, MENU_MAX_FPS)
+	Engine.max_fps = cap
+
+## The main menu sets this while it is in the tree.
+static func set_menu_frame_cap(enabled: bool) -> void:
+	_menu_frame_cap = enabled
+	apply_max_fps()
+
 static func apply_display_settings() -> void:
 	apply_fullscreen_enabled(get_fullscreen_enabled())
 	apply_frame_settings()
@@ -162,7 +178,7 @@ static func apply_display_scale() -> void:
 static func apply_frame_settings() -> void:
 	DisplayServer.window_set_vsync_mode(
 		DisplayServer.VSYNC_ENABLED if get_vsync_enabled() else DisplayServer.VSYNC_DISABLED)
-	Engine.max_fps = get_max_fps()
+	apply_max_fps()
 	var root := (Engine.get_main_loop() as SceneTree).root
 	var render_scale := get_render_scale()
 	if is_equal_approx(render_scale, 1.0):

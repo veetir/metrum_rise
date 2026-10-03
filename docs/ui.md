@@ -147,7 +147,7 @@ sizes through `UIStyle`, so window defaults and minimums grow with Accessibility
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
 layout values. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
 (a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
-(Unlimited/30/60/120/144), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
+(Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
 also turns off the screen-space AA pass), `Shadows` (High, or Low: plain PCF, two cascades, no
 cascade blending), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
 9 km) and `Building detail` (Performance/Balanced/Quality; default Balanced), persisted in the
