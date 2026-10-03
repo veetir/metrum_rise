@@ -202,7 +202,10 @@ Deterministic rule:
 gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
 tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
 shell so the submenu stack can read as one cluster while the actual toolbar row still matches
-the clock / city-status / RCI strip height.
+the clock / city-status / RCI strip height. The three layers are anchored independently, so
+`_layout_bottom_toolbar()` keeps the toolbar centred only while that clears the side strips: on
+overlap it shifts sideways just enough, and when the gap between the strips is narrower than
+the toolbar (large UI scale, small window, a wide submenu) it rises above them.
 **Script:** `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
