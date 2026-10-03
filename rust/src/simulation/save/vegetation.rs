@@ -2,7 +2,7 @@
 
 //! Deterministic serialization of the sparse vegetation delta; revisions are runtime-only.
 
-use super::schema::VEGETATION_VARIANT_SAVE_VERSION;
+use super::schema::{VEGETATION_VARIANT_SAVE_VERSION, YARD_HEDGE_SAVE_VERSION};
 use super::{SaveLoadError, SaveLoadResult};
 use crate::simulation::vegetation::edits::{
     AuthoredPlant, VegetationCell, VegetationEdits, VegetationLayer, variant_in_range,
@@ -24,6 +24,26 @@ pub(super) fn save(tx: &Transaction<'_>, edits: &VegetationEdits) -> SaveLoadRes
         for plant in added {
             addition.execute(params![
                 layer,
+                cell.x,
+                cell.z,
+                plant.x,
+                plant.z,
+                plant.yaw,
+                plant.scale,
+                plant.species,
+                plant.variant
+            ])?;
+        }
+    }
+    // Yard records in key order, each in the order its yard laid it.
+    let mut yard =
+        tx.prepare("INSERT INTO yard_hedge_modules VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    for (&(parcel_id, build_generation), modules) in edits.yard_hedges() {
+        for (cell, plant) in modules {
+            yard.execute(params![
+                parcel_id as i64,
+                build_generation,
+                cell.layer as i64,
                 cell.x,
                 cell.z,
                 plant.x,
@@ -99,6 +119,31 @@ pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<Vegetation
             return Err(SaveLoadError::custom("invalid authored vegetation plant"));
         }
         edits.add(cell, plant);
+    }
+    if version >= YARD_HEDGE_SAVE_VERSION {
+        let mut stmt = conn.prepare(
+            "SELECT parcel_id, build_generation, layer, cell_x, cell_z, x, z, yaw, scale, species, \
+             variant FROM yard_hedge_modules ORDER BY rowid",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let parcel_id: i64 = row.get(0)?;
+            let key = (parcel_id as u64, row.get(1)?);
+            let cell = VegetationCell {
+                layer: layer(row.get(2)?)?,
+                x: row.get(3)?,
+                z: row.get(4)?,
+            };
+            let plant = AuthoredPlant {
+                x: row.get(5)?,
+                z: row.get(6)?,
+                yaw: row.get(7)?,
+                scale: row.get(8)?,
+                species: row.get(9)?,
+                variant: row.get(10)?,
+            };
+            edits.record_yard_hedge(key, vec![(cell, plant)]);
+        }
     }
     Ok(edits)
 }

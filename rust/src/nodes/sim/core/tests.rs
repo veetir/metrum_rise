@@ -1348,6 +1348,7 @@ fn register_test_asset(
             economy_profile,
             extractor: None,
             field: None,
+            yard_hedge: None,
         }),
         prop: None,
         vehicle: None,

@@ -593,6 +593,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
             economy_profile: None,
             extractor: None,
             field: None,
+            yard_hedge: None,
         }),
         prop: None,
         vehicle: None,

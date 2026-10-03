@@ -1240,3 +1240,47 @@ fn graded_yard_vehicle_support_batch_benchmark() {
         );
     }
 }
+
+// Hedge modules standing in the vegetation edit store.
+fn yard_hedge_count(core: &SimCore) -> usize {
+    core.vegetation_edits
+        .sorted_cells()
+        .into_iter()
+        .flat_map(|cell| core.vegetation_edits.cell(cell).1.to_vec())
+        .filter(|plant| plant.species == 2 && plant.variant > 12)
+        .count()
+}
+
+#[test]
+fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        edges: crate::assets::asset::LotEdge::ALL.to_vec(),
+    });
+    core.allocator.registry.register("test", manifest, String::new());
+    assert_eq!(yard_hedge_count(&core), 0);
+    let building = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let laid = yard_hedge_count(&core);
+    // Most of a 20 m x 20 m lot's 80 m perimeter, less its gaps and anything the site rejects.
+    assert!(laid > 40, "laid {laid}");
+    // The record survives a save and load.
+    let path = temp_save_path("yard_hedge");
+    core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    core.precompute_road_mesh_data();
+    assert_eq!(yard_hedge_count(&core), laid);
+    assert!(core.bulldoze_building(building));
+    assert_eq!(yard_hedge_count(&core), 0, "an untouched yard hedge goes with its house");
+    assert!(core.undo_action_internal());
+    assert_eq!(yard_hedge_count(&core), laid, "undo puts the house back with its hedge");
+}

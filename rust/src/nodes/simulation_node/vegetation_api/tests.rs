@@ -3,6 +3,7 @@
 //! Deterministic edit, persistence, patch ownership and bounded-cost regressions.
 
 use super::*;
+use crate::simulation::buildings::allocator::yard_hedge::YardHedgeEvent;
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use std::collections::HashSet;
 
@@ -1261,4 +1262,66 @@ fn hedge_rows_merge_into_runs_that_stop_at_their_ends_and_at_sixteen_metres() {
     // A patch only draws the modules whose centres it contains.
     let left = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 74.0);
     assert_eq!(left.chunks_exact(7).map(|r| r[4]).sum::<f32>(), 10.0);
+}
+
+// Hedge modules standing anywhere in the edit store.
+fn hedge_modules(core: &SimCore) -> Vec<Plant> {
+    core.vegetation_edits
+        .sorted_cells()
+        .into_iter()
+        .flat_map(|cell| core.vegetation_edits.cell(cell).1.to_vec())
+        .filter(|plant| plant.species == SPECIES_BUSH as u8 && plant.variant > brush::HEDGE_FIRST_VARIANT)
+        .collect()
+}
+
+// A yard event lining the square lot from `min` to `max` on all four sides.
+fn square_yard(key: (u64, u32), min: Vector2, max: Vector2) -> YardHedgeEvent {
+    use crate::simulation::buildings::allocator::yard_hedge::YardHedgeRowWorld;
+    let corners = [min, Vector2::new(max.x, min.y), max, Vector2::new(min.x, max.y)];
+    YardHedgeEvent::Placed {
+        key,
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        rows: (0..4)
+            .map(|i| YardHedgeRowWorld {
+                from: corners[i],
+                to: corners[(i + 1) % 4],
+                join_from: true,
+                join_to: true,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_yard_hedge_shares_its_neighbours_line_and_leaves_with_its_building_unless_edited() {
+    use crate::simulation::buildings::allocator::yard_hedge::YardHedgeEvent as Event;
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    // Two 20 m yards one metre apart: the second shares the first's hedge on the line between.
+    core.allocator.pending_yard_hedges.push(square_yard((1, 0), Vector2::new(0.0, 0.0), Vector2::new(20.0, 20.0)));
+    core.allocator.pending_yard_hedges.push(square_yard((2, 0), Vector2::new(21.0, 0.0), Vector2::new(41.0, 20.0)));
+    publish_yard_hedges(&mut core);
+    let both = hedge_modules(&core);
+    let first = core.vegetation_edits.take_yard_hedge((1, 0)).unwrap();
+    let second = core.vegetation_edits.take_yard_hedge((2, 0)).unwrap();
+    assert_eq!(both.len(), first.len() + second.len());
+    // Its own side on that line was the first yard's hedge, so it laid none there; its front and
+    // back rows ran on to the first yard's corners instead, joining the two yards' hedges.
+    let on_shared_line = |plant: &Plant| plant.yaw.sin().abs() > 0.9 && plant.x < 21.6;
+    assert!(!second.iter().any(|(_, plant)| on_shared_line(plant)), "{second:?}");
+    assert!(second.iter().any(|(_, plant)| plant.yaw.sin().abs() < 0.1 && plant.x < 21.0));
+    assert!(second.len() < first.len() - 15, "{} {}", first.len(), second.len());
+    core.vegetation_edits.record_yard_hedge((1, 0), first.clone());
+    core.vegetation_edits.record_yard_hedge((2, 0), second.clone());
+    // The first yard goes whole; the second keeps every module it laid.
+    core.allocator.pending_yard_hedges.push(Event::Removed((1, 0)));
+    publish_yard_hedges(&mut core);
+    assert_eq!(hedge_modules(&core).len(), second.len());
+    // A yard whose hedge the player cut keeps the rest when its building goes, and forgets it.
+    let (cell, cut) = second[3];
+    core.vegetation_edits.remove_added(cell, |plant| (*plant == cut).then_some(0));
+    core.allocator.pending_yard_hedges.push(Event::Removed((2, 0)));
+    publish_yard_hedges(&mut core);
+    assert_eq!(hedge_modules(&core).len(), second.len() - 1);
+    assert!(core.vegetation_edits.take_yard_hedge((2, 0)).is_none());
 }

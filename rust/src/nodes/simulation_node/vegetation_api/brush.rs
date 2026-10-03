@@ -32,6 +32,8 @@ const HEDGE_MID: &[u8] = &[13];
 const HEDGE_TALL: &[u8] = &[14];
 /// First bush variant that is a landscape plant rather than generated ground cover.
 pub(crate) const LANDSCAPE_FIRST_VARIANT: u8 = 6;
+/// Preset of the low hedge; the medium and tall hedges follow it in the table.
+pub(crate) const HEDGE_LOW_PRESET: i64 = 17;
 /// First bush variant that is a clipped hedge module, planted along a line.
 pub(crate) const HEDGE_FIRST_VARIANT: u8 = 12;
 // A yard shrub is planted near its authored size; the generator's band would span a lilac

@@ -13,6 +13,7 @@ pub(crate) mod geometry;
 mod model;
 pub(crate) mod validation;
 mod vehicle;
+mod yard_hedge;
 
 pub use appearance::{BuildingAppearance, ColourScheme, MaterialOverride, SpawnAppearance};
 pub use building::{
@@ -24,6 +25,9 @@ pub use model::{
     SiteSurfaceMaterial, SnapMode, TerrainBehavior,
 };
 pub use vehicle::{ColorVariant, VehicleClass, VehicleData, VehicleFamily};
+pub use yard_hedge::{
+    FRONT_INSET_M, LotEdge, YardHedge, YardHedgeKind, YardHedgeRow, YardLot, plan_yard_hedge,
+};
 
 #[cfg(test)]
 mod tests;

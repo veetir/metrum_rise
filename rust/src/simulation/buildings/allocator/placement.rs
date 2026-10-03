@@ -1773,6 +1773,7 @@ impl BuildingAllocator {
         });
         let building_idx = self.buildings.len() - 1;
         self.push_building_site_client(building_idx, zone_cell_m);
+        self.queue_yard_hedge(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
         self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();

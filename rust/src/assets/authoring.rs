@@ -158,6 +158,8 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
     ];
     if zoned {
         fields.extend([
+            "yard_hedge",
+            "yard_hedge_edges",
             "density",
             "min_zone_width_cells",
             "min_zone_depth_cells",
@@ -209,10 +211,69 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
         "selected_profile": selected, "catalog_available": catalog.is_some(),
         "profile_required": matches!(kind, "extractor" | "farm") || utility,
         "placement": if zoned { "Grows in painted zoning" } else { "Placed explicitly" },
+        "yard_hedge_rows": if zoned { yard_hedge_rows(data) } else { json!([]) },
         "service_note": if kind == "service" && !utility {
             "Authors service classification and placement; no additional service simulation settings are available."
         } else { "" },
     })
+}
+
+// Lot cell size the editor's lot fields are authored in ("10 m cells"), as in its preview.
+const EDITOR_LOT_CELL_M: f32 = 10.0;
+
+// The rows the document's yard hedge would lay, `[{from: [x, z], to: [x, z], join_from,
+// join_to}]` in asset-local metres, from the same plan a spawned building lays. O(row samples x surface vertices).
+fn yard_hedge_rows(data: &Value) -> Value {
+    if super::asset::YardHedgeKind::from_name(text(data, "yard_hedge")).is_none() {
+        return json!([]);
+    }
+    let edges: Vec<_> = match data["yard_hedge_edges"].as_array() {
+        Some(names) => names
+            .iter()
+            .filter_map(|name| super::asset::LotEdge::from_name(name.as_str().unwrap_or_default()))
+            .collect(),
+        None => super::asset::LotEdge::ALL.to_vec(),
+    };
+    let number = |value: &Value| value.as_f64().unwrap_or(0.0) as f32;
+    let pair = |value: &Value, a: usize, b: usize| [number(&value[a]), number(&value[b])];
+    let surfaces: Vec<Vec<[f32; 2]>> = data["site_surfaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|surface| {
+            surface["vertices"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|vertex| pair(vertex, 0, 1))
+                .collect()
+        })
+        .collect();
+    let entrance = data["anchors"].as_array().into_iter().flatten().find_map(|anchor| {
+        (text(anchor, "anchor_type") == "entrance" && text(anchor, "name") == "main")
+            .then(|| pair(&anchor["position"], 0, 2))
+    });
+    let frontage = if data["frontage_forward"].is_array() {
+        pair(&data["frontage_forward"], 0, 2)
+    } else {
+        [0.0, 1.0]
+    };
+    let lot = super::asset::YardLot {
+        half_width_m: number(&data["lot_width_cells"]) * EDITOR_LOT_CELL_M * 0.5,
+        half_depth_m: number(&data["lot_depth_cells"]) * EDITOR_LOT_CELL_M * 0.5,
+        frontage,
+        surfaces: &surfaces,
+        entrance,
+    };
+    json!(
+        super::asset::plan_yard_hedge(&lot, &edges)
+            .iter()
+            .map(|row| {
+                json!({"from": row.from, "to": row.to,
+                    "join_from": row.join_from, "join_to": row.join_to})
+            })
+            .collect::<Vec<_>>()
+    )
 }
 
 /// Field-addressed authoring diagnostics. All checks are read-only, including invalid old data.

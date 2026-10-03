@@ -609,6 +609,40 @@ Rules:
   while preserving the minimum three-vertex polygon.
 - Painted decals, curbs, markings, and per-material texture selection are later extensions.
 
+### Yard Hedges
+
+A building asset may line its yard with a clipped hedge (`VEG-15`):
+
+```toml
+[building.yard_hedge]
+hedge = "medium"                          # low | medium | tall
+edges = ["front", "back", "left", "right"] # optional; all four when omitted
+```
+
+Left and right are as seen from the street. The editor offers it for zoned assets under
+Site → Footprint & frontage (`Yard hedge`, `Hedge edges`) and previews the planned rows on the lot
+as hedge-coloured boxes. Rust plans them (`plan_yard_hedge` in `assets/asset/yard_hedge.rs`) from
+lot geometry alone, so the preview and a spawned building lay the same rows:
+
+- Side and back rows run on the lot line, where an adjoining lot's hedge stands too; the front row
+  stands `0.75 m` inside the lot, clear of the sidewalk.
+- A row is cut where it would pass within `0.6 m` of a yard surface (driveway, walkway), and the
+  front row is also cut `0.8 m` either side of the main entrance. Pieces under `1 m` are dropped.
+- Planning samples each row every `0.25 m`: O(row length / 0.25 x surface vertices), on document
+  changes only.
+
+When a zoned building is placed, the allocator queues its rows in world space; SimCore lays them
+with the same row code as the hedge brush (`plan_row`), row by row, so corners close and a row end
+near a neighbour's hedge joins it. A module is skipped where any hedge facing the same way already
+stands within `2.5 m` across its row, so two adjoining yards share the hedge between them instead of
+planting two. The laid modules are ordinary authored vegetation, edited and removed by the brushes
+like any other, and recorded under the building's parcel id and build generation (save version
+`68`, table `yard_hedge_modules`). When the building is removed, its recorded modules go only if
+every one still stands as laid; if the player cut or rebuilt any of them the rest stays. Hedges the
+player drew are never recorded, so a hedge joined to a yard stays when the building goes. Undoing a
+bulldoze lays the yard's hedge again. Buildings placed before an asset gained a yard hedge, and
+buildings in saves older than version `68`, have none recorded.
+
 ### Flat-Site Authoring
 
 The building authoring view is WYSIWYG for the local flat lot:

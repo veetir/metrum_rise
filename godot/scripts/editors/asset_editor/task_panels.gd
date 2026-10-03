@@ -92,6 +92,14 @@ func _site() -> void:
 	v._frontage_lbl = _label(footprint, "Frontage")
 	v.geometry_button(footprint, "Set frontage from view", e._on_set_front_from_view)
 	v.geometry_button(footprint, "Move main entrance to frontage", e._on_reset_main_entrance_pressed)
+	v.choice_field(footprint, "yard_hedge", "Yard hedge · laid when the building spawns")
+	var edges := HFlowContainer.new()
+	for edge in ["front", "back", "left", "right"]:
+		var check := CheckBox.new()
+		check.name = edge
+		check.text = edge.capitalize()
+		edges.add_child(check)
+	v.field_row(footprint, "yard_hedge_edges", "Hedge edges · left and right as seen from the street", edges)
 	var advanced: Control = v.advanced(footprint, "footprint")
 	v.number_field(advanced, "min_zone_width_cells", "Minimum zoned width (cells)", 65535)
 	v.number_field(advanced, "min_zone_depth_cells", "Minimum zoned depth (cells)", 65535)

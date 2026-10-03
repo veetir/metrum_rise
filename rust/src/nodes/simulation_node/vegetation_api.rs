@@ -19,6 +19,7 @@ mod land_cover;
 const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
 use placement::{add_at, hedge_end_at, line_at, paint_at, stamp_limit};
+pub(crate) use placement::publish_yard_hedges;
 
 // Lane five of a packed placement carries both the species ordinal and the renderer mesh
 // variant pinned over it, because widening the stride would cost the whole scatter buffer a

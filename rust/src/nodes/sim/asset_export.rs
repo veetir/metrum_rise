@@ -5,7 +5,9 @@
 //! JSON metadata is validated and round-tripped through [`AssetManifest`]. Filesystem
 //! publication belongs exclusively to `assets::authoring::files`; this module only reads packs.
 
-use crate::assets::asset::{AnchorType, PlacementMode, SiteSurfaceMaterial};
+use crate::assets::asset::{
+    AnchorType, LotEdge, PlacementMode, SiteSurfaceMaterial, YardHedgeKind,
+};
 use crate::assets::pack::toml_string;
 use crate::assets::{AssetManifest, PackManifest};
 use crate::debug_log;
@@ -187,6 +189,14 @@ pub struct ExportParams {
     /// Optional field area mode. Version one supports `"player_polygon"`.
     #[serde(default)]
     pub field_area_mode: Option<String>,
+    /// Hedge a spawned building lines its yard with: `"low"`, `"medium"` or `"tall"`. Absent or
+    /// `"none"` exports no yard hedge.
+    #[serde(default)]
+    pub yard_hedge: Option<String>,
+    /// Lot edges the yard hedge lines (`"front"`, `"back"`, `"left"`, `"right"`); all four when
+    /// absent.
+    #[serde(default)]
+    pub yard_hedge_edges: Option<Vec<String>>,
 
     /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
@@ -340,6 +350,18 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
                 out.push_str("\n[building.field]\n");
                 out.push_str(&format!("resource = {}\n", toml_string(resource)));
                 out.push_str(&format!("area_mode = {}\n", toml_string(area_mode)));
+            }
+            if let Some(hedge) = p.yard_hedge.as_deref().and_then(YardHedgeKind::from_name) {
+                out.push_str("\n[building.yard_hedge]\n");
+                out.push_str(&format!("hedge = {}\n", toml_string(hedge.name())));
+                if let Some(edges) = &p.yard_hedge_edges {
+                    let edges: Vec<_> = LotEdge::ALL
+                        .into_iter()
+                        .filter(|edge| edges.iter().any(|name| name == edge.name()))
+                        .map(|edge| toml_string(edge.name()))
+                        .collect();
+                    out.push_str(&format!("edges = [{}]\n", edges.join(", ")));
+                }
             }
         }
         other => {
@@ -917,6 +939,17 @@ pub fn get_asset_manifest_json_internal(
             serde_json::json!(b.field.as_ref().map(|field| field.resource.as_str()));
         obj["field_area_mode"] =
             serde_json::json!(b.field.as_ref().map(|field| field.area_mode.as_str()));
+        obj["yard_hedge"] = serde_json::json!(
+            b.yard_hedge
+                .as_ref()
+                .map_or("none", |yard| yard.hedge.name())
+        );
+        obj["yard_hedge_edges"] = serde_json::json!(
+            b.yard_hedge.as_ref().map_or_else(
+                || LotEdge::ALL.iter().map(|edge| edge.name()).collect::<Vec<_>>(),
+                |yard| yard.edges.iter().map(|edge| edge.name()).collect()
+            )
+        );
     }
 
     serde_json::to_string(&obj).unwrap_or_default()
@@ -1203,6 +1236,25 @@ mod tests {
             .0;
         assert!(asset_toml.contains("frontage_forward = [1, 0, 0]"));
         assert!(asset_toml.contains("forward = [0, 0, -1]"));
+    }
+
+    #[test]
+    fn a_yard_hedge_exports_and_reads_back_with_its_edges() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.hedged")).unwrap();
+        data["yard_hedge"] = serde_json::json!("medium");
+        data["yard_hedge_edges"] = serde_json::json!(["left", "front"]);
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
+        let yard = manifest.building.as_ref().unwrap().yard_hedge.clone().unwrap();
+        assert_eq!(yard.hedge, YardHedgeKind::Medium);
+        // Written in manifest order, whatever order the editor listed them in.
+        assert_eq!(yard.edges, vec![LotEdge::Front, LotEdge::Left]);
+        // "none" exports no hedge at all.
+        data["yard_hedge"] = serde_json::json!("none");
+        let params: ExportParams = serde_json::from_value(data).unwrap();
+        let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
+        assert!(manifest.building.unwrap().yard_hedge.is_none());
     }
 
     #[test]

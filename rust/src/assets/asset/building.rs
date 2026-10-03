@@ -91,6 +91,9 @@ pub struct BuildingData {
     pub extractor: Option<BuildingExtractorData>,
     /// Renewable field-production contract for explicitly placed agricultural buildings.
     pub field: Option<BuildingFieldData>,
+    /// Hedge a spawned building lines its yard with; none when omitted.
+    #[serde(default)]
+    pub yard_hedge: Option<super::YardHedge>,
 }
 
 /// Authored extraction behavior for one explicit industry building.

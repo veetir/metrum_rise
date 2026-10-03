@@ -14,6 +14,7 @@ const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const PreviewMaterials = preload("res://scripts/editors/asset_editor/preview_materials.gd")
 const PickGeometry = preload("res://scripts/editors/asset_editor/mesh_pick_geometry.gd")
 const GroundShader = preload("res://scripts/editors/asset_editor/preview_ground.gdshader")
+const TreeSpecies = preload("res://scripts/renderers/tree_species.gd")
 
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
@@ -58,6 +59,8 @@ var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
 var _ground_grid: MeshInstance3D
+# The yard hedge rows a spawned building lays, drawn as the distant hedge boxes.
+var _yard_hedge: MultiMeshInstance3D
 var _scale_reference: MeshInstance3D
 var _scale_reference_pick: RefCounted
 var _scale_reference_placed := false
@@ -134,6 +137,11 @@ func _ready() -> void:
 	_ground_grid.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_ground_grid)
 
+	_yard_hedge = MultiMeshInstance3D.new()
+	_yard_hedge.multimesh = MultiMesh.new()
+	_yard_hedge.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	add_child(_yard_hedge)
+
 	_ghost_root = Node3D.new()
 	add_child(_ghost_root)
 
@@ -178,6 +186,33 @@ func _ready() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
+
+## Draws the yard hedge rows Rust planned for the document (`[{from: [x, z], to: [x, z]}]` in
+## asset-local metres), as boxes of the given hedge (0 low, 1 medium, 2 tall); none for -1.
+func set_yard_hedge(rows: Array, hedge: int) -> void:
+	var mm := _yard_hedge.multimesh
+	if hedge < 0 or rows.is_empty():
+		mm.instance_count = 0
+		return
+	mm.instance_count = 0
+	mm.mesh = TreeSpecies.hedge_run_mesh(hedge)
+	mm.instance_count = rows.size()
+	var size: Vector2 = TreeSpecies.HEDGE_RUN_SIZES[hedge]
+	var height := size.x
+	for i in rows.size():
+		var from := Vector3(rows[i]["from"][0], 0.0, rows[i]["from"][1])
+		var to := Vector3(rows[i]["to"][0], 0.0, rows[i]["to"][1])
+		var dir := (to - from).normalized() if from.distance_to(to) > 0.001 else Vector3.RIGHT
+		# A lot corner is closed in game by the row that meets it running on by half the
+		# hedge's width; both rows run on here, which overlaps unseen inside the corner.
+		if bool(rows[i].get("join_from", false)):
+			from -= dir * size.y * 0.5
+		if bool(rows[i].get("join_to", false)):
+			to += dir * size.y * 0.5
+		var along := to - from
+		mm.set_instance_transform(i, Transform3D(
+			Basis(along if along.length() > 0.001 else Vector3.RIGHT, Vector3.UP, dir.cross(Vector3.UP)),
+			(from + to) * 0.5 + Vector3.UP * (LOT_PLANE_Y + height * 0.5)))
 
 ## Temporarily hide editor-only visuals; fixed helper roots avoid walking every anchor/mesh.
 func begin_thumbnail_capture() -> Dictionary:

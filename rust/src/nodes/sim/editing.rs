@@ -556,7 +556,8 @@ impl SimCore {
         })
     }
 
-    fn bulldoze_building(&mut self, building_idx: usize) -> bool {
+    /// Removes one building with an undo entry, as the bulldoze tool does.
+    pub(crate) fn bulldoze_building(&mut self, building_idx: usize) -> bool {
         self.remove_building_for_edit(building_idx, true)
     }
 
@@ -600,6 +601,7 @@ impl SimCore {
             return false;
         }
         self.publish_pending_production_site_removals();
+        crate::nodes::simulation_node::vegetation_api::publish_yard_hedges(self);
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }

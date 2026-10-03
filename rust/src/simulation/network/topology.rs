@@ -1117,6 +1117,7 @@ mod tests {
                     economy_profile: None,
                     extractor: None,
                     field: None,
+                    yard_hedge: None,
                 }),
                 prop: None,
                 vehicle: None,

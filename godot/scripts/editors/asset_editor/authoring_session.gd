@@ -47,6 +47,9 @@ func initialize() -> void:
 				control.value_changed.connect(func(value): set_field(key, value))
 			elif control is OptionButton:
 				control.item_selected.connect(func(index): set_field(key, control.get_item_metadata(index)))
+			elif key == "yard_hedge_edges":
+				for check: CheckBox in control.get_children():
+					check.toggled.connect(func(_on): set_field(key, _checked_edges(control)))
 		var focus_control: Control = control.get_line_edit() if control is SpinBox else control
 		if focus_control is LineEdit:
 			focus_control.focus_entered.connect(func(): document.begin_transaction("Edit " + key.trim_prefix("_")))
@@ -109,6 +112,10 @@ func _document_changed() -> void:
 			_update_choices(key, control, value)
 		elif control is Label and key == "service_class":
 			control.text = str(value if value != null else "")
+		elif key == "yard_hedge_edges":
+			# An asset without the list lines all four edges, as the manifest does.
+			for check: CheckBox in control.get_children():
+				check.button_pressed = not (value is Array) or (value as Array).has(str(check.name))
 		control.set_block_signals(false)
 		if key not in ["asset_id", "display_name", "tags"]:
 			view.rows[key].visible = descriptor.get("fields", []).has(key)
@@ -123,6 +130,8 @@ func _document_changed() -> void:
 	if str(params.get("asset_id", "")).is_empty():
 		view.type_label.text = "Create or open an asset to begin."
 	_editor._update_pack_summary()
+	_editor._preview.set_yard_hedge(descriptor.get("yard_hedge_rows", []),
+		["low", "medium", "tall"].find(str(params.get("yard_hedge", ""))))
 	view.derived_workers.text = ""
 	var selected = descriptor.get("selected_profile")
 	if selected is Dictionary and selected.get("compatible", false):
@@ -157,6 +166,11 @@ func _update_choices(key: String, control: OptionButton, value: Variant) -> void
 	if key == "density":
 		for density in _editor._density_types_by_zone.get(str(params.get("zone_type", "")), []):
 			choices.append({"id": density, "label": str(density).capitalize()})
+	elif key == "yard_hedge":
+		for hedge in ["none", "low", "medium", "tall"]:
+			choices.append({"id": hedge, "label": hedge.capitalize()})
+		if selected.is_empty():
+			selected = "none"
 	elif key == "economy_profile":
 		choices.append({"id": "", "label": "Unassigned"})
 		for profile: Dictionary in descriptor.get("profiles", []):
@@ -174,6 +188,13 @@ func _update_choices(key: String, control: OptionButton, value: Variant) -> void
 		control.set_item_metadata(control.item_count - 1, selected)
 		control.set_item_disabled(control.item_count - 1, true)
 		control.select(control.item_count - 1)
+
+func _checked_edges(edges: Control) -> Array:
+	var checked: Array = []
+	for check: CheckBox in edges.get_children():
+		if check.button_pressed:
+			checked.append(str(check.name))
+	return checked
 
 func capture_geometry(label: String = "Edit geometry") -> void:
 	if not ready or not has_document or rendering or _editor._updating_site_anchor_controls or _editor._updating_site_surface_controls or _editor._suppress_part_transform_changed:

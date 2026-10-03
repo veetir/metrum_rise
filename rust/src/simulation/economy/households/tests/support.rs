@@ -192,6 +192,7 @@ fn test_building_data(zone: Option<ZoneClass>) -> BuildingData {
         economy_profile: None,
         extractor: None,
         field: None,
+        yard_hedge: None,
     }
 }
 

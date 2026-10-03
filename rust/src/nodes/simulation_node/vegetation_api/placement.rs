@@ -3,7 +3,8 @@
 //! Bounded brush proposals and class-local occupancy over the existing edit cells.
 
 use super::*;
-use brush::PlantClass;
+use crate::simulation::buildings::allocator::yard_hedge::YardHedgeEvent;
+use brush::{BrushPreset, HEDGE_LOW_PRESET, PlantClass};
 
 const ATTEMPTS: usize = 2;
 
@@ -138,13 +139,14 @@ const HEDGE_FACE_TOLERANCE_M: f32 = 0.05;
 // rather than meet, and need no fill at the joint.
 const HEDGE_COLLINEAR_COS: f32 = 0.97;
 
+// How far across its row a yard hedge module counts a parallel hedge as its own: a neighbour's
+// hedge on or just beyond the shared lot line, so adjoining yards share one hedge between them.
+const YARD_SHARE_M: f32 = 2.5;
+
 /// Lays hedge modules end to end from `from` to `to`, each facing along the row, and returns
-/// how many it planted. O(L) in the row length: one clearance test and one bounded lookup per
-/// module, plus two bounded joint searches. An end drawn within `HEDGE_SNAP_M` of a hedge
-/// already standing moves onto it: onto its free end, or else onto its side. Where the rows
-/// meet at an angle the new one runs on by half the old one's width, which fills the corner a
-/// square end would leave open. A module that would stand on a road, building or water, or on a
-/// module of the same hedge already there, is skipped, so redrawing a row does not stack it.
+/// how many it planted. An end drawn within `HEDGE_SNAP_M` of a hedge already standing moves
+/// onto it, and where the rows meet at an angle the new one runs on to close the corner (see
+/// `plan_row`). One undo step. O(L) in the row length.
 pub(super) fn line_at(
     core: &mut SimCore,
     from: Vector2,
@@ -158,7 +160,91 @@ pub(super) fn line_at(
     if !preset.is_hedge() || !valid_disc(core, from, 0.0) || !valid_disc(core, to, 0.0) {
         return 0;
     }
-    let (from_join, to_join) = (hedge_join(core, from), hedge_join(core, to));
+    prepare_sites(core);
+    let modules = plan_row(core, preset, from, to, [true, true], None);
+    let layout = PatchLayout::new(core);
+    let mut undo = VegetationEditUndo::for_stroke(stroke);
+    for &(cell, plant) in &modules {
+        undo.record_cell_with(cell, || core.vegetation_edits.snapshot_cell(cell));
+        core.vegetation_edits.add(cell, plant);
+        let key = layout.key(plant.x, plant.z);
+        core.vegetation_edits.bump_patch(key);
+        undo.record_patch(key);
+    }
+    core.push_vegetation_undo(undo);
+    modules.len()
+}
+
+/// Lays the yard hedges of the buildings placed since the last call and removes those of the
+/// buildings removed, in that order. A yard records the modules it laid, under its parcel and
+/// build generation. Removal takes them away only while every one still stands as laid: a yard
+/// whose hedge the player cut or rebuilt keeps what is left, and hedges the player drew were
+/// never recorded, so nothing joined to a yard goes with it. O(row length) per row and O(m) per
+/// removed yard of m modules; nothing when no building changed.
+pub(crate) fn publish_yard_hedges(core: &mut SimCore) {
+    let events = std::mem::take(&mut core.allocator.pending_yard_hedges);
+    if events.is_empty() {
+        return;
+    }
+    prepare_sites(core);
+    let layout = PatchLayout::new(core);
+    for event in events {
+        match event {
+            YardHedgeEvent::Placed { key, hedge, rows } => {
+                let Some(preset) = preset(HEDGE_LOW_PRESET + hedge.index() as i64) else {
+                    continue;
+                };
+                let mut laid = Vec::new();
+                // Row by row, so each row sees the ones before it and the corners join.
+                for row in rows {
+                    let join = [row.join_from, row.join_to];
+                    for (cell, plant) in plan_row(core, preset, row.from, row.to, join, Some(YARD_SHARE_M)) {
+                        core.vegetation_edits.add(cell, plant);
+                        core.vegetation_edits.bump_patch(layout.key(plant.x, plant.z));
+                        laid.push((cell, plant));
+                    }
+                }
+                core.vegetation_edits.record_yard_hedge(key, laid);
+            }
+            YardHedgeEvent::Removed(key) => {
+                let Some(laid) = core.vegetation_edits.take_yard_hedge(key) else {
+                    continue;
+                };
+                let untouched = laid.iter().all(|(cell, plant)| {
+                    core.vegetation_edits.cell(*cell).1.contains(plant)
+                });
+                if !untouched {
+                    continue;
+                }
+                for (cell, plant) in laid {
+                    core.vegetation_edits.remove_added(cell, |other| {
+                        (*other == plant).then(|| layout.key(plant.x, plant.z))
+                    });
+                }
+            }
+        }
+    }
+}
+
+// The modules a hedge row from `from` to `to` adds, each checked against what already stands but
+// none added yet. An end whose `join` flag is set and that lies within `HEDGE_SNAP_M` of a hedge
+// already standing moves onto that hedge's free end, or else onto its side; where the rows meet
+// at an angle the new one runs on by half the old one's width, which fills the corner a square
+// end would leave open. The end modules sit flush with the row's ends. A module that would
+// stand on a road, building or water is skipped, as is one standing on the same hedge facing the
+// same way (a redraw), or, with `share_across_m`, on any hedge facing the same way within that
+// distance across the row (a yard line a neighbour already hedged). O(L) in the row length: one
+// clearance test and one bounded lookup per module, plus two bounded joint searches.
+fn plan_row(
+    core: &SimCore,
+    preset: &BrushPreset,
+    from: Vector2,
+    to: Vector2,
+    join: [bool; 2],
+    share_across_m: Option<f32>,
+) -> Vec<(VegetationCell, Plant)> {
+    let join_at = |pos: Vector2, enabled: bool| enabled.then(|| hedge_join(core, pos)).flatten();
+    let (from_join, to_join) = (join_at(from, join[0]), join_at(to, join[1]));
     let (mut from, mut to) = (
         from_join.as_ref().map_or(from, |join| join.at),
         to_join.as_ref().map_or(to, |join| join.at),
@@ -180,9 +266,8 @@ pub(super) fn line_at(
     let span = to - from;
     let length = span.length();
     if !(length <= MAX_LINE_M) {
-        return 0;
+        return Vec::new();
     }
-    prepare_sites(core);
     // Never more than one module length apart, so the row closes; the overlap is hidden inside.
     let modules = (length / HEDGE_MODULE_M).ceil().max(1.0) as usize;
     // The two end modules sit flush with the row's ends and the rest share the length evenly,
@@ -199,33 +284,26 @@ pub(super) fn line_at(
     // The renderer turns +X by this yaw about +Y, which carries it to (cos, -sin) on the ground.
     let yaw = (-span.y).atan2(span.x);
     let (cell_m, salt) = grid(core, VegetationLayer::Canopy);
-    let layout = PatchLayout::new(core);
-    let mut undo = VegetationEditUndo::for_stroke(stroke);
-    let mut count = 0;
-    for i in 0..modules {
-        let at = first + step * i as f32;
-        let cell = cell_at(at, VegetationLayer::Canopy, cell_m);
-        let (species, variant) = preset.plant(cell.x, cell.z, salt);
-        let plant = Plant {
-            x: at.x,
-            z: at.y,
-            yaw,
-            scale: 1.0,
-            species,
-            variant,
-        };
-        if !authored_clear(core, &plant) || module_taken(core, &plant, cell_m) {
-            continue;
-        }
-        undo.record_cell_with(cell, || core.vegetation_edits.snapshot_cell(cell));
-        core.vegetation_edits.add(cell, plant);
-        let key = layout.key(at.x, at.y);
-        core.vegetation_edits.bump_patch(key);
-        undo.record_patch(key);
-        count += 1;
-    }
-    core.push_vegetation_undo(undo);
-    count
+    (0..modules)
+        .filter_map(|i| {
+            let at = first + step * i as f32;
+            let cell = cell_at(at, VegetationLayer::Canopy, cell_m);
+            let (species, variant) = preset.plant(cell.x, cell.z, salt);
+            let plant = Plant {
+                x: at.x,
+                z: at.y,
+                yaw,
+                scale: 1.0,
+                species,
+                variant,
+            };
+            let taken = match share_across_m {
+                Some(across) => hedge_alongside(core, &plant, across),
+                None => module_taken(core, &plant, cell_m),
+            };
+            (authored_clear(core, &plant) && !taken).then_some((cell, plant))
+        })
+        .collect()
 }
 
 /// Where a hedge end drawn at `pos` would join a hedge already standing, or `pos` itself.
@@ -371,6 +449,22 @@ fn module_taken(core: &SimCore, plant: &Plant, cell_m: f32) -> bool {
             })
         })
     })
+}
+
+// Whether any hedge module facing the same way as `plant` stands within half a module of it
+// along the row and within `across_m` across it. Visits the canopy cells around it.
+fn hedge_alongside(core: &SimCore, plant: &Plant, across_m: f32) -> bool {
+    let reach = (HEDGE_MODULE_M * 0.5).max(across_m);
+    let pos = Vector2::new(plant.x, plant.z);
+    let along = Vector2::new(plant.yaw.cos(), -plant.yaw.sin());
+    let mut found = false;
+    for_each_hedge(core, pos, reach, |_, other| {
+        let offset = other.centre - pos;
+        found |= other.along.dot(along).abs() >= HEDGE_COLLINEAR_COS
+            && offset.dot(along).abs() < HEDGE_MODULE_M * 0.5
+            && offset.dot(along.orthogonal()).abs() < across_m;
+    });
+    found
 }
 
 struct Proposal {

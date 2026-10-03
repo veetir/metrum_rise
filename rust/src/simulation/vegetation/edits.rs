@@ -2,7 +2,7 @@
 
 //! Sparse player edits over the generator's cell identities, with independent patch revisions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Grid owning a cell; coordinates are meaningful only together with their layer's spacing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -100,6 +100,9 @@ pub struct VegetationEdits {
     blocks: HashSet<(VegetationLayer, i32, i32)>,
     // Advances with every patch generation, so one comparison says whether any moved.
     epoch: u64,
+    // The hedge modules each building's yard laid, by the building's parcel and build
+    // generation, so demolition removes exactly those and nothing a player drew.
+    yard_hedges: BTreeMap<(u64, u32), Vec<(VegetationCell, AuthoredPlant)>>,
 }
 
 impl VegetationEdits {
@@ -223,6 +226,32 @@ impl VegetationEdits {
                 self.cells.remove(&cell);
             }
         }
+    }
+
+    /// Records the hedge modules a building's yard laid, under its parcel and build generation.
+    pub(crate) fn record_yard_hedge(
+        &mut self,
+        key: (u64, u32),
+        modules: Vec<(VegetationCell, AuthoredPlant)>,
+    ) {
+        if !modules.is_empty() {
+            self.yard_hedges.entry(key).or_default().extend(modules);
+        }
+    }
+
+    /// Forgets a yard's record and returns the modules it laid. O(log Y) in recorded yards.
+    pub(crate) fn take_yard_hedge(
+        &mut self,
+        key: (u64, u32),
+    ) -> Option<Vec<(VegetationCell, AuthoredPlant)>> {
+        self.yard_hedges.remove(&key)
+    }
+
+    /// Every yard record in key order, for saving.
+    pub(crate) fn yard_hedges(
+        &self,
+    ) -> impl Iterator<Item = (&(u64, u32), &Vec<(VegetationCell, AuthoredPlant)>)> {
+        self.yard_hedges.iter()
     }
 
     // Sorting is confined to save time; query and edit paths never scan the whole store.

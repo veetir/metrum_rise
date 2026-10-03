@@ -56,6 +56,7 @@ pub(super) fn register_test_asset(
             },
             extractor: None,
             field: None,
+            yard_hedge: None,
         }),
         prop: None,
         vehicle: None,
