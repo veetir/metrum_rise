@@ -984,6 +984,19 @@ never scaled, so its scale lane carries the ground's rise across its metre inste
 when the patch is fetched, and the renderer shears the module along its row to that rise with
 its sides kept vertical. Level modules climbed a slope in visible steps.
 
+A hedge is part of a yard, so it stays drawn as long as the trees are, to `canopy_far_m()`
+(`4500 m`), instead of ending with the bushes (`VEG-14`). Bushes are only built for patches in
+the trees' near band, about `200 m` plus half a patch diagonal, so every hedge vanished there,
+well before the houses it surrounds. Within the near band a hedge draws its modules; beyond it,
+`get_vegetation_hedge_runs` merges each row's modules into straight runs of at most `16 m` (a run
+is cut there so a box sheared between its two end heights stays on the ground), and the patch
+draws one box per run (12 triangles, untextured, `TreeSpecies.HEDGE_RUN_COLORS`). The merge
+sorts the patch's modules by hedge, yaw, offset across the row and position along it, so it is
+O(m log m) in the patch's hedge modules and costs an unedited patch a few block tests. The box
+colours were fitted against the modules at the same view: at `h150` on `test-game-2.sqlite` the
+modules' differing pixels average RGB `100/116/62` and the boxes' `85/103/57`. No benchmark was
+run: worlds without hedges draw nothing new, and each far patch upload makes one more Rust call.
+
 **Rocks.** Six granite boulders from `0.4` to `2.7 m`, 320 triangles each, on one tiled albedo
 and normal map with lichen and moss in vertex colour. The generator still decides where rocks
 go. They and the yard plants now cast shadows; ground cover still does not.

@@ -1241,3 +1241,24 @@ fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
     // Redrawing the first row snaps onto its own ends and stacks nothing.
     assert_eq!(lay(&mut core, (0.2, 0.3), (9.3, -0.2), 4), 0);
 }
+
+#[test]
+fn hedge_rows_merge_into_runs_that_stop_at_their_ends_and_at_sixteen_metres() {
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    // A 20 m row and a crossing 5 m row; the crossing row is its own run.
+    assert_eq!(line_at(&mut core, Vector2::new(0.0, 0.0), Vector2::new(20.0, 0.0), 17, 1), 20);
+    assert_eq!(line_at(&mut core, Vector2::new(30.0, 2.0), Vector2::new(30.0, 7.0), 18, 2), 5);
+    let runs = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 128.0);
+    let mut runs: Vec<_> = runs.chunks_exact(7).map(|r| r.to_vec()).collect();
+    runs.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    // The long row splits at 16 m and the two pieces cover exactly the drawn 20 m.
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert!((runs[0][4] - 16.0).abs() < 1e-4 && (runs[0][0] - 8.0).abs() < 1e-4, "{runs:?}");
+    assert!((runs[1][4] - 4.0).abs() < 1e-4 && (runs[1][0] - 18.0).abs() < 1e-4, "{runs:?}");
+    assert_eq!((runs[0][6], runs[2][6]), (0.0, 1.0));
+    assert!((runs[2][4] - 5.0).abs() < 1e-4 && (runs[2][2] - 4.5).abs() < 1e-4, "{runs:?}");
+    // A patch only draws the modules whose centres it contains.
+    let left = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 74.0);
+    assert_eq!(left.chunks_exact(7).map(|r| r[4]).sum::<f32>(), 10.0);
+}

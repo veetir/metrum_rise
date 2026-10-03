@@ -55,6 +55,9 @@ const DETAIL_REDUCED := 1
 const DETAIL_BLEND := 2
 const TREE_FAR_M := TreeSpecies.TREE_FAR_M
 const BUSH_RANGE_M := 420.0
+# Level of a patch's distant hedge runs. A hedge is part of a yard, so it stays as long as the
+# trees do: modules in the near band, one box per straight run beyond it.
+const HEDGE_RUN_LOD := 3
 const ROCK_RANGE_M := 420.0
 # Half the diagonal of a square patch, per metre of span. A patch is one instance, so every
 # conservative range test measures from the patch centre out to its farthest corner.
@@ -176,6 +179,8 @@ func _ready() -> void:
 ## carries no near band, and then the impostor must begin at zero: it is the only thing in the
 ## patch, and the rebuild that adds the near band can lag a fast approach.
 func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: float) -> Vector2:
+	if species == TreeSpecies.BUSH and variant >= TreeSpecies.HEDGE_FIRST_VARIANT:
+		return Vector2(0.0, canopy_far_m())
 	if species == TreeSpecies.BUSH:
 		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
 	if species == TreeSpecies.ROCK:
@@ -825,6 +830,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				proxy.buffer = buffer
 				proxy.custom_aabb = bounds
 				_add_instance(patch, proxy, species, 2, 0, caster, true)
+	if not near_band:
+		count += _add_hedge_runs(patch, origin, span, caster)
 	_share_patch_bounds(patch, near_band, caster, origins)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
@@ -940,6 +947,36 @@ func _share_patch_bounds(patch: Node3D, near_band: bool, caster: int, origins: D
 		# its shaders instead, and these ranges only bound the patches that take part.
 		instance.visibility_range_begin = range_m.x
 		instance.visibility_range_end = range_m.y
+
+## Draws the patch's hedges as straight boxes, one per run Rust merged from the modules, so a
+## yard keeps its hedge out to the trees' far range for a dozen triangles a run. Returns the
+## number of runs. O(runs) here; the merge is Rust's.
+func _add_hedge_runs(patch: Node3D, origin: Vector2, span: float, caster: int) -> int:
+	var runs: PackedFloat32Array = simulation.get_vegetation_hedge_runs(origin, span)
+	var per_hedge: Array = [[], [], []]
+	for i in range(0, runs.size(), 7):
+		var yaw := runs[i + 3]
+		var length := runs[i + 4]
+		var size: Vector2 = TreeSpecies.HEDGE_RUN_SIZES[int(runs[i + 6])]
+		# Stretched along the run, sheared up its slope with the sides kept vertical, and sunk
+		# into the lawn like a module.
+		(per_hedge[int(runs[i + 6])] as Array).append(Transform3D(
+			Basis(Vector3(cos(yaw) * length, runs[i + 5], -sin(yaw) * length), Vector3.UP,
+				Vector3(sin(yaw), 0.0, cos(yaw))),
+			Vector3(runs[i] - origin.x, runs[i + 1] - 0.05 + size.x * 0.5, runs[i + 2] - origin.y)))
+	for hedge in per_hedge.size():
+		var placed: Array = per_hedge[hedge]
+		if placed.is_empty():
+			continue
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = TreeSpecies.hedge_run_mesh(hedge)
+		mm.instance_count = placed.size()
+		for i in placed.size():
+			mm.set_instance_transform(i, placed[i])
+		_add_instance(patch, mm, TreeSpecies.BUSH, HEDGE_RUN_LOD,
+			TreeSpecies.HEDGE_FIRST_VARIANT + hedge, caster)
+	return runs.size() / 7
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,

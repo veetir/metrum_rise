@@ -11,6 +11,7 @@ use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
 
 mod brush;
+mod hedge_runs;
 mod land_cover;
 
 // Texels on each side of the square a tree's stand closure averages over; see
@@ -241,6 +242,18 @@ impl SimulationNode {
         stroke: i64,
     ) -> i64 {
         line_at(&mut self.lock_core(), from, to, option, stroke) as i64
+    }
+
+    /// Straight hedge runs standing in the patch at `origin`, for the distant hedge level: the
+    /// modules of each row merged into boxes of at most 16 m, packed 7 floats each (centre x,
+    /// ground height at the centre, centre z, yaw, length, the ground's rise along the run, and
+    /// the hedge index 0 low, 1 medium, 2 tall). O(m log m) in the patch's hedge modules.
+    #[func]
+    pub fn get_vegetation_hedge_runs(&self, origin: Vector2, span: f32) -> PackedFloat32Array {
+        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
+            return PackedFloat32Array::new();
+        }
+        PackedFloat32Array::from(hedge_runs::hedge_runs(&self.lock_core(), origin, span).as_slice())
     }
 
     /// Where a hedge end drawn at `pos` would land once `plant_vegetation_line` joins it to a

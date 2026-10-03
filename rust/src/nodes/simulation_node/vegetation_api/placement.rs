@@ -121,7 +121,7 @@ pub(super) fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
 
 /// Length of one hedge module along its row, in metres; tools/model_landscape.py builds each
 /// module from -0.5 m to +0.5 m along its own X axis.
-const HEDGE_MODULE_M: f32 = 1.0;
+pub(super) const HEDGE_MODULE_M: f32 = 1.0;
 /// Longest hedge one gesture lays, which bounds a call to 256 modules.
 pub(super) const MAX_LINE_M: f32 = 256.0;
 // Radius around a landscape plant's stem that must be open ground.

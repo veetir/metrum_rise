@@ -119,6 +119,13 @@ const HEDGE_FIRST_VARIANT := 12
 # clipped hedge is a dense block and barely moves.
 const SHRUB_SWAY_PER_M := 0.18
 const HEDGE_SWAY_PER_M := 0.03
+# The distant hedge: one box per straight run of modules, from get_vegetation_hedge_runs. Height
+# and width of the low, medium and tall bodies as tools/model_landscape.py builds them, and the
+# colour each module reads as from far enough away that its leaf cards blend.
+const HEDGE_RUN_SIZES: Array[Vector2] = [Vector2(0.90, 0.60), Vector2(1.40, 0.80), Vector2(1.90, 0.90)]
+const HEDGE_RUN_COLORS: Array[Color] = [
+	Color(0.25, 0.35, 0.16), Color(0.33, 0.44, 0.20), Color(0.21, 0.32, 0.24)]
+static var _hedge_run_meshes: Array[BoxMesh] = []
 # Granite boulders from tools/model_landscape.py, on one tiled stone texture.
 const ROCK_MODEL_DIR := "res://assets/models/vegetation/rocks/"
 
@@ -271,6 +278,21 @@ static func _form_material_pair(directory: String, info_file: String, form: Stri
 	return _form_materials[key]
 
 ## Baked form name of one near variant, as the bake tool and the texture files spell it.
+## Box for one distant hedge run of the given hedge index, a unit metre long along +X with its
+## base on the origin; the run's transform stretches it to the run and shears it up the slope.
+static func hedge_run_mesh(hedge: int) -> BoxMesh:
+	if _hedge_run_meshes.is_empty():
+		for index in HEDGE_RUN_SIZES.size():
+			var size: Vector2 = HEDGE_RUN_SIZES[index]
+			var mesh := BoxMesh.new()
+			mesh.size = Vector3(1.0, size.x, size.y)
+			var material := StandardMaterial3D.new()
+			material.albedo_color = HEDGE_RUN_COLORS[index]
+			material.roughness = 0.9
+			mesh.material = material
+			_hedge_run_meshes.append(mesh)
+	return _hedge_run_meshes[hedge]
+
 static func impostor_form(species: int, variant: int) -> String:
 	return "%s_%02d" % [IMPOSTOR_SPECIES_NAMES[species], variant]
 
