@@ -2244,6 +2244,7 @@ mod tests {
             .building_sites
             .push(super::super::site::BuildingSiteClient {
                 foundation_mesh: Default::default(),
+                structure_world: Vec::new(),
                 footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),
                 lot_footprint_world: [
                     Vector2::new(0.0, 0.0),

@@ -31,6 +31,9 @@ pub(crate) struct BuildingSiteClient {
     pub(crate) support_height_m: f32,
     /// Authored site surface polygons transformed into world space.
     pub(crate) surfaces: Vec<BuildingSiteSurfaceClient>,
+    /// World-space footprint of each mesh part's imported bounds: the walls a yard plant keeps
+    /// off. Empty when the asset has no imported bounds.
+    pub(crate) structure_world: Vec<[Vector2; 4]>,
 }
 
 /// Minimal immutable building-site data needed by asynchronous terrain jobs.

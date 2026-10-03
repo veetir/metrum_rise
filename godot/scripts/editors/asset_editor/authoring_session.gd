@@ -132,8 +132,6 @@ func _document_changed() -> void:
 	if str(params.get("asset_id", "")).is_empty():
 		view.type_label.text = "Create or open an asset to begin."
 	_editor._update_pack_summary()
-	_editor._preview.set_yard_hedge(descriptor.get("yard_hedge_rows", []),
-		["low", "medium", "tall"].find(str(params.get("yard_hedge", ""))))
 	view.derived_workers.text = ""
 	var selected = descriptor.get("selected_profile")
 	if selected is Dictionary and selected.get("compatible", false):
@@ -151,6 +149,7 @@ func _document_changed() -> void:
 		thumbnails.load_image(thumbnail_source)
 	if not _capturing:
 		_adapter.render(state)
+	_preview_yard_hedge()
 	colours.refresh(state)
 	selection_changed()
 	view.undo_button.disabled = not document.can_undo()
@@ -476,6 +475,17 @@ func load_draft(path: String) -> void:
 	document.reset(result["document"], true, path)
 	thumbnails.load_image(str(result["document"].get("thumbnail_source", "")))
 	_editor._view.show_task("model")
+
+# After rendering, so the rows keep off the walls of the meshes now shown, as the game's do.
+func _preview_yard_hedge() -> void:
+	var walls := PackedFloat32Array()
+	for index in _editor._parts.size():
+		var rect: Rect2 = _editor._mesh_part_footprint_bounds(index, _editor._parts[index].position)
+		if rect.has_area():
+			walls.append_array([rect.position.x, rect.position.y, rect.end.x, rect.end.y])
+	var rows = JSON.parse_string(policy.yard_hedge_rows_json(JSON.stringify(params), walls))
+	_editor._preview.set_yard_hedge(rows if rows is Array else [],
+		["low", "medium", "tall"].find(str(params.get("yard_hedge", ""))))
 
 ## Revalidate button: validates and says what it found, since an unchanged issue list otherwise
 ## looks as if nothing happened.

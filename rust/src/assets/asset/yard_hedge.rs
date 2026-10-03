@@ -107,6 +107,24 @@ pub struct YardLot<'a> {
     pub surfaces: &'a [Vec<[f32; 2]>],
     /// Main entrance position (local X, Z), which keeps a walkway gap in the front row.
     pub entrance: Option<[f32; 2]>,
+    /// The building's walls: each mesh part's footprint as a local `[min, max]` rectangle in
+    /// X and Z. A row keeps off them as off a surface, which is also where the game refuses a
+    /// plant, so a planned row is never cut in the world.
+    pub structures: &'a [[[f32; 2]; 2]],
+}
+
+/// The local `[min, max]` X/Z rectangle a mesh part's imported `[min, max]` bounds cover once
+/// the part's own transform places them; what [`YardLot::structures`] takes.
+pub fn structure_footprint(part: &super::MeshPart) -> Option<[[f32; 2]; 2]> {
+    let [min, max] = part.imported_bounds?;
+    let transform = part.local_transform();
+    let mut rect = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
+    for (x, z) in [(min[0], min[2]), (min[0], max[2]), (max[0], max[2]), (max[0], min[2])] {
+        let p = transform.transform_point3(glam::Vec3::new(x, 0.0, z));
+        rect[0] = [rect[0][0].min(p.x), rect[0][1].min(p.z)];
+        rect[1] = [rect[1][0].max(p.x), rect[1][1].max(p.z)];
+    }
+    Some(rect)
 }
 
 /// One straight hedge row in asset-local metres. `join_from` and `join_to` say whether that end
@@ -139,8 +157,8 @@ const MIN_PIECE_M: f32 = 1.0;
 /// side rows from the back to the front row's line, all on the lot line except the front row,
 /// which stands `FRONT_INSET_M` inside it; side and back rows on the lot line are where a
 /// neighbour's hedge stands too, so adjoining lots share them. Every row is cut where it would
-/// cross a yard surface, and the front row also in front of the entrance.
-/// O((L / SAMPLE_M) * V) for row length L and V surface vertices.
+/// cross a yard surface or the building's walls, and the front row also in front of the entrance.
+/// O((L / SAMPLE_M) * V) for row length L and V surface and wall vertices.
 pub fn plan_yard_hedge(lot: &YardLot<'_>, edges: &[LotEdge]) -> Vec<YardHedgeRow> {
     // Frontage snapped to a lot axis, and the right-hand side as seen from the street.
     let front = if lot.frontage[0].abs() > lot.frontage[1].abs() {
@@ -170,6 +188,9 @@ pub fn plan_yard_hedge(lot: &YardLot<'_>, edges: &[LotEdge]) -> Vec<YardHedgeRow
             let p = point(s);
             entrance_s.is_some_and(|e| (s - e).abs() < ENTRANCE_GAP_HALF_M)
                 || lot.surfaces.iter().any(|polygon| near_polygon(p, polygon, SURFACE_CLEAR_M))
+                || lot.structures.iter().any(|&[a, b]| {
+                    near_polygon(p, &[a, [a[0], b[1]], b, [b[0], a[1]]], SURFACE_CLEAR_M)
+                })
         };
         let samples = (length / SAMPLE_M).round().max(1.0) as usize;
         let mut start: Option<usize> = None;
@@ -234,6 +255,7 @@ mod tests {
             frontage: [0.0, 1.0],
             surfaces,
             entrance,
+            structures: &[],
         }
     }
 
@@ -264,5 +286,18 @@ mod tests {
             rows.iter().map(|row| (row.join_from, row.join_to)).collect::<Vec<_>>(),
             vec![(true, false), (false, false), (false, true)]
         );
+    }
+
+    #[test]
+    fn rows_keep_off_the_walls_of_a_house_reaching_the_back_line() {
+        // A house whose eaves reach the back lot line (z -10) between x -5 and 5.
+        let walls = [[[-5.0, -10.0], [5.0, 2.0]]];
+        let lot = YardLot {
+            structures: &walls,
+            ..lot(&[], None)
+        };
+        let rows = plan_yard_hedge(&lot, &[LotEdge::Back]);
+        let xs: Vec<_> = rows.iter().map(|row| (row.from[0], row.to[0])).collect();
+        assert_eq!(xs, vec![(-10.0, -5.75), (5.75, 10.0)], "{rows:?}");
     }
 }

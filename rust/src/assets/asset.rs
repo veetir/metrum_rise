@@ -27,6 +27,7 @@ pub use model::{
 pub use vehicle::{ColorVariant, VehicleClass, VehicleData, VehicleFamily};
 pub use yard_hedge::{
     FRONT_INSET_M, LotEdge, YardHedge, YardHedgeKind, YardHedgeRow, YardLot, plan_yard_hedge,
+    structure_footprint,
 };
 
 #[cfg(test)]

@@ -46,9 +46,9 @@ pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
     if class == PlantClass::Landscape {
         // A yard shrub or hedge stands beside a kerb or a wall by design, so only its own
         // stem position has to be clear, not a canopy tree's room.
-        return clear_site(core, plant.x, plant.z, LANDSCAPE_CLEAR_RADIUS_M, 1.0);
+        return clear_site(core, plant.x, plant.z, LANDSCAPE_CLEAR_RADIUS_M, 1.0, true);
     }
-    placement_clear(core, plant.x, plant.z, class.clearance_layer())
+    placement_clear_for(core, plant.x, plant.z, class.clearance_layer(), true)
 }
 
 // Both layers can own authored plants. Generated neighbors are evaluated locally and honor

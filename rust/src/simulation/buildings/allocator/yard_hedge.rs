@@ -7,7 +7,9 @@
 
 use super::BuildingAllocator;
 use super::entrance::building_local_xz_pos;
-use crate::assets::asset::{AnchorType, YardHedgeKind, YardLot, plan_yard_hedge};
+use crate::assets::asset::{
+    AnchorType, YardHedgeKind, YardLot, plan_yard_hedge, structure_footprint,
+};
 use godot::prelude::Vector2;
 
 /// Stable identity of a zoned building's yard: its parcel and that parcel's build generation.
@@ -38,7 +40,7 @@ pub(crate) enum YardHedgeEvent {
 
 impl BuildingAllocator {
     /// Queues the yard hedge of the building at `building_idx`, if its asset authors one and it
-    /// stands on a parcel. O(rows * samples * surface vertices) from the asset's own geometry.
+    /// stands on a parcel. O(rows * samples * surface and wall vertices) from the asset's own geometry.
     pub(crate) fn queue_yard_hedge(&mut self, building_idx: usize, zone_cell_m: f32) {
         let Some(building) = self.buildings.get(building_idx) else {
             return;
@@ -60,6 +62,11 @@ impl BuildingAllocator {
             .iter()
             .map(|surface| surface.vertices.clone())
             .collect();
+        let structures: Vec<_> = manifest
+            .mesh_parts
+            .iter()
+            .filter_map(structure_footprint)
+            .collect();
         let entrance = manifest
             .anchors
             .iter()
@@ -71,6 +78,7 @@ impl BuildingAllocator {
             frontage: [frontage[0], frontage[2]],
             surfaces: &surfaces,
             entrance,
+            structures: &structures,
         };
         let world = |p: [f32; 2]| building_local_xz_pos(building, [p[0], 0.0, p[1]], frontage);
         let rows = plan_yard_hedge(&lot, &yard.edges)

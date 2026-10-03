@@ -33,6 +33,7 @@ use std::collections::HashSet;
 fn site_radius_is_measured_from_the_indexed_lot_center() {
     let site = BuildingSiteClient {
         foundation_mesh: Default::default(),
+        structure_world: Vec::new(),
         footprint_world: vec![
             Vector2::new(18.0, -1.0),
             Vector2::new(20.0, -1.0),
@@ -225,6 +226,7 @@ fn road_test_edge(
 fn square_site_with_surface() -> BuildingSiteClient {
     BuildingSiteClient {
         foundation_mesh: Default::default(),
+        structure_world: Vec::new(),
         footprint_world: vec![
             Vector2::new(-5.0, -5.0),
             Vector2::new(-5.0, 5.0),
@@ -266,6 +268,7 @@ fn flat_site_from_bounds(
     ];
     BuildingSiteClient {
         foundation_mesh: Default::default(),
+        structure_world: Vec::new(),
         footprint_world,
         lot_footprint_world: [
             Vector2::new(min_x, min_z),

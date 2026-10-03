@@ -1325,3 +1325,39 @@ fn a_yard_hedge_shares_its_neighbours_line_and_leaves_with_its_building_unless_e
     assert_eq!(hedge_modules(&core).len(), second.len() - 1);
     assert!(core.vegetation_edits.take_yard_hedge((2, 0)).is_none());
 }
+
+#[test]
+fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
+    use crate::simulation::buildings::allocator::BuildingSiteClient;
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    let square = |a: f32, b: f32| {
+        vec![Vector2::new(a, a), Vector2::new(a, b), Vector2::new(b, b), Vector2::new(b, a)]
+    };
+    let house = square(2.0, 10.0);
+    core.allocator.building_sites.push(BuildingSiteClient {
+        foundation_mesh: Default::default(),
+        structure_world: vec![[house[0], house[1], house[2], house[3]]],
+        footprint_world: square(0.0, 20.0),
+        lot_footprint_world: [Vector2::ZERO; 4],
+        support_height_m: 0.0,
+        surfaces: vec![crate::simulation::buildings::allocator::BuildingSiteSurfaceClient {
+            material: crate::assets::SiteSurfaceMaterial::Asphalt,
+            name: String::new(),
+            vertices_world: square(12.0, 14.0),
+        }],
+    });
+    let shrub = |x: f32, z: f32| Plant {
+        x,
+        z,
+        yaw: 0.0,
+        scale: 1.0,
+        species: SPECIES_BUSH as u8,
+        variant: brush::LANDSCAPE_FIRST_VARIANT + 1,
+    };
+    assert!(placement::authored_clear(&core, &shrub(15.0, 15.0)), "the lawn takes a shrub");
+    assert!(!placement::authored_clear(&core, &shrub(6.0, 6.0)), "the house does not");
+    assert!(!placement::authored_clear(&core, &shrub(13.0, 13.0)), "nor its paving");
+    // Wild vegetation still keeps off the whole flat support.
+    assert!(!placement_clear(&core, 15.0, 15.0, VegetationLayer::Understory));
+}

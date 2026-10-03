@@ -211,7 +211,6 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
         "selected_profile": selected, "catalog_available": catalog.is_some(),
         "profile_required": matches!(kind, "extractor" | "farm") || utility,
         "placement": if zoned { "Grows in painted zoning" } else { "Placed explicitly" },
-        "yard_hedge_rows": if zoned { yard_hedge_rows(data) } else { json!([]) },
         "service_note": if kind == "service" && !utility {
             "Authors service classification and placement; no additional service simulation settings are available."
         } else { "" },
@@ -221,10 +220,15 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
 // Lot cell size the editor's lot fields are authored in ("10 m cells"), as in its preview.
 const EDITOR_LOT_CELL_M: f32 = 10.0;
 
-// The rows the document's yard hedge would lay, `[{from: [x, z], to: [x, z], join_from,
-// join_to}]` in asset-local metres, from the same plan a spawned building lays. O(row samples x surface vertices).
-fn yard_hedge_rows(data: &Value) -> Value {
-    if super::asset::YardHedgeKind::from_name(text(data, "yard_hedge")).is_none() {
+/// The rows the document's yard hedge would lay, `[{from: [x, z], to: [x, z], join_from,
+/// join_to}]` in asset-local metres, from the same plan a spawned building lays. `structures`
+/// are the mesh parts' local `[min, max]` X/Z footprints, which only the editor's loaded meshes
+/// know. Empty for an asset that is not zoned or has no yard hedge.
+/// O(row samples x surface and wall vertices).
+pub(crate) fn yard_hedge_rows(data: &Value, structures: &[[[f32; 2]; 2]]) -> Value {
+    if !matches!(kind(data), "residential" | "commercial" | "industrial")
+        || super::asset::YardHedgeKind::from_name(text(data, "yard_hedge")).is_none()
+    {
         return json!([]);
     }
     let edges: Vec<_> = match data["yard_hedge_edges"].as_array() {
@@ -264,6 +268,7 @@ fn yard_hedge_rows(data: &Value) -> Value {
         frontage,
         surfaces: &surfaces,
         entrance,
+        structures,
     };
     json!(
         super::asset::plan_yard_hedge(&lot, &edges)

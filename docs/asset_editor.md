@@ -627,8 +627,12 @@ lot geometry alone, so the preview and a spawned building lay the same rows:
 
 - Side and back rows run on the lot line, where an adjoining lot's hedge stands too; the front row
   stands `0.75 m` inside the lot, clear of the sidewalk.
-- A row is cut where it would pass within `0.6 m` of a yard surface (driveway, walkway), and the
-  front row is also cut `0.8 m` either side of the main entrance. Pieces under `1 m` are dropped.
+- A row is cut where it would pass within `0.6 m` of a yard surface (driveway, walkway) or of a
+  mesh part's footprint (its imported bounds, axis-aligned in the lot frame), and the front row is
+  also cut `0.8 m` either side of the main entrance. Pieces under `1 m` are dropped. The game reads
+  the footprints from imported bounds and the editor from the meshes it shows
+  (`yard_hedge_rows_json`), so a house whose eaves reach the back lot line gets a back row with a
+  gap behind it in both (`VEG-16`).
 - Planning samples each row every `0.25 m`: O(row length / 0.25 x surface vertices), on document
   changes only.
 
@@ -640,7 +644,10 @@ planting two. The laid modules are ordinary authored vegetation, edited and remo
 like any other, and recorded under the building's parcel id and build generation (save version
 `68`, table `yard_hedge_modules`). When the building is removed, its recorded modules go only if
 every one still stands as laid; if the player cut or rebuilt any of them the rest stays. Hedges the
-player drew are never recorded, so a hedge joined to a yard stays when the building goes. Undoing a
+player drew are never recorded, so a hedge joined to a yard stays when the building goes.
+Authored plants, the yard's hedge among them, keep off a building's walls and paving only, not its
+whole flat support: wild vegetation still keeps the support clear, but a lawn inside it takes
+hedges, shrubs and trees (`VEG-16`). Undoing a
 bulldoze lays the yard's hedge again. Buildings placed before an asset gained a yard hedge, and
 buildings in saves older than version `68`, have none recorded.
 

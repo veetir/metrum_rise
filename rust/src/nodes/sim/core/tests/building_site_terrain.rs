@@ -1284,3 +1284,56 @@ fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns()
     assert!(core.undo_action_internal());
     assert_eq!(yard_hedge_count(&core), laid, "undo puts the house back with its hedge");
 }
+
+#[test]
+fn a_house_reaching_its_back_line_lays_every_planned_module() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    // The fixture's 10.5 m house box moved back until its eaves reach the back lot line (+z).
+    manifest.mesh_parts[0].position = [0.0, 0.0, 4.75];
+    manifest.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        edges: vec![
+            crate::assets::asset::LotEdge::Back,
+            crate::assets::asset::LotEdge::Left,
+            crate::assets::asset::LotEdge::Right,
+        ],
+    });
+    let structures: Vec<_> = manifest
+        .mesh_parts
+        .iter()
+        .filter_map(crate::assets::asset::structure_footprint)
+        .collect();
+    let surfaces: Vec<_> = manifest.site_surfaces.iter().map(|s| s.vertices.clone()).collect();
+    let lot = crate::assets::asset::YardLot {
+        half_width_m: 10.0,
+        half_depth_m: 10.0,
+        frontage: [0.0, -1.0],
+        surfaces: &surfaces,
+        entrance: None,
+        structures: &structures,
+    };
+    let edges = manifest.building.as_ref().unwrap().yard_hedge.as_ref().unwrap().edges.clone();
+    let rows = crate::assets::asset::plan_yard_hedge(&lot, &edges);
+    // The back row opens behind the house instead of running under its eaves.
+    assert_eq!(rows.iter().filter(|row| row.from[1] == 10.0 && row.to[1] == 10.0).count(), 2);
+    core.allocator.registry.register("test", manifest, String::new());
+    place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    // Every planned module is laid: none is refused on the house's own lawn. A joined corner
+    // runs a row on by half the hedge's width, which can add one module per end.
+    let lengths: Vec<f32> = rows
+        .iter()
+        .map(|row| ((row.to[0] - row.from[0]).powi(2) + (row.to[1] - row.from[1]).powi(2)).sqrt())
+        .collect();
+    let least: usize = lengths.iter().map(|l| l.ceil() as usize).sum();
+    let most: usize = lengths.iter().map(|l| (l + 0.9).ceil() as usize).sum();
+    let laid = yard_hedge_count(&core);
+    assert!((least..=most).contains(&laid), "laid {laid}, planned {least}..={most}: {rows:?}");
+}

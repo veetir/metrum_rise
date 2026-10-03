@@ -720,17 +720,24 @@ fn inside_world(core: &SimCore, x: f32, z: f32) -> bool {
 }
 
 fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bool {
+    placement_clear_for(core, x, z, layer, false)
+}
+
+// `yard`: an authored plant, which may stand on a building's lawn (see `clear_site`).
+fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, yard: bool) -> bool {
     let (radius, max_relief) = if layer == VegetationLayer::Canopy {
         (CANOPY_CLEAR_RADIUS_M, 3.0)
     } else {
         (2.5, 1.6)
     };
-    clear_site(core, x, z, radius, max_relief)
+    clear_site(core, x, z, radius, max_relief, yard)
 }
 
 // Whether a 3x3 footprint of `radius` around a position is open, native ground within
-// `max_relief` of its centre height.
-fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32) -> bool {
+// `max_relief` of its centre height. Wild vegetation keeps off a building's whole flat support;
+// with `yard`, an authored plant keeps off only its walls and paving, so a yard's lawn can be
+// planted and a house's own hedge stands where its asset put it.
+fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard: bool) -> bool {
     if !inside_world(core, x, z) {
         return false;
     }
@@ -748,7 +755,11 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32) -> b
                 .road_surface
                 .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
                 .is_some()
-            || core.allocator.sample_building_site_height(p).is_some()
+            || if yard {
+                core.allocator.building_site_blocks_yard_plant(p)
+            } else {
+                core.allocator.sample_building_site_height(p).is_some()
+            }
             || core.allocator.field_clearance.covers_point(p)
         {
             return None;
