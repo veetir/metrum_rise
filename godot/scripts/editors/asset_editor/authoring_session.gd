@@ -476,6 +476,38 @@ func load_draft(path: String) -> void:
 	thumbnails.load_image(str(result["document"].get("thumbnail_source", "")))
 	_editor._view.show_task("model")
 
+## Grows (or, with a negative count, shrinks) the lot by `cells` 10 m cells at the back only:
+## the lot is centred on the asset's origin, so the dimension running away from the street
+## changes and everything placed on the lot moves half the change towards the street, which
+## keeps the street side, driveway and house where they were and opens a back yard behind.
+func extend_lot_at_back(cells: int) -> void:
+	if not ready or not has_document:
+		return
+	document.commit_transaction()
+	capture_geometry("Finish geometry edit")
+	var state := document.snapshot()
+	var p: Dictionary = state["params"]
+	var front := Vector2(0.0, 1.0)
+	if p.get("frontage_forward") is Array:
+		front = Vector2(float(p["frontage_forward"][0]), float(p["frontage_forward"][2]))
+	# The lot axis the frontage is snapped to, as the yard hedge plan snaps it.
+	var across_x := absf(front.x) > absf(front.y)
+	var key := "lot_width_cells" if across_x else "lot_depth_cells"
+	var size := int(PreviewGeometry.number(p, key, 2)) + cells
+	if size < 1:
+		return
+	var toward_street := Vector2(signf(front.x), 0.0) if across_x else Vector2(0.0, -1.0 if front.y < 0.0 else 1.0)
+	var shift := toward_street * float(cells) * 5.0
+	p[key] = size
+	for item: Dictionary in p.get("mesh_parts", []) + p.get("anchors", []):
+		item["position"][0] = float(item["position"][0]) + shift.x
+		item["position"][2] = float(item["position"][2]) + shift.y
+	for surface: Dictionary in p.get("site_surfaces", []):
+		for vertex: Array in surface.get("vertices", []):
+			vertex[0] = float(vertex[0]) + shift.x
+			vertex[1] = float(vertex[1]) + shift.y
+	document.apply(state, "Extend lot at back" if cells > 0 else "Trim lot at back")
+
 # After rendering, so the rows keep off the walls of the meshes now shown, as the game's do.
 func _preview_yard_hedge() -> void:
 	var walls := PackedFloat32Array()

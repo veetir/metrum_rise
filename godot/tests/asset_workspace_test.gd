@@ -385,6 +385,21 @@ func _test_model_and_publication(editor: Node) -> void:
 	state["params"]["anchors"][0]["width_m"] = 8.7654
 	session.document.apply(state, "Loaded precise metadata")
 	_expect(not editor._view.export_result.visible and not editor._view.validate_result.visible, "the next edit clears the export and revalidate results")
+	var before_yard: Dictionary = session.document.snapshot()
+	var front: Array = session.params.get("frontage_forward", [0, 0, 1])
+	var deep_key := "lot_width_cells" if absf(float(front[0])) > absf(float(front[2])) else "lot_depth_cells"
+	var deep_axis := 0 if deep_key == "lot_width_cells" else 2
+	var street_sign := signf(float(front[deep_axis])) if absf(float(front[deep_axis])) > 0.0 else 1.0
+	var depth := int(session.params[deep_key])
+	var part_at := float(session.params["mesh_parts"][0]["position"][deep_axis])
+	var anchor_at := float(session.params["anchors"][0]["position"][deep_axis])
+	session.extend_lot_at_back(1)
+	_expect(int(session.params[deep_key]) == depth + 1, "the back yard adds one cell to the lot's street-to-back dimension")
+	_expect(is_equal_approx(float(session.params["mesh_parts"][0]["position"][deep_axis]), part_at + 5.0 * street_sign)
+		and is_equal_approx(float(session.params["anchors"][0]["position"][deep_axis]), anchor_at + 5.0 * street_sign),
+		"the house and its anchors keep their distance to the street")
+	session.undo()
+	_expect(session.document.snapshot() == before_yard, "extending the back yard is one undo step")
 	editor._select_site_anchor(0)
 	editor._view._site_anchor_y_spin.value = 2
 	_expect(session.params["anchors"][0]["width_m"] == 8.7654, "entrance coordinate edits preserve dormant width metadata")

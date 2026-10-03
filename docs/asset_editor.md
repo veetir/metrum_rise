@@ -651,6 +651,15 @@ hedges, shrubs and trees (`VEG-16`). Undoing a
 bulldoze lays the yard's hedge again. Buildings placed before an asset gained a yard hedge, and
 buildings in saves older than version `68`, have none recorded.
 
+### Back Yards
+
+A back yard is a deeper lot, not a hedge offset: the land stays the building's own, so zoning
+reserves it and nothing else is built there. The lot is centred on the asset's origin, so the
+footprint's `Back yard` buttons (`+10 m`, `−10 m`) change the lot dimension running away from the
+street by one cell and move every mesh part, anchor and surface half a cell towards the street, in
+one undo step. The street side, driveway and house stay where they were and the yard opens behind
+(`TOOLS-12`).
+
 ### Flat-Site Authoring
 
 The building authoring view is WYSIWYG for the local flat lot:

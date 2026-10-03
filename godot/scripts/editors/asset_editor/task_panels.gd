@@ -89,6 +89,13 @@ func _site() -> void:
 	var footprint: Control = v.site_sections[0]
 	v._width_spin = v.number_field(footprint, "lot_width_cells", "Lot width (10 m cells) · authored", 65535)
 	v._depth_spin = v.number_field(footprint, "lot_depth_cells", "Lot depth (10 m cells) · authored", 65535)
+	var back_yard := HFlowContainer.new()
+	for step in [1, -1]:
+		var change := Button.new()
+		change.text = "+10 m" if step > 0 else "−10 m"
+		change.pressed.connect(e._session.extend_lot_at_back.bind(step))
+		back_yard.add_child(change)
+	v.field_row(footprint, "_back_yard", "Back yard · grows or trims the lot behind the house; the street side stays put", back_yard)
 	v._frontage_lbl = _label(footprint, "Frontage")
 	v.geometry_button(footprint, "Set frontage from view", e._on_set_front_from_view)
 	v.geometry_button(footprint, "Move main entrance to frontage", e._on_reset_main_entrance_pressed)
