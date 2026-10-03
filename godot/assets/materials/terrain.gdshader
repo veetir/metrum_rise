@@ -2,6 +2,13 @@ shader_type spatial;
 render_mode cull_disabled;
 
 uniform sampler2D heightmap;
+// Rust-baked per patch on the heightmap's texel grid (patch_masks.rs), one layer per patch slot:
+// R is local relief encoded as sqrt(relief / TERRAIN_MASK_RELIEF_MAX_M); G is nonzero wherever a
+// cliff face can be. A negative layer means no masks: flat ground, no cliff.
+uniform sampler2DArray terrain_masks : hint_default_black, repeat_disable, filter_linear;
+uniform float terrain_mask_layer = -1.0;
+// Patch texture size over layer size; only world-edge patches are smaller than a layer.
+uniform vec2 terrain_mask_uv_scale = vec2(1.0);
 uniform sampler2D overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D coal_pit_texture : repeat_disable, filter_linear;
 uniform sampler2D field_overlay_texture : repeat_disable, filter_linear;
@@ -61,6 +68,8 @@ uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
 // Share of the sky light a floor under closed crowns still receives, through and off the
 // crowns. See CANOPY_FLOOR_SKY_TRANSMISSION in scene_lighting.gd.
 uniform float canopy_floor_sky_transmission : hint_range(0.0, 1.0) = 1.0;
+// Matches RELIEF_ENCODE_MAX_M in patch_masks.rs.
+const float TERRAIN_MASK_RELIEF_MAX_M = 32.0;
 // Crown coverage of an 8 m texel below which the floor stays meadow, and at which it becomes
 // full forest floor. A lone crown peaks near 0.45 and a closed stand near 1.
 const float CANOPY_FLOOR_OPEN_COVER = 0.35;
@@ -101,7 +110,6 @@ uniform float terrain_grain_mix_strength = 0.38;
 uniform float terrain_grain_macro_strength = 0.12;
 uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
-uniform float terrain_relief_sample_radius_texels = 3.0;
 uniform float terrain_relief_start_m = 2.0;
 uniform float terrain_relief_end_m = 16.0;
 uniform float terrain_shore_blend_strength = 0.15;
@@ -316,22 +324,6 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 	return base_color;
 }
 
-float sample_local_relief(vec2 uv) {
-	vec2 texel = terrain_relief_sample_radius_texels / max(heightmap_texture_size, vec2(1.0));
-	float center = sample_world_height(uv);
-	float h_x_pos = sample_world_height(uv + vec2(texel.x, 0.0));
-	float h_x_neg = sample_world_height(uv - vec2(texel.x, 0.0));
-	float h_y_pos = sample_world_height(uv + vec2(0.0, texel.y));
-	float h_y_neg = sample_world_height(uv - vec2(0.0, texel.y));
-	float h_d0 = sample_world_height(uv + texel);
-	float h_d1 = sample_world_height(uv - texel);
-	float h_d2 = sample_world_height(uv + vec2(texel.x, -texel.y));
-	float h_d3 = sample_world_height(uv + vec2(-texel.x, texel.y));
-	float max_h = max(center, max(max(h_x_pos, h_x_neg), max(max(h_y_pos, h_y_neg), max(max(h_d0, h_d1), max(h_d2, h_d3)))));
-	float min_h = min(center, min(min(h_x_pos, h_x_neg), min(min(h_y_pos, h_y_neg), min(min(h_d0, h_d1), min(h_d2, h_d3)))));
-	return max_h - min_h;
-}
-
 float shoreline_mask(vec2 uv) {
 	vec2 texel = terrain_shore_lookup_radius_texels / max(watermap_texture_size, vec2(1.0));
 	float center = texture(watermap, uv).r;
@@ -481,6 +473,9 @@ float cliff_candidate(vec2 uv, vec2 along_uv) {
 	return slope_mask * relief_mask;
 }
 
+// The cliff face and its top and toe edges. Kept per pixel because the edge bands are narrower than
+// a heightmap texel; the fragment calls it only where the baked cliff reach is set. These
+// thresholds and radii are mirrored in patch_masks.rs, which bakes that reach.
 vec3 cliff_masks(vec2 uv) {
 	vec2 gradient = sample_height_gradient(uv);
 	float gradient_length = length(gradient);
@@ -598,13 +593,17 @@ void fragment() {
 		float floor_sky = mix(canopy_floor_sky_transmission, 1.0, sky_gap);
 		float world_elevation = h * height_scale;
 		float macro_mask = macro_variation(var_world_pos.xz);
-		float local_relief = sample_local_relief(var_centered_uv);
+		vec4 terrain_mask = terrain_mask_layer >= 0.0
+			? texture(terrain_masks, vec3(var_centered_uv * terrain_mask_uv_scale, terrain_mask_layer))
+			: vec4(0.0);
+		float local_relief = terrain_mask.r * terrain_mask.r * TERRAIN_MASK_RELIEF_MAX_M;
 		vec3 normal = sample_world_normal(var_centered_uv);
 		float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
 		float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
 		ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
 		vec3 color = terrain_surface_color(world_elevation, macro_mask, ruggedness);
-		vec3 cliff = cliff_masks(var_centered_uv);
+		// Most ground is not near a cliff; there the face test and its edges are all zero.
+		vec3 cliff = terrain_mask.g > 0.0 ? cliff_masks(var_centered_uv) : vec3(0.0);
 		float cliff_face = cliff.x;
 		float cliff_top = cliff.y;
 		float cliff_toe = cliff.z;

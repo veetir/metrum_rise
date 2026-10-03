@@ -525,6 +525,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
   distance and 67% render scale together take the Kuopio overview from `11.8` to `8.8 ms` on an
   M2 Pro. See [`ui.md`](ui.md).
 
+- `TERRAIN-06`: Rust bakes per-patch relief and cliff-reach masks on the payload worker; the
+  terrain shader reads them from one shared texture array and runs the cliff test only near cliffs.
+  Image unchanged, idle p50 `-0.13-0.28 ms` on M2 Pro. New `cliff` / `cliff_low` benchmark poses.
+  See [`terrain.md`](terrain.md).
+
 - Idle-frame matrix: `forest` / `forest_low` poses and `METRUM_IDLE_BENCH_CANOPY_DENSITY` measure
   denser canopy; at the `121.9/ha` ceiling vegetation costs up to `7.35 ms`, mostly tree vertex
   work. Benchmark runs no longer pick up the saved fullscreen state, building detail or HiDPI UI

@@ -3690,7 +3690,7 @@ noise evaluations per terrain pixel with one fetch. Rejected in the same pass: s
 texture reads by distance (no gain, the layers stay visible at nearly every on-screen range)
 and deduplicating meadow calls (the compiler already merges them). The next candidate is a
 per-patch bake of the heightmap-derived cliff, relief and shore masks (about `1.5 ms` more);
-it needs the Rust patch payload and is not started.
+it shipped as `TERRAIN-06` below.
 
 Measured with the idle-frame matrix (`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`, script
 `scripts/benchmarks/idle_frame_benchmark.gd`): simulation paused, V-Sync off, 1920x1080, 120
@@ -3794,12 +3794,58 @@ detail and the HiDPI UI scale: a fullscreen config had rendered the matrix at th
 A Metal System Trace (600 frames, profiled p50 within `0.07 ms` of the unprofiled runs) splits
 the GPU frame by pass. On `overview` the opaque pass fragment work is `9.06` of `12.2 ms` GPU
 time, vertex work `1.35 ms`, the depth prepass `0.76 ms` and shadow maps about `0.1 ms`: terrain
-shading still owns the frame, so the per-patch mask bake remains the next terrain target. On
+shading still owns the frame; the per-patch mask bake below was the next terrain target. On
 `forest_low` at the ceiling, vertex work rises to `6.64 ms` (depth prepass `2.22`, opaque pass
 `4.06`) while opaque fragment work falls to `6.00 ms` as crowns cover the ground, and the four
 shadow cascades take `0.72 ms`. Denser forest is bound by tree vertex throughput in the
 prepass and opaque pass, not by draw calls (`1,715`) or fill. Results:
 `benchmark-results/idle/suite/16-forest/`.
+
+Per-patch shading masks (`TERRAIN-06`, 2026-10-03): `patch_masks.rs` bakes two masks per terrain
+payload on the payload worker, on the heightmap's texel grid including the border ring: local
+relief (R, stored as `sqrt(relief / 32 m)`, about 2 cm of precision at the `0.1 m` contour
+threshold) and cliff reach (G), the cliff face test's maximum over a 2x-finer grid within a texel
+of each texel. The terrain shader reads both with one fetch and runs the per-pixel `cliff_masks`
+only where the reach is nonzero, so cliff faces and their top and toe bands are computed exactly as
+before. The Rust side mirrors the shader's sampling (UVs clamped to the patch, bilinear,
+clamp-to-edge) and the `CLIFF_*` thresholds in `terrain.gd`, which must change together. Two
+designs were measured and dropped on the way:
+
+- Baking the face and both edges at texel resolution was `0.1-0.15 ms` faster, but the edge bands
+  are narrower than a 10 m texel and came out stair-stepped (`cliff_low`: mean `0.54/255`, `1.7%`
+  of pixels over `12/255`).
+- One mask texture per patch material gave irregular `9-13 ms` frames on about 10% of frames (p95
+  `+0.5-4 ms`) while a Metal System Trace showed the opaque pass steady to `0.3 ms`; binding one
+  shared texture instead removed them. The masks therefore live in a `Texture2DArray` with a layer
+  per patch slot (pages of 1,024 layers, `9.3 MB` on Kuopio), written at install and at the staged
+  heightmap swap so the masks never lead the heights.
+
+The bake costs about `0.35 ms` per patch on ordinary ground and up to `3.8 ms` on a patch that is
+cliff throughout. A per-texel bound skips the face test wherever the largest step between adjacent
+texels within reach cannot produce a slope above `CLIFF_SLOPE_START`; a test checks the skipped
+points against the full test. The shoreline mask (bound `0.24 ms`) stays per pixel because it reads
+the water renderer's own texture. Road previews export their changed patches synchronously, so
+their masks are baked on the main thread at export (`0.35 ms` per patch on ordinary ground) into a
+one-layer array per preview slot; copying the resident patch's masks would describe the terrain
+the preview replaces.
+
+The idle matrix gains `cliff` and `cliff_low` poses (150 m and 40 m over some of Kuopio's steepest
+ground). Against the per-pixel shader, with vegetation off, no pixel differs by more than `12/255`
+in any of the seven Kuopio poses (largest `10/255`, mean at most `0.021/255`, from relief
+quantization). Matched A/B, same release extension, two interleaved runs each, idle p50:
+
+| Pose | Before | After |
+| --- | --- | --- |
+| overview | `11.77-11.81 ms` | `11.50-11.52 ms` |
+| close | `9.67-9.73 ms` | `9.46 ms` |
+| ground | `8.10-8.15 ms` | `7.92-7.94 ms` |
+| forest | `9.84-9.87 ms` | `9.66 ms` |
+| cliff | `8.95-8.99 ms` | `8.73-8.74 ms` |
+| cliff_low | `7.58-7.64 ms` | `7.47-7.48 ms` |
+
+p95 falls by about the same amount, and the settled load stays at `3.91-3.95 s`. Results and grids:
+`benchmark-results/idle/suite/19-mask-array/` and `grid-mask-bake-cliff.png` (the texel-grid
+design).
 
 Rendering non-repair rule:
 

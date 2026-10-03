@@ -33,11 +33,12 @@ const HEIGHT_SCALE := 20.0
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
-const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
 const TERRAIN_RELIEF_START_M := 2.0
 const TERRAIN_RELIEF_END_M := 16.0
 const TERRAIN_SHORE_BLEND_STRENGTH := 0.15
 const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 0.55
+# The cliff test's thresholds and radii are mirrored in patch_masks.rs, whose baked cliff reach
+# decides where the shader runs the test; change both together.
 const CLIFF_SLOPE_START := 0.26
 const CLIFF_SLOPE_END := 0.44
 const CLIFF_RELIEF_START_M := 4.0
@@ -130,6 +131,12 @@ var terrain_cell_m: float = 1.0
 var patch_cols: int = 0
 var patch_rows: int = 0
 var patch_interval_cells: int = 1
+# Baked relief and cliff-reach masks (patch_masks.rs), one array layer per patch slot. Every patch
+# material shares a page: one texture per patch material instead added irregular 1-5 ms frames on
+# Metal, although the shading work was the same.
+const MASK_LAYERS_PER_PAGE := 1024
+var _mask_pages: Array[Texture2DArray] = []
+var _mask_layer_size := Vector2i.ZERO
 var patch_span_m: float = 1.0
 var overlay_texture: ImageTexture
 var overlay_image: Image
@@ -247,6 +254,7 @@ func rebuild_from_simulation_state() -> void:
 	patch_cols = int(patch_layout.get("patch_cols", 0))
 	patch_rows = int(patch_layout.get("patch_rows", 0))
 	patch_interval_cells = max(1, int(patch_layout.get("patch_interval_cells", 1)))
+	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
 	_terrain_debug_enabled = _terrain_debug_is_enabled()
@@ -975,6 +983,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var material: ShaderMaterial = patch_resources["material"] as ShaderMaterial
 	material.shader = TERRAIN_SHADER
 	material.set_shader_parameter("heightmap", height_texture)
+	_apply_patch_masks(key, material, _terrain_patch_mask_image(patch_data), texture_width, texture_height)
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
 	material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
@@ -1024,7 +1033,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_grain_macro_strength", FIELD_OVERLAY_GRAIN_MACRO_STRENGTH)
 	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
 	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
-	material.set_shader_parameter("terrain_relief_sample_radius_texels", TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS)
 	material.set_shader_parameter("terrain_relief_start_m", TERRAIN_RELIEF_START_M)
 	material.set_shader_parameter("terrain_relief_end_m", TERRAIN_RELIEF_END_M)
 	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
@@ -1218,6 +1226,7 @@ func _stage_terrain_patch_update(
 	patch["spare_height_texture"] = height_texture
 	patch["spare_height_texture_width"] = texture_width
 	patch["spare_height_texture_height"] = texture_height
+	var mask_image := _terrain_patch_mask_image(patch_data)
 	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 
 	var sample_width := int(patch_data["sample_width"])
@@ -1254,6 +1263,7 @@ func _stage_terrain_patch_update(
 		"land_cover": _stage_patch_land_cover(key, patch),
 		"height_image": height_image,
 		"height_texture": height_texture,
+		"mask_image": mask_image,
 		"terrain_mesh": terrain_mesh,
 		"retaining_mesh": retaining_mesh,
 		"retaining_visible": retaining_visible,
@@ -1302,6 +1312,9 @@ func _commit_staged_patch_data(
 
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
 	material.set_shader_parameter("heightmap", stage["height_texture"])
+	# The layer is written here, with the heightmap swap, so the masks never lead the heights.
+	_apply_patch_masks(key, material, stage["mask_image"],
+		int(stage["texture_width"]), int(stage["texture_height"]))
 	material.set_shader_parameter(
 		"heightmap_texture_size",
 		Vector2(int(stage["texture_width"]), int(stage["texture_height"]))
@@ -2340,6 +2353,7 @@ func _terrain_patch_stage_matches_target(key: Vector2i, stage: Dictionary) -> bo
 		and typeof(stage.get("patch_data", null)) == TYPE_DICTIONARY
 		and stage.get("height_image", null) is Image
 		and stage.get("height_texture", null) is ImageTexture
+		and stage.has("mask_image")
 		and typeof(stage.get("land_cover", null)) == TYPE_DICTIONARY
 		and simulation_node.is_vegetation_land_cover_current(key, stage["land_cover"]["generations"])
 		and stage.get("terrain_mesh", null) is Mesh
@@ -2583,6 +2597,54 @@ func _patch_requires_engineered_refinement(key: Vector2i, patch_data: Dictionary
 
 func _terrain_patch_height_bytes(patch_data: Dictionary) -> PackedByteArray:
 	return patch_data["height_bytes"] as PackedByteArray
+
+func _rebuild_mask_pages(border_texels: int) -> void:
+	_mask_pages.clear()
+	_mask_layer_size = Vector2i.ONE * (patch_interval_cells + 1 + 2 * border_texels)
+	var blank := Image.create(_mask_layer_size.x, _mask_layer_size.y, false, Image.FORMAT_RG8)
+	var slots := patch_cols * patch_rows
+	for first in range(0, slots, MASK_LAYERS_PER_PAGE):
+		var layers: Array[Image] = []
+		layers.resize(mini(MASK_LAYERS_PER_PAGE, slots - first))
+		layers.fill(blank)
+		var page := Texture2DArray.new()
+		page.create_from_images(layers)
+		_mask_pages.append(page)
+
+## The relief and cliff-reach masks Rust baked from this payload's height samples, one texel per
+## heightmap texel. Null for a payload without them (a test fixture built outside the simulation).
+func _terrain_patch_mask_image(patch_data: Dictionary) -> Image:
+	var width := int(patch_data["texture_width"])
+	var height := int(patch_data["texture_height"])
+	var bytes: PackedByteArray = patch_data.get("mask_bytes", PackedByteArray())
+	if width <= 0 or height <= 0 or bytes.size() != width * height * 2:
+		return null
+	return Image.create_from_data(width, height, false, Image.FORMAT_RG8, bytes)
+
+# Writes the patch's mask layer and points its material at it; without masks the shader treats the
+# patch as flat ground with no cliff.
+func _apply_patch_masks(
+	key: Vector2i, material: ShaderMaterial, image: Image, texture_width: int, texture_height: int
+) -> void:
+	var slot := key.y * patch_cols + key.x
+	if (
+		image == null or key.x < 0 or key.x >= patch_cols or slot < 0 or slot >= patch_cols * patch_rows
+		or image.get_width() > _mask_layer_size.x or image.get_height() > _mask_layer_size.y
+	):
+		material.set_shader_parameter("terrain_mask_layer", -1.0)
+		return
+	if image.get_size() != _mask_layer_size:
+		# A world-edge patch has fewer samples. Its UVs never reach the padding: the shader samples
+		# only the inner samples, inside the border ring.
+		var padded := Image.create(_mask_layer_size.x, _mask_layer_size.y, false, Image.FORMAT_RG8)
+		padded.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+		image = padded
+	var page: Texture2DArray = _mask_pages[slot / MASK_LAYERS_PER_PAGE]
+	page.update_layer(image, slot % MASK_LAYERS_PER_PAGE)
+	material.set_shader_parameter("terrain_masks", page)
+	material.set_shader_parameter("terrain_mask_layer", float(slot % MASK_LAYERS_PER_PAGE))
+	material.set_shader_parameter(
+		"terrain_mask_uv_scale", Vector2(texture_width, texture_height) / Vector2(_mask_layer_size))
 
 func _terrain_patch_height_stats(patch_data: Dictionary) -> Dictionary:
 	# Failed refinement payloads intentionally omit a drawable height buffer.
