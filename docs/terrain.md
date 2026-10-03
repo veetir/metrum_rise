@@ -837,6 +837,33 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Pine rebuilt to the photo set — VEG-18 (2026-10-03)
+
+The authored pine read more like a broadleaf tree: crowns as short tufts on tall poles, an
+evenly bright orange upper stem and a pale grey column below it. Codex (GPT-6 Astra) rebuilt
+the pine in `tools/model_trees.py` over two rounds against the Scots pine set in
+`imgs/reference/vegetation/pine/` (`imgs/tree_models/BRIEF4.md`, `BRIEF5.md`, report in
+`imgs/tree_models/out/REPORT.md`). Only the pine changed; spruce, birch and aspen rebuild
+byte-identical, and two Mac builds give byte-identical files.
+
+| Variant | Crown ratio before | After | Sky through the crown before | After | Triangles full / reduced |
+|---|---:|---:|---:|---:|---:|
+| `pine_0` | `0.322` | `0.404` | `56%` | `60%` | `3852 / 680` |
+| `pine_1` | `0.279` | `0.399` | `52%` | `61%` | `3852 / 680` |
+| `pine_2` (young) | `0.929` | `0.934` | `67%` | `60%` | `3964 / 530` |
+
+The bark is dark grey-brown and fissured at the base, a muted red-brown higher up, with a
+mottled band between them. The new atlas's leaf mean is darker (`Y 0.162` against `0.238`), so
+`LEAF_ALBEDO_SCALE` for pine moves from `0.596` to `0.874`, which keeps pine at `1.4` times
+spruce as before. A stand from `140 m` and `180 m` at `13:00` renders within `1.5%` of the
+round-4 pine against the meadow. The pine impostors are re-baked. Their sparser crowns drew the
+conifer impostor at `0.858` of the near level with a low sun ahead, so the conifer response is
+refitted: `IMPOSTOR_VOLUME` `(0.75, 0.0, 1.25)` and `IMPOSTOR_RADIANCE_MATCH` `1.100`.
+`vegetation_level_match_test` passes all 108 poses within `0.103`.
+
+Still wrong, per the report: the bark repeats and has little relief close up, and the needle
+cards and the young pine's whorls are regular.
+
 ### Leaves take no sun highlight (2026-10-02)
 
 In play, crowns facing the sun turned pale, nearly white and flat

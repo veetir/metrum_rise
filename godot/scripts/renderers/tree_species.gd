@@ -71,12 +71,13 @@ const FOLIAGE_ALPHA_RECTS := [
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
 # level's luminance. Fitted over the poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [1.013, 1.060]
+const IMPOSTOR_RADIANCE_MATCH := [1.100, 1.060]
 # Volume response of an impostor, conifer first, as (lift gain, wrap floor, wrap gain); see
 # vegetation_impostor.gdshader. Fitted with the radiance match above over the same poses, on
-# the authored trees without a sun highlight; both species fit best at a low lift and keep all
-# poses within 0.090 (conifer) and 0.066 (broadleaf) at one shared response.
-const IMPOSTOR_VOLUME := [Vector3(0.75, 0.0, 1.0), Vector3(0.75, 0.0, 1.0)]
+# the authored trees without a sun highlight. Both species fit best at a low lift. The round-5
+# pine's sparser crown needs more wrap gain on the conifer, which keeps all poses within 0.103;
+# broadleaf stays within 0.066.
+const IMPOSTOR_VOLUME := [Vector3(0.75, 0.0, 1.25), Vector3(0.75, 0.0, 1.0)]
 # One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
 # shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
 const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
@@ -98,7 +99,7 @@ const CANOPY_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
 # renders at 0.35 of the meadow and anchors the set. The others keep their reflectance relative
 # to it as typical green-band leaf reflectance puts it: pine 1.4, birch 1.8 and aspen 1.7 times
 # spruce. Applied by the near cards' material and, per layer, by the baked impostors.
-const LEAF_ALBEDO_SCALE := {"pine": 0.596, "birch": 0.585, "aspen": 0.618}
+const LEAF_ALBEDO_SCALE := {"pine": 0.874, "birch": 0.585, "aspen": 0.618}
 const FORM_MODELS := 3
 # Sway weight of the trunk top, as the procedural trunks carried it. Everything farther from the
 # trunk takes the rest in proportion to its reach, so branch tips and their cards sway fully.
