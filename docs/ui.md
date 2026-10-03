@@ -475,7 +475,9 @@ window's `content_scale_factor` follows the screen's backing scale
 (`GameSettings.apply_display_scale()`, re-applied on `dpi_changed`), so 100% is the size the
 OS draws its own interface: 2x on a Retina Mac, 1x where the OS reports no scale. The 3D view
 keeps rendering at the window's full pixel size, and `Camera3D.unproject_position` and mouse
-positions both use the scaled coordinates. Failed config reads discard the whole
+positions both use the scaled coordinates. A windowed launch is sized the same way
+(`GameSettings.fit_launch_window()`): the project's 1920x1080 grows by the backing scale and is
+held to 90% of the usable screen, centred. Benchmark runs keep the fixed project size. Failed config reads discard the whole
 partially parsed state before defaults are installed; valid reads preserve unrelated layout values.
 A font/window refresh reads the scale once and passes it through the existing tree traversal and
 size helpers. Later operations still read current settings; there is no persistent settings cache.

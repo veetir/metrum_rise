@@ -44,6 +44,7 @@ const MAX_FPS_CHOICES := [0, 30, 60, 120, 144]
 const DEFAULT_MAX_FPS := 0
 ## The main menu draws next to nothing, so uncapped it spins at hundreds of frames per second.
 const MENU_MAX_FPS := 120
+const LAUNCH_WINDOW_SCREEN_COVERAGE := 0.9
 const DEFAULT_SHOW_FPS := false
 ## 3D render scale; below 1.0 the frame is rendered smaller and upscaled with FSR 2.
 const RENDER_SCALE_CHOICES := [1.0, 0.77, 0.67, 0.5]
@@ -142,9 +143,13 @@ static func get_view_distance() -> int:
 
 # Benchmarks measure the authored frame, so the player's render settings do not reach them.
 static func _graphics_value(key: String, default_value: Variant) -> Variant:
-	if "--gameplay-road-benchmark" in OS.get_cmdline_user_args():
+	if _is_benchmark_run():
 		return default_value
 	return get_value(SECTION_GRAPHICS, key, default_value)
+
+static func _is_benchmark_run() -> bool:
+	var args := OS.get_cmdline_user_args()
+	return "--gameplay-road-benchmark" in args or "--benchmark" in args
 
 ## Applies the player's frame rate cap, held to MENU_MAX_FPS or lower while the main menu is up.
 static func apply_max_fps() -> void:
@@ -165,6 +170,27 @@ static func apply_display_settings() -> void:
 	apply_display_scale()
 	if not root.dpi_changed.is_connected(apply_display_scale):
 		root.dpi_changed.connect(apply_display_scale)
+
+## Sizes a windowed launch for the screen's backing scale. The project's window size is in
+## pixels, which on a Retina screen is a quarter of the area it was laid out for. The window
+## keeps the project's aspect, grows by the backing scale and is held to 90% of the usable
+## screen, centred. Call once at launch: a size the player picks afterwards stays theirs.
+static func fit_launch_window() -> void:
+	# Benchmarks render at the project's fixed size so their frames stay comparable.
+	if _is_benchmark_run() or DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_WINDOWED:
+		return
+	var screen := DisplayServer.window_get_current_screen()
+	var usable := DisplayServer.screen_get_usable_rect(screen)
+	if usable.size.x <= 0 or usable.size.y <= 0:
+		return
+	var wanted := Vector2(
+		ProjectSettings.get_setting("display/window/size/viewport_width"),
+		ProjectSettings.get_setting("display/window/size/viewport_height")
+	) * maxf(1.0, DisplayServer.screen_get_scale(screen))
+	var fit := minf(1.0, LAUNCH_WINDOW_SCREEN_COVERAGE * minf(usable.size.x / wanted.x, usable.size.y / wanted.y))
+	var size := Vector2i((wanted * fit).round())
+	DisplayServer.window_set_size(size)
+	DisplayServer.window_set_position(usable.position + (usable.size - size) / 2)
 
 ## Scales all 2D content by the screen's backing scale (2 on a Retina Mac, 1 elsewhere), so
 ## 100% UI scale is the size the OS draws its own interface. The 3D view keeps rendering at the
