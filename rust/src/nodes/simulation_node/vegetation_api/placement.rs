@@ -3,7 +3,7 @@
 //! Bounded brush proposals and class-local occupancy over the existing edit cells.
 
 use super::*;
-use crate::simulation::buildings::allocator::yard_hedge::YardHedgeEvent;
+use crate::simulation::buildings::allocator::yard::YardEvent;
 use brush::{BrushPreset, HEDGE_LOW_PRESET, PlantClass};
 
 const ATTEMPTS: usize = 2;
@@ -43,6 +43,11 @@ fn influence(plant: &Plant, pos: Vector2, radius: f32) -> f32 {
 /// Uses species clearance while keeping the authored canopy owner cell.
 pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
+    if class == PlantClass::Tree && core.allocator.in_yard_planting(Vector2::new(plant.x, plant.z)) {
+        // An asset's planting area is lawn its author meant for trees, so a yard tree there
+        // needs only its trunk's room off walls, paving and roads, not a wild tree's.
+        return clear_site(core, plant.x, plant.z, YARD_TREE_CLEAR_RADIUS_M, 3.0, true);
+    }
     if class == PlantClass::Landscape {
         // A yard shrub or hedge stands beside a kerb or a wall by design, so only its own
         // stem position has to be clear, not a canopy tree's room.
@@ -53,7 +58,7 @@ pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
 
 // Both layers can own authored plants. Generated neighbors are evaluated locally and honor
 // tombstones; hidden authored entries reserve their space because they can become visible again.
-fn occupied(core: &SimCore, plant: &Plant) -> bool {
+pub(super) fn occupied(core: &SimCore, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
     let radius = class.spacing();
     let pos = Vector2::new(plant.x, plant.z);
@@ -127,6 +132,8 @@ pub(super) const HEDGE_MODULE_M: f32 = 1.0;
 pub(super) const MAX_LINE_M: f32 = 256.0;
 // Radius around a landscape plant's stem that must be open ground.
 const LANDSCAPE_CLEAR_RADIUS_M: f32 = 0.3;
+// Room a tree in a yard planting area keeps off walls, paving and roads.
+const YARD_TREE_CLEAR_RADIUS_M: f32 = 1.5;
 
 /// How far a drawn hedge end reaches for a hedge already standing, in metres.
 const HEDGE_SNAP_M: f32 = 1.25;
@@ -175,14 +182,16 @@ pub(super) fn line_at(
     modules.len()
 }
 
-/// Lays the yard hedges of the buildings placed since the last call and removes those of the
-/// buildings removed, in that order. A yard records the modules it laid, under its parcel and
-/// build generation. Removal takes them away only while every one still stands as laid: a yard
-/// whose hedge the player cut or rebuilt keeps what is left, and hedges the player drew were
-/// never recorded, so nothing joined to a yard goes with it. O(row length) per row and O(m) per
-/// removed yard of m modules; nothing when no building changed.
-pub(crate) fn publish_yard_hedges(core: &mut SimCore) {
-    let events = std::mem::take(&mut core.allocator.pending_yard_hedges);
+/// Lays the yard hedges and plants the yard planting areas of the buildings placed since the
+/// last call, and clears the yards of the buildings removed, in that order. A yard records what
+/// it laid and planted under its parcel and build generation; nothing a player placed is ever
+/// recorded. Removal takes the hedge away only while every module still stands as laid, so a
+/// yard whose hedge the player cut or rebuilt keeps what is left and nothing joined to it goes;
+/// each planted plant still standing goes with its building. O(row length) per row, O(area /
+/// spacing²) per planting area and O(n) per removed yard of n plants; nothing when no building
+/// changed.
+pub(crate) fn publish_yards(core: &mut SimCore) {
+    let events = std::mem::take(&mut core.allocator.pending_yards);
     if events.is_empty() {
         return;
     }
@@ -190,36 +199,45 @@ pub(crate) fn publish_yard_hedges(core: &mut SimCore) {
     let layout = PatchLayout::new(core);
     for event in events {
         match event {
-            YardHedgeEvent::Placed { key, hedge, rows } => {
-                let Some(preset) = preset(HEDGE_LOW_PRESET + hedge.index() as i64) else {
-                    continue;
-                };
-                let mut laid = Vec::new();
-                // Row by row, so each row sees the ones before it and the corners join.
-                for row in rows {
-                    let join = [row.join_from, row.join_to];
-                    for (cell, plant) in plan_row(core, preset, row.from, row.to, join, Some(YARD_SHARE_M)) {
-                        core.vegetation_edits.add(cell, plant);
-                        core.vegetation_edits.bump_patch(layout.key(plant.x, plant.z));
-                        laid.push((cell, plant));
+            YardEvent::Placed { key, hedge, rows, planting } => {
+                if let Some(preset) = hedge.and_then(|hedge| preset(HEDGE_LOW_PRESET + hedge.index() as i64)) {
+                    let mut laid = Vec::new();
+                    // Row by row, so each row sees the ones before it and the corners join.
+                    for row in rows {
+                        let join = [row.join_from, row.join_to];
+                        for (cell, plant) in plan_row(core, preset, row.from, row.to, join, Some(YARD_SHARE_M)) {
+                            core.vegetation_edits.add(cell, plant);
+                            core.vegetation_edits.bump_patch(layout.key(plant.x, plant.z));
+                            laid.push((cell, plant));
+                        }
                     }
+                    core.vegetation_edits.record_yard_hedge(key, laid);
                 }
-                core.vegetation_edits.record_yard_hedge(key, laid);
+                // After the hedge, so plants keep their room off it.
+                let mut planted = Vec::new();
+                for (index, area) in planting.iter().enumerate() {
+                    planted.extend(super::yard_planting::plant_area(core, key, index, area, &layout));
+                }
+                core.vegetation_edits.record_yard_planting(key, planted);
             }
-            YardHedgeEvent::Removed(key) => {
-                let Some(laid) = core.vegetation_edits.take_yard_hedge(key) else {
-                    continue;
+            YardEvent::Removed(key) => {
+                let remove = |core: &mut SimCore, laid: Vec<(VegetationCell, Plant)>| {
+                    for (cell, plant) in laid {
+                        core.vegetation_edits.remove_added(cell, |other| {
+                            (*other == plant).then(|| layout.key(plant.x, plant.z))
+                        });
+                    }
                 };
-                let untouched = laid.iter().all(|(cell, plant)| {
-                    core.vegetation_edits.cell(*cell).1.contains(plant)
-                });
-                if !untouched {
-                    continue;
+                if let Some(laid) = core.vegetation_edits.take_yard_hedge(key)
+                    && laid
+                        .iter()
+                        .all(|(cell, plant)| core.vegetation_edits.cell(*cell).1.contains(plant))
+                {
+                    remove(core, laid);
                 }
-                for (cell, plant) in laid {
-                    core.vegetation_edits.remove_added(cell, |other| {
-                        (*other == plant).then(|| layout.key(plant.x, plant.z))
-                    });
+                if let Some(planted) = core.vegetation_edits.take_yard_planting(key) {
+                    // A plant the player already removed is simply not found.
+                    remove(core, planted);
                 }
             }
         }

@@ -103,6 +103,8 @@ pub struct VegetationEdits {
     // The hedge modules each building's yard laid, by the building's parcel and build
     // generation, so demolition removes exactly those and nothing a player drew.
     yard_hedges: BTreeMap<(u64, u32), Vec<(VegetationCell, AuthoredPlant)>>,
+    // The plants each building's yard planting areas planted, keyed as `yard_hedges`.
+    yard_planting: BTreeMap<(u64, u32), Vec<(VegetationCell, AuthoredPlant)>>,
 }
 
 impl VegetationEdits {
@@ -252,6 +254,32 @@ impl VegetationEdits {
         &self,
     ) -> impl Iterator<Item = (&(u64, u32), &Vec<(VegetationCell, AuthoredPlant)>)> {
         self.yard_hedges.iter()
+    }
+
+    /// Records the plants a building's yard planting areas planted, keyed as its hedge.
+    pub(crate) fn record_yard_planting(
+        &mut self,
+        key: (u64, u32),
+        plants: Vec<(VegetationCell, AuthoredPlant)>,
+    ) {
+        if !plants.is_empty() {
+            self.yard_planting.entry(key).or_default().extend(plants);
+        }
+    }
+
+    /// Forgets a yard's planting record and returns what it planted. O(log Y) in recorded yards.
+    pub(crate) fn take_yard_planting(
+        &mut self,
+        key: (u64, u32),
+    ) -> Option<Vec<(VegetationCell, AuthoredPlant)>> {
+        self.yard_planting.remove(&key)
+    }
+
+    /// Every yard planting record in key order, for saving.
+    pub(crate) fn yard_planting(
+        &self,
+    ) -> impl Iterator<Item = (&(u64, u32), &Vec<(VegetationCell, AuthoredPlant)>)> {
+        self.yard_planting.iter()
     }
 
     // Sorting is confined to save time; query and edit paths never scan the whole store.

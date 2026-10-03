@@ -60,6 +60,10 @@ var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
 var _ground_grid: MeshInstance3D
 # The yard hedge rows a spawned building lays, drawn as the distant hedge boxes.
+# Yard planting kinds, which the editor keeps among the site surfaces, and their fill bucket.
+const PLANTING_KINDS := ["trees", "bushes", "mixed"]
+const PLANTING := "planting"
+var _planting_fill: StandardMaterial3D
 var _yard_hedge: MultiMeshInstance3D
 var _scale_reference: MeshInstance3D
 var _scale_reference_pick: RefCounted
@@ -827,7 +831,20 @@ func _loading_color() -> Color:
 func _selected_anchor_color() -> Color:
 	return Color(0.68, 0.40, 0.06) if _is_light_theme() else Color(1.0, 0.84, 0.40)
 
+# A planting area is lawn, not paving: a translucent green wash over the preview ground.
+func _planting_fill_material() -> StandardMaterial3D:
+	if _planting_fill == null:
+		_planting_fill = StandardMaterial3D.new()
+		_planting_fill.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_planting_fill.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# Authored outlines may wind either way, so their triangles may face down.
+		_planting_fill.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_planting_fill.albedo_color = Color(0.45, 0.8, 0.3, 0.35)
+	return _planting_fill
+
 func _site_surface_color(material: String) -> Color:
+	if material in PLANTING_KINDS:
+		return Color(0.18, 0.42, 0.14) if _is_light_theme() else Color(0.55, 0.85, 0.45)
 	match material:
 		"asphalt":
 			return Color(0.38, 0.45, 0.49) if _is_light_theme() else Color(0.63, 0.70, 0.75)
@@ -1047,11 +1064,14 @@ func _build_site_surface_fill() -> void:
 	var triangles_by_material := {
 		WorldMaterials.MATERIAL_ASPHALT: PackedVector3Array(),
 		WorldMaterials.MATERIAL_CONCRETE: PackedVector3Array(),
+		PLANTING: PackedVector3Array(),
 	}
 
 	for surface in _site_surfaces:
 		var material := str(surface.get("material", WorldMaterials.MATERIAL_ASPHALT))
-		if not triangles_by_material.has(material):
+		if material in PLANTING_KINDS:
+			material = PLANTING
+		elif not triangles_by_material.has(material):
 			material = WorldMaterials.MATERIAL_ASPHALT
 		var vertices := _site_surface_vertices(surface, SITE_SURFACE_FILL_Y)
 		if vertices.size() < 3:
@@ -1061,7 +1081,7 @@ func _build_site_surface_fill() -> void:
 		triangles_by_material[material] = material_triangles
 
 	var mesh := ArrayMesh.new()
-	for material in [WorldMaterials.MATERIAL_ASPHALT, WorldMaterials.MATERIAL_CONCRETE]:
+	for material in [WorldMaterials.MATERIAL_ASPHALT, WorldMaterials.MATERIAL_CONCRETE, PLANTING]:
 		var vertices: PackedVector3Array = triangles_by_material[material]
 		if vertices.is_empty():
 			continue
@@ -1074,7 +1094,7 @@ func _build_site_surface_fill() -> void:
 		arrays[Mesh.ARRAY_VERTEX] = vertices
 		arrays[Mesh.ARRAY_NORMAL] = normals
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, WorldMaterials.site_surface_material(material))
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _planting_fill_material() if material == PLANTING else WorldMaterials.site_surface_material(material))
 
 	_site_surface_fill.mesh = mesh if mesh.get_surface_count() > 0 else null
 
@@ -1110,6 +1130,8 @@ func _site_surface_label(surface: Dictionary, material_index: int) -> String:
 	return "%s %d" % [material, material_index]
 
 func _site_surface_label_prefix(material: String) -> String:
+	if material in PLANTING_KINDS:
+		return "Planting: " + material
 	match material:
 		"asphalt":
 			return "Asphalt"

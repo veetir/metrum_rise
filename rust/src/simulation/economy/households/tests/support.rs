@@ -193,6 +193,7 @@ fn test_building_data(zone: Option<ZoneClass>) -> BuildingData {
         extractor: None,
         field: None,
         yard_hedge: None,
+        yard_planting: Vec::new(),
     }
 }
 

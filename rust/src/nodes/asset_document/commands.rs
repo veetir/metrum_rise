@@ -196,11 +196,13 @@ fn edit(
                 }
                 ("anchors", entry)
             }
-            "asphalt" | "concrete" => {
-                let (w, d) = if kind == "asphalt" {
-                    (2.5, 3.5)
-                } else {
-                    (0.7, 3.0)
+            // Yard paving, or a yard planting area, which the editor keeps among the surfaces
+            // under its plant kind and export writes out as `[[building.yard_planting]]`.
+            "asphalt" | "concrete" | "trees" | "bushes" | "mixed" => {
+                let (w, d) = match kind.as_str() {
+                    "asphalt" => (2.5, 3.5),
+                    "concrete" => (0.7, 3.0),
+                    _ => (2.0, 2.0),
                 };
                 let vertices = [[-w, -d], [w, -d], [w, d], [-w, d]]
                     .into_iter()
@@ -294,7 +296,7 @@ fn edit(
             }
             "material" => {
                 let material = text(args, "material");
-                if !matches!(material.as_str(), "asphalt" | "concrete") {
+                if !matches!(material.as_str(), "asphalt" | "concrete" | "trees" | "bushes" | "mixed") {
                     return Err("Unsupported surface material".into());
                 }
                 entry.set("material", material);

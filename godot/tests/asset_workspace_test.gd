@@ -359,6 +359,11 @@ func _test_model_and_publication(editor: Node) -> void:
 		editor._menus.actions.create_from_controls("entrance")
 		editor._menus.actions.confirm()
 		session.capture_geometry("Add entrance")
+		if kind == "residential":
+			editor._menus.actions.create_from_controls("trees")
+			editor._menus.actions.confirm()
+			session.capture_geometry("Plant trees")
+			_expect(session.params["site_surfaces"].any(func(surface): return surface["material"] == "trees"), "a planting area is created like a yard surface")
 		var profile: String = {"commercial": "grocery_basic", "industrial": "machinery_factory_basic", "extractor": "coal_mine_basic", "farm": "grain_farm_basic", "service": "power_plant_basic"}.get(kind, "")
 		if not profile.is_empty():
 			session.set_field("economy_profile", profile)
@@ -379,6 +384,8 @@ func _test_model_and_publication(editor: Node) -> void:
 		if loaded is Dictionary:
 			session.load_manifest(loaded)
 			_expect(session.descriptor["kind"] == kind and editor._parts.size() == 1, "runtime roundtrip retains type and mesh for " + kind)
+			if kind == "residential":
+				_expect(session.params["site_surfaces"].any(func(surface): return surface["material"] == "trees"), "a planting area survives export and reopening")
 	var state: Dictionary = session.document.snapshot()
 	state["params"]["mesh_parts"][0]["position"] = [0.1234, 0.2345, 0.3456]
 	state["params"]["mesh_parts"][0]["rotation_degrees"] = [0, 12.3456, 0]

@@ -651,6 +651,36 @@ hedges, shrubs and trees (`VEG-16`). Undoing a
 bulldoze lays the yard's hedge again. Buildings placed before an asset gained a yard hedge, and
 buildings in saves older than version `68`, have none recorded.
 
+### Yard Planting
+
+A building asset may mark lawn areas its yard grows trees or shrubs in (`VEG-17`):
+
+```toml
+[[building.yard_planting]]
+plants = "trees"                                     # trees | bushes | mixed
+name = "back yard"                                   # optional editor label
+vertices = [[-9, -14], [9, -14], [9, -6.5], [-9, -6.5]]
+```
+
+The editor keeps planting areas among the yard surfaces (Site → Surfaces, `Plant trees`, `Plant
+bushes`, `Plant mixed`, or Create → Yard planting), as a surface whose material is the plant kind,
+so they are drawn, dragged and edited like paving and preview as a green wash. Export writes them as
+`[[building.yard_planting]]`, never as paving, and reading an asset puts them back among the
+surfaces. They are validated like surfaces: inside the lot, three or more vertices, non-zero area,
+no self-intersection. They do not cut the yard hedge.
+
+When a zoned building is placed, each area is filled on a jittered grid in the lot's frame: trees
+(the brush's scattered broadleaf-led mix) about one per 50 m², shrubs (the six yard shrubs) about one
+per 14 m², and mixed as a few trees among fewer shrubs. The grid is salted by the building's parcel
+id and build generation, so two copies of one asset grow different yards, a reload grows the same
+one, and a rebuilt parcel grows anew. Every plant passes the brush's clearance and spacing tests. A
+tree inside a planting area needs only `1.5 m` off walls, paving and roads instead of a wild tree's
+`6 m`, which also lets players plant trees there with the brush. The plants are ordinary authored
+vegetation, recorded per yard (save version `69`, table `yard_planting_plants`); each one still
+standing goes with its building, and undoing a bulldoze plants the same set again. Plants the
+player added are never recorded. Planting costs O(area / spacing²) bounded clearance tests per
+area, once per spawn.
+
 ### Back Yards
 
 A back yard is a deeper lot, not a hedge offset: the land stays the building's own, so zoning

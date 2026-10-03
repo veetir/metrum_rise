@@ -147,6 +147,9 @@ func _surfaces(box: Control) -> void:
 	box.add_child(actions)
 	for material in ["asphalt", "concrete"]:
 		v.button(actions, "Add " + material, func(): e._menus.actions.create_from_controls(material))
+	# Planting areas: lawn a spawned house fills with its own trees or shrubs.
+	for plants in ["trees", "bushes", "mixed"]:
+		v.button(actions, "Plant " + plants, func(): e._menus.actions.create_from_controls(plants))
 	v._site_surface_list = ItemList.new()
 	v._site_surface_list.custom_minimum_size.y = 125
 	v._site_surface_list.item_selected.connect(e._on_site_surface_selected)
@@ -158,11 +161,14 @@ func _surfaces(box: Control) -> void:
 	v._site_surface_name_edit = v.text_field(body, "_surface_name", "Name · authored")
 	v._site_surface_name_edit.text_changed.connect(e._on_site_surface_text_changed)
 	v._site_surface_name_edit.text_changed.connect(func(_value): e._session.capture_geometry("Rename surface"))
-	v._site_surface_material_btn = v.choice_field(body, "_surface_material", "Material", ["asphalt", "concrete"])
+	v._site_surface_material_btn = v.choice_field(body, "_surface_material", "Material", e.SITE_SURFACE_MATERIALS.map(func(m): return m.id))
+	for index in v._site_surface_material_btn.item_count:
+		v._site_surface_material_btn.set_item_text(index, e._site_surface_material_label(v._site_surface_material_btn.get_item_metadata(index)))
 	v._site_surface_material_btn.item_selected.connect(e._on_site_surface_material_selected)
 	v._site_surface_material_btn.item_selected.connect(func(_value): e._session.capture_geometry("Change surface material"))
 	v._site_surface_y_spin = _geometry_number(body, "_surface_y", "Height (m)", -50, 50, 0.01, e._on_site_surface_spin_changed)
 	_label(body, "Drag vertices in the viewport. Right-click an edge to add a vertex, or a vertex to remove it.")
+	_label(body, "Planting areas are lawn: each spawned house fills them with its own trees or shrubs, and players can plant trees there too.")
 	v.surface_properties.visible = false
 
 func _gameplay() -> void:

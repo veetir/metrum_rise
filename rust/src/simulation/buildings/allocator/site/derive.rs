@@ -212,6 +212,23 @@ impl BuildingAllocator {
             })
             .unwrap_or_default();
 
+        let planting_world = self
+            .registry
+            .get(&building.asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .map(|data| {
+                data.yard_planting
+                    .iter()
+                    .map(|area| {
+                        area.vertices
+                            .iter()
+                            .map(|&[x, z]| building_local_xz_pos(building, [x, 0.0, z], frontage_forward))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         BuildingSiteClient {
             foundation_mesh: Default::default(),
             footprint_world,
@@ -219,6 +236,7 @@ impl BuildingAllocator {
             support_height_m: building.support_height_m,
             surfaces,
             structure_world,
+            planting_world,
         }
     }
 

@@ -601,7 +601,7 @@ impl SimCore {
             return false;
         }
         self.publish_pending_production_site_removals();
-        crate::nodes::simulation_node::vegetation_api::publish_yard_hedges(self);
+        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }

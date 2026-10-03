@@ -6,7 +6,12 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 68;
+pub const SAVE_VERSION: i64 = 69;
+
+/// First version recording the plants each building's yard planting areas planted.
+///
+/// A save below this one has no planting records; no asset could author planting areas then.
+pub const YARD_PLANTING_SAVE_VERSION: i64 = 69;
 
 /// First version recording the hedge modules each building's yard laid.
 ///
@@ -91,6 +96,9 @@ CREATE TABLE vegetation_additions(layer INTEGER, cell_x INTEGER, cell_z INTEGER,
 CREATE TABLE yard_hedge_modules(parcel_id INTEGER, build_generation INTEGER, layer INTEGER,
                                 cell_x INTEGER, cell_z INTEGER, x REAL, z REAL, yaw REAL,
                                 scale REAL, species INTEGER, variant INTEGER);
+CREATE TABLE yard_planting_plants(parcel_id INTEGER, build_generation INTEGER, layer INTEGER,
+                                  cell_x INTEGER, cell_z INTEGER, x REAL, z REAL, yaw REAL,
+                                  scale REAL, species INTEGER, variant INTEGER);
 CREATE TABLE time_state(
     time_elapsed REAL NOT NULL,
     speed_multiplier REAL NOT NULL,

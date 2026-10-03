@@ -1337,3 +1337,84 @@ fn a_house_reaching_its_back_line_lays_every_planned_module() {
     let laid = yard_hedge_count(&core);
     assert!((least..=most).contains(&laid), "laid {laid}, planned {least}..={most}: {rows:?}");
 }
+
+// Every recorded yard planting plant, in record order.
+fn yard_planting(core: &SimCore) -> Vec<crate::simulation::vegetation::edits::AuthoredPlant> {
+    core.vegetation_edits
+        .yard_planting()
+        .flat_map(|(_, plants)| plants.iter().map(|(_, plant)| *plant))
+        .collect()
+}
+
+#[test]
+fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() {
+    use crate::assets::asset::{YardPlantKind, YardPlanting};
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    // The strips beside the fixture's 10.5 m house: trees on one side, within a wild tree's 6 m
+    // of the wall, and shrubs on the other.
+    manifest.building.as_mut().unwrap().yard_planting = vec![
+        YardPlanting {
+            plants: YardPlantKind::Trees,
+            name: String::new(),
+            vertices: vec![[6.0, -3.0], [9.5, -3.0], [9.5, 9.5], [6.0, 9.5]],
+        },
+        YardPlanting {
+            plants: YardPlantKind::Bushes,
+            name: String::new(),
+            vertices: vec![[-9.5, -3.0], [-6.0, -3.0], [-6.0, 9.5], [-9.5, 9.5]],
+        },
+    ];
+    core.allocator.registry.register("test", manifest, String::new());
+    let first = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let first_plants = yard_planting(&core);
+    let trees = first_plants.iter().filter(|plant| plant.species < 2).count();
+    assert!(trees > 0 && first_plants.len() > trees, "{first_plants:?}");
+    let second = place_yard(&mut core, 9, -1.0, &asset).unwrap();
+    let both = yard_planting(&core);
+    // The same asset grows a different yard: compare each yard's plants in its own lot frame.
+    let local = |building: usize, plants: &[crate::simulation::vegetation::edits::AuthoredPlant]| {
+        let b = &core.allocator.buildings[building];
+        let front = core.allocator.registry.get(&b.asset_id).unwrap().manifest.building_frontage_forward();
+        let (bx, bz) = crate::simulation::buildings::allocator::building_local_xz_basis(b.facing_dir, front);
+        let centre = Vector2::new(b.center_x, b.center_y);
+        let mut out: Vec<_> = plants
+            .iter()
+            .map(|p| {
+                let d = Vector2::new(p.x, p.z) - centre;
+                ((d.dot(bx) * 10.0).round() as i32, (d.dot(bz) * 10.0).round() as i32)
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    let second_plants = both[first_plants.len()..].to_vec();
+    assert!(!second_plants.is_empty());
+    assert_ne!(local(first, &first_plants), local(second, &second_plants));
+    // A save and load keeps the yards as they grew.
+    let path = temp_save_path("yard_planting");
+    core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    core.precompute_road_mesh_data();
+    assert_eq!(yard_planting(&core), both);
+    // Bulldozing takes the first yard's plants only; undo plants the same ones again.
+    assert!(core.bulldoze_building(first));
+    let standing = |core: &SimCore, plant: &crate::simulation::vegetation::edits::AuthoredPlant| {
+        core.vegetation_edits
+            .sorted_cells()
+            .into_iter()
+            .any(|cell| core.vegetation_edits.cell(cell).1.contains(plant))
+    };
+    assert!(!first_plants.iter().any(|plant| standing(&core, plant)));
+    assert!(second_plants.iter().all(|plant| standing(&core, plant)));
+    assert!(core.undo_action_internal());
+    assert!(first_plants.iter().all(|plant| standing(&core, plant)));
+}

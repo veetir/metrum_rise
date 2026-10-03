@@ -34,6 +34,9 @@ pub(crate) struct BuildingSiteClient {
     /// World-space footprint of each mesh part's imported bounds: the walls a yard plant keeps
     /// off. Empty when the asset has no imported bounds.
     pub(crate) structure_world: Vec<[Vector2; 4]>,
+    /// World-space yard planting areas, where a yard tree may stand nearer the house than a
+    /// tree's usual room allows.
+    pub(crate) planting_world: Vec<Vec<Vector2>>,
 }
 
 /// Minimal immutable building-site data needed by asynchronous terrain jobs.

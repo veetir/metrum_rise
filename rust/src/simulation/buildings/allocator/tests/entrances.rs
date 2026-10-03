@@ -152,6 +152,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             extractor: None,
             field: None,
             yard_hedge: None,
+            yard_planting: Vec::new(),
         }),
         prop: None,
         vehicle: None,

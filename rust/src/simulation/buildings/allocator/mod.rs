@@ -13,7 +13,7 @@ mod index;
 mod lifecycle;
 mod placement;
 mod site;
-pub(crate) mod yard_hedge;
+pub(crate) mod yard;
 
 #[cfg(test)]
 mod tests;
@@ -332,7 +332,7 @@ pub struct BuildingAllocator {
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Yard hedges to lay and remove, in the order the buildings were placed and removed.
-    pub(crate) pending_yard_hedges: Vec<yard_hedge::YardHedgeEvent>,
+    pub(crate) pending_yards: Vec<yard::YardEvent>,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
@@ -618,7 +618,7 @@ impl BuildingAllocator {
             max_building_support_m: f32::NEG_INFINITY,
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
-            pending_yard_hedges: Vec::new(),
+            pending_yards: Vec::new(),
             max_lot_radius_cells: 0.0,
             max_site_radius_m: 0.0,
             dirty_index: true,
@@ -763,7 +763,7 @@ impl BuildingAllocator {
         self.buildings.clear();
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
-        self.pending_yard_hedges.clear();
+        self.pending_yards.clear();
         self.building_sites.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {

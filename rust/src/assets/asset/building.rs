@@ -94,6 +94,9 @@ pub struct BuildingData {
     /// Hedge a spawned building lines its yard with; none when omitted.
     #[serde(default)]
     pub yard_hedge: Option<super::YardHedge>,
+    /// Lawn areas a spawned building plants with trees or shrubs; none when omitted.
+    #[serde(default)]
+    pub yard_planting: Vec<super::YardPlanting>,
 }
 
 /// Authored extraction behavior for one explicit industry building.

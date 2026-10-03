@@ -108,6 +108,17 @@ impl BuildingAllocator {
             .unwrap_or(false)
     }
 
+    /// Whether `pos` lies in a building's yard planting area. Same bounded chunk lookup.
+    pub(crate) fn in_yard_planting(&self, pos: Vector2) -> bool {
+        self.site_at(pos, |site| {
+            site.planting_world
+                .iter()
+                .any(|area| point_in_polygon_slice(pos, area))
+                .then_some(())
+        })
+        .is_some()
+    }
+
     // The lowest-index site for which `probe` answers at `pos`, through the 512 m chunk index;
     // a linear scan only while the index is being rebuilt.
     fn site_at<T>(&self, pos: Vector2, probe: impl Fn(&BuildingSiteClient) -> Option<T>) -> Option<T> {

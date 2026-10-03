@@ -240,10 +240,12 @@ pub(crate) fn yard_hedge_rows(data: &Value, structures: &[[[f32; 2]; 2]]) -> Val
     };
     let number = |value: &Value| value.as_f64().unwrap_or(0.0) as f32;
     let pair = |value: &Value, a: usize, b: usize| [number(&value[a]), number(&value[b])];
+    // Paving only: a planting area, kept among the surfaces by the editor, is lawn.
     let surfaces: Vec<Vec<[f32; 2]>> = data["site_surfaces"]
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|surface| super::asset::YardPlantKind::from_name(text(surface, "material")).is_none())
         .map(|surface| {
             surface["vertices"]
                 .as_array()

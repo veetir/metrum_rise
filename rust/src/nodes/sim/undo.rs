@@ -822,8 +822,8 @@ impl SimCore {
         // The bulldoze took the yard's hedge with it; restoring the building lays it again,
         // skipping whatever of it still stands.
         self.allocator
-            .queue_yard_hedge(building_idx, self.zoning.config.zone_cell_m);
-        crate::nodes::simulation_node::vegetation_api::publish_yard_hedges(self);
+            .queue_yard(building_idx, self.zoning.config.zone_cell_m);
+        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
     }

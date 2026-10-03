@@ -691,6 +691,7 @@ mod tests {
                 extractor: None,
                 field: None,
                 yard_hedge: None,
+                yard_planting: Vec::new(),
             }),
             prop: None,
             vehicle: None,
