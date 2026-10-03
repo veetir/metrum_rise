@@ -365,6 +365,10 @@ Current WorldEditor shortcuts:
 | Two-finger scroll (touchpad) | Zoom camera, in fractions of a step |
 | Pinch (touchpad) | Zoom camera by the pinch factor |
 
+W / A / S / D pan only while no embedded window, such as the save dialog or an open menu, is
+exclusive or holds focus; that window's own text fields are invisible to the game window's focus
+owner, so typing a save name also panned the camera (`UI-01`).
+
 Godot 4.7.1 dispatches each touchpad gesture twice, so `input_manager.gd` consumes the repeated
 copy before any handler sees it. The vegetation brush takes Ctrl (radius) and Shift (option) with
 the wheel or a two-finger scroll. macOS turns Shift with a vertical scroll into a horizontal one,

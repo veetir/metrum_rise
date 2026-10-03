@@ -269,13 +269,12 @@ func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 		camera.zoom(zoom_delta)
 
 func _ui_has_modal_popup() -> bool:
-	var viewport := get_viewport()
-	var window := viewport as Window
-	return (
-		window != null
-		and window.has_method("has_visible_popup")
-		and window.has_visible_popup()
-	)
+	# Dialogs and menus are embedded subwindows of the game window, so its own focus owner never
+	# sees their controls: a file name typed into the save dialog also panned the camera.
+	for window in get_viewport().get_embedded_subwindows():
+		if window.visible and (window.exclusive or window.has_focus()):
+			return true
+	return false
 
 func _ui_captures_keyboard_input() -> bool:
 	var viewport := get_viewport()
