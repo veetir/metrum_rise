@@ -127,7 +127,9 @@ func reset_defaults() -> void:
 
 func _persisted_values() -> Dictionary:
 	return {
-		GameSettings.KEY_FULLSCREEN: GameSettings.get_fullscreen_enabled(),
+		# The window itself, not the saved value: the player can leave or enter fullscreen
+		# outside Options, and Apply must not undo that.
+		GameSettings.KEY_FULLSCREEN: GameSettings.is_window_fullscreen(),
 		GameSettings.KEY_VSYNC: GameSettings.get_vsync_enabled(),
 		GameSettings.KEY_SHOW_FPS: GameSettings.get_show_fps(),
 		GameSettings.KEY_MAX_FPS: GameSettings.get_max_fps(),

@@ -166,9 +166,15 @@ static func apply_frame_settings() -> void:
 		root.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 
 static func apply_fullscreen_enabled(enabled: bool) -> void:
-	var target_mode := DisplayServer.WINDOW_MODE_FULLSCREEN if enabled else DisplayServer.WINDOW_MODE_WINDOWED
-	if DisplayServer.window_get_mode() != target_mode:
-		DisplayServer.window_set_mode(target_mode)
+	if enabled != is_window_fullscreen():
+		DisplayServer.window_set_mode(
+			DisplayServer.WINDOW_MODE_FULLSCREEN if enabled else DisplayServer.WINDOW_MODE_WINDOWED)
+
+## Whether the window is fullscreen now, however it got there: the setting, the macOS green
+## button or Ctrl+Cmd+F all leave it in one of the two fullscreen modes.
+static func is_window_fullscreen() -> bool:
+	return DisplayServer.window_get_mode() in [
+		DisplayServer.WINDOW_MODE_FULLSCREEN, DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN]
 
 static func get_ui_scale() -> float:
 	return normalized_ui_scale(float(get_value(
