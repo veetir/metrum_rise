@@ -39,6 +39,9 @@ uniform vec2 watermap_texture_size = vec2(1.0, 1.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
 
+// Keeps the surface just above coincident terrain so the two never z-fight.
+const float WATER_SURFACE_LIFT_M = 0.05;
+
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
 varying vec3 var_sun_direction_view;
@@ -70,14 +73,12 @@ float sample_raw_water_depth(vec2 uv) {
 	return texture(watermap, uv).r;
 }
 
-float sample_contour_water_depth(vec2 uv) {
-	// The watermap sampler uses linear filtering. Sampling it between texel
-	// centers yields a contour-style shoreline field on top of the authored
-	// grid instead of exposing whole-cell steps directly.
-	return sample_raw_water_depth(uv);
-}
-
-float sample_display_water_depth(vec2 uv) {
+// Smoothed water level at a vertex. A dry vertex takes the level of the wet samples beside it
+// rather than its own terrain height, so the surface stays flat where a shoreline cell meets
+// rising ground and the terrain hides the part below it. Lifting dry vertices to the terrain
+// instead tilted the surface up steep banks. Without a wet sample nearby the vertex stays on the
+// terrain.
+float sample_display_water_surface(vec2 uv) {
 	float center_terrain = sample_terrain_world_height(uv);
 	float center_depth = sample_raw_water_depth(uv);
 	float center_surface = center_terrain + center_depth;
@@ -117,7 +118,19 @@ float sample_display_water_depth(vec2 uv) {
 	}
 
 	if (accum_weight <= 0.0) {
-		return 0.0;
+		// The corner of a shoreline cell opposite its only wet corner has no wet side neighbour;
+		// its wet sample is diagonal.
+		for (int corner = 0; corner < 4; corner++) {
+			vec2 offset = vec2(corner % 2 == 0 ? -1.0 : 1.0, corner < 2 ? -1.0 : 1.0) * (dx + dz);
+			float diagonal_depth = sample_raw_water_depth(uv + offset);
+			if (diagonal_depth > 0.001) {
+				accum_surface += sample_terrain_world_height(uv + offset) + diagonal_depth;
+				accum_weight += 1.0;
+			}
+		}
+		if (accum_weight <= 0.0) {
+			return center_terrain;
+		}
 	}
 
 	float average_surface = accum_surface / accum_weight;
@@ -129,17 +142,13 @@ float sample_display_water_depth(vec2 uv) {
 			clamp(water_surface_smoothing, 0.0, 1.0)
 		);
 	}
-	return max(display_surface - center_terrain, 0.0);
+	return display_surface;
 }
 
 void vertex() {
 	var_centered_uv = centered_uv(UV);
-	float terrain_height = texture(heightmap, terrain_height_uv(var_centered_uv)).r;
-	float water_depth = sample_display_water_depth(var_centered_uv);
-	
-	// Terrain samples are still in pre-scaled storage units, but water depth is
-	// already world-space metres. Only the terrain sample should use height_scale.
-	VERTEX.y += terrain_height * height_scale + water_depth + 0.05;
+	float water_surface = sample_display_water_surface(var_centered_uv);
+	VERTEX.y += water_surface + WATER_SURFACE_LIFT_M;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	var_sun_direction_view = normalize((MODELVIEW_MATRIX * vec4(normalize(scene_sun_direction), 0.0)).xyz);
 	vec3 view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -350,7 +359,13 @@ vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 }
 
 void fragment() {
-	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
+	// Water column under this pixel: the flat surface minus the terrain below it. Shoreline cells
+	// are drawn whole at the water level, so this reaches zero exactly where the terrain meets the
+	// surface, unlike the depth texture, which interpolates across the cell to its dry corner.
+	float contour_depth_m = max(
+		var_world_pos.y - WATER_SURFACE_LIFT_M - sample_terrain_world_height(var_centered_uv),
+		0.0
+	);
 	float depth_m = contour_depth_m;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
 	float depth_factor = smoothstep(0.12, max(water_deep_color_depth_m, 0.121), depth_m);

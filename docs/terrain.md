@@ -3519,6 +3519,13 @@ Current deterministic rules:
 - the water shader reads the terrain patch's height texture through that texture's own layout
   (derived from its size), never the watermap UV; reusing the watermap UV shifted terrain height
   outward near patch edges and opened lake-bed slivers along seams (`WATER-02`)
+- water patch border texels hold the neighbouring patch's real depth samples, like terrain
+  borders; the surface smoothing pairs the two, and clamped borders gave the two sides of a seam
+  different heights (`WATER-02`)
+- every water vertex sits at the smoothed water level, including dry shoreline vertices, and any
+  mesh cell touching water is drawn whole; the terrain hides the surface above the shoreline, and
+  the fragment shore fade uses surface height minus terrain height per pixel. Lifting dry
+  vertices to the terrain tilted the surface up steep banks (`WATER-02`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch

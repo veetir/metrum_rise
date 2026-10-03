@@ -519,9 +519,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
-- `WATER-02`: the straight lake-bed slivers along patch seams came from the water shader reading
-  the terrain height texture with the watermap's border layout. It now uses the terrain texture's
-  own layout. The Kuopio DEM import was not at fault. See [`terrain.md`](terrain.md).
+- `WATER-02`: lake seam slivers, hairline seam cracks and water tilting up steep banks were
+  rendering faults, not the Kuopio DEM import: the water shader read terrain height with the
+  watermap's layout, water borders repeated edge depth instead of the neighbour's, and shoreline
+  vertices took dry terrain height. Water now stays flat at its level and terrain forms the
+  shoreline. See [`terrain.md`](terrain.md).
 
 - Options → Graphics gains V-Sync, Show FPS (top-right readout), Max FPS, Render scale (FSR 2),
   Shadows and View distance, applied live and persisted in `user://settings.cfg`. They replace
