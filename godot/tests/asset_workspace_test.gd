@@ -368,6 +368,8 @@ func _test_model_and_publication(editor: Node) -> void:
 			session.set_field(field, "")
 			_expect(session.descriptor["kind"] == kind and editor._view.rows[field].visible, "resource editing retains type and controls")
 			session.set_field(field, resource)
+		session.revalidate()
+		_expect(editor._view.validate_result.visible and editor._view.validate_result.text.contains("no issues"), "revalidate reports its result for " + kind)
 		session.publish()
 		_expect(session._issues.is_empty(), "runtime publication for %s: %s" % [kind, JSON.stringify(session._issues)])
 		_expect(editor._view.export_result.visible and editor._view.export_result.text.begins_with("Exported to "), "export confirms itself under its button for " + kind)
@@ -382,7 +384,7 @@ func _test_model_and_publication(editor: Node) -> void:
 	state["params"]["mesh_parts"][0]["rotation_degrees"] = [0, 12.3456, 0]
 	state["params"]["anchors"][0]["width_m"] = 8.7654
 	session.document.apply(state, "Loaded precise metadata")
-	_expect(not editor._view.export_result.visible, "the next edit clears the export confirmation")
+	_expect(not editor._view.export_result.visible and not editor._view.validate_result.visible, "the next edit clears the export and revalidate results")
 	editor._select_site_anchor(0)
 	editor._view._site_anchor_y_spin.value = 2
 	_expect(session.params["anchors"][0]["width_m"] == 8.7654, "entrance coordinate edits preserve dormant width metadata")

@@ -182,7 +182,9 @@ func _validate() -> void:
 	var box: Control = v.tasks["validate"]
 	_label(box, "Drafts can be incomplete. Runtime export requires all errors to be resolved.")
 	v.export_summary = _label(box, "")
-	v.button(box, "Revalidate", e._session.validate)
+	v.button(box, "Revalidate", e._session.revalidate)
+	v.validate_result = _label(box, "")
+	v.validate_result.visible = false
 	v.issues_box = VBoxContainer.new()
 	box.add_child(v.issues_box)
 	v.button(box, "Export runtime asset…", e._on_export_pressed)

@@ -82,6 +82,7 @@ func _document_changed() -> void:
 		return
 	rendering = true
 	_editor._view.export_result.visible = false
+	_editor._view.validate_result.visible = false
 	var state := document.snapshot()
 	params = state.get("params", {})
 	has_document = not state.is_empty()
@@ -476,6 +477,18 @@ func load_draft(path: String) -> void:
 	thumbnails.load_image(str(result["document"].get("thumbnail_source", "")))
 	_editor._view.show_task("model")
 
+## Revalidate button: validates and says what it found, since an unchanged issue list otherwise
+## looks as if nothing happened.
+func revalidate() -> void:
+	if not ready or not has_document:
+		return
+	validate()
+	var time := Time.get_time_string_from_system()
+	if _issues.is_empty():
+		_show_result(_editor._view.validate_result, "Checked at %s: no issues, ready to export." % time, true)
+	else:
+		_show_result(_editor._view.validate_result, "Checked at %s: %d issue(s), listed below." % [time, _issues.size()], false)
+
 func validate() -> void:
 	if not ready or not has_document:
 		return
@@ -535,13 +548,13 @@ func publish(move_original: bool = false) -> void:
 	validate()
 	if not _issues.is_empty():
 		_editor._view.show_task("validate")
-		_show_export_result("Not exported: resolve the issues above first.", false)
+		_show_result(_editor._view.export_result, "Not exported: resolve the issues above first.", false)
 		return
 	var state := document.snapshot()
 	var output := ProjectSettings.globalize_path("user://mods/" + str(params["pack_id"]))
 	var error := AssetAuthoringFiles.publish_document(JSON.stringify(state), output)
 	if not error.is_empty():
-		_show_export_result("Export failed: " + error, false)
+		_show_result(_editor._view.export_result, "Export failed: " + error, false)
 		message("Export failed: " + error)
 		return
 	var origin: Dictionary = state.get("origin", {})
@@ -561,14 +574,12 @@ func publish(move_original: bool = false) -> void:
 	_editor._refresh_asset_browser()
 	_editor._view.status.text = "Runtime asset exported. No unsaved changes."
 	_editor._log("Runtime asset exported: " + str(params["asset_id"]))
-	var time := Time.get_time_dict_from_system()
-	_show_export_result("Exported to %s:%s at %02d:%02d:%02d." % [
-		params["pack_id"], params["asset_id"], time["hour"], time["minute"], time["second"]], true)
+	_show_result(_editor._view.export_result, "Exported to %s:%s at %s." % [
+		params["pack_id"], params["asset_id"], Time.get_time_string_from_system()], true)
 
-# Applying the published revision above re-renders the document first, so this runs last and
-# survives until the next edit clears it.
-func _show_export_result(text: String, ok: bool) -> void:
-	var label: Label = _editor._view.export_result
+# A button's outcome line. Publishing re-renders the document before export reports, so the
+# line survives until the next edit clears it.
+func _show_result(label: Label, text: String, ok: bool) -> void:
 	label.text = text
 	label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.5) if ok else Color(0.95, 0.45, 0.4))
 	label.visible = true
