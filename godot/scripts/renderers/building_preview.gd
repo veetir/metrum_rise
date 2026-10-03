@@ -119,7 +119,7 @@ func _ready() -> void:
 	ground_mesh.size = Vector2(10000.0, 10000.0)
 	_ground.mesh = ground_mesh
 	_ground.position.y = LOT_PLANE_Y - 0.025
-	_ground.material_override = WorldMaterials.flat_terrain_material()
+	_ground.material_override = WorldMaterials.editor_ground_material()
 	var grid_material := ShaderMaterial.new()
 	grid_material.shader = GroundShader
 	grid_material.set_shader_parameter("cell_m", CELL_M)
@@ -858,8 +858,8 @@ func _build_lot_plane() -> void:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	# Unpainted lot areas match the surrounding terrain; authored yards render above it.
-	mesh.surface_set_material(0, WorldMaterials.flat_terrain_material())
+	# Unpainted lot areas match the surrounding ground; authored yards render above it.
+	mesh.surface_set_material(0, WorldMaterials.editor_ground_material())
 	_lot_plane.mesh = mesh
 
 func _build_ground_grid() -> void:

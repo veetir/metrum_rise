@@ -616,7 +616,7 @@ The building authoring view is WYSIWYG for the local flat lot:
 - The editor preview shows a flat lot plane with the authored `lot_width_cells` and
   `lot_depth_cells`, not an abstract infinite grid as the main authoring reference.
 - The lot boundary is the runtime site footprint.
-- Unpainted preview lot areas use the same grass terrain material as the surrounding ground,
+- Unpainted preview lot areas use the same grass material as the surrounding ground,
   independent of UI theme. Authored yard surfaces cover only their polygons.
 - Mesh parts, anchors, and `[[site_surfaces]]` share the same local coordinate system.
 - Authored site-surface materials preview on the flat lot as the runtime site client will render
@@ -1633,9 +1633,13 @@ Current preview (`TOOLS-04`):
 - Flat, shadow-receiving terrain beneath the preview with a 10 m × 10 m grid aligned
   to the lot cells, a selectable 1.8 m scale reference and explicit asset comparison ghost.
   The terrain is preview-only, below the lot surface, and never enters exported assets.
-  `WorldMaterials.flat_terrain_material()` reuses the game's terrain shader and cached grass
-  albedo/height textures with a constant zero heightmap and no water. World-space grass detail
-  and day/night shading come from that shader; the grid is a transparent overlay.
+  `WorldMaterials.editor_ground_material()` (`editor_ground.gdshader`) draws the game's grass
+  palette and site-ground lighting from two plain grass texture reads, with a fixed tint fitted to
+  the terrain shader's mean lawn colour in place of its meadow noise. The full terrain shader on
+  this screen-filling plane cost more than the rest of the editor view: at 1.5x render scale on
+  the M2 Pro (3456x1928 window, rintamamiestalo house, vsync off) a frame took `46.5 ms` with it
+  and `19.4 ms` with the editor ground, where hiding the ground entirely reaches the `16.7 ms`
+  display cap. The grid is a transparent overlay.
   One static two-triangle plane uses two material passes: O(1) geometry/storage,
   no per-frame CPU updates or allocations, and constant work per visible fragment.
   Enable Scale reference, then click its figure or 10-logical-pixel circular handle and left-drag.
