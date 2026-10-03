@@ -145,11 +145,20 @@ scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Build
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
 sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
-layout values. `Graphics` owns Apply-based `Fullscreen` and `Building detail`
-(Performance/Balanced/Quality; default Balanced), persisted through `user://settings.cfg`.
-Applying building detail updates live building renderers without reimporting assets; Cancel
-discards pending edits and Reset proposes defaults. Detail uses the shared screen-size LOD
-policy, not asset-authored distance bands; it changes neither simulation nor visibility.
+layout values. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
+(a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
+(Unlimited/30/60/120/144), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
+also turns off the screen-space AA pass), `Shadows` (High, or Low: plain PCF, two cascades, no
+cascade blending), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
+9 km) and `Building detail` (Performance/Balanced/Quality; default Balanced), persisted in the
+`graphics` section of `user://settings.cfg`. Apply takes effect live: frame settings through
+`GameSettings.apply_display_settings()`, shadows and view distance through the
+`graphics_settings` group (`SceneLighting`, `InputManager`), building detail through the
+building renderers without reimporting assets. Cancel discards pending edits and Reset
+proposes defaults. Detail uses the shared screen-size LOD policy, not asset-authored distance
+bands; it changes neither simulation nor visibility. Gameplay benchmarks
+(`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults.
+These replace the former `METRUM_GFX` preset and its F8-F11 hotkeys.
 `Gameplay` owns `Road construction preview`: `Road only (faster)` (default) or `Road and
 terrain`. It persists `gameplay/road_preview_mode`; Apply updates active road tools immediately,
 Cancel discards pending edits and Reset proposes Road only. Full mode previews ground changes
@@ -424,7 +433,7 @@ its close button is used.
 |--------|----------|-----------------|---------|
 | Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
 | Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
-| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen/windowed and building-detail presets, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |

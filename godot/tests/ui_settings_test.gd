@@ -41,6 +41,7 @@ func _run() -> void:
 		_expect(Settings.save_ui_scale(NAN) == OK and Settings.get_ui_scale() == Settings.DEFAULT_UI_SCALE, "Saving an invalid scale must never persist NaN")
 		_test_refresh(style)
 		_test_building_quality()
+		_test_frame_settings()
 		_test_road_preview_mode()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
@@ -65,6 +66,22 @@ func _test_building_quality() -> void:
 	_expect(panel.apply_changes() == OK and Settings.get_building_lod_quality() == 0, "Apply persists quality")
 	panel.reset_defaults()
 	_expect(panel.has_pending_changes() and panel._lod_quality.selected == 1, "Reset proposes Balanced without applying it")
+	panel.free()
+
+func _test_frame_settings() -> void:
+	for pair in [[75, 0], [60, 60], [0, 0]]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, pair[0])
+		_expect(Settings.get_max_fps() == pair[1], "Max FPS outside the choices falls back to Unlimited")
+	for pair in [[0.9, 1.0], [0.67, 0.67]]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_RENDER_SCALE, pair[0])
+		_expect(is_equal_approx(Settings.get_render_scale(), pair[1]), "Render scale outside the choices falls back to native")
+	var panel := preload("res://scripts/ui/graphics_options.gd").new()
+	root.add_child(panel)
+	panel._max_fps.item_selected.emit(2)
+	_expect(panel.has_pending_changes() and Settings.get_max_fps() == 0, "Pending max FPS must not change persisted settings")
+	_expect(panel.apply_changes() == OK and Settings.get_max_fps() == 60 and Engine.max_fps == 60, "Apply persists and applies max FPS")
+	panel.reset_defaults()
+	_expect(panel.apply_changes() == OK and Engine.max_fps == 0 and is_equal_approx(root.scaling_3d_scale, 1.0), "Reset restores the uncapped native frame")
 	panel.free()
 
 func _test_refresh(style: Script) -> void:

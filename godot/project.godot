@@ -9,7 +9,7 @@ run/main_scene="res://scenes/Router.tscn"
 [autoload]
 
 LaunchState="*res://scripts/core/launch_state.gd"
-GfxPreset="*res://scripts/core/gfx_preset.gd"
+FpsOverlay="*res://scripts/core/fps_overlay.gd"
 
 [display]
 

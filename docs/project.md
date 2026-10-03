@@ -519,6 +519,12 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Options → Graphics gains V-Sync, Show FPS (top-right readout), Max FPS, Render scale (FSR 2),
+  Shadows and View distance, applied live and persisted in `user://settings.cfg`. They replace
+  the `METRUM_GFX` preset environment variable and its F8-F11 hotkeys. Low shadows, reduced view
+  distance and 67% render scale together take the Kuopio overview from `11.8` to `8.8 ms` on an
+  M2 Pro. See [`ui.md`](ui.md).
+
 - `TERRAIN-03` / `TERRAIN-04`: idle frames and startup. Eleven road/site textures now import
   VRAM-compressed with mipmaps (startup `3.7 -> 1.9 s`), and the terrain shader reads four
   position-only noise fields from a texture baked once per world (`terrain_world_noise.gd`)
