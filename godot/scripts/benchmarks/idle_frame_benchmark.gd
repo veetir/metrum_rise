@@ -9,6 +9,8 @@
 ## streaming, LOD and vegetation work a moving view causes is measured on the same frames each run.
 ## METRUM_IDLE_BENCH_VSYNC=1 keeps vsync on (and METRUM_GAMEPLAY_BENCHMARK_MAX_FPS applies), so path
 ## frame pacing can be compared against the display refresh rather than measured as throughput.
+## METRUM_IDLE_BENCH_CANOPY_DENSITY starts a new game on the pinned world at that many canopy stems
+## per hectare instead of loading it with the default forest.
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
@@ -19,6 +21,9 @@ const POSES := [
 	{"name": "mid", "offset": Vector2(2000.0, -1500.0), "radius": 400.0},
 	{"name": "close", "offset": Vector2(-1500.0, 2000.0), "radius": 120.0},
 	{"name": "ground", "offset": Vector2(-1500.0, 2000.0), "radius": 12.0},
+	# One of the densest canopy cells on Kuopio (about 510 trees per 400 m cell, the generator's top).
+	{"name": "forest", "offset": Vector2(2400.0, 1600.0), "radius": 150.0},
+	{"name": "forest_low", "offset": Vector2(2400.0, 1600.0), "radius": 30.0},
 	# Saved-city poses; pair them with METRUM_IDLE_BENCH_SAVE_PATH and METRUM_IDLE_BENCH_CENTRE.
 	{"name": "city", "offset": Vector2(0.0, 0.0), "radius": 60.0},
 	{"name": "city_low", "offset": Vector2(0.0, 0.0), "radius": 20.0},
@@ -78,8 +83,17 @@ func run(bench: Node) -> void:
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
-	var loaded: bool = (bench.input_manager.menu_load_game_from_path(save_path)
-		if not save_path.is_empty() else bench._load_benchmark_world())
+	# Canopy stems per hectare for a new game on the pinned world, as the new-game dialog sets it.
+	var canopy_density := OS.get_environment("METRUM_IDLE_BENCH_CANOPY_DENSITY")
+	var loaded: bool
+	if not save_path.is_empty():
+		loaded = bench.input_manager.menu_load_game_from_path(save_path)
+	elif not canopy_density.is_empty():
+		loaded = bench.input_manager.menu_start_new_game(bench.world_path,
+			{"canopy_stems_per_ha": float(canopy_density)})
+	else:
+		loaded = bench._load_benchmark_world()
+	_report["canopy_stems_per_ha"] = float(canopy_density) if not canopy_density.is_empty() else null
 	if not loaded:
 		bench._fail("failed to load %s" % (save_path if not save_path.is_empty() else bench.world_path))
 		return

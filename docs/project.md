@@ -525,6 +525,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
   distance and 67% render scale together take the Kuopio overview from `11.8` to `8.8 ms` on an
   M2 Pro. See [`ui.md`](ui.md).
 
+- Idle-frame matrix: `forest` / `forest_low` poses and `METRUM_IDLE_BENCH_CANOPY_DENSITY` measure
+  denser canopy; at the `121.9/ha` ceiling vegetation costs up to `7.35 ms`, mostly tree vertex
+  work. Benchmark runs no longer pick up the saved fullscreen state, building detail or HiDPI UI
+  scale. See [`terrain.md`](terrain.md).
+
 - `TERRAIN-03` / `TERRAIN-04`: idle frames and startup. Eleven road/site textures now import
   VRAM-compressed with mipmaps (startup `3.7 -> 1.9 s`), and the terrain shader reads four
   position-only noise fields from a texture baked once per world (`terrain_world_noise.gd`)

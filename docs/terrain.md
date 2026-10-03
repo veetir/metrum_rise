@@ -3775,6 +3775,32 @@ time are unchanged; by day idle p50 (new asset pack installed, matched baseline)
 `10.65 -> 9.16 ms`. The benchmark's SSIL variants go through `SceneLighting.ssil_allowed`,
 because the day cycle rewrites `ssil_enabled` every frame.
 
+Frame budget after these changes, and canopy density (2026-10-03, `RENDER-04`): the idle matrix
+gains `forest` and `forest_low` poses (150 m and 30 m over one of Kuopio's densest canopy cells,
+about 510 trees per 400 m cell) and `METRUM_IDLE_BENCH_CANOPY_DENSITY`, which starts a new game
+on the pinned world at that many stems per hectare. Started at the default `30.47` it matches a
+plain load within `0.05 ms`. Benchmark runs now ignore the saved fullscreen state, building
+detail and the HiDPI UI scale: a fullscreen config had rendered the matrix at the display's
+`3456x2168` and measured overview at `30 ms`. Idle p50, vegetation off in brackets:
+
+| Pose | Default `30.5/ha` | Ceiling `121.9/ha` |
+| --- | --- | --- |
+| overview | `11.79 (10.96) ms` | `13.19 (11.10) ms` |
+| close | `9.69 (8.78) ms` | `11.76 (8.83) ms` |
+| ground | `8.11 (7.58) ms` | `9.23 (7.62) ms` |
+| forest | `9.84 (8.62) ms` | `11.71 (8.69) ms` |
+| forest_low | `10.08 (7.37) ms` | `14.75 (7.40) ms`, `4.6 M` primitives |
+
+A Metal System Trace (600 frames, profiled p50 within `0.07 ms` of the unprofiled runs) splits
+the GPU frame by pass. On `overview` the opaque pass fragment work is `9.06` of `12.2 ms` GPU
+time, vertex work `1.35 ms`, the depth prepass `0.76 ms` and shadow maps about `0.1 ms`: terrain
+shading still owns the frame, so the per-patch mask bake remains the next terrain target. On
+`forest_low` at the ceiling, vertex work rises to `6.64 ms` (depth prepass `2.22`, opaque pass
+`4.06`) while opaque fragment work falls to `6.00 ms` as crowns cover the ground, and the four
+shadow cascades take `0.72 ms`. Denser forest is bound by tree vertex throughput in the
+prepass and opaque pass, not by draw calls (`1,715`) or fill. Results:
+`benchmark-results/idle/suite/16-forest/`.
+
 Rendering non-repair rule:
 
 - shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must
