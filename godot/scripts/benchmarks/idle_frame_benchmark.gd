@@ -24,6 +24,9 @@ const POSES := [
 	# One of the densest canopy cells on Kuopio (about 510 trees per 400 m cell, the generator's top).
 	{"name": "forest", "offset": Vector2(2400.0, 1600.0), "radius": 150.0},
 	{"name": "forest_low", "offset": Vector2(2400.0, 1600.0), "radius": 30.0},
+	# Among Kuopio's steepest ground (slopes above 1 over 10 m), for the cliff and relief shading.
+	{"name": "cliff", "offset": Vector2(-2900.0, 2500.0), "radius": 150.0},
+	{"name": "cliff_low", "offset": Vector2(-2900.0, 2500.0), "radius": 40.0},
 	# Saved-city poses; pair them with METRUM_IDLE_BENCH_SAVE_PATH and METRUM_IDLE_BENCH_CENTRE.
 	{"name": "city", "offset": Vector2(0.0, 0.0), "radius": 60.0},
 	{"name": "city_low", "offset": Vector2(0.0, 0.0), "radius": 20.0},
