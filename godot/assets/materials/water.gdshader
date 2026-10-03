@@ -51,8 +51,19 @@ vec2 centered_uv(vec2 uv) {
 		/ max(watermap_texture_size, vec2(1.0));
 }
 
+// `heightmap` is the terrain patch's own texture, which covers the same samples as the watermap
+// but with the terrain's wider border ring. Map a watermap UV to the same sample there; reading
+// it with the watermap layout shifts terrain height outward by up to three samples near patch
+// edges, which drops the surface below shore terrain in a strip along the seam.
+vec2 terrain_height_uv(vec2 water_uv) {
+	vec2 sample_texel = water_uv * max(watermap_texture_size, vec2(1.0)) - inner_sample_offset_texels;
+	vec2 height_size = vec2(textureSize(heightmap, 0));
+	vec2 height_border = max((height_size - max(inner_sample_size_texels, vec2(1.0))) * 0.5, vec2(0.0));
+	return (height_border + sample_texel) / height_size;
+}
+
 float sample_terrain_world_height(vec2 uv) {
-	return texture(heightmap, uv).r * height_scale;
+	return texture(heightmap, terrain_height_uv(uv)).r * height_scale;
 }
 
 float sample_raw_water_depth(vec2 uv) {
@@ -123,7 +134,7 @@ float sample_display_water_depth(vec2 uv) {
 
 void vertex() {
 	var_centered_uv = centered_uv(UV);
-	float terrain_height = texture(heightmap, var_centered_uv).r;
+	float terrain_height = texture(heightmap, terrain_height_uv(var_centered_uv)).r;
 	float water_depth = sample_display_water_depth(var_centered_uv);
 	
 	// Terrain samples are still in pre-scaled storage units, but water depth is

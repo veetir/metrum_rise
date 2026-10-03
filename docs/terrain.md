@@ -3516,6 +3516,9 @@ Current deterministic rules:
   so Godot image uploads do not convert `PackedFloat32Array` data on the render path
 - the terrain shader keeps separate terrain-height and water-depth UV layouts because terrain and
   water patch textures may use different border widths
+- the water shader reads the terrain patch's height texture through that texture's own layout
+  (derived from its size), never the watermap UV; reusing the watermap UV shifted terrain height
+  outward near patch edges and opened lake-bed slivers along seams (`WATER-02`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
