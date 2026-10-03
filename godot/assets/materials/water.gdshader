@@ -523,6 +523,12 @@ void fragment() {
 		var_world_pos.y - WATER_SURFACE_LIFT_M - sample_terrain_world_height(var_centered_uv),
 		0.0
 	);
+	// Never deeper than the interpolated water depth, which is zero along any cell edge between
+	// two dry samples. A dry sample can lie below the water level, in a hollow the lake fill does
+	// not reach; the surface still takes the level of its wet neighbours, so the two cells holding
+	// a wet corner drew water over the hollow and the two without one did not, which left a dark
+	// cross of water on dry land. On an ordinary shore the rising terrain meets the surface first.
+	contour_depth_m = min(contour_depth_m, sample_raw_water_depth(var_centered_uv));
 	float depth_m = contour_depth_m;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
 	float depth_factor = smoothstep(0.12, max(water_deep_color_depth_m, 0.121), depth_m);

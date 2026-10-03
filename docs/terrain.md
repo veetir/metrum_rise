@@ -3622,8 +3622,12 @@ Current deterministic rules:
   different heights (`WATER-02`)
 - every water vertex sits at the smoothed water level, including dry shoreline vertices, and any
   mesh cell touching water is drawn whole; the terrain hides the surface above the shoreline, and
-  the fragment shore fade uses surface height minus terrain height per pixel. Lifting dry
-  vertices to the terrain tilted the surface up steep banks (`WATER-02`)
+  the fragment shore fade uses surface height minus terrain height per pixel, capped at the
+  interpolated depth texture. Lifting dry vertices to the terrain tilted the surface up steep
+  banks. The cap matters where a dry sample lies below the water level, in a hollow the lake fill
+  does not reach: the cells holding a wet corner drew water over the hollow and the cells without
+  one did not, which left a dark cross of water on dry land; the interpolated depth is zero on
+  every cell edge between dry samples (`WATER-02`)
 - water opacity also follows the metres of water the view ray crosses, from the opaque depth
   buffer, so the bed and the shadows cast onto it fade with that path rather than with the
   straight-down depth alone; opacity stays below the depth prepass's `0.99` cut-off so the
