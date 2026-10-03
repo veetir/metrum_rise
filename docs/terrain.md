@@ -3530,6 +3530,11 @@ Current deterministic rules:
   buffer, so the bed and the shadows cast onto it fade with that path rather than with the
   straight-down depth alone; opacity stays below the depth prepass's `0.99` cut-off so the
   water never writes the depth it reads back (`WATER-03`)
+- the water reflects the opaque scene by marching the reflected view ray through the depth
+  buffer (12 growing steps plus 5 bisection steps), reading the hit from a blurrier screen mip
+  the longer the ray; rays that meet nothing keep the engine's own specular sky reflection, so
+  the sky never comes from the screen edge (streaks) or a fallback colour (a frame at the edge
+  of the on-screen sky). Godot's SSR skips transparent materials (`WATER-03`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch

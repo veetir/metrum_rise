@@ -266,6 +266,85 @@ float water_view_thickness(vec2 screen_uv, vec3 view_pos, mat4 inv_projection) {
 	return max(length(scene.xyz / scene.w) - length(view_pos), 0.0);
 }
 
+// Screen-space reflection of the opaque scene in the water. Godot's own SSR skips transparent
+// materials, so the water reflected only a flat sky colour: no shore, no trees, no buildings.
+// The reflected view ray is marched through the opaque depth buffer in geometrically growing
+// steps and refined by bisection on a hit. O(REFLECTION_STEPS + REFLECTION_REFINE) texture
+// reads per water pixel. `weight` is zero where the ray meets no scene on screen; the sky there
+// stays the engine's own specular sky reflection. Reflecting the sky from the screen instead
+// stretched its edge row into streaks off screen, and any fallback colour framed the screen
+// edge where it met the on-screen sky.
+// Twelve steps growing 1.8x reach as far as 24 growing 1.38x, for half the reads, with the
+// same reflections on the benchmark views.
+const int REFLECTION_STEPS = 12;
+const float REFLECTION_STEP_GROWTH = 1.8;
+const int REFLECTION_REFINE = 5;
+// Screen-texture mip per doubling of the reflected ray's length. A sharp mip-0 read made every
+// reflection pin-sharp and shimmer with the ripples; real lakes blur what they reflect with
+// distance from the surface.
+const float REFLECTION_BLUR_PER_OCTAVE = 0.7;
+const float REFLECTION_MAX_LOD = 5.0;
+
+vec3 water_view_at(vec2 uv, mat4 inv_projection) {
+	float depth = texture(depth_texture, uv).r;
+	vec4 view = inv_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+	return view.xyz / view.w;
+}
+
+vec2 water_screen_at(vec3 view, mat4 projection) {
+	vec4 clip = projection * vec4(view, 1.0);
+	return clip.xy / clip.w * 0.5 + 0.5;
+}
+
+float water_reflection_lod(float ray_m) {
+	return clamp(log2(1.0 + ray_m * 0.25) * REFLECTION_BLUR_PER_OCTAVE, 0.0, REFLECTION_MAX_LOD);
+}
+
+vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv_projection,
+		out float weight) {
+	weight = 0.0;
+	vec3 direction = reflect(normalize(view_pos), view_normal);
+	// A ray turning back toward the camera leaves the screen at once. Fading out toward that
+	// direction, rather than cutting at it, keeps reflected shores from ending at an edge where
+	// the view looks steeply down.
+	float facing = 1.0 - smoothstep(-0.30, -0.02, direction.z);
+	if (facing <= 0.0) {
+		return vec3(0.0);
+	}
+	float near_t = 0.0;
+	float far_t = max(length(view_pos) * 0.02, 0.5);
+	for (int i = 0; i < REFLECTION_STEPS; i++) {
+		vec3 sample_view = view_pos + direction * far_t;
+		vec2 uv = water_screen_at(sample_view, projection);
+		if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+			break;
+		}
+		float scene_depth = texture(depth_texture, uv).r;
+		vec4 scene = inv_projection * vec4(uv * 2.0 - 1.0, scene_depth, 1.0);
+		float scene_z = scene.z / scene.w;
+		// Behind a drawn surface and not far behind it: the ray passed through that surface.
+		if (scene_depth > 0.0 && scene_depth < 1.0 && sample_view.z < scene_z
+				&& scene_z - sample_view.z < max(far_t * 0.35, 3.0)) {
+			for (int r = 0; r < REFLECTION_REFINE; r++) {
+				float mid_t = (near_t + far_t) * 0.5;
+				vec3 mid_view = view_pos + direction * mid_t;
+				if (mid_view.z < water_view_at(water_screen_at(mid_view, projection), inv_projection).z) {
+					far_t = mid_t;
+				} else {
+					near_t = mid_t;
+				}
+			}
+			uv = water_screen_at(view_pos + direction * far_t, projection);
+			vec2 edge = min(uv, vec2(1.0) - uv);
+			weight = smoothstep(0.0, 0.15, min(edge.x, edge.y)) * facing;
+			return textureLod(screen_texture, uv, water_reflection_lod(far_t)).rgb;
+		}
+		near_t = far_t;
+		far_t *= REFLECTION_STEP_GROWTH;
+	}
+	return vec3(0.0);
+}
+
 float water_debug_patch_border(vec2 patch_uv) {
 	vec2 edge_distance = min(patch_uv, vec2(1.0) - patch_uv);
 	float nearest_edge = min(edge_distance.x, edge_distance.y);
@@ -452,7 +531,22 @@ void fragment() {
 			refracted_scene,
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
-		final_color = mix(final_color, sky_reflection, fresnel_mix);
+		// Reflected scene where the ray finds one, the sky where it does not. The scene is
+		// already lit, so it is emitted rather than lit again as albedo. The flat view-space up
+		// carries a small share of the wave slope, which ripples the reflection.
+		float reflection_weight = 0.0;
+		vec3 reflected_scene = vec3(0.0);
+		// Below a few percent the reflection cannot be seen, and steep views skip the march.
+		if (fresnel_mix > 0.05) {
+			vec3 view_up = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+			vec3 ripple_normal = perturb_water_normal(
+				view_up, wave_slope, water_wave_normal_strength * 0.25);
+			reflected_scene = water_reflection(VERTEX, ripple_normal, PROJECTION_MATRIX,
+				INV_PROJECTION_MATRIX, reflection_weight);
+		}
+		final_color = mix(final_color, sky_reflection, fresnel_mix * (1.0 - reflection_weight));
+		final_color *= 1.0 - fresnel_mix * reflection_weight;
+		EMISSION = reflected_scene * fresnel_mix * reflection_weight;
 		final_color += scene_sun_color.rgb
 			* scene_ambient_light.rgb
 			* sun_specular
@@ -463,8 +557,11 @@ void fragment() {
 			* 0.07;
 		final_color = mix(final_color, sky_reflection, topdown_ripple);
 		ALBEDO = final_color;
-		ALPHA = final_alpha;
+		// A reflection is light leaving the surface, not the lake bed seen through it.
+		ALPHA = min(mix(final_alpha, 1.0, fresnel_mix * shore_mask), WATER_MAX_ALPHA);
 		ROUGHNESS = clamp(0.08 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
-		SPECULAR = 0.72;
+		// The engine's own specular reflects the sky; where the scene is reflected instead, it
+		// would lay that sky over the reflected shore and wash it out.
+		SPECULAR = 0.72 * (1.0 - reflection_weight);
 	}
 }
