@@ -253,6 +253,7 @@ Editor outputs:
 - `Export Runtime Pack`: writes the normal unpacked runtime pack folder
 - `Export pack as zip…`: writes a share archive of an installed pack to a location the creator chooses
 - Default export flow: export the runtime pack folder first, then optionally generate the share archive from that exact folder
+- Each runtime export reports its outcome under its button: the pack, asset and time on success, or why it was not exported. The next edit clears it (`UI-04`).
 
 Do not make zip the only exported artifact. The unpacked runtime pack should remain the canonical installable form.
 

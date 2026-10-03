@@ -186,6 +186,8 @@ func _validate() -> void:
 	v.issues_box = VBoxContainer.new()
 	box.add_child(v.issues_box)
 	v.button(box, "Export runtime asset…", e._on_export_pressed)
+	v.export_result = _label(box, "")
+	v.export_result.visible = false
 
 func _label_detached(text: String) -> Label:
 	var label := Label.new()

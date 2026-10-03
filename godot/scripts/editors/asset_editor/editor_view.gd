@@ -92,6 +92,8 @@ var undo_button: Button
 var redo_button: Button
 var catalog_refresh: Button
 var export_summary: Label
+# Outcome of the last export, under its button; cleared by the next document edit.
+var export_result: Label
 var inspector: PanelContainer
 var welcome: PanelContainer
 var toolbar: HFlowContainer

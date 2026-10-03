@@ -370,6 +370,7 @@ func _test_model_and_publication(editor: Node) -> void:
 			session.set_field(field, resource)
 		session.publish()
 		_expect(session._issues.is_empty(), "runtime publication for %s: %s" % [kind, JSON.stringify(session._issues)])
+		_expect(editor._view.export_result.visible and editor._view.export_result.text.begins_with("Exported to "), "export confirms itself under its button for " + kind)
 		var id: String = session.params["asset_id"]
 		var loaded = JSON.parse_string(editor.sim.get_asset_manifest_json(pack["pack_id"] + ":" + id))
 		_expect(loaded is Dictionary, "published manifest is loadable for " + kind)
@@ -381,6 +382,7 @@ func _test_model_and_publication(editor: Node) -> void:
 	state["params"]["mesh_parts"][0]["rotation_degrees"] = [0, 12.3456, 0]
 	state["params"]["anchors"][0]["width_m"] = 8.7654
 	session.document.apply(state, "Loaded precise metadata")
+	_expect(not editor._view.export_result.visible, "the next edit clears the export confirmation")
 	editor._select_site_anchor(0)
 	editor._view._site_anchor_y_spin.value = 2
 	_expect(session.params["anchors"][0]["width_m"] == 8.7654, "entrance coordinate edits preserve dormant width metadata")
