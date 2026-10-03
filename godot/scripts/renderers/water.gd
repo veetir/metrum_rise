@@ -24,6 +24,8 @@ const DEEP_WATER_COLOR := Color(0.012, 0.052, 0.075, 0.97)
 const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
 const SKY_REFLECTION_COLOR := Color(0.22, 0.33, 0.44, 1.0)
 const WATER_DEEP_COLOR_DEPTH_M := 1.8
+# Metres of humic lake water that absorb about 63% of the light from the bed behind it.
+const WATER_VISIBILITY_M := 1.2
 const WATER_FRESNEL_STRENGTH := 0.30
 const WATER_FRESNEL_POWER := 2.8
 const WATER_WAVE_COLOR_STRENGTH := 0.052
@@ -612,6 +614,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("foam_color", FOAM_COLOR)
 	material.set_shader_parameter("sky_reflection_color", SKY_REFLECTION_COLOR)
 	material.set_shader_parameter("water_deep_color_depth_m", WATER_DEEP_COLOR_DEPTH_M)
+	material.set_shader_parameter("water_visibility_m", WATER_VISIBILITY_M)
 	material.set_shader_parameter("water_fresnel_strength", WATER_FRESNEL_STRENGTH)
 	material.set_shader_parameter("water_fresnel_power", WATER_FRESNEL_POWER)
 	material.set_shader_parameter("water_wave_color_strength", WATER_WAVE_COLOR_STRENGTH)

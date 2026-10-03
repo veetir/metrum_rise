@@ -3526,6 +3526,10 @@ Current deterministic rules:
   mesh cell touching water is drawn whole; the terrain hides the surface above the shoreline, and
   the fragment shore fade uses surface height minus terrain height per pixel. Lifting dry
   vertices to the terrain tilted the surface up steep banks (`WATER-02`)
+- water opacity also follows the metres of water the view ray crosses, from the opaque depth
+  buffer, so the bed and the shadows cast onto it fade with that path rather than with the
+  straight-down depth alone; opacity stays below the depth prepass's `0.99` cut-off so the
+  water never writes the depth it reads back (`WATER-03`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch

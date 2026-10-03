@@ -4,6 +4,7 @@ render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
+uniform sampler2D depth_texture : hint_depth_texture, repeat_disable, filter_nearest;
 uniform float height_scale = 10.0;
 uniform vec4 shallow_water_color : source_color = vec4(0.10, 0.28, 0.40, 0.62);
 uniform vec4 deep_water_color : source_color = vec4(0.018, 0.09, 0.18, 0.90);
@@ -12,6 +13,7 @@ uniform vec4 sky_reflection_color : source_color = vec4(0.38, 0.56, 0.72, 1.0);
 uniform float shore_softness_m = 0.26;
 uniform float shore_foam_band_m = 0.18;
 uniform float water_deep_color_depth_m = 3.5;
+uniform float water_visibility_m = 1.2;
 uniform float water_fresnel_strength = 0.46;
 uniform float water_fresnel_power = 2.8;
 uniform float water_wave_color_strength = 0.052;
@@ -41,6 +43,9 @@ uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
 
 // Keeps the surface just above coincident terrain so the two never z-fight.
 const float WATER_SURFACE_LIFT_M = 0.05;
+// Opacity ceiling below the depth prepass's 0.99 alpha cut-off, so the water never writes the
+// opaque depth that its own reflection and absorption read back.
+const float WATER_MAX_ALPHA = 0.98;
 
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
@@ -252,6 +257,15 @@ float water_sun_glitter(vec3 view_normal, float breakup) {
 	);
 }
 
+// Metres of water the view ray crosses between the surface and the opaque scene behind it.
+// The straight-down depth leaves the bed, and the shadows cast onto it, showing through deep
+// water at low view angles, where the ray actually crosses far more water than that.
+float water_view_thickness(vec2 screen_uv, vec3 view_pos, mat4 inv_projection) {
+	float scene_depth = texture(depth_texture, screen_uv).r;
+	vec4 scene = inv_projection * vec4(screen_uv * 2.0 - 1.0, scene_depth, 1.0);
+	return max(length(scene.xyz / scene.w) - length(view_pos), 0.0);
+}
+
 float water_debug_patch_border(vec2 patch_uv) {
 	vec2 edge_distance = min(patch_uv, vec2(1.0) - patch_uv);
 	float nearest_edge = min(edge_distance.x, edge_distance.y);
@@ -380,8 +394,13 @@ void fragment() {
 	float shore_foam = (1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), contour_depth_m))
 		* shore_mask;
 	float foam_amount = clamp(shore_foam * 0.16, 0.0, 0.34);
-	float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
-	final_alpha = clamp(final_alpha, 0.0, 0.92);
+	// Light from the bed decays with the water it crosses; the colour ramp alone capped opacity
+	// below one, so tree shadows on the bed showed through even deep water.
+	float absorbed = 1.0 - exp(-water_view_thickness(SCREEN_UV, VERTEX, INV_PROJECTION_MATRIX)
+		/ max(water_visibility_m, 0.01));
+	float final_alpha = max(mix(shallow_water_color.a, deep_water_color.a, depth_factor), absorbed)
+		* shore_mask;
+	final_alpha = clamp(final_alpha, 0.0, WATER_MAX_ALPHA);
 
 	vec3 base_view_normal = normalize(NORMAL);
 	NORMAL = perturb_water_normal(base_view_normal, wave_slope, water_wave_normal_strength);
@@ -425,7 +444,7 @@ void fragment() {
 		}
 
 		vec3 final_color = mix(depth_tint, foam_color.rgb, foam_amount);
-		float shallow_refraction = (1.0 - depth_factor) * shore_mask;
+		float shallow_refraction = (1.0 - depth_factor) * shore_mask * (1.0 - absorbed);
 		vec2 refraction_offset = wave_slope * water_refraction_strength * shallow_refraction;
 		vec3 refracted_scene = texture(screen_texture, clamp(SCREEN_UV + refraction_offset, vec2(0.001), vec2(0.999))).rgb;
 		final_color = mix(
