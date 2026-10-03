@@ -95,6 +95,7 @@ func _run() -> void:
 	_reset()
 	_test_guide_geometry()
 	_test_filters_and_overlap()
+	_test_alt_orbit()
 	_test_guide_occlusion()
 	await _test_list_selection()
 	await _test_access_point_input()
@@ -611,6 +612,36 @@ func _capture_access_selection() -> void:
 			editor._view._preview_panel._hour.value = hour
 			editor.set_process(true)
 		camera.transform = camera_transform
+
+# Option with a touchpad click stands in for the middle button: a drag orbits and must not cycle
+# the selection, while a press and release in place still cycles overlaps.
+func _test_alt_orbit() -> void:
+	_reset()
+	var mouse := _screen(Vector3.ZERO)
+	editor._cam_input.set_process_input(true)
+	var before := camera.global_transform
+	_alt_button(mouse, true)
+	_mouse_motion(mouse + Vector2(40.0, 0.0))
+	_alt_button(mouse + Vector2(40.0, 0.0), false)
+	expect(not camera.global_transform.is_equal_approx(before), "Alt+drag orbits the asset editor camera")
+	expect(selection.hovered.is_empty() and editor._selected_part_indices.is_empty(), "an Alt+drag neither cycles nor selects")
+	camera.global_transform = before
+	_top_camera()
+	mouse = _screen(Vector3.ZERO)
+	_alt_button(mouse, true)
+	_alt_button(mouse, false)
+	expect(not selection.hovered.is_empty(), "an Alt+click without a drag still cycles overlaps")
+	editor._cam_input.set_process_input(false)
+	_reset()
+
+func _alt_button(mouse: Vector2, down: bool) -> void:
+	var event := InputEventMouseButton.new()
+	event.alt_pressed = true
+	event.position = mouse
+	event.global_position = mouse
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = down
+	root.push_input(event, true)
 
 func _click(mouse: Vector2, additive: bool = false) -> void:
 	for down in [true, false]:

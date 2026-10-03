@@ -193,6 +193,8 @@ func _build_preview_node() -> void:
 	_cam_input = Node.new()
 	_cam_input.set_script(cam_script)
 	_cam_input.right_mouse_pan_enabled = false
+	# Alt+drag orbits on a touchpad, so an Alt+click arrives from the camera once it proves no drag.
+	_cam_input.alt_click = func(mouse: Vector2) -> void: _selection.cycle(mouse)
 	add_child(_cam_input)
 
 # ──────────────────────────────────────────────────────────────────────────────

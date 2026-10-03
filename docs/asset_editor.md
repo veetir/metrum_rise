@@ -1492,6 +1492,8 @@ Road authoring remains outside the first importer milestone.
 
 One on-demand context menu serves the preview, mesh/access/yard lists and library. Right-click
 only opens menus; middle-drag/wheel retain camera navigation and Alt+left-click cycles overlaps.
+On a touchpad, Alt (Option) with a left drag of more than 4 px orbits instead, and a two-finger
+scroll or pinch zooms (`UI-03`); an Alt press released in place still cycles overlaps.
 The depth-aware picker excludes occluded targets. Right-clicking an unselected object selects it
 and opens its inspector; clicking a selected object preserves the complete mixed selection.
 Empty-space menus preserve selection but offer creation/view actions, never unrelated deletion.
