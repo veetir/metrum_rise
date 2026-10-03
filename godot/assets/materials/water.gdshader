@@ -304,21 +304,32 @@ float water_view_thickness(vec2 screen_uv, vec3 view_pos, mat4 inv_projection) {
 // Screen-space reflection of the opaque scene in the water. Godot's own SSR skips transparent
 // materials, so the water reflected only a flat sky colour: no shore, no trees, no buildings.
 // The reflected view ray is marched through the opaque depth buffer in geometrically growing
-// steps and refined by bisection on a hit. O(REFLECTION_STEPS + REFLECTION_REFINE) texture
-// reads per water pixel. `weight` is zero where the ray meets no scene on screen; the sky there
-// stays the engine's own specular sky reflection. Reflecting the sky from the screen instead
-// stretched its edge row into streaks off screen, and any fallback colour framed the screen
-// edge where it met the on-screen sky.
+// steps. A step that ends behind a drawn surface is bisected to the crossing, which is a hit
+// only if the ray there is just behind that surface; a ray that only passed behind a nearer
+// object, such as a trunk in front of the shore, keeps marching. Accepting a step only when it
+// landed within a fixed depth behind the surface lost every ray whose step overshot a hillside,
+// which cut reflected slopes into bands and left a sky-coloured gap following each near trunk.
+// O(REFLECTION_STEPS + crossings * REFLECTION_REFINE) texture reads per water pixel. `weight`
+// is zero where the ray meets no scene on screen; the sky there stays the engine's own specular
+// sky reflection. Reflecting the sky from the screen instead stretched its edge row into streaks
+// off screen, and any fallback colour framed the screen edge where it met the on-screen sky.
 // Twelve steps growing 1.8x reach as far as 24 growing 1.38x, for half the reads, with the
 // same reflections on the benchmark views.
 const int REFLECTION_STEPS = 12;
 const float REFLECTION_STEP_GROWTH = 1.8;
-const int REFLECTION_REFINE = 5;
-// Screen-texture mip per doubling of the reflected ray's length. A sharp mip-0 read made every
-// reflection pin-sharp and shimmer with the ripples; real lakes blur what they reflect with
-// distance from the surface.
-const float REFLECTION_BLUR_PER_OCTAVE = 0.7;
-const float REFLECTION_MAX_LOD = 5.0;
+const int REFLECTION_REFINE = 6;
+// Depth behind the surface at the refined crossing that still counts as the ray meeting it, as
+// a multiple of the refined bracket plus a share of the view depth for the depth buffer's own
+// precision. A ray behind a nearer object stays tens of metres behind it however far it is
+// refined.
+const float REFLECTION_HIT_BRACKETS = 4.0;
+const float REFLECTION_HIT_DEPTH_SHARE = 0.01;
+// Blur of the reflection: its width grows with the reflected ray's length, as the ripples
+// scatter it, and is read from the screen-texture mip of that width in pixels. Sizing it in
+// metres alone blurred a far island's thin reflection into a mip that is mostly sky, so it read
+// pale and white beneath an island that is not.
+const float REFLECTION_BLUR_PER_M = 0.02;
+const float REFLECTION_MAX_LOD = 4.0;
 
 vec3 water_view_at(vec2 uv, mat4 inv_projection) {
 	float depth = texture(depth_texture, uv).r;
@@ -331,8 +342,22 @@ vec2 water_screen_at(vec3 view, mat4 projection) {
 	return clip.xy / clip.w * 0.5 + 0.5;
 }
 
-float water_reflection_lod(float ray_m) {
-	return clamp(log2(1.0 + ray_m * 0.25) * REFLECTION_BLUR_PER_OCTAVE, 0.0, REFLECTION_MAX_LOD);
+// Mip whose texel spans the blur of a ray `ray_m` long meeting the scene at `hit_view`.
+float water_reflection_lod(float ray_m, vec3 hit_view, mat4 projection) {
+	float pixels_per_m = projection[1][1] * 0.5 * float(textureSize(screen_texture, 0).y)
+		/ max(-hit_view.z, 1.0);
+	return clamp(log2(1.0 + ray_m * REFLECTION_BLUR_PER_M * pixels_per_m), 0.0, REFLECTION_MAX_LOD);
+}
+
+// True where the view-space point is behind the opaque scene drawn at its pixel. The sky is
+// never in front of anything.
+bool water_ray_behind_scene(vec3 sample_view, mat4 projection, mat4 inv_projection,
+		out float gap_m) {
+	vec2 uv = water_screen_at(sample_view, projection);
+	float scene_depth = texture(depth_texture, uv).r;
+	vec4 scene = inv_projection * vec4(uv * 2.0 - 1.0, scene_depth, 1.0);
+	gap_m = scene.z / scene.w - sample_view.z;
+	return scene_depth > 0.0 && scene_depth < 1.0 && gap_m > 0.0;
 }
 
 vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv_projection,
@@ -348,31 +373,35 @@ vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv
 	}
 	float near_t = 0.0;
 	float far_t = max(length(view_pos) * 0.02, 0.5);
+	float gap_m;
 	for (int i = 0; i < REFLECTION_STEPS; i++) {
 		vec3 sample_view = view_pos + direction * far_t;
 		vec2 uv = water_screen_at(sample_view, projection);
 		if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
 			break;
 		}
-		float scene_depth = texture(depth_texture, uv).r;
-		vec4 scene = inv_projection * vec4(uv * 2.0 - 1.0, scene_depth, 1.0);
-		float scene_z = scene.z / scene.w;
-		// Behind a drawn surface and not far behind it: the ray passed through that surface.
-		if (scene_depth > 0.0 && scene_depth < 1.0 && sample_view.z < scene_z
-				&& scene_z - sample_view.z < max(far_t * 0.35, 3.0)) {
+		if (water_ray_behind_scene(sample_view, projection, inv_projection, gap_m)) {
+			float in_front_t = near_t;
+			float behind_t = far_t;
 			for (int r = 0; r < REFLECTION_REFINE; r++) {
-				float mid_t = (near_t + far_t) * 0.5;
-				vec3 mid_view = view_pos + direction * mid_t;
-				if (mid_view.z < water_view_at(water_screen_at(mid_view, projection), inv_projection).z) {
-					far_t = mid_t;
+				float mid_t = (in_front_t + behind_t) * 0.5;
+				if (water_ray_behind_scene(view_pos + direction * mid_t, projection, inv_projection,
+						gap_m)) {
+					behind_t = mid_t;
 				} else {
-					near_t = mid_t;
+					in_front_t = mid_t;
 				}
 			}
-			uv = water_screen_at(view_pos + direction * far_t, projection);
-			vec2 edge = min(uv, vec2(1.0) - uv);
-			weight = smoothstep(0.0, 0.15, min(edge.x, edge.y)) * facing;
-			return textureLod(screen_texture, uv, water_reflection_lod(far_t)).rgb;
+			vec3 hit_view = view_pos + direction * behind_t;
+			water_ray_behind_scene(hit_view, projection, inv_projection, gap_m);
+			if (gap_m < (behind_t - in_front_t) * REFLECTION_HIT_BRACKETS
+					- hit_view.z * REFLECTION_HIT_DEPTH_SHARE) {
+				uv = water_screen_at(hit_view, projection);
+				vec2 edge = min(uv, vec2(1.0) - uv);
+				weight = smoothstep(0.0, 0.15, min(edge.x, edge.y)) * facing;
+				return textureLod(screen_texture, uv,
+					water_reflection_lod(behind_t, hit_view, projection)).rgb;
+			}
 		}
 		near_t = far_t;
 		far_t *= REFLECTION_STEP_GROWTH;

@@ -3629,10 +3629,17 @@ Current deterministic rules:
   straight-down depth alone; opacity stays below the depth prepass's `0.99` cut-off so the
   water never writes the depth it reads back (`WATER-03`)
 - the water reflects the opaque scene by marching the reflected view ray through the depth
-  buffer (12 growing steps plus 5 bisection steps), reading the hit from a blurrier screen mip
-  the longer the ray; rays that meet nothing keep the engine's own specular sky reflection, so
-  the sky never comes from the screen edge (streaks) or a fallback colour (a frame at the edge
-  of the on-screen sky). Godot's SSR skips transparent materials (`WATER-03`)
+  buffer in 12 growing steps. A step that ends behind a drawn surface is bisected (6 steps) to
+  the crossing, which is a hit only if the ray there lies within a few refined brackets behind
+  that surface; a ray that only passed behind a nearer object keeps marching. Accepting a step
+  only when it landed within a fixed depth of the surface lost every ray whose step overshot a
+  hillside, which cut reflected slopes into horizontal bands and left a sky-coloured gap
+  following each near trunk. The hit is read from the screen mip whose texel spans the blur of
+  the ray's length at the hit's distance; sizing the blur in metres alone read a far island's
+  thin reflection from a mip that is mostly sky, so it showed pale white. Rays that meet nothing
+  keep the engine's own specular sky reflection, so the sky never comes from the screen edge
+  (streaks) or a fallback colour (a frame at the edge of the on-screen sky). Godot's SSR skips
+  transparent materials (`WATER-03`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
@@ -3718,6 +3725,12 @@ Current deterministic rules:
   `9.92 -> 10.62 ms` (`issue-2`), `9.82 -> 10.71 ms` (lake view across Kallavesi) and
   `9.08 -> 9.59 ms` (island shore view). The reflection march is the cost; with it disabled the
   shader is within `0.1 ms` of the base. Views without water are unaffected
+- `WATER-03` reflection fixes (crossing test, footprint blur), same harness and protocol plus the
+  `p1`, `layers-1` and `white-distance-1` saves: frame p50 `39ccf90c` -> fix was
+  `10.25/10.26 -> 10.33/10.23 ms` (`issue-1`), `10.83/10.81 -> 10.92/10.87 ms` (lake view),
+  `9.64/9.63 -> 9.72/9.66 ms` (island shore; a `10.81 ms` baseline outlier was rerun), `8.57/8.56 -> 8.68/8.70 ms` (`p1`),
+  `8.74/8.72 -> 8.79/8.81 ms` (`layers-1`) and `8.96/8.90 -> 8.99/8.99 ms`
+  (`white-distance-1`): at most `+0.1 ms`
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
 - the visible background uses one continuous procedural hemisphere gradient; its upper and lower
