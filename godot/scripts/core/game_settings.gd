@@ -190,10 +190,12 @@ static func fit_launch_window() -> void:
 
 ## Scales all 2D content by the screen's backing scale (2 on a Retina Mac, 1 elsewhere), so
 ## 100% UI scale is the size the OS draws its own interface. The 3D view keeps rendering at the
-## window's full pixel size. Follows the window onto screens with a different scale.
+## window's full pixel size. Follows the window onto screens with a different scale. Benchmark
+## runs keep 1, so the HUD covers the same share of the frame on every machine.
 static func apply_display_scale() -> void:
 	var root := (Engine.get_main_loop() as SceneTree).root
-	root.content_scale_factor = maxf(1.0, DisplayServer.screen_get_scale(root.current_screen))
+	root.content_scale_factor = 1.0 if _is_benchmark_run() else maxf(
+		1.0, DisplayServer.screen_get_scale(root.current_screen))
 
 ## Applies vsync, the frame rate cap and the 3D render scale. Shadow quality and view distance
 ## belong to the world scene and are applied by its owners on the `graphics_settings` group.
