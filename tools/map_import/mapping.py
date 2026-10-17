@@ -2,22 +2,34 @@
 
 """One ordered capability table. First matching rule per role wins.
 
-Service roads only admit explicitly designated alleys or emergency access;
-untagged service often means parking circulation/yard access, so it is retained
-but not imported. grade1 tracks become footpaths: their geometry is useful but
+Untagged service ways become ordinary streets; driveway and parking semantics
+are excluded explicitly. grade1 tracks become footpaths: their geometry is useful but
 the game has no farm/forest vehicle access semantics. Private/no access, layered
 structures and area highways are deferred rather than silently flattened.
 
 Current road tool supports lane counts, not named road types or source speed
-limits. Primary/secondary default to 1+1 ordinary lanes; explicit lane counts and
-one-way direction are retained. Shared bidirectional single lanes widen to 1+1,
-with an explicit mapping reason. No lane count is inferred from road importance.
+limits. Minor streets default to 1+1, including untagged service; only a surveyed
+one-way overrides this policy. Named primary/secondary corridors become 1+1
+medians in conflate.py, including unpaired tail pieces; other major ways retain
+explicit direction and lane counts.
+POLICY owns the spatial and minimum-length rules for standalone paths.
 Apartment footprints mask generic residential zoning until apartment growth
 exists; other unknown buildings mask generic zoning as well. Industrial buildings
 need explicit assets/work areas, not speculative residential/commercial zoning.
 """
 
 from dataclasses import asdict, dataclass
+
+# Offline conflation thresholds in metres/degrees. These are serialized with the
+# capability table, so every lossy mapping decision is reproducible and tunable.
+POLICY = {'parallel_distance_m': 35.0, 'parallel_angle_deg': 30.0,
+          'parallel_fraction': 0.60, 'sample_m': 5.0,
+          'carriageway_distance_m': 24.0, 'endpoint_merge_m': 4.0,
+          'endpoint_snap_m': 12.0, 'dead_end_path_m': 100.0,
+          'standalone_path_min_m': 65.0,
+          'junction_slide_m': [-12.0, -8.0, 8.0, 12.0], 'junction_clearance_m': 12.0,
+          'water_margin_m': 1.0, 'roundabout_max_diameter_m': 90.0,
+          'minor_default_lanes': [1, 1]}
 
 
 @dataclass(frozen=True)
@@ -34,6 +46,7 @@ CAPABILITIES = (
     Capability('road', 'roundabout', (True,), 'skip', 'roundabout_ROAD_62'),
     Capability('road', 'road_class', ('motorway', 'motorway_link'), 'skip', 'motorway_unsupported'),
     Capability('road', 'road_class', ('steps', 'corridor', 'construction', 'proposed'), 'skip', 'non_placeable_highway'),
+    Capability('road', 'footway', ('sidewalk', 'crossing'), 'skip', 'road_includes_sidewalks'),
     Capability('road', 'service', ('parking_aisle', 'driveway', 'drive-through'), 'skip', 'private_or_parking_service'),
     Capability('road', 'access', ('no', 'private'), 'skip', 'restricted_access'),
     Capability('road', 'bridge', (True,), 'skip', 'grade_separation_deferred'),
@@ -44,7 +57,7 @@ CAPABILITIES = (
     Capability('road', 'road_class', ('tertiary', 'tertiary_link'), 'road', 'ordinary_road', 2),
     Capability('road', 'road_class', ('residential', 'unclassified', 'living_street', 'road'), 'road', 'ordinary_road', 3),
     Capability('road', 'service', ('alley', 'emergency_access'), 'road', 'explicit_access_street', 4),
-    Capability('road', 'road_class', ('service',), 'skip', 'service_yard_semantics_unknown'),
+    Capability('road', 'road_class', ('service',), 'road', 'ordinary_service_street', 4),
     Capability('road', 'road_class', ('track',), 'track', 'track_requires_grade1', 5),
     Capability('road', 'road_class', ('footway', 'cycleway', 'path', 'pedestrian', 'bridleway'), 'footpath', 'shared_footpath', 6),
     Capability('road', '*', (), 'skip', 'unsupported_highway'),
@@ -87,7 +100,13 @@ def map_role(feature, role):
             total = p.get('lanes')
             if total is not None and (total < 1 or total > 8 or total != int(total)):
                 return {**result, 'action': 'skip', 'reason': 'invalid_or_excessive_lane_count'}
-            if p['oneway']:
+            minor = p['road_class'] in ('service', 'residential', 'unclassified', 'living_street', 'tertiary', 'road')
+            oneway = bool(p['oneway']) and (not minor or p.get('oneway_confirmed', False))
+            result['oneway'] = p['oneway'] if oneway else 0
+            if minor and not oneway:
+                fwd, bkw = POLICY['minor_default_lanes']
+                result['reason'] = 'ordinary_two_way_default'
+            elif oneway:
                 fwd, bkw = int(total or 1), 0
             else:
                 forward, backward = p.get('lanes_forward'), p.get('lanes_backward')
@@ -96,7 +115,7 @@ def map_role(feature, role):
                     bkw = backward if backward is not None else (total-forward if total else 1)
                 else:
                     fwd, bkw = (max(1, int(total)//2), max(1, int(total)-int(total)//2)) if total else (1, 1)
-            if total == 1 and not p['oneway'] and p.get('lanes_forward') is None and p.get('lanes_backward') is None:
+            if total == 1 and not oneway and p.get('lanes_forward') is None and p.get('lanes_backward') is None:
                 result['reason'] = 'shared_single_lane_widened_to_two'
             if fwd < 0 or bkw < 0 or fwd != int(fwd) or bkw != int(bkw) or not 1 <= fwd+bkw <= 8:
                 return {**result, 'action': 'skip', 'reason': 'invalid_directional_lanes'}

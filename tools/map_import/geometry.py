@@ -137,13 +137,14 @@ def merge_nodes(roads, tolerance):
 
 def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
     roads = sorted(roads, key=lambda item: item[0]['id'])
+    provenance = {f['id']: f.get('source_ids', [f['id']]) for f, _ in roads}
     reps, positions, merged = merge_nodes(roads, merge_m)
     cooked = []
     incidence = defaultdict(set)
     for f, mapping in roads:
         ids = [reps.get(n, n) for n in f['node_ids']]
         ids = [n for i, n in enumerate(ids) if not i or n != ids[i-1]]
-        if f['properties']['oneway'] == -1:
+        if mapping.get('oneway', f['properties']['oneway']) == -1:
             ids.reverse()
         for a, b in zip(ids, ids[1:]):
             incidence[a].add(b)
@@ -163,7 +164,7 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
             continue
         source_shapes.add(key)
         p = f['properties']
-        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], p['speed_kmh'], bool(p['oneway']))
+        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], None, bool(m.get('oneway', p['oneway'])))
         segments.append({'nodes': ids, 'source': f['id'], 'mapping': m,
                          'signature': signature, 'class': p['road_class']})
     ends = defaultdict(list)
@@ -231,12 +232,17 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
                     discarded.append({'source_ids': sources, 'reason': 'below_2m_stroke', 'length_m': round(size, 3)})
                     continue
                 m = original['mapping']
-                strokes.append({'source_ids': sources, 'points_xz': clipped, 'road_class': original['class'],
+                order_sources = sources
+                sources = sorted({source for owner in sources for source in provenance[owner]})
+                strokes.append({'source_ids': sources, '_order_sources': order_sources,
+                                'points_xz': clipped, 'road_class': original['class'],
                                 'kind': m['action'], 'fwd_lanes': m['fwd_lanes'], 'bkw_lanes': m['bkw_lanes'],
-                                'snap': True, 'priority': m['priority'], 'length_m': round(size, 3)})
-    strokes.sort(key=lambda s: (s['priority'], s['source_ids'], s['points_xz']))
+                                'snap': True, 'priority': m['priority'], 'length_m': round(size, 3),
+                                'junctions_xz': [p for p in clipped[1:-1] if p in pinned]})
+    strokes.sort(key=lambda s: (s['priority'], s['_order_sources'], s['points_xz']))
     unique, seen = [], set()
     for stroke in strokes:
+        del stroke['_order_sources']
         points = tuple(map(tuple, stroke['points_xz']))
         key = (stroke['kind'], stroke['fwd_lanes'], stroke['bkw_lanes'], points)
         reverse = (stroke['kind'], stroke['bkw_lanes'], stroke['fwd_lanes'], points[::-1])

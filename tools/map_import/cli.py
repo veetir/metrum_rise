@@ -6,33 +6,35 @@ Example (repository root):
   TMPDIR=/private/var/folders/7h/xq0frx8x03q49hg7ykfs8zxc0000gr/T/ \
     ~/.local/bin/python3.12 -m tools.map_import
 
-Later, when running Godot is permitted, use the existing built extension:
-  godot --headless --path godot --script res://scripts/tools/map_import_apply.gd \
-    -- --plan ../maps/processed/niirala/plan.json \
-    --world bootstrap/worlds/kuopio_324km2_10m.sqlite \
-    --output ../maps/processed/niirala --packs bootstrap/mods
+Apply through the local headless wrapper with the already deployed extension:
+  maps/processed/run_apply.sh
+  # Optional: up to three full days at the maximum supported speed; both bounds apply.
+  maps/processed/run_apply.sh --grow-days 3 --grow-max-seconds 180 --grow-max-frames 120000
   ~/.local/bin/python3.12 -m tools.map_import --outcome maps/processed/niirala/apply_results.json
 
 Relative runner paths resolve from the Godot project directory. The preparation
 CLI never starts Godot, invokes run.sh or performs a network request. Outputs are
 restricted to ignored paths under maps/processed to protect local ODbL data.
 
-External Rust application is intentionally absent: compile_road/commit_road,
-load_world_definition_internal and save_game_internal are crate-private. The
-public lower-level graph/save functions bypass player planning/earthworks and do
-not substitute for those APIs. Widening visibility or registering an internal
-runner would modify existing simulation code, triggering the requested fallback.
+The apply script uses public player validation, commit, undo, vegetation, outside
+connection, speed and save APIs. No lower-level graph writes or Rust hooks are
+needed. A disconnected car edit is undone and deferred; every retry is recorded.
+The crop's continuing road gets one outside connection, using the existing
+connection tool's normal extension. The final save is confirmed paused.
 """
 
 import argparse
 import hashlib
 import json
 import math
+import re
+import sqlite3
 from pathlib import Path
 import subprocess
 
-from .geometry import build_strokes
-from .mapping import map_role, table
+from .mapping import POLICY, map_role, table
+from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
+from .water import WaterMask
 from .normalise import normalise
 from .osm import OsmAdapter
 from .projection import tm35fin
@@ -73,7 +75,7 @@ def validate_outcome(outcome, plan, plan_hash):
             raise ValueError(f'Duplicate/unknown apply IDs in {field}')
         if outcome.get('complete') and set(ids) != known:
             raise ValueError(f'Completed apply omits {field}')
-        if any(r['status'] not in ('accepted', 'refused', 'skipped') or not isinstance(r.get('reason'), str)
+        if any(r['status'] not in ('accepted', 'partial', 'refused', 'skipped') or not isinstance(r.get('reason'), str)
                for r in outcome[field]):
             raise ValueError(f'Invalid apply status in {field}')
     if any(not math.isfinite(p['area_m2']) or p['area_m2'] < 0 for p in outcome['parcels']):
@@ -94,19 +96,39 @@ def prepare(args):
     decisions = {(f['id'], role): map_role(f, role) for f in features for role in f['roles']}
     roads = [(f, decisions[(f['id'], 'road')]) for f in features if 'road' in f['roles']
              and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
-    strokes, preparation = build_strokes(roads, box, args.simplify_m)
+    # Keep neutral source geometry immutable; conflation owns its working copy.
+    from copy import deepcopy
+    roads = deepcopy(roads)
+    roundabouts = collapse_roundabouts(features, roads, decisions)
+    roads, conflation = conflate(roads, decisions)
+    conflation['roundabouts'] = roundabouts
+    strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
+    strokes = prune_stubs(strokes, preparation['discarded'])
+    water = WaterMask.load(args.world)
+    strokes, water_audit = water.clip(strokes)
+    strokes = prune_stubs(strokes, preparation['discarded'])
+    preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=water_audit, water_fills=water.fills)
     zones = frontage_intents(features, decisions, strokes, box, transform.zone_cell_m)
     plan = {'schema_version': 1, 'source_sha256': digest(args.source), 'world_sha256': digest(args.world),
             'source_license': 'OpenStreetMap contributors, ODbL; local derived data',
             'world_transform': transform.record(), 'target_box_xz': box,
             'center_wgs84': [args.lat, args.lon], 'center_world_xz': center,
-            'parameters': {'size_m': args.size_m, 'simplify_m': args.simplify_m, 'merge_m': 2},
+            'parameters': {'size_m': args.size_m, 'simplify_m': args.simplify_m, **POLICY},
             'capabilities': table(), 'strokes': strokes, 'zoning': zones}
     # Validate an outcome before replacing any previous products.
     plan_bytes = (json.dumps(plan, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode()
     outcome = json.loads(args.outcome.read_text()) if args.outcome else None
     if outcome is not None:
         validate_outcome(outcome, plan, hashlib.sha256(plan_bytes).hexdigest())
+        log = args.outcome.with_name('apply.log')
+        counts = re.findall(r'CCH rebuilt:.*?→ (\d+) (?:DISCONNECTED components|component)', log.read_text()) if log.exists() else []
+        outcome['car_components'] = int(counts[-1]) if counts else None
+        save_path = output/'city.sqlite'
+        if outcome.get('saved') and save_path.exists():
+            with sqlite3.connect(save_path.resolve().as_uri()+'?mode=ro', uri=True) as conn:
+                outcome['population'] = conn.execute('SELECT coalesce(sum(member_count),0) FROM households').fetchone()[0]
+                outcome['buildings'] = conn.execute('SELECT count(*) FROM buildings').fetchone()[0]
+                outcome['saved_speed'] = conn.execute('SELECT speed_multiplier FROM time_state').fetchone()[0]
     report = build_report(features, decisions, plan, preparation, outcome)
     output.mkdir(parents=True, exist_ok=True)
     write_json(output/'neutral.json', {'schema_version': 1, 'coordinate_system': 'world_xz_metres',

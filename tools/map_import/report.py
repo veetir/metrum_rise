@@ -51,9 +51,15 @@ def build_report(features, decisions, plan, preparation, outcome=None):
     totals = {}
     for kind in ('road', 'footpath'):
         ids = {s['id'] for s in plan['strokes'] if s['kind'] == kind}
+        lengths = {s['id']: s['length_m'] for s in plan['strokes'] if s['kind'] == kind}
         results = [r for r in road_results.values() if r['id'] in ids]
         totals[kind] = {'prepared': len(ids), 'prepared_length_m': round(sum(s['length_m'] for s in plan['strokes'] if s['kind'] == kind), 3),
                         'attempted': len(results), 'accepted': sum(r['status'] == 'accepted' for r in results) if outcome else None,
+                        'partial': sum(r['status'] == 'partial' for r in results) if outcome else None,
+                        'accepted_length_m': round(sum(r.get('accepted_length_m', lengths[r['id']] if r['status'] == 'accepted' else 0) for r in results), 3) if outcome else None,
+                        'attempt_refusals_by_reason': dict(sorted(Counter(a['reason'] for r in results for a in r.get('attempts', []) if a['reason'] and a.get('by') != 'importer').items())),
+                        'importer_retries_by_reason': dict(sorted(Counter(a['reason'] for r in results for a in r.get('attempts', []) if a['reason'] and a.get('by') == 'importer').items())),
+                        'failed_pieces_by_reason': dict(sorted(Counter(a['reason'] for r in results for a in r.get('failed_pieces', [])).items())),
                         'refused': sum(r['status'] == 'refused' for r in results) if outcome else None,
                         'refused_by_reason': dict(sorted(Counter(r['reason'] for r in results if r['status'] == 'refused').items())),
                         'unattempted': len(ids)-len(results)}
@@ -84,13 +90,21 @@ def summary(report):
     for kind in ('road', 'footpath'):
         t = report['totals'][kind]
         lines.append(f"{kind}: {t['prepared']} prepared ({t['prepared_length_m']:.1f} m), {t['attempted']} attempted, "
-                     f"accepted={t['accepted']}, refused={t['refused']}; {t['unattempted']} unattempted")
+                     f"accepted={t['accepted']}, partial={t['partial']}, refused={t['refused']}; {t['unattempted']} unattempted; accepted metres={t['accepted_length_m']}")
         for reason, count in t['refused_by_reason'].items():
-            lines.append(f"  game refusal {reason}: {count}")
+            lines.append(f"  unplaced stroke reason {reason}: {count}")
     z = report['totals']['zoning']
     lines.append(f"Zoning intents: {z['prepared_by_type']}; nominal area m2: {z['nominal_prepared_area_m2']}")
     lines.append(f"Committed parcels: {z['committed_parcels_by_type']}; actual area m2: {z['committed_area_m2']}")
     lines.append('Skipped feature roles: ' + ', '.join(f'{k}={v}' for k, v in report['skipped_by_reason'].items()))
     lines.append(f"Input junction warnings (not game refusals): {len(report['preparation']['junctions'])}")
     lines.append(f"Input radius warnings (not game refusals): {len(report['preparation'].get('radius_warnings', []))}")
+    if report['apply_results']:
+        lines.append(f"Connected car components (game CCH log): {report['apply_results'].get('car_components', 'unknown')}")
+        lines.append(f"Forest clearing: {report['apply_results'].get('forest', {})}")
+        lines.append(f"Population: {report['apply_results'].get('population', 'unknown')}; buildings: {report['apply_results'].get('buildings', 'unknown')}; saved speed: {report['apply_results'].get('saved_speed', 'unknown')}")
+        lines.append(f"Growth: {report['apply_results'].get('growth', {})}")
+        for kind in ('road', 'footpath'):
+            lines.append(f"{kind} attempt refusals: {report['totals'][kind]['attempt_refusals_by_reason']}; failed pieces: {report['totals'][kind]['failed_pieces_by_reason']}")
+            lines.append(f"{kind} importer decisions: {report['totals'][kind]['importer_retries_by_reason']}")
     return '\n'.join(lines) + '\n'

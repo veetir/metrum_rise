@@ -14,6 +14,8 @@ import unittest
 from tools.map_import.cli import validate_outcome
 from tools.map_import.geometry import build_strokes, clip_line, point_segment_distance, radius_audit, simplify
 from tools.map_import.mapping import map_role, table
+from tools.map_import.conflate import collapse_roundabouts, conflate, prepare_streets, snap_endpoints, prune_stubs
+from tools.map_import.water import WaterMask
 from tools.map_import.model import SourceFeature
 from tools.map_import.normalise import normalise
 from tools.map_import.osm import OsmAdapter, assemble_rings, number, speed
@@ -142,7 +144,7 @@ class MappingTest(unittest.TestCase):
         self.assertTrue(table())
 
     def test_unsupported_features_have_reasons(self):
-        for kind in ('motorway', 'motorway_link', 'steps', 'corridor', 'construction', 'service', 'track'):
+        for kind in ('motorway', 'motorway_link', 'steps', 'corridor', 'construction', 'track'):
             result = map_role(feature('r', [(0, 0), (10, 0)], road_class=kind), 'road')
             self.assertEqual(result['action'], 'skip')
             self.assertTrue(result['reason'])
@@ -150,19 +152,29 @@ class MappingTest(unittest.TestCase):
         self.assertEqual(map_role(feature('r', [(0, 0), (10, 0)], bridge=True), 'road')['reason'], 'grade_separation_deferred')
 
     def test_service_and_track_policy(self):
+        self.assertEqual(map_role(feature('s', [(0, 0), (10, 0)], road_class='service'), 'road')['action'], 'road')
+        for subtype in ('sidewalk', 'crossing'):
+            self.assertEqual(map_role(feature('p', [(0, 0), (10, 0)], road_class='footway', footway=subtype), 'road')['reason'], 'road_includes_sidewalks')
         self.assertEqual(map_role(feature('a', [(0, 0), (10, 0)], road_class='service', service='alley'), 'road')['action'], 'road')
         self.assertEqual(map_role(feature('t', [(0, 0), (10, 0)], road_class='track', track_grade='grade1'), 'road')['action'], 'footpath')
         self.assertEqual(map_role(feature('p', [(0, 0), (10, 0)], road_class='service', service='parking_aisle'), 'road')['action'], 'skip')
 
     def test_directional_and_invalid_lanes(self):
         for oneway in (1, -1):
-            result = map_role(feature('r', [(0, 0), (10, 0)], oneway=oneway, lanes=2), 'road')
+            result = map_role(feature('r', [(0, 0), (10, 0)], road_class='primary', oneway=oneway, lanes=2), 'road')
             self.assertEqual((result['fwd_lanes'], result['bkw_lanes']), (2, 0))
-        f = feature('r', [(0, 0), (10, 0)], lanes=3, lanes_forward=2)
+        f = feature('r', [(0, 0), (10, 0)], road_class='primary', lanes=3, lanes_forward=2)
         result = map_role(f, 'road')
         self.assertEqual((result['fwd_lanes'], result['bkw_lanes']), (2, 1))
         for lanes in (-1, 0, 2.5, 9):
             self.assertEqual(map_role(feature('r', [(0, 0), (10, 0)], lanes=lanes), 'road')['action'], 'skip')
+
+    def test_minor_roads_prefer_default_unless_oneway_confirmed(self):
+        for kind in ('service', 'residential', 'unclassified', 'living_street', 'tertiary'):
+            f = feature('r', [(0, 0), (50, 0)], road_class=kind, oneway=-1, lanes=3)
+            self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (1, 1))
+            f['properties']['oneway_confirmed'] = True
+            self.assertEqual(map_role(f, 'road')['bkw_lanes'], 0)
 
 
 class StrokeTest(unittest.TestCase):
@@ -177,14 +189,14 @@ class StrokeTest(unittest.TestCase):
         self.assertEqual(result[0]['length_m'], 40)
 
     def test_oneway_reverse_is_geometry_not_lane_swap(self):
-        f = feature('r', [(0, 0), (20, 0)], oneway=-1)
+        f = feature('r', [(0, 0), (20, 0)], oneway=-1, oneway_confirmed=True)
         strokes, _ = build_strokes([road(f)], self.box)
         self.assertEqual(strokes[0]['points_xz'], [(20, 0), (0, 0)])
         self.assertEqual((strokes[0]['fwd_lanes'], strokes[0]['bkw_lanes']), (1, 0))
 
     def test_opposing_oneway_pieces_do_not_join(self):
-        a = feature('a', [(0, 0), (20, 0)], ['a', 'joint'], oneway=1)
-        b = feature('b', [(40, 0), (20, 0)], ['b', 'joint'], oneway=1)
+        a = feature('a', [(0, 0), (20, 0)], ['a', 'joint'], oneway=1, oneway_confirmed=True)
+        b = feature('b', [(40, 0), (20, 0)], ['b', 'joint'], oneway=1, oneway_confirmed=True)
         self.assertEqual(len(build_strokes([road(a), road(b)], self.box)[0]), 2)
 
     def test_original_way_continuous_at_branch_and_junction_pinned(self):
@@ -252,6 +264,113 @@ class StrokeTest(unittest.TestCase):
         random.Random(31).shuffle(roads)
         self.assertEqual(build_strokes(roads, self.box), expected)
         self.assertTrue(any(d['reason'] == 'duplicate_stroke' for d in expected[1]['discarded']))
+
+
+class ConflationTest(unittest.TestCase):
+    def test_path_policy_cannot_move_or_reorder_car_strokes(self):
+        cars = [road(feature('a', [(0, 0), (100, 0)])), road(feature('b', [(100, 0), (200, 50)]))]
+        path = road(feature('path', [(1.5, 0), (1.5, 100)], road_class='path'))
+        box = (-500, -500, 500, 500)
+        expected = prepare_streets(cars, box, 1)[0]
+        actual = prepare_streets(cars+[path], box, 1)[0]
+        self.assertEqual([s for s in actual if s['kind'] == 'road'], expected)
+
+    def test_roundabout_approaches_remap_to_one_ordinary_junction(self):
+        circle = feature('circle', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True)
+        fs = [feature('west', [(-100, 0), (0, 0)], ['w', 'a']),
+              feature('east', [(20, 20), (100, 20)], ['c', 'e'])]
+        roads = list(map(road, fs))
+        decisions = {('circle', 'road'): map_role(circle, 'road')}
+        audit = collapse_roundabouts([circle], roads, decisions)
+        self.assertEqual(audit[0]['centre_xz'], (10, 10))
+        self.assertEqual(roads[0][0]['node_ids'][-1], roads[1][0]['node_ids'][0])
+        self.assertEqual(roads[0][0]['points'][-1], (10, 10))
+        self.assertEqual(decisions['circle', 'road']['reason'], 'roundabout_as_ordinary_junction')
+
+    def test_parallel_paths_drop_but_shortcut_survives(self):
+        fs = [feature('r', [(0, 0), (200, 0)]),
+              feature('side', [(0, 8), (200, 8)], road_class='cycleway'),
+              feature('shortcut', [(100, 0), (100, 100)], road_class='path')]
+        decisions = {(f['id'], 'road'): map_role(f, 'road') for f in fs}
+        result, audit = conflate([road(f) for f in fs], decisions)
+        self.assertEqual([f['id'] for f, _ in result], ['r', 'shortcut'])
+        self.assertEqual(audit['parallel_paths'][0]['source_ids'], ['side'])
+
+    def test_split_carriageways_create_one_two_way_median(self):
+        fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1),
+              feature('b', [(100, 12), (0, 12)], road_class='primary', name='Main', oneway=1)]
+        result, audit = conflate([road(f) for f in fs], {})
+        self.assertEqual(len(result), 1)
+        f, m = result[0]
+        self.assertTrue(all(p[1] == 6 for p in f['points']))
+        self.assertEqual((m['fwd_lanes'], m['bkw_lanes']), (1, 1))
+        self.assertEqual(len(audit['carriageways']), 2)
+        self.assertEqual(conflate([road(f) for f in reversed(fs)], {}), (result, audit))
+        strokes, _ = build_strokes(result, (-200, -200, 200, 200))
+        self.assertEqual(strokes[0]['source_ids'], ['a', 'b'])
+
+    def test_near_miss_inserts_shared_junction(self):
+        roads = [road(feature('a', [(0, 0), (100, 0)])), road(feature('b', [(50, 5), (50, 80)]))]
+        audit = snap_endpoints(roads)
+        self.assertEqual(len(audit), 1)
+        self.assertIn((50, 0), roads[0][0]['points'])
+        self.assertEqual(roads[1][0]['points'][0], (50, 0))
+
+    def test_short_dead_end_pruned_but_through_path_kept(self):
+        fs = [feature('a', [(0, 0), (100, 0)]), feature('b', [(50, 0), (50, 30)], road_class='path')]
+        strokes, audit = build_strokes(list(map(road, fs)), (-100, -100, 200, 200))
+        result = prune_stubs(strokes, audit['discarded'])
+        self.assertEqual([s['kind'] for s in result], ['road'])
+
+    def test_water_bilinear_width_and_trim(self):
+        depth = [0.0]*121
+        depth[5*11+5] = 2.0
+        mask = WaterMask(11, 11, 10, depth)
+        self.assertEqual(mask.at((0, 0)), 2)
+        self.assertEqual(mask.at((5, 0)), 1)
+        s = {'id': 'wet', 'kind': 'road', 'fwd_lanes': 1, 'bkw_lanes': 1,
+             'points_xz': [(-40, 0), (40, 0)], 'length_m': 80, 'source_ids': ['s']}
+        clipped, audit = mask.clip([s])
+        self.assertEqual(len(clipped), 2)
+        self.assertGreaterEqual(audit[0]['removed_m'], 20)
+        dry = {**s, 'points_xz': [(-40, 30), (40, 30)]}
+        self.assertEqual(mask.clip([dry]), ([dry], []))
+
+    def test_water_inclusive_world_edges_and_duplicate_vertices(self):
+        mask = WaterMask(3, 3, 10, [1.0]*9)
+        self.assertEqual(mask.at((10, 10)), 1)
+        self.assertEqual(mask.at((10.1, 10)), 0)
+        self.assertFalse(mask.safe((0, 0), (0, 0), 5))
+
+    def test_authored_water_flood_and_edge_escape_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'world.sqlite'
+            samples = [0.1 if x in (0, 4) or z in (0, 4) else 0 for z in range(5) for x in range(5)]
+            with sqlite3.connect(path) as conn:
+                conn.executescript('CREATE TABLE world_definition_meta(width_m,height_m,terrain_cell_m,terrain_chunk_m);'
+                                   'INSERT INTO world_definition_meta VALUES(40,40,10,50);'
+                                   'CREATE TABLE world_terrain_chunks(chunk_x,chunk_z,width_samples,height_samples,source_height_blob_f32_le);'
+                                   'CREATE TABLE world_lake_fills(world_x,world_z,surface_elevation_m);'
+                                   'CREATE TABLE world_open_water_fills(world_x,world_z,surface_elevation_m);'
+                                   'INSERT INTO world_lake_fills VALUES(0,0,1);')
+                conn.execute('INSERT INTO world_terrain_chunks VALUES(0,0,5,5,?)', (struct.pack('<25f', *samples),))
+            mask = WaterMask.load(path)
+            self.assertEqual(mask.at((0, 0)), 1)
+            self.assertEqual(sum(d > 0 for d in mask.depth), 9)
+            with sqlite3.connect(path) as conn:
+                conn.execute('UPDATE world_lake_fills SET surface_elevation_m=3')
+            self.assertFalse(any(WaterMask.load(path).depth))
+            with sqlite3.connect(path) as conn:
+                conn.execute('INSERT INTO world_open_water_fills VALUES(0,0,3)')
+            self.assertEqual(sum(d > 0 for d in WaterMask.load(path).depth), 25)
+
+    def test_short_through_path_is_pruned_after_water_clipping(self):
+        path = {'source_ids': ['p'], 'kind': 'footpath', 'length_m': 60, 'points_xz': [(0, 0), (60, 0)]}
+        roads = [{'source_ids': ['r'], 'kind': 'road', 'length_m': 100, 'points_xz': [(0, 0), (0, 100)]},
+                 {'source_ids': ['s'], 'kind': 'road', 'length_m': 100, 'points_xz': [(60, 0), (60, 100)]}]
+        discarded = []
+        self.assertEqual(prune_stubs([path, *roads], discarded), roads)
+        self.assertEqual(discarded[0]['reason'], 'short_standalone_path')
 
 
 class ZoningReportTest(unittest.TestCase):
