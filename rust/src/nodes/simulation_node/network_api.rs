@@ -8,6 +8,61 @@ mod road_tool;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Selects the separator for subsequent immutable tool requests: 0 none, 1 paint,
+    /// 2 kerbed grass, 3 kerbed paving. Returns an empty string on success, else a reason.
+    #[func]
+    pub fn set_road_tool_median(&mut self, style: i32, width_m: f32) -> GString {
+        match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
+            Ok(median) => {
+                self.road_tool_median = median;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
+    /// Queues an in-place lane/median edit using the current tool selection; poll the returned
+    /// identity with `get_road_commit_result`, exactly as for drawing a road.
+    #[func]
+    pub fn change_road_cross_section(&mut self, edge: i32, fwd: i32, bkw: i32) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if edge < 0 || !(0..=4).contains(&fwd) || !(0..=4).contains(&bkw) {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_cross_section".into(),
+                detail: "invalid_cross_section".into(),
+            });
+        } else {
+            let _ = self.cmd_tx.send(
+                crate::nodes::sim::core::SimCommand::ChangeRoadCrossSection {
+                    edge: edge as usize,
+                    lanes: (fwd as u8, bkw as u8),
+                    median: self.road_tool_median,
+                    completion,
+                },
+            );
+        }
+        self.road_commit_request_id
+    }
+
+    /// Returns the authored lane/median selection of a live road for inspection.
+    #[func]
+    pub fn get_road_cross_section(&self, edge: i32) -> VarDictionary {
+        let core = self.lock_core();
+        let Some(edge) = usize::try_from(edge)
+            .ok()
+            .and_then(|id| core.region_graph.get_edge(id))
+            .filter(|edge| !edge.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        vdict! { "fwd_lanes": i32::from(edge.fwd_lanes), "bkw_lanes": i32::from(edge.bkw_lanes),
+        "median_style": edge.median.map_or(0, |median| median.style as i32),
+        "median_width": edge.median.map_or(0.0, |median| median.width_m) }
+    }
+
     /// Returns the ID of the edge hovered by the mouse.
     #[func]
     pub fn get_hovered_edge(&self, world_x: f32, world_z: f32) -> i32 {
@@ -75,6 +130,7 @@ impl SimulationNode {
         let send_ok = self
             .cmd_tx
             .send(crate::nodes::sim::core::SimCommand::AddRoad {
+                median: self.road_tool_median,
                 points,
                 fwd_lanes,
                 bkw_lanes,
@@ -413,8 +469,15 @@ impl SimulationNode {
     /// Toggles a user override for a crosswalk at a specific road mouth.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        self.lock_core()
-            .set_crosswalk_override_internal(node_id, edge_id, enabled);
+        let surface_changed = {
+            let mut core = self.lock_core();
+            let generation = core.road_tool_surface_generation;
+            core.set_crosswalk_override_internal(node_id, edge_id, enabled);
+            core.road_tool_surface_generation != generation
+        };
+        if surface_changed {
+            self.refresh_snapshot_from_core();
+        }
     }
 
     /// Returns true if a crosswalk exists natively or by user override.

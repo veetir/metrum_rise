@@ -28,6 +28,8 @@ pub(crate) enum StreetLightKind {
     ResidentialWood = 1,
     /// 10 m galvanised pole with a longer arm, on wider roads.
     Main = 2,
+    /// Twin-arm pole standing within a raised median.
+    Median = 3,
     /// Post-top light beside footpaths.
     Path = 4,
 }
@@ -82,6 +84,13 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
     // steel and wooden poles still spaces them evenly.
     let (kind, family, spacing_m, min_gap_m, both_sides) = match edge.primary_type {
         TransitType::Foot => (StreetLightKind::Path, Family::Path, 20.0, 8.0, false),
+        TransitType::Road
+            if edge
+                .median
+                .is_some_and(|median| median.is_raised() && median.width_m >= 2.0) =>
+        {
+            (StreetLightKind::Median, Family::Median, 36.0, 14.0, false)
+        }
         TransitType::Road if u16::from(edge.fwd_lanes) + u16::from(edge.bkw_lanes) <= 2 => {
             let kind = if super::cosmetic_road_age(edge) > WOODEN_POLE_MIN_AGE {
                 StreetLightKind::ResidentialWood
@@ -171,6 +180,7 @@ fn chain_runs<'a>(
 enum Family {
     Residential,
     Main,
+    Median,
     Path,
 }
 
@@ -271,7 +281,7 @@ fn arm_rank(graph: &RegionGraph, edge: usize) -> Option<(u8, usize)> {
     let family = rule_for_edge(graph.edge(edge))?.family;
     Some((
         match family {
-            Family::Main => 0,
+            Family::Main | Family::Median => 0,
             Family::Residential => 1,
             Family::Path => 2,
         },
@@ -529,6 +539,20 @@ fn pole_offset(
     side: f32,
     kind: StreetLightKind,
 ) -> Option<(f32, Option<f32>)> {
+    if kind == StreetLightKind::Median {
+        let band = section
+            .bands
+            .iter()
+            .find(|band| band.kind == RoadSurfaceBandKind::Median)?;
+        if band.lateral_end_m - band.lateral_start_m < 1.4 {
+            return None;
+        }
+        // place_at multiplies the offset by side; the median's signed centre is absolute.
+        return Some((
+            (band.lateral_start_m + band.lateral_end_m) * 0.5 * side,
+            Some((band.height_start_m + band.height_end_m) * 0.5),
+        ));
+    }
     let on_side = |kinds: &[RoadSurfaceBandKind]| {
         section
             .bands

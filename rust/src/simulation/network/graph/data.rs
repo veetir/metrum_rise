@@ -68,12 +68,14 @@ pub struct Edge {
     pub allowed_types: u8,
     /// Classification (Standard, Bridge, Tunnel). Multi-modal foundation (Item 26).
     pub class: EdgeClass,
-    /// Total road width in metres (asphalt + sidewalks).
+    /// Carriageway and median width in metres, excluding the outer kerbs and sidewalks.
     pub width: f32,
     /// Number of forward (start->end) vehicle lanes.
     pub fwd_lanes: u8,
     /// Number of backward (end->start) vehicle lanes.
     pub bkw_lanes: u8,
+    /// Optional central separator, included in `width`; absent on legacy roads.
+    pub median: Option<super::RoadMedian>,
     /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
     /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.

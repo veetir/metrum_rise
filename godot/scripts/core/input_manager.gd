@@ -216,7 +216,10 @@ func _unhandled_input(event):
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_E:
-				if current_tool == Tool.VEGETATION:
+				if current_tool == Tool.ROAD:
+					road_tool.toggle_cross_section_edit()
+					get_viewport().set_input_as_handled()
+				elif current_tool == Tool.VEGETATION:
 					vegetation_tool.toggle_mode()
 					get_viewport().set_input_as_handled()
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
@@ -238,6 +241,13 @@ func _unhandled_input(event):
 			KEY_F12:
 				_handle_money_and_demand_cheat()
 			
+			KEY_N:
+				if current_tool == Tool.ROAD: road_tool.cycle_median()
+			KEY_SEMICOLON:
+				if current_tool == Tool.ROAD: road_tool.adjust_median_width(-0.5)
+			KEY_APOSTROPHE:
+				if current_tool == Tool.ROAD: road_tool.adjust_median_width(0.5)
+
 			# Lane Adjustments (Forward)
 			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
 			KEY_BRACKETLEFT, KEY_DOWN: _handle_lane_adjust(-1, 0)

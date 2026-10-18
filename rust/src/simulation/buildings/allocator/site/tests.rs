@@ -301,6 +301,7 @@ fn road_test_edge(
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     crate::simulation::network::graph::Edge {
+        median: None,
         start_node,
         end_node,
         primary_type: TransitType::Road,

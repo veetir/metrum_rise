@@ -58,13 +58,14 @@ impl RoadEditPlan {
     /// Builds the same local road solution as the worker without cloning the resident city.
     pub(crate) fn compile_road(core: &SimCore, request: RoadPreviewRequest) -> Self {
         use crate::simulation::network::surface::RoadSurfaceSystem;
-        let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+        let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
             &request.points,
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.road_surface,
             request.snap_to_existing_roads,
         );
+        prepared.median = request.median;
         let (preview, reuse, _, topology) = core
             .transit_network
             .road_surface
@@ -216,6 +217,7 @@ impl RoadEditPlan {
             bkw,
             &core.watermap,
             self.road.validation.clone(),
+            self.road.prepared.median,
         );
         if !validation.is_valid {
             return Some(FailedCheck::Validation(validation.invalid_reason));
@@ -223,7 +225,12 @@ impl RoadEditPlan {
         if self.overlaps_fields(core) {
             return Some(FailedCheck::Fields);
         }
-        let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
+        let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH
+            + self
+                .road
+                .prepared
+                .median
+                .map_or(0.0, |median| median.width_m);
         let half_width_m = width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH;
         if self.overlaps_cell_zoning(core)
             || core
@@ -385,6 +392,11 @@ impl RoadEditPlan {
             .then_some(&self.road.prepared)
     }
 
+    /// Median selected by this immutable request; part of commit/preview identity.
+    pub(crate) fn median(&self) -> Option<crate::simulation::network::graph::RoadMedian> {
+        self.road.prepared.median
+    }
+
     /// Returns the compiled road validation after exact input/dependency matching.
     pub(crate) fn validation(&self) -> &RoadPreviewValidation {
         &self.road.validation
@@ -427,6 +439,7 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                median: None,
                 enqueued_at: None,
                 include_terrain: false,
                 request_id: 7,
@@ -479,6 +492,7 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                median: None,
                 enqueued_at: None,
                 include_terrain: false,
                 request_id: 7,

@@ -23,6 +23,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     for i in 0..3 {
         let geometry = vec![points[i], points[i + 1]];
         graph.add_edge(Edge {
+            median: None,
             start_node: nodes[i],
             end_node: nodes[i + 1],
             primary_type: TransitType::Road,
@@ -424,8 +425,15 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
-    restore_lane_references(&conn, 58, &mut restored, &graph, &mut new_network, &allocator)
-        .unwrap();
+    restore_lane_references(
+        &conn,
+        58,
+        &mut restored,
+        &graph,
+        &mut new_network,
+        &allocator,
+    )
+    .unwrap();
 
     assert_ne!(restored.current_lane_id[healthy], usize::MAX);
     assert_eq!(restored.transit[healthy], TRANSIT_INTERSECTION);
@@ -470,8 +478,15 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
             .collect();
         new_lanes[id].next_lanes = direct.into();
     }
-    restore_lane_references(&conn, 58, &mut restored, &graph, &mut new_network, &allocator)
-        .unwrap();
+    restore_lane_references(
+        &conn,
+        58,
+        &mut restored,
+        &graph,
+        &mut new_network,
+        &allocator,
+    )
+    .unwrap();
 
     assert_eq!(restored.current_lane_id[on_connector], usize::MAX);
     assert_eq!(restored.transit[on_connector], TRANSIT_NETWORK);
@@ -481,11 +496,13 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
 fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     let (graph, network) = fixture();
     let mut allocator = BuildingAllocator::new();
-    allocator.buildings.push(crate::simulation::buildings::allocator::indexed_test_building(
-        "test:retry_home".into(),
-        crate::simulation::zoning::ZoneType::Residential,
-        0,
-    ));
+    allocator.buildings.push(
+        crate::simulation::buildings::allocator::indexed_test_building(
+            "test:retry_home".into(),
+            crate::simulation::zoning::ZoneType::Residential,
+            0,
+        ),
+    );
     let current_node = graph.edge(1).start_node;
     let mut agents = AgentSystem::new();
     let i = agents.spawn_border_arrival_agent(usize::MAX, current_node, 0.0, 0.0);

@@ -325,6 +325,7 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            median: None,
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,

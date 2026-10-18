@@ -863,6 +863,9 @@ pub fn build_pedestrian_connections_at_node(
             .copied();
         if crosswalk_override == Some(false)
             || (crosswalk_override.is_none() && road_degree == 2 && crosswalks_added >= 1)
+            || (crosswalk_override.is_none()
+                && graph.edge(edge_idx).median.is_some()
+                && graph.median_continues_at_node(edge_idx, node_id as u32))
         {
             continue;
         }

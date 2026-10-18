@@ -1052,6 +1052,7 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
+                    median: None,
                     enqueued_at: None,
                     include_terrain: false,
                     request_id: 0,
@@ -1137,6 +1138,7 @@ impl SimCore {
             bkw_lanes_u8,
             &self.watermap,
             fast_validation,
+            prepared_input.median,
         );
         let mut validation = fast_validation.clone();
         if validation.is_valid {
@@ -1173,6 +1175,7 @@ impl SimCore {
                     bkw_lanes_u8,
                     &self.watermap,
                     full_validation,
+                    prepared_input.median,
                 );
                 let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
                 if full_validation.is_valid != fast_validation.is_valid
@@ -1252,7 +1255,8 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
-        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
+        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH
+            + prepared_input.median.map_or(0.0, |median| median.width_m);
         let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
         if self
             .zoning
@@ -2093,21 +2097,49 @@ impl SimCore {
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }
-        self.push_network_undo_for_local_topology(
-            HashSet::from([edge_id as usize]),
-            HashSet::from([node_id]),
-        );
-        self.region_graph
-            .set_crosswalk_override(node_id, edge_id as usize, enabled);
-
         let affected: HashSet<usize> = self
             .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
+        let changes_median = affected
+            .iter()
+            .any(|&id| self.region_graph.edge(id).median.is_some());
+        if changes_median {
+            self.transit_network.begin_road_edit();
+        }
+        self.push_network_undo_for_local_topology(
+            if changes_median {
+                affected.clone()
+            } else {
+                HashSet::from([edge_id as usize])
+            },
+            HashSet::from([node_id]),
+        );
+        self.region_graph
+            .set_crosswalk_override(node_id, edge_id as usize, enabled);
+        if changes_median {
+            self.transit_network.mark_surface_dirty_from_sets(
+                &self.region_graph,
+                &affected,
+                &HashSet::from([node_id]),
+            );
+            self.mark_local_network_render_dirty();
+            if !self.validate_staged_road_render_with_plan(None) {
+                return;
+            }
+        }
+        let lane_edges = if changes_median {
+            crate::simulation::network::lanes::LaneSystem::incremental_rebuild_edge_closure(
+                &self.region_graph,
+                &affected,
+            )
+        } else {
+            affected.clone()
+        };
         self.agents.invalidate_lane_ids_for_edges(
-            &affected,
+            &lane_edges,
             &self.transit_network.lane_system,
             &self.region_graph,
         );
@@ -2115,11 +2147,18 @@ impl SimCore {
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.agents.reattach_invalidated_lanes_for_edges(
-            &affected,
+            &lane_edges,
             &self.transit_network.lane_system,
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
+        if changes_median {
+            self.transit_network
+                .rebuild_cch_and_check(&self.region_graph);
+            self.transit_network.flow_fields.mark_all_dirty();
+            self.precompute_road_mesh_data();
+            self.terrain_dirty = true;
+        }
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
             self.transit_network.mark_point_dirty(pos);
@@ -2470,6 +2509,7 @@ mod tests {
         let start = graph.node(start_node).pos;
         let end = graph.node(end_node).pos;
         graph.add_edge(Edge {
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -2517,6 +2557,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -2687,6 +2728,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -3301,6 +3343,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -3355,6 +3398,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -4143,6 +4187,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(8.0, 0.0, 0.0), NodeType::Junction);
         let edge_idx = core.region_graph.add_edge(Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,

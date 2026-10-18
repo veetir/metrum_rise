@@ -57,6 +57,8 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
                     color,
                 );
             }
+        } else if let Some(median) = edge.median {
+            super::median::emit_span_nonroad(mesh, piece, median);
         } else {
             for quad in piece.sidewalk_surface_polygons() {
                 emit_surface_triangles(
@@ -68,7 +70,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
             }
         }
         let road_space_color = road_space_color(edge);
-        for (quad, corners, road_space) in piece.road_surface_polygons_in_road_space() {
+        let emit_asphalt = |(quad, corners, road_space)| {
             emit_road_space_quad(
                 mesh,
                 MeshLayer::Road,
@@ -77,6 +79,27 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
                 &road_space,
                 road_space_color,
             );
+        };
+        let asphalt = piece.road_surface_polygons_in_road_space();
+        if edge.median.is_some() {
+            let center = edge.median_center_offset();
+            let half = edge.median_half_width();
+            asphalt
+                .map(|(quad, corners, mut road_space)| {
+                    // Tyre wear is measured in lane space, excluding the island.
+                    let side = if road_space.iter().map(|uv| uv[1]).sum::<f32>() * 0.25 < center {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    for uv in &mut road_space {
+                        uv[1] -= center + side * half;
+                    }
+                    (quad, corners, road_space)
+                })
+                .for_each(emit_asphalt);
+        } else {
+            asphalt.for_each(emit_asphalt);
         }
         if edge.class == EdgeClass::Bridge {
             let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
@@ -114,16 +137,27 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
             .map(|&edge_idx| graph.edge(edge_idx))
             .filter(|edge| !edge.deleted)
             .all(|edge| edge.primary_type == TransitType::Foot);
-        emit_node_top_surface_polygons(
-            mesh,
-            MeshLayer::Sidewalk,
-            piece.sidewalk_surface_polygons(),
-            if footpath_node {
-                footpath_node_color()
-            } else {
-                sidewalk_color()
-            },
-        );
+        let median = graph
+            .node_adjacency(node_id)
+            .iter()
+            .copied()
+            .filter_map(|id| graph.edge(id).median.map(|median| (id, median)))
+            .min_by_key(|&(id, _)| id)
+            .map(|(_, median)| median);
+        if let Some(median) = median {
+            super::median::emit_node_nonroad(mesh, piece, median);
+        } else {
+            emit_node_top_surface_polygons(
+                mesh,
+                MeshLayer::Sidewalk,
+                piece.sidewalk_surface_polygons(),
+                if footpath_node {
+                    footpath_node_color()
+                } else {
+                    sidewalk_color()
+                },
+            );
+        }
         emit_node_top_surface_polygons(
             mesh,
             MeshLayer::Road,

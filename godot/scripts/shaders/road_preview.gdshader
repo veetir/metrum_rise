@@ -7,6 +7,8 @@ uniform float lane_width_m = 3.5;
 uniform float sidewalk_width_m = 1.5;
 uniform int forward_lanes = 1;
 uniform int backward_lanes = 1;
+uniform int median_style = 0;
+uniform float median_width_m = 0.0;
 // 0 = valid, 1 = checking, 2 = invalid. Only display state; Rust owns validity.
 uniform int placement_state = 0;
 
@@ -24,16 +26,30 @@ void fragment() {
 	vec3 asphalt = texture(asphalt_tex, world_xz * 0.05).rgb;
 	vec3 sidewalk = texture(sidewalk_tex, world_xz * 0.12).rgb * 1.16;
 	vec3 base = COLOR.r < 0.25 ? asphalt : (COLOR.r < 0.75 ? sidewalk : vec3(0.50, 0.49, 0.46));
+	bool median_band = median_style > 0 && COLOR.r > 0.625 && COLOR.r < 0.875;
+	float median_center = float(backward_lanes - forward_lanes) * lane_width_m * 0.5;
+	if (median_band) {
+		base = median_style == 2 ? vec3(0.20, 0.28, 0.10) : (median_style == 3 ? vec3(0.50, 0.49, 0.46) : asphalt);
+		if (median_style == 1) {
+			float hatch = 1.0 - smoothstep(0.18, 0.24, mod(UV.x + UV.y, 3.0));
+			base = mix(base, vec3(0.82), hatch);
+		}
+	}
 	float stripe = 0.0;
 	if (COLOR.r < 0.25 && lanes > 1.0) {
 		// UV is longitudinal metres / signed lateral metres, so bends retain lane spacing.
-		float lane_position = (UV.y + half_carriageway) / lane_width_m;
+		float lateral = UV.y;
+		if (median_style > 0) {
+			lateral -= median_center + sign(lateral - median_center) * median_width_m * 0.5;
+		}
+		float lane_position = (lateral + half_carriageway) / lane_width_m;
 		float divider = floor(lane_position + 0.5);
 		if (divider > 0.5 && divider < lanes - 0.5) {
 			float distance_to_line = abs(lane_position - divider) * lane_width_m;
 			float aa = max(fwidth(UV.y), 0.005);
 			stripe = 1.0 - smoothstep(0.08, 0.08 + aa, distance_to_line);
 			bool center = forward_lanes > 0 && backward_lanes > 0 && abs(divider - float(backward_lanes)) < 0.1;
+			if (center && median_style > 0) { stripe = 0.0; }
 			if (!center) {
 				float phase = fract(UV.x / 6.0);
 				float dash_aa = min(fwidth(UV.x / 6.0), 0.25);

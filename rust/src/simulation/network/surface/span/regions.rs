@@ -36,9 +36,14 @@ impl RoadSurfaceSystem {
                     }
                     let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
                     let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
-                    if width_a <= SPAN_REGION_MIN_BAND_WIDTH_M
-                        && width_b <= SPAN_REGION_MIN_BAND_WIDTH_M
-                    {
+                    // A nose's kerbs start narrower than the ordinary strip cutoff. Keep
+                    // every nonzero separator strip so its tip cannot leave an unowned slit.
+                    let min_width = if pair[0].bands.len() > 6 {
+                        0.001
+                    } else {
+                        SPAN_REGION_MIN_BAND_WIDTH_M
+                    };
+                    if width_a <= min_width && width_b <= min_width {
                         continue;
                     }
 

@@ -25,6 +25,14 @@ var current_path: Path3D
 
 var fwd_lanes: int = 1
 var bkw_lanes: int = 1
+var median_style: int = 0
+var median_width: float = 3.0
+var edit_cross_section: bool = false
+var _cross_section_label: Label
+var _edit_request_id: int = 0
+var _edit_message: String = ""
+var _candidate_cache_median_style: int = -1
+var _candidate_cache_median_width: float = -1.0
 var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
@@ -153,11 +161,27 @@ func _ready():
 	_info_label.add_theme_constant_override("shadow_offset_y", 1)
 	_info_label.visible = false
 	_hud_canvas.add_child(_info_label)
+	_cross_section_label = Label.new()
+	_cross_section_label.position = Vector2(20.0, 90.0)
+	_cross_section_label.add_theme_font_size_override("font_size", 17)
+	_cross_section_label.add_theme_color_override("font_shadow_color", Color.BLACK)
+	_cross_section_label.add_theme_constant_override("shadow_offset_x", 1)
+	_cross_section_label.add_theme_constant_override("shadow_offset_y", 1)
+	_hud_canvas.add_child(_cross_section_label)
+	_refresh_cross_section_label()
 
 func _process(delta):
 	if preview_metrics != null and DisplayServer.get_name() == "headless":
 		preview_metrics.frame(_preview_drawn_request_id, false)
 	_poll_road_commit_result()
+	if _cross_section_label:
+		_cross_section_label.visible = active
+	if _edit_request_id > 0:
+		var result: Variant = simulation_node.get_road_commit_result(_edit_request_id)
+		if result is Dictionary:
+			_edit_request_id = 0
+			_edit_message = "Road updated" if result.get("committed", false) else _preview_invalid_text({"invalid_reason": result.get("reason", "")})
+			_refresh_cross_section_label()
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
@@ -206,7 +230,52 @@ func _snap_to_roads_enabled() -> bool:
 func _zoning_snap_enabled() -> bool:
 	return draw_mode == 0 and zoning_grid_snap_enabled
 
+func _refresh_cross_section_label() -> void:
+	if _cross_section_label == null:
+		return
+	var median_name: String = ["No median", "Painted", "Kerbed grass", "Kerbed paving"][median_style]
+	if median_style > 0:
+		median_name += " %.1f m" % median_width
+	_cross_section_label.text = "%s  %d + %d lanes  |  %s\nN: median   ; / ': width   E: draw/edit\n%s" % ["Click road to update" if edit_cross_section else "Draw road", fwd_lanes, bkw_lanes, median_name, _edit_message]
+
+func cycle_median() -> void:
+	set_median((median_style + 1) % 4, [3.0, 1.0, 5.0, 2.0][(median_style + 1) % 4])
+
+func set_median(style: int, width: float) -> void:
+	var reason: String = simulation_node.set_road_tool_median(style, width)
+	if not reason.is_empty():
+		_edit_message = reason
+		_refresh_cross_section_label()
+		return
+	median_style = style
+	median_width = width
+	_edit_message = ""
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_update_lanes_label()
+
+func adjust_median_width(delta: float) -> void:
+	if median_style == 0:
+		return
+	var limits: Vector2 = [Vector2.ZERO, Vector2(0.5, 2.0), Vector2(2.0, 12.0), Vector2(1.0, 3.0)][median_style]
+	set_median(median_style, clampf(median_width + delta, limits.x, limits.y))
+
+func toggle_cross_section_edit() -> void:
+	cancel_road()
+	edit_cross_section = not edit_cross_section
+	_edit_message = ""
+	_refresh_cross_section_label()
+
+func apply_cross_section_to_edge(edge: int) -> int:
+	if _edit_request_id > 0 or _commit_request_id > 0:
+		return 0
+	_edit_request_id = simulation_node.change_road_cross_section(edge, fwd_lanes, bkw_lanes)
+	_edit_message = "Updating road..."
+	_refresh_cross_section_label()
+	return _edit_request_id
+
 func _update_lanes_label():
+	_refresh_cross_section_label()
 	if active and current_path != null:
 		_queue_preview_update()
 
@@ -231,7 +300,7 @@ func _unhandled_input(event):
 
 
 func _handle_click():
-	if _scripted_pointer_enabled or _commit_request_id > 0:
+	if _scripted_pointer_enabled or _commit_request_id > 0 or _edit_request_id > 0:
 		return
 	var total_start_us := Time.get_ticks_usec()
 	var state_before: int = current_state
@@ -244,6 +313,9 @@ func _handle_click():
 	var tangent_ms := 0.0
 	var path_ms := 0.0
 	var commit_ms := 0.0
+	if edit_cross_section and is_valid:
+		apply_cross_section_to_edge(simulation_node.get_hovered_edge(pos.x, pos.z))
+		return
 	if not is_valid:
 		_log_click_detail(
 			state_before,
@@ -417,6 +489,8 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		not _candidate_cache_validation.is_empty()
 		and _candidate_cache_fwd_lanes == fwd_lanes
 		and _candidate_cache_bkw_lanes == bkw_lanes
+		and _candidate_cache_median_style == median_style
+		and _candidate_cache_median_width == median_width
 		and _candidate_cache_snap_to_roads == _snap_to_roads_enabled()
 		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
 		and _preview_zoning_revision_is_current(_candidate_cache_validation)
@@ -473,6 +547,8 @@ func _remember_candidate_validation(points: PackedVector3Array, validation: Dict
 	_candidate_cache_validation = validation
 	_candidate_cache_fwd_lanes = fwd_lanes
 	_candidate_cache_bkw_lanes = bkw_lanes
+	_candidate_cache_median_style = median_style
+	_candidate_cache_median_width = median_width
 	_candidate_cache_snap_to_roads = _snap_to_roads_enabled()
 	_candidate_cache_surface_generation = int(validation.get("surface_generation", -1))
 
@@ -678,6 +754,8 @@ func _update_road_preview_material(preview: Dictionary) -> void:
 		return
 	_road_preview_material.set_shader_parameter("forward_lanes", fwd_lanes)
 	_road_preview_material.set_shader_parameter("backward_lanes", bkw_lanes)
+	_road_preview_material.set_shader_parameter("median_style", median_style)
+	_road_preview_material.set_shader_parameter("median_width_m", median_width if median_style > 0 else 0.0)
 	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
 	_road_preview_material.set_shader_parameter("placement_state", state)
 
@@ -745,6 +823,16 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 func _preview_invalid_text(preview: Dictionary) -> String:
 	var reason := String(preview.get("invalid_reason", ""))
 	match reason:
+		"median_requires_both_directions", "median_requires_vehicle_road":
+			return "A median needs vehicle lanes in both directions"
+		"median_width_out_of_range":
+			return "Median width is outside this style's range"
+		"cross_section_too_wide_for_curve":
+			return "This cross-section is too wide for the road's curve"
+		"invalid_road":
+			return "Click an existing road to update it"
+		"zoning_cell_overlap", "field_overlap":
+			return "Road widening overlaps reserved land"
 		"bridge_clearance":
 			return "Bridge clearance %.1f m / %.1f m" % [
 				float(preview.get("clearance_m", 0.0)),

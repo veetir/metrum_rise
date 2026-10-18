@@ -22,6 +22,8 @@ pub(in crate::simulation::network::surface::edge) const ROAD_PROFILE_MAX_GRADE: 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedRoadInput {
+    /// Selected median, applied before intersection solving and exact surface compilation.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Physical geometry for the new edge that will be previewed or committed.
     pub(crate) points: Vec<Vector3>,
     /// Physical geometry used to validate the full vertical profile solve.
@@ -120,6 +122,7 @@ impl RoadSurfaceSystem {
 
         if class != EdgeClass::Standard || points.len() < 2 {
             return PreparedRoadInput {
+                median: None,
                 validation_points: points.clone(),
                 points,
                 class,
@@ -132,6 +135,7 @@ impl RoadSurfaceSystem {
             Self::prepare_terminal_road_extension(raw_points, &points, terrain, graph)
         {
             return PreparedRoadInput {
+                median: None,
                 points: extension.new_points,
                 validation_points: extension.validation_points,
                 class,
@@ -141,6 +145,7 @@ impl RoadSurfaceSystem {
         }
 
         PreparedRoadInput {
+            median: None,
             validation_points: points.clone(),
             points,
             class,
@@ -168,6 +173,7 @@ impl RoadSurfaceSystem {
 
         let (points, class) = Self::prepare_road_input_points(raw_points, terrain);
         PreparedRoadInput {
+            median: None,
             validation_points: points.clone(),
             points,
             class,

@@ -985,6 +985,7 @@ pub fn split_edge(
     let width = old_edge.width;
     let fwd_lanes = old_edge.fwd_lanes;
     let bkw_lanes = old_edge.bkw_lanes;
+    let median = old_edge.median;
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
@@ -1008,8 +1009,15 @@ pub fn split_edge(
 
     graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
     graph.adjacency[junction_node_id as usize].push(edge_id);
+    if let Some(median) = &mut graph.edges[edge_id].median {
+        median.end_setback_m = 0.0;
+    }
 
     let mut new_edge = Edge {
+        median: median.map(|mut median| {
+            median.start_setback_m = 0.0;
+            median
+        }),
         start_node: junction_node_id,
         end_node: old_end_node,
         primary_type,

@@ -2,8 +2,10 @@
 
 //! Road network graph data structures and spatial indexing.
 
+mod cross_section;
 /// Core data structures for nodes and edges.
 pub mod data;
+pub use cross_section::{MedianStyle, RoadMedian};
 /// Logic for rebuilding adjacency lists and connectivity.
 pub mod rebuild;
 /// Chunk-based spatial index for fast distance and AABB queries.

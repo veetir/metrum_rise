@@ -103,6 +103,35 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
 
+        if edge.median.is_some() {
+            let line = FinnishLaneLine {
+                width_m: FINNISH_LINE_WIDTH_M,
+                pattern: MARKING_PATTERN_SHORT_DASH,
+            };
+            let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+            for (count, sign) in [(edge.fwd_lanes, side), (edge.bkw_lanes, -side)] {
+                for divider in 1..count {
+                    let offset = edge.median_center_offset()
+                        + sign
+                            * (edge.median_half_width() + f32::from(divider) * config::LANE_WIDTH);
+                    for &(start, end) in &ranges {
+                        if end > start {
+                            emit_lane_marking_sections(
+                                mesh,
+                                &sections[start..=end],
+                                1,
+                                1,
+                                marking_s_range,
+                                line,
+                                Some(offset),
+                            );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         let Some(line) = FinnishLaneLine::for_edge(edge) else {
             continue;
         };
@@ -118,6 +147,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                     total_lanes,
                     marking_s_range,
                     line,
+                    None,
                 );
             }
         }
@@ -131,6 +161,7 @@ fn emit_lane_marking_sections(
     total_lanes: usize,
     marking_s_range: (f32, f32),
     line: FinnishLaneLine,
+    lateral_offset_m: Option<f32>,
 ) {
     if sections.len() < 2 {
         return;
@@ -155,8 +186,8 @@ fn emit_lane_marking_sections(
         let Some((left_b, right_b)) = carriageway_bounds(&pair[1]) else {
             continue;
         };
-        let lateral_a = left_a + (right_a - left_a) * lane_fraction;
-        let lateral_b = left_b + (right_b - left_b) * lane_fraction;
+        let lateral_a = lateral_offset_m.unwrap_or(left_a + (right_a - left_a) * lane_fraction);
+        let lateral_b = lateral_offset_m.unwrap_or(left_b + (right_b - left_b) * lane_fraction);
         let Some(start) = section_world_point_at_lateral_offset(&pair[0], lateral_a) else {
             continue;
         };
@@ -343,7 +374,7 @@ fn carriageway_bounds(section: &RoadSurfaceSection) -> Option<(f32, f32)> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_marking_segment(
+pub(super) fn emit_marking_segment(
     mesh: &mut NetworkMeshData,
     start: Vector3,
     end: Vector3,

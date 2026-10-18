@@ -132,22 +132,30 @@ impl NetworkMeshData {
         let mut remaining = Vec::new();
         let mut selected = Vec::new();
         macro_rules! layer {
-            ($index:expr, $p:ident, $n:ident, $uv:ident, $c:ident) => {{
+            ($index:expr, $p:ident, $n:ident, $uv:ident, $c:ident) => {
+                layer!(
+                    self,
+                    output,
+                    self.owner_ranges[$index],
+                    output.owner_ranges[$index],
+                    $index,
+                    $p,
+                    $n,
+                    $uv,
+                    $c
+                )
+            };
+            ($source:ident, $target:ident, $ranges:expr, $output_ranges:expr, $index:expr, $p:ident, $n:ident, $uv:ident, $c:ident) => {{
                 let mut range_index = 0;
                 // Owner membership is constant within a range, so hash once per range, not per
                 // triangle.
                 let mut classified_range = usize::MAX;
                 let (mut full, mut partial) = (false, false);
-                for start in (0..self.$p.len()).step_by(3) {
-                    while self.owner_ranges[$index]
-                        .get(range_index)
-                        .is_some_and(|r| r.end <= start)
-                    {
+                for start in (0..$source.$p.len()).step_by(3) {
+                    while ($ranges).get(range_index).is_some_and(|r| r.end <= start) {
                         range_index += 1;
                     }
-                    let owner = self.owner_ranges[$index]
-                        .get(range_index)
-                        .and_then(|r| r.owner);
+                    let owner = ($ranges).get(range_index).and_then(|r| r.owner);
                     if classified_range != range_index {
                         classified_range = range_index;
                         full = owner.is_some_and(|o| whole.contains(&o));
@@ -160,10 +168,10 @@ impl NetworkMeshData {
                     };
                     for i in 0..3 {
                         triangle.vertices[i] = Vertex {
-                            p: self.$p[start + i],
-                            n: self.$n[start + i],
-                            uv: self.$uv[start + i],
-                            c: self.$c[start + i],
+                            p: $source.$p[start + i],
+                            n: $source.$n[start + i],
+                            uv: $source.$uv[start + i],
+                            c: $source.$c[start + i],
                             crossing: if $index == 4 {
                                 self.road_crossings[start + i]
                             } else {
@@ -224,16 +232,16 @@ impl NetworkMeshData {
                                 continue;
                             }
                             for v in vertices {
-                                output.$p.push(v.p);
-                                output.$n.push(v.n);
-                                output.$uv.push(v.uv);
-                                output.$c.push(v.c);
+                                $target.$p.push(v.p);
+                                $target.$n.push(v.n);
+                                $target.$uv.push(v.uv);
+                                $target.$c.push(v.c);
                                 if $index == 4 {
                                     output.road_crossings.push(v.crossing);
                                 }
                             }
                             output.current_owner = owner;
-                            output.record_owner_triangle($index, output.$p.len());
+                            super::record_owner_range(&mut $output_ranges, owner, $target.$p.len());
                         }
                     }
                 }
@@ -276,6 +284,20 @@ impl NetworkMeshData {
             concrete_uvs,
             concrete_colors
         );
+        if let Some(source) = self.median_grass.as_deref() {
+            let target = output.median_grass.get_or_insert_default();
+            layer!(
+                source,
+                target,
+                source.owner_ranges,
+                target.owner_ranges,
+                7,
+                vertices,
+                normals,
+                uvs,
+                colors
+            );
+        }
         output
     }
 }

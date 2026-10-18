@@ -94,20 +94,23 @@ impl LaneSystem {
 
         let lane_w = config::LANE_WIDTH;
         let sidewalk_w = config::SIDEWALK_WIDTH;
-        let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+        let asphalt_width =
+            (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w + edge.median_half_width() * 2.0;
         let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
 
         // 1. Forward Lanes
         for l in 0..edge.fwd_lanes {
             // Lane 0 is closest to center
-            let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
+            let lane_offset = edge.median_center_offset()
+                + (edge.median_half_width() + (l as f32 + 0.5) * lane_w) * side_mul;
             build_lane(true, l as i8, LaneType::Vehicle, lane_offset);
         }
 
         // 2. Backward Lanes
         for l in 0..edge.bkw_lanes {
             // Lane 0 is closest to center
-            let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
+            let lane_offset = edge.median_center_offset()
+                - (edge.median_half_width() + (l as f32 + 0.5) * lane_w) * side_mul;
             build_lane(false, -(l as i8) - 1, LaneType::Vehicle, lane_offset);
         }
 

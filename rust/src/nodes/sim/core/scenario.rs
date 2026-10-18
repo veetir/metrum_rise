@@ -293,6 +293,7 @@ pub(super) fn install_bootstrap_assets(core: &mut SimCore) {
 pub(super) fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
     let outcome = core.commit_road(
         RoadCommitRequest {
+            median: None,
             points: vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
             fwd_lanes: 1,
             bkw_lanes: 1,

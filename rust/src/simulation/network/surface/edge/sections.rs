@@ -71,7 +71,7 @@ impl RoadSurfaceSystem {
                 center_height_m,
                 tangent_xz,
                 lateral_xz,
-                bands: self.build_lateral_bands(edge, center, lateral_xz, None, None),
+                bands: self.build_lateral_bands(edge, center, lateral_xz, None, None, 1.0),
             }];
         }
 
@@ -113,7 +113,13 @@ impl RoadSurfaceSystem {
         );
         let width_tapers =
             self.edge_width_tapers_for_width_change_node(graph, edge_idx, edge, total_length_m);
-        let sample_distances = self.build_section_sample_distances(
+        let median_ends = super::median::MedianEnds::for_edge(
+            graph,
+            edge_idx,
+            total_length_m,
+            mouth_policy.ownership_range,
+        );
+        let mut sample_distances = self.build_section_sample_distances(
             edge,
             &cumulative,
             mouth_policy,
@@ -121,6 +127,9 @@ impl RoadSurfaceSystem {
             end_profile_plane.is_some(),
             width_tapers,
         );
+        if edge.median.is_some() {
+            median_ends.add_samples(&mut sample_distances, total_length_m);
+        }
         let span_frame = mouth_policy.ownership_range.map(|(start_s_m, end_s_m)| {
             let mut start_tangent = self
                 .sample_polyline(&points, &cumulative, start_s_m, None)
@@ -144,13 +153,30 @@ impl RoadSurfaceSystem {
             .map(|s_m| {
                 let (center, sampled_tangent_xz) =
                     self.sample_polyline(&points, &cumulative, s_m, span_frame.as_ref());
-                let tangent_xz = if s_m <= SAMPLE_EPSILON_M {
+                let mut tangent_xz = if s_m <= SAMPLE_EPSILON_M {
                     start_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else if total_length_m - s_m <= SAMPLE_EPSILON_M {
                     end_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else {
                     sampled_tangent_xz
                 };
+                if edge.median.is_some()
+                    && let Some((start_s, end_s)) = mouth_policy.ownership_range
+                {
+                    if let Some(tangent) = start_pass_through_tangent.filter(|_| s_m < start_s) {
+                        tangent_xz = tangent
+                            .lerp(sampled_tangent_xz, f64::from(s_m / start_s))
+                            .normalize();
+                    }
+                    if let Some(tangent) = end_pass_through_tangent.filter(|_| s_m > end_s) {
+                        tangent_xz = tangent
+                            .lerp(
+                                sampled_tangent_xz,
+                                f64::from((total_length_m - s_m) / (total_length_m - end_s)),
+                            )
+                            .normalize();
+                    }
+                }
                 let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x).normalize();
                 let profile_blend = mouth_policy.profile_range.and_then(|profile| {
                     Self::edge_profile_blend_for_section(
@@ -191,6 +217,7 @@ impl RoadSurfaceSystem {
                             s_m,
                             width_tapers,
                         )),
+                        median_ends.scale(s_m),
                     ),
                 }
             })
@@ -213,8 +240,13 @@ impl RoadSurfaceSystem {
         if incidents.is_empty() {
             return (None, None);
         }
-        let kind = self.classify_visual_node_kind(&incidents);
-        if kind != CompiledNodeKind::PassThrough {
+        let kind = self.classify_visual_node_kind(graph, &incidents);
+        // Continuing medians need one shared endpoint cross-section through a bend. Without
+        // the bisector frame, the two inner kerbs overlap at the node's distinct road axes.
+        let median_bend = kind == CompiledNodeKind::Bend
+            && edge.median.is_some()
+            && graph.median_continues_at_node(edge_idx, node_id);
+        if kind != CompiledNodeKind::PassThrough && !median_bend {
             return (Some(kind), None);
         }
 
@@ -408,6 +440,7 @@ impl RoadSurfaceSystem {
 
     fn edge_supports_width_change_taper(edge: &Edge) -> bool {
         !edge.deleted
+            && edge.median.is_none()
             && edge.class == EdgeClass::Standard
             && edge.primary_type == TransitType::Road
             && edge.allowed_types & TransitFlags::CAR != 0
@@ -736,6 +769,7 @@ mod tests {
             .map(|segment| segment[0].distance_to(segment[1]))
             .sum();
         Edge {
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,

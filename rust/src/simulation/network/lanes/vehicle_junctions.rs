@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Vehicle junction connectors, including continuous divided bend corridors.
+
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
@@ -172,9 +174,24 @@ pub fn build_vehicle_connections_at_node(
             );
             let mut conn_geom = Vec::with_capacity(steps + 1);
             let mut conn_len = 0.0;
+            let median_bend = graph.edge(in_edge_id).median.is_some()
+                && graph.median_continues_at_node(in_edge_id, node_id as u32);
+            let divided_frame = median_bend.then(|| {
+                MedianBendFrame::new(
+                    graph,
+                    node_id,
+                    &lanes[in_lane_id],
+                    &lanes[out_lid],
+                    p1_base,
+                    p2_base,
+                )
+            });
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
-                let point = vehicle_connection_point(p0, p1, p2, p3, t);
+                let point = divided_frame.as_ref().map_or_else(
+                    || vehicle_connection_point(p0, p1, p2, p3, t),
+                    |frame| frame.point(t),
+                );
                 conn_geom.push(point);
                 if k > 0 {
                     conn_len += conn_geom[k - 1].distance_to(point);
@@ -199,6 +216,85 @@ pub fn build_vehicle_connections_at_node(
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);
         }
+    }
+}
+
+// Two offset approach ribbons meet on the same bisector cross-section as the median. A
+// single cubic can cut the island on the inside of a bend. This construction keeps the lane
+// offset throughout each half, including lane changes between the two directional groups.
+struct MedianBendFrame {
+    node: Vector3,
+    start: Vector3,
+    end: Vector3,
+    start_normal: Vector3,
+    mid_normal: Vector3,
+    end_normal: Vector3,
+    start_offset: f32,
+    end_offset: f32,
+}
+
+impl MedianBendFrame {
+    fn new(
+        graph: &RegionGraph,
+        node: usize,
+        inbound: &Lane,
+        outbound: &Lane,
+        incoming: Vector3,
+        outgoing: Vector3,
+    ) -> Self {
+        let normal = |direction: Vector3| Vector3::new(-direction.z, 0.0, direction.x).normalized();
+        let offset = |lane: &Lane| {
+            let edge = graph.edge(lane.edge_id);
+            let index = if lane.lane_idx >= 0 {
+                lane.lane_idx
+            } else {
+                -lane.lane_idx - 1
+            };
+            let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+            edge.median_center_offset() * if lane.is_fwd { 1.0 } else { -1.0 }
+                + side * (edge.median_half_width() + (f32::from(index) + 0.5) * config::LANE_WIDTH)
+        };
+        let start_normal = normal(incoming);
+        let end_normal = normal(outgoing);
+        Self {
+            node: graph.node(node as u32).pos,
+            start: *inbound.geometry.last().unwrap(),
+            end: outbound.geometry[0],
+            start_normal,
+            mid_normal: (start_normal + end_normal).normalized(),
+            end_normal,
+            start_offset: offset(inbound),
+            end_offset: offset(outbound),
+        }
+    }
+
+    fn point(&self, t: f32) -> Vector3 {
+        let middle_offset = (self.start_offset + self.end_offset) * 0.5;
+        let (a, b, normal_a, normal_b, offset_a, offset_b, u) = if t <= 0.5 {
+            (
+                self.start - self.start_normal * self.start_offset,
+                self.node,
+                self.start_normal,
+                self.mid_normal,
+                self.start_offset,
+                middle_offset,
+                t * 2.0,
+            )
+        } else {
+            (
+                self.node,
+                self.end - self.end_normal * self.end_offset,
+                self.mid_normal,
+                self.end_normal,
+                middle_offset,
+                self.end_offset,
+                t * 2.0 - 1.0,
+            )
+        };
+        let normal = normal_a.lerp(normal_b, u).normalized();
+        let mut point = a.lerp(b, u) + normal * (offset_a + (offset_b - offset_a) * u);
+        point.y = self.start.y + (self.end.y - self.start.y) * t;
+        point
     }
 }
 

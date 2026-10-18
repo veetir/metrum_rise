@@ -53,6 +53,7 @@ static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
+static var _road_median_grass_material: ShaderMaterial
 static var _flat_terrain_material: ShaderMaterial
 static var _editor_ground_material: ShaderMaterial
 static var _site_asphalt_material: ShaderMaterial
@@ -116,6 +117,15 @@ static func road_sidewalk_face_material() -> ShaderMaterial:
 			"detail_texture", load_texture(ROAD_AGGREGATE_DETAIL)
 		)
 	return _road_sidewalk_face_material
+
+## Uses the terrain's grass textures and standard cloud-shadow lighting on raised medians.
+static func road_median_grass_material() -> ShaderMaterial:
+	if _road_median_grass_material == null:
+		_road_median_grass_material = ShaderMaterial.new()
+		_road_median_grass_material.shader = _load_shader("res://scripts/shaders/road_median_grass.gdshader")
+		_road_median_grass_material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))
+		_road_median_grass_material.set_shader_parameter("terrain_grass_height", load_texture(GRASS_HEIGHT))
+	return _road_median_grass_material
 
 static func road_concrete_material() -> ShaderMaterial:
 	if _road_concrete_material == null:

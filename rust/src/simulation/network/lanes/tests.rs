@@ -18,6 +18,7 @@ fn test_lane_geometry_and_length() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -80,6 +81,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
     let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -202,6 +204,7 @@ fn test_highway_no_sidewalks() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -246,6 +249,7 @@ fn test_dedicated_footpath_centering() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Foot,
@@ -312,6 +316,7 @@ fn build_pedestrian_junction(
         let start = graph.node(center).pos;
         let end = graph.node(arm).pos;
         edge_ids.push(graph.add_edge(Edge {
+            median: None,
             start_node: center,
             end_node: arm,
             primary_type: TransitType::Road,
@@ -572,6 +577,7 @@ fn test_rht_lane_offsets() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -637,6 +643,7 @@ fn test_crosswalk_counts() {
     ];
     for (s, e) in edges {
         graph.add_edge(Edge {
+            median: None,
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -974,6 +981,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
             let p0 = graph.nodes[start_node as usize].pos;
             let p1 = graph.nodes[end_node as usize].pos;
             graph.add_edge(Edge {
+                median: None,
                 start_node,
                 end_node,
                 primary_type: TransitType::Road,
@@ -1165,6 +1173,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
     let p0 = graph.nodes[s as usize].pos;
     let p1 = graph.nodes[e as usize].pos;
     graph.add_edge(Edge {
+        median: None,
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,

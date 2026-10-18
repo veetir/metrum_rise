@@ -501,6 +501,19 @@ impl RoadSurfaceSystem {
         Option<RoadPreviewRenderInput>,
         Option<RoadTopologyPlan>,
     ) {
+        if let Some(median) = prepared_input.median {
+            let refusal = median.validate().err().or_else(|| {
+                (fwd_lanes == 0 || bkw_lanes == 0).then_some("median_requires_both_directions")
+            });
+            if let Some(reason) = refusal {
+                return (
+                    new_edge_validation.with_invalid_reason(reason),
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
         // Compiling a surface never measures the stroke, so apply the fast check's minimum here
         // too; every full check (click, exact preview, commit plan) passes through this point.
         if Self::preview_stroke_too_short(&prepared_input.validation_points) {
@@ -524,6 +537,7 @@ impl RoadSurfaceSystem {
                     prepared_input.extension.as_ref(),
                     prepared_input.endpoint_snap_enabled,
                     compile_reason,
+                    prepared_input.median,
                 );
         }
 
@@ -549,6 +563,7 @@ impl RoadSurfaceSystem {
             prepared_input.extension.as_ref(),
             prepared_input.endpoint_snap_enabled,
             compile_reason,
+            prepared_input.median,
         )
     }
 
@@ -563,6 +578,13 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
     ) -> RoadPreviewValidation {
+        if let Some(median) = prepared_input.median
+            && let Some(reason) = median.validate().err().or_else(|| {
+                (_fwd_lanes == 0 || _bkw_lanes == 0).then_some("median_requires_both_directions")
+            })
+        {
+            return RoadPreviewValidation::valid(0.0).with_invalid_reason(reason);
+        }
         let mut validation = Self::fast_prepared_profile_validation(
             prepared_input.class,
             &prepared_input.validation_points,
@@ -919,6 +941,7 @@ impl RoadSurfaceSystem {
             extension,
             endpoint_snap_enabled,
             compile_reason,
+            None,
         )
         .0
     }
@@ -936,6 +959,7 @@ impl RoadSurfaceSystem {
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
         compile_reason: RoadSurfaceCompileReason,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> (
         RoadPreviewValidation,
         Option<RoadPreviewTopologyReuse>,
@@ -980,6 +1004,7 @@ impl RoadSurfaceSystem {
             existing_graph,
             extension,
             endpoint_snap_enabled,
+            median,
         )
         else {
             return (
@@ -1508,6 +1533,7 @@ impl RoadSurfaceSystem {
             existing_graph,
             None,
             true,
+            None,
         )
         .map(|validation| {
             (
@@ -1529,6 +1555,7 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Option<SurfaceValidationGraph> {
         if prepared_points.len() < 2 {
             return None;
@@ -1559,6 +1586,7 @@ impl RoadSurfaceSystem {
             extension,
             start_existing,
             end_existing,
+            median,
         );
         for edge_idx in existing_edge_ids {
             Self::copy_validation_graph_edge(
@@ -1599,6 +1627,13 @@ impl RoadSurfaceSystem {
         let new_edge_idx = validation_graph.add_edge(build_surface_edge(
             start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class,
         ));
+        {
+            let edge = validation_graph.edge_mut(new_edge_idx);
+            edge.validate_cross_section(fwd_lanes, bkw_lanes, median)
+                .ok()?;
+            edge.median = median;
+            edge.width += median.map_or(0.0, |median| median.width_m);
+        }
         let (base_cost, physical_length) =
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(
                 validation_graph.edge(new_edge_idx),
@@ -1736,6 +1771,7 @@ impl RoadSurfaceSystem {
         extension: Option<&RoadExtensionReprofile>,
         start_existing: Option<u32>,
         end_existing: Option<u32>,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Vec<usize> {
         let mut min_x = f32::MAX;
         let mut max_x = f32::MIN;
@@ -1748,7 +1784,8 @@ impl RoadSurfaceSystem {
             max_z = max_z.max(point.z);
         }
 
-        let pad = config::SNAP_TOLERANCE
+        let pad = median.map_or(0.0, |median| median.width_m * 0.5)
+            + config::SNAP_TOLERANCE
             + config::INTERSECTION_TOLERANCE
             + Self::preview_candidate_roadbed_half_width_m(
                 prepared_points,

@@ -719,6 +719,7 @@ mod tests {
 
     fn create_test_edge(n0: u32, n1: u32) -> Edge {
         Edge {
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,

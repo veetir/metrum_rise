@@ -18,6 +18,8 @@ pub(crate) fn validate_road_candidate_against_water(
     bkw_lanes: u8,
     water: &WaterSystem,
     validation: RoadPreviewValidation,
+
+    median: Option<crate::simulation::network::graph::RoadMedian>,
 ) -> RoadPreviewValidation {
     if !validation.is_valid || edge_class != EdgeClass::Standard || prepared_points.len() < 2 {
         return validation;
@@ -28,6 +30,7 @@ pub(crate) fn validate_road_candidate_against_water(
         fwd_lanes,
         bkw_lanes,
     );
+    let half_width_m = half_width_m + median.map_or(0.0, |median| median.width_m * 0.5);
     if water.road_corridor_overlaps_visible_water(prepared_points, half_width_m) {
         return validation.with_invalid_reason(ROAD_WATER_REQUIRES_BRIDGE_REASON);
     }
@@ -63,6 +66,7 @@ mod tests {
             1,
             &water,
             preview.validation,
+            None,
         );
 
         assert!(!validation.is_valid);
@@ -93,6 +97,7 @@ mod tests {
             1,
             &water,
             preview.validation,
+            None,
         );
 
         assert!(validation.is_valid);
@@ -121,6 +126,7 @@ mod tests {
             1,
             &water,
             preview.validation,
+            None,
         );
 
         assert!(validation.is_valid);

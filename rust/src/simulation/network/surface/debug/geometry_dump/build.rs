@@ -197,7 +197,7 @@ impl RoadSurfaceSystem {
     ) {
         let valid = graph.get_valid_node(node_id);
         let incidents = self.sorted_incident_surface_edges(graph, valid);
-        let kind = self.classify_visual_node_kind(&incidents);
+        let kind = self.classify_visual_node_kind(graph, &incidents);
         let compiled_piece = self.compiled_visual_node_pieces.get(&node_id);
         let compiled = compiled_piece.is_some();
         let uses_visible_earthwork =

@@ -46,6 +46,8 @@ pub(crate) enum SimCommand {
     /// Place a new road segment.  Executed in the sim thread so the main thread
     /// never blocks on the expensive lane-rebuild and zoning-obstruction passes.
     AddRoad {
+        /// Authored median selection captured at submission.
+        median: Option<crate::simulation::network::graph::RoadMedian>,
         /// World-space polyline points.
         points: Vec<godot::prelude::Vector3>,
         /// Forward lane count.
@@ -63,6 +65,17 @@ pub(crate) enum SimCommand {
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
+    /// Change one road's lane counts and separator through the road transaction gate.
+    ChangeRoadCrossSection {
+        /// Stable graph edge being edited.
+        edge: usize,
+        /// New directional lane counts.
+        lanes: (u8, u8),
+        /// Authored central separator.
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        /// Acceptance after dependent caches and query snapshots have been published.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
     /// Delete one previously resolved building or road target on the simulation thread.
     Bulldoze {
         /// Immutable target token captured while the cursor still referenced the object.
@@ -233,6 +246,7 @@ pub(crate) fn run_sim_thread(
                     }
                 }
                 Ok(SimCommand::AddRoad {
+                    median,
                     points,
                     fwd_lanes,
                     bkw_lanes,
@@ -266,6 +280,7 @@ pub(crate) fn run_sim_thread(
                         );
                         c.commit_road(
                             RoadCommitRequest {
+                                median,
                                 points,
                                 fwd_lanes,
                                 bkw_lanes,
@@ -302,6 +317,34 @@ pub(crate) fn run_sim_thread(
                         committed: outcome.committed,
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadCrossSection {
+                    edge,
+                    lanes,
+                    median,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) = {
+                        let mut c = core.lock().expect("simulation core lock poisoned");
+                        let committed = c.change_road_cross_section(edge, lanes.0, lanes.1, median);
+                        let rejection = c.last_road_rejection.take().unwrap_or_default();
+                        let snapshots = road_tool_snapshots_from_core(&c);
+                        (committed, rejection, snapshots)
+                    };
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
                     });
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {

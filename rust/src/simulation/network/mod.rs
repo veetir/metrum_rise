@@ -59,6 +59,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         .sum();
 
     graph::Edge {
+        median: None,
         start_node,
         end_node,
         primary_type: if is_walkway {

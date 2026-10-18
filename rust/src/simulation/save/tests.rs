@@ -125,6 +125,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let end = graph.add_node(points[1], NodeType::Junction);
     let length = points[0].distance_to(points[1]);
     let edge_idx = graph.add_edge(Edge {
+        median: None,
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -180,6 +181,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -1388,6 +1390,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -1729,6 +1732,42 @@ fn sqlite_graph_rejects_malformed_references_before_publication() {
         accepted_corruptions.is_empty(),
         "accepted malformed graph fields: {accepted_corruptions:?}"
     );
+}
+
+#[test]
+fn road_median_save_round_trip_and_older_schema_default() {
+    use crate::simulation::network::graph::{MedianStyle, RoadMedian};
+    for style in [
+        MedianStyle::Painted,
+        MedianStyle::KerbedGrass,
+        MedianStyle::KerbedPaving,
+    ] {
+        let (mut graph, id) = snapshot_test_graph();
+        let median = RoadMedian {
+            style,
+            width_m: 2.0,
+            start_setback_m: 1.5,
+            end_setback_m: 4.0,
+        };
+        graph
+            .set_edge_cross_section(id, 1, 1, Some(median))
+            .unwrap();
+        let maps =
+            build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        let loaded = network::load_graph(&conn).unwrap();
+        assert_eq!(loaded.edge(0).median, Some(median));
+        assert_eq!(loaded.edge(0).width, graph.edge(id).width);
+        // Removing the four new columns models a pre-89 network table, with actual old width.
+        conn.execute_batch("UPDATE network_edges SET width = 7; ALTER TABLE network_edges DROP COLUMN median_style; ALTER TABLE network_edges DROP COLUMN median_width; ALTER TABLE network_edges DROP COLUMN median_start_setback; ALTER TABLE network_edges DROP COLUMN median_end_setback;").unwrap();
+        let old = network::load_graph(&conn).unwrap();
+        assert_eq!(old.edge(0).median, None);
+        assert_eq!(old.edge(0).width, 7.0);
+    }
 }
 
 #[test]

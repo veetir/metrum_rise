@@ -513,9 +513,84 @@ For every road-owned top surface:
 - preview and committed placement use the same Rust surface solve rules
 - render triangles and query triangles use the same compiled ownership
 
-The current required band model supports carriageway, curb / shoulder, sidewalk, and no-sidewalk
-profiles. Later medians, parking lanes, cycle tracks, tram reservations, or richer shoulders must
-add explicit ordered bands instead of special-case render offsets.
+The required band model supports carriageway, curb / shoulder, sidewalk, central medians and
+no-sidewalk profiles. Parking lanes, cycle tracks, tram reservations and richer shoulders must
+also add explicit ordered bands instead of special-case render offsets.
+
+### Central medians and in-place cross-section changes — ROAD-66
+
+Road tooling slice A adds `Edge.median: Option<RoadMedian>`. `None` keeps the original band
+and lane calculations. A median stores its style, total width including kerbs, and independent
+start/end additional setbacks in metres. `Edge.width` includes the median but excludes the
+outside sidewalk bands. Painted widths are 0.5–2 m, grass 2–12 m (normally 2–6 m), and paving
+1–3 m. All dimensions must be finite; a median requires vehicle lanes in both directions.
+
+The ordered section is sidewalk | outside kerb | backward carriageway | median kerb | median |
+median kerb | forward carriageway | outside kerb | sidewalk. Painted median kerbs have zero
+width/height. Raised medians share the existing 0.15 m kerb width and 0.12 m kerb height.
+Unequal lane groups shift the median within the centreline-centred outer footprint; lane zero
+stays beside the median, and lane changes remain within the existing same-direction groups.
+
+At a junction or terminal the separator starts beyond the node's visible mouth, zebra inset
+and clearance, plus its authored end setback. A four-metre smooth taper has explicit one-metre
+sample stations, replacing overlapping terrain stations inside each nose so tiny kerb
+triangles cannot disappear. Span band indices stay stable as the three separator bands collapse;
+node mouths omit zero-width bands and receive plain carriageway. Matching divided roads keep
+their separator through degree-two bends and straight continuations, on a shared bisector frame.
+Vehicle connectors follow those offset approach ribbons. These continuous separators omit the
+default zebra crossing; an explicitly enabled crossing opens both median ends before the zebra,
+transactionally rebuilding surfaces, pedestrian lanes and undo state. A divided/undivided profile
+transition has a node-owned handoff. Existing median-free node classification is unchanged.
+Splits retain the median and external end setbacks, resetting setbacks at the new internal ends.
+The same bands own terrain clips, earthworks, picking and rendered top surfaces.
+
+Grass uses the terrain grass palette/textures on a separate optional chunk layer, with the
+standard cloud-shadow light include. Paving uses the existing concrete material. Painted
+separators are asphalt with white borders and diagonal hatching emitted through `ROAD-56`'s
+marking mesh/shader, clipped to the separator polygons. Raised medians at least two metres
+wide use the existing twin-arm median lamp; poles require at least 1.4 m of median interior
+at their sampled station. Median tree planting is not implemented.
+
+A raised median makes the *effective* vehicle frontage policy `SameSideOnly`; the player's
+stored policy remains intact and resumes when the median is removed or painted. Derived
+building and proposed-site entrance books consume that effective policy. The existing route
+planner then takes a legal junction loop where needed; `NET-07`'s dead-end U-turn rule is
+unchanged. Painted medians retain the authored frontage policy. See
+[`entrance_and_exit.md`](entrance_and_exit.md) for the access polyline and route contracts.
+
+The road tool retains the lane keys and adds **N** to cycle median styles, **; / '** to change
+width by 0.5 m and **E** to switch drawing/in-place editing. The fixed label shows the complete
+selection. In edit mode a click applies that selection to the picked edge. Immutable Rust
+preview/commit requests and GDScript cache identities include the median; exact previews and
+commits use the same bounded topology/surface compiler. Full preview mode includes the
+corresponding terrain override; the existing surface-only mode still leaves the terrain visible.
+
+An in-place edit keeps edge/node identities and authored centreline. It captures the existing
+bounded road undo checkpoint, checks protected land/water and the existing minimum curve
+radius for the new width, finalizes affected profiles/clips,
+and passes the existing staged road/terrain publication gate before rebuilding lanes. Agent
+lane IDs are invalidated before replacement, then reattached; entrances, CCH, flow fields,
+road chunks, terrain payloads and painted-lot dirtiness are refreshed. Rejection rolls the
+transaction back. Widening cannot silently consume existing parcels, fields or painted lots.
+
+Save format **89** persists style, width and both end setbacks in `network_edges`; schemas
+without those columns load with no median. Lane identities remain rebuilt from the graph.
+
+New lane/access arithmetic is O(1), allocation-free. Median endpoint continuity visits only
+local adjacency. Compiling a median adds a constant number of bands and at most ten sample
+stations; geometry work remains O(affected samples × bands), and rendering O(affected
+triangles + lamps). No per-tick or per-agent loop allocates or scans roads for medians.
+The grass material's buffers and owner ranges live in an optional boxed layer, allocated
+once when a grass chunk first receives geometry. Undivided meshes retain their original seven
+buffer groups and owner-range arrays. Triangle attributes append as complete triples, preserving
+vertex order and values while using one capacity check per attribute. The existing commit path's
+agent, entrance and routing rebuild costs remain explicit.
+
+Acceptance measurements and windowed inspection are pending while this row is in progress.
+Slice B (`ROAD-67`) can shorten either end with the stored setbacks; it must add lane-use and
+turn-pocket geometry, rather than making median extent an unbreakable edge-wide rule. Grade
+separation (`ROAD-68`) and interchange/slip-road work (`ROAD-69`, alongside `ROAD-62`) remain
+separate slices.
 
 ## Pedestrian Junction Crossings
 
@@ -540,8 +615,9 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
   walkers across the lawn on curved roads
 - a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
   road or reattaching farther along the reverse sidewalk
-- degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
-  junctions may expose one crossing per eligible arm
+- degree-two junctions keep the deterministic single-crosswalk policy, except a continuous
+  median omits the default crossing; a user override opens that median before the requested zebra.
+  Higher-degree junctions may expose one crossing per eligible arm
 - a crossing is square to the road where it is drawn (`ROAD-64`): the midpoint of the two sidewalk
   lane ends is projected onto the arm's physical edge, and both kerb points sit at that one station,
   asphalt half-width either side along the local normal. Before, the two sidewalk lanes were trimmed

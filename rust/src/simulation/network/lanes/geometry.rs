@@ -161,7 +161,7 @@ pub fn build_one_lane(
 
 /// Returns the half-width of the road asphalt based on the number of lanes.
 pub fn road_half_width(edge: &Edge) -> f32 {
-    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5 + edge.median_half_width()
 }
 
 /// Samples the authoritative agent position, including the deterministic pedestrian offset.

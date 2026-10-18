@@ -14,7 +14,7 @@ impl RoadSurfaceSystem {
     ) -> Option<RoadSurfaceVisualNodeCompileInput> {
         let valid = graph.get_valid_node(node_id);
         let incidents = self.sorted_incident_surface_edges(graph, valid);
-        match self.classify_visual_node_kind(&incidents) {
+        match self.classify_visual_node_kind(graph, &incidents) {
             CompiledNodeKind::Terminal => {
                 let incident = incidents.first()?;
                 let mouths = self.build_ordered_piece_mouths(graph, &[*incident])?;

@@ -6,6 +6,7 @@ use crate::simulation::network::types::EdgeClass;
 
 mod handoff;
 mod input;
+mod median;
 mod polyline;
 mod preview;
 mod preview_visual;

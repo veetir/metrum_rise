@@ -7,6 +7,7 @@ mod coverage;
 mod earthwork;
 mod geometry;
 mod markings;
+mod median;
 mod top_surface;
 
 pub(super) use coverage::{

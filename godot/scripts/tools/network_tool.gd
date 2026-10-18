@@ -642,6 +642,10 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		return false
 	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat, rust_validated):
 		return false
+	if chunk_data.has("median_grass_vertices") and not _append_road_surface(
+		arr_mesh, chunk_data, "median_grass", WorldMaterials.road_median_grass_material(), rust_validated
+	):
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,

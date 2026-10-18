@@ -41,13 +41,14 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
             );
+            prepared_input.median = self.road_tool_median;
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
                 &prepared_input,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
@@ -62,6 +63,7 @@ impl SimulationNode {
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 &query.water,
                 validation,
+                self.road_tool_median,
             );
             (prepared_input.points, validation, query.surface_generation)
         };
@@ -127,6 +129,7 @@ impl SimulationNode {
             fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
             bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
             &query.terrain,
+            self.road_tool_median,
         );
         let mut dict = VarDictionary::new();
         dict.set("surface_generation", surface_generation);
@@ -156,13 +159,14 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
             );
+            prepared_input.median = self.road_tool_median;
             let new_edge_validation = query.road_surface.validate_prepared_road_surface(
                 &prepared_input.points,
                 prepared_input.class,
@@ -188,6 +192,7 @@ impl SimulationNode {
                 bkw_lanes_u8,
                 &query.water,
                 validation,
+                self.road_tool_median,
             );
             (prepared_input.points, validation, query.surface_generation)
         };
@@ -350,6 +355,7 @@ impl SimulationNode {
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
         let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            median: self.road_tool_median,
             enqueued_at: None,
             include_terrain,
             request_id,
@@ -437,6 +443,7 @@ impl SimulationNode {
             &preview.prepared_points,
             i32::from(preview.fwd_lanes),
             i32::from(preview.bkw_lanes),
+            preview.median,
         ) else {
             return Variant::nil();
         };
@@ -614,6 +621,7 @@ impl SimulationNode {
                 prepared_points,
                 fwd_lanes,
                 bkw_lanes,
+                self.road_tool_median,
             )
             .unwrap_or_else(|| {
                 let mut pending =
@@ -631,6 +639,7 @@ impl SimulationNode {
         prepared_points: &[Vector3],
         fwd_lanes: i32,
         bkw_lanes: i32,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Option<VarDictionary> {
         let mut dict = Self::road_candidate_validation_to_dictionary(validation, prepared_points);
         if validation.is_valid {
@@ -640,7 +649,8 @@ impl SimulationNode {
             let lanes =
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
             let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
-                + crate::config::SIDEWALK_WIDTH;
+                + crate::config::SIDEWALK_WIDTH
+                + median.map_or(0.0, |median| median.width_m * 0.5);
             let overlaps = core
                 .zoning
                 .parcel_ids_overlapping_road_corridor(prepared_points, half_width);

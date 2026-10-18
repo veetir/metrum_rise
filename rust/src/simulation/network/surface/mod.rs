@@ -112,7 +112,7 @@ pub enum RoadSurfaceBandKind {
     Sidewalk,
     /// Dedicated pedestrian corridor that is not a roadside sidewalk band.
     Footpath,
-    /// Reserved central median or separator.
+    /// Authored painted or raised central separator between directional carriageways.
     Median,
     /// Reserved parking band.
     Parking,
