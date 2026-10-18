@@ -1,26 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-"""Prepare local products and reconcile optional player-path apply results.
+"""Prepare offline roads for Niirala, Savilahti and Neulamäki.
 
-Example (repository root):
-  TMPDIR=/private/var/folders/7h/xq0frx8x03q49hg7ykfs8zxc0000gr/T/ \
-    ~/.local/bin/python3.12 -m tools.map_import
+Python 3.12 standard library only. Default output: maps/processed/kuopio_sw.
+--area niirala selects the old 1600 m box; --bbox WEST SOUTH EAST NORTH selects
+an explicit geographic box. --include-park-paths enables standalone paths;
+sidewalks remain excluded. This iteration emits no zoning or growth products.
 
-Apply through the local headless wrapper with the already deployed extension:
-  maps/processed/run_apply.sh
-  # Optional: up to three full days at the maximum supported speed; both bounds apply.
-  maps/processed/run_apply.sh --grow-days 3 --grow-max-seconds 180 --grow-max-frames 120000
-  ~/.local/bin/python3.12 -m tools.map_import --outcome maps/processed/niirala/apply_results.json
+Apply using the deployed extension directly, with TMPDIR set as in CLAUDE.md:
+  godot --headless --path godot --script res://scripts/tools/map_import_apply.gd -- \
+    --plan ../maps/processed/kuopio_sw/plan.json --output ../maps/processed/kuopio_sw/run
 
-Relative runner paths resolve from the Godot project directory. The preparation
-CLI never starts Godot, invokes run.sh or performs a network request. Outputs are
-restricted to ignored paths under maps/processed to protect local ODbL data.
-
-The apply script uses public player validation, commit, undo, vegetation, outside
-connection, speed and save APIs. No lower-level graph writes or Rust hooks are
-needed. A disconnected car edit is undone and deferred; every retry is recorded.
-The crop's continuing road gets one outside connection, using the existing
-connection tool's normal extension. The final save is confirmed paused.
+All geometry is sent through player validation and acknowledged commit APIs.
+Detached streets remain in the save for local repair rather than being undone.
+World editor fill operations change the produced save only. A separate water-bed
+pass gives the DEM's flat water surfaces depth through the terrain brush.
 """
 
 import argparse
@@ -34,13 +28,14 @@ import subprocess
 
 from .mapping import POLICY, map_role, table
 from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
-from .water import WaterMask
+from .curves import prepare_curves
+from .survey import inspect
+from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
 from .projection import tm35fin
 from .report import build_report, summary
 from .terrain import load_transform
-from .zoning import frontage_intents
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -88,12 +83,21 @@ def prepare(args):
     center = transform.world(*tm35fin(args.lat, args.lon))
     half = args.size_m/2
     box = (center[0]-half, center[1]-half, center[0]+half, center[1]+half)
+    if args.bbox:
+        west, south, east, north = args.bbox
+        if not west < east or not south < north:
+            raise ValueError('Bounding box requires WEST < EAST and SOUTH < NORTH')
+        corners = [transform.world(*tm35fin(lat, lon)) for lat in (south, north) for lon in (west, east)]
+        box = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners))
+    elif args.area == 'kuopio-sw':
+        corners = [transform.world(*tm35fin(lat, lon)) for lat in (62.871, 62.901) for lon in (27.588, 27.674)]
+        box = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners))
     if any(not math.isfinite(v) for v in (*box, args.simplify_m)) or args.size_m <= 0 or args.simplify_m < 0:
         raise ValueError('Target size must be positive and simplification nonnegative')
     if box[0] < -(transform.max_e-transform.min_e)/2 or box[2] > (transform.max_e-transform.min_e)/2 or box[1] < -(transform.max_n-transform.min_n)/2 or box[3] > (transform.max_n-transform.min_n)/2:
         raise ValueError('Target box lies outside the authored world')
     features = normalise(OsmAdapter().read(args.source), transform)
-    decisions = {(f['id'], role): map_role(f, role) for f in features for role in f['roles']}
+    decisions = {(f['id'], role): map_role(f, role, args.include_park_paths) for f in features for role in f['roles']}
     roads = [(f, decisions[(f['id'], 'road')]) for f in features if 'road' in f['roles']
              and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
     # Keep neutral source geometry immutable; conflation owns its working copy.
@@ -104,17 +108,17 @@ def prepare(args):
     conflation['roundabouts'] = roundabouts
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])
-    water = WaterMask.load(args.world)
-    strokes, water_audit = water.clip(strokes)
-    strokes = prune_stubs(strokes, preparation['discarded'])
-    preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=water_audit, water_fills=water.fills)
-    zones = frontage_intents(features, decisions, strokes, box, transform.zone_cell_m)
+    strokes = prepare_curves(strokes, features)
+    preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=[], water_fills=[])
+    zones = []
+    survey = inspect(features, args.world, box)
+    beds = prepare_initial(args.world, box, survey['water_edits'])
     plan = {'schema_version': 1, 'source_sha256': digest(args.source), 'world_sha256': digest(args.world),
             'source_license': 'OpenStreetMap contributors, ODbL; local derived data',
             'world_transform': transform.record(), 'target_box_xz': box,
             'center_wgs84': [args.lat, args.lon], 'center_world_xz': center,
-            'parameters': {'size_m': args.size_m, 'simplify_m': args.simplify_m, **POLICY},
-            'capabilities': table(), 'strokes': strokes, 'zoning': zones}
+            'parameters': {'size_m': args.size_m, 'simplify_m': args.simplify_m, 'include_park_paths': args.include_park_paths, **POLICY},
+            'water_edits': survey['water_edits'], 'water_beds': beds, 'capabilities': table(), 'strokes': strokes, 'zoning': zones}
     # Validate an outcome before replacing any previous products.
     plan_bytes = (json.dumps(plan, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode()
     outcome = json.loads(args.outcome.read_text()) if args.outcome else None
@@ -122,12 +126,12 @@ def prepare(args):
         validate_outcome(outcome, plan, hashlib.sha256(plan_bytes).hexdigest())
         log = args.outcome.with_name('apply.log')
         counts = re.findall(r'CCH rebuilt:.*?→ (\d+) (?:DISCONNECTED components|component)', log.read_text()) if log.exists() else []
-        outcome['car_components'] = int(counts[-1]) if counts else None
-        save_path = output/'city.sqlite'
+        outcome['car_components'] = int(counts[-1]) if counts else outcome.get('car_components')
+        save_path = Path(outcome.get('save_path') or output/'city.sqlite').resolve()
+        if not save_path.is_relative_to(ROOT/'maps/processed'):
+            raise ValueError('Outcome save must stay under maps/processed')
         if outcome.get('saved') and save_path.exists():
             with sqlite3.connect(save_path.resolve().as_uri()+'?mode=ro', uri=True) as conn:
-                outcome['population'] = conn.execute('SELECT coalesce(sum(member_count),0) FROM households').fetchone()[0]
-                outcome['buildings'] = conn.execute('SELECT count(*) FROM buildings').fetchone()[0]
                 outcome['saved_speed'] = conn.execute('SELECT speed_multiplier FROM time_state').fetchone()[0]
     report = build_report(features, decisions, plan, preparation, outcome)
     output.mkdir(parents=True, exist_ok=True)
@@ -135,16 +139,20 @@ def prepare(args):
                                       'world_transform': transform.record(), 'features': features})
     (output/'plan.json').write_bytes(plan_bytes)
     write_json(output/'report.json', report)
+    write_json(output/'survey.json', survey)
     (output/'summary.txt').write_text(summary(report))
     return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--source', type=Path, default=ROOT/'maps/raw/osm/niirala_osm_api.json')
+    parser.add_argument('--area', choices=('kuopio-sw', 'niirala'), default='kuopio-sw')
+    parser.add_argument('--bbox', nargs=4, type=float, metavar=('WEST', 'SOUTH', 'EAST', 'NORTH'))
+    parser.add_argument('--include-park-paths', action='store_true')
+    parser.add_argument('--source', type=Path, default=ROOT/'maps/raw/osm/kuopio_sw_osm_api.json')
     parser.add_argument('--world', type=Path, default=ROOT/'godot/bootstrap/worlds/kuopio_324km2_10m.sqlite')
     parser.add_argument('--dem-dir', type=Path, default=ROOT/'maps/raw/Kuopio/324km2')
-    parser.add_argument('--output', type=Path, default=ROOT/'maps/processed/niirala')
+    parser.add_argument('--output', type=Path, default=ROOT/'maps/processed/kuopio_sw')
     parser.add_argument('--lat', type=float, default=62.889552)
     parser.add_argument('--lon', type=float, default=27.652509)
     parser.add_argument('--size-m', type=float, default=1600)

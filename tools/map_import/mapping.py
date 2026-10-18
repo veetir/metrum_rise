@@ -2,16 +2,15 @@
 
 """One ordered capability table. First matching rule per role wins.
 
-Untagged service ways become ordinary streets; driveway and parking semantics
-are excluded explicitly. grade1 tracks become footpaths: their geometry is useful but
-the game has no farm/forest vehicle access semantics. Private/no access, layered
-structures and area highways are deferred rather than silently flattened.
+Public service ways become ordinary streets; driveway, parking and restricted
+motor access are excluded explicitly. Footpaths and grade1 tracks are disabled
+by default. Grade separation is retained for the player elevation path.
 
 Current road tool supports lane counts, not named road types or source speed
 limits. Minor streets default to 1+1, including untagged service; only a surveyed
-one-way overrides this policy. Named primary/secondary corridors become 1+1
-medians in conflate.py, including unpaired tail pieces; other major ways retain
-explicit direction and lane counts.
+one-way overrides this policy. Divided named arterials and motorways become one
+centreline in conflate.py, retaining the surveyed counts of both carriageways.
+Other major ways retain explicit direction and lane counts.
 POLICY owns the spatial and minimum-length rules for standalone paths.
 Apartment footprints mask generic residential zoning until apartment growth
 exists; other unknown buildings mask generic zoning as well. Industrial buildings
@@ -44,13 +43,11 @@ class Capability:
 
 CAPABILITIES = (
     Capability('road', 'roundabout', (True,), 'skip', 'roundabout_ROAD_62'),
-    Capability('road', 'road_class', ('motorway', 'motorway_link'), 'skip', 'motorway_unsupported'),
+    Capability('road', 'road_class', ('motorway', 'motorway_link', 'trunk', 'trunk_link'), 'road', 'major_road', 0),
     Capability('road', 'road_class', ('steps', 'corridor', 'construction', 'proposed'), 'skip', 'non_placeable_highway'),
     Capability('road', 'footway', ('sidewalk', 'crossing'), 'skip', 'road_includes_sidewalks'),
     Capability('road', 'service', ('parking_aisle', 'driveway', 'drive-through'), 'skip', 'private_or_parking_service'),
-    Capability('road', 'access', ('no', 'private'), 'skip', 'restricted_access'),
-    Capability('road', 'bridge', (True,), 'skip', 'grade_separation_deferred'),
-    Capability('road', 'tunnel', (True,), 'skip', 'grade_separation_deferred'),
+    Capability('road', 'access', ('no', 'private', 'permit'), 'skip', 'restricted_access'),
     Capability('road', 'area', (True,), 'skip', 'highway_area_not_centerline'),
     Capability('road', 'road_class', ('primary', 'primary_link'), 'road', 'ordinary_road', 0),
     Capability('road', 'road_class', ('secondary', 'secondary_link'), 'road', 'ordinary_road', 1),
@@ -79,7 +76,7 @@ def table():
     return [asdict(row) for row in CAPABILITIES]
 
 
-def map_role(feature, role):
+def map_role(feature, role, include_park_paths=False):
     p = feature['properties']
     rule = next(r for r in CAPABILITIES if r.role == role and (r.field == '*' or p.get(r.field) in r.values))
     result = {'action': rule.action, 'reason': rule.reason, 'priority': rule.priority}
@@ -92,9 +89,9 @@ def map_role(feature, role):
             result.update(action='footpath', reason='grade1_track_as_footpath')
         if p.get('relation_type') or len(feature['points']) < 2:
             return {**result, 'action': 'skip', 'reason': 'not_a_centerline'}
-        if p.get('layer', 0) != 0:
-            return {**result, 'action': 'skip', 'reason': 'grade_separation_deferred'}
         if result['action'] == 'footpath':
+            if not include_park_paths:
+                return {**result, 'action': 'skip', 'reason': 'paths_disabled'}
             result.update(fwd_lanes=0, bkw_lanes=0)
         else:
             total = p.get('lanes')

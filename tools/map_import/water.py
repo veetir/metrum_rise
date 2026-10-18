@@ -24,7 +24,7 @@ class WaterMask:
         self.width, self.height, self.cell, self.depth = width, height, cell, depth
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, authored_fills=None):
         with sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro', uri=True) as conn:
             w, h, cell, chunk = conn.execute('SELECT width_m,height_m,terrain_cell_m,terrain_chunk_m FROM world_definition_meta').fetchone()
             nx, nz, span = round(w/cell)+1, round(h/cell)+1, math.ceil(chunk/cell)
@@ -39,32 +39,39 @@ class WaterMask:
                     heights[start:start+cw] = array('f', (v*20 for v in data[row*cw:(row+1)*cw]))
             depth = array('f', [0])*(nx*nz)
             fills = []
-            for name, open_water in (('world_lake_fills', False), ('world_open_water_fills', True)):
-                for x, z, surface in conn.execute('SELECT * FROM '+name+' ORDER BY rowid'):
-                    sx, sz = max(0, min(nx-1, math.floor((x+w/2)/cell+.5))), max(0, min(nz-1, math.floor((z+h/2)/cell+.5)))
-                    seed = sz*nx+sx
-                    if heights[seed] >= surface:
-                        continue
-                    visited = bytearray(nx*nz)
-                    visited[seed] = 1
-                    queue, cells, edge = deque([seed]), array('I'), False
-                    while queue:
-                        i = queue.popleft()
-                        cells.append(i)
-                        px, pz = i % nx, i//nx
-                        edge |= px == 0 or pz == 0 or px == nx-1 or pz == nz-1
-                        for j in ((i-1 if px else -1), (i+1 if px+1 < nx else -1),
-                                  (i-nx if pz else -1), (i+nx if pz+1 < nz else -1)):
-                            if j >= 0 and not visited[j] and heights[j] <= surface:
-                                visited[j] = 1
-                                queue.append(j)
-                    applied = edge == open_water
-                    fills.append({'seed_xz': [x, z], 'surface_m': surface, 'filled_cells': len(cells), 'applied': applied})
-                    if applied:
-                        for i in cells:
-                            depth[i] = max(depth[i], surface-heights[i])
+            entries = authored_fills
+            if entries is None:
+                entries = [{'kind':kind, 'seed_xz':[x,z], 'surface_m':surface}
+                           for name,kind in (('world_lake_fills','lake'),('world_open_water_fills','open'))
+                           for x,z,surface in conn.execute('SELECT * FROM '+name+' ORDER BY rowid')]
+            for entry in entries:
+                x,z = entry['seed_xz']
+                surface,kind = entry['surface_m'],entry['kind']
+                sx, sz = max(0, min(nx-1, math.floor((x+w/2)/cell+.5))), max(0, min(nz-1, math.floor((z+h/2)/cell+.5)))
+                seed = sz*nx+sx
+                if heights[seed] >= surface:
+                    continue
+                visited = bytearray(nx*nz)
+                visited[seed] = 1
+                queue, cells, edge = deque([seed]), array('I'), False
+                while queue:
+                    i = queue.popleft()
+                    cells.append(i)
+                    px, pz = i % nx, i//nx
+                    edge |= px == 0 or pz == 0 or px == nx-1 or pz == nz-1
+                    for j in ((i-1 if px else -1), (i+1 if px+1 < nx else -1),
+                              (i-nx if pz else -1), (i+nx if pz+1 < nz else -1)):
+                        if j >= 0 and not visited[j] and heights[j] <= surface:
+                            visited[j] = 1
+                            queue.append(j)
+                applied = kind == "auto" or edge == (kind == "open")
+                fills.append({'seed_xz': [x, z], 'surface_m': surface, 'filled_cells': len(cells), 'applied': applied, 'kind': 'open' if edge else 'lake'})
+                if applied:
+                    for i in cells:
+                        depth[i] = max(depth[i], surface-heights[i])
         mask = cls(nx, nz, cell, depth)
         mask.fills = fills
+        mask.heights = heights
         return mask
 
     def at(self, p):

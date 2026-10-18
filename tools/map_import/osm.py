@@ -95,7 +95,7 @@ class OsmAdapter:
                      'lanes_backward': number(tags.get('lanes:backward')), 'oneway': one_way,
                      'speed_kmh': speed(tags.get('maxspeed')), 'service': tags.get('service', ''),
                      'track_grade': tags.get('tracktype', ''), 'surface': tags.get('surface', ''),
-                     'access': tags.get('access', ''), 'footway': tags.get('footway', ''),
+                     'access': tags.get('motorcar', tags.get('motor_vehicle', tags.get('vehicle', tags.get('access', '')))), 'footway': tags.get('footway', ''),
                      'oneway_confirmed': tags.get('oneway:source') == 'survey',
                      'roundabout': tags.get('junction') in ('roundabout', 'circular'),
                      'bridge': tags.get('bridge', 'no') != 'no', 'tunnel': tags.get('tunnel', 'no') != 'no',

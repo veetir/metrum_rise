@@ -12,7 +12,6 @@ var _output := ""
 var _results: Dictionary = {}
 var _fatal := false
 var _deferred: Array = []
-var _car_started := false
 var _junction_slides: Array = [-12.0, -8.0, 8.0, 12.0]
 var _junction_clearance := 12.0
 
@@ -21,8 +20,9 @@ func _initialize() -> void:
 
 func _run() -> void:
 	var args := _arguments()
-	_output = _resolve_path(String(args.get("output", "../maps/processed/niirala")))
-	var plan_path := _resolve_path(String(args.get("plan", "../maps/processed/niirala/plan.json")))
+	Engine.max_fps = 60
+	_output = _resolve_path(String(args.get("output", "../maps/processed/kuopio_sw")))
+	var plan_path := _resolve_path(String(args.get("plan", "../maps/processed/kuopio_sw/plan.json")))
 	var world_path := _resolve_path(String(args.get("world", "bootstrap/worlds/kuopio_324km2_10m.sqlite")))
 	# Restrict derived data and saves to the repository's local map output directory.
 	var local_maps := ProjectSettings.globalize_path("res://../maps/processed/").simplify_path() + "/"
@@ -48,7 +48,11 @@ func _run() -> void:
 	simulation.set_simulation_speed(0.0)
 	var warnings: String = simulation.load_all_asset_packs(_resolve_path(String(args.get("packs", "res://bootstrap/mods"))))
 	_results["asset_warnings"] = warnings
-	if not simulation.load_world_definition(world_path):
+	var resumed := args.has("resume")
+	if resumed:
+		if not _load_resume(simulation, _resolve_path(args["resume"]), plan_path):
+			return
+	elif not simulation.load_world_definition(world_path):
 		_fail("World definition failed to load")
 		return
 	simulation.set_simulation_speed(0.0)
@@ -57,10 +61,28 @@ func _run() -> void:
 	if absf(world_size.x - float(transform["max_e"]) + float(transform["min_e"])) > 0.01 or absf(world_size.y - float(transform["max_n"]) + float(transform["min_n"])) > 0.01:
 		_fail("Loaded world dimensions differ from plan")
 		return
-	_results["forest"] = _clear_forest(simulation, plan["target_box_xz"])
+	if not resumed:
+		_results["water"] = _adjust_water(simulation, plan.get("water_edits", []))
+		var beds: Dictionary = plan.get("water_beds", {})
+		if not beds.is_empty():
+			simulation.begin_terrain_stroke()
+			for sample in beds["samples_xzy"]:
+				simulation.level_terrain_stroke_step(Vector2(sample[0], sample[1]), beds["radius_m"], sample[2], 1.0)
+			simulation.end_terrain_stroke()
+			_results["water_beds"] = {"lowering_m": beds["lowering_m"], "samples": beds["samples_xzy"].size()}
+		_results["forest"] = _clear_forest(simulation, plan["target_box_xz"])
 	var accepted := {}
+	var prior := {}
+	for record in _results["roads"]:
+		prior[record["id"]] = record
+		accepted[record["id"]] = record.get("accepted_length_m", 0.0) > 0.0
 	var roads_repaired := false
 	for stroke in plan["strokes"]:
+		if prior.has(stroke["id"]):
+			var record: Dictionary = prior[stroke["id"]]
+			for failure in record["failed_pieces"]:
+				_deferred.append({"stroke": stroke, "record": record, "failure": failure})
+			continue
 		if stroke["kind"] == "footpath" and not roads_repaired:
 			await _retry_deferred(simulation)
 			await _repair_network(simulation)
@@ -79,12 +101,15 @@ func _run() -> void:
 		accepted[stroke["id"]] = accepted_m > 0.0
 		if _results["roads"].size() % 10 == 0:
 			_write_results()
+		if _results["roads"].size() % 20 == 0:
+			_checkpoint(simulation)
 	if not roads_repaired:
 		await _retry_deferred(simulation)
 		await _repair_network(simulation)
 	for record in _results["roads"]:
 		_finish_record(record)
 		accepted[record["id"]] = record["accepted_length_m"] > 0.0
+	_results["snapshot"] = JSON.parse_string(simulation.get_road_terrain_benchmark_snapshot())
 	_results["gateways"] = _create_gateway(simulation, plan["target_box_xz"])
 	_results["network"] = Network.inspect_network(simulation)
 	_results["car_components"] = _results["network"]["components"]
@@ -124,6 +149,61 @@ func _run() -> void:
 		quit(2)
 		return
 	quit(0 if _results["saved"] else 2)
+
+func _load_resume(simulation: Node, folder: String, plan_path: String) -> bool:
+	var local_maps := ProjectSettings.globalize_path("res://../maps/processed/").simplify_path()+"/"
+	if not (folder+"/").begins_with(local_maps) or folder == _output:
+		_fail("Resume needs a distinct importer-owned checkpoint folder")
+		return false
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("checkpoint_results.json")))
+	if not parsed is Dictionary or not parsed.get("saved", false) or parsed.get("plan_sha256", "") != FileAccess.get_sha256(plan_path):
+		_fail("Resume checkpoint must match this exact plan")
+		return false
+	if not simulation.load_game(folder.path_join("checkpoint.sqlite")):
+		_fail("Resume checkpoint failed to load")
+		return false
+	_results = parsed
+	_results["complete"] = false
+	_results["saved"] = false
+	_results["resume_base"] = folder
+	return true
+
+func _adjust_water(simulation: Node, edits: Array) -> Array:
+	var results := []
+	for edit in edits:
+		var old: Variant = edit.get("seed_xz")
+		var removed := false
+		if old is Array:
+			var p := Vector2(old[0], old[1])
+			removed = simulation.remove_world_lake_fill_near(p, 1.0) if edit["kind"] == "lake" else simulation.remove_world_open_water_fill_near(p, 1.0)
+		var seed: Array = edit["new_seed_xz"]
+		var p := Vector2(seed[0], seed[1])
+		var preview: Dictionary = simulation.begin_world_lake_fill_preview(p, edit["new_surface_m"]) if edit["kind"] == "lake" else simulation.begin_world_open_water_fill_preview(p, edit["new_surface_m"])
+		if preview.get("status", "") == "below_seed":
+			var best := INF
+			var target := p
+			for dx in range(-250, 251, 10):
+				for dz in range(-250, 251, 10):
+					var q := p+Vector2(dx, dz)
+					var run := Vector2(dx,dz).length_squared()
+					if run < best and simulation.get_height_at(q) < float(edit["new_surface_m"])-0.005:
+						best = run
+						target = q
+			if best < INF:
+				p = target
+				preview = simulation.begin_world_open_water_fill_preview(p, edit["new_surface_m"])
+		var kind: String = edit["kind"]
+		if preview.get("status", "") == "not_edge_connected":
+			kind = "lake"
+			preview = simulation.begin_world_lake_fill_preview(p, edit["new_surface_m"])
+		elif preview.get("kind", "") == "open_water":
+			kind = "open"
+		var committed := false
+		if preview.get("valid", false):
+			committed = simulation.commit_world_lake_fill_preview() if kind == "lake" else simulation.commit_world_open_water_fill_preview()
+
+		results.append({"edit": edit, "removed": removed, "preview": preview, "committed": committed})
+	return results
 
 func _create_gateway(simulation: Node, box: Array) -> Array:
 	var snapshot: Dictionary = JSON.parse_string(simulation.get_road_terrain_benchmark_snapshot())
@@ -187,7 +267,8 @@ func _grow(simulation: Node, args: Dictionary) -> Dictionary:
 		"agents": state["agents"], "buildings": state["buildings"], "paused": state["simulation_speed"] == 0.0}
 
 func _repair_network(simulation: Node) -> void:
-	_results["repairs"] = []
+	if not _results.has("repairs"):
+		_results["repairs"] = []
 	var tried := {}
 	for sweep in 6:
 		var network := Network.inspect_network(simulation)
@@ -266,13 +347,15 @@ func _length(points: Array) -> float:
 func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, strategy: String) -> String:
 	var xyz := []
 	var placed := []
-	var touches := false
 	for i in points.size():
 		var p: Array = points[i]
 		var pos := Vector2(float(p[0]), float(p[1]))
 		var world := Vector3(pos.x, simulation.get_world_surface_height(pos), pos.y)
-		var snapped: Variant = simulation.get_closest_network_point(world, 8.0)
-		touches = touches or snapped is Vector3
+		if stroke.get("bridge", false):
+			world.y += 6.0
+		elif stroke.get("tunnel", false):
+			world.y -= 6.0
+		var snapped: Variant = simulation.get_closest_network_point(world, 2.0)
 		if i == 0 or i == points.size()-1:
 			# The commit's snap flag only enables 2 m graph matching. The player's
 			# cursor also projects the clicked position onto a node/edge beforehand.
@@ -305,12 +388,11 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 	var outcome: Dictionary
 	if degenerate:
 		outcome = {"by": "importer", "reason": "degenerate_after_snap"}
-	elif _car_started and int(stroke["fwd_lanes"]) + int(stroke["bkw_lanes"]) > 0 and not touches:
-		outcome = {"by": "importer", "reason": "disconnected_candidate_deferred"}
 	else:
+		MetrumDebug.log("road", "map_import_attempt id=%s strategy=%s points=%d lanes=%d/%d" % [stroke["id"], strategy, xyz.size(), stroke["fwd_lanes"], stroke["bkw_lanes"]])
 		outcome = await _replay(simulation, attempt)
 	var reason := String(outcome.get("reason", ""))
-	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"]})
+	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
 	if reason == "replay_timeout" or reason == "validation_unavailable":
 		_fatal = true
 		_fail("Unknown road completion for %s: %s" % [stroke["id"], reason])
@@ -320,7 +402,7 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	var points := PackedVector3Array()
 	for p in attempt["points"]:
 		points.append(Vector3(p[0], p[1], p[2]))
-	var deadline := Time.get_ticks_msec() + 120000
+	var deadline := Time.get_ticks_msec() + 600000
 	var validation: Dictionary = {}
 	while Time.get_ticks_msec() < deadline:
 		validation = simulation.validate_road_candidate_for_commit_with_snap(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), true)
@@ -328,26 +410,19 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 			break
 		await process_frame
 	if not validation.get("is_valid", false):
-		return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable"))}
+		return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable")), "validation": validation}
 	var request: int = simulation.add_road_with_snap(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), true)
 	# Wall-clock bound: headless frames can run much faster than the background
 	# compiler, so a frame-only timeout loses live request acknowledgements.
-	deadline = Time.get_ticks_msec() + 120000
-	while Time.get_ticks_msec() < deadline:
+	deadline = Time.get_ticks_msec() + 600000
+	while true:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:
-			if result.get("committed", false) and int(attempt["fwd_lanes"]) + int(attempt["bkw_lanes"]) > 0:
-				var network := Network.inspect_network(simulation, 0.0)
-				if int(network["components"]) > 1:
-					# Undo this acknowledged edit before any other mutation. Detached
-					# streets are deferred until their connecting street exists.
-					if not simulation.undo_action():
-						return {"by": "importer", "reason": "validation_unavailable"}
-					return {"by": "importer", "reason": "disconnected_candidate_deferred"}
-				_car_started = true
-			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed"))}
+			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed")), "metrics": simulation.get_road_benchmark_state()["command"]}
+		if Time.get_ticks_msec() >= deadline:
+			return {"by": "commit", "reason": "replay_timeout"}
 		await process_frame
-	return {"by": "commit", "reason": "replay_timeout"}
+	return {}
 
 func _split(points: Array, junctions: Array) -> Array:
 	var pieces := []
@@ -480,6 +555,14 @@ func _place(simulation: Node, stroke: Dictionary, points: Array, record: Diction
 			if reason.is_empty():
 				record["pieces"].append(record["attempts"][-1]["points_xz"])
 				return
+	if int(stroke["fwd_lanes"])+int(stroke["bkw_lanes"]) > 2 and reason in ["surface_geometry_invalid", "render_geometry_invalid", "junction_arm_angle", "road_tight_curve"]:
+		var narrow: Dictionary = stroke.duplicate(true)
+		narrow["fwd_lanes"] = mini(1, int(stroke["fwd_lanes"]))
+		narrow["bkw_lanes"] = mini(1, int(stroke["bkw_lanes"]))
+		reason = await _attempt(simulation, narrow, points, record, "lane_fit_after_refusal")
+		if reason.is_empty():
+			record["pieces"].append(record["attempts"][-1]["points_xz"])
+			return
 	var failure := {"points_xz": points, "reason": reason}
 	record["failed_pieces"].append(failure)
 	if stroke.get("kind", "road") == "road":
@@ -507,6 +590,19 @@ func _apply_zone(simulation: Node, zone: Dictionary, accepted: Dictionary, profi
 	result["status"] = "accepted" if committed else "refused"
 	result["reason"] = "" if committed else "zoning_commit_false_no_exposed_reason"
 	return result
+
+func _checkpoint(simulation: Node) -> void:
+	if DirAccess.make_dir_recursive_absolute(_output) != OK:
+		return
+	var save_path := _output.path_join("checkpoint.sqlite")
+	if not simulation.save_game(save_path):
+		return
+	var record := _results.duplicate(true)
+	record["saved"] = true
+	record["save_path"] = save_path
+	var file := FileAccess.open(_output.path_join("checkpoint_results.json"), FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(record, "\t", true)+"\n")
 
 func _write_results() -> bool:
 	if DirAccess.make_dir_recursive_absolute(_output) != OK:

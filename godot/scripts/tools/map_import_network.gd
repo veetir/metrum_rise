@@ -74,7 +74,7 @@ static func inspect_network(simulation: Node, radius: float = 40.0) -> Dictionar
 			for z in range(floori((p.y-radius)/32.0), floori((p.y+radius)/32.0)+1):
 				for i in grid.get(Vector2i(x, z), []):
 					nearby[i] = true
-		var best := {}
+		var by_component := {}
 		var indices: Array = nearby.keys()
 		indices.sort()
 		for i in indices:
@@ -86,12 +86,14 @@ static func inspect_network(simulation: Node, radius: float = 40.0) -> Dictionar
 			var t := clampf((p-a).dot(b-a)/(b-a).length_squared(), 0.0, 1.0)
 			var q := a.lerp(b, t)
 			var gap := p.distance_to(q)
+			var best: Dictionary = by_component.get(s["root"], {})
 			if gap < 2.1 or gap > radius or (not best.is_empty() and gap >= float(best["gap_m"])):
 				continue
-			best = {"node": node, "from_component": own, "to_component": s["root"],
+			by_component[s["root"]] = {"node": node, "from_component": own, "to_component": s["root"],
 				"gap_m": gap, "points_xz": [[p.x, p.y], [q.x, q.y]]}
-		if not best.is_empty():
-			candidates.append(best)
-	candidates.sort_custom(func(a, b): return float(a["gap_m"]) < float(b["gap_m"]) if not is_equal_approx(a["gap_m"], b["gap_m"]) else int(a["node"]) < int(b["node"]))
+		var choices: Array = by_component.values()
+		choices.sort_custom(func(a, b): return float(a["gap_m"]) < float(b["gap_m"]) if not is_equal_approx(a["gap_m"], b["gap_m"]) else int(a["to_component"]) < int(b["to_component"]))
+		candidates.append_array(choices.slice(0, mini(4, choices.size())))
+	candidates.sort_custom(func(a, b): return float(a["gap_m"]) < float(b["gap_m"]) if not is_equal_approx(a["gap_m"], b["gap_m"]) else (int(a["node"]) < int(b["node"]) if int(a["node"]) != int(b["node"]) else int(a["to_component"]) < int(b["to_component"])))
 	return {"components": components.size(), "component_nodes": components, "candidates": candidates,
 		"car_edges": edges.size(), "car_nodes": parents.size()}

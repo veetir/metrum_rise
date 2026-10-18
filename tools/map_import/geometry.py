@@ -164,7 +164,7 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
             continue
         source_shapes.add(key)
         p = f['properties']
-        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], None, bool(m.get('oneway', p['oneway'])))
+        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], (p.get('bridge',False),p.get('tunnel',False),p.get('layer',0)), bool(m.get('oneway', p['oneway'])))
         segments.append({'nodes': ids, 'source': f['id'], 'mapping': m,
                          'signature': signature, 'class': p['road_class']})
     ends = defaultdict(list)

@@ -117,7 +117,7 @@ def aligned(u, a, b, opposite=False):
 def conflate(roads, decisions):
     roads = deepcopy(sorted(roads, key=lambda r: r[0]['id']))
     divided = [(f, m) for f, m in roads if m['action'] == 'road' and m.get('oneway')
-               and f['properties']['road_class'] in ('primary', 'secondary') and f['properties']['name']]
+               and f['properties']['road_class'] in ('primary', 'secondary', 'motorway', 'trunk') and f['properties']['name']]
     index = SegmentIndex((f['id'], f['points'][::m['oneway']], f) for f, m in divided)
     extents = defaultdict(list)
     for f, _ in divided:
@@ -135,6 +135,7 @@ def conflate(roads, decisions):
         dense.append((tuple(points[-1]), dense[-1][1], 0))
         chunks, current, matched, removed = [], [], 0, 0
         sources = {f['id']}
+        opposing_lanes = 1
         for p, u, run in dense:
             hit = index.nearest(p, POLICY['carriageway_distance_m'],
                 lambda s: s[0] != f['id'] and s[3]['properties']['name'] == f['properties']['name']
@@ -144,6 +145,7 @@ def conflate(roads, decisions):
             if hit:
                 sources.add(hit[3][0])
                 matched += run
+                opposing_lanes = max(opposing_lanes, int(hit[3][3]['properties'].get('lanes') or 1))
                 q = tuple(round((p[j]+hit[2][j])/2, 3) for j in range(2))
                 keep = u[axes[f['properties']['name']]] >= 0
                 shifted.update(f['node_ids'])
@@ -166,7 +168,7 @@ def conflate(roads, decisions):
             g['node_ids'] = [f'median/{p[0]:.3f}/{p[1]:.3f}' for p in g['points']]
             g['properties']['oneway'] = 0
             g['id'] = f['id'] if i == 0 else f"{f['id']}/part/{i}"
-            changed.append((g, {**m, 'oneway': 0, 'fwd_lanes': 1, 'bkw_lanes': 1}))
+            changed.append((g, {**m, 'oneway': 0, 'fwd_lanes': max(1, m['fwd_lanes']), 'bkw_lanes': opposing_lanes}))
     # Reattach source junctions on either removed carriageway to the retained median.
     medians = SegmentIndex((f['id'], f['points'], f) for f, m in changed if f['id'] in divided_ids)
     for f, m in changed:
