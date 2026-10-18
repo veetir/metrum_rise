@@ -537,3 +537,52 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.target_building[i], 0);
     assert_eq!(agents.next_replan_time[i], 0.0);
 }
+
+#[test]
+fn obsolete_direct_through_connector_has_no_delay_target() {
+    let (graph, mut network) = fixture();
+    let from = network.lane_system.edge_lanes[&1]
+        .iter()
+        .copied()
+        .find(|&id| network.lane_system.lanes[id].is_fwd)
+        .unwrap();
+    let to = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| network.lane_system.lanes[id].is_fwd)
+        .unwrap();
+    // The saved junction connector has become a direct road-lane link.
+    network.lane_system.lanes[from].next_lanes = vec![to].into();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    conn.execute("INSERT INTO network_runtime_state VALUES (1, 0.375)", [])
+        .unwrap();
+    for (old, edge, id) in [(10_i64, 1_i64, from), (20, 2, to)] {
+        let lane = &network.lane_system.lanes[id];
+        conn.execute(
+            "INSERT INTO saved_lanes VALUES (?1, ?2, ?3, ?4, -1, -1, -1, 2.5, 1.25)",
+            params![old, edge, lane.is_fwd, lane.lane_idx],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (30, -1, 1, 0, 2, 10, 20, 9.0, 8.0)",
+        [],
+    )
+    .unwrap();
+    restore_lane_references(
+        &conn,
+        crate::simulation::save::schema::SAVE_VERSION,
+        &mut AgentSystem::new(),
+        &graph,
+        &mut network,
+        &BuildingAllocator::new(),
+    )
+    .unwrap();
+    for id in [from, to] {
+        assert_eq!(network.lane_system.lanes[id].frontage_delay_penalty_s, 2.5);
+        assert_eq!(network.lane_system.lanes[id].live_frontage_delay_s, 1.25);
+    }
+    assert_eq!(network.frontage_delay_elapsed_s, 0.375);
+}

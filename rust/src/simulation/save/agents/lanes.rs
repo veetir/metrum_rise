@@ -206,7 +206,12 @@ pub(in crate::simulation::save) fn restore_lane_references(
             {
                 return Err(SaveLoadError::custom("invalid saved frontage delay"));
             }
-            let lane = &mut network.lane_system.lanes[remap[&old]];
+            // A connector replaced by a direct lane link was intentionally omitted above.
+            // It has no runtime lane on which to restore a delay.
+            let Some(&id) = remap.get(&old) else {
+                continue;
+            };
+            let lane = &mut network.lane_system.lanes[id];
             lane.frontage_delay_penalty_s = price;
             lane.live_frontage_delay_s = live;
         }
