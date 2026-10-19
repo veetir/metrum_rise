@@ -16,6 +16,7 @@ use crate::simulation::terrain::TerrainSystem;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
+mod lane_use;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -117,6 +118,8 @@ pub struct LaneSystem {
     pub node_lanes: HashMap<usize, Vec<usize>>,
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
+    // Rebuild-derived: only approaches with different permitted movements need lane choice.
+    turn_preparation: Vec<bool>,
     revision: u64,
     // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
     // (old ids become tombstones), so every lane at or above it still has flat build heights.
@@ -137,6 +140,7 @@ impl LaneSystem {
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
+            turn_preparation: Vec::new(),
             revision: 0,
             surface_synced_len: 0,
         }
@@ -149,7 +153,14 @@ impl LaneSystem {
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
+        self.turn_preparation.clear();
         self.surface_synced_len = 0;
+    }
+
+    /// Whether this road lane approaches a node with lane-dependent movement restrictions.
+    #[inline]
+    pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
+        self.turn_preparation.get(lane_id).copied().unwrap_or(false)
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when

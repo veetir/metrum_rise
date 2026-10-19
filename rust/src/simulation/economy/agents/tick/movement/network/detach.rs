@@ -16,6 +16,8 @@ use crate::traffic_log;
 /// Returns `true` when movement should stop for this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Keep frontage geometry and logging out of the frequently executed road movement loop.
+#[inline(never)]
 pub(super) unsafe fn try_network_detach(
     i: usize,
     lane_id: usize,

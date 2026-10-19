@@ -592,6 +592,176 @@ turn-pocket geometry, rather than making median extent an unbreakable edge-wide 
 separation (`ROAD-68`) and interchange/slip-road work (`ROAD-69`, alongside `ROAD-62`) remain
 separate slices.
 
+### Default junction lane use — ROAD-67 (slice B, stages 1–2)
+
+Open vehicle junctions rebuild lane use from the XZ endpoint tangents of the authored physical
+centrelines. Turns within the inclusive ±45° sector are straight; outside it the signed cross
+product distinguishes left and right. Elevation, median offsets and clipped lane endpoints do
+not change the classification. There is no traffic-light, priority, yield or stop-control change
+(`TRAFFIC-06`), and `NET-07`'s dead-end-only default U-turn rule is unchanged.
+
+Only available movements receive lanes. One incoming lane shares all movements. With all three
+movements available, two lanes use left+straight / straight+right; three use left / straight /
+right; four use left / straight / straight / right. With left and straight only, the leftmost
+lane turns left and the others go straight; straight+right is symmetric. A T approach with only
+left/right splits its lanes into contiguous halves (the left half gets the odd extra lane).
+A sole movement uses every incoming lane. Explicit vehicle connections still put the whole
+node in whitelist mode and override these defaults, including target-lane selection.
+
+Connector targets preserve lane order. Straight movements map monotonically over the outgoing
+lane group; left/right use the corresponding outer group, no wider than the incoming movement's
+lane group. Integer interval overlap fans or merges unequal counts without reversed lane order.
+This changes connectors at existing open junctions and removes unnecessary lane swapping at
+ordinary degree-two continuations. It does **not** taper a lane-count transition yet.
+
+Every previously allowed road-edge turn still has at least one connector: the available movement
+mask is covered by the incoming lane masks, and every movement lane has a target. Consequently
+the CCH edge-turn projection, legal node routes and U-turn decisions are unchanged. A route may
+now need a sibling lane before a turn, or a frontage lane change after entering the destination
+road. A very short road may not have room for those physical maneuvers; a car that misses its
+turn takes a legal onward connector and replans. Directed networks with no legal recovery loop
+cannot guarantee that a missed turn remains reachable. See [`traffic.md`](traffic.md#planned-lane-changes).
+
+No roadbed, kerb, sidewalk, median, light, sign, existing marking or physical road-lane generation
+code changes in these stages. Existing roadbed mesh buffers are checked independently of the
+intentionally changed connector hashes. Preview and commit keep the same surface compiler.
+
+The default also applies on load. The schema remains **89**: lane use is derived, with no new
+saved field. Saved road lanes retain their identities. Old default connectors removed by the
+policy are omitted during reference restoration; an agent saved on one takes the existing
+stale-lane repair and replans from its saved junction. This is a one-time migration exception to
+exact microscopic continuation. Missing whitelist connectors and malformed endpoint/mode
+references remain load errors. New-policy saves retain the normal lane-state round trip.
+
+Turn preparation adds no agent fields or per-agent allocations. Its query is O(D + L × C):
+the existing node-local edge lookup (degree D), same-edge sibling vehicle lanes (L), and their
+local successors (C). A rebuild-derived byte per retained
+lane skips single-lane and single-movement approaches; other roads outside the preparation
+window return before querying the route. Full/local rebuilds refresh the flag with the connectors,
+and clearing the lane system clears it. Gap checks and reservations use the existing lane buckets.
+Rebuild policy queries visit only node-local arms and lane groups; there is no city-wide scan or
+new spatial index.
+
+**Stages 1–2 validation (2026-10-19).** Fresh `cargo test` passes 2,560 library tests (146
+manual/benchmark fixtures ignored), all four growth integration tests and doctests; one separate
+scaling integration fixture remains ignored by the normal suite. `cargo clippy --all-targets`
+is clean. `cargo doc --no-deps` adds no missing-doc warnings; its two existing warnings remain in
+untouched vegetation API and surface-span documentation. Formatting was checked only on the
+21 modified/new Rust files. `bash -n run.sh` passes; the new bridge is registered in its suite.
+
+Coverage includes T/cross/skewed 1–4-lane movement classification, whitelist precedence,
+monotone targets, full/local restriction-cache refresh, reaching the required lane, physically
+continuing after a blocked lane change and reaching a building/border, route-preview agreement,
+retired old default connectors, current-policy save round trips, and
+`in_place_cross_section_keeps_edge_and_agents_valid_and_undo_restores_profile` (`ROAD-65`).
+Independent roadbed hashes match the original builder; connector hashes change intentionally.
+
+Exact Rust commands (repository root):
+
+```bash
+cargo test --manifest-path rust/Cargo.toml
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo doc --manifest-path rust/Cargo.toml --no-deps
+cargo build --manifest-path rust/Cargo.toml --release
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run --message-format=json
+cargo bench --manifest-path rust/Cargo.toml --bench road_chunk_benchmark --no-run --message-format=json
+```
+
+Fourteen individual release Godot checks pass: `road_turn_lanes_test`, `road_cross_section_test`,
+`network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`, `road_preview_metrics_test`,
+`road_junction_preview_test`, `road_preview_stream_test`, `vehicle_ground_support_test`,
+`junction_debug_overlay_test`, `agent_inspector_test`, `street_lamp_grid_test`,
+`zoning_road_tool_test`, `road_rejection_report_test` and `road_marking_lighting_test`.
+The isolated project has a `roads-b-` app-data name. The dump/replay check uses a temporary
+subclass that prefixes only its SQLite save filename with `roads-b-`. The marking-lighting
+check uses a window; the other bridge checks use `--headless`. Every invocation is wrapped in
+`perl -e 'alarm 900; exec @ARGV' godot --path "$GODOT_PROJECT" --script "res://tests/$CASE.gd"`,
+adding `--headless` for those cases; `$GODOT_PROJECT` names the isolated project mirror.
+The dump/replay check substitutes `res://roads_b_rejection_test.gd`, its temporary save-prefix wrapper.
+`network_tool_chunk_renderer_test` and `road_junction_preview_test` emit one resource-in-use
+exit diagnostic; fresh runs against the original release reproduce both, with zero assertion
+failures and zero exit codes. Those existing cleanup diagnostics are unchanged by this slice.
+
+Matched unprofiled road runs use the same machine/toolchain as the
+[traffic acceptance](traffic.md#road-67-stages-12-acceptance-2026-10-19), four Rayon workers,
+`METRUM_DEBUG=0`, two alternating process pairs per side and no competing build/test/capture.
+The baseline is `ff3f9882`; candidate release and benchmark SHA-256 identities are:
+
+| Binary | Baseline SHA-256 | Candidate SHA-256 |
+| --- | --- | --- |
+| Road Criterion | `190dbff905e675a0e76a207625c1934956daa2d7965189fb2ccc8e383bc71d7e` | `8e900f0a51971b10ae2bcd1b8092c14b32b7dc9794ef3665c49026915b32fe0c` |
+| Godot release library | `636089ed52e9d9e667af7575b870ffe5c3f788a6711960c1cb604f0e8f37f043` | `37a2a18f01db492c5b822ae3df502de5267ab97abc08b28be4828704bdca7997` |
+
+Criterion runs as `METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$BENCH_BINARY" --bench --noplot` from
+`rust/`. All twelve signature-checked cases pass. Targeted chunk emission remains flat:
+
+| Occupied chunks | Before (ms) | After (ms) |
+| ---: | ---: | ---: |
+| 1 | 0.046683 | 0.045851 |
+| 64 | 0.047162 | 0.049045 |
+| 256 | 0.046812 | 0.046828 |
+| 1,024 | 0.046829 | 0.047713 |
+
+At 1,024 occupied chunks the full-network comparator is 41.3045→41.2830 ms and the known-global-scan
+dirty diagnostic is 0.162730→0.162400 ms. These are medians of two process estimates, not a
+pooled latency distribution or a speedup claim.
+
+The upload command is `METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' godot --headless --path "$GODOT_PROJECT" --script res://tests/road_chunk_renderer_benchmark.gd`.
+All four runs end with zero failures and retain the same immutable geometry/instances. With
+one 8,190-vertex chunk changing, command-drain medians at 4/64/256/1,024/4,096 resident chunks
+are respectively 4.844→4.874 / 4.974→4.988 / 4.879→4.877 / 4.782→4.872 /
+4.727→4.729 ms. At 1,024 resident chunks, changing 0/1/4/16 chunks costs
+0.032→0.033 / 4.881→4.642 / 14.494→14.686 / 58.616→58.660 ms. This headless
+boundary includes command staging and render-server synchronization, not physical GPU upload
+or rendered-frame timing. Raw staging and p95 values remain in `$ARTIFACTS`.
+
+Three alternating local lane-rebuild pairs keep identical local products at 0/1k/10k/100k
+background roads; medians are 0.017125→0.017125 / 0.017042→0.016917 /
+0.015458→0.016208 / 0.015416→0.015458 ms. The command is
+`METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$TEST_BINARY" simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling --exact --ignored --nocapture --test-threads=1`.
+
+Two alternating populated-map pairs use the same command with test
+`nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling`.
+Four local occupied sites stay fixed while background buildings/parcels/agents/roads grow;
+local terrain products and all non-timing counts match. Repeated plan/worker medians are:
+
+| Remote buildings | Plan before→after (ms) | Worker before→after (ms) |
+| ---: | ---: | ---: |
+| 0 | 4.4455→4.4343 | 1.1934→1.1930 |
+| 1,000 | 4.5011→4.4734 | 1.2140→1.2140 |
+| 10,000 | 4.4320→4.4632 | 1.2183→1.2419 |
+| 100,000 | 4.5879→4.5452 | 1.2698→1.2307 |
+
+Fixture/index construction is excluded. Once-per-edit snapshot cost is separate and grows from
+0.0036→0.0124 ms at zero background to 0.1439→0.1270 ms at 100k; it is not claimed constant.
+These measurements establish local repeated planning/rebuild work, not city-wide ticking speed.
+
+**Windowed inspection.** The final deployed release ran the real `Main.tscn` through
+`METRUM_ROADS_B_CAPTURE=1 METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot --path "$GODOT_PROJECT" --script res://tests/road_turn_lanes_test.gd`.
+The fixture creates a fresh flat world through Rust, builds a four-lane-per-direction arterial
+with a 5 m kerbed grass median and a 1+1 cross road, and sustains 84 interleaved routed cars.
+It refreshes the loaded world and waits for render completion between road edits; captures run
+with a Metal window, not headless. The final run exits zero; every started Godot is closed.
+The library was unlinked before each deployment copy, and the final deployed SHA matches the
+release library above. No player save/mod data is used.
+
+All six PNGs under ignored `captures/roads_b/` were inspected:
+`prisma_approach_above.png`, `prisma_approach_street.png`, `prisma_connectors_above.png`,
+`prisma_traffic_above.png`, `prisma_traffic_street.png`, and `prisma_turn_queue_street.png`.
+They show the unchanged kerbed median/lamp layout, ordered connectors, cars separating into
+left/straight/straight/right lanes and short turn-lane queues during inflow. Compared with the
+Prisma street view/map, this is a lane-use fixture: its four approach lanes remain full-length,
+and it lacks the pocket/taper geometry, arrows, solid approach lines and gantry. It is not a
+completed reconstruction of the real junction; its slip-road topology/overpass belong to later
+slices. No signal or right-of-way behavior is implied by these car-following queues.
+
+**Remaining slice B work:** per-end pockets and tapers, mid-road lane-count taper geometry,
+painted arrows/solid approach lines, and pocket editing/preview controls. Existing controls are
+**[ / ]** (or **Down / Up**) for forward lanes, **, / .** for backward lanes, and **E** to
+switch drawing/in-place editing of the picked edge. These stages add no controls. Median end
+setbacks remain reserved for pocket geometry. Slices C/D remain separate, and can consume these
+lane-use rules while supplying their own explicit node/topology representation.
+
 ## Pedestrian Junction Crossings
 
 One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:

@@ -9,7 +9,8 @@ use super::super::super::super::{
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_network_replan, plan_immigration_trip,
+    plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
@@ -25,6 +26,8 @@ use std::sync::atomic::AtomicU32;
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Keep rare route planning out of the small, frequently executed movement loop.
+#[inline(never)]
 pub(super) unsafe fn prepare_network_replan(
     i: usize,
     sim_time: f32,
@@ -139,11 +142,60 @@ unsafe fn ensure_exact_access_plan(
         let s_next_replan_time = &slices.next_replan_time;
 
         let target_building = *s_tgt_b.get(i);
-        if *s_transit.get(i) == TRANSIT_IMMIGRATING
-            || (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
-            || target_building == usize::MAX
-        {
+        if *s_transit.get(i) == TRANSIT_IMMIGRATING {
             return true;
+        }
+        if target_building == usize::MAX {
+            if *slices.access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION != 0
+                && slices.path.get(i).is_empty()
+                && let Some(node) =
+                    lane_terminal_node(*slices.lane_id.get(i), transit_network, graph)
+                && node != *slices.freight_target_border_node.get(i)
+            {
+                if sim_time < *slices.next_replan_time.get(i) {
+                    return false;
+                }
+                let border = *slices.freight_target_border_node.get(i);
+                if let Some(plan) = plan_border_network_replan(
+                    node,
+                    *slices.cur_e.get(i),
+                    border,
+                    graph,
+                    transit_network,
+                    pathfind_count,
+                ) {
+                    apply_network_replan(i, plan, slices);
+                } else {
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "freight-missed-turn",
+                        FailureCause::NoBorderRoute { from: node, border },
+                        slices,
+                    );
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 {
+            // A missed turn discards the node path while keeping the physical connector.
+            // Replan once on its outgoing road, early enough to choose that road's next lane.
+            // Empty zero-hop access paths still cross at their planned detach node normally.
+            let lane_id = *slices.lane_id.get(i);
+            if !slices.path.get(i).is_empty()
+                || lane_terminal_node(lane_id, transit_network, graph)
+                    .is_none_or(|node| node == *slices.planned_detach_n.get(i))
+                || transit_network
+                    .lane_system
+                    .lanes
+                    .get(*slices.planned_detach_lane.get(i) as usize)
+                    .is_some_and(|lane| lane.edge_id == *slices.cur_e.get(i))
+            {
+                return true;
+            }
         }
 
         if sim_time < *s_next_replan_time.get(i) {
@@ -170,7 +222,7 @@ unsafe fn ensure_exact_access_plan(
             incoming_edge,
             target_building,
             *s_tmode.get(i),
-            0,
+            *s_access_flags.get(i),
             allocator,
             transit_network,
             graph,

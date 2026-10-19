@@ -603,3 +603,82 @@ fn obsolete_direct_through_connector_has_no_delay_target() {
     }
     assert_eq!(network.frontage_delay_elapsed_s, 0.375);
 }
+
+#[test]
+fn older_open_node_connectors_retire_without_refusing_the_save() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    for point in [
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, -100.0),
+    ] {
+        let end = graph.add_node(point, NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: end,
+            end_node: center,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 14.0,
+            geometry: vec![point, Vector3::ZERO],
+            physical_geometry: vec![point, Vector3::ZERO],
+            physical_length: 100.0,
+            speed_limit: 10.0,
+            ..Default::default()
+        });
+    }
+    graph.rebuild_all_indices();
+    graph.rebuild_intersection_clips();
+    // Emulate a pre-ROAD-67 default connector: right incoming lane turns left.
+    graph.add_lane_connection(center, 0, 1, 2, -1);
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    let connector = network.lane_system.node_lanes[&(center as usize)][0];
+    graph.remove_lane_connection(center, (0, 1));
+    let mut agents = AgentSystem::new();
+    add_agent(&mut agents, connector, &graph, &network.lane_system);
+    let road = network.lane_system.edge_lanes[&0][0];
+    add_agent(&mut agents, road, &graph, &network.lane_system);
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    tx.commit().unwrap();
+    let version = crate::simulation::save::schema::SAVE_VERSION;
+    let mut restored = load_agents(&conn, 0.0, version).unwrap();
+    let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    let mut rebuilt = TransitNetwork::new();
+    rebuilt.lane_system.rebuild(&mut new_graph);
+    restore_lane_references(
+        &conn,
+        version,
+        &mut restored,
+        &new_graph,
+        &mut rebuilt,
+        &allocator,
+    )
+    .unwrap();
+    assert_eq!(restored.current_lane_id[0], usize::MAX);
+    assert_eq!(restored.current_lane_id[1], road);
+    assert!(restored.current_path[0].is_empty());
+    // The same missing identity under an authored whitelist remains an invalid save.
+    new_graph.add_lane_connection(center, 0, 0, 1, -1);
+    let mut restored = load_agents(&conn, 0.0, version).unwrap();
+    assert!(
+        restore_lane_references(
+            &conn,
+            version,
+            &mut restored,
+            &new_graph,
+            &mut rebuilt,
+            &allocator
+        )
+        .is_err()
+    );
+}

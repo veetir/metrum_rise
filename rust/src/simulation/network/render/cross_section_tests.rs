@@ -59,6 +59,7 @@ fn digest(value: impl std::fmt::Debug) -> u64 {
 #[test]
 fn median_free_road_products_match_pre_median_fixtures() {
     let mut actual = Vec::new();
+    let mut roadbed_actual = Vec::new();
     for (arms, slope) in [(1, false), (2, false), (3, false), (4, false), (3, true)] {
         let (mut graph, terrain) = fixture(arms, slope);
         let mut surface = RoadSurfaceSystem::new(128.0);
@@ -108,6 +109,9 @@ fn median_free_road_products_match_pre_median_fixtures() {
             street_lights,
             road_signs
         );
+        // Keep the immutable roadbed/marking/light/sign contract separate from the
+        // connector graph, whose default lane-use policy intentionally changes in ROAD-67.
+        roadbed_actual.push(digest(&hash));
         for lane in &lanes.lanes {
             hash.push(digest((
                 &lane.geometry,
@@ -128,15 +132,26 @@ fn median_free_road_products_match_pre_median_fixtures() {
         hash.push(digest(sections));
         actual.push(digest(hash));
     }
-    // Recorded on 20f512009c998ae53d3f6d7e17ab5378c161af04 before median support.
+    // Roadbed-only hashes recorded with the unchanged ff3f9882 vehicle connector builder.
+    assert_eq!(
+        roadbed_actual,
+        vec![
+            1451289510056481026,
+            11020531984807302493,
+            7444062654369267069,
+            5535944556499364918,
+            8766796812298245393
+        ]
+    );
+    // The combined hashes now include ROAD-67's intentionally restricted connectors.
     assert_eq!(
         actual,
         vec![
             7042786987200519549,
-            4666517345580941470,
-            3510520567682657787,
-            4560277745105121650,
-            3172059839746288161
+            1902816779279458275,
+            6368666773750471467,
+            2243866881970647380,
+            18328961886945073119
         ]
     );
 }

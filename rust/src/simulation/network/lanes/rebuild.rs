@@ -43,6 +43,7 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
+            &mut self.turn_preparation,
         );
         build_pedestrian_connections_at_node(
             &mut self.lanes,

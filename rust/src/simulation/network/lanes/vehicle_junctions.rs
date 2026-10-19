@@ -5,6 +5,7 @@
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
+use super::lane_use::DefaultLaneUse;
 use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
@@ -25,6 +26,7 @@ pub fn build_vehicle_connections_at_node(
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
+    turn_preparation: &mut Vec<bool>,
 ) {
     let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
     let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
@@ -73,40 +75,37 @@ pub fn build_vehicle_connections_at_node(
     let node_allows_direct_pass_through = vehicle_deg == 2 && !node_has_any_vehicle_conn;
     let node_uses_junction_span = vehicle_deg >= 3 || node_has_any_vehicle_conn;
 
+    turn_preparation.resize(lanes.len(), false);
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
-        let mut allowed: Option<Vec<(usize, i8)>> =
-            lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
-
-        // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
-        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
-        // Nodes with no user connections remain fully open (allow all non-U-turns).
-        if allowed.is_none() && !node_has_any_vehicle_conn {
-            // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
-            // The router reads the same rule.
-            let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
-            let mut defaults = Vec::new();
-            for &(out_edge_id, out_lane_idx, _) in &outbound {
-                if out_edge_id != in_edge_id || allows_u_turn {
-                    defaults.push((out_edge_id, out_lane_idx));
-                }
-            }
-            if !defaults.is_empty() {
-                allowed = Some(defaults);
-            }
-        }
-        // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
-        // None → no junction connection lanes created → turn is blocked.
-
-        let mut valid_outs = Vec::new();
+        let explicit = lane_conns.get(&(in_edge_id, in_lane_idx));
+        let defaults = (!node_has_any_vehicle_conn)
+            .then(|| DefaultLaneUse::new(graph, in_edge_id, node_id as u32));
+        turn_preparation[in_lane_id] = defaults.as_ref().map_or_else(
+            || {
+                let lane = &lanes[in_lane_id];
+                let edge = graph.edge(in_edge_id);
+                (if lane.is_fwd {
+                    edge.fwd_lanes
+                } else {
+                    edge.bkw_lanes
+                }) > 1
+            },
+            DefaultLaneUse::needs_lane_choice,
+        );
+        let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
         for &(out_edge_id, out_lane_idx, out_lid) in &outbound {
-            if let Some(rules) = &allowed
-                && rules.contains(&(out_edge_id, out_lane_idx))
-            {
-                valid_outs.push(out_lid);
+            let allowed = if let Some(defaults) = &defaults {
+                if out_edge_id == in_edge_id {
+                    allows_u_turn
+                } else {
+                    defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx)
+                }
+            } else {
+                explicit.is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx)))
+            };
+            if !allowed {
+                continue;
             }
-        }
-
-        for out_lid in valid_outs {
             let p0 = *lanes[in_lane_id].geometry.last().unwrap();
             let p1_base = {
                 let g = &lanes[in_lane_id].geometry;

@@ -298,8 +298,40 @@ curvature speed until it exits to the target road lane.
 
 ## Planned Lane Changes
 
-Planned lane changes solve a different problem from overtaking: a car may need to move to a sibling
-lane on the same edge to reach the exact `planned_detach_lane_id` for building access.
+Planned lane changes serve both the next junction movement (`ROAD-67`) and the exact
+`planned_detach_lane_id` for building access. Junction lane use and target pairing are owned by
+[`roads.md`](roads.md#default-junction-lane-use--road-67-slice-b-stages-12).
+
+Turn preparation starts within `70 m × (directional lane count − 1) + 30 m` of the road-lane end.
+The car reads its next path edge (or destination approach edge), finds the nearest same-direction
+sibling with an actual connector/direct continuation to it, and moves one adjacent lane at a
+time. Ties use centre-relative lane index then lane ID. The current lane wins if already legal,
+preventing discretionary return/overtake from undoing the preparation. Frontage preparation has
+priority on the destination road. Whitelists use the same actual-connector query.
+
+Turn changes use the existing speed-scaled S-curve, gap tests and deterministic lane reservation.
+The remaining approach distance is divided over the still-required adjacent steps, capping each
+maneuver while retaining its 18 m minimum and the existing 12 m road-end buffer. There is no extra
+per-agent state or allocation. Both claim classification and movement call the same selector.
+Per-tick additional work is O(A × (D + L × C)) in the preparation window, where D is the
+local node degree, L the same-direction lane count and C its successor count. A rebuild-derived per-lane byte skips
+approaches without lane-dependent movements; outside the window an O(1) guard also returns
+before reading path/access columns. No route query or graph-wide lookup occurs during ordinary
+lane choice.
+
+A blocked turn-lane gap suppresses discretionary changes but does not stop the car indefinitely.
+At the road end, if a sibling can make the desired turn but this lane cannot, the car takes its
+first legal onward movement in stable successor order. It keeps its physical connector and
+replans on the outgoing road before its next junction. This reuses the ordinary destination
+planner, and does not jump sideways, reverse on the approach, or relax a turn restriction.
+Freight border trips use the same outgoing-road replan boundary; debug cars without a destination stop
+at the end of the diversion road. A directed network without a legal recovery loop can still
+lose reachability after a missed turn. Genuine missing turns retain the existing failure report.
+
+A destination turn may enter a different same-direction lane on its road, then use frontage lane
+changes to reach the exact detach lane. Inspector route prediction includes these preparation
+moves and the same destination-edge connector fallback; occupied gaps can still change the
+future route and trigger a redraw.
 
 Ownership split:
 
@@ -333,6 +365,61 @@ The car's authoritative longitudinal lane becomes the target lane when the maneu
 rendering blends from the source lane to the target lane over the S-curve. This keeps traffic gap
 checks and destination detach checks tied to the lane the car is entering, without creating a
 temporary lane object per car.
+
+### ROAD-67 stages 1–2 acceptance (2026-10-19)
+
+Fresh matched, unprofiled release runs on Apple M2 Pro (12 logical CPUs), Rust 1.98.1,
+`opt-level=3`, `debug=1`, MacOSX26.5 SDK; inherited macOS scheduling. Baseline is `ff3f9882`;
+no builds, other tests or game captures ran during measurement. Test executable SHA-256:
+
+- baseline: `b8befab53b6b34332e4b66b8904f4c02526313ae01dd919ccf7563640c1bacd0`
+- candidate: `4bc39d10fbe01c7da5f8945dc2a781c4dc9144979a320cd4e99fcc66b914971f`
+
+An 11-pair screen had unstable ingress samples, so the final tick comparison uses 51 alternating
+process pairs and eight Rayon workers. The table reports medians of process samples; every paired
+bootstrap 95% interval includes zero. It establishes no tick regression beyond noise and no
+speedup claim. All deterministic work counts match; exercised agent rows grow exactly 3× and
+lane rows stay at 16.
+
+| Tick fixture | Agents | Before (ms) | After (ms) | Paired median change, 95% interval |
+| --- | ---: | ---: | ---: | --- |
+| Network | 10,000 | 0.476500 | 0.487084 | +1.12% [-2.12%, +4.35%] |
+| Network | 30,000 | 0.902000 | 0.903625 | -0.86% [-6.23%, +7.22%] |
+| Access egress | 10,000 | 0.643209 | 0.645042 | +1.53% [-2.31%, +3.15%] |
+| Access egress | 30,000 | 1.568250 | 1.557667 | -0.22% [-1.62%, +1.11%] |
+| Access ingress | 10,000 | 0.347042 | 0.342792 | -6.84% [-10.99%, +1.81%] |
+| Access ingress | 30,000 | 0.596209 | 0.589458 | -2.43% [-6.25%, +11.64%] |
+
+Five alternating transition pairs use four workers and identical transition counts. Largest tiers:
+
+| Movement case | Agents | Before (ms) | After (ms) |
+| --- | ---: | ---: | ---: |
+| clear | 131,072 | 4.824958 | 4.678500 |
+| merge | 131,072 | 5.986250 | 5.814000 |
+| blocked | 196,608 | 4.966208 | 5.142459 |
+| lateral | 196,608 | 4.623791 | 4.720750 |
+| cruise | 196,608 | 3.089333 | 3.189083 |
+
+The positive movement-only deltas are at most 0.177 ms at these large tiers; they are not claimed
+as zero cost. Three matched claim/reset pairs (four workers) retain identical classification
+checksums: at 1,048,576 agents idle is 0.256979→0.257073 ms and mixed 0.616021→0.619109 ms;
+resetting 1,048,576 empty lanes is 0.300651→0.299719 ms.
+
+The first implementation's 10–17% transition slowdown was rejected. The accepted build keeps
+rare route planning and frontage detach geometry outside the small movement loop, keeps the
+existing compact lane-change input, and gates the route query with the rebuild-derived lane byte.
+No new per-agent column, allocation or spatial index is introduced.
+
+Build each retained executable with `cargo test --release --lib --no-run`. The exact tick command
+is `METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1`.
+The other commands use `METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$TEST_BINARY" <test> --exact --ignored --nocapture --test-threads=1`, with:
+
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_lane_transitions`
+- `simulation::economy::agents::tick::claims::tests::benchmark_claim_preparation`
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_empty_lane_claim_reset`
+
+Raw process rows, earlier rejected results and build identities remain local under `$ARTIFACTS`.
+Road/locality measurements and the windowed inspection are recorded in [`roads.md`](roads.md#default-junction-lane-use--road-67-slice-b-stages-12).
 
 ## Conservative Overtaking
 

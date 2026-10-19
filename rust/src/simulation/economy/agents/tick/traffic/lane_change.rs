@@ -87,6 +87,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     params: LaneChangeParams,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
+    turn_lane_id: usize,
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
     if params.has_access_plan
@@ -108,6 +109,27 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
             .is_some_and(|bucket| lane_change_gap_clear(bucket, lane_d, params.speed));
         // A pending frontage maneuver takes priority even while its gap is blocked.
         return (available > LANE_CHANGE_MIN_LENGTH_M && gap_clear).then_some(LaneChange {
+            target_lane_id,
+            length,
+            kind: LaneChangeKind::Planned,
+        });
+    }
+    if turn_lane_id != usize::MAX {
+        let final_lane = turn_lane_id;
+        let target_lane_id =
+            lane_change_target_toward(params.lane_id, final_lane, transit_network)?;
+        let target = &transit_network.lane_system.lanes[target_lane_id];
+        let available = source.length.min(target.length) - params.lane_d;
+        let steps = (i16::from(transit_network.lane_system.lanes[final_lane].lane_idx)
+            - i16::from(source.lane_idx))
+        .unsigned_abs();
+        let length = turn_lane_change_length(params.speed, available, steps)?;
+        let gap_clear = lane_buckets
+            .get(target_lane_id)
+            .is_some_and(|bucket| lane_change_gap_clear(bucket, params.lane_d, params.speed));
+        // A blocked turn maneuver never starts a discretionary move instead. If the gap
+        // never opens, the lane-end handler takes a legal onward turn and replans.
+        return (available > length + OVERTAKE_EDGE_BUFFER_M && gap_clear).then_some(LaneChange {
             target_lane_id,
             length,
             kind: LaneChangeKind::Planned,
@@ -167,6 +189,22 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         length,
         kind,
     })
+}
+
+/// Bounds one turn preparation step so the remaining adjacent steps still fit before the
+/// road-end buffer. The existing 18 m minimum is never shortened.
+pub(in crate::simulation::economy::agents::tick) fn turn_lane_change_length(
+    speed: f32,
+    available: f32,
+    steps: u16,
+) -> Option<f32> {
+    if steps == 0 {
+        return None;
+    }
+    let steps = f32::from(steps);
+    let budget = (available - OVERTAKE_EDGE_BUFFER_M) / steps - LANE_CHANGE_FINISH_EPS_M;
+    let length = lane_change_length_for_speed(speed).min(budget);
+    (length >= LANE_CHANGE_MIN_LENGTH_M).then_some(length)
 }
 
 /// Returns the speed-scaled longitudinal lane-change length.

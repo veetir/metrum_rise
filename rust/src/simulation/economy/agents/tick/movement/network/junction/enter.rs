@@ -6,7 +6,7 @@ use super::super::super::super::super::MODE_CAR;
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
-    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
+    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, sibling_lane_reaches_edge,
 };
 use super::super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::super::traffic::{
@@ -143,6 +143,54 @@ pub(super) unsafe fn enter_next_edge_connector(
                 LaneEndAction::Break
             }
             ConnectorEntry::MissingConnection => {
+                // A missed turn must follow this lane's actual geometry. Taking its first
+                // legal onward movement is deterministic; the ordinary destination replan
+                // runs on the outgoing road, with that road as the incoming edge.
+                if *slices.tmode.get(i) == MODE_CAR
+                    && sibling_lane_reaches_edge(lane_id, to_edge, transit_network)
+                    && let Some(onward_edge) = transit_network.lane_system.lanes[lane_id]
+                        .next_lanes
+                        .iter()
+                        .find_map(|&next| {
+                            let lane = &transit_network.lane_system.lanes[next];
+                            let road = if lane.edge_id == usize::MAX {
+                                *lane.next_lanes.first()?
+                            } else {
+                                next
+                            };
+                            let edge = transit_network.lane_system.lanes[road].edge_id;
+                            (edge != to_edge).then_some(edge)
+                        })
+                {
+                    let action = enter_next_edge_connector(
+                        i,
+                        lane_id,
+                        from_edge,
+                        onward_edge,
+                        node_id,
+                        path_idx_before_lane_end,
+                        path_len,
+                        speed,
+                        remaining_dist,
+                        transit_network,
+                        lane_buckets,
+                        lane_claims,
+                        slices,
+                    );
+                    if *s_lane_id.get(i) != lane_id {
+                        s_path.get_mut(i).clear();
+                        *s_path_idx.get_mut(i) = 0;
+                        traffic_log!(
+                            "[MISSED_TURN] agent={} node={} lane={} wanted_edge={} onward_edge={}",
+                            i,
+                            node_id,
+                            lane_id,
+                            to_edge,
+                            onward_edge
+                        );
+                    }
+                    return action;
+                }
                 traffic_log!(
                     "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
                     i,
@@ -203,13 +251,21 @@ pub(super) unsafe fn enter_detach_lane_connector(
         let s_path_idx = &slices.path_idx;
         let s_lane_d = &slices.lane_d;
         let s_speed = &slices.speed;
+        let detach_edge = target_edge_for_lane(detach_lane_id, transit_network);
+        let direct = if direct_vehicle_lane_to_lane(lane_id, detach_lane_id, transit_network) {
+            Some(detach_lane_id)
+        } else if *slices.tmode.get(i) == MODE_CAR {
+            direct_vehicle_lane_to_edge(lane_id, detach_edge, transit_network)
+        } else {
+            None
+        };
         if *slices.tmode.get(i) == MODE_CAR
-            && direct_vehicle_lane_to_lane(lane_id, detach_lane_id, transit_network)
+            && let Some(direct) = direct
         {
             return Some(enter_direct_vehicle_lane(
                 i,
                 lane_id,
-                detach_lane_id,
+                direct,
                 from_edge,
                 target_edge_for_lane(detach_lane_id, transit_network),
                 node_id,
@@ -223,7 +279,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
             ));
         }
 
-        let connector_entry = claim_connector_to_lane(
+        let mut connector_entry = claim_connector_to_lane(
             i,
             lane_id,
             detach_lane_id,
@@ -232,6 +288,20 @@ pub(super) unsafe fn enter_detach_lane_connector(
             lane_buckets,
             lane_claims,
         );
+
+        if matches!(connector_entry, ConnectorEntry::MissingConnection)
+            && *slices.tmode.get(i) == MODE_CAR
+        {
+            connector_entry = claim_connector_to_edge(
+                i,
+                lane_id,
+                detach_edge,
+                connector_choice_seed(i, lane_id, detach_edge, node_id, *s_path_idx.get(i)),
+                transit_network,
+                lane_buckets,
+                lane_claims,
+            );
+        }
 
         match connector_entry {
             ConnectorEntry::Enter(conn_lane_id) => {
@@ -333,7 +403,21 @@ pub(super) unsafe fn enter_detach_lane_connector(
                     *remaining_dist = 0.0;
                     Some(LaneEndAction::Break)
                 } else {
-                    None
+                    Some(enter_next_edge_connector(
+                        i,
+                        lane_id,
+                        from_edge,
+                        detach_edge,
+                        node_id,
+                        path_idx.min(path_len),
+                        path_len,
+                        speed,
+                        remaining_dist,
+                        transit_network,
+                        lane_buckets,
+                        lane_claims,
+                        slices,
+                    ))
                 }
             }
         }

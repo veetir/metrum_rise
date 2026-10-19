@@ -7,6 +7,7 @@ use super::super::{
     TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use super::access::planned_detach_is_legal;
+use super::lane_nav::{junction_approach_lane, junction_approach_node};
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
     lane_change_finished, planned_lane_change_target,
@@ -257,8 +258,46 @@ fn agent_lane_change_target(
         },
         preparation.network,
         preparation.lane_buckets,
+        if preparation
+            .network
+            .lane_system
+            .needs_turn_preparation(agents.current_lane_id[i])
+        {
+            agent_turn_lane_target(agents, i, preparation)
+        } else {
+            usize::MAX
+        },
     )
     .map(|choice| choice.target_lane_id)
+}
+
+// Keep route/access column reads and the rare successor query outside ordinary classification.
+#[inline(never)]
+fn agent_turn_lane_target(
+    agents: &AgentVec,
+    i: usize,
+    preparation: &ClaimPreparation<'_>,
+) -> usize {
+    junction_approach_node(
+        agents.current_lane_id[i],
+        agents.lane_distance[i],
+        preparation.network,
+        preparation.graph,
+    )
+    .and_then(|node| {
+        junction_approach_lane(
+            agents.current_lane_id[i],
+            node,
+            &agents.current_path[i],
+            agents.current_path_index[i],
+            agents.access_flags[i],
+            agents.planned_detach_node[i],
+            agents.planned_detach_lane_id[i] as usize,
+            preparation.network,
+            preparation.graph,
+        )
+    })
+    .unwrap_or(usize::MAX)
 }
 
 fn agent_network_claim_distance(

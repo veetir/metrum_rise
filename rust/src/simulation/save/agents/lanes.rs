@@ -128,12 +128,24 @@ pub(in crate::simulation::save) fn restore_lane_references(
                     let lane = &lanes.lanes[id];
                     lane.node_id == node && lane.next_lanes.first() == Some(&to)
                 })
-            })
-            .ok_or_else(|| {
-                SaveLoadError::custom(format!(
-                    "saved connector {old} has no matching junction route"
-                ))
-            })?;
+            });
+        let Some(id) = id else {
+            if remap
+                .get(&from)
+                .zip(remap.get(&to))
+                .is_some_and(|(&from, &to)| {
+                    retired_default_vehicle_connector(lanes, graph, node, from, to)
+                })
+            {
+                // ROAD-67 rebuilds the open-node defaults on load. A car saved on a retired
+                // connector takes the existing stale-lane repair below; road-lane identities
+                // and edge-level routes remain valid. Whitelists and malformed refs still fail.
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved connector {old} has no matching junction route"
+            )));
+        };
         remap.insert(old, id);
     }
     // Saves written before ROAD-65 can hold lane ids a terrain edit or undo had renumbered:
@@ -220,6 +232,43 @@ pub(in crate::simulation::save) fn restore_lane_references(
         }
     }
     Ok(())
+}
+
+fn retired_default_vehicle_connector(
+    lanes: &LaneSystem,
+    graph: &RegionGraph,
+    node: usize,
+    from: usize,
+    to: usize,
+) -> bool {
+    let source = &lanes.lanes[from];
+    let target = &lanes.lanes[to];
+    if node >= graph.node_count()
+        || source.lane_type != LaneType::Vehicle
+        || target.lane_type != LaneType::Vehicle
+        || source.edge_id == usize::MAX
+        || target.edge_id == usize::MAX
+        || crate::simulation::network::lanes::vehicle_junctions::node_whitelists_vehicle_turns(
+            graph, node,
+        )
+    {
+        return false;
+    }
+    let incoming = graph.edge(source.edge_id);
+    let outgoing = graph.edge(target.edge_id);
+    let terminal = if source.is_fwd {
+        incoming.end_node
+    } else {
+        incoming.start_node
+    };
+    let origin = if target.is_fwd {
+        outgoing.start_node
+    } else {
+        outgoing.end_node
+    };
+    terminal as usize == node
+        && origin as usize == node
+        && (source.edge_id != target.edge_id || graph.open_node_allows_u_turn(node as u32))
 }
 
 /// Checks the shared mode/ownership contract for a snapshot lane.
