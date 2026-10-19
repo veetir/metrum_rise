@@ -164,7 +164,7 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
             continue
         source_shapes.add(key)
         p = f['properties']
-        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], (p.get('bridge',False),p.get('tunnel',False),p.get('layer',0)), bool(m.get('oneway', p['oneway'])))
+        signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], (m.get('median_style', 0), m.get('median_width_m', 0)), (p.get('bridge',False),p.get('tunnel',False),p.get('layer',0)), bool(m.get('oneway', p['oneway'])))
         segments.append({'nodes': ids, 'source': f['id'], 'mapping': m,
                          'signature': signature, 'class': p['road_class']})
     ends = defaultdict(list)
@@ -237,6 +237,7 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
                 strokes.append({'source_ids': sources, '_order_sources': order_sources,
                                 'points_xz': clipped, 'road_class': original['class'],
                                 'kind': m['action'], 'fwd_lanes': m['fwd_lanes'], 'bkw_lanes': m['bkw_lanes'],
+                                'median_style': m.get('median_style', 0), 'median_width_m': m.get('median_width_m', 0),
                                 'snap': True, 'priority': m['priority'], 'length_m': round(size, 3),
                                 'junctions_xz': [p for p in clipped[1:-1] if p in pinned]})
     strokes.sort(key=lambda s: (s['priority'], s['_order_sources'], s['points_xz']))
@@ -279,7 +280,7 @@ def junction_audit(strokes):
 def roadbed_half_width(stroke):
     # build_surface_edge + visual_profile_half_widths_for_edge: 3.5 m lanes,
     # 1.5 m sidewalks (curb included); zero-lane footpaths are 2 m wide.
-    return 1.0 if stroke['kind'] == 'footpath' else (stroke['fwd_lanes']+stroke['bkw_lanes'])*1.75 + 1.5
+    return 1.0 if stroke['kind'] == 'footpath' else (stroke['fwd_lanes']+stroke['bkw_lanes'])*1.75 + 1.5 + stroke.get('median_width_m', 0)/2
 
 
 def radius_audit(strokes):

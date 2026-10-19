@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Windowed, read-only save inspection at fixed north-up orthographic map scales.
+## Windowed, read-only save inspection at fixed map scales and street-level views.
 ## Each image has a matching source-centreline PNG from tools.map_import.render.
 extends SceneTree
 
@@ -47,6 +47,18 @@ func _run() -> void:
 		camera.position = p
 		camera.rotation = Vector3(-PI/2.0, 0.0, 0.0)
 		camera.size = view["height_m"]
+		if view.has("eye_xz"):
+			var simulation: Node = main.get_node("SimulationNode")
+			var eye: Array = view["eye_xz"]
+			var target: Array = view.get("target_xz", [view["x"], view["z"]])
+			var eye_ground: float = simulation.get_world_surface_height(Vector2(eye[0], eye[1]))
+			var target_ground: float = simulation.get_world_surface_height(Vector2(target[0], target[1]))
+			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+			camera.fov = 65.0
+			camera.position = Vector3(eye[0], eye_ground+float(view.get("eye_height_m", 3.0)), eye[1])
+			camera.look_at(Vector3(target[0], target_ground+1.0, target[1]))
+		else:
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 		var stable := 0
 		var begin := Time.get_ticks_msec()
 		while stable < 40 and Time.get_ticks_msec()-begin < 120000:

@@ -274,11 +274,15 @@ func _repair_network(simulation: Node) -> void:
 		var network := Network.inspect_network(simulation)
 		if int(network["components"]) <= 1:
 			break
-		var joined := {}
+		var components := {}
+		for component in network["component_nodes"]:
+			components[component] = component
 		var successes := 0
 		for candidate in network["candidates"]:
 			var key := JSON.stringify(candidate["points_xz"])
-			if tried.has(key) or joined.has(candidate["from_component"]) or joined.has(candidate["to_component"]):
+			var from_root: int = Network._root(components, int(candidate["from_component"]))
+			var to_root: int = Network._root(components, int(candidate["to_component"]))
+			if tried.has(key) or from_root == to_root:
 				continue
 			tried[key] = true
 			var record := {"id": "repair/%d/%d" % [sweep, _results["repairs"].size()], "attempts": [], "pieces": [], "failed_pieces": [], "candidate": candidate}
@@ -290,9 +294,11 @@ func _repair_network(simulation: Node) -> void:
 			if _fatal:
 				return
 			if reason.is_empty():
-				joined[candidate["from_component"]] = true
-				joined[candidate["to_component"]] = true
+				# Later validated links can join other branches to this same root.
+				components[maxi(from_root, to_root)] = mini(from_root, to_root)
 				successes += 1
+		_write_results()
+		_checkpoint(simulation)
 		if successes == 0:
 			break
 
@@ -320,6 +326,7 @@ func _retry_deferred(simulation: Node) -> void:
 			if _fatal:
 				return
 		_write_results()
+		_checkpoint(simulation)
 		if after == before:
 			break
 
@@ -392,7 +399,7 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 		MetrumDebug.log("road", "map_import_attempt id=%s strategy=%s points=%d lanes=%d/%d" % [stroke["id"], strategy, xyz.size(), stroke["fwd_lanes"], stroke["bkw_lanes"]])
 		outcome = await _replay(simulation, attempt)
 	var reason := String(outcome.get("reason", ""))
-	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
+	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "median_style": stroke.get("median_style", 0), "median_width_m": stroke.get("median_width_m", 0.0), "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
 	if reason == "replay_timeout" or reason == "validation_unavailable":
 		_fatal = true
 		_fail("Unknown road completion for %s: %s" % [stroke["id"], reason])
@@ -402,6 +409,9 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	var points := PackedVector3Array()
 	for p in attempt["points"]:
 		points.append(Vector3(p[0], p[1], p[2]))
+	var median_reason: String = simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width_m", 0.0)))
+	if not median_reason.is_empty():
+		return {"by": "importer", "reason": median_reason}
 	var deadline := Time.get_ticks_msec() + 600000
 	var validation: Dictionary = {}
 	while Time.get_ticks_msec() < deadline:

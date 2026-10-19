@@ -105,6 +105,9 @@ def prepare(args):
     roads = deepcopy(roads)
     roundabouts = collapse_roundabouts(features, roads, decisions)
     roads, conflation = conflate(roads, decisions)
+    from .medians import simplify_prisma
+    prisma = tuple(round(v, 3) for v in transform.world(*tm35fin(62.887133, 27.629350)))
+    roads, conflation['prisma'] = simplify_prisma(roads, prisma, decisions)
     conflation['roundabouts'] = roundabouts
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])

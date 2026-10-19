@@ -6,7 +6,7 @@ Public service ways become ordinary streets; driveway, parking and restricted
 motor access are excluded explicitly. Footpaths and grade1 tracks are disabled
 by default. Grade separation is retained for the player elevation path.
 
-Current road tool supports lane counts, not named road types or source speed
+Current road tool supports lane counts and central medians, not named road types or source speed
 limits. Minor streets default to 1+1, including untagged service; only a surveyed
 one-way overrides this policy. Divided named arterials and motorways become one
 centreline in conflate.py, retaining the surveyed counts of both carriageways.
@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 # capability table, so every lossy mapping decision is reproducible and tunable.
 POLICY = {'parallel_distance_m': 35.0, 'parallel_angle_deg': 30.0,
           'parallel_fraction': 0.60, 'sample_m': 5.0,
-          'carriageway_distance_m': 24.0, 'endpoint_merge_m': 4.0,
+          'carriageway_distance_m': 45.0, 'endpoint_merge_m': 4.0,
           'endpoint_snap_m': 12.0, 'dead_end_path_m': 100.0,
           'standalone_path_min_m': 65.0,
           'junction_slide_m': [-12.0, -8.0, 8.0, 12.0], 'junction_clearance_m': 12.0,

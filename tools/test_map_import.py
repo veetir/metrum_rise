@@ -379,6 +379,91 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual((result[0][1]['fwd_lanes'], result[0][1]['bkw_lanes']), (2, 3))
 
+    def test_pair_directional_tags_and_reverse_oneway(self):
+        fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1, lanes_forward=2),
+              feature('b', [(0, 12), (100, 12)], road_class='primary', name='Main', oneway=-1, lanes_backward=3)]
+        result, _ = conflate(list(map(road, fs)), {})
+        self.assertEqual(len(result), 1)
+        self.assertEqual((result[0][1]['fwd_lanes'], result[0][1]['bkw_lanes']), (2, 3))
+        self.assertEqual(result[0][1]['median_width_m'], 3.25)
+
+    def test_median_width_styles_and_clamps(self):
+        from tools.map_import.medians import median_section
+        for separation, lanes, style, width in [(4, (1, 1), 1, .5),
+                                                (5, (1, 1), 3, 1.5),
+                                                (12, (1, 1), 2, 8.5),
+                                                (40, (2, 2), 2, 12),
+                                                (1, (1, 1), 1, .5)]:
+            self.assertEqual(median_section(separation, *lanes),
+                             {'median_style': style, 'median_width_m': width})
+        self.assertEqual(median_section(10, 1, 1, paved=True)['median_width_m'], 3)
+
+    def test_explicit_median_surface_context_selects_paving(self):
+        fs = [feature('a', [(0, 0), (100, 0)], name='Main', oneway=1, median_surface='paving_stones'),
+              feature('b', [(100, 10), (0, 10)], name='Main', oneway=1)]
+        result, _ = conflate(list(map(road, fs)), {})
+        self.assertEqual(result[0][1]['median_style'], 3)
+        self.assertEqual(result[0][1]['median_width_m'], 3)
+
+    def test_tertiary_pairs_merge_even_without_survey_override(self):
+        fs = [feature('a', [(0, 0), (100, 0)], road_class='tertiary', name='Main', oneway=1, lanes=1),
+              feature('b', [(100, 9), (0, 9)], road_class='tertiary', name='Main', oneway=1, lanes=1)]
+        result, _ = conflate(list(map(road, fs)), {})
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1]['median_width_m'], 5.5)
+        strokes, _ = build_strokes(result, (-200, -200, 200, 200))
+        self.assertEqual(strokes[0]['median_style'], 2)
+        self.assertEqual(strokes[0]['median_width_m'], 5.5)
+
+    def test_chain_pockets_and_layer_separation(self):
+        fs = [feature('a', [(0, 0), (50, 0)], ['a0', 'a1'], road_class='primary', name='Main', oneway=1, lanes=2),
+              feature('a2', [(50, 0), (100, 0)], ['a1', 'a2'], road_class='primary', name='Main', oneway=1, lanes=3, through_lanes=2),
+              feature('b', [(100, 12), (0, 12)], road_class='primary', name='Main', oneway=1, lanes=2)]
+        result, _ = conflate(list(map(road, fs)), {})
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all((m['fwd_lanes'], m['bkw_lanes']) == (2, 2) for _, m in result))
+        fs[-1]['properties']['layer'] = 1
+        result, audit = conflate(list(map(road, fs)), {})
+        self.assertEqual(len(result), 3)
+        self.assertTrue(all(a['status'] == 'fallback' for a in audit['carriageways']))
+
+    def test_convergence_preserves_shared_tip_and_side_street(self):
+        fs = [feature('a', [(0, 0), (25, -5), (100, -5), (125, 0)], ['tip0', 'a1', 'a2', 'tip1'], road_class='primary', name='Main', oneway=1),
+              feature('b', [(125, 0), (100, 5), (25, 5), (0, 0)], ['tip1', 'b1', 'b2', 'tip0'], road_class='primary', name='Main', oneway=1),
+              feature('side', [(25, 5), (25, 100)], ['b2', 's'])]
+        result, _ = conflate(list(map(road, fs)), {})
+        median = next(f for f, m in result if m.get('median_style'))
+        self.assertEqual(median['points'][0], (0, 0))
+        self.assertEqual(median['points'][-1], (125, 0))
+        side = next(f for f, _ in result if f['id'] == 'side')
+        self.assertAlmostEqual(side['points'][0][1], 0, delta=.6)
+
+    def test_bridge_provenance_does_not_elevate_whole_corridor(self):
+        fs = [feature('a', [(0, 0), (100, 0)], ['a0', 'a1'], road_class='primary', name='Main', oneway=1, lanes=2),
+              feature('a2', [(100, 0), (120, 0)], ['a1', 'a2'], road_class='primary', name='Main', oneway=1, lanes=2, bridge=True, layer=1),
+              feature('b', [(100, 12), (0, 12)], ['b1', 'b0'], road_class='primary', name='Main', oneway=1, lanes=2),
+              feature('b2', [(120, 12), (100, 12)], ['b2', 'b1'], road_class='primary', name='Main', oneway=1, lanes=2, bridge=True, layer=1)]
+        result, _ = conflate(list(map(road, fs)), {})
+        ground = next(f for f, _ in result if f['id'] == 'a')
+        self.assertEqual(ground['source_ids'], ['a', 'b'])
+        from tools.map_import.curves import prepare_curves
+        strokes, _ = build_strokes(result, (-200, -200, 200, 200))
+        prepare_curves(strokes, fs)
+        self.assertEqual(sum(s['bridge'] for s in strokes), 1)
+
+    def test_prisma_divided_arms_share_a_straight_throat(self):
+        from tools.map_import.medians import simplify_prisma
+        fs = [feature('main', [(-30, -100), (-14, -50), (2, -10), (8, 20), (20, 60), (35, 100)], name='Savilahdentie'),
+              feature('west', [(-150, 0), (-50, 0), (-10, 2)], name='Sarastuskaari')]
+        result, audit = simplify_prisma(list(map(road, fs)), (0, 0), {})
+        main, west = [f for f, _ in result]
+        self.assertIn((0, 0), main['points'])
+        self.assertEqual(west['points'][-1], (0, 0))
+        self.assertIn('junction/prisma', main['node_ids'])
+        axis = audit[-1]['axis_xz']
+        for x, z in main['points'][1:-1]:
+            self.assertAlmostEqual(x*axis[1]-z*axis[0], 0, delta=.001)
+
     def test_near_miss_inserts_shared_junction(self):
         roads = [road(feature('a', [(0, 0), (100, 0)])), road(feature('b', [(50, 5), (50, 80)]))]
         audit = snap_endpoints(roads)
@@ -477,6 +562,34 @@ class ZoningReportTest(unittest.TestCase):
         applied = build_report(features, decisions, plan, preparation, outcome)
         self.assertEqual(applied['totals']['road']['refused_by_reason'], {'junction_arm_angle': 1})
         self.assertEqual(next(f['status'] for f in applied['features'] if f['id'] == 'road'), 'refused')
+
+    def test_street_report_keeps_missing_names_and_final_refusals(self):
+        from tools.map_import.road_report import analyse
+        missing = feature('lost', [(0, 10), (50, 10)], name='Lost Street')
+        outside = feature('outside', [(1000, 0), (1100, 0)], name='Outside')
+        stroke = {'id': 's', 'road_class': 'primary', 'kind': 'road', 'names': ['Main'],
+                  'length_m': 100, 'source_ids': ['main']}
+        outcome = {'roads': [{'id': 's', 'status': 'partial', 'accepted_length_m': 80,
+                             'attempts': [{'reason': 'road_tight_curve'}, {'reason': ''}],
+                             'failed_pieces': [{'reason': 'road_tight_curve'}]}], 'car_components': 1}
+        result = analyse({'strokes': [stroke], 'target_box_xz': [-100, -100, 100, 100]}, outcome, [missing, outside])
+        self.assertEqual([(r['street'], r['status']) for r in result['named_streets']],
+                         [('Lost Street', 'missing'), ('Main', 'partly placed')])
+        self.assertEqual(result['remaining_refusals'], {'road_tight_curve': 1})
+        self.assertEqual(result['by_class']['primary']['placed_m'], 80)
+
+    def test_saved_network_counts_canonical_ids_and_medians(self):
+        from tools.map_import.road_report import save_stats
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'save.sqlite'
+            with sqlite3.connect(path) as conn:
+                conn.executescript('CREATE TABLE network_edges(start_node,end_node,physical_length,fwd_lanes,bkw_lanes,median_style);'
+                                   'INSERT INTO network_edges VALUES(0,1,100,1,1,2),(1,2,200,1,1,0),(4,5,80,0,0,0);'
+                                   'CREATE TABLE time_state(speed_multiplier);INSERT INTO time_state VALUES(0);')
+            stats = save_stats(path)
+            self.assertEqual((stats['car_components'], stats['car_edges'], stats['car_nodes']), (1, 2, 3))
+            self.assertAlmostEqual(stats['car_km'], .3)
+            self.assertEqual(stats['median_styles'][2]['edges'], 1)
 
     def test_outcome_hash_duplicate_and_completeness_checks(self):
         plan = {'strokes': [{'id': 's'}], 'zoning': []}

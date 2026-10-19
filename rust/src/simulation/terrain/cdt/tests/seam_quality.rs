@@ -176,3 +176,29 @@ fn seam_hardening_keeps_noncollinear_submillimetre_road_corners() {
     );
     assert_eq!(quality.merged_subbudget_seam_edges, 0);
 }
+
+#[test]
+fn cdt_seam_hardening_preserves_a_mergeable_minimum_triangle() {
+    let points = vec![
+        TerrainCdtVertex::new(0.0, 0.12, 0.0),
+        TerrainCdtVertex::new(0.02, 0.12, 0.0),
+        TerrainCdtVertex::new(2.0, 0.12, 0.02),
+    ];
+    let source = test_span_boundary_source(7, TerrainCdtRoadBandKind::Sidewalk, 5);
+    let edges = (0..points.len())
+        .map(|i| TerrainCdtRoadLoopSourceEdge {
+            start: points[i],
+            end: points[(i + 1) % points.len()],
+            source,
+        })
+        .collect::<Vec<_>>();
+    let quality = harden_terrain_cdt_road_loop_seams(
+        points.clone(),
+        &edges,
+        TerrainCdtPatch::new(-1.0, -1.0, 3.0, 1.0, [0.0; 4]),
+    );
+    assert_eq!(quality.points, points);
+    assert_eq!(quality.merged_subbudget_seam_edges, 0);
+    assert_eq!(quality.edge_sources, vec![Some(source); 3]);
+    assert_eq!(quality.accepted_seam_edges, 3);
+}
