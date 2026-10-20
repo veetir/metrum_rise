@@ -53,6 +53,7 @@ impl LaneSystem {
             &mut self.node_lanes,
             &mut self.crosswalks,
         );
+        self.rebuild_node_control(graph, node_id);
         // Connectors are pushed one at a time; keep only the ids.
         if let Some(ids) = self.node_lanes.get_mut(&node_id) {
             ids.shrink_to_fit();
@@ -288,6 +289,9 @@ impl LaneSystem {
                     for lid in old_ids {
                         if let Some(lane) = self.lanes.get_mut(lid) {
                             self.crosswalks.remove(&lid);
+                            if let Some(control) = self.controlled.get_mut(lid) {
+                                *control = None;
+                            }
                             lane.geometry = Vec::new();
                             lane.cum_dist = Vec::new();
                             lane.next_lanes.clear();

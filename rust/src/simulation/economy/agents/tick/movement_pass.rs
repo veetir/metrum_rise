@@ -34,7 +34,8 @@ impl AgentSystem {
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;
-        let lane_claims = LaneClaimContext::new(&self.lane_claim_owner, &self.movement_claim_modes);
+        let lane_claims = LaneClaimContext::new(&self.lane_claim_owner, &self.movement_claim_modes)
+            .with_junctions(&self.junction_admission, transit_network);
         let sim_time = self.sim_time;
         let economy_tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
@@ -44,9 +45,11 @@ impl AgentSystem {
         if n >= PAR_THRESHOLD {
             self.movement_query_shards
                 .resize_with(rayon::current_num_threads(), Default::default);
-            self.movement_query_shards.par_iter_mut().for_each(|scratch| {
-                scratch.prepare_routes(transit_network, graph);
-            });
+            self.movement_query_shards
+                .par_iter_mut()
+                .for_each(|scratch| {
+                    scratch.prepare_routes(transit_network, graph);
+                });
         }
         self.movement_serial_query
             .prepare_routes(transit_network, graph);

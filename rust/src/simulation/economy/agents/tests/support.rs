@@ -525,10 +525,18 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
 
     let mut saw_connector = false;
     let mut connector_pairs = 0;
-    for tick in 0..200 {
+    // Right-of-way admission queues conflicting movements. Keep checking separation until
+    // every finite request drains, with a deterministic bound that also detects deadlock.
+    for tick in 0..5000 {
         agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
         saw_connector |= agents.transit.contains(&TRANSIT_INTERSECTION);
         connector_pairs += assert_vehicle_lane_spacing(&agents, &network, tick, label);
+        if expected_exits
+            .iter()
+            .all(|&(agent, edge)| agents.current_edge[agent] == edge)
+        {
+            break;
+        }
     }
     assert!(
         saw_connector,

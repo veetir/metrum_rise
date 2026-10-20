@@ -28,6 +28,10 @@ const CLAIM_CLASSIFICATION_CHUNK: usize = 4_096;
 pub(in crate::simulation::economy::agents::tick) struct LaneClaimContext<'a> {
     owners: &'a [AtomicUsize],
     modes: &'a [MovementClaimMode],
+    junctions: Option<(
+        &'a super::junction_control::JunctionAdmission,
+        &'a TransitNetwork,
+    )>,
 }
 
 impl<'a> LaneClaimContext<'a> {
@@ -36,7 +40,42 @@ impl<'a> LaneClaimContext<'a> {
         owners: &'a [AtomicUsize],
         modes: &'a [MovementClaimMode],
     ) -> Self {
-        Self { owners, modes }
+        Self {
+            owners,
+            modes,
+            junctions: None,
+        }
+    }
+
+    /// Attaches immutable right-of-way decisions to the existing lane reservations.
+    pub(super) fn with_junctions(
+        mut self,
+        admission: &'a super::junction_control::JunctionAdmission,
+        network: &'a TransitNetwork,
+    ) -> Self {
+        self.junctions = Some((admission, network));
+        self
+    }
+
+    /// Also excludes conflicting connectors already claimed during ordered handoffs.
+    pub(super) fn connector_allowed(&self, agent: usize, connector: usize) -> bool {
+        let Some((admission, network)) = self.junctions else {
+            return true;
+        };
+        if !admission.allows(agent, connector, network) {
+            return false;
+        }
+        network
+            .lane_system
+            .controlled_movement(connector)
+            .is_none_or(|control| {
+                control.conflicts.iter().all(|&other| {
+                    self.owners.get(other).is_none_or(|owner| {
+                        let owner = owner.load(Ordering::Relaxed);
+                        owner == usize::MAX || owner == agent
+                    })
+                })
+            })
     }
 
     /// Returns whether an agent may acquire an unreserved lane during movement.

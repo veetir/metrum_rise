@@ -23,6 +23,141 @@ Implementation lives mainly in:
 
 ## Current Scope
 
+### Automatic vehicle junction priority — TRAFFIC-06 stage 1a
+
+Stage 1a adds automatic vehicle right of way to the existing connector reservations. It is a staged
+implementation: zebra priority, fixed-time signals, authored control/major-road selection, all-way stop,
+control previews/undo, importer setters and explicit roundabout entry priority are still pending.
+The signalised Prisma reference is **not** represented by this stage's priority capture.
+
+At a mixed-hierarchy junction the higher road has priority. Hierarchy is the ordered tuple
+(design speed in mm/s, original through-lane count, original carriageway width in mm).
+`EdgeClass` describes structures (surface/bridge/tunnel), not an OSM road class, so it does not
+set hierarchy. Turn pockets use their original cross-section and cannot promote a side road.
+Equal-hierarchy approaches use the Finnish right-hand rule; a left turn yields to conflicting
+oncoming straight/right movements. Where trajectories overlap without a statutory ordering,
+connector order breaks the tie. Default NET-07 U-turn legality is unchanged.
+
+Lesser approaches yield. A road at most 30 km/h joining a major road at least 60 km/h gets a
+stop control: its leading vehicle must be within 5 cm of its lane mouth and below 0.1 m/s in
+a completed occupancy snapshot before it can enter. This requires a full stopped tick, not
+an arbitrary dwell timer. B1/B5/B6 signing is derived from the identical policy through ROAD-60.
+These are explicit game defaults, not inferred import metadata.
+
+Lane rebuilding compiles local swept-trajectory conflicts and directed yielding relations.
+A vehicle already inside a connector clears it before a conflicting car enters. Waiting priority
+persists while that crossing is occupied, so another minor-road arrival cannot follow the
+crossing car ahead of a waiting major approach. A blocked outgoing road does not reserve
+precedence for a movement that cannot leave the junction.
+Admission also checks the outgoing road's entry slot to
+avoid deliberately entering a blocked exit. It reserves the existing connector lane and
+checks conflicting lanes' existing claim owners in the stable serial handoff phase.
+
+Before speed updates, immutable lane buckets supply leading approach requests. The lookahead
+covers braking distance, a 20 m approach zone and the current tick's travel.
+Strongly connected components in the active yielding graph identify a
+closed right-hand waiting cycle; its lowest agent index proceeds. A minor movement outside
+the cycle cannot acquire priority by the tie-break. Per-agent speed updates and ordinary
+movement remain parallel, and IDM brakes against denied admission at the lane mouth.
+
+No new spatial index or per-agent state is introduced. The admission prepass visits only nodes
+reached from occupied lane buckets. For D occupied lanes, C local movement candidates, K local
+conflict/yield links and B local successors, runtime is O(D + C·B + K); Tarjan is O(C + K).
+Ordered arbitration reuses one stack and sparse lane-ID scratch. Buffers grow before traffic
+visitation when topology grows; steady-state arbitration and agent loops allocate nothing.
+Rebuild geometry work is O(C²·P²) per affected junction (P sampled points per trajectory),
+with no remote junction rebuild or full-city spatial scan. Full/incremental rebuild and clear
+own the derived cache lifecycle.
+
+**Zebra boundary found during implementation.** Vehicle connectors start at the asphalt
+junction throat, but zebra centres are `CROSSWALK_INSET` (4 m) farther out on the physical
+road lanes. A connector-only pedestrian conflict check misses these crossings. Stage 1a
+therefore leaves pedestrian admission unchanged; it does not claim zebra priority. The next
+stage must put the stop point before the stripes and reserve the entire incoming/outgoing
+crossing portion, retain the existing turn shape, support degree-two direct continuations,
+and preserve full/incremental rebuild equivalence and agent/save references. Composed walk
+routes must obey the same crossing authority. Do not patch this with a late connector gate.
+
+Save format remains 91: all policy and scratch are derived. Loading an old save deliberately
+changes junction behavior but leaves road/lane geometry and legal routes unchanged. No player
+save is rewritten; captures use fresh blank worlds.
+
+#### Stage 1a acceptance — 2026-10-20/21
+
+Baseline is ROAD-68 checkpoint `7990a6d6`; candidate is the vehicle-priority working tree.
+Apple M2 Pro, Rust 1.98.1, macOS SDK 26.5 and Godot 4.7.2 (gdext 4.5 API).
+Preserved unprofiled release artifacts and individual logs live in `$ARTIFACTS`.
+
+| Artifact | Baseline SHA-256 | Candidate SHA-256 |
+| --- | --- | --- |
+| Library test executable | `d41b15c620baec9088fbaf87ce1a08f3ecca323c29b622b90cb4181246cda452` | `4972ab34cbe199b60cafed4a17f0c8235af3041cce1298cb65ba62d15b865195` |
+| GDExtension library | `fd3a90faa20e306e0e19bca47ac34376676f4a5efe8af0e7255d6037aed3d505` | `a52a5eb774b463a7456b502821c3fa56684f373d8b3c0df3256ba6f0c8af6338` |
+
+Fresh correctness commands, from the repository root:
+
+```bash
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+cargo test --manifest-path rust/Cargo.toml --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+"$TEST_BINARY" junction_control --nocapture --test-threads=1
+"$TEST_BINARY" automatic_priority_yield_and_stop_models_follow_approach_policy --nocapture --test-threads=1
+"$TEST_BINARY" test_junction_gate_prevents_stacking --nocapture --test-threads=1
+```
+
+The full debug library suite passed **2,611 tests, zero failures, 148 ignored**; all-target
+Clippy passed without warnings. Ten new admission tests cover hierarchy independent of agent
+storage order, equal-road right-hand yielding, oncoming left turns, cycle draining, priority
+retained during an occupied crossing, full stops, occupied/conflicting claims, incremental
+cache retirement and pocket hierarchy. The sign test
+checks B1/B5/B6 model policy. Existing junction-spacing regressions still check every tick and
+now allow up to 500 simulated seconds for the newly yielding queues to drain, stopping early
+on success.
+A fan-connector regression exposed and fixed braking against a denied representative instead
+of an admissible shorter routing candidate.
+
+Each bridge ran individually against the final native release library in a separate isolated
+Godot test profile; no player mods/saves were loaded:
+
+```bash
+for test in road_junction_control_test road_junction_preview_test road_preview_stream_test \
+    road_cross_section_test road_turn_lanes_test road_pockets_test road_pockets_legacy_test \
+    road_trajectory_test road_grade_separation_test junction_debug_overlay_test; do
+    METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+        godot --headless --path "$ARTIFACTS/profile/project" --script "res://tests/$test.gd"
+done
+```
+
+All ten passed. The legacy bridge retains all four roadbed golden hashes from `6ec0b858`;
+paint and sign transforms are intentionally outside those geometry hashes. The new bridge
+builds a divided 2+2 major road, 1+1 minor road and median/kerb pockets through Rust tools,
+checks sign poses across the bridge, and runs a car through its pocket route.
+
+PERF-06: **15 alternating baseline/candidate process pairs**, eight Rayon workers,
+`METRUM_DEBUG=0`, no concurrent build/capture. Each executable ran:
+
+```bash
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+    simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+    --exact --ignored --nocapture --test-threads=1
+```
+
+| Workload | Agents | Baseline median ms | Candidate median ms | Paired median delta, 95% interval |
+| --- | ---: | ---: | ---: | --- |
+| Network | 10,000 | 0.519125 | 0.500292 | -4.93% [-10.99%, +4.37%] |
+| Network | 30,000 | 0.888083 | 0.906708 | +0.81% [-7.30%, +9.70%] |
+| Access egress | 10,000 | 0.652667 | 0.647625 | +1.80% [-1.64%, +3.08%] |
+| Access egress | 30,000 | 1.543791 | 1.569250 | +1.04% [-1.45%, +4.98%] |
+| Access ingress | 10,000 | 0.349916 | 0.344125 | -4.22% [-12.24%, +12.18%] |
+| Access ingress | 30,000 | 0.511083 | 0.585083 | -7.05% [-10.94%, +28.77%] |
+
+All work counters match, including linear agent counts and 16 fixed frontage lanes. Every
+interquartile range overlaps and every paired interval includes zero: no regression beyond
+noise is detected on the existing PERF-06 fixtures. Paired intervals use 10,000 bootstrap
+resamples (seed 606); the median of pair ratios differs from the ratio of independent medians.
+This establishes neither a speedup nor saturated signal/junction throughput. Road rebuild,
+locality and visual evidence belong to the [ROAD-60 acceptance](roads.md#road-signs-road-60).
+
 ### Shared lane occupancy contract (TRAFFIC-02)
 
 All live lane acquisitions use `agents/lane_state.rs`: building egress and ingress rollback,
@@ -951,8 +1086,8 @@ The measured ignored tests are
 - normal road bends do not yet use curvature speed limits
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
-- there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
-  (`TRAFFIC-06` plans junction priority, yield and stop control, and roundabout entry)
+- automatic vehicle priority/yield/stop control is implemented in TRAFFIC-06 stage 1a; zebra priority, fixed-time lights,
+  authored controls, importer hooks and explicit roundabout entry priority remain pending
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild

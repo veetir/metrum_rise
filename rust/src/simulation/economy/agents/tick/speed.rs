@@ -8,9 +8,8 @@ use super::runtime::dispatch_agents;
 use super::slices::RawSlice;
 use super::traffic::{
     LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_MIN_SPEED_GAIN_MS, braking_speed_for_distance,
-    connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear,
-    lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
-    planned_lane_change_target,
+    connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear, limit_speed_change,
+    live_lane_bucket_transit, overtake_follow_gap, planned_lane_change_target,
 };
 use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B};
 use crate::simulation::economy::agents::data::AgentSystem;
@@ -52,6 +51,7 @@ impl AgentSystem {
             let s_overtake_cooldown_idm = RawSlice::new(&mut self.agents.overtake_cooldown_s);
             let s_speed_idm = RawSlice::new(&mut self.agents.speed);
             let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
+            let admission = &self.junction_admission;
 
             dispatch_agents(n, |i| unsafe {
                 let cur_spd = *s_speed_idm.get(i);
@@ -107,18 +107,12 @@ impl AgentSystem {
                                 transit_network,
                                 graph,
                             ) {
-                                let turn_target = transit_network
-                                    .lane_system
-                                    .lanes
-                                    .get(connector_id)
-                                    .map(|connector| {
-                                        if lane_entry_slot_clear(connector_id, buckets) {
-                                            connector_turn_speed(connector)
-                                        } else {
-                                            0.0
-                                        }
-                                    })
-                                    .unwrap_or(CAR_JUNCTION_SPEED_MS);
+                                let turn_target = admission.approach_turn_speed(
+                                    i,
+                                    connector_id,
+                                    transit_network,
+                                    buckets,
+                                );
                                 target_speed = target_speed
                                     .min(braking_speed_for_distance(turn_target, dist_to_end));
                             }

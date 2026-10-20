@@ -354,7 +354,8 @@ gate them by camera height, or make them a graphics setting is open.
 
 Finnish road signs stand beside the roads, placed in Rust with the road chunks and drawn by
 `godot/scripts/renderers/road_signs.gd` as one MultiMesh per sign model and chunk. They are
-cosmetic: traffic ignores them.
+cosmetic for speeds/warnings; B1/B5/B6 reflect the automatic junction control described in
+[`traffic.md`](traffic.md#automatic-vehicle-junction-priority--traffic-06-stage-1a).
 
 - **Pedestrian crossings (E1-1, E1-2).** One sign per approach at every zebra, taken from its
   `CrosswalkMarking` (the crossing authority), on the right-hand side facing approaching traffic,
@@ -390,13 +391,17 @@ cosmetic: traffic ignores them.
   They make the game honest about the roads placement still accepts: the hill in
   `traffic-signs.sqlite` gets 16 % and 18 % signs (`warning-sign-steep-after.png`).
 - Signs facing the same way on the same side keep 12 m apart along the street, in priority
-  crossing, speed, warning; a lower sign moves on, away from the junction, or is left out.
+  control, crossing, speed, warning; a lower sign moves on, away from the junction, or is left out.
 - Poles stand 0.5 m behind the kerb face on the sidewalk (measured from the face; it was
   measured from the sidewalk's inner edge, which put poles in the walking line), or 0.75 m beyond the kerb or shoulder on the
   terrain where there is no sidewalk, and keep 2 m from street-light poles by sliding along the
   road away from the junction; a sign with no room on its edge is left out.
-- Priority, yield and stop signs (B1, B5, B6) are modelled and shipped but not placed: junction
-  priority does not exist yet.
+- **Priority, yield and stop (B1/B5/B6, TRAFFIC-06 stage 1a).** Automatic approach hierarchy
+  selects these through the same Rust policy that admits traffic. They use the existing
+  pole models and per-chunk batches, before crossing/speed/warning spacing passes. The
+  station starts 16 m back from the compiled mouth and pole avoidance slides away from
+  the junction; signs without room on their road remain omitted by the existing placement
+  contract. No authored control tool or signal head is included in this stage.
 - Models: `godot/assets/models/road_signs/`, faces rasterized from public-domain Finnish sign
   SVGs (`credits.txt`), geometry CC BY 4.0; metres, pole base at the origin, printed face +Z. Commons has
   steep-hill faces only up to 13 %, so 14–18 % are composed from numeral paths of the real signs.
@@ -407,6 +412,95 @@ per chunk rebuild, ordered by a total pose key, so the same network gives identi
 42.7–43.5 µs a rebuild with the warning and spacing passes, flat from 1 to 1024 occupied chunks;
 it ran beside other build jobs on the M2 Pro, so treat it as a scaling check, not an exact cost.
 In game (`traffic-signs.sqlite`) the warning signs face the traffic they warn, on its right.
+
+### TRAFFIC-06 stage 1a road acceptance — 2026-10-21
+
+Vehicle policy, correctness and PERF-06 acceptance are recorded in
+[`traffic.md`](traffic.md#stage-1a-acceptance--2026-10-2021). Baseline is ROAD-68 checkpoint
+`7990a6d6`; candidate is the stage 1a working tree. Matched unprofiled release runs use four
+Rayon workers, `METRUM_DEBUG=0`, with no concurrent build/windowed capture. Setup is excluded
+from repeated locality timings. Release test identities are in the traffic acceptance;
+road-chunk benchmark SHA-256 is baseline
+`035943ba1441b23f8540ccb9a4d9b552e499139603f7b1344696911c39f622df`, candidate
+`11969fc6ed6f9d96fad53d05dd614f689869ad9399d8e6acb504dd1ba332501a`.
+
+Commands, run once per preserved baseline/candidate executable:
+
+```bash
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" \
+    simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling \
+    --exact --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" \
+    nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling \
+    --exact --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$BENCH_BINARY" --bench --noplot
+```
+
+Incremental lane rebuild keeps three affected edges and local product hash
+`a7b3e139667176b5` at every tier on both builds (21 samples):
+
+| Background edges | Baseline median ms | Candidate median ms | Candidate p95 ms |
+| ---: | ---: | ---: | ---: |
+| 0 | 0.016875 | 0.025292 | 0.040125 |
+| 1,000 | 0.016666 | 0.022750 | 0.024334 |
+| 10,000 | 0.015084 | 0.021417 | 0.023292 |
+| 100,000 | 0.015459 | 0.021167 | 0.026750 |
+
+The local control compilation adds roughly 6–8 µs without a background-size trend. One-time
+100,000-edge setup is 159.02→190.34 ms; it is separate from the repeated local operation.
+
+Populated pocket planning holds the edited neighborhood fixed, with identical local products
+at all tiers (31 samples each):
+
+| Remote buildings | Agents | Parcels | Remote roads | Prepare p50 ms, before→after | Preview p50 ms, before→after |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 0 | 24 | 4 | 0 | 0.0420→0.0427 | 17.861→17.987 |
+| 1,000 | 6,024 | 1,004 | 4 | 0.0428→0.0438 | 18.361→18.661 |
+| 10,000 | 60,024 | 10,004 | 40 | 0.0445→0.0446 | 18.233→18.482 |
+| 100,000 | 600,024 | 100,004 | 391 | 0.0424→0.0436 | 18.431→18.465 |
+
+Planning remains local as background buildings, agents, parcels and roads increase.
+Criterion chunk medians (20 samples, 1 s warmup, 3 s measurement) are:
+
+| Operation, ms before→after | 1 occupied chunk | 64 | 256 | 1,024 |
+| --- | --- | --- | --- | --- |
+| Chunk emit only | 0.045138→0.046128 | 0.045437→0.046523 | 0.045818→0.046604 | 0.045606→0.046856 |
+| Dirty compile + emit diagnostic | 0.081964→0.083371 | 0.085740→0.086554 | 0.094807→0.095365 | 0.159168→0.159238 |
+| Full network emit | 0.042424→0.043423 | 2.365866→2.415824 | 9.546468→9.746803 | 40.340844→41.144333 |
+
+The additional sign pass costs about 0.8–1.3 µs per emitted chunk in this fixture; full emission
+rises about 2%. Single-pair figures establish cost/scaling, not a statistically established
+speedup. Existing dirty-compile residency costs remain visible in the diagnostic row.
+Legacy bridge roadbed hashes remain unchanged; control signs deliberately change sign products.
+
+The final release test executable reran both locality tests after the agent handoff refinement.
+The road-chunk executable above predates that refinement; its road compiler/sign sources are
+identical to the final sources, and its separate SHA-256 records exactly what was measured.
+
+Windowed acceptance used the final native library, an isolated profile and a fresh blank world:
+
+```bash
+METRUM_JC_CAPTURE=1 METRUM_DEBUG=0 RAYON_NUM_THREADS=4 \
+    perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/profile/project" \
+    --script res://tests/road_junction_control_test.gd
+```
+
+The run exited zero in 48.10 seconds and closed its window. All five fresh 1600×1000 PNGs were
+inspected in ignored `captures/junction_control/`: `automatic_priority_above`,
+`priority_pole_street`, `yield_pole_street`, `priority_traffic_above` and
+`priority_traffic_street`. B1/B5 faces point toward approaching traffic on existing poles;
+the divided major road retains its median and kerb pockets, and conflicting inflow forms a
+minor-road queue while major traffic passes. The capture exposed a successive-minor admission
+bug: an occupied crossing cancelled the waiting major car's priority. The final build retains
+that request's precedence until the crossing clears, with a targeted release regression.
+B6/full-stop behavior is tested numerically; no B6 street capture is claimed.
+
+Inspected references are `real_prisma_junction_streetview.png` and `map_prisma_junction.png`
+in `$HOME/dev/metrum_rise-refs/roads/user-2026-10-18/`. They show signal heads, turn
+pockets and separate slip movements. This staged automatic-priority scene demonstrates
+pockets and yielding, but does not recreate the reference's signal plan, heads, gantries,
+slip layout or surrounding structures. Signalised Prisma acceptance remains pending.
+No player saves were loaded or written; any later new save must use the `roads-jc-` prefix.
 
 ## Ownership Boundaries
 

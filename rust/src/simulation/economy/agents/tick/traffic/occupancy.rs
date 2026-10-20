@@ -119,7 +119,9 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     let start = stable_index(choice_seed, candidate_connectors.len());
     for offset in 0..candidate_connectors.len() {
         let candidate = candidate_connectors[(start + offset) % candidate_connectors.len()];
-        if claim_lane_entry(agent_idx, candidate, lane_claims) {
+        if lane_claims.connector_allowed(agent_idx, candidate)
+            && claim_lane_entry(agent_idx, candidate, lane_claims)
+        {
             return ConnectorEntry::Enter(candidate);
         }
     }

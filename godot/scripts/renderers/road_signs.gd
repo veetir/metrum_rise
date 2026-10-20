@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Cosmetic Finnish road signs. Rust supplies five floats per pose: chunk-local pole-base
+## Finnish road signs, including simulation-derived priority control. Rust supplies five floats per pose: chunk-local pole-base
 ## x, y, z, yaw about +Y, model index. This renderer only batches those transforms.
 extends Node3D
 
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const MODEL_DIR := "res://assets/models/road_signs/"
-# Indexed by Rust RoadSignKind. B1/B5/B6 are assets for later, never placed here.
+# Indexed by Rust RoadSignKind.
 const MODELS: Array[String] = [
 	"E1-1", "E1-2", "C32-30", "C32-40", "C32-50", "C32-60", "C32-80",
 	"A1.1", "A1.2", "A2.1", "A2.2",
 	# Descents (A3.2: the car points down the slope), then ascents (A3.1).
 	"A3.2-8", "A3.2-10", "A3.2-12", "A3.2-14", "A3.2-16", "A3.2-18",
-	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9",
+	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9", "B1", "B5", "B6",
 ]
 # GLB contract (validation.json/build.log and export_validation.json): metres, ground-origin
 # pole base, +Y up, +Z is the printed front. One mesh/surface and one embedded atlas material

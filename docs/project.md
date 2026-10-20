@@ -22,6 +22,15 @@ bridge abutment cutouts retain ground beneath airborne sections
 ([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)). Both broken saves and the full
 medians save have been checked numerically and in street-level/overhead captures.
 
+TRAFFIC-06 stage 1a adds automatic major/minor priority, equal-road right-hand yielding,
+full stops on low-speed approaches to faster roads and B1/B5/B6 poles.
+Local conflict admission uses existing lane reservations and resolves circular right-hand
+waits deterministically. Zebra priority, signals, authored controls/undo, importer hooks and the signalised
+Prisma reconstruction remain pending ([junction control](traffic.md#automatic-vehicle-junction-priority--traffic-06-stage-1a)).
+Fresh 2,611-test library, all-target Clippy and ten individual road/traffic bridges pass.
+Matched PERF-06 runs detect no regression beyond noise; lane rebuild and populated pocket
+planning remain local.
+
 ROAD-68 has an explicit crossing-layer topology stage in progress, with roadbed clearance
 validation, preview/commit identity and version-91 sparse persistence. Filled openings,
 embankments, player over/under controls and the university reconstruction remain pending

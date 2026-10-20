@@ -13,6 +13,7 @@ use crate::simulation::network::surface::{
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 
+pub(crate) mod control;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
@@ -123,6 +124,7 @@ pub struct LaneSystem {
     crosswalks: HashMap<usize, LaneCrosswalk>,
     // Rebuild-derived: only approaches with different permitted movements need lane choice.
     turn_preparation: Vec<bool>,
+    controlled: Vec<Option<control::ControlledMovement>>,
     revision: u64,
     // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
     // (old ids become tombstones), so every lane at or above it still has flat build heights.
@@ -144,6 +146,7 @@ impl LaneSystem {
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
             turn_preparation: Vec::new(),
+            controlled: Vec::new(),
             revision: 0,
             surface_synced_len: 0,
         }
@@ -168,6 +171,7 @@ impl LaneSystem {
         self.node_lanes.clear();
         self.crosswalks.clear();
         self.turn_preparation.clear();
+        self.controlled.clear();
         self.surface_synced_len = 0;
     }
 

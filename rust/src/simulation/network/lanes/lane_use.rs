@@ -12,7 +12,8 @@ const RIGHT: u8 = 4;
 
 // Tangents point out from the node. Physical centerlines keep classification independent of
 // lane offsets, clipping, median width and the order in which lanes are rebuilt.
-fn outward(graph: &RegionGraph, edge: usize, node: u32) -> Vector2 {
+/// Unit centreline tangent pointing away from a junction, shared by lane use and priority.
+pub(super) fn outward(graph: &RegionGraph, edge: usize, node: u32) -> Vector2 {
     let edge = graph.edge(edge);
     let points = &edge.physical_geometry;
     let direction = if edge.start_node == node {
@@ -47,6 +48,19 @@ fn movement(incoming: Vector2, outgoing: Vector2) -> u8 {
     } else {
         RIGHT
     }
+}
+
+/// Uses the same inclusive straight sector for priority and lane allocation.
+pub(super) fn is_left_movement(
+    graph: &RegionGraph,
+    incoming: usize,
+    outgoing: usize,
+    node: u32,
+) -> bool {
+    movement(
+        -outward(graph, incoming, node),
+        outward(graph, outgoing, node),
+    ) == LEFT
 }
 
 fn lane_rank(index: i8, count: usize) -> usize {

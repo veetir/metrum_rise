@@ -198,6 +198,8 @@ pub struct AgentSystem {
     pub lane_claim_owner: Vec<AtomicUsize>,
     /// Prepared movement categories used to dispatch claims and skip redundant lateral decisions.
     pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
+    // Immutable snapshot grants shared by speed and connector entry.
+    pub(crate) junction_admission: super::tick::junction_control::JunctionAdmission,
     /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
@@ -279,6 +281,7 @@ impl AgentSystem {
             lane_change_ghost_agents: Vec::new(),
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
+            junction_admission: Default::default(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             edge_is_dirty: Vec::new(),

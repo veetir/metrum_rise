@@ -7,6 +7,7 @@ mod claims;
 #[cfg(test)]
 mod contract;
 mod frontage;
+pub(crate) mod junction_control;
 mod lane_buckets;
 mod lane_nav;
 mod movement;
@@ -36,15 +37,15 @@ const TRAFFIC_DEBUG_STATIONARY_EPS_M: f32 = 0.02;
 const TRAFFIC_DEBUG_STATIONARY_AFTER_S: f32 = 3.0;
 const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
 
+#[cfg(test)]
+pub(crate) use planning::estimate_trip_seconds_between;
 pub(crate) use planning::{
     BuildingTripEnds, BuildingWalkingAccess, BuiltTripPlan, PedestrianReachability,
     SharedNetworkQuotes, TripEstimate, TripQueryScratch, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
-    estimate_trip_seconds_with_scratch,
-    plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
+    estimate_trip_seconds_with_scratch, plan_building_origin_trip, plan_building_to_border_trip,
+    plan_immigration_trip,
 };
-#[cfg(test)]
-pub(crate) use planning::estimate_trip_seconds_between;
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
@@ -85,6 +86,7 @@ impl AgentSystem {
 
         let (lane_count, live_lane_agent_count) =
             self.prepare_lane_buckets_for_tick(transit_network, n);
+        self.prepare_junction_admission(transit_network, graph, delta);
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
@@ -206,3 +208,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod junction_control_tests;

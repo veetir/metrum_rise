@@ -113,6 +113,7 @@ pub(super) unsafe fn enter_next_edge_connector(
                 LaneEndAction::KeepMoving
             }
             ConnectorEntry::ClaimedThisTick => {
+                *slices.speed.get_mut(i) = 0.0;
                 *s_path_idx.get_mut(i) = path_idx_before_lane_end;
                 *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
                 traffic_log!(
@@ -128,6 +129,7 @@ pub(super) unsafe fn enter_next_edge_connector(
                 LaneEndAction::Break
             }
             ConnectorEntry::Occupied => {
+                *slices.speed.get_mut(i) = 0.0;
                 *s_path_idx.get_mut(i) = path_idx_before_lane_end;
                 *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
                 traffic_log!(
