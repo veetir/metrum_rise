@@ -587,7 +587,154 @@ buffer groups and owner-range arrays. Triangle attributes append as complete tri
 vertex order and values while using one capacity check per attribute. The existing commit path's
 agent, entrance and routing rebuild costs remain explicit.
 
-Acceptance measurements and windowed inspection are pending while this row is in progress.
+**Acceptance — reviewed implementation `ff3f9882`.** Recorded validation passes **2,552
+library tests, 0 failures, 146 ignored**, clippy on all targets without warnings, and all nine
+release-library road bridge suites. Coverage includes 45 median style/lane/junction fixtures,
+band ordering, setbacks, lane offsets/connectors, frontage doors, old-schema loading and median
+round-trip, agent reattachment/undo, explicit crossings and grass preview attributes. The
+saved-junction fixture passes after naming its original SQL columns; its values and geometry
+are unchanged. Five pre-feature fixtures (straight, bend, T, cross and sloped) retain identical
+legacy surface/mesh attributes, lanes/links, crossings, signs and lights against `20f5120`.
+
+The measurements below were completed before the documentation handoff, not rerun for it.
+Controls use `20f512009c998ae53d3f6d7e17ab5378c161af04`; final feature Rust/Godot source digest is
+`b150aa0f2bcf2e00f08285386fde37ee5972cc552be45678ec0bc0bf057dd380`
+(sorted changed/new feature paths and bytes against that base). The deployed release library
+SHA256 is `929ee7cec47d7eb7e9eecbe13d11a691fb3db3f351bcf0b5891aabf921bc1357`.
+Both revisions use the same compiler/dependencies and unprofiled release profile, Apple M2 Pro,
+macOS 27.0.1, `RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0` and upstream Godot 4.7.2.
+Logs and preserved executables remain local under `$ARTIFACTS`.
+
+Criterion chunk runs use 20 samples, 1 s warmup and a 3 s measurement target; surface runs use
+10 samples, 3 s warmup and the existing 2 s target, excluding fixture setup. Values are displayed
+point estimates. **All 12 final chunk comparisons improve** against the renewed exact-base
+control, and also improve on the original before-run point estimates. The initial 2–3% emission
+regression was removed with sparse grass buffers, triangle attribute appends and exact band
+capacity reservation; legacy product hashes remain unchanged.
+
+| Resident chunks | Local emit, µs before → after | Full emit, ms before → after | Dirty compile + local emit, µs before → after |
+|---:|---:|---:|---:|
+| 1 | 48.066 → 45.895 | 0.044589 → 0.042976 | 93.009 → 81.962 |
+| 64 | 49.15 → 46.146 | 2.4557 → 2.3779 | 89.922 → 85.707 |
+| 256 | 48.68 → 46.382 | 10.454 → 9.5875 | 100.42 → 95.134 |
+| 1024 | 48.799 → 46.133 | 45.356 → 40.98 | 164.54 → 158.52 |
+
+| Surface workload | Before → after | Criterion result |
+|---|---:|---|
+| `compile_all_grid` | 1.5003 → 1.4995 s | No significant change |
+| `compile_dirty_unchanged_edge` | 379.67 → 372.23 µs | No significant change |
+| `compile_dirty_unchanged_terrain` | 5.8922 → 5.8517 ms | No significant change |
+| `compile_dirty_lane_width_change` | 22.709 → 23.115 ms | No significant change |
+| `compile_dirty_changed_terrain` | 5.884 → 6.1487 ms | Initial +4.5% flag; not reproduced in either repeated order |
+| `rebuild_all_earthworks_grid` | 105.99 → 96.95 µs | No significant change |
+
+The initial changed-terrain +4.5% flag is retained above. An old/new repeat gives
+5.9255 → 5.8512 ms (within Criterion's noise threshold); reverse order gives old 5.9004 / new
+6.0862 ms (no significant change). Earlier unpaired runs shifted 10–25%, including unchanged
+control executables, so those shifts do not establish feature regressions or improvements.
+Original chunk before-runs at 1/64/256/1024 residents were: local emit 47.099/47.047/48.501/47.238 µs,
+full emit 0.044094/2.4556/9.9121/41.392 ms, dirty compile + emit 85.138/91.930/97.543/159.64 µs.
+
+Godot staging uses 20 warmup / 101 measured samples and 8,190 vertices per changed chunk.
+Matched old/new scripts use identical fresh `roads-a-perf` settings and the same final native
+library; only the optional grass-layer upload branch differs. All runs report zero validation
+failures. One-chunk medians vary in both directions; larger affected batches remain steady.
+This headless ArrayMesh staging benchmark does not measure GPU frame time.
+
+| Upload workload | Original before, µs | Matched old script, µs | Final script, µs |
+|---|---:|---:|---:|
+| resident 4 | 4349 | 4254 | 4298 |
+| resident 64 | 4354 | 4217 | 4185 |
+| resident 256 | 4352 | 4281 | 4162 |
+| resident 1024 | 4290 | 4177 | 3960 |
+| resident 4096 | 4356 | 4240 | 4171 |
+| affected 0 | 30 | 25 | 33 |
+| affected 1 | 4356 | 4257 | 4319 |
+| affected 4 | 14325 | 14664 | 14648 |
+| affected 16 | 57427 | 58874 | 58637 |
+
+The populated-map locality check holds the affected neighborhood fixed for 100 samples per
+size. Every final size has identical local products; planning remains neighborhood-bounded,
+with snapshot setup measured separately. Existing global agent/access/CCH publication costs
+remain; this does not claim the entire commit is local.
+
+| Remote buildings / agents / parcels / remote roads | Compile p50, ms before → after | Worker p50, ms before → after | Snapshot once, ms before → after |
+|---|---:|---:|---:|
+| 0 / 24 / 4 / 0 | 4.6309 → 4.5023 | 1.2378 → 1.2442 | 0.005417 → 0.007084 |
+| 1000 / 6024 / 1004 / 4 | 4.6808 → 4.586 | 1.2143 → 1.2527 | 0.012 → 0.010542 |
+| 10000 / 60024 / 10004 / 40 | 4.5122 → 4.5908 | 1.2058 → 1.2848 | 0.039167 → 0.03875 |
+| 100000 / 600024 / 100004 / 391 | 4.7038 → 4.8627 | 1.283 → 1.3277 | 0.13237 → 0.17796 |
+
+Reproduction commands use the executable placeholders defined in [`README.md`](README.md).
+Run each benchmark with its corresponding preserved old/final `$BENCH_BINARY`; the original
+before-runs used `cargo bench --bench road_chunk_benchmark -- --save-baseline roads-a-before`
+and the equivalent `surface_benchmark` command on `20f5120`. Retained logs include
+`$ARTIFACTS/chunks-acceptance-before.log`, `$ARTIFACTS/chunks-final-reserved.log`,
+`$ARTIFACTS/surface-before-paired.log`, `$ARTIFACTS/surface-final-reserved.log`, the
+`terrain-repeat-*`/`terrain-reverse-*` logs, `upload-matched-*` and `locality-*` logs.
+
+```bash
+export RAYON_NUM_THREADS=4 METRUM_DEBUG=0
+cargo test --manifest-path rust/Cargo.toml --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo build --manifest-path rust/Cargo.toml --release
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+cargo bench --manifest-path rust/Cargo.toml --no-run --bench road_chunk_benchmark --bench surface_benchmark
+cd rust
+# Choose the old then final chunk executable:
+"$BENCH_BINARY" --bench --noplot --save-baseline roads-a-acceptance-before
+"$BENCH_BINARY" --bench --noplot --baseline roads-a-acceptance-before
+# Likewise, old then final surface executable:
+"$BENCH_BINARY" --bench --noplot --save-baseline roads-a-paired-before
+"$BENCH_BINARY" --bench --noplot --baseline roads-a-paired-before
+# Changed-terrain repeats: old/new, then new/old (same final source):
+"$BENCH_BINARY" --bench --noplot 'compile_dirty_changed_terrain$' --save-baseline roads-a-terrain-repeat-before
+"$BENCH_BINARY" --bench --noplot 'compile_dirty_changed_terrain$' --baseline roads-a-terrain-repeat-before
+"$BENCH_BINARY" --bench --noplot 'compile_dirty_changed_terrain$' --save-baseline roads-a-terrain-reverse-after
+"$BENCH_BINARY" --bench --noplot 'compile_dirty_changed_terrain$' --baseline roads-a-terrain-reverse-after
+"$TEST_BINARY" populated_road_plan_scaling --ignored --nocapture --test-threads=1
+cd ..
+# Use the corresponding script/project revision:
+perl -e 'alarm 900; exec @ARGV' godot --headless --path godot --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+The nine passing bridge suites are `road_cross_section_test`, `network_tool_chunk_renderer_test`,
+`road_benchmark_metrics_test`, `road_preview_metrics_test`, `road_junction_preview_test`,
+`road_preview_stream_test`, `zoning_road_tool_test`, `road_rejection_report_test` and
+`street_lamp_grid_test`. Each used the release library in an isolated project with fresh test
+user data; `$ARTIFACTS/bridge-results-final.log` records exit 0 for each. The runner command was
+`perl -e 'alarm 900; exec @ARGV' godot --headless --path "$TEST_PROJECT" --script "res://tests/$test.gd"`,
+where `TEST_PROJECT` selects that isolated project and `test` selects a suite above.
+Existing ObjectDB/resource cleanup diagnostics remain in the chunk-renderer and junction-preview
+tests. This is road-specific bridge validation, not a claim that the entire Godot suite passes.
+Samply/perf/Heaptrack were unavailable; a native CPU sample was diagnostic only, with no heap
+profile. No per-agent/per-tick median allocation was introduced.
+
+**Windowed visual acceptance.** After remove-then-copy deployment of the release library,
+the following non-headless harness completed and every one of its 18 PNGs was inspected:
+
+```bash
+# ARTIFACTS contains the release library copied from the completed release build.
+rm -f godot/bin/libmetrum_rise.dylib
+cp "$ARTIFACTS/libmetrum_rise.dylib" godot/bin/libmetrum_rise.dylib
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_ROADS_A_CAPTURE=1 perl -e 'alarm 900; exec @ARGV' godot --path godot --script res://tests/road_cross_section_test.gd
+```
+
+The locally excluded `captures/roads_a/` gallery contains `neulamaentie_{above,street}.png`
+(1+1 lanes, 5 m grass), `prisma_{above,street}.png` (2+2, 3 m grass, cross junction),
+`{painted,paving,grass_curve}_{above,street}.png`, `divided_to_undivided_t.png`,
+`continuous_divided_bend.png`, `divided_bend_requested_crossing.png`,
+`tool_edited_neulamaentie.png`, `tool_paving_{preview,committed}.png` and
+`kuopio_sloped_{above,street}.png` (bundled real Kuopio terrain, 2–6% grade).
+`captures/roads_a/captions.txt` explains each view. Neulamäentie and Prisma were also inspected
+side by side with their reference photographs (`$ARTIFACTS/reference-comparison.jpg`);
+reference photographs remain outside the repository. Noses clear zebras, divided bend kerbs
+meet cleanly, and grass/paving use shared materials and cloud lighting. Actual tool drawing,
+exact preview/commit and in-place editing were exercised. Preview and commit geometry agree;
+vegetation is cleared on commit. All started Godot processes are closed; no player save was
+written. These reconstruct cross-sections, with no median trees, surrounding streetscape,
+signal gantries, turn pockets or grade separation.
+
 Slice B (`ROAD-67`) can shorten either end with the stored setbacks; it must add lane-use and
 turn-pocket geometry, rather than making median extent an unbreakable edge-wide rule. Grade
 separation (`ROAD-68`) and interchange/slip-road work (`ROAD-69`, alongside `ROAD-62`) remain
