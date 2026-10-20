@@ -21,6 +21,7 @@ fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {
     let preview = super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -87,6 +88,7 @@ fn road_only_preview_rejects_visual_terrain_changes_before_click_reuse() {
     let road = RoadEditPlan::compile_road(
         &core,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -135,6 +137,7 @@ fn prepare_with_lanes(
     let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -413,6 +416,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -1442,6 +1446,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
             let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
                 &context,
                 RoadPreviewRequest {
+                    crossing_level: 0,
                     median: None,
                     enqueued_at: None,
                     include_terrain: false,

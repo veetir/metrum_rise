@@ -151,6 +151,20 @@ fn validation_detail(
     prepared: &[Vector3],
 ) -> (String, Option<Vector3>) {
     match reason {
+        "grade_separation_clearance" => (
+            format!(
+                "crossing clearance {:.2} m below the reserved deck, needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "grade_separation_grade" => (
+            format!(
+                "grade-separated road grade {:.1}%, maximum 16%",
+                validation.max_grade * 100.0
+            ),
+            None,
+        ),
         "bridge_clearance" | "tunnel_clearance" if validation.required_clearance_m <= 0.0 => (
             format!(
                 "the bridge profile dips {:.2} m below the terrain",

@@ -601,7 +601,7 @@ pub(crate) fn author_lane_count_transitions(
 
 /// Refuses topology strokes through an authored pocket until it is removed or resized.
 /// Uses the existing edge R-tree and segment intersections; no whole-map search.
-pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3]) -> bool {
+pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3], level: i16) -> bool {
     if points.len() < 2 {
         return false;
     }
@@ -622,29 +622,32 @@ pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3]) -> b
             if conflict || edge.deleted || edge.lane_tapers.is_none() {
                 return;
             }
-            for a in points.windows(2) {
-                for b in edge.geometry.windows(2) {
-                    if let Some((t, u)) =
-                        super::interaction::find_intersection_2d(a[0], a[1], b[0], b[1])
-                    {
-                        let pa = a[0].lerp(a[1], t);
-                        let pb = b[0].lerp(b[1], u);
-                        if (pa.y - pb.y).abs() < 4.5
-                            && pa.distance_to(edge.geometry[0]) > 0.2
-                            && pa.distance_to(*edge.geometry.last().unwrap()) > 0.2
-                        {
-                            conflict = true;
-                            return;
-                        }
-                    }
-                }
-            }
+            // A separated interior crossing is safe, but an authored same-point endpoint
+            // must not attach a third arm to a protected pocket transition on either layer.
             for point in [points[0], *points.last().unwrap()] {
                 for node in [edge.start_node, edge.end_node] {
                     if graph.node(node).node_type == NodeType::LaneTransition
                         && point.distance_to(graph.node(node).pos) < 0.2
                     {
                         conflict = true;
+                    }
+                }
+            }
+            if conflict || edge.crossing_level != level {
+                return;
+            }
+            for a in points.windows(2) {
+                for b in edge.geometry.windows(2) {
+                    if let Some((t, _u)) =
+                        super::interaction::find_intersection_2d(a[0], a[1], b[0], b[1])
+                    {
+                        let pa = a[0].lerp(a[1], t);
+                        if pa.distance_to(edge.geometry[0]) > 0.2
+                            && pa.distance_to(*edge.geometry.last().unwrap()) > 0.2
+                        {
+                            conflict = true;
+                            return;
+                        }
                     }
                 }
             }

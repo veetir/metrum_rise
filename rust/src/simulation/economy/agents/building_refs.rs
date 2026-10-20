@@ -719,6 +719,7 @@ mod tests {
 
     fn create_test_edge(n0: u32, n1: u32) -> Edge {
         Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,

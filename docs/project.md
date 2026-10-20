@@ -22,6 +22,16 @@ bridge abutment cutouts retain ground beneath airborne sections
 ([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)). Both broken saves and the full
 medians save have been checked numerically and in street-level/overhead captures.
 
+ROAD-68 has an explicit crossing-layer topology stage in progress, with roadbed clearance
+validation, preview/commit identity and version-91 sparse persistence. Filled openings,
+embankments, player over/under controls and the university reconstruction remain pending
+([slice C status](roads.md#explicit-layered-crossings--road-68-slice-c-topology-stage)).
+Agent-tick timing acceptance is still open.
+The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
+strip without changing physical geometry. ROAD-61 blank-world probes reproduce erased buried
+profiles and quick/exact tunnel-validation disagreement; its structural fix remains planned
+([tunnel diagnosis](roads.md#short-road-tunnels--road-61-diagnosis-fix-planned)).
+
 The sky now has weather: volumetric clouds that drift on simulation time and are saved with the city, cloud shadows on every lit surface (terrain, water, trees, roads, buildings, cars and pedestrians) that darken the sun as fully as a tree's shadow down to sunset, and cloud reflections in the water ([RENDER-16](terrain.md)). At night, stars and a Milky Way turn with the clock behind the clouds ([RENDER-17](terrain.md)). The weather changes by itself on a seeded, saved schedule, and Tools > Weather holds a chosen scenario or Tools > Looks sets a time and weather in one click ([RENDER-20](roadmap.md)). Trees and water now share one wind that follows the weather and holds still while paused ([RENDER-18](terrain.md)), and on calm mornings mist gathers over the lakes and burns off by ten ([RENDER-19](terrain.md)). Storms come in gusts that bend whole stands of trees, roughen the lakes and roll wind waves across meadows and grain fields ([RENDER-22](terrain.md)); the first GPU grass draws near a low camera ([VEG-23](terrain.md#gpu-grass-prototype--veg-23)), and lakes reflect the stars and the Milky Way at night. The wind now wanders with each weather change, turning and changing speed, and a cirrus layer drifts above the cumulus on its own faster wind ([RENDER-25](roadmap.md)); the moon keeps a month, drifting east among the stars and waxing and waning ([RENDER-24](terrain.md)). Storms now rain: the deck darkens and the ground, roads and roofs go dark and wet; falling streaks and water rings were removed as fake until rain is done properly ([RENDER-23](terrain.md)).
 
 The asset editor's **Preview** button now shows a building's yard as the game would plant it: real hedge modules and the trees, shrubs and flowers its planting areas grow, from the same Rust planners as a spawned house; **Reroll** shows another layout and **Exit preview** returns to editing, all without touching the asset ([TOOLS-14](asset_editor.md#yard-planting)).

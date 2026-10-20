@@ -8,6 +8,7 @@ mod cold_node_edit_latency;
 mod commute_bounds;
 mod construction_throughput;
 pub(super) mod fields;
+mod grade_separation;
 mod road_plan_scaling;
 mod road_terrain_plan;
 mod zoning_buildability;
@@ -654,6 +655,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -897,6 +899,7 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -956,6 +959,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            crossing_level: 0,
             median: None,
             enqueued_at: None,
             include_terrain: false,
@@ -986,6 +990,7 @@ fn add_test_border_road(core: &mut SimCore) {
         .region_graph
         .add_node(Vector3::new(180.0, 0.0, 0.0), NodeType::Junction);
     core.region_graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: border,
@@ -1219,6 +1224,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         .map(|points| points[0].distance_to(points[1]))
         .sum();
     Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node,
@@ -2630,6 +2636,7 @@ fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click()
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
+                crossing_level: 0,
                 median: None,
                 enqueued_at: None,
                 include_terrain,
@@ -2680,6 +2687,7 @@ fn preview_terrain_revisions_keep_unchanged_plain_patches_across_poses() {
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
+                crossing_level: 0,
                 median: None,
                 enqueued_at: None,
                 include_terrain: true,
@@ -2733,6 +2741,7 @@ fn benchmark_road_preview_modes() {
             let preview = super::road_preview::compile_road_preview_with_sites(
                 &context,
                 RoadPreviewRequest {
+                    crossing_level: 0,
                     median: None,
                     enqueued_at: None,
                     include_terrain,

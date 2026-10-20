@@ -502,9 +502,20 @@ impl RoadSurfaceSystem {
         Option<RoadPreviewRenderInput>,
         Option<RoadTopologyPlan>,
     ) {
+        let new_edge_validation = self.validate_prepared_crossing_clearance(
+            prepared_input,
+            fwd_lanes,
+            bkw_lanes,
+            existing_graph,
+            new_edge_validation,
+        );
+        if !new_edge_validation.is_valid {
+            return (new_edge_validation, None, None, None);
+        }
         if crate::simulation::network::pockets::stroke_splits_pocket(
             existing_graph,
             &prepared_input.points,
+            prepared_input.crossing_level,
         ) {
             return (
                 new_edge_validation.with_invalid_reason("remove_pocket_before_junction_edit"),
@@ -550,6 +561,7 @@ impl RoadSurfaceSystem {
                     prepared_input.endpoint_snap_enabled,
                     compile_reason,
                     prepared_input.median,
+                    prepared_input.crossing_level,
                 );
         }
 
@@ -576,6 +588,7 @@ impl RoadSurfaceSystem {
             prepared_input.endpoint_snap_enabled,
             compile_reason,
             prepared_input.median,
+            prepared_input.crossing_level,
         )
     }
 
@@ -593,6 +606,7 @@ impl RoadSurfaceSystem {
         if crate::simulation::network::pockets::stroke_splits_pocket(
             existing_graph,
             &prepared_input.points,
+            prepared_input.crossing_level,
         ) {
             return RoadPreviewValidation::valid(0.0)
                 .with_invalid_reason("remove_pocket_before_junction_edit");
@@ -625,7 +639,15 @@ impl RoadSurfaceSystem {
             return validation;
         }
 
-        self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation)
+        let validation =
+            self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation);
+        self.validate_prepared_crossing_clearance(
+            prepared_input,
+            _fwd_lanes,
+            _bkw_lanes,
+            existing_graph,
+            validation,
+        )
     }
 
     // The one road length rule: fewer than two points, or a horizontal length, ignoring
@@ -961,6 +983,7 @@ impl RoadSurfaceSystem {
             endpoint_snap_enabled,
             compile_reason,
             None,
+            0,
         )
         .0
     }
@@ -979,6 +1002,7 @@ impl RoadSurfaceSystem {
         endpoint_snap_enabled: bool,
         compile_reason: RoadSurfaceCompileReason,
         median: Option<crate::simulation::network::graph::RoadMedian>,
+        crossing_level: i16,
     ) -> (
         RoadPreviewValidation,
         Option<RoadPreviewTopologyReuse>,
@@ -1024,6 +1048,7 @@ impl RoadSurfaceSystem {
             extension,
             endpoint_snap_enabled,
             median,
+            crossing_level,
         )
         else {
             return (
@@ -1043,6 +1068,14 @@ impl RoadSurfaceSystem {
                 None,
                 None,
             );
+        }
+        for &id in &required_edge_ids {
+            let skip = HashSet::from([id]);
+            if let Some(refused) =
+                self.crossing_clearance_violation(&validation_graph, id, &validation_graph, &skip)
+            {
+                return (refused, None, None, None);
+            }
         }
         if let Some(refused) = Self::edit_geometry_violation(
             &validation_graph,
@@ -1553,6 +1586,7 @@ impl RoadSurfaceSystem {
             None,
             true,
             None,
+            0,
         )
         .map(|validation| {
             (
@@ -1575,6 +1609,7 @@ impl RoadSurfaceSystem {
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
         median: Option<crate::simulation::network::graph::RoadMedian>,
+        crossing_level: i16,
     ) -> Option<SurfaceValidationGraph> {
         if prepared_points.len() < 2 {
             return None;
@@ -1648,6 +1683,7 @@ impl RoadSurfaceSystem {
         ));
         {
             let edge = validation_graph.edge_mut(new_edge_idx);
+            edge.crossing_level = crossing_level;
             edge.validate_cross_section(fwd_lanes, bkw_lanes, median)
                 .ok()?;
             edge.median = median;

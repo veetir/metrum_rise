@@ -125,6 +125,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let end = graph.add_node(points[1], NodeType::Junction);
     let length = points[0].distance_to(points[1]);
     let edge_idx = graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: start,
@@ -182,6 +183,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -1392,6 +1394,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -1901,4 +1904,31 @@ fn lane_taper_save_round_trip_and_legacy_absence() {
             .lane_tapers
             .is_none()
     );
+}
+
+#[test]
+fn crossing_levels_round_trip_and_old_saves_default_without_changing_geometry() {
+    let (mut graph, id) = snapshot_test_graph();
+    graph.edge_mut(id).crossing_level = -2;
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(loaded.edge(0).crossing_level, -2);
+    assert_eq!(
+        loaded.edge(0).physical_geometry,
+        graph.edge(id).physical_geometry
+    );
+    conn.execute_batch("DROP TABLE road_crossing_levels")
+        .unwrap();
+    let old = network::load_graph(&conn).unwrap();
+    assert_eq!(old.edge(0).crossing_level, 0);
+    assert_eq!(
+        old.edge(0).physical_geometry,
+        loaded.edge(0).physical_geometry
+    );
+    assert_eq!(old.edge(0).geometry, loaded.edge(0).geometry);
 }

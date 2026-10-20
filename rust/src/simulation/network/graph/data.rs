@@ -98,6 +98,9 @@ pub struct Edge {
     pub physical_geometry: Vec<Vector3>,
     /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,
+    /// Authored crossing layer. Different layers never join at interior crossings.
+    /// Higher layers must clear lower roadbeds; zero is the default for older saves.
+    pub crossing_level: i16,
     /// When `true` the building allocator will not place buildings along this edge.
     /// Auto-set for roads at or above `HIGH_SPEED_ROAD_THRESHOLD_MS`; player-toggleable in the road inspector.
     pub no_building_spawn: bool,

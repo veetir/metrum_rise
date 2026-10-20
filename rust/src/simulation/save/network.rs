@@ -42,6 +42,17 @@ pub(super) fn save_network(
         }
     }
 
+    {
+        let mut stmt = tx.prepare("INSERT INTO road_crossing_levels VALUES (?1,?2)")?;
+        for (id, edge) in graph.edges().iter().enumerate() {
+            if edge.crossing_level != 0
+                && let Some(saved) = maps.edge_old_to_new.get(&id)
+            {
+                stmt.execute(params![usize_to_i64(*saved)?, edge.crossing_level])?;
+            }
+        }
+    }
+
     // 2. Edges
     {
         let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, median_start_setback, median_end_setback) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
@@ -248,6 +259,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 median.validate().map_err(SaveLoadError::custom)?;
             }
             let edge = Edge {
+                crossing_level: 0,
                 lane_tapers: None,
                 median,
                 start_node,
@@ -276,6 +288,23 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         }
     }
 
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_crossing_levels'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt =
+                conn.prepare("SELECT edge_id,level FROM road_crossing_levels ORDER BY edge_id")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                if id >= graph.edge_count() {
+                    return Err(SaveLoadError::custom(
+                        "crossing level references missing road",
+                    ));
+                }
+                graph.edge_mut(id).crossing_level = row.get(1)?;
+            }
+        }
+    }
     {
         let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_lane_tapers'", [], |row| row.get(0))?;
         if exists {

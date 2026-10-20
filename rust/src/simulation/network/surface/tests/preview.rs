@@ -812,6 +812,7 @@ fn logged_ordinary_terminal_continuation_remains_placeable() {
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
     let prepared_input = PreparedRoadInput {
+        crossing_level: 0,
         median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,
@@ -875,6 +876,7 @@ fn logged_orthogonal_t_junction_remains_placeable() {
 
     let surface = RoadSurfaceSystem::new(16.0);
     let candidate_input = PreparedRoadInput {
+        crossing_level: 0,
         median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,
@@ -912,6 +914,7 @@ fn candidate_with_both_endpoints_snapped_to_one_node_stays_rejected() {
     graph.add_node(Vector3::ZERO, NodeType::Junction);
     let candidate_points = vec![Vector3::new(-1.5, 0.0, 0.0), Vector3::new(1.5, 0.0, 0.0)];
     let prepared_input = PreparedRoadInput {
+        crossing_level: 0,
         median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,

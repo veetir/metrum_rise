@@ -957,6 +957,17 @@ automatic zebra clearance and median noses remain. No-profile edges retain the e
 compiler and exact vertex arithmetic. New degree-two count edits explicitly author a taper;
 legacy roads are not implicitly reprofiled on load.
 
+**Pocket asphalt follow-up (2026-10-20).** The right pocket previously passed graph-centred
+road-space coordinates to a shader that expects a centred carriageway. Its shifted outer lane
+could exceed the packed carriageway half-width and blend into the pale gravel shoulder.
+Pocket asphalt now subtracts the sampled outer-boundary midpoint and actual sampled median
+half-width, so both stored ends and the full taper use the carriageway's material/tint. Packed
+age/speed/lane metadata and the shared asphalt shader remain unchanged. The correction is
+O(V) at mesh emission, with constant work per corner and no extra allocation; there is no
+per-tick work. Ordinary non-pocket UVs and every physical vertex remain unchanged. A targeted
+renderer regression first failed at 9.04 m against an 8.75 m shader half-width; it covers
+undivided/divided right pockets and combined left/right pockets at both stored ends.
+
 **Editing and publication.** Endpoint pocket editing splits/moves/removes the hidden transition
 in one undo transaction and rebuilds the affected physical lanes/connectors, agent references,
 frontage access, routing and surface owners. Existing split migration carries frontage dependents.
@@ -1434,6 +1445,302 @@ following and existing reservations; traffic lights and right-of-way remain `TRA
 `ROAD-68` needs explicit grade/topology separation before junction construction. `ROAD-69` and
 `ROAD-62` need their own ramp/roundabout roles and connectors; the flagged degree-two transition
 is reserved for lane continuity. They can reuse the lane-use, pocket/profile and marking contracts.
+
+### Explicit layered crossings — ROAD-68 (slice C, topology stage)
+
+**Scope:** the topology stage is implemented; the filled structural opening, player over/under
+controls and university reconstruction remain pending. This is not filled-underpass acceptance.
+This stage has not produced `roads-c-uni-underpass.sqlite`.
+
+Each edge owns an authored signed `crossing_level` (default zero). Different levels never
+create an interior intersection, endpoint-to-edge snap or captured interior node. Equal levels
+use ordinary junction construction; centreline height no longer silently decides connectivity.
+Existing saved graphs retain their nodes, edge geometry, physical profiles and clips on load.
+Splits inherit the level, local preview excerpts and adopted plans carry it, and bounded undo
+restores it with the edge. Deliberately coincident straight endpoints can connect approach
+roads across levels; mere roadbed edge contact is not an underpass overlap. Nearby nodes on
+another level do not pull a stroke onto their surface. Protected lane-transition endpoints
+still refuse a third arm, regardless of the incoming layer. Save version **91** adds the sparse `road_crossing_levels` table;
+versions through 90 have no rows and load at zero without reprocessing crossings.
+
+The Rust tool API `set_road_tool_crossing_level(level)` pins the selection into synchronous
+validation, async preview and commit. A stale preview at another level is rebuilt. Nonzero-level
+profiles preserve authored heights and enforce a 16% grade bound. A default-level road beside
+another layer also preserves its input heights rather than snapping its interior onto that
+road's visible surface. Ordinary zero-level neighborhoods retain the prior profile solver.
+This API currently requires authored elevations; auto-cut/raise and a crossing selection key
+are still the tool stage, including crossing-layer capture in the road-attempt replay workflow.
+Bridge and tunnel classification remain separate from connectivity.
+
+The structural stage cannot be implemented by turning the upper road into an ordinary grounded
+span: its single-valued terrain cutout would conflict with the lower corridor and close the
+opening. It needs explicit opening/support ownership in the compiled span, paired local
+invalidation when either crossed road changes, and retaining/wing-wall boundaries shared with
+the earthwork compiler. The current bridge underside/pier renderer is deliberately still in use;
+it is not a filled-underpass implementation.
+
+Clearance follows layer order, not inferred height: an upper layer below a lower layer is
+refused. Vehicle routes require **4.8 m**, foot/cycle routes **2.8 m**, below a reserved **0.6 m**
+structural deck. Validation intersects the renderer's actual `SpanQuad` band triangles, including
+medians, kerbs and sidewalks. Fixed-stack triangle clipping checks the affine height difference
+at all overlap vertices. A whole-footprint diagonal is not a height authority: on a sloped bend
+it can overstate the rendered band's height by 0.21 m; a numeric regression covers this case.
+Refusals report measured and required clearance. Finalized width/pocket edits and node moves
+repeat the guard before retiring lanes or changing agent references.
+
+Discovery reuses the road-edge R-tree. For K nearby edges and P/Q sampled sections, clearance
+work is O(log E + K log K + P + sum(P Q B²)), where B is the bounded band count; storage is
+O(K + (P + Q) B) during editing. The inner clipping loop allocates nothing. No agent state,
+routing algorithm, U-turn rule, signal/right-of-way rule or per-tick loop changes. Disconnected
+nodes supply disconnected CCH and physical lane paths. Existing bridge/tunnel zoning exclusions
+keep an upper bridge from acquiring ground-level frontage at the crossing.
+
+Input profile selection also reuses the same R-tree for each raw stroke segment:
+O(P log E + sum(Kp)) time and O(max(Kp)) temporary candidates, where Kp is that segment's
+local query output. No discovery step scans the resident graph.
+
+Remaining acceptance is explicit: replace the exposed bridge/pier treatment at crossings with
+short openings, abutments, wing walls, deck edges and parapets; retain solid fill beside/under
+the upper road and grade the lower approaches through the shared earthwork compiler. Preserve
+ordinary valley/water bridges. Then add over/under highlighting and deterministic grade solving,
+rebuild a copied university save into a new `roads-c-` save, and finish the separately diagnosed
+`ROAD-61` tunnel work.
+Ramps (`ROAD-69`) can reuse the authored straight endpoint connections, but need their own
+curved junction roles, grade/profile solving and structural/support ownership. Roundabouts
+(`ROAD-62`) retain ordinary same-level topology. Neither belongs to this topology stage.
+
+The native capture/bridge fixture is `road_grade_separation_test.gd`; set
+`METRUM_ROADS_C_CAPTURE=1` for the optional street/overhead batch in ignored `captures/roads_c/`.
+Default-layer geometry is also compared with `road_pockets_legacy_test.gd`'s unchanged hashes.
+
+#### Topology-stage verification — 2026-10-20
+
+Fresh release comparison: baseline `cce4554e`, candidate uncommitted ROAD-68 topology-stage
+sources. Apple M2 Pro (12 logical CPUs), Rust 1.98.1, macOS SDK 26.5, Godot 4.7.2 with gdext
+4.5 API. Four Rayon workers except eight for PERF-06; `METRUM_DEBUG=0`. Preserved release
+executables, command manifests, individual logs, Criterion estimates and JSON summaries stay
+local in `$ARTIFACTS`. SHA-256 identifies each executable independently of its filename:
+
+| Artifact | Baseline SHA-256 | Candidate SHA-256 |
+| --- | --- | --- |
+| GDExtension library | `3ac40e85907a0893261046c1e20c83d0e3962b3a555cfcfb77bbc30c0fc3f148` | `fd3a90faa20e306e0e19bca47ac34376676f4a5efe8af0e7255d6037aed3d505` |
+| Library test executable | `bc8856320789b3e6f9536d28f46e284b40b1df076c1ad177d4870fadc3c70e95` | `d41b15c620baec9088fbaf87ce1a08f3ecca323c29b622b90cb4181246cda452` |
+| Road-chunk benchmark | `d342afd5bb3c463ab172c3da9726a74d489852ee314430f5baccc54d87d1910c` | `035943ba1441b23f8540ccb9a4d9b552e499139603f7b1344696911c39f622df` |
+| Surface benchmark | `ec70fb5ea53f55af64a67f77e670dfee548e239c835aadf8a1f6ab07b7e444ab` | `1e3416ed48cbdfcf796aae4ff3e461185c5434026883409ffa939e99efd0ecaf` |
+
+Fresh correctness commands (from the repository root):
+
+```bash
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+cargo build --manifest-path rust/Cargo.toml --release
+rm -f godot/bin/libmetrum_rise.dylib
+# Preserve the freshly built library under ARTIFACTS, then deploy it:
+cp "$ARTIFACTS/libmetrum_rise.dylib" godot/bin/libmetrum_rise.dylib
+perl -e 'alarm 900; exec @ARGV' godot --headless --path godot --import
+cargo test --manifest-path rust/Cargo.toml --release --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+```
+
+The fresh baseline was built/deployed/imported before any Godot test. Final candidate library
+suite: **2,600 passed, zero failed, 148 ignored**; release build and all-target Clippy passed
+without warnings. Targeted coverage includes vehicle/pedestrian crossings in both construction
+orders, disconnected physical lanes/CCH, same-level splits, width/median/sloped-band clearance,
+atomic refusals, stale-level preview rejection, preview/commit identity, old-schema loading,
+save round trip, in-place width/node edits and undo with agents on both roads. Node-move
+preflight is checked against finalized clip-derived profiles near a taper. Protected transition
+nodes retain the no-third-arm rule across layers.
+
+Each following Godot bridge script passed **individually** with the final release library:
+`road_grade_separation`, `road_pockets_legacy`, `road_cross_section`,
+`network_tool_chunk_renderer`, `road_junction_preview`, `road_preview_stream`,
+`road_preview_metrics`, `road_benchmark_metrics`, `surface_patch_debug`, `zoning_road_tool`,
+`field_edit_tool`, `road_turn_lanes`, `road_pockets`, `road_trajectory`, `road_rejection_report`
+(all filenames end in `_test.gd`). Invocation for each:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path godot --script res://tests/road_grade_separation_test.gd
+```
+
+The new bridge fixture drives cars at 0 m and 6 m through the crossing, edits/undoes width and
+upper approach height with both cars present, then drives fresh reverse routes. An earlier
+junction run hit the existing asynchronous terrain-delta polling race; isolated baseline/
+candidate and the final candidate run passed. Junction/surface debug scripts emit shutdown
+resource warnings; the baseline junction run also does so. These are not geometry assertion
+failures.
+
+Six saves freshly created by the preserved **version-90 baseline** retain identical roadbed
+SHA-256 hashes after candidate load: undivided/divided straight/skew crossings and ordinary/
+divided bridges. The existing slice-A/B legacy hash fixture also passes unchanged. Run the new
+fixture first with the baseline library and `METRUM_ROADS_C_LEGACY_RECORD=1`, then with the
+candidate library without that flag; both use
+`METRUM_ROADS_C_LEGACY_DIR=$ARTIFACTS/legacy` and the same script command above. The directory
+contains `roads-c-v90-0.sqlite` through `roads-c-v90-5.sqlite` and `legacy-hashes.json`.
+No user save is loaded, rewritten or migrated by these comparisons.
+
+Performance below is fresh, unprofiled **B/A/B/A** release work with no concurrent builds,
+tests or Godot runs. Values are the arithmetic mean of the two process medians in ms; they
+are observations, not claimed speedups. Criterion uses one-second warmup, road groups 20
+samples/three seconds, surface groups ten samples/two seconds. For each side's preserved
+`$BENCH_BINARY`:
+
+```bash
+# Road-chunk executable, all workloads:
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 CRITERION_HOME="$ARTIFACTS/criterion-side-pair" \
+  "$BENCH_BINARY" --bench --noplot --warm-up-time 1
+# Surface executable:
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 CRITERION_HOME="$ARTIFACTS/surface-side-pair" \
+  "$BENCH_BINARY" --bench --noplot --warm-up-time 1 \
+  'compile_(all_grid|dirty_lane_width_change|dirty_changed_terrain)'
+```
+
+| Workload | Baseline ms | Candidate ms |
+| --- | ---: | ---: |
+| Chunk emit only, 1 / 64 / 256 / 1,024 chunks | 0.04593 / 0.04631 / 0.04663 / 0.04714 | 0.04708 / 0.04728 / 0.04722 / 0.04711 |
+| Dirty compile + emit, same scales | 0.08366 / 0.08693 / 0.09511 / 0.15870 | 0.08645 / 0.09007 / 0.09863 / 0.16252 |
+| Full emit, same scales | 0.04314 / 2.39724 / 9.73790 / 40.63954 | 0.04420 / 2.48067 / 9.90524 / 41.95910 |
+| Surface cold grid | 1,497.256 | 1,525.758 |
+| Dirty width | 22.845 | 22.978 |
+| Dirty terrain | 5.838 | 5.786 |
+| Road/site CDT | 0.5121 | 0.4884 |
+
+CDT products match: 763 vertices, 1,369 faces, zero invalid/missing faces. Chunk fixtures keep
+their local output signatures. The local planning checks below use 100 samples per scale,
+hold the neighborhood fixed, and grow remote buildings/parcels/agents/roads together. All
+`identical_local_products` checks pass. The largest fixture has 100,000 remote buildings,
+100,004 parcels, 600,024 agents and 391 remote roads.
+
+| Repeated full local planning, remote buildings | 0 | 1,000 | 10,000 | 100,000 |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary, baseline ms | 5.519 | 5.699 | 5.638 | 5.820 |
+| Ordinary, candidate ms | 5.743 | 5.807 | 5.737 | 5.873 |
+| Paved, baseline ms | 6.786 | 6.751 | 6.897 | 7.181 |
+| Paved, candidate ms | 6.724 | 6.975 | 7.127 | 6.785 |
+
+The worker-only ordinary component increases 0.07–0.14 ms for explicit clearance validation;
+full ordinary planning increases 0.9–4.1% (0.05–0.22 ms) and remains local. This edit-time
+cost is accepted for the new guard. One-time snapshot setup is separate and is not included
+in repeated planning timings. The dedicated two-edge grade-clearance fixture holds its
+crossing fixed while adding 0 / 1,000 / 10,000 / 100,000 background roads: medians
+**0.09138 / 0.09133 / 0.09146 / 0.09121 ms**, p95 at most 0.10084 ms.
+
+Pocket planning uses 31 samples per scale with setup excluded. Local products match across
+background scales within each build; the intended pocket UV correction changes texture
+coordinates between builds. Preparation stays 0.043–0.045 ms. Preview means of process
+medians are:
+
+| Pocket preview, remote buildings | 0 | 1,000 | 10,000 | 100,000 |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline ms | 18.263 | 18.556 | 18.581 | 18.899 |
+| Candidate ms | 18.501 | 18.686 | 18.614 | 19.003 |
+
+Run each release test executable with `--exact --ignored --nocapture --test-threads=1` and
+these fully qualified test names (`METRUM_DEBUG=0 RAYON_NUM_THREADS=4`):
+
+```text
+nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling
+nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling
+nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling
+simulation::terrain::cdt::tests::ownership::benchmark_road_site_cdt_noding
+simulation::network::surface::grade_separation::tests::benchmark_grade_separation_clearance_locality
+```
+
+PERF-06 uses `simulation::economy::agents::tick::contract::benchmark_agent_tick_contract`
+with the same flags and eight Rayon workers. An initial 15 B/A process pairs gave a 9.3%
+higher 30,000-agent ingress median, with baseline samples spanning 0.403–0.890 ms. Follow-up
+used **30 order-balanced process pairs** (B/A then A/B), plus ten B/B and ten A/A pairs.
+The balanced cohort's medians, ms at 10,000 / 30,000 agents:
+
+| Mode | Baseline ms | Candidate ms |
+| --- | ---: | ---: |
+| Network | 0.50060 / 0.86181 | 0.48569 / 0.92861 |
+| Access egress | 0.63723 / 1.55613 | 0.64692 / 1.56825 |
+| Access ingress | 0.32540 / 0.57429 | 0.33817 / 0.61252 |
+
+All six work-counter dictionaries match across all **130 invocations**, and all workload/scaling
+assertions pass. No agent-tick algorithm or allocation changes. At 30,000 agents, network and
+ingress medians are 7.8% / 6.7% higher (0.067 / 0.038 ms). Unchanged-build repeat medians vary
+up to 6.1% for network and 5.2% for ingress at that tier; at 10,000 ingress they vary 12.7%.
+These short one-tick measurements are noisy. The timing difference remains an acceptance risk;
+do not turn equal work counts or unchanged source into a claim of no runtime regression.
+
+A further 30 order-balanced baseline/scalar/packed-layout triples did not reproduce those
+30,000-agent increases for the scalar candidate: network medians were 0.96850 → 0.92927 ms,
+ingress 0.55515 → 0.54812 ms. Their paired median-difference bootstrap 95% intervals include
+zero (network −0.08873 to +0.04512 ms; ingress −0.06810 to +0.08677 ms). All 90 additional
+workload checks pass. The packing experiment preserved the baseline hot-field offsets but
+showed no benefit over the scalar candidate, so its extra byte fields/accessors were reverted.
+The final representation remains a signed `i16`. These mixed cohorts do not establish a
+stable timing cause or certify the absence of a tick-cost increase; retain the acceptance risk.
+A rebuild after reverting the experiment matches all four final executable SHA-256 values
+above, so the recorded correctness and timing results apply to the restored source exactly.
+
+The headless Godot upload benchmark also ran B/A/B/A, 20 warmups and 101 measured updates
+per case, after removing/copying each preserved side's dylib. Command:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path godot --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+| Complete upload, mean of process medians | Baseline ms | Candidate ms |
+| --- | ---: | ---: |
+| One changed chunk, resident 4 / 64 / 256 / 1,024 / 4,096 | 4.516 / 4.590 / 4.543 / 4.562 / 4.609 | 4.415 / 4.593 / 4.540 / 4.558 / 4.543 |
+| Resident 1,024, changed 0 / 1 / 4 / 16 | 0.035 / 4.510 / 14.755 / 58.986 | 0.031 / 4.527 / 14.617 / 58.685 |
+
+Every upload run reports zero failures; one changed payload has 8,190 vertices. Headless
+ArrayMesh timings do not certify native rendered frames or filled-underpass appearance.
+
+Native Metal captures were inspected at street level and overhead for vehicle and pedestrian
+crossings, plus matched before/after right-pocket views, under ignored `captures/roads_c/`.
+The pocket's pale outer strip is removed; the whole added lane uses carriageway asphalt.
+The crossing views still show an exposed deck and piers. They do **not** meet the Prisma/
+Vaskivuorentie reference photographs' short concrete opening, wing walls and grassy fill.
+The fixture uses the production road chunk uploader on an isolated flat dry surface, with the
+existing 0.04 m pavement clearance. It does not certify terrain cutouts or native full-city
+frames. Full `Main` capture attempts stalled on pending empty-water payload/prewarm requests;
+that unrelated residency issue was not changed. Direct `godot` launches work; macOS `open`
+lost the script arguments and opened the Project Manager, so it is not used for this batch.
+
+The rendered `road_marking_lighting_test.gd` passes. The separately run
+`terrain_overlay_shader_test.gd` passes overlay intensity and edge-clamp checks but fails two
+forest-floor canopy-light assertions on Metal, identically with preserved baseline and
+candidate libraries. No terrain or lighting shader changed in this branch; those pre-existing
+assertions are not reported as passing.
+
+### Short road tunnels — ROAD-61 (diagnosis, fix planned)
+
+Fresh blank-world authoring probes on 2026-10-20 reproduce two failures through
+`validate_road_candidate_with_snap` and `add_road_with_snap`, using one lane each way, default
+crossing level, no snapping and flat terrain at y=0:
+
+| Authored stroke `(x,y)`; z=0 | Quick validation | Exact commit / geometry |
+| --- | --- | --- |
+| `(-100,0), (-50,-6), (50,-6), (100,0)` | Valid, reported grade 0 | Commits a 200 m surface road with every physical height reset to 0; the buried interior is lost. |
+| `(-50,-6), (50,-6)` | Valid | Refused with `surface_geometry_invalid`, `rejected=road_plan_invalid`. |
+| `(-100,0), (-50,-6), (50,-6)` | Valid, 12% grade | Commits the authored profile, but exports only 84 road and 84 earthwork vertices, zero concrete vertices. |
+
+Diagnosis: `prepare_road_input_points_with_support` selects Bridge/Tunnel from **endpoints
+only**. Grounded endpoints route the first stroke into the ordinary terrain-following profile
+solver, erasing its authored interior elevation. With both endpoints buried, tunnel visibility
+produces no visible portal range; the exact surface plan then cannot publish a visible span,
+although the quick validator accepted it. Existing `test_tunnel_surface_only_renders_portals`
+coverage deliberately hides buried top surfaces; it does not prove a usable, lined concrete
+portal. The mixed-depth probe's zero concrete output confirms that missing structure in this
+fixture, but does not diagnose every terrain/rendering failure in the original player report.
+
+Leave the fix planned: explicit structural/profile intent, a distinction between an entirely
+buried valid road and missing surface geometry, paired quick/exact refusal rules, and actual
+portal/terrain-cut ownership belong together. Do not use a crossing-layer number as an implicit
+tunnel-mode workaround, or change old saved geometry on load. The original player tunnel case
+has not been loaded/reproduced. The local probe and JSON results remain in `$ARTIFACTS`;
+they create only fresh blank worlds and never read or write player saves.
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_ROADS_C_TUNNEL_OUTPUT="$ARTIFACTS/tunnel-diagnosis.json" \
+  perl -e 'alarm 900; exec @ARGV' godot --headless --path godot \
+  --script "$ARTIFACTS/roads_c_tunnel_probe.gd"
+```
 
 ### Straight cross-section transitions — ROAD-70
 

@@ -60,6 +60,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         .sum();
 
     graph::Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node,

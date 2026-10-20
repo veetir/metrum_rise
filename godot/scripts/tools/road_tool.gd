@@ -965,6 +965,10 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Click an existing road to update it"
 		"zoning_cell_overlap", "field_overlap":
 			return "Road widening overlaps reserved land"
+		"grade_separation_clearance":
+			return "Crossing clearance %.1f m / %.1f m (below deck)" % [float(preview.get("clearance_m", 0.0)), float(preview.get("required_clearance_m", 0.0))]
+		"grade_separation_grade":
+			return "Separated road exceeds the 16% grade limit"
 		"bridge_clearance":
 			return "Bridge clearance %.1f m / %.1f m" % [
 				float(preview.get("clearance_m", 0.0)),

@@ -366,6 +366,7 @@ mod tests {
         ];
 
         let edge_defaults = Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: 0,

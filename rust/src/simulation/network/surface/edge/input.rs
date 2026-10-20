@@ -22,6 +22,8 @@ pub(in crate::simulation::network::surface::edge) const ROAD_PROFILE_MAX_GRADE: 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedRoadInput {
+    /// Authored crossing layer, captured in exact preview/commit identity.
+    pub(crate) crossing_level: i16,
     /// Selected median, applied before intersection solving and exact surface compilation.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Physical geometry for the new edge that will be previewed or committed.
@@ -122,6 +124,7 @@ impl RoadSurfaceSystem {
 
         if class != EdgeClass::Standard || points.len() < 2 {
             return PreparedRoadInput {
+                crossing_level: 0,
                 median: None,
                 validation_points: points.clone(),
                 points,
@@ -135,6 +138,7 @@ impl RoadSurfaceSystem {
             Self::prepare_terminal_road_extension(raw_points, &points, terrain, graph)
         {
             return PreparedRoadInput {
+                crossing_level: 0,
                 median: None,
                 points: extension.new_points,
                 validation_points: extension.validation_points,
@@ -145,6 +149,7 @@ impl RoadSurfaceSystem {
         }
 
         PreparedRoadInput {
+            crossing_level: 0,
             median: None,
             validation_points: points.clone(),
             points,
@@ -173,11 +178,79 @@ impl RoadSurfaceSystem {
 
         let (points, class) = Self::prepare_road_input_points(raw_points, terrain);
         PreparedRoadInput {
+            crossing_level: 0,
             median: None,
             validation_points: points.clone(),
             points,
             class,
             endpoint_snap_enabled: false,
+            extension: None,
+        }
+    }
+
+    /// Prepares authored grade-separated profiles without snapping their interior to the upper road.
+    /// Default-level neighborhoods retain the existing solver and exact legacy arithmetic.
+    pub(crate) fn prepare_road_input_for_tool_at_level(
+        raw: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        surface: &RoadSurfaceSystem,
+        snap: bool,
+        level: i16,
+    ) -> PreparedRoadInput {
+        let different_layer = raw.windows(2).any(|pair| {
+            let min = Vector3::new(
+                pair[0].x.min(pair[1].x) - 24.0,
+                0.0,
+                pair[0].z.min(pair[1].z) - 24.0,
+            );
+            let max = Vector3::new(
+                pair[0].x.max(pair[1].x) + 24.0,
+                0.0,
+                pair[0].z.max(pair[1].z) + 24.0,
+            );
+            graph
+                .get_edges_near_aabb(min, max)
+                .into_iter()
+                .any(|id| !graph.edge(id).deleted && graph.edge(id).crossing_level != level)
+        });
+        if level == 0 && !different_layer {
+            return Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
+        }
+        let mut points = Self::simplify_road_alignment_points(raw);
+        if snap && points.len() >= 2 {
+            for index in [0, points.len() - 1] {
+                if let Some(node) = graph.find_node_within(points[index], config::SNAP_TOLERANCE) {
+                    let matching_layer = graph.node_adjacency(node).iter().any(|&id| {
+                        !graph.edge(id).deleted && graph.edge(id).crossing_level == level
+                    });
+                    // A cross-layer endpoint connection must be authored at the same physical
+                    // point. A nearby lower node must not pull an underpass onto its surface.
+                    if matching_layer || points[index].distance_to(graph.node(node).pos) < 0.05 {
+                        points[index] = graph.node(node).pos;
+                    }
+                }
+            }
+        }
+        let class = if points.iter().any(|p| {
+            p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE > PREVIEW_CLEARANCE_M
+        }) {
+            EdgeClass::Bridge
+        } else if points.iter().any(|p| {
+            p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE
+                < -PREVIEW_CLEARANCE_M
+        }) {
+            EdgeClass::Tunnel
+        } else {
+            EdgeClass::Standard
+        };
+        PreparedRoadInput {
+            crossing_level: level,
+            median: None,
+            validation_points: points.clone(),
+            points,
+            class,
+            endpoint_snap_enabled: snap,
             extension: None,
         }
     }

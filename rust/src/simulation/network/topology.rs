@@ -533,7 +533,9 @@ fn collect_crossing_splits(
     let edge1_geo_ds = downsample(&edge1_geo_full, ISECT_MIN_STEP);
 
     for &other_id in candidates {
-        if graph.edge(other_id).deleted {
+        if graph.edge(other_id).deleted
+            || graph.edge(other_id).crossing_level != graph.edge(edge_id).crossing_level
+        {
             continue;
         }
 
@@ -561,18 +563,13 @@ fn collect_crossing_splits(
                 // (denom ≈ 0). Keeping the guard caused shallow-angle intersections
                 // (< ~11.5°) between *distinct* edges to be silently skipped.
 
-                if let Some((t, u)) = interaction::find_intersection_2d(
+                if let Some((t, _u)) = interaction::find_intersection_2d(
                     edge1_geo_ds[i],
                     edge1_geo_ds[i + 1],
                     edge2_geo_ds[j],
                     edge2_geo_ds[j + 1],
                 ) {
                     let p1 = edge1_geo_ds[i].lerp(edge1_geo_ds[i + 1], t);
-                    let p2 = edge2_geo_ds[j].lerp(edge2_geo_ds[j + 1], u);
-
-                    if (p1.y - p2.y).abs() > 4.5 {
-                        continue;
-                    }
 
                     let pos = p1;
                     let factor_t = find_geo_factor(&edge1_geo_full, pos);
@@ -608,7 +605,10 @@ fn collect_endpoint_snap_splits(
     let endpoints = [edge1_geo_ds[0], *edge1_geo_ds.last().unwrap()];
 
     for &other_id in candidates {
-        if edge_id == other_id || graph.edge(other_id).deleted {
+        if edge_id == other_id
+            || graph.edge(other_id).deleted
+            || graph.edge(other_id).crossing_level != graph.edge(edge_id).crossing_level
+        {
             continue;
         }
 
@@ -633,7 +633,7 @@ fn collect_endpoint_snap_splits(
                 }
             }
 
-            if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
+            if best_dist < snap_guard {
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
                 // The float segment index is an address, not an exact geometric parameter.
@@ -903,7 +903,10 @@ fn collect_interior_node_splits(
     // Collect unique canonical junction nodes from all candidate edges.
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for &other_id in candidates {
-        if other_id == edge_id || graph.edge(other_id).deleted {
+        if other_id == edge_id
+            || graph.edge(other_id).deleted
+            || graph.edge(other_id).crossing_level != graph.edge(edge_id).crossing_level
+        {
             continue;
         }
         let e = graph.edge(other_id);
@@ -929,7 +932,6 @@ fn collect_interior_node_splits(
         // Find the closest point on the new edge's centreline to this node (XZ plane).
         let mut best_dist_xz = f32::MAX;
         let mut best_factor = 0.0_f32;
-        let mut best_y = 0.0_f32;
         for (seg_idx, w) in edge_geo.windows(2).enumerate() {
             let t = segment_factor_xz(node_pos, w[0], w[1]);
             let closest = w[0].lerp(w[1], t);
@@ -938,16 +940,12 @@ fn collect_interior_node_splits(
                     .length();
             if dist_xz < best_dist_xz {
                 best_dist_xz = dist_xz;
-                best_y = closest.y;
                 best_factor = seg_idx as f32 + t;
             }
         }
 
         if best_dist_xz >= config::INTERSECTION_TOLERANCE {
             continue;
-        }
-        if (node_pos.y - best_y).abs() > 4.5 {
-            continue; // different elevation (bridge / tunnel)
         }
         // Endpoint cases are handled by collect_endpoint_snap_splits.
         let at_start = best_factor < 0.1;
@@ -1102,6 +1100,7 @@ pub fn split_edge(
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
+    let crossing_level = old_edge.crossing_level;
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
 
@@ -1127,6 +1126,7 @@ pub fn split_edge(
     }
 
     let mut new_edge = Edge {
+        crossing_level,
         lane_tapers: None,
         median: median.map(|mut median| {
             median.start_setback_m = 0.0;

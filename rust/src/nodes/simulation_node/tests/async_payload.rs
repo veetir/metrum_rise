@@ -770,6 +770,7 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
         let start = graph.add_node(Vector3::new(road_x, 0.0, start_z), NodeType::Junction);
         let end = graph.add_node(Vector3::new(road_x, 0.0, end_z), NodeType::Junction);
         graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: start,

@@ -1052,6 +1052,7 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
+                    crossing_level: 0,
                     median: None,
                     enqueued_at: None,
                     include_terrain: false,
@@ -1858,6 +1859,18 @@ impl SimCore {
             if old_pos == pos {
                 return false;
             }
+            if let Some(refusal) = self
+                .transit_network
+                .road_surface
+                .node_move_crossing_refusal(&self.region_graph, node_id, pos)
+            {
+                self.last_road_rejection = Some(RoadRejection::from_validation(
+                    refusal.invalid_reason,
+                    &refusal,
+                    &[],
+                ));
+                return false;
+            }
             if self.zoning.cells.has_reservations()
                 && self
                     .transit_network
@@ -2509,6 +2522,7 @@ mod tests {
         let start = graph.node(start_node).pos;
         let end = graph.node(end_node).pos;
         graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node,
@@ -2558,6 +2572,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,
@@ -2730,6 +2745,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,
@@ -3346,6 +3362,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,
@@ -3402,6 +3419,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,
@@ -4192,6 +4210,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(8.0, 0.0, 0.0), NodeType::Junction);
         let edge_idx = core.region_graph.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n0,

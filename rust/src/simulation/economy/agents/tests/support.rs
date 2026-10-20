@@ -71,6 +71,7 @@ pub(super) fn register_test_asset(
 
 pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -290,6 +291,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
     let make = |s: u32, e: u32, x0: f32, x1: f32| Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: s,
@@ -337,6 +339,7 @@ pub(super) fn build_4way_junction(
     let nn = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
     let ns = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
     let arm = |s: u32, e: u32, sx: f32, sz: f32, ex: f32, ez: f32| Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: s,

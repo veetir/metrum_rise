@@ -256,6 +256,8 @@ pub struct SimulationNode {
     /// Distinguishes complete endpoint preview payloads within one mesh generation.
     pub(crate) pocket_preview_revision: u64,
     /// Current editor selection, copied into every immutable preview and commit request.
+    /// Current crossing layer, captured by preview and commit submission.
+    pub(crate) road_tool_crossing_level: i16,
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
     pub(crate) road_commit_result:
@@ -484,6 +486,7 @@ impl INode3D for SimulationNode {
             cell_chunk_job: Default::default(),
             road_commit_request_id: 0,
             pocket_preview_revision: 0,
+            road_tool_crossing_level: 0,
             road_tool_median: None,
             road_commit_result: None,
             road_preview_tx,

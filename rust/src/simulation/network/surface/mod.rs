@@ -17,6 +17,7 @@ mod debug;
 mod earthwork;
 mod edge;
 mod geometry;
+mod grade_separation;
 mod incident;
 mod indices;
 mod keys;

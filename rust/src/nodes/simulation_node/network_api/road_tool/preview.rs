@@ -41,12 +41,13 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
+                self.road_tool_crossing_level,
             );
             prepared_input.median = self.road_tool_median;
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
@@ -159,12 +160,13 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
+                self.road_tool_crossing_level,
             );
             prepared_input.median = self.road_tool_median;
             let new_edge_validation = query.road_surface.validate_prepared_road_surface(
@@ -355,6 +357,7 @@ impl SimulationNode {
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
         let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            crossing_level: self.road_tool_crossing_level,
             median: self.road_tool_median,
             enqueued_at: None,
             include_terrain,
@@ -418,7 +421,9 @@ impl SimulationNode {
         let Some(preview) = preview_result.as_ref() else {
             return Variant::nil();
         };
-        if preview.request_id != request_id {
+        if preview.request_id != request_id
+            || preview.crossing_level != self.road_tool_crossing_level
+        {
             return Variant::nil();
         }
 
@@ -460,6 +465,7 @@ impl SimulationNode {
         // are resolved after the exact click under the simulation lock.
         let mut terrain_patches = None;
         dict.set("include_terrain", preview.include_terrain);
+        dict.set("crossing_level", i32::from(preview.crossing_level));
         let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
         dict.set("plan_state", if valid { "provisional" } else { "invalid" });
         if let Some(plan) = preview.edit_plan() {

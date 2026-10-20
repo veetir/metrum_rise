@@ -11,6 +11,7 @@ use godot::prelude::Vector3;
 #[test]
 fn test_slope_cost_calculation() {
     let mut edge = Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: 0,
@@ -63,6 +64,7 @@ fn test_pathing_avoids_steep_slope() {
     // 1. Short but very steep road: A -> B
     // Slope = 50m height / 100m length = 50%.
     let mut edge_ab = Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n_a,
@@ -102,6 +104,7 @@ fn test_pathing_avoids_steep_slope() {
     // 2. Long but flat detour: A -> C -> B
     // A -> C (111.8m)
     let mut edge_ac = Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n_a,
@@ -132,6 +135,7 @@ fn test_pathing_avoids_steep_slope() {
 
     // C -> B (111.8m)
     let mut edge_cb = Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n_c,
@@ -190,6 +194,7 @@ fn test_bidirectional_walkway_pathing() {
 
     // Create a bidirectional walkway (primary_type = Foot, allowed_types = 1, lanes = 0)
     graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -243,6 +248,7 @@ fn test_car_uturn_allowed() {
 
     // Create a bidirectional road (idx 0)
     let edge_idx = graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -301,6 +307,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
         let start_pos = node_positions[start_node as usize];
         let end_pos = node_positions[end_node as usize];
         Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node,
@@ -368,6 +375,7 @@ fn test_car_avoids_walkway_shortcut() {
 
     // Road path
     graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -392,6 +400,7 @@ fn test_car_avoids_walkway_shortcut() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n1,
@@ -418,6 +427,7 @@ fn test_car_avoids_walkway_shortcut() {
 
     // Walkway shortcut n0 -> n2 directly
     graph.add_edge(Edge {
+        crossing_level: 0,
         lane_tapers: None,
         median: None,
         start_node: n0,
@@ -496,6 +506,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
         let p1 = g.nodes()[e as usize].pos;
         let len = p0.distance_to(p1);
         g.add_edge(Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: s,
@@ -612,6 +623,7 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
     let mut edge = |start_node: u32, end_node: u32, foot_only: bool| {
         let points = vec![graph.node(start_node).pos, graph.node(end_node).pos];
         let mut edge = Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node,

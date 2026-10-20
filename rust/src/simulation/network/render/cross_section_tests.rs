@@ -56,6 +56,99 @@ fn digest(value: impl std::fmt::Debug) -> u64 {
         })
 }
 
+#[test]
+fn pocket_asphalt_stays_inside_the_shader_carriageway() {
+    use crate::simulation::network::graph::RoadMedian;
+    use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
+
+    for end in [0, 1] {
+        for (left, right, divided) in [
+            (false, true, false),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let (mut graph, _) = fixture(4, false);
+            let terrain = TerrainSystem::with_chunking(257, 257, 4.0, 32, 0.0);
+            let far = graph.edge(0).end_node;
+            graph.set_node_pos(far, Vector3::new(400.0, 0.0, 0.0));
+            let edge = graph.edge_mut(0);
+            edge.geometry = vec![Vector3::ZERO, Vector3::new(400.0, 0.0, 0.0)];
+            if end == 0 {
+                (edge.start_node, edge.end_node) = (edge.end_node, edge.start_node);
+                edge.geometry.reverse();
+            }
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 400.0;
+            edge.median = RoadMedian::from_tool(if divided { 2 } else { 0 }, 5.0).unwrap();
+            edge.width = 14.0 + if divided { 5.0 } else { 0.0 };
+            graph.rebuild_all_indices();
+            graph.rebuild_intersection_clips();
+            let layout = PocketLayout::prepare(
+                &graph,
+                PocketRequest {
+                    edge: 0,
+                    at_start: end == 1,
+                    left,
+                    right,
+                    length: 80.0,
+                    taper: 35.0,
+                },
+            )
+            .unwrap();
+            let edited = layout.apply(&mut graph);
+            graph.rebuild_intersection_clips();
+            let pocket = edited
+                .into_iter()
+                .find(|&id| graph.edge(id).pocket_taper().is_some())
+                .unwrap();
+            assert_eq!(graph.edge(pocket).pocket_taper().unwrap().0, end);
+            let edge = graph.edge(pocket);
+            let half = f32::from(edge.fwd_lanes + edge.bkw_lanes) * crate::config::LANE_WIDTH * 0.5;
+            let mut surface = RoadSurfaceSystem::new(128.0);
+            assert!(
+                surface.compile_dirty(&graph, &terrain),
+                "end={end} left={left} divided={divided}"
+            );
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            let mesh = road::RoadRenderer
+                .generate_mesh_data_with_surface(&graph, &lanes, &terrain, &surface);
+            let removed = graph
+                .edges()
+                .iter()
+                .enumerate()
+                .filter(|(id, _)| *id != pocket)
+                .map(|(id, _)| NetworkMeshOwner::Edge(id))
+                .chain((0..graph.node_count()).map(|id| NetworkMeshOwner::Node(id as u32)))
+                .collect();
+            let mesh = mesh.without_owners(&removed);
+            let mut count = 0;
+            let mut max_lateral = 0.0_f32;
+            let expected_color = road::road_space_color(graph.edge(pocket));
+            for (uv, color) in mesh.road_uvs.iter().zip(&mesh.road_colors) {
+                if color.a < 0.5 {
+                    continue;
+                }
+                assert_eq!(
+                    *color, expected_color,
+                    "pocket and through asphalt share one packed material"
+                );
+                assert!(
+                    uv.y.abs() <= half + 1e-4,
+                    "end={end} left={left} divided={divided}: asphalt {uv:?} exceeds shader half-width {half}"
+                );
+                max_lateral = max_lateral.max(uv.y.abs());
+                count += 1;
+            }
+            assert!(count > 0);
+            assert!(
+                (max_lateral - half).abs() < 1e-4,
+                "full pocket width is represented without clamping"
+            );
+        }
+    }
+}
+
 // Preserve the recorded visible-pose debug representation while ignoring new ownership metadata.
 struct VisiblePose<'a, K> {
     name: &'static str,

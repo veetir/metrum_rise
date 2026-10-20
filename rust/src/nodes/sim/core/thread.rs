@@ -46,6 +46,8 @@ pub(crate) enum SimCommand {
     /// Place a new road segment.  Executed in the sim thread so the main thread
     /// never blocks on the expensive lane-rebuild and zoning-obstruction passes.
     AddRoad {
+        /// Authored crossing layer captured at submission.
+        crossing_level: i16,
         /// Authored median selection captured at submission.
         median: Option<crate::simulation::network::graph::RoadMedian>,
         /// World-space polyline points.
@@ -263,6 +265,7 @@ pub(crate) fn run_sim_thread(
                     }
                 }
                 Ok(SimCommand::AddRoad {
+                    crossing_level,
                     median,
                     points,
                     fwd_lanes,
@@ -297,6 +300,7 @@ pub(crate) fn run_sim_thread(
                         );
                         c.commit_road(
                             RoadCommitRequest {
+                                crossing_level,
                                 median,
                                 points,
                                 fwd_lanes,

@@ -81,7 +81,23 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
             );
         };
         let asphalt = piece.road_surface_polygons_in_road_space();
-        if edge.median.is_some() {
+        if edge.pocket_taper().is_some() {
+            asphalt
+                .map(|(quad, corners, mut road_space)| {
+                    for uv in &mut road_space {
+                        let section = edge.lane_section_at(uv[0]);
+                        let center = (section.left + section.right) * 0.5;
+                        let median_center = (section.median_left + section.median_right) * 0.5;
+                        let median_half = (section.median_right - section.median_left) * 0.5;
+                        let side = if uv[1] < median_center { -1.0 } else { 1.0 };
+                        // The shader's carriageway is centred. A right pocket shifts only one
+                        // kerb; using the graph centreline makes its asphalt look like gravel.
+                        uv[1] -= center + side * median_half;
+                    }
+                    (quad, corners, road_space)
+                })
+                .for_each(emit_asphalt);
+        } else if edge.median.is_some() {
             let center = edge.median_center_offset();
             let half = edge.median_half_width();
             asphalt

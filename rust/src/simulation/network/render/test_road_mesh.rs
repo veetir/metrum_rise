@@ -131,6 +131,7 @@ mod tests {
             .map(|segment| segment[0].distance_to(segment[1]))
             .sum();
         Edge {
+            crossing_level: 0,
             lane_tapers: None,
             median: None,
             start_node: n1,

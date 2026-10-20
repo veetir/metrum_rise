@@ -32,6 +32,8 @@ use crate::simulation::water::WaterSystem;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
+    /// Crossing layer pinned to this rendered result.
+    pub(crate) crossing_level: i16,
     /// Selected median, pinned to this result even if the editor has since changed options.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Fixed-size worker stage measurements, present only in performance captures.
@@ -77,6 +79,8 @@ pub(crate) struct RoadPreviewWorkerContext {
 
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
+    /// Authored crossing layer, captured in exact preview/commit identity.
+    pub(crate) crossing_level: i16,
     /// Authored median selection captured with this input.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Diagnostic enqueue clock; absent outside performance captures.
@@ -425,12 +429,13 @@ fn prepare_road_preview_from_context(
     );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+    let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
         &request.points,
         &context.terrain,
         &context.region_graph,
         &context.road_surface,
         request.snap_to_existing_roads,
+        request.crossing_level,
     );
     prepared.median = request.median;
     let (mut preview, topology_reuse, render_input, topology_plan) = preview_surface
@@ -486,6 +491,7 @@ fn prepare_road_preview_from_context(
     };
     let request_id = request.request_id;
     let median = request.median;
+    let crossing_level = request.crossing_level;
     let edit_plan = (preview.is_valid && generation_matches).then(|| {
         Arc::new(RoadEditPlan::new(
             request,
@@ -498,6 +504,7 @@ fn prepare_road_preview_from_context(
         ))
     });
     RoadPreviewSnapshot {
+        crossing_level,
         median,
         timing: None,
         include_terrain,

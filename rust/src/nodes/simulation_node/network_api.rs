@@ -21,6 +21,16 @@ impl SimulationNode {
         }
     }
 
+    /// Selects an explicit crossing layer; higher layers must pass above lower layers.
+    #[func]
+    pub fn set_road_tool_crossing_level(&mut self, level: i32) -> GString {
+        let Ok(level) = i16::try_from(level) else {
+            return "crossing_level_out_of_range".into();
+        };
+        self.road_tool_crossing_level = level;
+        GString::new()
+    }
+
     /// Queues an in-place lane/median edit using the current tool selection; poll the returned
     /// identity with `get_road_commit_result`, exactly as for drawing a road.
     #[func]
@@ -235,6 +245,7 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         vdict! { "fwd_lanes": i32::from(edge.fwd_lanes), "bkw_lanes": i32::from(edge.bkw_lanes),
+        "crossing_level": edge.crossing_level,
         "median_style": edge.median.map_or(0, |median| median.style as i32),
         "median_width": edge.median.map_or(0.0, |median| median.width_m) }
     }
@@ -306,6 +317,7 @@ impl SimulationNode {
         let send_ok = self
             .cmd_tx
             .send(crate::nodes::sim::core::SimCommand::AddRoad {
+                crossing_level: self.road_tool_crossing_level,
                 median: self.road_tool_median,
                 points,
                 fwd_lanes,

@@ -193,6 +193,7 @@ mod tests {
             width: 22.5,
             physical_length: 150.0,
             median: RoadMedian::from_tool(2, 5.0).unwrap(),
+            crossing_level: 0,
             lane_tapers: Some(Box::new([
                 Some(RoadLaneTaper {
                     length_m: 35.0,

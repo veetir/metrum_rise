@@ -134,6 +134,28 @@ impl SimCore {
             .transit_network
             .finalize_road_geometry(&mut self.region_graph);
         dirty.extend(finalized.dirty_edges);
+        let mut ordered: Vec<_> = dirty.iter().copied().collect();
+        ordered.sort_unstable();
+        for id in ordered {
+            if let Some(refusal) = self
+                .transit_network
+                .road_surface
+                .crossing_clearance_violation(
+                    &self.region_graph,
+                    id,
+                    &self.region_graph,
+                    &HashSet::from([id]),
+                )
+            {
+                self.rollback_staged_road_edit();
+                self.last_road_rejection = Some(RoadRejection::from_validation(
+                    refusal.invalid_reason,
+                    &refusal,
+                    &[],
+                ));
+                return false;
+            }
+        }
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied());
         self.mark_local_network_render_dirty();

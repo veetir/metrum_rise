@@ -58,12 +58,13 @@ impl RoadEditPlan {
     /// Builds the same local road solution as the worker without cloning the resident city.
     pub(crate) fn compile_road(core: &SimCore, request: RoadPreviewRequest) -> Self {
         use crate::simulation::network::surface::RoadSurfaceSystem;
-        let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+        let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
             &request.points,
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.road_surface,
             request.snap_to_existing_roads,
+            request.crossing_level,
         );
         prepared.median = request.median;
         let (preview, reuse, _, topology) = core
@@ -392,6 +393,11 @@ impl RoadEditPlan {
             .then_some(&self.road.prepared)
     }
 
+    /// Layer selected by this immutable request; stale previews cannot change topology.
+    pub(crate) fn crossing_level(&self) -> i16 {
+        self.road.prepared.crossing_level
+    }
+
     /// Median selected by this immutable request; part of commit/preview identity.
     pub(crate) fn median(&self) -> Option<crate::simulation::network::graph::RoadMedian> {
         self.road.prepared.median
@@ -439,6 +445,7 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                crossing_level: 0,
                 median: None,
                 enqueued_at: None,
                 include_terrain: false,
@@ -492,6 +499,7 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                crossing_level: 0,
                 median: None,
                 enqueued_at: None,
                 include_terrain: false,
