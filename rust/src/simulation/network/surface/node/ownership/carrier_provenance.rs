@@ -373,6 +373,17 @@ fn source_segment_provenance_for_point(
     ) {
         return Ok(Some(origin));
     }
+    // An owner/source can have mouth and side-join height domains. Before rejecting an
+    // unresolved ambiguity, discard segments explicitly declared only by another claim.
+    // Undeclared source/constraint rails retain the strict checks above. This cold path
+    // reuses the candidate buffer and existing contour membership, with no new allocation.
+    candidates.retain(|candidate| source_segment_matches_claim(*candidate, claim_priority, rails));
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    if candidates.len() == 1 {
+        return Ok(Some(source_segment_origin(candidates[0])));
+    }
     Err(
         NodeBooleanOwnershipError::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
             owner,
@@ -463,6 +474,30 @@ fn candidate_is_declared_generated_contour_segment(
             && generated_contour_matches_source(owner, source, contour)
             && generated_contour_contains_candidate_segment(contour, candidate)
     })
+}
+
+fn source_segment_matches_claim(
+    candidate: NodeSourceSegmentAuthorizationCandidate,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    rails: &NodeRailContourSet,
+) -> bool {
+    let source = (
+        candidate.source_kind,
+        candidate.source_mouth_order_index,
+        candidate.source_band_index,
+    );
+    let mut declared = false;
+    for contour in &rails.contours {
+        if generated_contour_matches_source(candidate.source_segment_id.owner, source, contour)
+            && generated_contour_contains_candidate_segment(contour, candidate)
+        {
+            declared = true;
+            if contour.claim_priority == claim_priority {
+                return true;
+            }
+        }
+    }
+    !declared
 }
 
 fn generated_contour_contains_candidate_segment(

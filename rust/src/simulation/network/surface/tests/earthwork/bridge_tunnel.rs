@@ -200,3 +200,45 @@ fn tunnel_earthworks_only_stamp_portals() {
     assert!(center.abs() <= 0.01);
     assert!(portal <= -0.1);
 }
+
+#[test]
+fn bridge_abutment_ranges_stop_before_fully_airborne_sections() {
+    let terrain = flat_terrain(129, 65);
+    let surface = RoadSurfaceSystem::new(16.0);
+    let ground = Vector3::new(-48.0, 0.0, 0.0);
+    let air = Vector3::new(48.0, 7.5, 0.0);
+    for points in [vec![ground, air], vec![air, ground]] {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(points[1], NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            EdgeClass::Bridge,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        let sections = surface.compile_edge_sections(&graph, edge_idx);
+        let ranges = surface.earthwork_section_ranges_for_edge(
+            &graph,
+            edge_idx,
+            graph.edge(edge_idx),
+            &sections,
+            &terrain,
+        );
+        assert!(
+            !ranges.is_empty(),
+            "the grounded abutment still needs a cutout"
+        );
+        for (first, last) in ranges {
+            assert!(
+                sections[first..=last]
+                    .iter()
+                    .all(|section| surface.bridge_section_contacts_terrain(section, &terrain)),
+                "a bridge cutout must not remove terrain beneath an airborne section"
+            );
+        }
+    }
+}

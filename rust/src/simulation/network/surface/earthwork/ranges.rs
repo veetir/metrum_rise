@@ -84,6 +84,9 @@ impl RoadSurfaceSystem {
             return Vec::new();
         }
 
+        // Only contacting sections own a terrain cutout. Padding into the next airborne
+        // section removes the natural ground below an open bridge deck, leaving a visible
+        // hole beside the abutment. The elevated continuation keeps its underlying terrain.
         let mut ranges = Vec::new();
         if self.bridge_section_contacts_terrain(&sections[start_index], terrain) {
             let mut contact_end = start_index;
@@ -92,7 +95,7 @@ impl RoadSurfaceSystem {
             {
                 contact_end += 1;
             }
-            let transition_end = (contact_end + 1).min(end_index);
+            let transition_end = contact_end;
             if transition_end > start_index {
                 ranges.push((start_index, transition_end));
             }
@@ -105,7 +108,7 @@ impl RoadSurfaceSystem {
             {
                 contact_start -= 1;
             }
-            let transition_start = contact_start.saturating_sub(1).max(start_index);
+            let transition_start = contact_start;
             if end_index > transition_start {
                 if let Some(last) = ranges.last_mut() {
                     if transition_start <= last.1 {

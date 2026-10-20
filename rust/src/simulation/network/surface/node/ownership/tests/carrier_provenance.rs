@@ -923,3 +923,78 @@ fn region_for_source(
         seam_constraints: Vec::new(),
     }
 }
+
+#[test]
+fn carrier_provenance_scopes_generated_segments_to_the_region_claim() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 3);
+    let source = (RoadSurfaceBandKind::Carriageway, 0, 3);
+    let point = (0, 0);
+    let mouth = [(-1_000, 0), (1_000, 0), (0, 1_000)];
+    let join = [(1, -1_000), (1, 1_000), (1_000, 0)];
+    let region = region_for_source(owner, source, vec![overlay_point_from_key(point)]);
+    let mut rails = rails_with_source_height_keys(source, mouth.into_iter().chain(join));
+    // One owner/source has two explicit height domains. The side join passes 1 um from
+    // the mouth point at a different height; its rail cannot authorize the MouthBand.
+    for (keys, purpose, claim_priority, height) in [
+        (
+            mouth,
+            NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+            NodeGeneratedContourClaimPriority::MouthBand,
+            0.0,
+        ),
+        (
+            join,
+            NodeGeneratedContourPurpose::BendSideJoin,
+            NodeGeneratedContourClaimPriority::SideJoin,
+            0.003,
+        ),
+    ] {
+        let points_xz: Vec<_> = keys.into_iter().map(road_point_from_key).collect();
+        rails.contours.push(NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band { kind: source.0 },
+            purpose,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            owner: Some(owner),
+            claim_priority,
+            height_points_world: Some(
+                points_xz
+                    .iter()
+                    .map(|p| RoadVec3::new(p.x, height, p.y))
+                    .collect(),
+            ),
+            backend_polyline: road_points_to_polyline(points_xz.clone(), true),
+            points_xz,
+        });
+    }
+    // Keep the support heights consistent with the two declared domains.
+    for p in rails
+        .height_carrier_points_by_source
+        .get_mut(&source)
+        .unwrap()
+    {
+        if ownership_key_from_road_point(road_vec3_xz(*p)).0 == 1 {
+            p.y = 0.003;
+        }
+    }
+    let rail_points = rail_points_with_source_segments(
+        owner,
+        vec![
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(mouth[0], mouth[1]),
+            ),
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(join[0], join[1]),
+            ),
+        ],
+    );
+    let closure = NodeCarrierProvenanceClosure::from_owned_regions(&[region], &rails, &rail_points)
+        .expect("a foreign generated claim must not make the mouth carrier ambiguous");
+    assert!(matches!(closure.records[0].origin,
+        NodeCarrierProvenanceOrigin::SourceSegment { segment_start, segment_end, .. }
+            if segment_start.raw_tuple() == mouth[0] && segment_end.raw_tuple() == mouth[1]));
+}

@@ -416,6 +416,29 @@ impl RegionGraph {
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
+        // Cross-section transitions can own a visual Bend on a straight alignment. The
+        // finalizer does not solve a crossing plane there: two longitudinal profiles cannot
+        // supply crossfall authority. Fitting their almost-collinear one-metre samples would
+        // amplify a mild grade change into a vertical roadbed. Use the same pass-through
+        // contract as finalization, without allocating an incident collection.
+        let mut incidents = self.node_adjacency(node_id).iter().filter_map(|&edge_idx| {
+            let edge = &self.edges[edge_idx];
+            (!edge.deleted && edge.primary_type == TransitType::Road && edge.geometry.len() >= 2)
+                .then(|| JunctionProfileIncident {
+                    edge_idx,
+                    at_start: self.get_valid_node(edge.start_node) == node_id,
+                })
+        });
+        let continuation_axis = if let (Some(a), Some(b), None) =
+            (incidents.next(), incidents.next(), incidents.next())
+            && self.junction_profile_incidents_form_pass_through(&[a, b])
+        {
+            let a = Self::edge_endpoint_direction_xz(&self.edges[a.edge_idx], a.at_start)?;
+            let b = Self::edge_endpoint_direction_xz(&self.edges[b.edge_idx], b.at_start)?;
+            Some((a - b).normalized())
+        } else {
+            None
+        };
         let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0_f64, 0.0, 0.0, 0.0, 0.0);
         for &edge_idx in self.node_adjacency(node_id) {
             let edge = &self.edges[edge_idx];
@@ -457,6 +480,23 @@ impl RegionGraph {
             zz += dz * dz;
             xy += dx * dy;
             zy += dz * dy;
+        }
+        if let Some(axis) = continuation_axis {
+            // Only the longitudinal grade is observable on a straight continuation. Solve
+            // that one-dimensional least-squares system, with zero transverse grade about
+            // the shared bisector. Keep an explicit plane so transition sampling is retained.
+            let ax = f64::from(axis.x);
+            let az = f64::from(axis.y);
+            let denom = ax * ax * xx + 2.0 * ax * az * xz + az * az * zz;
+            if denom <= f64::EPSILON {
+                return None;
+            }
+            let grade = (ax * xy + az * zy) / denom;
+            return grade.is_finite().then_some(JunctionEndpointProfilePlane {
+                origin,
+                grade_x: (grade * ax) as f32,
+                grade_z: (grade * az) as f32,
+            });
         }
         let det = xx * zz - xz * xz;
         if det.abs() <= f64::EPSILON * (xx * zz).max(1.0) {

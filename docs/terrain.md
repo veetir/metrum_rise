@@ -4899,6 +4899,9 @@ Deterministic terrain-render rules:
   ordering, keeping total work `O(contributors + windows)` while reducing its wall-clock critical path
 - only changed tiles build through Rayon; completed tile results are sorted canonically before patch
   composition so scheduling order cannot change topology or shared seam identity
+- bridge abutment cutouts end at the last ground-contact section, retaining natural terrain
+  beneath the airborne continuation. An extra section of padding exposed sky under bridge
+  edges; the range is owned by the road compiler ([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)).
 - road grading guides provide sampling positions, not independent parent-edge height authority.
   They sample the common visual terrain; interior samples inside the required tie-in envelope
   yield to the retained road seam. Shared-side samples remain, graded once against uncut halo

@@ -1435,6 +1435,108 @@ following and existing reservations; traffic lights and right-of-way remain `TRA
 `ROAD-62` need their own ramp/roundabout roles and connectors; the flagged degree-two transition
 is reserved for lane continuity. They can reuse the lane-use, pocket/profile and marking contracts.
 
+### Straight cross-section transitions — ROAD-70
+
+A visual `Bend` at a median/lane/width transition does not authorize a crossing plane on a
+geometrically straight continuation. Profile reconstruction must use the same pass-through
+alignment rule as the junction finalizer. It fits only the longitudinal grade along the shared
+continuation axis, with zero transverse grade, retaining the transition's canonical profile
+stations and rails. Standard section centers keep
+the saved physical longitudinal heights; no terrain height, grade cap or render correction
+supplies road height. Actual bends and multi-arm junctions retain their solved crossing planes.
+The guard uses stack incidents and existing local adjacency/direction helpers: no allocation,
+O(local incident edges + profile points), with no city-wide work.
+
+Diagnosis (2026-10-20, `e572ef39`): `broken-1.sqlite` and `broken-2.sqlite.sqlite` contain valid
+mild longitudinal profiles. The older one-metre crossing-plane fit (`2ec65ca90`) interpreted
+opposing longitudinal grade changes as crossfall when ROAD-66 made median transitions visual
+bends. Node 225 (edges 204/205) reconstructed grade 3.48, giving a band vertex 22.89 m outside
+the saved curve height range; node 278 (285/573) reconstructed grade 1.21, with a 12.01 m outlier.
+Each reproduces with its two edges alone. Removing the median only from 205/573 removes the
+respective ridge. Reverting the round-4 CDT seam fix leaves the probed road triangles identical;
+its old terrain-rendering stall remains a reason to retain that seam fix. The blue slabs are
+background through missing terrain, confirmed by hiding water and changing the background to
+magenta. Terrain consumes the malformed road boundary; it does not originate the ridge.
+
+The whole-map audit finds ten straight median/profile transitions using the unsupported fit.
+Four produce band vertices more than 2 m outside their edge's saved height range: nodes
+225, 278, 56 (43/46, 5.41 m) and 306 (212/283, 3.56 m). The other six are smaller manifestations.
+The two-edge regression `straight_median_transition_does_not_invent_crossfall_from_longitudinal_grades`
+fails before the fix and checks both section heights and complete surface publication afterward.
+
+The corrected fit also exposes an old false source-carrier ambiguity at median-width transition
+16: one owner/source contains both `MouthBand` and `SideJoin` generators, with heights differing
+by 3.3 mm. On the otherwise-rejected ambiguity path, generated segments are scoped to the
+region's declared claim. Exact existing contour membership supplies that authority; unknown or
+same-claim competing rails still face the existing strict checks. The candidate buffer is reused,
+with no new allocation or valid-path work. A separate minimal negative-control regression covers
+this distinction. Final combined validation: 2,556 library tests passed, 146 ignored; release
+build and Clippy all targets pass. All nine headless road/terrain bridge scripts pass
+(`road_cross_section`, `network_tool_chunk_renderer`, `road_junction_preview`,
+`road_preview_stream`, `road_preview_metrics`, `road_benchmark_metrics`, `surface_patch_debug`,
+`zoning_road_tool`, `field_edit_tool`, each with `_test.gd`), and native
+`road_marking_lighting_test` passes. The two canopy-light assertions in
+`terrain_overlay_shader_test` fail on the baseline too; three resource-at-exit warnings also
+reproduce on the baseline. These lighting/shutdown issues remain outside ROAD-70/71.
+
+All three copied inputs have identical road rows and source terrain. The whole-map primary-fix
+comparison preserves section/band/piece-boundary line counts (104,188 / 739,722 / 279,664) and
+every XZ coordinate; height changes remove the bad crossfall. Eighteen final window captures
+were inspected: both spots, street level/overhead/oblique, in each broken save and the full
+medians save. The ridges and background gaps are absent. Captures, numeric scans and logs stay
+local under `$ARTIFACTS`; user saves are untouched.
+
+Verification commands use `cargo build --release`, `RAYON_NUM_THREADS=4 cargo test --lib`, and
+`cargo clippy --all-targets` from `rust/`. On this macOS toolchain, `SDKROOT` selects the installed
+MacOSX26.5 SDK (the default 27.0 SDK stubs are incompatible with its linker). Godot 4.7.2 runs
+use `perl -e 'alarm 900; exec @ARGV' godot --headless --path <isolated-project> --script
+res://tests/<name>.gd` for the nine bridge scripts; native lighting tests omit `--headless`
+and append `-- --asset-editor`.
+Each native library deployment removes the old dylib before copying the release build.
+
+Matched unprofiled release measurements (2026-10-20): exact `e572ef39` production baseline
+versus that revision plus the ROAD-70/71 corrections, Rust 1.98.1, Apple M2 Pro,
+`RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`. The existing `surface_benchmark` fixture has 324 nodes,
+612 standard-road edges, 36 m spacing and a 513 × 513 terrain grid. Three alternating
+before/after process pairs ran without concurrent builds, tests or Godot. Criterion uses ten
+samples, a one-second warm-up and the fixture's two-second requested measurement time
+(automatically extended for the cold compile). Graph/setup and destruction stay outside the
+timed kernel. Values below are the median of the three process medians:
+
+| Workload | Baseline | Fixed | Change |
+| --- | ---: | ---: | ---: |
+| `compile_all_grid` | 1.53879 s | 1.52255 s | −1.06% |
+| `compile_dirty_lane_width_change` | 22.9583 ms | 22.9678 ms | +0.04% |
+
+Paired cold changes span −2.42% to +1.11%; width-edit changes span −0.64% to +0.51%.
+There is no measured regression in these workloads; the spread does not establish a speedup.
+Build each side with `cargo bench --bench surface_benchmark --no-run`, preserve its printed
+executable separately, then run this command once per side/pair with a fresh output directory:
+
+```bash
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 CRITERION_HOME="$ARTIFACTS/criterion-side-pair" \
+  "$BENCH_BINARY" --bench --noplot --warm-up-time 1 \
+  'compile_(all_grid|dirty_lane_width_change)'
+```
+
+### Bridge abutment cutout bounds — ROAD-71
+
+A bridge abutment cutout ends at the last contacting section on each endpoint's existing
+contact interval. It must not include the next fully airborne section. The deck continues above
+natural terrain there; cutting that terrain away exposes the background below the bridge edge.
+The existing contact criterion, road heights, and elevated span remain unchanged. Only the
+canonical support/cutout range shrinks; terrain CDT retains the natural ground beyond it.
+This preserves O(endpoint section count) work and the existing buffers/allocations.
+
+The old one-section padding (`1f845dc57`) produces the small sky-coloured wedges beside edge
+1438 near the second reported spot, independently of the median ridge. Its padded end was at
+road height 90.292 m, with its outside pavement about 2.5 m above source ground. Restricting the
+cutout to ground-contact sections removes those wedges in the window. The whole-save audit
+scans all 17 bridge edges: 29, 56, 60, 125, 187 and 1438 have an airborne padded endpoint.
+`bridge_abutment_ranges_stop_before_fully_airborne_sections` covers both ramp directions and
+fails on the old padding. The final combined library/bridge validation and all 18 inspected
+window captures above include this correction; edge 1438 no longer exposes sky beside its
+abutment.
 
 ## Pedestrian Junction Crossings
 

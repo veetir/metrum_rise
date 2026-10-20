@@ -1125,3 +1125,58 @@ fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
         render_earthwork_faces: Vec::new(),
     }
 }
+
+#[test]
+fn straight_median_transition_does_not_invent_crossfall_from_longitudinal_grades() {
+    use crate::simulation::network::graph::RoadMedian;
+
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 100.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    // Two mild longitudinal grades on a nearly straight alignment do not define crossfall.
+    // A median ending here requires a visual Bend, although the profile finalizer correctly
+    // treats the alignment as pass-through and never solves a shared crossing plane.
+    for (endpoint, median) in [
+        (Vector3::new(0.0, 101.2, 24.0), None),
+        (
+            Vector3::new(0.024, 99.52, -24.0),
+            RoadMedian::from_tool(2, 3.2).unwrap(),
+        ),
+    ] {
+        let end = graph.add_node(endpoint, NodeType::Junction);
+        let mut edge = test_edge(
+            center,
+            end,
+            vec![center_pos, endpoint],
+            if median.is_some() { 10.2 } else { 7.0 },
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        );
+        edge.median = median;
+        edge.fwd_lanes = 1;
+        edge.bkw_lanes = 1;
+        edge.start_clip = 7.26;
+        graph.add_edge(edge);
+    }
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    assert_eq!(
+        surface.classify_surface_node_kind_from_graph_geometry(&graph, center),
+        Some(super::super::CompiledNodeKind::Bend)
+    );
+    for edge_idx in 0..2 {
+        for section in surface.compile_edge_sections(&graph, edge_idx) {
+            for band in &section.bands {
+                for height in [band.height_start_m, band.height_end_m] {
+                    assert!(
+                        (height - section.center_height_m).abs() <= CURB_STEP_HEIGHT_M + 0.001,
+                        "a straight median transition invented crossfall: {section:?}"
+                    );
+                }
+            }
+        }
+    }
+    let terrain = TerrainSystem::with_chunking(128, 128, 1.0, 8, 5.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    assert!(surface.published_generation_matches_source());
+}
