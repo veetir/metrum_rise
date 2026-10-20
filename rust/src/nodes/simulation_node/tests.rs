@@ -65,6 +65,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
     let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let end = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     graph.add_edge(Edge {
+        lane_tapers: None,
         median: None,
         start_node: start,
         end_node: end,

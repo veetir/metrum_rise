@@ -136,6 +136,7 @@ fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
     let mut mesh = NetworkMeshData::new();
     // World position (36, -4.45), one metre before a shifted chunk boundary.
     mesh.street_lights.push(StreetLight {
+        owner_edge: usize::MAX,
         position: Vector3::new(511.0, 0.0, 15.55),
         yaw: 0.0,
         kind: StreetLightKind::Path,

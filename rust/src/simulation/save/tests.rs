@@ -125,6 +125,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let end = graph.add_node(points[1], NodeType::Junction);
     let length = points[0].distance_to(points[1]);
     let edge_idx = graph.add_edge(Edge {
+        lane_tapers: None,
         median: None,
         start_node: start,
         end_node: end,
@@ -181,6 +182,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        lane_tapers: None,
         median: None,
         start_node: n0,
         end_node: n1,
@@ -1390,6 +1392,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        lane_tapers: None,
         median: None,
         start_node: n0,
         end_node: n1,
@@ -1858,4 +1861,44 @@ fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
         assert_eq!(edge.start_clip, saved.start_clip);
         assert_eq!(edge.end_clip, saved.end_clip);
     }
+}
+
+#[test]
+fn lane_taper_save_round_trip_and_legacy_absence() {
+    use crate::simulation::network::graph::RoadLaneTaper;
+    let (mut graph, id) = snapshot_test_graph();
+    let node = graph.edge(id).start_node;
+    graph.set_node_type(node, NodeType::LaneTransition);
+    let taper = RoadLaneTaper {
+        length_m: 12.0,
+        from_fwd: 1,
+        from_bkw: 1,
+        from_median_m: 0.0,
+        left_pocket: false,
+        right_pocket: false,
+    };
+    graph.edge_mut(id).lane_tapers = Some(Box::new([Some(taper), None]));
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(loaded.edge(0).lane_tapers, graph.edge(id).lane_tapers);
+    assert_eq!(
+        loaded.node(loaded.edge(0).start_node).node_type,
+        NodeType::LaneTransition
+    );
+    conn.execute_batch("UPDATE road_lane_tapers SET length_m=-1")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+    conn.execute_batch("DROP TABLE road_lane_tapers").unwrap();
+    assert!(
+        network::load_graph(&conn)
+            .unwrap()
+            .edge(0)
+            .lane_tapers
+            .is_none()
+    );
 }

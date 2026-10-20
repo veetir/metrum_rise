@@ -8,6 +8,7 @@ extends RefCounted
 var generation: int = -1
 var request_id: int = 0
 var retained_revision: int = 0
+var _retained_prop_chunks: Array = []
 var _instances: Array[MeshInstance3D] = []
 var _retained_instances: Array[MeshInstance3D] = []
 var _retained_keys := PackedInt32Array()
@@ -75,6 +76,10 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 		_recycle(retained)
 		return false
 	if not reuse_retained:
+		# Keep only packed poses; retained geometry already lives in the staged ArrayMeshes.
+		_retained_prop_chunks = []
+		for chunk: Dictionary in data.get("retained_chunks", []):
+			_retained_prop_chunks.append({"chunk_x": chunk.chunk_x, "chunk_z": chunk.chunk_z, "street_lights": chunk.get("street_lights", PackedFloat32Array()), "road_signs": chunk.get("road_signs", PackedFloat32Array())})
 		clear()
 		_recycle(_retained_instances)
 		_retained_instances = retained
@@ -110,6 +115,25 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 		tool._preview_metric_row["retained_layers_reused"] = reused_layers
 	return true
 
+# Combines exact owner partitions; placement remains Rust-owned, including retained props.
+func prop_chunks(data: Dictionary) -> Array:
+	var chunks := {}
+	for batch: Array in [data.get("chunks", []), data.get("approach_chunks", []), _retained_prop_chunks]:
+		for source: Dictionary in batch:
+			var key := Vector2i(source.chunk_x, source.chunk_z)
+			if not chunks.has(key):
+				chunks[key] = {"chunk_x": key.x, "chunk_z": key.y, "street_lights": PackedFloat32Array(), "road_signs": PackedFloat32Array()}
+			for field: String in ["street_lights", "road_signs"]:
+				var poses: PackedFloat32Array = chunks[key][field]
+				poses.append_array(source.get(field, PackedFloat32Array()))
+				chunks[key][field] = poses
+	# Include empty replacements to remove all old props in a now empty chunk.
+	for i in range(0, _retained_keys.size(), 2):
+		var key := Vector2i(_retained_keys[i], _retained_keys[i + 1])
+		if not chunks.has(key):
+			chunks[key] = {"chunk_x": key.x, "chunk_z": key.y}
+	return chunks.values()
+
 func clear() -> void:
 	for instance in _hidden:
 		if is_instance_valid(instance):
@@ -132,6 +156,7 @@ func reset() -> void:
 	_retained_keys = PackedInt32Array()
 	_retained_source_generation = -1
 	retained_revision = 0
+	_retained_prop_chunks = []
 
 func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin_x: float, origin_z: float, output: Array[MeshInstance3D], prefix: String) -> bool:
 	if not chunks is Array:
@@ -144,6 +169,14 @@ func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin
 		if not keys.has(key) or seen.has(key) or chunk.get("removed", true):
 			return false
 		seen[key] = true
+		# A pole can own a chunk without a triangle there. Its poses stage separately.
+		var props_only := bool(chunk.get("road_mesh_payload_validated", false))
+		for layer: String in ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "median_grass", "concrete"]:
+			var vertices: Variant = chunk.get(layer + "_vertices")
+			if not vertices is PackedVector3Array or not vertices.is_empty():
+				props_only = false
+		if props_only:
+			continue
 		if not tool._preview_metric_row.is_empty():
 			tool._road_upload_metrics = tool._preview_metric_row
 		var reused := not _spare.is_empty()

@@ -474,3 +474,26 @@ impl RoadTerrainPlan {
             .count()
     }
 }
+
+impl SimCore {
+    /// Compiles reversible terrain cutouts for an endpoint edit using the production tile builder.
+    /// Inputs and site snapshots cover only the old/new local road ownership footprint.
+    pub(crate) fn compile_pocket_preview_terrain(
+        &self,
+        roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
+    ) -> Option<RoadTerrainPlan> {
+        let earthworks = Arc::new(roads.compile_earthworks(
+            &self.transit_network.road_surface,
+            &self.region_graph,
+            &self.heightmap,
+        )?);
+        let sites = RoadTerrainSiteInputs::capture(self, &earthworks)?;
+        Some(RoadTerrainPlan::compile(
+            &self.heightmap,
+            &earthworks,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            Some(sites),
+        ))
+    }
+}

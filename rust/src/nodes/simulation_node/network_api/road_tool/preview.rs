@@ -492,44 +492,10 @@ impl SimulationNode {
         let readiness_ms = export_start.map(|t| t.elapsed().as_secs_f64() * 1000.0);
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
         if let Some(scene) = &preview.junction_preview {
-            let empty = BTreeSet::new();
-            let export = |meshes| {
-                SimCore::road_mesh_chunks_dict(
-                    meshes,
-                    &empty,
-                    true,
-                    preview.surface_generation,
-                    scene.chunk_span_m,
-                    scene.chunk_origin_x_m,
-                    scene.chunk_origin_z_m,
-                )
-            };
-            let mut replacement = export(&scene.planned);
-            // Approach clips follow the moving junction bounds, so they travel with every pose.
-            replacement.set(
-                "approach_chunks",
-                export(&scene.approach).get("chunks").unwrap(),
-            );
-            if scene.retained_revision != retained_revision || retained_revision == 0 {
-                let retained = export(scene.retained.as_ref());
-                replacement.set("retained_chunks", retained.get("chunks").unwrap());
-            }
-            replacement.set(
-                "retained_revision",
-                i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "source_mesh_generation",
-                i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "replacement_keys",
-                PackedInt32Array::from_iter(
-                    scene
-                        .replacement_chunks
-                        .iter()
-                        .flat_map(|key| [key.0, key.1]),
-                ),
+            let replacement = Self::road_junction_preview_dict(
+                scene,
+                preview.surface_generation,
+                retained_revision,
             );
             if let Some(patches) = terrain_patches {
                 let mut payloads = Array::<VarDictionary>::new();
@@ -596,7 +562,11 @@ impl SimulationNode {
         dict.to_variant()
     }
 
-    fn append_road_preview_visual_mesh(dict: &mut VarDictionary, mesh: &RoadPreviewVisualMesh) {
+    /// Exports material-tagged road preview triangles for drawing and endpoint edits.
+    pub(crate) fn append_road_preview_visual_mesh(
+        dict: &mut VarDictionary,
+        mesh: &RoadPreviewVisualMesh,
+    ) {
         dict.set(
             "surface_vertices",
             PackedVector3Array::from(mesh.vertices.as_slice()),
@@ -821,5 +791,55 @@ impl SimulationNode {
         dict.set("clearance_m", validation.clearance_m);
         dict.set("required_clearance_m", validation.required_clearance_m);
         dict
+    }
+}
+
+impl SimulationNode {
+    /// Exports the same reversible chunk protocol for drawing and endpoint editing.
+    pub(crate) fn road_junction_preview_dict(
+        scene: &crate::simulation::network::render::road::preview::RoadJunctionPreview,
+        surface_generation: u64,
+        retained_revision: u64,
+    ) -> VarDictionary {
+        let empty = BTreeSet::new();
+        let export = |meshes| {
+            SimCore::road_mesh_chunks_dict(
+                meshes,
+                &empty,
+                true,
+                surface_generation,
+                scene.chunk_span_m,
+                scene.chunk_origin_x_m,
+                scene.chunk_origin_z_m,
+            )
+        };
+        let mut replacement = export(&scene.planned);
+        // Approach clips follow the moving junction bounds, so they travel with every pose.
+        replacement.set(
+            "approach_chunks",
+            export(&scene.approach).get("chunks").unwrap(),
+        );
+        if scene.retained_revision != retained_revision || retained_revision == 0 {
+            let retained = export(scene.retained.as_ref());
+            replacement.set("retained_chunks", retained.get("chunks").unwrap());
+        }
+        replacement.set(
+            "retained_revision",
+            i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
+        );
+        replacement.set(
+            "source_mesh_generation",
+            i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
+        );
+        replacement.set(
+            "replacement_keys",
+            PackedInt32Array::from_iter(
+                scene
+                    .replacement_chunks
+                    .iter()
+                    .flat_map(|key| [key.0, key.1]),
+            ),
+        );
+        replacement
     }
 }

@@ -30,6 +30,7 @@ fn grid(side: u32) -> RegionGraph {
             {
                 let geometry = vec![graph.node(a).pos, graph.node(b).pos];
                 graph.add_edge(Edge {
+                    lane_tapers: None,
                     median: None,
                     start_node: a,
                     end_node: b,

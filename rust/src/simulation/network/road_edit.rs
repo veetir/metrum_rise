@@ -188,7 +188,7 @@ impl RoadTopologyPlan {
     /// Retains final local road geometry and prospective owner IDs without compiling terrain.
     pub(super) fn capture_road_queries(
         &mut self,
-        local: &RegionGraph,
+        local: &mut RegionGraph,
         surface: &RoadSurfaceSystem,
         source: &RegionGraph,
     ) {
@@ -217,6 +217,7 @@ impl RoadTopologyPlan {
                 })
             })
             .collect::<Vec<_>>();
+        local.set_placement_identities(edge_ids.clone(), node_ids.clone());
         let (replaced_edges, replaced_nodes) = self.commit_recompiled_sources(local, source);
         self.roads = Some(Arc::new(PlannedRoadSurfaceQuery::capture(
             local,
@@ -310,6 +311,7 @@ impl TransitNetwork {
         let mut dirty_edges = std::mem::take(&mut self.bulk_dirty_edges);
         let authored_edges = std::mem::take(&mut self.profile_authored_edges);
         let affected_nodes = self.bulk_surface_profile_nodes(graph, &dirty_edges);
+        super::pockets::author_lane_count_transitions(graph, &affected_nodes, &mut dirty_edges);
         let start = Instant::now();
         dirty_edges.extend(graph.finalize_junction_endpoint_profiles_for_edges(
             &affected_nodes,

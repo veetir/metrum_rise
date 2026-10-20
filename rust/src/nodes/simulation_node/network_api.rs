@@ -47,6 +47,182 @@ impl SimulationNode {
         self.road_commit_request_id
     }
 
+    /// Adds road-end turn lanes through a hidden transition node; poll normal road completion.
+    #[func]
+    pub fn change_road_pocket(
+        &mut self,
+        edge: i32,
+        at_start: bool,
+        left: bool,
+        right: bool,
+        pocket_m: f32,
+        taper_m: f32,
+    ) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if let Ok(edge) = usize::try_from(edge) {
+            let _ = self
+                .cmd_tx
+                .send(crate::nodes::sim::core::SimCommand::ChangeRoadPocket {
+                    edge,
+                    at_start,
+                    left,
+                    right,
+                    pocket_m,
+                    taper_m,
+                    completion,
+                });
+        } else {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_road".into(),
+                detail: "invalid_road".into(),
+            });
+        }
+        self.road_commit_request_id
+    }
+
+    /// Resolves the nearest stored road end and reports its authored pocket dimensions.
+    #[func]
+    pub fn get_road_pocket_selection(&self, world_x: f32, world_z: f32) -> VarDictionary {
+        let core = self.lock_core();
+        let id = core.get_hovered_edge_internal(world_x, world_z);
+        let Some(edge) = usize::try_from(id)
+            .ok()
+            .and_then(|id| core.region_graph.get_edge(id))
+            .filter(|e| !e.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        let p = Vector2::new(world_x, world_z);
+        let start = core.region_graph.node(edge.start_node).pos;
+        let end = core.region_graph.node(edge.end_node).pos;
+        let mut at_start = p.distance_squared_to(Vector2::new(start.x, start.z))
+            < p.distance_squared_to(Vector2::new(end.x, end.z));
+        let mut left = false;
+        let mut right = false;
+        let mut length = 80.0;
+        let mut taper = 35.0;
+        if let Some((profile_end, profile)) = edge.pocket_taper() {
+            at_start = profile_end == 1;
+            left = profile.left_pocket;
+            right = profile.right_pocket;
+            taper = profile.length_m;
+            length = edge.physical_length
+                - profile.length_m
+                - if at_start {
+                    edge.start_clip
+                } else {
+                    edge.end_clip
+                };
+        }
+        vdict! {"edge":id,"at_start":at_start,"left":left,"right":right,"pocket_m":length,"taper_m":taper}
+    }
+
+    /// Returns a nonmutating compiled endpoint preview; dimensions use the same operation as commit.
+    #[func]
+    pub fn preview_road_pocket(
+        &mut self,
+        edge: i32,
+        at_start: bool,
+        left: bool,
+        right: bool,
+        pocket_m: f32,
+        taper_m: f32,
+    ) -> VarDictionary {
+        self.pocket_preview_revision = self.pocket_preview_revision.wrapping_add(1).max(1);
+        let core = self.lock_core();
+        let mut result = VarDictionary::new();
+        let request = crate::simulation::network::pockets::PocketRequest {
+            edge: usize::try_from(edge).unwrap_or(usize::MAX),
+            at_start,
+            left,
+            right,
+            length: pocket_m,
+            taper: taper_m,
+        };
+        if let Ok(layout) =
+            crate::simulation::network::pockets::PocketLayout::prepare(&core.region_graph, request)
+            && let Some(reason) = core.pocket_layout_refusal(&layout)
+        {
+            result.set("is_valid", false);
+            result.set("invalid_reason", reason);
+            return result;
+        }
+        match core.transit_network.road_surface.compile_pocket_preview(
+            &core.region_graph,
+            &core.heightmap,
+            request,
+        ) {
+            Ok((mut scene, roads)) => {
+                let Some(patches) = core
+                    .compile_pocket_preview_terrain(&roads)
+                    .and_then(|terrain| terrain.preview_patches())
+                else {
+                    result.set("is_valid", false);
+                    result.set("is_pending", true);
+                    result.set("invalid_reason", "surface_preview_pending");
+                    return result;
+                };
+                let mut payloads = Array::<VarDictionary>::new();
+                for patch in patches {
+                    let mut data = if patch.input_road_loops == 0 {
+                        Self::terrain_patch_dict(&patch.patch, &[])
+                    } else {
+                        Self::cached_refined_terrain_patch_dict(&patch, false, &[])
+                    };
+                    data.set(
+                        "terrain_revision",
+                        i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+                    );
+                    data.set(
+                        "surface_generation",
+                        i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
+                    );
+                    data.set("render_step_mm", i64::from(patch.key.render_step_mm));
+                    data.set(
+                        "terrain_requires_engineered_refinement",
+                        patch.input_road_loops > 0,
+                    );
+                    payloads.push(&data);
+                }
+                result.set("terrain_preview", vdict! { "patches": payloads });
+
+                scene.source_mesh_generation = core.cached_road_mesh_generation;
+                let meshes = scene
+                    .replacement_chunks
+                    .iter()
+                    .filter_map(|key| {
+                        core.cached_road_mesh_chunks
+                            .get(key)
+                            .map(|mesh| (*key, Arc::clone(mesh)))
+                    })
+                    .collect();
+                scene.retain_existing(&meshes);
+                scene.retained_revision = self.pocket_preview_revision;
+                result.set("is_valid", true);
+                result.set(
+                    "junction_preview",
+                    Self::road_junction_preview_dict(&scene, core.road_tool_surface_generation, 0),
+                );
+                result.set(
+                    "request_id",
+                    i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+                );
+            }
+            Err(reason) => {
+                result.set("is_valid", false);
+                result.set("invalid_reason", reason);
+            }
+        }
+        result.set(
+            "surface_generation",
+            self.get_road_tool_surface_generation(),
+        );
+        result
+    }
+
     /// Returns the authored lane/median selection of a live road for inspection.
     #[func]
     pub fn get_road_cross_section(&self, edge: i32) -> VarDictionary {

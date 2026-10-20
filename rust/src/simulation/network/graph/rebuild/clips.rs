@@ -36,7 +36,7 @@ impl RegionGraph {
     /// and ensures space for the junction mesh.
     pub fn rebuild_intersection_clips(&mut self) {
         let edge_indices = (0..self.edges.len()).collect::<Vec<_>>();
-        let clip_stats = self.build_clip_node_stats(&edge_indices, None);
+        let clip_stats = self.build_clip_node_stats(&edge_indices, None, None);
         let computed_clips = self.compute_intersection_clips(&edge_indices, &clip_stats, None);
 
         for (edge_idx, start_clip, end_clip) in computed_clips {
@@ -74,7 +74,7 @@ impl RegionGraph {
             self.remove_from_spatial_index(edge_idx);
         }
 
-        let clip_stats = self.build_clip_node_stats(&reindex_ids, Some(affected_nodes));
+        let clip_stats = self.build_clip_node_stats(&reindex_ids, Some(affected_nodes), None);
         let computed_clips =
             self.compute_intersection_clips(&reindex_ids, &clip_stats, Some(affected_nodes));
 
@@ -129,10 +129,30 @@ impl RegionGraph {
         edge_ids
     }
 
+    /// Predicts one changed cross-section's mouth using the authoritative local clip solver.
+    /// Geometry/tangents remain unchanged; work visits only the endpoint's incident roads.
+    pub(crate) fn endpoint_clip_for_width(
+        &self,
+        edge: usize,
+        node: u32,
+        width: f32,
+        half: f32,
+    ) -> f32 {
+        let node = self.get_valid_node(node);
+        let affected = HashSet::from([node]);
+        let stats = self.build_clip_node_stats(
+            self.node_adjacency(node),
+            Some(&affected),
+            Some((edge, width, half)),
+        );
+        self.clip_for_edge_at_node(edge, node, self.edge(edge).physical_length, &stats)
+    }
+
     fn build_clip_node_stats(
         &self,
         edge_indices: &[usize],
         affected_nodes: Option<&HashSet<u32>>,
+        width_override: Option<(usize, f32, f32)>,
     ) -> HashMap<u32, ClipNodeStats> {
         let mut stats: HashMap<u32, ClipNodeStats> = HashMap::new();
 
@@ -154,7 +174,11 @@ impl RegionGraph {
                     Self::edge_endpoint_direction_xz(edge, false),
                 ),
             ];
-            let half_width_m = Self::roadbed_half_width_m(edge);
+            let (width_m, half_width_m) =
+                width_override.filter(|&(id, _, _)| id == edge_idx).map_or(
+                    (edge.width, Self::roadbed_half_width_m(edge)),
+                    |(_, width, half)| (width, half),
+                );
 
             for (node_id, direction_xz) in endpoints {
                 if affected_nodes.is_some_and(|affected| !affected.contains(&node_id)) {
@@ -166,8 +190,8 @@ impl RegionGraph {
                     ..Default::default()
                 });
                 node_stats.connection_count += 1;
-                node_stats.max_road_width_m = node_stats.max_road_width_m.max(edge.width);
-                node_stats.min_road_width_m = node_stats.min_road_width_m.min(edge.width);
+                node_stats.max_road_width_m = node_stats.max_road_width_m.max(width_m);
+                node_stats.min_road_width_m = node_stats.min_road_width_m.min(width_m);
                 node_stats.max_half_width_m = node_stats.max_half_width_m.max(half_width_m);
 
                 if let Some(direction_xz) = direction_xz {
@@ -246,6 +270,15 @@ impl RegionGraph {
         let Some(stats) = clip_stats.get(&node_id) else {
             return 0.0;
         };
+        if self.nodes[node_id as usize].node_type == NodeType::LaneTransition {
+            let edge = self.edge(edge_idx);
+            let end = usize::from(edge.end_node == node_id);
+            return edge
+                .lane_tapers
+                .as_ref()
+                .and_then(|ends| ends[end])
+                .map_or(0.0, |t| t.length_m);
+        }
         if self.nodes[node_id as usize].node_type != NodeType::Junction {
             return 0.0;
         }
@@ -333,7 +366,9 @@ impl RegionGraph {
         } else {
             0.0
         };
-        edge.width.max(crate::config::LANE_WIDTH) * 0.5 + sidewalk_width
+        edge.width.max(crate::config::LANE_WIDTH) * 0.5
+            + sidewalk_width
+            + edge.pocket_surface_shift().abs()
     }
 
     pub(super) fn edge_endpoint_direction_xz(edge: &Edge, at_start: bool) -> Option<Vector2> {

@@ -19,6 +19,7 @@ pub use render::NetworkMeshData;
 pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
+pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub mod topology;
 use crate::config;
@@ -59,6 +60,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         .sum();
 
     graph::Edge {
+        lane_tapers: None,
         median: None,
         start_node,
         end_node,

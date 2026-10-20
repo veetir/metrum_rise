@@ -81,6 +81,8 @@ pub(crate) enum RoadSignKind {
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RoadSign {
+    /// Exact source edge for reversible preview filtering; omitted from the Godot pose payload.
+    pub(crate) owner_edge: usize,
     /// Pole base in the owning mesh's coordinate system.
     pub(crate) position: Vector3,
     /// Rotation about +Y, in radians.
@@ -585,19 +587,32 @@ fn chain_warnings(
     stations: &mut HashMap<usize, ChainSpan>,
     edges: &mut Vec<usize>,
 ) {
-    let chain_id = *chain.iter().min().unwrap();
+    let chain_id = *chain
+        .iter()
+        .min_by_key(|&&id| graph.placement_edge_id(id))
+        .unwrap();
     let mut endpoint = None;
     for &id in chain {
         let edge = graph.edge(id);
         for node in [edge.start_node, edge.end_node] {
             if continuation(graph, node, id, degrees).is_none() {
-                endpoint =
-                    Some(endpoint.map_or((node, id), |old: (u32, usize)| old.min((node, id))));
+                let key =
+                    |(node, edge)| (graph.placement_node_id(node), graph.placement_edge_id(edge));
+                endpoint = Some(endpoint.map_or((node, id), |old| {
+                    if key(old) <= key((node, id)) {
+                        old
+                    } else {
+                        (node, id)
+                    }
+                }));
             }
         }
     }
     let (mut node, mut id) = endpoint.unwrap_or_else(|| {
-        let id = *chain.iter().min().unwrap();
+        let id = *chain
+            .iter()
+            .min_by_key(|&&id| graph.placement_edge_id(id))
+            .unwrap();
         (graph.edge(id).start_node, id)
     });
     points.clear();
@@ -859,6 +874,7 @@ fn pose(
     let tangent = RoadVec2::new(lateral.y, -lateral.x);
     let face = -tangent * f64::from(direction);
     Some(RoadSign {
+        owner_edge: usize::MAX,
         position: Vector3::new(ground.x as f32, height, ground.y as f32),
         yaw: face.x.atan2(face.y) as f32,
         kind,
@@ -1197,7 +1213,10 @@ pub(super) fn emit_road_signs(
                                 && spacing.advance(span, placed_s, side, direction) == 0.0
                             {
                                 if covered.contains(&edge_id) {
-                                    signs.push(sign);
+                                    signs.push(RoadSign {
+                                        owner_edge: edge_id,
+                                        ..sign
+                                    });
                                 }
                                 spacing.insert(span, placed_s, side, direction);
                             }
@@ -1250,7 +1269,10 @@ pub(super) fn emit_road_signs(
                         )
                     {
                         if covered.contains(&edge_id) {
-                            signs.push(sign);
+                            signs.push(RoadSign {
+                                owner_edge: edge_id,
+                                ..sign
+                            });
                         }
                         spacing.insert(span, s, direction, direction);
                     }
@@ -1292,7 +1314,10 @@ pub(super) fn emit_road_signs(
                             visible, terrain, &poles, s, direction, kind, &spacing, span,
                         ) {
                             if covered.contains(&edge_id) {
-                                signs.push(sign);
+                                signs.push(RoadSign {
+                                    owner_edge: edge_id,
+                                    ..sign
+                                });
                             }
                             spacing.insert(span, s, direction, direction);
                         }

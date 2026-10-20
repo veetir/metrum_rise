@@ -986,6 +986,7 @@ fn add_test_border_road(core: &mut SimCore) {
         .region_graph
         .add_node(Vector3::new(180.0, 0.0, 0.0), NodeType::Junction);
     core.region_graph.add_edge(Edge {
+        lane_tapers: None,
         median: None,
         start_node: border,
         end_node: junction,
@@ -1218,6 +1219,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         .map(|points| points[0].distance_to(points[1]))
         .sum();
     Edge {
+        lane_tapers: None,
         median: None,
         start_node,
         end_node,
@@ -2980,4 +2982,92 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
         outcomes[0], outcomes[1],
         "reload must preserve each replacement, placement and queued proof"
     );
+}
+
+#[test]
+fn pocket_edits_and_undo_keep_opposite_frontage_and_occupancy() {
+    use crate::simulation::network::graph::RoadMedian;
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    let center = core
+        .region_graph
+        .add_node(Vector3::ZERO, NodeType::Junction);
+    for (p, count, median) in [
+        (
+            Vector3::new(-240.0, 0.0, 0.0),
+            2,
+            RoadMedian::from_tool(2, 5.0).unwrap(),
+        ),
+        (Vector3::new(100.0, 0.0, 0.0), 1, None),
+        (Vector3::new(0.0, 0.0, 100.0), 1, None),
+        (Vector3::new(0.0, 0.0, -100.0), 1, None),
+    ] {
+        let start = core.region_graph.add_node(p, NodeType::Junction);
+        let geometry = vec![p, Vector3::ZERO];
+        core.region_graph
+            .add_edge(crate::simulation::network::graph::Edge {
+                start_node: start,
+                end_node: center,
+                geometry: geometry.clone(),
+                physical_geometry: geometry,
+                physical_length: p.length(),
+                width: f32::from(count) * 7.0 + median.map_or(0.0, |m| m.width_m),
+                fwd_lanes: count,
+                bkw_lanes: count,
+                median,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                ..Default::default()
+            });
+    }
+    core.region_graph.rebuild_intersection_clips();
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    core.precompute_road_mesh_data();
+    let asset = register_test_asset(
+        &mut core.allocator,
+        "roads_b_frontage",
+        ZoneType::Residential,
+    );
+    add_test_complete_building(&mut core, asset, ZoneType::Residential);
+    let cell = core.config.zone_cell_m;
+    let building = &mut core.allocator.buildings[0];
+    building.center_x = -70.0;
+    building.center_y = -11.0 - cell;
+    building.facing_dir = godot::prelude::Vector2::new(0.0, 1.0);
+    building.frontage_t = 170.0 / 240.0;
+    building.cell_x = (170.0 / cell - 1.0).floor() as usize;
+    building.side_offset = 11.0;
+    core.allocator.rebuild_building_site_clients(cell);
+    for (length, remove) in [(80.0, false), (100.0, false), (100.0, true)] {
+        let id = if core.region_graph.edge_count() > 4 && !core.region_graph.edge(4).deleted {
+            4
+        } else {
+            0
+        };
+        assert!(
+            core.change_road_pocket(id, false, !remove, !remove, length, 35.0),
+            "{:?}",
+            core.last_road_rejection
+        );
+        let b = &core.allocator.buildings[0];
+        assert!((b.center_x + 70.0).abs() < 0.001);
+        let edge = core.region_graph.edge(b.edge_idx);
+        let x = edge.physical_geometry[0].x + b.frontage_t * edge.physical_length;
+        assert!((x + 70.0).abs() < 0.01);
+        let occ = &core.allocator.edge_occupancy[&b.edge_idx];
+        assert!(occ.left[b.cell_x]);
+        assert!(!occ.right[b.cell_x]);
+    }
+    for _ in 0..3 {
+        assert!(core.undo_action_internal());
+        let b = &core.allocator.buildings[0];
+        let edge = core.region_graph.edge(b.edge_idx);
+        assert!(
+            (edge.physical_geometry[0].x + b.frontage_t * edge.physical_length + 70.0).abs() < 0.01
+        );
+        assert!(core.allocator.edge_occupancy[&b.edge_idx].left[b.cell_x]);
+    }
+    assert_eq!(core.allocator.buildings[0].edge_idx, 0);
+    assert!(!core.allocator.edge_occupancy.contains_key(&4));
 }

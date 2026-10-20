@@ -71,6 +71,7 @@ fn build_shared() -> SharedSetup {
     let physical_length = 1_000_000.0;
     let speed_ms = 20.0_f32;
     let edge = Edge {
+        lane_tapers: None,
         median: None,
         start_node: node_a,
         end_node: node_b,
@@ -181,6 +182,7 @@ fn register_test_asset(
 
 fn create_access_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        lane_tapers: None,
         median: None,
         start_node: n0,
         end_node: n1,

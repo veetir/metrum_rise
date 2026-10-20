@@ -103,7 +103,7 @@ Supported live behavior:
 
 - car following with simplified IDM
 - road speed limits
-- junction connector lanes with smooth cubic geometry
+- junction connector lanes with tangent circular turns and cubic lateral transitions
 - curve-based junction turn speed caps
 - acceleration and braking limits
 - connector entry spacing so multiple cars can use a junction when safely separated
@@ -365,6 +365,101 @@ The car's authoritative longitudinal lane becomes the target lane when the maneu
 rendering blends from the source lane to the target lane over the S-curve. This keeps traffic gap
 checks and destination detach checks tied to the lane the car is entering, without creating a
 temporary lane object per car.
+
+ROAD-67 stages 3–5 use [split transition nodes](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35).
+Pocket lanes retain node-to-node identities and ordinary lane-local arc distances. The wider
+road's lane mouths sit at the full-width end of the taper; fork/merge connectors traverse the
+taper through existing junction gap checks and reservations. Transition nodes suppress zebras
+while retaining pedestrian continuity. This adds no agent state or per-tick allocation.
+The final 20 m of a movement-selective approach has solid divider paint. The existing cached
+approach flag bounds every planned/frontage/discretionary maneuver before that interval; no new
+agent fields or allocations are needed, and the added tick work is O(1). A blocked car continues
+legally and replans as described above. Rebuilds can reattach a car directly onto a new taper
+connector at its preserved position. Resize/removal/undo reproject moving lane stations, and
+save version 90 persists the sparse taper records while lane identities remain derived.
+H edits pockets, J/K toggle sides, U/I adjust body length and Shift+U/I taper length; both off
+removes it. See the linked road spec for constraints and preview publication.
+
+ROAD-67 connector trajectories are constructed at lane rebuild time. A single turn uses
+the largest circular fillet fitting the entry/exit tangent intersection, with straight tangent
+leads for unequal mouth distances. Curvature stays zero or one signed reciprocal radius;
+it cannot reverse or spike above that required turn radius.
+Straight-through and parallel lane gain/drop paths use their actual mouth span, retaining the
+necessary lateral S without junction-wide overshoot. Continuous divided bends use tangent
+straight leads and one circular arc, with radius limited by lane-to-median clearance. They
+retain the median corridor without the old offset frame's endpoint/midpoint heading breaks.
+This adds O(1) construction work per connector and no tick-time work, agent state or allocation.
+Vehicle pose sampling remains unchanged; the driven lane geometry owns the correction.
+Explicitly connected straight splits inset only the physical vehicle lane mouths, retaining
+a real connector span instead of a backtracking loop at coincident endpoints. Insets are
+bounded by the remaining edge length; graph clips, roadbed and sidewalk geometry stay intact.
+
+### ROAD-67 trajectory follow-up acceptance (2026-10-20)
+
+Fresh default and release suites pass all 2,583 library tests; the default whole suite also
+passes all four growth integrations. Sixteen release headless road/traffic bridges and the
+windowed trajectory/traffic fixture pass. Sampled connectors reject reverse signed curvature
+for single turns, bound curvature by the available tangent-circle radius (including median
+clearance), and check endpoint tangency. Coverage includes divided/undivided T and cross
+junctions, skewed arms, 1–4 lanes, Prisma left/right pockets, lane gains/drops and 15–90°
+divided bends. Explicit straight whitelists must advance without a backtracking loop.
+
+Matched PERF-06 compares the completed stages 3–5 release with this follow-up, using 15
+alternating process pairs and eight Rayon workers. All six workloads have matching work counters across builds;
+30k agent work remains exactly 3× 10k with fixed lane work. Every paired bootstrap interval
+includes zero: no tick regression is detected. These noisy single-tick measurements establish
+neither a fixed equivalence bound nor a speedup. Build identities, commands and road/locality
+results are in the [road acceptance record](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35).
+
+| Mode | Agents | Before → after median, ms | Paired median change | Paired bootstrap 95% |
+| --- | --- | --- | --- | --- |
+| network | 10,000 | 0.499458 → 0.498083 | +2.04% | -5.38% … +6.28% |
+| network | 30,000 | 0.970750 → 0.927333 | +0.94% | -7.84% … +8.21% |
+| access_egress | 10,000 | 0.646500 → 0.641000 | +2.71% | -6.51% … +4.40% |
+| access_egress | 30,000 | 1.592000 → 1.575167 | +0.14% | -2.27% … +4.24% |
+| access_ingress | 10,000 | 0.352291 → 0.307708 | -9.41% | -17.34% … +6.43% |
+| access_ingress | 30,000 | 0.604625 → 0.556166 | +3.40% | -24.49% … +28.79% |
+
+The stages 3–5 acceptance below describes the earlier, pre-follow-up build.
+
+### ROAD-67 stages 3–5 acceptance (2026-10-19)
+
+Matched unprofiled release runs compare `6ec0b858` with the completed stages 3–5 build on
+Apple M2 Pro (12 logical CPUs), Rust 1.98.1, MacOSX26.5 SDK, release `opt-level=3`, `debug=1`.
+Fifteen alternating process pairs use eight Rayon workers and identical workloads/counters.
+All paired bootstrap intervals include zero; no agent-tick regression is detected. The noisy
+single-tick contract does not establish equivalence at a fixed percentage bound or a speedup.
+
+| Mode | Agents | Before → after median, ms | Paired median change | Paired bootstrap 95% |
+| --- | --- | --- | --- | --- |
+| network | 10,000 | 0.484250 → 0.465709 | -1.44% | -7.01% … +1.26% |
+| network | 30,000 | 0.907625 → 0.906542 | -0.63% | -4.25% … +11.95% |
+| access_egress | 10,000 | 0.665833 → 0.650125 | +0.16% | -3.69% … +5.19% |
+| access_egress | 30,000 | 1.580125 → 1.565625 | -1.76% | -4.17% … +2.80% |
+| access_ingress | 10,000 | 0.388417 → 0.330250 | -9.38% | -26.36% … +7.77% |
+| access_ingress | 30,000 | 0.614958 → 0.610000 | +0.40% | -8.52% … +20.22% |
+
+Test executable SHA-256: before
+`4bc39d10fbe01c7da5f8945dc2a781c4dc9144979a320cd4e99fcc66b914971f`, after
+`d3474f6396dc614f1c6671768d1667911ff1761529c7c7faff7ba15f722dc85f`.
+Exact command:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Three matched pairs also cover lane transitions, claim preparation/reset, incremental lane
+rebuilds and lane reattachment. At 65,536 transition groups, clear/merge/blocked medians are
+4.805/5.923/5.217 → 4.550/5.536/4.637 ms; lateral is 4.740 → 4.850 ms and cruise
+3.233 → 3.226 ms. At 1,048,576 rows, idle/mixed claims are 0.256776/0.620568 →
+0.256755/0.640193 ms; lane reset is 0.301536 → 0.304688 ms. Counts/checksums match.
+Fresh default/release suites pass 2,579 library tests; all four growth integration tests pass.
+Road/traffic bridges, real windowed traffic, connector save/load and agent-safe edit/undo checks
+pass. The [road acceptance record](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35)
+owns complete commands, worker settings, auxiliary/road/locality tables, library identities,
+legacy geometry proof and capture comparisons. The following section retains stages 1–2 evidence.
 
 ### ROAD-67 stages 1–2 acceptance (2026-10-19)
 

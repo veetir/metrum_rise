@@ -29,6 +29,15 @@ impl RoadSurfaceSystem {
         match incidents.len() {
             0 | 1 => CompiledNodeKind::Terminal,
             2 => {
+                let node = match incidents[0].side {
+                    IncidentEdgeSide::Start => graph.edge(incidents[0].edge_idx).start_node,
+                    IncidentEdgeSide::End => graph.edge(incidents[0].edge_idx).end_node,
+                };
+                if graph.node(node).node_type
+                    == crate::simulation::network::types::NodeType::LaneTransition
+                {
+                    return CompiledNodeKind::PassThrough;
+                }
                 let a = incidents[0];
                 let b = incidents[1];
                 let straight =

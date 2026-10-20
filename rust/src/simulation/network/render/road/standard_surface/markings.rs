@@ -11,7 +11,7 @@ use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::lanes::{LaneSystem, LaneType};
+use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, Lane, LaneSystem, LaneType};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem,
 };
@@ -79,6 +79,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
         let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
+        emit_approach_arrows(mesh, graph, lane_system, edge_idx);
         if total_lanes <= 1 {
             continue;
         }
@@ -103,6 +104,32 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
 
+        let mut solid = (false, false);
+        if let Some(ids) = lane_system.edge_lanes.get(&edge_idx) {
+            for &id in ids {
+                if lane_system.needs_turn_preparation(id) {
+                    if lane_system.lanes[id].is_fwd {
+                        solid.1 = true;
+                    } else {
+                        solid.0 = true;
+                    }
+                }
+            }
+        }
+        let dashed_range = |start: bool, end: bool| {
+            (
+                if start {
+                    edge.start_clip + APPROACH_SOLID_LENGTH_M
+                } else {
+                    marking_s_range.0
+                },
+                if end {
+                    sections.last().map_or(0.0, |s| s.s_m) - edge.end_clip - APPROACH_SOLID_LENGTH_M
+                } else {
+                    marking_s_range.1
+                },
+            )
+        };
         if edge.median.is_some() {
             let line = FinnishLaneLine {
                 width_m: FINNISH_LINE_WIDTH_M,
@@ -124,6 +151,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                                 marking_s_range,
                                 line,
                                 Some(offset),
+                                dashed_range(sign != side && solid.0, sign == side && solid.1),
                             );
                         }
                     }
@@ -148,12 +176,14 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                     marking_s_range,
                     line,
                     None,
+                    dashed_range(solid.0, solid.1),
                 );
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_lane_marking_sections(
     mesh: &mut NetworkMeshData,
     sections: &[RoadSurfaceSection],
@@ -162,6 +192,7 @@ fn emit_lane_marking_sections(
     marking_s_range: (f32, f32),
     line: FinnishLaneLine,
     lateral_offset_m: Option<f32>,
+    dashed_range: (f32, f32),
 ) {
     if sections.len() < 2 {
         return;
@@ -194,22 +225,155 @@ fn emit_lane_marking_sections(
         let Some(end) = section_world_point_at_lateral_offset(&pair[1], lateral_b) else {
             continue;
         };
-        let t_start = ((clipped_start_s - segment_start_s) / (segment_end_s - segment_start_s))
-            .clamp(0.0, 1.0);
-        let t_end =
-            ((clipped_end_s - segment_start_s) / (segment_end_s - segment_start_s)).clamp(0.0, 1.0);
-        let clipped_start = start.lerp(end, t_start);
-        let clipped_end = start.lerp(end, t_end);
-        emit_marking_segment(
-            mesh,
-            clipped_start,
-            clipped_end,
+        let mut cuts = [
             clipped_start_s,
             clipped_end_s,
-            line.width_m * 0.5,
-            line.pattern,
-            marking_dash_color(),
-        );
+            dashed_range.0.clamp(clipped_start_s, clipped_end_s),
+            dashed_range.1.clamp(clipped_start_s, clipped_end_s),
+        ];
+        cuts.sort_by(f32::total_cmp);
+        for cut in cuts.windows(2) {
+            if cut[1] <= cut[0] + MIN_SEGMENT_LEN {
+                continue;
+            }
+            let point = |s: f32| {
+                start.lerp(
+                    end,
+                    ((s - segment_start_s) / (segment_end_s - segment_start_s)).clamp(0.0, 1.0),
+                )
+            };
+            let middle = (cut[0] + cut[1]) * 0.5;
+            emit_marking_segment(
+                mesh,
+                point(cut[0]),
+                point(cut[1]),
+                cut[0],
+                cut[1],
+                line.width_m * 0.5,
+                if middle < dashed_range.0 || middle > dashed_range.1 {
+                    2.0
+                } else {
+                    line.pattern
+                },
+                marking_dash_color(),
+            );
+        }
+    }
+}
+
+fn arrow_mask(lane: &Lane, lanes: &LaneSystem) -> u8 {
+    let Some(input) = lane.geometry.windows(2).rev().find_map(|pair| {
+        Vector2::new(pair[1].x - pair[0].x, pair[1].z - pair[0].z).try_normalized()
+    }) else {
+        return 0;
+    };
+    let mut mask = 0;
+    let mut target = |id: usize| {
+        let Some(out) = lanes.lanes.get(id).filter(|out| {
+            out.edge_id != usize::MAX && out.edge_id != lane.edge_id && out.geometry.len() >= 2
+        }) else {
+            return;
+        };
+        let Some(output) = out.geometry.windows(2).find_map(|pair| {
+            Vector2::new(pair[1].x - pair[0].x, pair[1].z - pair[0].z).try_normalized()
+        }) else {
+            return;
+        };
+        mask |= if input.dot(output) >= std::f32::consts::FRAC_1_SQRT_2 {
+            2
+        } else if input.cross(output) < 0.0 {
+            1
+        } else {
+            4
+        };
+    };
+    for &id in &lane.next_lanes {
+        if lanes.lanes[id].edge_id == usize::MAX {
+            for &next in &lanes.lanes[id].next_lanes {
+                target(next);
+            }
+        } else {
+            target(id);
+        }
+    }
+    mask
+}
+
+fn lane_point(lane: &Lane, d: f32) -> Vector3 {
+    let index = lane
+        .cum_dist
+        .partition_point(|&s| s <= d)
+        .saturating_sub(1)
+        .min(lane.geometry.len() - 2);
+    let fraction = ((d - lane.cum_dist[index])
+        / (lane.cum_dist[index + 1] - lane.cum_dist[index]).max(1e-5))
+    .clamp(0.0, 1.0);
+    lane.geometry[index].lerp(lane.geometry[index + 1], fraction)
+}
+
+fn emit_approach_arrows(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    lanes: &LaneSystem,
+    edge: usize,
+) {
+    let Some(ids) = lanes.edge_lanes.get(&edge) else {
+        return;
+    };
+    for &id in ids {
+        let lane = &lanes.lanes[id];
+        let road = graph.edge(edge);
+        let end = if lane.is_fwd {
+            road.end_node
+        } else {
+            road.start_node
+        };
+        if lane.lane_type != LaneType::Vehicle || graph.node_adjacency(end).len() < 3 {
+            continue;
+        }
+        let mask = arrow_mask(lane, lanes);
+        if mask == 0 {
+            continue;
+        }
+        for back in [12.0, 42.0] {
+            if lane.length < back + 8.0 {
+                continue;
+            }
+            let center = lane_point(lane, lane.length - back);
+            let Some(forward) = (lane_point(lane, lane.length - back + 1.0)
+                - lane_point(lane, lane.length - back - 1.0))
+            .try_normalized() else {
+                continue;
+            };
+            let right = Vector3::new(-forward.z, 0.0, forward.x);
+            let point = |x: f32, y: f32| center + right * x + forward * y;
+            let mut stroke = |a: (f32, f32), b: (f32, f32), width: f32| {
+                emit_marking_segment(
+                    mesh,
+                    point(a.0, a.1),
+                    point(b.0, b.1),
+                    0.0,
+                    1.0,
+                    width * 0.5,
+                    2.0,
+                    marking_dash_color(),
+                );
+            };
+            stroke((0.0, -2.5), (0.0, 0.0), 0.20);
+            if mask & 2 != 0 {
+                stroke((0.0, 0.0), (0.0, 2.5), 0.20);
+                stroke((-0.65, 1.55), (0.0, 2.5), 0.23);
+                stroke((0.65, 1.55), (0.0, 2.5), 0.23);
+            }
+            for (bit, side) in [(1, -1.0), (4, 1.0)] {
+                if mask & bit == 0 {
+                    continue;
+                }
+                stroke((0.0, 0.0), (side * 1.05, 0.9), 0.20);
+                stroke((side * 1.05, 0.9), (side * 1.05, 0.0), 0.23);
+                stroke((side * 1.05, 0.9), (side * 0.15, 1.1), 0.23);
+            }
+        }
     }
 }
 
@@ -230,6 +394,11 @@ fn edge_lane_marking_s_range(
     }
     if has_end_crosswalk {
         end_s = end_s.min(total_s - edge.end_clip - crosswalk_gap_m);
+    }
+
+    if edge.lane_tapers.is_some() {
+        start_s = start_s.max(edge.start_clip);
+        end_s = end_s.min(total_s - edge.end_clip);
     }
 
     (start_s.clamp(0.0, total_s), end_s.clamp(0.0, total_s))
@@ -411,4 +580,44 @@ pub(super) fn emit_marking_segment(
         ],
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn arrows_follow_actual_connectors_and_whitelist_removal() {
+        let mut lanes = LaneSystem::new();
+        let source = Lane {
+            edge_id: 0,
+            geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::ZERO],
+            ..Default::default()
+        };
+        lanes.lanes.push(source);
+        for (id, direction) in [
+            (1, Vector3::new(0.0, 0.0, -10.0)),
+            (2, Vector3::new(10.0, 0.0, 0.0)),
+            (3, Vector3::new(0.0, 0.0, 10.0)),
+        ] {
+            lanes.lanes.push(Lane {
+                edge_id: id,
+                geometry: vec![Vector3::ZERO, direction],
+                ..Default::default()
+            });
+        }
+        for id in 1..=3 {
+            let mut connector = Lane::default();
+            connector.next_lanes.push(id);
+            let next = lanes.lanes.len();
+            lanes.lanes.push(connector);
+            lanes.lanes[0].next_lanes.push(next);
+        }
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 7);
+        lanes.lanes[0].geometry.push(Vector3::ZERO);
+        lanes.lanes[1].geometry.insert(0, Vector3::ZERO);
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 7);
+        lanes.lanes[0].next_lanes.clear();
+        lanes.lanes[0].next_lanes.push(5);
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 2);
+    }
 }

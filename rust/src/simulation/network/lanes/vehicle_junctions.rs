@@ -98,7 +98,34 @@ pub fn build_vehicle_connections_at_node(
                 if out_edge_id == in_edge_id {
                     allows_u_turn
                 } else {
-                    defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx)
+                    if graph.node(node_id as u32).node_type
+                        == crate::simulation::network::types::NodeType::LaneTransition
+                        && (graph.edge(in_edge_id).pocket_taper().is_some()
+                            || graph.edge(out_edge_id).pocket_taper().is_some())
+                    {
+                        let incoming = &lanes[in_lane_id];
+                        let outgoing = &lanes[out_lid];
+                        let rank = |index: i8| {
+                            if index >= 0 {
+                                index as usize
+                            } else {
+                                (-i16::from(index) - 1) as usize
+                            }
+                        };
+                        let a = graph.edge(in_edge_id);
+                        let b = graph.edge(out_edge_id);
+                        a.transition_rank(
+                            usize::from(a.end_node as usize == node_id),
+                            incoming.is_fwd,
+                            rank(in_lane_idx),
+                        ) == b.transition_rank(
+                            usize::from(b.end_node as usize == node_id),
+                            outgoing.is_fwd,
+                            rank(out_lane_idx),
+                        )
+                    } else {
+                        defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx)
+                    }
                 }
             } else {
                 explicit.is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx)))
@@ -160,34 +187,41 @@ pub fn build_vehicle_connections_at_node(
             } else {
                 VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR
             };
-            let cd = distance_basis * control_factor;
+            let cd = if flat_direction_dot(p1_base, p2_base) > 0.98 {
+                dist * VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR
+            } else {
+                distance_basis * control_factor
+            };
             let p1 = p0 + p1_base * cd;
             let p2 = p3 - p2_base * cd;
-
-            let steps = vehicle_connection_steps_for_curve(
-                p0,
-                p1,
-                p2,
-                p3,
-                distance_basis.max(dist + cd * 2.0),
+            let median_bend = graph.node(node_id as u32).node_type
+                != crate::simulation::network::types::NodeType::LaneTransition
+                && graph.edge(in_edge_id).median.is_some()
+                && graph.median_continues_at_node(in_edge_id, node_id as u32);
+            let turn = VehicleTurn::try_new(
+                &lanes[in_lane_id],
+                &lanes[out_lid],
+                p1_base,
+                p2_base,
+                median_bend,
+            );
+            let steps = turn.as_ref().map_or_else(
+                || {
+                    vehicle_connection_steps_for_curve(
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        distance_basis.max(dist + cd * 2.0),
+                    )
+                },
+                |curve| vehicle_connection_steps(curve.sampling_span),
             );
             let mut conn_geom = Vec::with_capacity(steps + 1);
             let mut conn_len = 0.0;
-            let median_bend = graph.edge(in_edge_id).median.is_some()
-                && graph.median_continues_at_node(in_edge_id, node_id as u32);
-            let divided_frame = median_bend.then(|| {
-                MedianBendFrame::new(
-                    graph,
-                    node_id,
-                    &lanes[in_lane_id],
-                    &lanes[out_lid],
-                    p1_base,
-                    p2_base,
-                )
-            });
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
-                let point = divided_frame.as_ref().map_or_else(
+                let point = turn.as_ref().map_or_else(
                     || vehicle_connection_point(p0, p1, p2, p3, t),
                     |frame| frame.point(t),
                 );
@@ -218,80 +252,113 @@ pub fn build_vehicle_connections_at_node(
     }
 }
 
-// Two offset approach ribbons meet on the same bisector cross-section as the median. A
-// single cubic can cut the island on the inside of a bend. This construction keeps the lane
-// offset throughout each half, including lane changes between the two directional groups.
-struct MedianBendFrame {
-    node: Vector3,
+// Intersect the entry and exit tangents, then fit the largest circular fillet between
+// them, with straight leads for unequal distances. Curvature is zero or +/-1/radius;
+// there is no counter-steer or anisotropic cubic curvature spike. Continuous medians
+// additionally limit the radius so the arc stays clear of their sharp outside corner.
+struct VehicleTurn {
     start: Vector3,
     end: Vector3,
-    start_normal: Vector3,
-    mid_normal: Vector3,
-    end_normal: Vector3,
-    start_offset: f32,
-    end_offset: f32,
+    incoming: Vector3,
+    outgoing: Vector3,
+    center: Vector3,
+    radial: Vector3,
+    arc_end: Vector3,
+    entry_length: f32,
+    arc_sampling_span: f32,
+    angle: f32,
+    sampling_span: f32,
 }
 
-impl MedianBendFrame {
-    fn new(
-        graph: &RegionGraph,
-        node: usize,
+impl VehicleTurn {
+    fn try_new(
         inbound: &Lane,
         outbound: &Lane,
         incoming: Vector3,
         outgoing: Vector3,
-    ) -> Self {
-        let normal = |direction: Vector3| Vector3::new(-direction.z, 0.0, direction.x).normalized();
-        let offset = |lane: &Lane| {
-            let edge = graph.edge(lane.edge_id);
-            let index = if lane.lane_idx >= 0 {
-                lane.lane_idx
-            } else {
-                -lane.lane_idx - 1
-            };
-            let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-            edge.median_center_offset() * if lane.is_fwd { 1.0 } else { -1.0 }
-                + side * (edge.median_half_width() + (f32::from(index) + 0.5) * config::LANE_WIDTH)
-        };
-        let start_normal = normal(incoming);
-        let end_normal = normal(outgoing);
-        Self {
-            node: graph.node(node as u32).pos,
-            start: *inbound.geometry.last().unwrap(),
-            end: outbound.geometry[0],
-            start_normal,
-            mid_normal: (start_normal + end_normal).normalized(),
-            end_normal,
-            start_offset: offset(inbound),
-            end_offset: offset(outbound),
+        median_bend: bool,
+    ) -> Option<Self> {
+        let start = *inbound.geometry.last().unwrap();
+        let end = outbound.geometry[0];
+        let incoming = Vector3::new(incoming.x, 0.0, incoming.z).normalized();
+        let outgoing = Vector3::new(outgoing.x, 0.0, outgoing.z).normalized();
+        let cross = |a: Vector3, b: Vector3| a.x * b.z - a.z * b.x;
+        let determinant = cross(incoming, outgoing);
+        if determinant.abs() <= 1.0e-4 {
+            return None;
         }
+        let delta = end - start;
+        let a = cross(delta, outgoing) / determinant;
+        let b = cross(incoming, delta) / determinant;
+        if a <= 0.0 || b <= 0.0 {
+            return None;
+        }
+        let angle = determinant.atan2(incoming.dot(outgoing));
+        let half_angle = angle.abs() * 0.5;
+        let clearance = |lane: &Lane| {
+            let rank = if lane.lane_idx >= 0 {
+                i16::from(lane.lane_idx)
+            } else {
+                -i16::from(lane.lane_idx) - 1
+            };
+            // Retain half the lane-centre clearance so the fillet does not graze the kerb.
+            (f32::from(rank) + 0.5) * config::LANE_WIDTH * 0.5
+        };
+        // At the bisector a fillet encroaches R * (1 - cos(theta/2)) into the
+        // sharp corner. Its encroachment must fit the lane-to-median clearance.
+        let mut radius = a.min(b) / half_angle.tan();
+        if median_bend {
+            radius =
+                radius.min(clearance(inbound).min(clearance(outbound)) / (1.0 - half_angle.cos()));
+        }
+        let setback = radius * half_angle.tan();
+        let entry_length = (a - setback).max(0.0);
+        let exit_length = (b - setback).max(0.0);
+        let arc_start = start + incoming * entry_length;
+        let arc_end = end - outgoing * exit_length;
+        let center =
+            arc_start + Vector3::new(-incoming.z, 0.0, incoming.x) * (radius * angle.signum());
+        let radial = arc_start - center;
+        // Give a short arc between long tangent leads enough angular samples too.
+        // This affects parameterization only; cum_dist retains actual path distance.
+        let arc_sampling_span = (radius * angle.abs()).max(angle.abs() / 0.15);
+        Some(Self {
+            start,
+            end,
+            incoming,
+            outgoing,
+            center,
+            radial,
+            arc_end,
+            entry_length,
+            arc_sampling_span,
+            angle,
+            sampling_span: entry_length + arc_sampling_span + exit_length,
+        })
     }
 
     fn point(&self, t: f32) -> Vector3 {
-        let middle_offset = (self.start_offset + self.end_offset) * 0.5;
-        let (a, b, normal_a, normal_b, offset_a, offset_b, u) = if t <= 0.5 {
-            (
-                self.start - self.start_normal * self.start_offset,
-                self.node,
-                self.start_normal,
-                self.mid_normal,
-                self.start_offset,
-                middle_offset,
-                t * 2.0,
-            )
+        if t <= 0.0 {
+            return self.start;
+        }
+        if t >= 1.0 {
+            return self.end;
+        }
+        let distance = t * self.sampling_span;
+        let mut point = if distance <= self.entry_length {
+            self.start + self.incoming * distance
+        } else if distance >= self.entry_length + self.arc_sampling_span {
+            self.arc_end + self.outgoing * (distance - self.entry_length - self.arc_sampling_span)
         } else {
-            (
-                self.node,
-                self.end - self.end_normal * self.end_offset,
-                self.mid_normal,
-                self.end_normal,
-                middle_offset,
-                self.end_offset,
-                t * 2.0 - 1.0,
-            )
+            let angle = self.angle * (distance - self.entry_length) / self.arc_sampling_span;
+            let (sine, cosine) = angle.sin_cos();
+            self.center
+                + Vector3::new(
+                    self.radial.x * cosine - self.radial.z * sine,
+                    0.0,
+                    self.radial.x * sine + self.radial.z * cosine,
+                )
         };
-        let normal = normal_a.lerp(normal_b, u).normalized();
-        let mut point = a.lerp(b, u) + normal * (offset_a + (offset_b - offset_a) * u);
         point.y = self.start.y + (self.end.y - self.start.y) * t;
         point
     }

@@ -129,6 +129,15 @@ impl RoadPreviewRenderInput {
         }
     }
 
+    /// Replaces complete compiled owners for an endpoint edit, including narrowing/removal.
+    /// The caller supplies every affected source node; the copied halo remains bounded.
+    pub(crate) fn replace_whole_neighborhood(mut self) -> Self {
+        self.replaced_nodes.extend(self.removed.iter().copied());
+        self.bounded.clear();
+        self.planned_whole.extend(self.planned_bounded.drain());
+        self
+    }
+
     /// Exports only the local compiled scene. Lane reconstruction is confined to this excerpt;
     /// it supplies the same crosswalks and lane-divider clipping as the committed renderer.
     pub(crate) fn render(

@@ -3,6 +3,8 @@
 //! Road network graph data structures and spatial indexing.
 
 mod cross_section;
+mod lane_taper;
+pub use lane_taper::RoadLaneTaper;
 /// Core data structures for nodes and edges.
 pub mod data;
 pub use cross_section::{MedianStyle, RoadMedian};

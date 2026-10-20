@@ -253,6 +253,8 @@ pub struct SimulationNode {
     cell_chunk_job: cell_zoning_api::CellChunkJob,
     /// Identity of the latest placement whose single completion may be polled by the editor.
     pub(crate) road_commit_request_id: i64,
+    /// Distinguishes complete endpoint preview payloads within one mesh generation.
+    pub(crate) pocket_preview_revision: u64,
     /// Current editor selection, copied into every immutable preview and commit request.
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
@@ -481,6 +483,7 @@ impl INode3D for SimulationNode {
             cmd_rx: Some(cmd_rx),
             cell_chunk_job: Default::default(),
             road_commit_request_id: 0,
+            pocket_preview_revision: 0,
             road_tool_median: None,
             road_commit_result: None,
             road_preview_tx,

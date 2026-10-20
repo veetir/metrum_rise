@@ -76,6 +76,8 @@ pub struct Edge {
     pub bkw_lanes: u8,
     /// Optional central separator, included in `width`; absent on legacy roads.
     pub median: Option<super::RoadMedian>,
+    /// Authored lane transitions at the stored start and end; absent on legacy roads.
+    pub lane_tapers: Option<Box<[Option<super::RoadLaneTaper>; 2]>>,
     /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
     /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.
@@ -130,6 +132,8 @@ impl Edge {
 /// agent movement, and building placement operate on this graph.
 #[derive(Clone)]
 pub struct RegionGraph {
+    // Source ordinals for deterministic cosmetic ordering in bounded preview excerpts only.
+    placement_ids: Option<std::sync::Arc<(Vec<usize>, Vec<u32>)>>,
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
     pub(in crate::simulation::network) nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
@@ -156,6 +160,20 @@ pub(crate) struct RegionGraphUndoDelta {
 }
 
 impl RegionGraphUndoDelta {
+    /// Whether either side of this inverse contains authored lane stations that can move.
+    pub(crate) fn changes_lane_tapers(&self, graph: &RegionGraph) -> bool {
+        self.edges.iter().any(|(id, edge)| {
+            edge.lane_tapers.is_some()
+                || graph
+                    .get_edge(*id)
+                    .is_some_and(|edge| edge.lane_tapers.is_some())
+        }) || graph
+            .edges()
+            .iter()
+            .skip(self.original_edge_count)
+            .any(|edge| edge.lane_tapers.is_some())
+    }
+
     /// Returns every topology ID whose pre-edit record is stored by this inverse.
     pub(crate) fn stored_topology_ids(&self) -> (HashSet<usize>, HashSet<u32>) {
         let edge_ids = self
@@ -204,6 +222,7 @@ impl RegionGraph {
     /// Creates a new, empty road graph.
     pub fn new() -> Self {
         Self {
+            placement_ids: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             node_aliases: std::collections::HashMap::new(),
@@ -211,6 +230,23 @@ impl RegionGraph {
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
         }
+    }
+
+    /// Retains prospective live ordinals for cosmetic ordering without sparse global arrays.
+    pub(crate) fn set_placement_identities(&mut self, edges: Vec<usize>, nodes: Vec<u32>) {
+        self.placement_ids = Some(std::sync::Arc::new((edges, nodes)));
+    }
+
+    /// Stable cosmetic ordinal; graph/routing indices always remain local to this graph.
+    pub(crate) fn placement_edge_id(&self, edge: usize) -> usize {
+        self.placement_ids.as_ref().map_or(edge, |ids| ids.0[edge])
+    }
+
+    /// Stable cosmetic ordinal; absent on authoritative graphs and never serialized.
+    pub(crate) fn placement_node_id(&self, node: u32) -> u32 {
+        self.placement_ids
+            .as_ref()
+            .map_or(node, |ids| ids.1[node as usize])
     }
 
     /// Captures graph records that can be changed by a polyline edit and nearby junction solving.

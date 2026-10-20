@@ -624,6 +624,12 @@ pub fn build_pedestrian_connections_at_node(
     node_lanes: &mut HashMap<usize, Vec<usize>>,
     crosswalks: &mut HashMap<usize, LaneCrosswalk>,
 ) {
+    if graph.node(node_id as u32).node_type
+        == crate::simulation::network::types::NodeType::LaneTransition
+    {
+        connect_transition_sidewalks(lanes, lane_map, graph, node_id as u32, node_lanes);
+        return;
+    }
     let node_pos = graph.node(node_id as u32).pos;
     let adj: Vec<usize> = graph.node_adjacency(node_id as u32).to_vec();
     let mut mouths: Vec<SidewalkMouth> = Vec::new();
@@ -861,7 +867,9 @@ pub fn build_pedestrian_connections_at_node(
             .crosswalk_overrides
             .get(&edge_idx)
             .copied();
-        if crosswalk_override == Some(false)
+        if graph.nodes[node_id].node_type
+            == crate::simulation::network::types::NodeType::LaneTransition
+            || crosswalk_override == Some(false)
             || (crosswalk_override.is_none() && road_degree == 2 && crosswalks_added >= 1)
             || (crosswalk_override.is_none()
                 && graph.edge(edge_idx).median.is_some()
@@ -1009,5 +1017,61 @@ pub fn build_pedestrian_connections_at_node(
             node_id,
             &mouths[source_mouth],
         );
+    }
+}
+
+// Sidewalks retain one metre at either side of the seam for a short connector. Their
+// physical lanes follow the rest of the taper, without a crossing or perimeter detour.
+fn connect_transition_sidewalks(
+    lanes: &mut Vec<Lane>,
+    lane_map: &HashMap<(usize, bool, i8), usize>,
+    graph: &RegionGraph,
+    node: u32,
+    node_lanes: &mut HashMap<usize, Vec<usize>>,
+) {
+    for &from_edge in graph.node_adjacency(node) {
+        let edge = graph.edge(from_edge);
+        if edge.deleted {
+            continue;
+        }
+        let incoming_fwd = edge.end_node == node;
+        for index in [100, -100] {
+            let Some(&from) = lane_map.get(&(from_edge, incoming_fwd, index)) else {
+                continue;
+            };
+            let Some(&position) = lanes[from].geometry.last() else {
+                continue;
+            };
+            for &to_edge in graph.node_adjacency(node) {
+                let target = graph.edge(to_edge);
+                if target.deleted || to_edge == from_edge {
+                    continue;
+                }
+                let outgoing_fwd = target.start_node == node;
+                for target_index in [100, -100] {
+                    let Some(&to) = lane_map.get(&(to_edge, outgoing_fwd, target_index)) else {
+                        continue;
+                    };
+                    let Some(&endpoint) = lanes[to].geometry.first() else {
+                        continue;
+                    };
+                    let length = position.distance_to(endpoint);
+                    if length > CONNECTION_POINT_EPSILON_M && length < 3.0 {
+                        let id = lanes.len();
+                        lanes.push(Lane {
+                            geometry: vec![position, endpoint],
+                            cum_dist: vec![0.0, length],
+                            length,
+                            lane_type: LaneType::Foot,
+                            node_id: node as usize,
+                            next_lanes: LaneSuccessors::one(to),
+                            ..Default::default()
+                        });
+                        lanes[from].next_lanes.push(id);
+                        node_lanes.entry(node as usize).or_default().push(id);
+                    }
+                }
+            }
+        }
     }
 }

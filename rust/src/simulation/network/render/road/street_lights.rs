@@ -38,6 +38,8 @@ pub(crate) enum StreetLightKind {
 /// +X arm toward the road.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StreetLight {
+    /// Exact source edge for reversible preview filtering; omitted from the Godot pose payload.
+    pub(crate) owner_edge: usize,
     pub(crate) position: Vector3,
     pub(crate) yaw: f32,
     pub(crate) kind: StreetLightKind,
@@ -239,9 +241,11 @@ fn street_chain(graph: &RegionGraph, edge_idx: usize, family: Family) -> Vec<(us
     chain.extend(ahead);
     let closed = first_node == last_node && chain.len() > 1 && live_degree(graph, first_node) == 2;
     if closed {
-        let lowest = (0..chain.len()).min_by_key(|&i| chain[i].0).unwrap_or(0);
+        let lowest = (0..chain.len())
+            .min_by_key(|&i| graph.placement_edge_id(chain[i].0))
+            .unwrap_or(0);
         chain.rotate_left(lowest);
-    } else if first_node > last_node {
+    } else if graph.placement_node_id(first_node) > graph.placement_node_id(last_node) {
         chain.reverse();
         for link in &mut chain {
             link.1 = !link.1;
@@ -285,7 +289,7 @@ fn arm_rank(graph: &RegionGraph, edge: usize) -> Option<(u8, usize)> {
             Family::Residential => 1,
             Family::Path => 2,
         },
-        edge,
+        graph.placement_edge_id(edge),
     ))
 }
 
@@ -479,7 +483,8 @@ fn place_along_chain(
         }
         let (a, b) = (&sections[section_index], &sections[section_index + 1]);
         for &side in sides {
-            if let Some(light) = place_at(terrain, a, b, s, side, rule.kind) {
+            if let Some(mut light) = place_at(terrain, a, b, s, side, rule.kind) {
+                light.owner_edge = edge_idx;
                 mesh.push_street_light(light);
             }
         }
@@ -526,6 +531,7 @@ fn place_at(
     // The model's arm points along +X; turn it toward the road centre.
     let toward_road = -lateral * f64::from(side);
     Some(StreetLight {
+        owner_edge: usize::MAX,
         position: Vector3::new(ground.x as f32, height, ground.y as f32),
         yaw: (-toward_road.y).atan2(toward_road.x) as f32,
         kind,

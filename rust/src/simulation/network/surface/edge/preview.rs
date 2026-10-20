@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod node_move;
+mod pocket;
 
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
@@ -501,6 +502,17 @@ impl RoadSurfaceSystem {
         Option<RoadPreviewRenderInput>,
         Option<RoadTopologyPlan>,
     ) {
+        if crate::simulation::network::pockets::stroke_splits_pocket(
+            existing_graph,
+            &prepared_input.points,
+        ) {
+            return (
+                new_edge_validation.with_invalid_reason("remove_pocket_before_junction_edit"),
+                None,
+                None,
+                None,
+            );
+        }
         if let Some(median) = prepared_input.median {
             let refusal = median.validate().err().or_else(|| {
                 (fwd_lanes == 0 || bkw_lanes == 0).then_some("median_requires_both_directions")
@@ -578,6 +590,13 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
     ) -> RoadPreviewValidation {
+        if crate::simulation::network::pockets::stroke_splits_pocket(
+            existing_graph,
+            &prepared_input.points,
+        ) {
+            return RoadPreviewValidation::valid(0.0)
+                .with_invalid_reason("remove_pocket_before_junction_edit");
+        }
         if let Some(median) = prepared_input.median
             && let Some(reason) = median.validate().err().or_else(|| {
                 (_fwd_lanes == 0 || _bkw_lanes == 0).then_some("median_requires_both_directions")
@@ -988,7 +1007,7 @@ impl RoadSurfaceSystem {
         }
 
         let Some(SurfaceValidationGraph {
-            graph: validation_graph,
+            graph: mut validation_graph,
             new_edge_idx,
             required_edge_ids,
             required_node_ids,
@@ -1239,7 +1258,7 @@ impl RoadSurfaceSystem {
             .flatten();
 
         if let Some(plan) = &mut topology_plan {
-            plan.capture_road_queries(&validation_graph, &validation_surface, existing_graph);
+            plan.capture_road_queries(&mut validation_graph, &validation_surface, existing_graph);
         }
 
         // The authoritative dirty set also includes far endpoints of adjacent spans. Capture every

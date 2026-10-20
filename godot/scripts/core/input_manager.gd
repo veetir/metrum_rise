@@ -222,6 +222,17 @@ func _unhandled_input(event):
 				elif current_tool == Tool.VEGETATION:
 					vegetation_tool.toggle_mode()
 					get_viewport().set_input_as_handled()
+			KEY_H:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_edit()
+			KEY_J:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_side(true)
+			KEY_K:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_side(false)
+			KEY_U:
+				if current_tool == Tool.ROAD: road_tool.adjust_pocket_length(-1.0, event.shift_pressed)
+			KEY_I:
+				if current_tool == Tool.ROAD: road_tool.adjust_pocket_length(1.0, event.shift_pressed)
+
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:

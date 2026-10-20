@@ -17,6 +17,7 @@ enum CellScenario {
     NodeMovement,
     Snapshot,
     Memory,
+    Pocket,
 }
 
 #[test]
@@ -66,6 +67,12 @@ fn populated_cell_node_move_validation_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::NodeMovement);
 }
 
+#[test]
+#[ignore = "populated pocket preview locality; run release without competing work"]
+fn populated_pocket_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Pocket);
+}
+
 fn measure_populated_road_plan_scaling(
     paved: bool,
     zoning_only: bool,
@@ -77,7 +84,7 @@ fn measure_populated_road_plan_scaling(
     if scenario == CellScenario::Memory {
         memory::calibrate(&mut memory_phase);
     }
-    let cells = scenario != CellScenario::None;
+    let cells = !matches!(scenario, CellScenario::None | CellScenario::Pocket);
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
@@ -128,6 +135,28 @@ fn measure_populated_road_plan_scaling(
         insert_populated_site(&mut core, building);
     }
     let edge_template = core.region_graph.edge(0).clone();
+    if scenario == CellScenario::Pocket {
+        let start = core.region_graph.edge(0).end_node;
+        for z in [-100.0, 100.0] {
+            let end = core
+                .region_graph
+                .add_node(Vector3::new(96.0, 0.0, z), NodeType::Junction);
+            let mut edge = edge_template.clone();
+            edge.start_node = start;
+            edge.end_node = end;
+            edge.geometry = vec![
+                core.region_graph.node(start).pos,
+                core.region_graph.node(end).pos,
+            ];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 100.0;
+            core.region_graph.add_edge(edge);
+        }
+        core.region_graph.rebuild_intersection_clips();
+    }
+    let first_background_edge = core.region_graph.edge_count();
+    let mut previous_pocket_mesh: Option<String> = None;
+
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
     let mut previous_road_meshes: Option<
@@ -210,7 +239,7 @@ fn measure_populated_road_plan_scaling(
             building.width_cells = 1;
             building.depth_cells = 1;
             building.facing_dir = Vector2::new(0.0, -1.0);
-            building.edge_idx = 1 + index / 256;
+            building.edge_idx = first_background_edge + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
             building.occupancy = 6;
             if fields {
@@ -252,6 +281,65 @@ fn measure_populated_road_plan_scaling(
                 .road_surface
                 .published_generation_matches_source()
         );
+        if scenario == CellScenario::Pocket {
+            use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
+            let request = PocketRequest {
+                edge: 0,
+                at_start: false,
+                left: false,
+                right: true,
+                length: 80.0,
+                taper: 28.0,
+            };
+            let mut prepare = [0.0; 31];
+            let mut preview = [0.0; 31];
+            for iteration in 0..34 {
+                let start = Instant::now();
+                let layout = PocketLayout::prepare(&core.region_graph, request).unwrap();
+                assert!(core.pocket_layout_refusal(&layout).is_none());
+                std::hint::black_box(layout);
+                let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                let (mesh, roads) = core
+                    .transit_network
+                    .road_surface
+                    .compile_pocket_preview(&core.region_graph, &core.heightmap, request)
+                    .unwrap();
+                let terrain = core.compile_pocket_preview_terrain(&roads).unwrap();
+                assert!(terrain.preview_patches().is_some());
+                let preview_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let products = format!(
+                    "{:?}",
+                    mesh.planned
+                        .iter()
+                        .map(|(key, data)| (
+                            key,
+                            &data.road_vertices,
+                            &data.curb_vertices,
+                            &data.sidewalk_vertices,
+                            &data.marking_vertices,
+                            &data.road_uvs,
+                            &data.road_colors
+                        ))
+                        .collect::<Vec<_>>()
+                );
+                if let Some(previous) = &previous_pocket_mesh {
+                    assert_eq!(&products, previous);
+                }
+                previous_pocket_mesh = Some(products);
+                if iteration >= 3 {
+                    prepare[iteration - 3] = plan_ms;
+                    preview[iteration - 3] = preview_ms;
+                }
+            }
+            prepare.sort_by(f64::total_cmp);
+            preview.sort_by(f64::total_cmp);
+            eprintln!(
+                "POCKET_PLAN_SCALING {}",
+                serde_json::json!({"remote_buildings":remote_buildings,"remote_roads":background_roads,"parcels":core.zoning.parcels().len(),"agents":core.agents.len(),"samples":31,"setup_excluded":true,"prepare_p50_ms":prepare[15],"preview_p50_ms":preview[15],"identical_local_products":true})
+            );
+            continue;
+        }
         if scenario == CellScenario::Memory {
             let products = memory::measure(&mut core, remote_buildings, &mut memory_phase);
             if let Some(previous) = &previous_memory_products {

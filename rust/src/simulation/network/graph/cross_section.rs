@@ -18,7 +18,7 @@ pub enum MedianStyle {
 }
 
 /// One median in metres. End setbacks are additional clearance beyond the automatic mouth
-/// and zebra clearance, leaving room for a future turn pocket without splitting the road.
+/// and zebra clearance, leaving additional authored clearance at a junction mouth.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoadMedian {
     /// Total separator width including its two kerbs, when raised.
@@ -80,22 +80,30 @@ impl RoadMedian {
 impl Edge {
     /// Positions unequal directional lane groups inside a centreline-centred road footprint.
     pub fn median_center_offset(&self) -> f32 {
-        if self.median.is_none() {
-            return 0.0;
-        }
         let side = if crate::config::DRIVE_ON_LEFT {
             -1.0
         } else {
             1.0
         };
-        (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes))
-            * crate::config::LANE_WIDTH
-            * 0.5
-            * side
+        self.pocket_surface_shift()
+            + (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes))
+                * crate::config::LANE_WIDTH
+                * 0.5
+                * side
     }
     /// Median displacement of each directional lane group; O(1), allocation-free.
     pub fn median_half_width(&self) -> f32 {
-        self.median.map_or(0.0, |median| median.width_m * 0.5)
+        self.median.map_or(0.0, |median| {
+            (median.width_m
+                - self.pocket_taper().map_or(0.0, |(_, t)| {
+                    if t.left_pocket {
+                        crate::config::LANE_WIDTH
+                    } else {
+                        0.0
+                    }
+                }))
+                * 0.5
+        })
     }
 
     /// The effective access policy, preserving the player's choice underneath a raised median.
@@ -166,6 +174,14 @@ impl super::RegionGraph {
     /// Tests matching directional groups, style and local setbacks in O(local degree).
     pub(crate) fn median_continues_at_node(&self, id: usize, node: u32) -> bool {
         let node = self.get_valid_node(node);
+        if self.node(node).node_type == crate::simulation::network::types::NodeType::LaneTransition
+        {
+            return self.node_adjacency(node).len() == 2
+                && self
+                    .node_adjacency(node)
+                    .iter()
+                    .all(|&id| self.edge(id).median.is_some());
+        }
         if self
             .node(node)
             .crosswalk_overrides

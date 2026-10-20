@@ -90,6 +90,18 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     turn_lane_id: usize,
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
+    let change_end = source.length
+        - if transit_network
+            .lane_system
+            .needs_turn_preparation(params.lane_id)
+        {
+            crate::simulation::network::lanes::APPROACH_SOLID_LENGTH_M
+        } else {
+            0.0
+        };
+    if params.lane_d >= change_end {
+        return None;
+    }
     if params.has_access_plan
         && let Some(target_lane_id) = planned_lane_change_target(
             params.lane_id,
@@ -101,7 +113,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     {
         let target = &transit_network.lane_system.lanes[target_lane_id];
         let lane_d = params.lane_d.min(target.length);
-        let available = (source.length - params.lane_d).min(params.detach_lane_d - params.lane_d);
+        let available = (change_end - params.lane_d).min(params.detach_lane_d - params.lane_d);
         let length = lane_change_length_for_speed(params.speed)
             .min((available - LANE_CHANGE_FINISH_EPS_M).max(LANE_CHANGE_MIN_LENGTH_M));
         let gap_clear = lane_buckets
@@ -119,7 +131,10 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         let target_lane_id =
             lane_change_target_toward(params.lane_id, final_lane, transit_network)?;
         let target = &transit_network.lane_system.lanes[target_lane_id];
-        let available = source.length.min(target.length) - params.lane_d;
+        // The turn helper already reserves its 12 m end buffer. Extend that reservation
+        // to the solid zone, rather than charging both buffers against each lane step.
+        let extra_buffer = (source.length - change_end - OVERTAKE_EDGE_BUFFER_M).max(0.0);
+        let available = source.length.min(target.length) - params.lane_d - extra_buffer;
         let steps = (i16::from(transit_network.lane_system.lanes[final_lane].lane_idx)
             - i16::from(source.lane_idx))
         .unsigned_abs();
@@ -146,7 +161,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         params.detach_lane_d,
         transit_network,
     );
-    if !(source.length - params.lane_d > length + OVERTAKE_EDGE_BUFFER_M
+    if !(change_end - params.lane_d > length + OVERTAKE_EDGE_BUFFER_M
         && detach_distance > length + OVERTAKE_DETACH_BUFFER_M)
     {
         return None;

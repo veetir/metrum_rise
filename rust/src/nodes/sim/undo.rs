@@ -442,7 +442,56 @@ impl SimCore {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
                 }
+                let previous_frontages = if tr_graph.changes_lane_tapers(&self.region_graph) {
+                    let mut ids: Vec<_> = restored_topology_scope
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .iter()
+                        .copied()
+                        .collect();
+                    ids.sort_unstable();
+                    ids.into_iter()
+                        .filter_map(|id| {
+                            self.region_graph
+                                .get_edge(id)
+                                .filter(|edge| !edge.deleted)
+                                .map(|edge| (id, edge.clone()))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                if !previous_frontages.is_empty() {
+                    self.agents.invalidate_lane_ids_for_edges(
+                        &restored_topology_scope.as_ref().unwrap().0,
+                        &self.transit_network.lane_system,
+                        &self.region_graph,
+                    );
+                }
                 self.region_graph.restore_undo_delta(tr_graph);
+                if !previous_frontages.is_empty() {
+                    let mut after: Vec<_> = restored_topology_scope
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            self.region_graph
+                                .get_edge(id)
+                                .is_some_and(|edge| !edge.deleted)
+                        })
+                        .collect();
+                    after.sort_unstable();
+                    self.transit_network.remap_pocket_frontages(
+                        &previous_frontages,
+                        &after,
+                        &self.region_graph,
+                        &self.zoning,
+                        &mut self.allocator,
+                    );
+                }
                 if let Some((edge_ids, _)) = &restored_topology_scope {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());

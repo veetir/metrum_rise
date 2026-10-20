@@ -6,7 +6,7 @@ use super::super::graph::{Edge, RegionGraph};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
 use super::pedestrian_junctions::{build_pedestrian_connections_at_node, footpath_end_insets};
-use super::vehicle_junctions::build_vehicle_connections_at_node;
+use super::vehicle_junctions::{build_vehicle_connections_at_node, node_whitelists_vehicle_turns};
 use super::{LaneSystem, LaneType};
 use crate::config;
 use std::collections::{HashMap, HashSet};
@@ -75,6 +75,22 @@ impl LaneSystem {
         } else {
             (0.0, 0.0)
         };
+        // Explicit straight splits keep connector/reservation semantics. Separate their lane
+        // mouths instead of manufacturing a backtracking loop at coincident road endpoints.
+        // This is lane-only trimming: the compiled roadbed and graph clips stay unchanged.
+        let vehicle_inset = |node, clip: f32| {
+            let desired = (config::LANE_WIDTH * 0.5 - clip).max(0.0);
+            if desired > 0.0 && node_whitelists_vehicle_turns(graph, node as usize) {
+                desired
+                    .min((edge.physical_length - edge.start_clip - edge.end_clip).max(0.0) * 0.25)
+            } else {
+                0.0
+            }
+        };
+        let vehicle_insets = (
+            vehicle_inset(edge.start_node, edge.start_clip),
+            vehicle_inset(edge.end_node, edge.end_clip),
+        );
 
         let mut edge_lane_indices = Vec::new();
 
@@ -89,7 +105,25 @@ impl LaneSystem {
                 l_idx,
                 l_type,
                 l_off,
-                end_insets,
+                if l_type == LaneType::Foot && edge.primary_type == TransitType::Road {
+                    let inset = |node, clip| {
+                        if graph.node(node).node_type
+                            == crate::simulation::network::types::NodeType::LaneTransition
+                        {
+                            1.0 - config::CROSSWALK_INSET - clip
+                        } else {
+                            0.0
+                        }
+                    };
+                    (
+                        inset(edge.start_node, edge.start_clip),
+                        inset(edge.end_node, edge.end_clip),
+                    )
+                } else if l_type == LaneType::Vehicle {
+                    vehicle_insets
+                } else {
+                    end_insets
+                },
             );
         };
 
@@ -123,12 +157,14 @@ impl LaneSystem {
                 build_lane(false, 0, LaneType::Foot, 0.0);
             } else {
                 // Left Sidewalk (idx 100)
-                let left_offset = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                let left_offset = edge.pocket_surface_shift()
+                    - (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
                 build_lane(true, 100, LaneType::Foot, left_offset);
                 build_lane(false, 100, LaneType::Foot, left_offset);
 
                 // Right Sidewalk (idx -100)
-                let right_offset = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                let right_offset = edge.pocket_surface_shift()
+                    + (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
                 build_lane(true, -100, LaneType::Foot, right_offset);
                 build_lane(false, -100, LaneType::Foot, right_offset);
             }

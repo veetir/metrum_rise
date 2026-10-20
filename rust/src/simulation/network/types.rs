@@ -55,6 +55,8 @@ pub enum NodeType {
     /// functions as a spawn point if it has at least one non-deleted incident edge (i.e. the
     /// road is actually connected to the city network).
     Border,
+    /// Degree-two lane fork/merge with continuous sidewalks and no zebra or priority control.
+    LaneTransition,
 }
 
 /// Architectural classification of a road edge.

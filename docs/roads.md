@@ -537,7 +537,8 @@ sample stations, replacing overlapping terrain stations inside each nose so tiny
 triangles cannot disappear. Span band indices stay stable as the three separator bands collapse;
 node mouths omit zero-width bands and receive plain carriageway. Matching divided roads keep
 their separator through degree-two bends and straight continuations, on a shared bisector frame.
-Vehicle connectors follow those offset approach ribbons. These continuous separators omit the
+Vehicle connectors use tangent circular fillets bounded by those ribbons' median clearance.
+These continuous separators omit the
 default zebra crossing; an explicitly enabled crossing opens both median ends before the zebra,
 transactionally rebuilding surfaces, pedestrian lanes and undo state. A divided/undivided profile
 transition has a node-owned handoff. Existing median-free node classification is unchanged.
@@ -755,12 +756,538 @@ and it lacks the pocket/taper geometry, arrows, solid approach lines and gantry.
 completed reconstruction of the real junction; its slip-road topology/overpass belong to later
 slices. No signal or right-of-way behavior is implied by these car-following queues.
 
-**Remaining slice B work:** per-end pockets and tapers, mid-road lane-count taper geometry,
+**Remaining at the stages 1–2 acceptance build (`6ec0b858`):** per-end pockets and tapers, mid-road lane-count taper geometry,
 painted arrows/solid approach lines, and pocket editing/preview controls. Existing controls are
 **[ / ]** (or **Down / Up**) for forward lanes, **, / .** for backward lanes, and **E** to
 switch drawing/in-place editing of the picked edge. These stages add no controls. Median end
 setbacks remain reserved for pocket geometry. Slices C/D remain separate, and can consume these
 lane-use rules while supplying their own explicit node/topology representation.
+
+### Split transition nodes and turn pockets — ROAD-67 (slice B, stages 3–5)
+
+**Design choice (2026-10-19).** A bounded comparison selected
+splitting at a flagged degree-two transition node. A pocket adds one node and short edge beside
+the junction; the short edge carries the extra directional lanes. Lane gains fork through
+ordinary successors and drops merge through existing target-lane reservations/gap checks.
+The wider road's physical lane mouths are clipped at shared edge stations during rebuilding,
+so offset-curve arc length cannot move a mouth into the taper. The initial split uses the
+existing local clip solver with the proposed width to preserve the requested pocket length. Connector
+curves span the taper under existing junction reservations. Every lane retains a road-node
+origin and terminal, its own arc-distance coordinate and existing
+`LaneIdentity`. This avoids station maps in target gaps, occupancy ghosts, claim preparation,
+render blending, frontage detach plans and height synchronization. No agent field or tick-time
+allocation is added. An authored pocket reserves its left/right movement; the remaining base
+lanes retain straight travel when it exists, sharing the remaining turn at the outer lane.
+Pockets for absent geometric movements are refused; explicit connection whitelists still override
+lane use. Stage 1–2 lane-use rules and the NET-07 U-turn rule remain authoritative.
+
+The rejected station-mapping design would retain one edge but require partial lane spans,
+source/target coordinate conversion across those consumers and internal merge terminals.
+The split approach reuses `split_edge`'s physical-profile preservation and frontage/zoning
+migration, local spatial indices, ROAD-65 reattachment and bounded undo. Its explicit cost is
+one extra route node/edge per pocket, and rebuild work proportional to the affected neighborhood.
+There is no full-map transition search during a tick. Transition nodes suppress zebras and
+crossing signs, retain same-side pedestrian continuity, and do not imply priority or lights.
+Lamp/sign bases follow compiled outer bands; spacing remains rebuild-owned. The new node is
+hidden by endpoint editing, while the graph remains inspectable by existing debug tools.
+
+**Data and save.** An optional boxed pair of per-end taper records on the wider edge stores
+length, the narrower directional counts/median width and left/right pocket roles. Ordinary
+edges have no allocation. The transition flag is a node type. The short edge's actual lane
+counts include its pockets. Its authored median keeps the original width; the sampled profile
+consumes one lane width from the approach's own median side for a left pocket. A right pocket
+moves only its own outer kerb/sidewalk. Save version 90 adds a sparse taper table, with rows
+ordered by saved edge and stored end; old saves receive no tapers and keep their roadbed.
+Sampled bands and lane IDs remain derived. Pocket dimensions are validated before mutation,
+including the four-lane approach limit, median capacity and minimum retained road length.
+
+**One sampled profile.** The wider edge interpolates from the narrow section at the transition
+to its full section over the authored taper. Independent outer and median boundaries preserve
+the opposite carriageway; through lanes keep their alignment for pockets. Added lanes fork
+from their adjacent narrow lane. Section sampling includes the taper boundaries and intermediate
+stations; vehicle/sidewalk paths use the same profile. Existing band ordering/material ownership,
+automatic zebra clearance and median noses remain. No-profile edges retain the existing
+compiler and exact vertex arithmetic. New degree-two count edits explicitly author a taper;
+legacy roads are not implicitly reprofiled on load.
+
+**Editing and publication.** Endpoint pocket editing splits/moves/removes the hidden transition
+in one undo transaction and rebuilds the affected physical lanes/connectors, agent references,
+frontage access, routing and surface owners. Existing split migration carries frontage dependents.
+Preview and commit must use the same deterministic operation and surface compiler. A stale
+preview is rebuilt against current authoritative state. Mid-road count changes use the existing
+in-place cross-section controls and author transitions at incident degree-two nodes.
+
+**Markings and controls.** Finnish white arrows derive from actual permitted approach
+movements through ROAD-56's marking layer. Solid approach divider segments share their
+no-change interval with the lane selector and stop before zebra clearance. Optional gantries
+remain deferred. Endpoint selection, pocket toggles and pocket/taper dimensions use H mode; existing E and
+directional count keys retain their meaning. The controls and bounds are listed below.
+
+**Trajectory follow-up.** Connector turns use the largest circular fillet fitting the actual entry/exit tangent
+intersection, with tangent straight leads for unequal mouth distances. This prevents initial
+counter-steer and avoids the curvature spikes of an anisotropic cubic.
+Parallel through/taper connectors retain a bounded lateral S. Continuous divided bends use
+one median-clearance-limited circular fillet with tangent straight leads, replacing the
+non-tangent interpolated-normal frame. This changes rebuilt vehicle trajectories only; the
+roadbed, lane connectivity, reservations, save schema and rendered pose sampler stay unchanged.
+The additional construction work is O(1) per connector and adds no per-agent tick cost.
+Explicit straight whitelist nodes receive bounded vehicle-lane-only mouth insets, so their
+connectors advance over a positive span while graph clips and every roadbed band stay unchanged.
+
+**Acceptance.** Test transition fork/merge order, both stored directions, 1–4 lanes, opposing
+pockets, median/outer-band coordinates, physical vehicle support, blocked merges, save round
+trips, agent-safe edits/undo, preview equality and legacy roadbed hashes. Run the whole Rust
+suite/clippy, road/traffic bridges, matched release PERF-06 and road/locality benchmarks, and
+windowed overhead and street-level capture batches. Prisma must have two through
+lanes plus an inner median pocket and outer right lane, crossed by a 1+1 road. Stages 1–2's
+captures and measurements above remain historical evidence for `6ec0b858`.
+
+**Controls and bounds.** **H** switches between drawing
+and pocket editing. Hover a road end, **J / K** toggle the left / right pocket, **U / I** shorten /
+lengthen its body by 10 m, and **Shift+U / I** adjust taper length by 5 m. Click the highlighted
+end to apply. Both toggles off remove the pocket and coalesce its two edges; resizing moves the
+same hidden node. Bodies are 60–300 m and tapers 12–100 m. A left pocket requires at least
+3.8 m of median, leaving at least 0.3 m after consuming a 3.5 m lane. Directional totals stay
+within four lanes. Existing **E**, **[ / ]** (or **Down / Up**) and **, / .** count controls remain;
+change the count between consecutive drawn segments, or use E on one existing segment. A
+near-straight degree-two count change with matching median style authors its taper in the
+shared preview/commit finalizer. An unconnected opposing flow retains ordinary junction behavior.
+Mixed gains/drops use monotone overlapping rank intervals; pocket forks use adjacent-lane ranks.
+One-way right pockets retain their through-lane alignment. A base-count/median edit on a pocket
+pair requires removing the pocket first. Optional gantries are deferred.
+
+Endpoint previews copy a fixed incidence halo using the existing road-preview copier. They run
+the same immutable `PocketLayout`, local junction/profile finalizer and band compiler as commit;
+they never mutate the live graph or copy the agent store or resident building collection. Indexed
+local site snapshots supply the paired production terrain compiler. The committed chunk renderer supplies
+all materials, arrows and solid lines. Local graphs retain prospective source ordinals solely for
+cosmetic chain ordering; lane/routing IDs remain local. Exact edge ownership accompanies lamp and
+sign poses in the derived chunk cache, so preview partitions retain unrelated props and reversibly
+replace the edited ones through the existing renderers. Reversible source-owner replacement removes the old
+wide roadbed when previewing pocket removal, retaining unrelated chunk geometry. Road and terrain
+cutout replacements stage together, so removing or shortening the right lane also refills the old
+cutout. Terrain streaming and independent reservation revisions invalidate the hovered preview. Repeated hover
+on the same end/options/generation reuses the uploaded meshes. The commit
+replans against current state. Corridor clearance follows independent left/right boundaries in
+2 m conservative strips, including sidewalks; a kerb-side pocket does not reserve a symmetric
+extra lane on the opposite side. Existing surface validation remains the final acceptance gate.
+
+A stroke that would split an authored pocket/taper, or attach a new arm to its hidden transition,
+is refused with a remove-transition-first message. Remove the pocket, edit the junction, then
+reapply it. This prevents silent loss of roles and invalid lane terminals; it does not add a new
+junction inside a taper. Explicit vehicle whitelists, real footpath junctions, forced crossings and
+special node roles are preserved instead of being automatically promoted to lane transitions.
+
+ROAD-65 publication projects affected cars onto rebuilt road lanes **or taper connectors**;
+a car already in a newly authored taper keeps its physical position and speed. Undo invalidates
+moving lane stations before rebuilding, then projects positions again. Frontage references and
+legacy occupancy are remapped through their owners on add, move, removal and undo. Planning is
+O(local degree + local profile/surface compilation + affected terrain tiles/sites); it invokes
+the existing fixed-tile CDT builder, without copying the city. Commit retains existing whole-agent/access/CCH
+publication and edit-time building-reference maintenance. No per-agent field or allocation is
+introduced. The lane selector adds an O(1) cached approach-flag check and forbids starting a
+maneuver that would cross the final 20 m solid zone. Blocked preparation retains stages 1–2's
+legal continuation/replan behavior.
+
+**Existing roads and blocking fixes.** Roads without authored transitions keep their roadbed
+bands and vertex arithmetic on load. Paint changes at junction approaches by design. Undivided
+asymmetric/one-way lanes now use the same centred lane-group offset as divided roads; previously
+outer lane centres could lie on or outside the asphalt. This lane-placement correction is necessary
+for a right pocket; it changes lane geometry, not the legacy roadbed. Splitting a road also now
+carries endpoint connection/crosswalk references to the half that still reaches that endpoint.
+NET-07, routing turn legality, junction priority and traffic lights are unchanged.
+
+`road_pockets_test.gd` builds a true 2+2 upstream road and a 4+2 Prisma approach through Rust
+road-tool commands, exercises routed traffic and endpoint controls, and offers one opt-in
+windowed batch with overhead/street views of the pocket, mid-road taper and traffic. Final
+`stage5_` names preserve the historical stages 1–2 PNGs.
+
+**Trajectory follow-up acceptance (2026-10-20).** The right-turn hook came from cubic
+handles sized to the whole junction, overshooting the actual lane-tangent intersection.
+The continuous-median offset frame separately broke endpoint/midpoint tangency. Both are
+replaced by the tangent-circle construction above; no pose interpolation or agent tick code
+changed. The old straight-whitelist loop is replaced by bounded lane-only mouth insets.
+
+Fresh whole `cargo test` passes 2,583 library tests and all four growth integrations; the
+release library suite passes the same 2,583 tests. Clippy is clean. Rustdoc has no missing-doc
+warnings; the two existing link warnings remain. All five follow-up Rust files pass targeted
+Rustfmt; shell syntax, SPDX and whitespace checks pass. The original roadbed/prop golden
+hashes remain unchanged; only combined hashes containing the intentionally changed vehicle
+connectors were updated. Sixteen release headless bridges pass (the earlier fifteen plus
+`road_trajectory_test`), including save/load, moving-agent edits/undo and legacy roadbed checks.
+The windowed fixture also passes and produces eleven before/after view pairs.
+
+Commands from `rust/`, with `METRUM_DEBUG=0`, `RAYON_NUM_THREADS=4` and MacOSX26.5 SDK:
+
+```bash
+cargo test -- --test-threads=4
+cargo test --release --lib -- --test-threads=4
+cargo clippy --all-targets
+cargo doc --no-deps
+cargo build --release
+cargo bench --bench road_chunk_benchmark --no-run --message-format=json
+```
+
+Before is the completed, uncommitted stages 3–5 release; after is this trajectory follow-up.
+Both use Rust 1.98.1, release `opt-level=3`, `debug=1`, on Apple M2 Pro (12 logical CPUs).
+Retained executables stay immutable; no builds, correctness suites or windows compete with
+matched timings. The source stays unchanged between verification and measurement.
+
+| Executable | Before SHA-256 | After SHA-256 |
+| --- | --- | --- |
+| Library test | d3474f6396dc614f1c6671768d1667911ff1761529c7c7faff7ba15f722dc85f | d4286c5c488ac065dc42dd7e8d70ab5f2fb086614262bdf25ba9acb2daaa17eb |
+| GDExtension | d52803aa3c57330602b93422d23d6f243585e52b7c68516ca5bddd7904698ee6 | e83f8459a929eb13d621f9239f5e3ef3cbf80518cc5ee6d9c6e8cfe54e218dc2 |
+| Road Criterion | c6ee2c8fcf858457dcd03fa548bd628c9762440372d21b2327b134b373a23d0d | 932ab527c2e7fdbcaf9cb676725f071495fd5265a4877ad3fa0d7ad61f97bfbe |
+
+PERF-06 uses fifteen alternating pairs/eight workers; its six workload counters match and
+all paired intervals include zero. No tick regression is detected; no speedup is claimed.
+See [the traffic table](traffic.md#road-67-trajectory-follow-up-acceptance-2026-10-20).
+Lane transitions and incremental rebuild use three pairs/four workers; ordinary, paved and
+pocket locality use two pairs/four workers. Criterion uses two alternating pairs, all twelve
+cases, twenty samples and one-second warmup; the group overrides the CLI measurement target
+with three seconds. Representative runtime/rebuild medians, milliseconds:
+
+| Fixture | Before → after, ms |
+| --- | --- |
+| Transitions / clear / 65,536 groups | 4.502666 → 4.484375 |
+| Transitions / merge / 65,536 groups | 5.609750 → 5.555750 |
+| Transitions / blocked / 65,536 groups | 4.566041 → 4.596416 |
+| Transitions / lateral / 65,536 groups | 4.843500 → 4.878125 |
+| Transitions / cruise / 65,536 groups | 3.214583 → 3.213083 |
+| Lane rebuild / 0 background edges | 0.017500 → 0.017000 |
+| Lane rebuild / 1,000 background edges | 0.016667 → 0.016500 |
+| Lane rebuild / 10,000 background edges | 0.015792 → 0.015542 |
+| Lane rebuild / 100,000 background edges | 0.015417 → 0.015291 |
+
+Local lane products are identical across background tiers within each build; cross-build
+connector hashes intentionally differ. Transition work counts match across builds. All twelve
+Criterion medians, milliseconds:
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| chunk_emit_only/1 | 0.046580 | 0.045618 |
+| full_network_emit/1 | 0.043741 | 0.042644 |
+| dirty_compile_plus_chunk_emit_diagnostic/1 | 0.083760 | 0.082589 |
+| chunk_emit_only/64 | 0.047383 | 0.045774 |
+| full_network_emit/64 | 2.419250 | 2.379700 |
+| dirty_compile_plus_chunk_emit_diagnostic/64 | 0.088277 | 0.086348 |
+| chunk_emit_only/256 | 0.047521 | 0.046696 |
+| full_network_emit/256 | 9.947750 | 9.571250 |
+| dirty_compile_plus_chunk_emit_diagnostic/256 | 0.097826 | 0.095465 |
+| chunk_emit_only/1024 | 0.047539 | 0.046175 |
+| full_network_emit/1024 | 41.464500 | 40.565500 |
+| dirty_compile_plus_chunk_emit_diagnostic/1024 | 0.163150 | 0.158085 |
+
+Headless Godot upload uses five alternating pairs, four workers and 101 samples/case.
+The initial two pairs had unusually fast baseline residency medians of 3.788 and 3.819 ms;
+the upload-only extension retains every original sample. Geometry/work counts match in all
+five pairs. These are CPU submission/completion measurements, not GPU frame timings.
+
+| Kind / resident chunks / changed chunks | Before → after complete median, ms |
+| --- | --- |
+| resident/4/1 | 4.355 → 4.341 |
+| resident/64/1 | 4.364 → 4.356 |
+| resident/256/1 | 4.353 → 4.367 |
+| resident/1024/1 | 4.330 → 4.363 |
+| resident/4096/1 | 4.339 → 4.367 |
+| affected/1024/0 | 0.032 → 0.031 |
+| affected/1024/1 | 4.362 → 4.366 |
+| affected/1024/4 | 14.308 → 14.325 |
+| affected/1024/16 | 57.273 → 57.343 |
+
+Populated locality keeps the affected neighborhood fixed while increasing background roads,
+buildings, parcels and agents. Setup and one-time snapshots are outside repeated planning;
+local road/terrain products match at every tier. Ordinary/paved full-worker and pocket
+road-plus-terrain preview medians, milliseconds:
+
+| Remote buildings | Remote roads / agents / parcels | Ordinary before → after | Paved before → after | Pocket preview before → after | Pocket prepare before → after |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 / 24 / 4 | 5.4702 → 5.4652 | 6.5409 → 6.4877 | 18.2122 → 18.1637 | 0.042792 → 0.043187 |
+| 1,000 | 4 / 6024 / 1004 | 5.4868 → 5.5969 | 6.5254 → 6.5749 | 18.3895 → 18.6169 | 0.042313 → 0.043250 |
+| 10,000 | 40 / 60024 / 10004 | 5.5121 → 5.5817 | 6.6843 → 6.5950 | 18.3195 → 18.5022 | 0.042437 → 0.043063 |
+| 100,000 | 391 / 600024 / 100004 | 5.6673 → 5.6412 | 6.7104 → 6.6872 | 18.5951 → 18.6806 | 0.043250 → 0.044979 |
+
+At 100k remote buildings ordinary/paved full-worker p95s are 6.1492 → 5.9896 and
+7.0188 → 7.0371 ms; their separate one-time snapshots are 0.156417 → 0.138458 and
+0.158604 → 0.145313 ms. Repeated work follows the local neighborhood, not background count.
+Pocket preview includes production terrain CDT, excluding retained export/GPU upload/lock wait.
+All 68 matched invocations, raw rows and analyses remain in `$ARTIFACTS/benchmark-commands.json`,
+`$ARTIFACTS/raw-results.json`, `$ARTIFACTS/summary.json` and the corresponding logs.
+
+Benchmark commands select each retained build as `$TEST_BINARY` / `$BENCH_BINARY`:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$BENCH_BINARY" \
+  --bench --noplot --sample-size 20 --measurement-time 1 --warm-up-time 1
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path "$GODOT_PROJECT" \
+  --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+The four-worker ignored-test invocation uses the same flags
+`--exact --ignored --nocapture --test-threads=1` for these fixtures:
+
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_lane_transitions`
+- `simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling`
+- `nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling`
+- `nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`
+- `nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling`
+
+Engine checks use the earlier isolated `$GODOT_PROJECT` and headless script command, with
+`road_trajectory_test` added to the runner. Windowed inspection uses:
+
+```bash
+METRUM_ROADS_B_CAPTURE=1 METRUM_TRAJECTORY_TAG=after \
+  METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --path "$GODOT_PROJECT" --script res://tests/road_trajectory_test.gd
+```
+
+Produced eleven before/after pairs under `captures/roads_b/trajectory_{before,after}_*.png`.
+Inspected both versions of `prisma_paths` and `divided_bend_paths`, plus the after-build
+`plain_t_paths`, `divided_cross_paths`, `lane_transition_paths`, `prisma_traffic_above` and
+`prisma_turn_queue_street` views. The right-turn hook and median-frame kink disappear;
+left pockets turn once, through paths remain straight and lane gains/drops retain gentle S
+curves. Cars acquire and finish the kerb-side pocket turn, and sustained mixed inflow runs
+without route failures. No visual check remains pending. Every game run quits; deployment
+unlinks the old dylib before copying. The pre-follow-up stages 3–5 record below is historical.
+
+**Stages 3–5 acceptance (2026-10-19).** The default-profile whole `cargo test` passes
+2,579 library tests, all four growth integration tests and doctests; 147 library fixtures and
+one separate scaling integration test remain intentionally ignored. The release library suite
+also passes all 2,579 tests. `cargo clippy --all-targets` adds no warnings. `cargo doc --no-deps`
+has no missing-doc warnings; its two existing vegetation/private-span link warnings remain.
+All 78 changed Rust files pass the targeted Rustfmt check; SPDX and `bash -n run.sh` checks pass.
+No dependencies, unsafe code, engine patches or agent-state fields were added.
+
+Coverage includes both stored directions, left/right/both roles, one-way right pockets,
+1–4 approach lanes, mixed lane gain/drop, opposing pockets, median/kerb/sidewalk coordinates,
+connector reachability, solid-zone lane changes, moving agents during edit/undo, opposite-side
+frontage/occupancy remaps, version-90 round trips and a car saved inside a taper connector.
+The preview/commit test compares exact triangles, lamp poses and sign poses for addition,
+resizing and removal while preserving an unrelated road in the same chunks. Another test
+requires terrain triangles to refill the retired right-lane cutout. Visible-pose golden hashes
+retain their previous values; internal ownership metadata is excluded from that representation.
+Four independent paint-free bridge hashes also match freshly built roads and version-89 saves
+from `6ec0b858` exactly.
+
+Commands from `rust/`, with `METRUM_DEBUG=0`, four Rayon workers and the MacOSX26.5 SDK:
+
+```bash
+cargo test -- --test-threads=4
+cargo test --release --lib -- --test-threads=4
+cargo clippy --all-targets
+cargo doc --no-deps
+cargo build --release
+cargo bench --bench road_chunk_benchmark --no-run --message-format=json
+```
+
+Fifteen individual release headless bridges pass: `road_pockets_legacy_test`, `road_pockets_test`,
+`road_turn_lanes_test`, `road_cross_section_test`, `network_tool_chunk_renderer_test`,
+`road_benchmark_metrics_test`, `road_preview_metrics_test`, `road_junction_preview_test`,
+`road_preview_stream_test`, `vehicle_ground_support_test`, `junction_debug_overlay_test`,
+`agent_inspector_test`, `street_lamp_grid_test`, `zoning_road_tool_test` and
+`road_rejection_report_test`. The unchanged inspector test needed an isolated rerun after a
+few-frame camera-follow timing failure; baseline and candidate both pass the isolated rerun.
+Initial failure output is retained. Existing preview-test shutdown resource warnings remain.
+The marking lighting test also passes windowed. The pose-only preview cache cleanup passes
+fresh junction/stream bridge checks and the windowed pocket/control/traffic batch.
+
+Each engine run uses an isolated `roads-b-` project/app-data name and this command pattern:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path "$GODOT_PROJECT" --script "res://tests/$TEST.gd"
+METRUM_ROADS_B_CAPTURE=1 METRUM_DEBUG=0 RAYON_NUM_THREADS=4 \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$GODOT_PROJECT" \
+  --script res://tests/road_pockets_test.gd
+```
+
+`GODOT_PROJECT` is the isolated mirror. The rejection replay uses a temporary copy with a
+`roads-b-` save/dump prefix. `METRUM_ROADS_B_CONTRACT_DIR=$ARTIFACTS` enables the four old-save
+comparisons. Every engine run quits itself, with the alarm as a guard. Release deployment
+unlinks the installed dylib before copying; the final installed library is the release build.
+
+**Matched release performance.** Apple M2 Pro, 12 logical CPUs, Rust 1.98.1,
+release `opt-level=3`, `debug=1`, MacOSX26.5 SDK, inherited macOS scheduling, `METRUM_DEBUG=0`.
+Before is `6ec0b858`; after is the uncommitted slice B stages 3–5 build. Both binaries stay
+immutable during timing. No builds, correctness suites or windowed captures run alongside
+measurements. Dollar-prefixed artifact names follow `docs/README.md`.
+
+| Executable | Before SHA-256 | After SHA-256 |
+| --- | --- | --- |
+| Library test | 4bc39d10fbe01c7da5f8945dc2a781c4dc9144979a320cd4e99fcc66b914971f | d3474f6396dc614f1c6671768d1667911ff1761529c7c7faff7ba15f722dc85f |
+| GDExtension | 37a2a18f01db492c5b822ae3df502de5267ab97abc08b28be4828704bdca7997 | d52803aa3c57330602b93422d23d6f243585e52b7c68516ca5bddd7904698ee6 |
+| Road Criterion | 8e900f0a51971b10ae2bcd1b8092c14b32b7dc9794ef3665c49026915b32fe0c | c6ee2c8fcf858457dcd03fa548bd628c9762440372d21b2327b134b373a23d0d |
+
+`PERF-06` uses 15 alternating process pairs and eight Rayon workers. All six workloads have
+identical work counters across builds and repeated fixtures; 30k agent-row work is exactly 3×
+10k while lane work stays constant. These one-tick samples are noisy: every paired bootstrap
+interval includes zero. No agent-tick regression is detected, and no speedup is claimed.
+
+| Mode | Agents | Before → after median, ms | Paired median change | Paired bootstrap 95% |
+| --- | --- | --- | --- | --- |
+| network | 10,000 | 0.484250 → 0.465709 | -1.44% | -7.01% … +1.26% |
+| network | 30,000 | 0.907625 → 0.906542 | -0.63% | -4.25% … +11.95% |
+| access_egress | 10,000 | 0.665833 → 0.650125 | +0.16% | -3.69% … +5.19% |
+| access_egress | 30,000 | 1.580125 → 1.565625 | -1.76% | -4.17% … +2.80% |
+| access_ingress | 10,000 | 0.388417 → 0.330250 | -9.38% | -26.36% … +7.77% |
+| access_ingress | 30,000 | 0.614958 → 0.610000 | +0.40% | -8.52% … +20.22% |
+
+Commands use the retained executable as `$TEST_BINARY`, with `--exact --ignored --nocapture
+--test-threads=1`. The agent command is:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Three alternating pairs run each auxiliary fixture (four workers, except reattachment uses one):
+
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_lane_transitions`
+- `simulation::economy::agents::tick::claims::tests::benchmark_claim_preparation`
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_empty_lane_claim_reset`
+- `simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling`
+- `simulation::economy::agents::remap::tests::benchmark_lane_reattachment`
+
+Transition counts, claim/reattachment checksums and rebuild local products match. Representative
+largest tiers and all reattachment tiers, median of process medians in milliseconds:
+
+| Fixture | Before → after, ms |
+| --- | --- |
+| Transitions / clear / 65,536 groups | 4.805417 → 4.549625 |
+| Transitions / merge / 65,536 groups | 5.923084 → 5.535500 |
+| Transitions / blocked / 65,536 groups | 5.217125 → 4.637250 |
+| Transitions / lateral / 65,536 groups | 4.740083 → 4.850084 |
+| Transitions / cruise / 65,536 groups | 3.232667 → 3.225750 |
+| Claims / idle / 1,048,576 agents | 0.256776 → 0.256755 |
+| Claims / mixed / 1,048,576 agents | 0.620568 → 0.640193 |
+| Claim reset / 1,048,576 lanes | 0.301536 → 0.304688 |
+| Reattachment / 1024 queries | 0.105917 → 0.102959 |
+| Reattachment / 16384 queries | 1.688875 → 1.695167 |
+| Reattachment / 131072 queries | 13.392208 → 13.643708 |
+| Lane rebuild / 0 background edges | 0.017250 → 0.016708 |
+| Lane rebuild / 1,000 background edges | 0.017333 → 0.016750 |
+| Lane rebuild / 10,000 background edges | 0.015542 → 0.015833 |
+| Lane rebuild / 100,000 background edges | 0.015500 → 0.015542 |
+
+Road Criterion uses two alternating pairs, four Rayon workers, 20 samples and 1 s warm-up.
+The group retains its 3 s measurement target (longer estimates for expensive samples). Commands:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$BENCH_BINARY" \
+  --bench --noplot --sample-size 20 --measurement-time 1 --warm-up-time 1
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path "$GODOT_PROJECT" \
+  --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+| Rust road fixture / resident chunks | Before, ms | After, ms |
+| --- | --- | --- |
+| chunk_emit_only/1 | 0.047276 | 0.046586 |
+| full_network_emit/1 | 0.043941 | 0.043924 |
+| dirty_compile_plus_chunk_emit_diagnostic/1 | 0.084126 | 0.084266 |
+| chunk_emit_only/64 | 0.046701 | 0.046884 |
+| full_network_emit/64 | 2.438250 | 2.394650 |
+| dirty_compile_plus_chunk_emit_diagnostic/64 | 0.088281 | 0.086438 |
+| chunk_emit_only/256 | 0.047487 | 0.046443 |
+| full_network_emit/256 | 9.952000 | 9.766100 |
+| dirty_compile_plus_chunk_emit_diagnostic/256 | 0.097416 | 0.096015 |
+| chunk_emit_only/1024 | 0.047948 | 0.046476 |
+| full_network_emit/1024 | 41.590000 | 40.753000 |
+| dirty_compile_plus_chunk_emit_diagnostic/1024 | 0.161165 | 0.162900 |
+
+Godot upload uses the same frontend for both release libraries, two alternating pairs and four
+workers. These are headless CPU staging/completion timings, not GPU frame times. All runs end
+with zero benchmark failures. Complete medians and p95s (milliseconds):
+
+| Kind / resident / changed chunks | Median before → after | p95 before → after |
+| --- | --- | --- |
+| resident/4/1 | 4.351000 → 4.358000 | 4.444000 → 4.476500 |
+| resident/64/1 | 4.352000 → 4.362500 | 4.483500 → 4.471000 |
+| resident/256/1 | 4.353500 → 4.351000 | 4.481000 → 4.446000 |
+| resident/1024/1 | 4.360500 → 4.344000 | 4.439000 → 4.467000 |
+| resident/4096/1 | 4.363000 → 4.346500 | 4.481000 → 4.470000 |
+| affected/1024/0 | 0.035500 → 0.034000 | 0.051000 → 0.048000 |
+| affected/1024/1 | 4.364500 → 4.356500 | 4.481000 → 4.438500 |
+| affected/1024/4 | 14.608500 → 14.533000 | 14.908500 → 14.948500 |
+| affected/1024/16 | 58.682500 → 58.551500 | 59.285000 → 59.170500 |
+
+**Populated-map locality.** Two alternating pairs per existing fixture run
+`nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling` and
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling` with the same
+`$TEST_BINARY --exact --ignored --nocapture --test-threads=1` pattern and four workers.
+The local road/site neighborhood stays fixed; remote roads grow 0/4/40/391, parcels
+4/1,004/10,004/100,004 and agents 24/6,024/60,024/600,024. Repeated plans verify identical
+local products. Setup and the one-time snapshot stay outside repeated planning/worker timings.
+All cells below are before → after medians in milliseconds:
+
+**Ordinary sites.**
+
+| Remote buildings | Plan | Road worker | Full worker | Snapshot once |
+| --- | --- | --- | --- | --- |
+| 0 | 4.563125 → 4.488584 | 1.228823 → 1.290323 | 5.543500 → 5.530886 | 0.012042 → 0.011854 |
+| 1,000 | 4.554604 → 4.551823 | 1.231594 → 1.303906 | 5.582281 → 5.611511 | 0.009625 → 0.009916 |
+| 10,000 | 4.540875 → 4.531865 | 1.240719 → 1.298948 | 5.532542 → 5.575240 | 0.047209 → 0.040104 |
+| 100,000 | 4.584406 → 4.635687 | 1.238406 → 1.325843 | 5.619312 → 5.714948 | 0.153271 → 0.129563 |
+
+**Paved sites.**
+
+| Remote buildings | Plan | Road worker | Full worker | Snapshot once |
+| --- | --- | --- | --- | --- |
+| 0 | 5.538719 → 5.545218 | 1.224521 → 1.302542 | 6.509698 → 6.531833 | 0.007313 → 0.005146 |
+| 1,000 | 5.545438 → 5.610313 | 1.227761 → 1.320604 | 6.540479 → 6.672729 | 0.010292 → 0.013084 |
+| 10,000 | 5.543573 → 5.583417 | 1.237177 → 1.310958 | 6.593979 → 6.624094 | 0.044145 → 0.039479 |
+| 100,000 | 5.651948 → 5.720812 | 1.268063 → 1.361615 | 6.680667 → 6.766489 | 0.125645 → 0.136396 |
+
+The road-only worker adds roughly 0.06–0.09 ms for new paint/pose products; planning/full-worker
+medians remain close and retain locality. One paved 10k process-pair full-worker p95 is
+6.922 → 16.145 ms, with median 6.594 → 6.624 ms; the 100k tier p95 is 7.025 → 7.243 ms.
+This tail outlier is retained, rather than hidden by the median. Snapshot setup still scales
+with stored city state. These planning fixtures do not time whole-agent/access/CCH edit publication.
+
+The new candidate-only `nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling`
+uses four workers, three warmups and 31 measured calls per tier. Preparation includes corridor
+reservation checks; preview compilation includes road/paint/pose products and production terrain
+CDT. It excludes retained-mesh export, GPU upload and lock wait. Local road products remain
+identical, and terrain products validate at every tier. There is no baseline pocket implementation.
+
+| Remote buildings | Prepare p50, ms | Road + terrain compile p50, ms |
+| --- | --- | --- |
+| 0 | 0.042541 | 18.188083 |
+| 1,000 | 0.043709 | 18.625875 |
+| 10,000 | 0.044291 | 18.614750 |
+| 100,000 | 0.043666 | 18.515750 |
+
+**Windowed inspection.** Inspected the real game's Metal-rendered PNGs in locally ignored
+`captures/roads_b/`, against `$HOME/dev/metrum_rise-refs/roads/user-2026-10-18/`'s Prisma
+street view/map and the Commons Savilahdentie-at-Prisma median photograph. All 16 final `stage5_`
+views were captured through Rust road-tool commands and the ordinary routed-car simulation:
+
+- `stage5_pocket_taper_above.png`, `stage5_pocket_taper_street.png`: median opening, unchanged
+  opposite kerb, widened own kerb/sidewalk and the full-width L/S/S/R approach.
+- `stage5_midroad_taper_above.png`, `stage5_midroad_taper_street.png`: smooth 1+1 → 2+2 widening,
+  continuous sidewalks, lamp placement and no zebra at the transition.
+- `stage5_tool_preview_above.png`, `stage5_tool_preview_street.png`,
+  `stage5_tool_committed_above.png`, `stage5_tool_committed_street.png`,
+  `stage5_tool_remove_preview_above.png`, `stage5_tool_remove_committed_above.png`: paired
+  resize/removal views, including matching median/paint/lamps/signs and refilled terrain cutouts.
+- `stage5_prisma_approach_above.png`, `stage5_prisma_approach_street.png`,
+  `stage5_prisma_connectors_above.png`, `stage5_prisma_traffic_above.png`,
+  `stage5_prisma_traffic_street.png`, `stage5_prisma_turn_queue_street.png`: two upstream lanes
+  gaining inner/outer pockets, white arrows and solid approaches, ordered connectors and short
+  turn-lane queues. The fixture crosses a 1+1 road.
+
+The approach matches the reference's median opening and L/S/S/R arrangement. The reference's
+gantry, nearby slip-road islands and underpass remain outside this slice. Queues arise from car
+following and existing reservations; traffic lights and right-of-way remain `TRAFFIC-06`.
+`ROAD-68` needs explicit grade/topology separation before junction construction. `ROAD-69` and
+`ROAD-62` need their own ramp/roundabout roles and connectors; the flagged degree-two transition
+is reserved for lane continuity. They can reuse the lane-use, pocket/profile and marking contracts.
+
 
 ## Pedestrian Junction Crossings
 

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Junction clipping regressions for road and footpath geometry.
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -10,6 +12,7 @@ mod tests {
 
     fn road_edge(start_node: u32, end_node: u32, start: Vector3, end: Vector3, width: f32) -> Edge {
         Edge {
+            lane_tapers: None,
             median: None,
             start_node,
             end_node,
@@ -45,6 +48,7 @@ mod tests {
 
         // Edge 0: Left to Center (-X to 0) (Horizontal Main Road Part 1)
         g.add_edge(Edge {
+            lane_tapers: None,
             median: None,
             start_node: n_left,
             end_node: n_center,
@@ -73,6 +77,7 @@ mod tests {
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
+            lane_tapers: None,
             median: None,
             start_node: n_center,
             end_node: n_right,
@@ -101,6 +106,7 @@ mod tests {
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
+            lane_tapers: None,
             median: None,
             start_node: n_bot,
             end_node: n_center,

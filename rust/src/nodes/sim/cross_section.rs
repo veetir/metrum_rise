@@ -23,6 +23,16 @@ impl SimCore {
         let Some(edge) = self.region_graph.get_edge(id).filter(|edge| !edge.deleted) else {
             return self.refuse_cross_section("invalid_road");
         };
+        let edits_pocket_base = [edge.start_node, edge.end_node].into_iter().any(|node| {
+            self.region_graph.node(node).node_type
+                == crate::simulation::network::types::NodeType::LaneTransition
+                && self.region_graph.node_adjacency(node).iter().any(|&other| {
+                    other != id && self.region_graph.edge(other).pocket_taper().is_some()
+                })
+        });
+        if edge.pocket_taper().is_some() || edits_pocket_base {
+            return self.refuse_cross_section("edit_pocket_controls");
+        }
         if let Err(reason) = edge.validate_cross_section(fwd, bkw, median) {
             return self.refuse_cross_section(reason);
         }
@@ -113,6 +123,10 @@ impl SimCore {
             self.rollback_staged_road_edit();
             return self.refuse_cross_section(reason);
         }
+        self.finish_road_section_edit(dirty)
+    }
+
+    pub(super) fn finish_road_section_edit(&mut self, mut dirty: HashSet<usize>) -> bool {
         self.transit_network
             .bulk_dirty_edges
             .extend(dirty.iter().copied());
@@ -150,7 +164,7 @@ impl SimCore {
         true
     }
 
-    fn refuse_cross_section(&mut self, reason: &'static str) -> bool {
+    pub(super) fn refuse_cross_section(&mut self, reason: &'static str) -> bool {
         self.last_road_rejection = Some(RoadRejection::new(reason, reason));
         false
     }

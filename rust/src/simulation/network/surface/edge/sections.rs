@@ -71,7 +71,15 @@ impl RoadSurfaceSystem {
                 center_height_m,
                 tangent_xz,
                 lateral_xz,
-                bands: self.build_lateral_bands(edge, center, lateral_xz, None, None, 1.0),
+                bands: self.build_lateral_bands(
+                    edge,
+                    center,
+                    lateral_xz,
+                    None,
+                    None,
+                    1.0,
+                    Some(0.0),
+                ),
             }];
         }
 
@@ -129,6 +137,23 @@ impl RoadSurfaceSystem {
         );
         if edge.median.is_some() {
             median_ends.add_samples(&mut sample_distances, total_length_m);
+        }
+        if let Some(ends) = &edge.lane_tapers {
+            for (end, taper) in ends.iter().enumerate() {
+                if let Some(taper) = taper {
+                    let steps = (taper.length_m / 2.0).ceil() as usize;
+                    for step in 0..=steps {
+                        let distance = taper.length_m * step as f32 / steps as f32;
+                        sample_distances.push(if end == 0 {
+                            distance
+                        } else {
+                            total_length_m - distance
+                        });
+                    }
+                }
+            }
+            sample_distances.sort_by(f32::total_cmp);
+            sample_distances.dedup_by(|a, b| (*a - *b).abs() < 0.125);
         }
         let span_frame = mouth_policy.ownership_range.map(|(start_s_m, end_s_m)| {
             let mut start_tangent = self
@@ -218,6 +243,7 @@ impl RoadSurfaceSystem {
                             width_tapers,
                         )),
                         median_ends.scale(s_m),
+                        Some(s_m),
                     ),
                 }
             })
@@ -440,6 +466,7 @@ impl RoadSurfaceSystem {
 
     fn edge_supports_width_change_taper(edge: &Edge) -> bool {
         !edge.deleted
+            && edge.lane_tapers.is_none()
             && edge.median.is_none()
             && edge.class == EdgeClass::Standard
             && edge.primary_type == TransitType::Road
@@ -769,6 +796,7 @@ mod tests {
             .map(|segment| segment[0].distance_to(segment[1]))
             .sum();
         Edge {
+            lane_tapers: None,
             median: None,
             start_node,
             end_node,

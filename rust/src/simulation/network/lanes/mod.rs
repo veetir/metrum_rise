@@ -108,6 +108,9 @@ impl Default for Lane {
     }
 }
 
+/// Last metres of a movement-selective approach where divider paint is solid.
+pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
+
 /// System for managing road and intersection lanes.
 pub struct LaneSystem {
     /// All active lanes.
@@ -144,6 +147,17 @@ impl LaneSystem {
             revision: 0,
             surface_synced_len: 0,
         }
+    }
+
+    /// Checks authored pocket movements from local junction geometry before changing topology.
+    pub(crate) fn approach_supports_pockets(
+        graph: &RegionGraph,
+        edge: usize,
+        node: u32,
+        left: bool,
+        right: bool,
+    ) -> bool {
+        lane_use::DefaultLaneUse::new(graph, edge, node).supports_pockets(left, right)
     }
 
     /// Clears all lanes and structural mappings.

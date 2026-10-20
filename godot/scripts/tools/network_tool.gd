@@ -29,6 +29,8 @@ var road_mesh_root: Node3D # Final road chunks owned only by RoadTool
 var _street_lights: StreetLights
 var _road_signs: RoadSigns
 var _road_chunk_instances: Dictionary = {}
+# Canonical packed poses share their arrays; only previewed chunk keys are restored.
+var _road_prop_chunks: Dictionary = {}
 var _road_mesh_generation: int = -1
 var _road_chunk_span_m: float = 0.0
 var _road_chunk_origin_x_m: float = 0.0
@@ -489,6 +491,7 @@ func _commit_road_mesh_update(
 	if props:
 		_street_lights.configure_chunks(chunk_span_m, Vector2(chunk_origin_x_m, chunk_origin_z_m))
 	if full_replace:
+		_road_prop_chunks.clear()
 		for key in _road_chunk_instances.keys():
 			_remove_road_chunk(key)
 		if props:
@@ -497,6 +500,7 @@ func _commit_road_mesh_update(
 	for chunk_data in validated_updates:
 		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
 		if chunk_data["removed"]:
+			_road_prop_chunks.erase(key)
 			_remove_road_chunk(key)
 			if props:
 				_street_lights.remove_chunk(key)
@@ -509,6 +513,7 @@ func _commit_road_mesh_update(
 			0.0,
 			chunk_origin_z_m + float(key.y) * chunk_span_m
 		)
+		_road_prop_chunks[key] = {"street_lights": chunk_data.get("street_lights", PackedFloat32Array()), "road_signs": chunk_data.get("road_signs", PackedFloat32Array())}
 		var lights = chunk_data.get("street_lights")
 		_street_lights.set_chunk(
 			key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
@@ -528,7 +533,30 @@ func _commit_road_mesh_update(
 	_road_chunk_origin_z_m = chunk_origin_z_m
 	return surface_generation
 
+# Applies the complete paired prop poses without touching canonical chunk payloads.
+func set_road_prop_preview(chunks: Array) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	if _street_lights == null or _road_signs == null:
+		return keys
+	for data: Dictionary in chunks:
+		var key := Vector2i(data.chunk_x, data.chunk_z)
+		keys.append(key)
+		_set_road_prop_poses(key, data)
+	return keys
+
+func clear_road_prop_preview(keys: Array[Vector2i]) -> void:
+	if _street_lights == null or _road_signs == null:
+		return
+	for key: Vector2i in keys:
+		_set_road_prop_poses(key, _road_prop_chunks.get(key, {}))
+
+func _set_road_prop_poses(key: Vector2i, data: Dictionary) -> void:
+	var origin := Vector3(_road_chunk_origin_x_m + key.x * _road_chunk_span_m, 0.0, _road_chunk_origin_z_m + key.y * _road_chunk_span_m)
+	_street_lights.set_chunk(key, origin, data.get("street_lights", PackedFloat32Array()))
+	_road_signs.set_chunk(key, origin, data.get("road_signs", PackedFloat32Array()))
+
 func reset_main_mesh_chunks() -> void:
+	_road_prop_chunks.clear()
 	discard_staged_main_mesh_update()
 	for key in _road_chunk_instances.keys():
 		_remove_road_chunk(key)

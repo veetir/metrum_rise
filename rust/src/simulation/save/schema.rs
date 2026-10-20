@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 89;
+pub const SAVE_VERSION: i64 = 90;
 
 /// First version storing the weather: scenario, transition, cloud drift, wind clock and schedule.
 ///
@@ -242,6 +242,7 @@ CREATE TABLE network_nodes(
     z REAL NOT NULL,
     node_type INTEGER NOT NULL
 );
+CREATE TABLE road_lane_tapers(edge_id INTEGER NOT NULL, end_index INTEGER NOT NULL, length_m REAL NOT NULL, from_fwd INTEGER NOT NULL, from_bkw INTEGER NOT NULL, from_median REAL NOT NULL, left_pocket INTEGER NOT NULL, right_pocket INTEGER NOT NULL, PRIMARY KEY(edge_id, end_index));
 CREATE TABLE network_edges(
     edge_id INTEGER PRIMARY KEY,
     start_node INTEGER NOT NULL,
@@ -613,6 +614,7 @@ pub fn transit_type_from_i64(value: i64) -> Result<TransitType, SaveLoadError> {
 pub fn node_type_to_i64(value: NodeType) -> i64 {
     match value {
         NodeType::Junction => 0,
+        NodeType::LaneTransition => 6,
         NodeType::Station => 1,
         NodeType::Harbor => 2,
         NodeType::Airport => 3,
@@ -624,6 +626,7 @@ pub fn node_type_to_i64(value: NodeType) -> i64 {
 pub fn node_type_from_i64(value: i64) -> Result<NodeType, SaveLoadError> {
     match value {
         0 => Ok(NodeType::Junction),
+        6 => Ok(NodeType::LaneTransition),
         1 => Ok(NodeType::Station),
         2 => Ok(NodeType::Harbor),
         3 => Ok(NodeType::Airport),

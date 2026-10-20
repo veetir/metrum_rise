@@ -76,6 +76,23 @@ pub(crate) enum SimCommand {
         /// Acceptance after dependent caches and query snapshots have been published.
         completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
     },
+    /// Add a pocket using a hidden degree-two split and the standard road transaction.
+    ChangeRoadPocket {
+        /// Selected source road.
+        edge: usize,
+        /// Stored endpoint receiving the pocket.
+        at_start: bool,
+        /// Enable an inner left-turn pocket.
+        left: bool,
+        /// Enable an outer right-turn lane.
+        right: bool,
+        /// Full-width approach length.
+        pocket_m: f32,
+        /// Transition length.
+        taper_m: f32,
+        /// Completion after dependent publication.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
     /// Delete one previously resolved building or road target on the simulation thread.
     Bulldoze {
         /// Immutable target token captured while the cursor still referenced the object.
@@ -332,6 +349,37 @@ pub(crate) fn run_sim_thread(
                         let rejection = c.last_road_rejection.take().unwrap_or_default();
                         let snapshots = road_tool_snapshots_from_core(&c);
                         (committed, rejection, snapshots)
+                    };
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadPocket {
+                    edge,
+                    at_start,
+                    left,
+                    right,
+                    pocket_m,
+                    taper_m,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) = {
+                        let mut c = core.lock().expect("simulation core lock poisoned");
+                        let committed =
+                            c.change_road_pocket(edge, at_start, left, right, pocket_m, taper_m);
+                        let rejection = c.last_road_rejection.take().unwrap_or_default();
+                        (committed, rejection, road_tool_snapshots_from_core(&c))
                     };
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(

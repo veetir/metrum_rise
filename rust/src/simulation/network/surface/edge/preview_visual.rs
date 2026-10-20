@@ -60,6 +60,7 @@ impl RoadSurfaceSystem {
             None,
             None,
             1.0,
+            None,
         );
         // Reserve once for the stroke, not inside the per-quad emission loop. Sequential emission
         // shares longitudinal coordinates and is a single UI stroke, not a city-wide element loop.

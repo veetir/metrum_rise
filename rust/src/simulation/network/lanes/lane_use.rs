@@ -130,6 +130,8 @@ pub(super) struct DefaultLaneUse {
     available: u8,
     count: usize,
     node: u32,
+    left_pocket: bool,
+    right_pocket: bool,
 }
 
 impl DefaultLaneUse {
@@ -154,12 +156,53 @@ impl DefaultLaneUse {
                 available |= movement(incoming, outward(graph, other, node));
             }
         }
+        let pockets = approach.pocket_taper().filter(|(end, _)| {
+            if *end == 0 {
+                approach.end_node == node
+            } else {
+                approach.start_node == node
+            }
+        });
         Self {
+            left_pocket: pockets.is_some_and(|(_, t)| t.left_pocket),
+            right_pocket: pockets.is_some_and(|(_, t)| t.right_pocket),
             incoming,
             available,
             count,
             node,
         }
+    }
+
+    fn mask(&self, rank: usize) -> u8 {
+        let left = usize::from(self.left_pocket && self.available & LEFT != 0);
+        let right = usize::from(self.right_pocket && self.available & RIGHT != 0);
+        if left != 0 && rank == 0 {
+            return LEFT;
+        }
+        if right != 0 && rank + 1 == self.count {
+            return RIGHT;
+        }
+        let remaining = self.available
+            & !(if left != 0 { LEFT } else { 0 })
+            & !(if right != 0 { RIGHT } else { 0 });
+        let mask = lane_mask(
+            rank - left,
+            self.count - left - right,
+            if remaining == 0 {
+                self.available
+            } else {
+                remaining
+            },
+        );
+        if self.left_pocket || self.right_pocket {
+            mask | (self.available & STRAIGHT)
+        } else {
+            mask
+        }
+    }
+
+    pub(super) fn supports_pockets(&self, left: bool, right: bool) -> bool {
+        (!left || self.available & LEFT != 0) && (!right || self.available & RIGHT != 0)
     }
 
     /// Single-movement and single-lane approaches need no advance movement selection.
@@ -171,13 +214,13 @@ impl DefaultLaneUse {
     pub(super) fn allows(&self, graph: &RegionGraph, from: i8, edge: usize, to: i8) -> bool {
         let turn = movement(self.incoming, outward(graph, edge, self.node));
         let rank = lane_rank(from, self.count);
-        if lane_mask(rank, self.count, self.available) & turn == 0 {
+        if self.mask(rank) & turn == 0 {
             return false;
         }
         let mut group_rank = 0;
         let mut group_count = 0;
         for candidate in 0..self.count {
-            if lane_mask(candidate, self.count, self.available) & turn != 0 {
+            if self.mask(candidate) & turn != 0 {
                 group_rank += usize::from(candidate < rank);
                 group_count += 1;
             }
@@ -201,6 +244,30 @@ impl DefaultLaneUse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pockets_preserve_straight_travel_in_the_base_lanes() {
+        for (left, right, expected) in [
+            (true, false, vec![LEFT, STRAIGHT, STRAIGHT | RIGHT]),
+            (false, true, vec![LEFT | STRAIGHT, STRAIGHT, RIGHT]),
+            (true, true, vec![LEFT, STRAIGHT, STRAIGHT, RIGHT]),
+        ] {
+            let use_rules = DefaultLaneUse {
+                incoming: Vector2::new(1.0, 0.0),
+                available: 7,
+                count: expected.len(),
+                node: 0,
+                left_pocket: left,
+                right_pocket: right,
+            };
+            assert_eq!(
+                (0..expected.len())
+                    .map(|rank| use_rules.mask(rank))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn lane_use_shared_and_dedicated_one_to_four_lanes() {

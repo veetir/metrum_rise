@@ -177,4 +177,57 @@ mod tests {
         assert_eq!(overtaking_lane_target(2, &network), None);
         assert_eq!(cruise_lane_return_target(2, &network), Some(3));
     }
+    #[test]
+    fn solid_approach_zone_blocks_turn_and_frontage_lane_changes() {
+        use super::{LaneChangeParams, choose_lane_change};
+        use crate::simulation::network::graph::{Edge, RegionGraph};
+        use crate::simulation::network::types::{NodeType, TransitFlags};
+        use godot::prelude::Vector3;
+        let mut graph = RegionGraph::new();
+        let node = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        for p in [
+            Vector3::new(-180.0, 0.0, 0.0),
+            Vector3::new(180.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 180.0),
+        ] {
+            let end = graph.add_node(p, NodeType::Junction);
+            graph.add_edge(Edge {
+                start_node: end,
+                end_node: node,
+                geometry: vec![p, Vector3::ZERO],
+                physical_geometry: vec![p, Vector3::ZERO],
+                physical_length: 180.0,
+                width: 14.0,
+                fwd_lanes: 2,
+                bkw_lanes: 2,
+                allowed_types: TransitFlags::CAR,
+                ..Default::default()
+            });
+        }
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut graph);
+        let ids = &network.lane_system.edge_lanes[&0];
+        let from = ids[0];
+        let to = ids[1];
+        assert!(network.lane_system.needs_turn_preparation(from));
+        let length = network.lane_system.lanes[from].length;
+        let buckets = vec![Vec::new(); network.lane_system.lanes.len()];
+        for frontage in [false, true] {
+            let params = |d| LaneChangeParams {
+                lane_id: from,
+                lane_d: d,
+                speed: 4.0,
+                detach_lane_id: to,
+                detach_lane_d: length,
+                has_access_plan: frontage,
+                blocked_time: 0.0,
+                cooldown: 0.0,
+            };
+            let early = choose_lane_change(params(0.0), &network, &buckets, to).unwrap();
+            assert!(
+                early.length <= length - crate::simulation::network::lanes::APPROACH_SOLID_LENGTH_M
+            );
+            assert!(choose_lane_change(params(length - 19.0), &network, &buckets, to).is_none());
+        }
+    }
 }

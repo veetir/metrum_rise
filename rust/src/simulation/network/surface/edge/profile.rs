@@ -65,6 +65,7 @@ struct EdgeLateralBandSpec {
 }
 
 impl RoadSurfaceSystem {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface::edge) fn build_lateral_bands(
         &self,
         edge: &Edge,
@@ -73,6 +74,7 @@ impl RoadSurfaceSystem {
         profile_blend: Option<EdgeProfilePlaneBlend>,
         carriageway_half_width_override_m: Option<f32>,
         median_scale: f32,
+        station: Option<f32>,
     ) -> Vec<RoadSurfaceBand> {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
             let flat_height_m = center.y as f32;
@@ -109,6 +111,7 @@ impl RoadSurfaceSystem {
             carriageway_half_width_override_m,
             median_scale,
             |spec| {
+                let spec = taper_band_spec(edge, station, median_scale, spec);
                 bands.push(RoadSurfaceBand {
                     kind: spec.kind,
                     lateral_start_m: spec.lateral_start_m,
@@ -137,6 +140,7 @@ impl RoadSurfaceSystem {
         let mut roadbed_half_width_m = 0.0_f32;
         let mut carriageway_half_width_m = 0.0_f32;
         Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, 1.0, |spec| {
+            let spec = taper_band_spec(edge, None, 1.0, spec);
             let band_half_width_m = spec.lateral_start_m.abs().max(spec.lateral_end_m.abs());
             roadbed_half_width_m = roadbed_half_width_m.max(band_half_width_m);
             if spec.kind == RoadSurfaceBandKind::Carriageway {
@@ -313,4 +317,47 @@ impl RoadSurfaceSystem {
 
         points
     }
+}
+
+fn taper_band_spec(
+    edge: &Edge,
+    station: Option<f32>,
+    scale: f32,
+    mut spec: EdgeLateralBandSpec,
+) -> EdgeLateralBandSpec {
+    if edge.lane_tapers.is_none() {
+        return spec;
+    }
+    let profile = station.map_or_else(|| edge.full_lane_section(), |s| edge.lane_section_at(s));
+    let half = edge.width * 0.5;
+    let old_center = edge.median_center_offset();
+    let old_half = edge.median.map_or(0.0, |m| m.width_m * 0.5 * scale);
+    let center = (profile.median_left + profile.median_right) * 0.5;
+    let new_half = (profile.median_right - profile.median_left) * 0.5 * scale;
+    let kerb = edge
+        .median
+        .filter(|m| m.is_raised())
+        .map_or(0.0, |_| CURB_BAND_WIDTH_M * scale);
+    let remap = |x: f32| {
+        if x <= -half {
+            profile.left + (x + half)
+        } else if x >= half {
+            profile.right + (x - half)
+        } else if edge.median.is_none() {
+            profile.left + (x + half) / (half * 2.0) * (profile.right - profile.left)
+        } else if x == old_center - old_half {
+            center - new_half
+        } else if x == old_center - old_half + kerb {
+            center - new_half + kerb
+        } else if x == old_center + old_half - kerb {
+            center + new_half - kerb
+        } else if x == old_center + old_half {
+            center + new_half
+        } else {
+            x
+        }
+    };
+    spec.lateral_start_m = remap(spec.lateral_start_m);
+    spec.lateral_end_m = remap(spec.lateral_end_m);
+    spec
 }

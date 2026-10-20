@@ -298,6 +298,29 @@ impl NetworkMeshData {
                 colors
             );
         }
+        let keep_pose = |edge, p: godot::prelude::Vector3| {
+            let owner = NetworkMeshOwner::Edge(edge);
+            let selected = whole.contains(&owner)
+                || (bounded.contains(&owner)
+                    && bounds.iter().any(|b| {
+                        let x = p.x + origin.x;
+                        let z = p.z + origin.y;
+                        x >= b[0] && z >= b[1] && x <= b[2] && z <= b[3]
+                    }));
+            selected == inside
+        };
+        output.street_lights.extend(
+            self.street_lights
+                .iter()
+                .filter(|light| keep_pose(light.owner_edge, light.position))
+                .copied(),
+        );
+        output.road_signs.extend(
+            self.road_signs
+                .iter()
+                .filter(|sign| keep_pose(sign.owner_edge, sign.position))
+                .copied(),
+        );
         output
     }
 }

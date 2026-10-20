@@ -67,6 +67,119 @@ impl TransitNetwork {
     }
 }
 
+impl TransitNetwork {
+    /// Rebinds only pocket-pair frontage references and journals them until render acceptance.
+    /// Uses the established edit-time building pass; planning never scans buildings.
+    pub(crate) fn remap_pocket_frontages(
+        &mut self,
+        before: &[(usize, Edge)],
+        after: &[usize],
+        graph: &RegionGraph,
+        zoning: &crate::simulation::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        use crate::simulation::buildings::allocator::{BuildingAllocator, EdgeOccupancy};
+        let cell = zoning.config.zone_cell_m;
+        let mut journals: Vec<_> = before
+            .iter()
+            .map(|(id, _)| RoadSplitDependentsUndo {
+                edge_id: *id,
+                new_edge_id: *id,
+                buildings: Vec::new(),
+                occupancy: allocator.edge_occupancy.get(id).cloned(),
+            })
+            .collect();
+        for (id, _) in before {
+            allocator.edge_occupancy.remove(id);
+        }
+        for &id in after {
+            if !before.iter().any(|(old, _)| *old == id) {
+                journals.push(RoadSplitDependentsUndo {
+                    edge_id: id,
+                    new_edge_id: id,
+                    buildings: Vec::new(),
+                    occupancy: None,
+                });
+            }
+            allocator.edge_occupancy.remove(&id);
+            let edge = graph.edge(id);
+            if !edge.deleted {
+                let columns = (edge.physical_length / cell).ceil() as usize;
+                allocator.edge_occupancy.insert(
+                    id,
+                    EdgeOccupancy {
+                        cells_long: columns,
+                        left: vec![false; columns],
+                        right: vec![false; columns],
+                    },
+                );
+            }
+        }
+        for (index, building) in allocator.buildings.iter_mut().enumerate() {
+            let Some((slot, (_, old))) = before
+                .iter()
+                .enumerate()
+                .find(|(_, (id, _))| *id == building.edge_idx)
+            else {
+                continue;
+            };
+            journals[slot].buildings.push((
+                index,
+                building.edge_idx,
+                building.cell_x,
+                building.frontage_t,
+            ));
+            let point = BuildingAllocator::sample_pos_on_polyline(
+                &old.physical_geometry,
+                old.physical_length,
+                building.frontage_t * old.physical_length,
+            );
+            let mut best = None;
+            for &id in after {
+                let edge = graph.edge(id);
+                if edge.deleted {
+                    continue;
+                }
+                let station =
+                    BuildingAllocator::project_point_to_polyline_s(&edge.physical_geometry, point);
+                let position = BuildingAllocator::sample_pos_on_polyline(
+                    &edge.physical_geometry,
+                    edge.physical_length,
+                    station,
+                );
+                let distance = point.distance_squared_to(position);
+                if best
+                    .as_ref()
+                    .is_none_or(|&(d, old_id, _)| distance < d || (distance == d && id < old_id))
+                {
+                    best = Some((distance, id, station));
+                }
+            }
+            if let Some((_, id, station)) = best {
+                building.edge_idx = id;
+                building.frontage_t = station / graph.edge(id).physical_length.max(0.001);
+                building.cell_x = (station / cell - f32::from(building.width_cells) * 0.5)
+                    .max(0.0)
+                    .floor() as usize;
+                if let Some(occupancy) = allocator.edge_occupancy.get_mut(&id) {
+                    let end = (building.cell_x + usize::from(building.width_cells))
+                        .min(occupancy.cells_long);
+                    let side = if building.side > 0 {
+                        &mut occupancy.left
+                    } else {
+                        &mut occupancy.right
+                    };
+                    side[building.cell_x.min(end)..end].fill(true);
+                }
+            }
+        }
+        if let Some(journal) = &mut self.road_edit_split_undo {
+            journal.extend(journals);
+        }
+        allocator.entrances_dirty = true;
+    }
+}
+
 /// Maximum distance between consecutive geometry points used for the O(segs²)
 /// crossing-detection inner loop. Mouse-tracked polylines can have a point
 /// every ~0.5 m; 5 m is accurate enough for roads wider than 7 m and gives a
@@ -1014,6 +1127,7 @@ pub fn split_edge(
     }
 
     let mut new_edge = Edge {
+        lane_tapers: None,
         median: median.map(|mut median| {
             median.start_setback_m = 0.0;
             median
@@ -1044,6 +1158,24 @@ pub fn split_edge(
     new_edge.physical_length = length_new;
 
     let new_edge_id = graph.add_edge(new_edge);
+    // The retained half no longer reaches the old endpoint. Carry its authored rules and
+    // zebra override to the appended half before rebuilding any junction consumers.
+    let endpoint = &mut graph.nodes[old_end_node as usize];
+    let previous = std::mem::take(&mut endpoint.lane_connections);
+    for ((from, lane), mut targets) in previous {
+        for (edge, _) in &mut targets {
+            if *edge == edge_id {
+                *edge = new_edge_id;
+            }
+        }
+        endpoint.lane_connections.insert(
+            (if from == edge_id { new_edge_id } else { from }, lane),
+            targets,
+        );
+    }
+    if let Some(enabled) = endpoint.crosswalk_overrides.remove(&edge_id) {
+        endpoint.crosswalk_overrides.insert(new_edge_id, enabled);
+    }
 
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;

@@ -900,9 +900,7 @@ impl RegionGraph {
     /// Samples the existing physical profile at control stations without importing solver pins.
     /// Both polylines follow the same authored XZ alignment; materialized support knots can differ.
     /// A monotonic station walk costs O(control points + physical points), with one output buffer.
-    pub(in crate::simulation::network) fn physical_profile_on_control_alignment(
-        edge: &Edge,
-    ) -> Vec<Vector3> {
+    pub(crate) fn physical_profile_on_control_alignment(edge: &Edge) -> Vec<Vector3> {
         let source = &edge.physical_geometry;
         if source.len() < 2 {
             return source.clone();

@@ -431,6 +431,7 @@ mod tests {
         let p0 = graph.node(start).pos;
         let p1 = graph.node(end).pos;
         graph.add_edge(Edge {
+            lane_tapers: None,
             median: None,
             start_node: start,
             end_node: end,

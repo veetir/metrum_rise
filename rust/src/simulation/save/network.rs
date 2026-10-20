@@ -4,7 +4,7 @@
 
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadLaneTaper, RoadMedian};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
@@ -82,6 +82,32 @@ pub(super) fn save_network(
                 edge.median.map_or(0.0, |median| median.start_setback_m),
                 edge.median.map_or(0.0, |median| median.end_setback_m)
             ])?;
+        }
+    }
+
+    {
+        let mut stmt =
+            tx.prepare("INSERT INTO road_lane_tapers VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
+                continue;
+            };
+            if let Some(ends) = &edge.lane_tapers {
+                for (end, taper) in ends.iter().enumerate() {
+                    if let Some(taper) = taper {
+                        stmt.execute(params![
+                            usize_to_i64(saved_id)?,
+                            end as i64,
+                            taper.length_m,
+                            i64::from(taper.from_fwd),
+                            i64::from(taper.from_bkw),
+                            taper.from_median_m,
+                            i64::from(taper.left_pocket),
+                            i64::from(taper.right_pocket)
+                        ])?;
+                    }
+                }
+            }
         }
     }
 
@@ -222,6 +248,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 median.validate().map_err(SaveLoadError::custom)?;
             }
             let edge = Edge {
+                lane_tapers: None,
                 median,
                 start_node,
                 end_node,
@@ -246,6 +273,59 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             edge.validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, median)
                 .map_err(SaveLoadError::custom)?;
             graph.add_edge(edge);
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_lane_tapers'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt = conn.prepare("SELECT edge_id,end_index,length_m,from_fwd,from_bkw,from_median,left_pocket,right_pocket FROM road_lane_tapers ORDER BY edge_id,end_index")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                let end = i64_to_usize(row.get(1)?)?;
+                if id >= graph.edge_count() || end > 1 {
+                    return Err(SaveLoadError::custom("invalid lane taper owner"));
+                }
+                let taper = RoadLaneTaper {
+                    length_m: row.get(2)?,
+                    from_fwd: i64_to_u8(row.get(3)?)?,
+                    from_bkw: i64_to_u8(row.get(4)?)?,
+                    from_median_m: row.get(5)?,
+                    left_pocket: row.get(6)?,
+                    right_pocket: row.get(7)?,
+                };
+                let edge = graph.edge(id);
+                if !taper.length_m.is_finite()
+                    || taper.length_m < 2.0
+                    || taper.length_m > edge.physical_length
+                    || taper.from_fwd > 4
+                    || taper.from_bkw > 4
+                    || taper.from_fwd + taper.from_bkw == 0
+                    || !taper.from_median_m.is_finite()
+                    || !(0.0..=12.0).contains(&taper.from_median_m)
+                    || (taper.left_pocket
+                        && edge
+                            .median
+                            .is_none_or(|m| m.width_m < crate::config::LANE_WIDTH + 0.3))
+                {
+                    return Err(SaveLoadError::custom("invalid lane taper dimensions"));
+                }
+                let node = if end == 0 {
+                    edge.start_node
+                } else {
+                    edge.end_node
+                };
+                if graph.node(node).node_type
+                    != crate::simulation::network::types::NodeType::LaneTransition
+                {
+                    return Err(SaveLoadError::custom("lane taper requires transition node"));
+                }
+                graph
+                    .edge_mut(id)
+                    .lane_tapers
+                    .get_or_insert_with(|| Box::new([None, None]))[end] = Some(taper);
+            }
         }
     }
 
