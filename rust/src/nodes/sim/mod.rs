@@ -14,6 +14,7 @@ pub mod query;
 pub mod render;
 mod road_pockets;
 pub mod road_tool;
+mod roundabouts;
 pub mod save_load;
 pub mod undo;
 pub mod world_definition;

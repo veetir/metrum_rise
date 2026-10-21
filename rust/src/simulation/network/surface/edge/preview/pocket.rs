@@ -11,6 +11,27 @@ use crate::simulation::network::surface::PlannedRoadSurfaceQuery;
 use std::sync::Arc;
 
 impl RoadSurfaceSystem {
+    /// Roundabouts use the same local surface, terrain ownership and render pipeline as endpoint edits.
+    pub(crate) fn compile_roundabout_preview(
+        &self,
+        source: &RegionGraph,
+        terrain: &TerrainSystem,
+        request: crate::simulation::network::roundabouts::RoundaboutRequest,
+    ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
+        use crate::simulation::network::roundabouts::RoundaboutLayout;
+        let layout = RoundaboutLayout::prepare(source, request.clone())?;
+        self.compile_local_layout_preview(
+            source,
+            terrain,
+            layout.originals.iter().map(|(id, _)| *id).collect(),
+            |graph, nodes, _| {
+                let mut local = request;
+                local.replace = local.replace.map(|id| nodes[&id]);
+                Ok(RoundaboutLayout::prepare(graph, local)?.apply(graph))
+            },
+        )
+    }
+
     /// Compiles a fixed incidence halo, independent of background roads/buildings/agents.
     /// The same layout, junction finalizer and sampled bands are used by commit.
     pub(crate) fn compile_pocket_preview(
@@ -20,10 +41,35 @@ impl RoadSurfaceSystem {
         request: PocketRequest,
     ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
         let layout = PocketLayout::prepare(source, request)?;
+        self.compile_local_layout_preview(
+            source,
+            terrain,
+            layout.originals.iter().map(|(id, _)| *id).collect(),
+            |graph, _, edges| {
+                let local_request = PocketRequest {
+                    edge: *edges.get(&request.edge).ok_or("invalid_road")?,
+                    ..request
+                };
+                Ok(PocketLayout::prepare(graph, local_request)?.apply(graph))
+            },
+        )
+    }
+
+    /// Shared bounded preview for topology presets; ordinary pocket previews retain the same compiler.
+    pub(crate) fn compile_local_layout_preview(
+        &self,
+        source: &RegionGraph,
+        terrain: &TerrainSystem,
+        mut original_ids: Vec<usize>,
+        apply: impl FnOnce(
+            &mut RegionGraph,
+            &HashMap<u32, u32>,
+            &HashMap<usize, usize>,
+        ) -> Result<Vec<usize>, &'static str>,
+    ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
         let mut graph = RegionGraph::new();
         let mut nodes = HashMap::new();
         let mut edges = HashMap::new();
-        let mut original_ids: Vec<_> = layout.originals.iter().map(|(id, _)| *id).collect();
         original_ids.sort_unstable();
         for id in original_ids {
             Self::copy_validation_graph_edge(&mut graph, source, &mut nodes, &mut edges, id, None);
@@ -62,11 +108,7 @@ impl RoadSurfaceSystem {
                 }
             }
         }
-        let local_request = PocketRequest {
-            edge: *edges.get(&request.edge).ok_or("invalid_road")?,
-            ..request
-        };
-        let changed = PocketLayout::prepare(&graph, local_request)?.apply(&mut graph);
+        let changed = apply(&mut graph, &nodes, &edges)?;
         let mut network = TransitNetwork::new();
         network.bulk_dirty_edges.extend(changed.iter().copied());
         let finalized = network.finalize_road_geometry(&mut graph);
@@ -75,7 +117,7 @@ impl RoadSurfaceSystem {
             self.chunk_origin_x_m,
             self.chunk_origin_z_m,
         );
-        surface.node_validation_logging_enabled = false;
+        surface.node_validation_logging_enabled = crate::debug::Channel::Road.enabled();
         let mut required: Vec<_> = finalized.dirty_edges.iter().copied().collect();
         required.sort_unstable();
         let mut required_nodes: Vec<_> = finalized.affected_nodes.iter().copied().collect();
@@ -89,6 +131,13 @@ impl RoadSurfaceSystem {
         );
         if Self::explicit_surface_validation_failure(&surface, &required, &required_nodes).is_some()
         {
+            crate::debug_log!(
+                "road",
+                "local_layout_preview_failed spans={:?} nodes={:?} reason={:?}",
+                surface.last_failed_span_ids,
+                surface.last_failed_node_ids,
+                surface.last_compile_failure_label
+            );
             return Err("surface_geometry_invalid");
         }
         let replaced_nodes: HashSet<u32> = nodes

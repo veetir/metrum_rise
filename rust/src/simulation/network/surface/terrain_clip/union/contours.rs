@@ -22,13 +22,19 @@ impl RoadSurfaceSystem {
                         RoadSurfaceTerrainClipContourRole::Hole
                     },
                 };
-                let boundary_loop =
+                let Some(boundary_loop) =
                     Self::terrain_clip_boundary_loop_from_overlay_contour_with_source_edges(
                         contour,
                         topology,
                         source_edges,
                         &source_edge_index,
-                    )?;
+                    )?
+                else {
+                    if contour_index == 0 {
+                        break;
+                    }
+                    continue;
+                };
                 contours.push(TerrainClipOutputContour {
                     boundary_loop,
                     topology,

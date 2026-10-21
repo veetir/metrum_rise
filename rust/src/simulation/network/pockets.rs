@@ -455,7 +455,7 @@ impl PocketLayout {
     }
 }
 
-fn replace_edge(graph: &mut RegionGraph, id: usize, edge: Edge) {
+pub(super) fn replace_edge(graph: &mut RegionGraph, id: usize, edge: Edge) {
     graph.remove_from_spatial_index(id);
     let old = graph.edge(id);
     let (a, b) = (old.start_node, old.end_node);

@@ -1536,9 +1536,197 @@ views were captured through Rust road-tool commands and the ordinary routed-car 
 The approach matches the reference's median opening and L/S/S/R arrangement. The reference's
 gantry, nearby slip-road islands and underpass remain outside this slice. Queues arise from car
 following and existing reservations; traffic lights and right-of-way remain `TRAFFIC-06`.
-`ROAD-68` needs explicit grade/topology separation before junction construction. `ROAD-69` and
-`ROAD-62` need their own ramp/roundabout roles and connectors; the flagged degree-two transition
-is reserved for lane continuity. They can reuse the lane-use, pocket/profile and marking contracts.
+`ROAD-68` needs explicit grade/topology separation before junction construction. `ROAD-69`
+still needs ramp roles and connectors; ROAD-62's circulating role is described below. The
+flagged degree-two transition is reserved for lane continuity. These features reuse the lane-use,
+pocket/profile and marking contracts.
+
+### Single-lane roundabout authoring — ROAD-62 (first slice)
+
+The O tool / road-menu Roundabout button authors a normal directed road ring with 3–6
+approaches. Brackets change the outside **asphalt** diameter by 1 m (sidewalks are additional), N
+cycles the arm count, and comma/period rotate new presets. On an existing ordinary junction,
+the tool retains its actual uneven arm angles and existing outer edge IDs. Replacement currently
+requires one lane each way, no separator, no pocket, no vehicle turn restrictions, surface level
+zero, diameter at most 60 m and at least 30 m of retained approach. The replacement limit
+keeps displaced road occupants within the existing 30 m lane-reattachment reach. Larger
+empty-ground presets remain available up to 120 m. Derived pedestrian connections are not vehicle
+restrictions. The retired central node leaves both the node grid and live adjacency.
+
+Ring supports are intersections of consecutive circle tangents, with at most 1 m of arc between
+support tangents. Incoming/outgoing ring edges therefore meet with a common tangent at each
+arm, rather than introducing the small corner caused by inscribed sampled chords. Circulating
+edges are one-way, 20 km/h and excluded from building spawning. They use the existing roadbed
+compiler for asphalt, kerbs, sidewalks, terrain clips and the grass-filled central opening.
+Approach zebras use the existing throat plus 4 m inset; both ends of circulating edges explicitly
+disable zebras. Ordinary NET-07 U-turn rules remain intact; a reversal can route around the ring.
+
+A sparse version-92 `roundabout_edges` table persists the circulating role using snapshot edge
+IDs. Absence of this table loads ordinary roads. Splits inherit the role, and in-place section
+edits cannot turn a circulating edge into a two-way or divided road. The identical role supplies
+[entry priority](traffic.md#roundabout-entry-priority--road-62) and a B5/D2 compound pole.
+The D2 disc is procedural mesh geometry below the existing B5 model and uses the same shared
+cloud-shadow material factory. See [Väylä's sign guidance](https://aineistot.vayla.fi/api/file/ava/Julkaisut/Vaylavirasto/vo_2023-29_liikennemerkkien_kaytto_web.pdf).
+
+Preview and commit use the same immutable layout and bounded junction/surface compiler. The
+pocket preview compiler/exporter is shared, including prospective IDs, retained geometry,
+terrain cutout replacements and sign/lamp replacement. Commit queues one local road transaction,
+then publishes profiles, surface/terrain, lanes, entrances, CCH and flow fields through the
+existing road-section gate. One undo restores the entire operation. Water, field, parcel and
+painted-cell corridor guards apply. Indexed nearby-road checks refuse an occupied site rather
+than silently creating unconnected crossing surfaces. The bridge entry points are
+`preview_roundabout(center, diameter, angles, replace_node)` and `place_roundabout(...)`;
+angles are radians from +X toward +Z, and a negative replacement ID means empty ground.
+
+A rotated four-arm acceptance fixture exposed a terrain-clip union bug: a 1.75 m long,
+approximately one-micron wide overlay hole lost its sub-resolution connector and exported
+two exactly reversed edges. The exporter now omits only a two-edge closed result with matching
+endpoint heights, original area within the existing numeric dust budget, and every original
+point within the existing dust-width strip about that segment. Other ownership/height failures
+remain errors. Real island holes retain terrain coverage; the native regression checks terrain
+triangles inside the island and their absence beneath the ring. Previously accepted ordinary
+road products retain their existing geometry checks and golden hashes.
+
+For P selected arm samples, A arms and G generated ring/arm samples, layout storage is
+O(P + G + A) and construction O(P + G + A log A). Existing R-tree corridor discovery costs
+O(G log E + local candidate segment pairs), with the existing tool-width query halo; there is
+no city-wide road/building/agent scan in planning. The per-node priority cache has the same
+complexity as TRAFFIC-06. No per-tick or per-agent loop is added. Complete commit still includes
+the existing dependent routing/access publication work; planning locality does not claim
+whole-commit locality.
+
+**Scope still open.** ROAD-62 is not complete. The first slice reserves at least 12 m of
+circulating arc between arm mouths. Compact 12/14 m presets therefore refuse placement, and
+18/25 m support depends on arm spacing; no compact-geometry acceptance is claimed. Splitter
+islands, entry/yield pavement markings, optional central tree/art presets, approach widening,
+two-lane entry selection and spiral exits remain unimplemented. The API is an authoring hook;
+there is no OSM `junction=roundabout` way parser or matching-size importer mapping in this slice.
+Cursor compilation is synchronous; the approximately 50 ms local preview remains an editor
+responsiveness limit for a future worker integration. General zebra priority remains the
+separate TRAFFIC-06 pedestrian work.
+
+#### First-slice verification — 2026-10-21
+
+Fresh release validation uses baseline `9eec50ea092c66a5ee80abfc0e370fdb8e75b28f`
+(TRAFFIC-06) and this ROAD-62 working tree on Apple M2 Pro (12 logical CPUs), Rust 1.98.1,
+macOS SDK 26.5 and Godot 4.7.2 (gdext 4.5 API). Preserved binaries, manifests and individual
+logs are local under `$ARTIFACTS`. Release test-executable SHA-256 identities are
+`4972ab34cbe199b60cafed4a17f0c8235af3041cce1298cb65ba62d15b865195` (baseline) and
+`86c8085bf64d8f644a97961dcd9c8a8b2e64f484b4d162b0cfc406a6b8d440f4` (candidate).
+The deployed candidate library identity is
+`944c94aff71033087e8406b119fc2151fc03a384261a00a6645f4a15e874280b`.
+
+```sh
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --release --lib
+cargo build --manifest-path rust/Cargo.toml --release
+```
+
+Results: **2,619 passed, 0 failed, 149 ignored**; all-target Clippy has zero warnings; release
+build passes. Targeted coverage includes 3–6-arm direction/priority, 80 km/h entry yielding to
+20 km/h circulation, 36-car six-arm drainage with one/four-worker bit identity, exact
+preview/commit geometry and signs, one-step undo, occupied uneven-junction replacement and
+lane reattachment, atomic overlap rejection, sparse save roundtrip/old-table absence, and
+rotated-ring terrain coverage. Two-lane traffic is outside this coverage.
+
+After removing the deployed dylib before copying the fresh release library, these fourteen
+bridges were run **individually**, all with exit zero:
+
+```sh
+for test in road_roundabouts road_pockets_legacy road_cross_section road_pockets \
+  road_turn_lanes road_grade_separation road_junction_control road_trajectory \
+  road_junction_preview road_preview_stream network_tool_chunk_renderer \
+  road_preview_metrics road_benchmark_metrics road_rejection_report; do
+  METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+    godot --headless --path godot --script "res://tests/${test}_test.gd"
+done
+```
+
+The existing `road_junction_preview` and `network_tool_chunk_renderer` fixtures emit shutdown
+ObjectDB/resource warnings (respectively eight/three instances and one resource). Isolated
+baseline reruns reproduce those same warnings and pass. An earlier baseline preview run during
+concurrent validation hit the held-revision polling assertion; its isolated retry passed.
+The final candidate's fourteen runs all pass. The four legacy roadbed golden digests match.
+
+Matched, unprofiled release timing runs alternate baseline/candidate order, without concurrent
+builds or Godot. PERF-06 uses fifteen pairs and eight Rayon workers; lane rebuilding three
+pairs, ordinary junction compilation five pairs and populated pocket planning two pairs use
+four workers. Each command selects the existing ignored fixture, with setup outside repeated
+planning measurements:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+# Four-worker commands use the same arguments with these exact test selectors:
+# simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling
+# simulation::network::surface::tests::junction::compile_benchmark::junction_compile_constant_factors
+# nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling
+# nodes::sim::core::tests::road_plan_scaling::populated_roundabout_plan_scaling
+```
+
+PERF-06 medians (ms), with all six work-counter dictionaries identical between builds:
+
+| Workload | Agents | Baseline | Candidate |
+|---|---:|---:|---:|
+| Network | 10,000 | 0.489834 | 0.491125 |
+| Network | 30,000 | 0.886625 | 0.914291 |
+| Access egress | 10,000 | 0.647041 | 0.663708 |
+| Access egress | 30,000 | 1.573667 | 1.569125 |
+| Access ingress | 10,000 | 0.350833 | 0.353833 |
+| Access ingress | 30,000 | 0.600209 | 0.575459 |
+
+Observed changes span −4.1% to +3.1%; these are matched workload observations, not a claimed
+speedup. No tick loop changed. Lane rebuild medians at 0/1k/10k/100k background edges are
+0.023083/0.022292/0.021250/0.021250 ms baseline versus
+0.023208/0.022083/0.020792/0.020875 ms candidate. All local products retain digest
+`a7b3e139667176b5`. One-time fixture setup is separately recorded and excluded.
+Populated pocket preview medians at 0/1k/10k/100k background buildings are
+18.046979/18.080146/18.408563/18.503625 ms baseline versus
+18.211708/18.321167/18.213979/18.628917 ms candidate, with matching local products.
+
+Ordinary junction compile medians (ms) and unchanged product digests:
+
+| Fixture | Baseline | Candidate | Product digest |
+|---|---:|---:|---|
+| Flat T | 12.084709 | 12.112875 | `ac04689be4ad851c` |
+| Sloped T | 16.946875 | 16.908833 | `7201e064f90ac1c0` |
+| Flat cross | 18.616542 | 18.616084 | `53f0d82dbb4d6ec7` |
+| Sloped cross | 19.769625 | 19.757958 | `e4b58b7a88ba4d35` |
+| Sloped oblique | 32.466833 | 32.436167 | `97f94e5b4e5e4dc2` |
+| Sloped five-arm | 94.970875 | 95.099917 | `9c98666cc7da900e` |
+| Total | 194.823500 | 195.131999 | — |
+
+The total changes by +0.16%. The initial two-pair sloped-cross median differed by +5.3%;
+three additional balanced pairs resolve that timing outlier, giving the five-pair values above.
+All six geometry product digests match across builds and processes.
+
+The new roundabout fixture has no baseline implementation. Three candidate-only release runs
+with four workers hold the affected neighborhood fixed while adding remote roads, parcels,
+buildings and agents. All repeated local products remain identical:
+
+| Remote buildings | Remote roads | Total parcels | Total agents | Prepare p50 ms | Preview p50 ms |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 4 | 24 | 0.028125 | 49.253000 |
+| 1,000 | 4 | 1,004 | 6,024 | 0.027416 | 51.185625 |
+| 10,000 | 40 | 10,004 | 60,024 | 0.027000 | 49.763417 |
+| 100,000 | 391 | 100,004 | 600,024 | 0.026833 | 48.809666 |
+
+These are medians across process p50s, with snapshot/setup excluded. They establish bounded
+planning locality, not commit latency or an acceptable synchronous cursor frame budget.
+
+A final windowed run of the same `road_roundabouts_test.gd`, with `METRUM_RB_CAPTURE=1`,
+passes and produces seven inspected, nonblack PNGs in `captures/roundabouts/`:
+`four_uneven_arms_above.png`, `central_island_street.png`, `entry_b5_d2.png`,
+`tool_five_arm_preview_above.png`, `traffic_loaded_above.png`, `traffic_loaded_street.png`
+and `traffic_drained_above.png`. The real scene shows the grass opening, kerbs, setback zebras,
+B5/D2 compound sign, paired five-arm tool preview and loaded/drained traffic. Reference
+inspection uses `Haapavesi_roundabout.jpg` and `Roundabout_in_Otalampi_Vihti.jpg` in the
+provided Finnish roundabout collection. Their splitter islands, entry paint and decorated
+centers expose the remaining visual scope above; no visual parity with those details is claimed.
+Captures are local and uncommitted. No player save was touched or task save created; every
+Godot process started for this slice was closed.
 
 ### Explicit layered crossings — ROAD-68 (slice C, topology stage)
 

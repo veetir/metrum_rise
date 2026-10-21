@@ -990,6 +990,7 @@ fn add_test_border_road(core: &mut SimCore) {
         .region_graph
         .add_node(Vector3::new(180.0, 0.0, 0.0), NodeType::Junction);
     core.region_graph.add_edge(Edge {
+        roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
         median: None,
@@ -1224,6 +1225,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         .map(|points| points[0].distance_to(points[1]))
         .sum();
     Edge {
+        roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
         median: None,

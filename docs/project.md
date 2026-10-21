@@ -31,6 +31,14 @@ Fresh 2,611-test library, all-target Clippy and ten individual road/traffic brid
 Matched PERF-06 runs detect no regression beyond noise; lane rebuild and populated pocket
 planning remain local.
 
+ROAD-62 has a first single-lane authoring slice: O activates 3–6-arm presets or replacement of
+an ordinary junction, with paired geometry/terrain/prop previews, one-step undo and persisted
+circulating priority. Compact presets, splitter islands, yield paint, tree/art presets,
+two-lane spiral rules and OSM way mapping remain open. Fresh 2,619-test release library,
+all-target Clippy and fourteen individual road bridges pass; populated planning retains
+identical local products through 100,000 background buildings. Synchronous previews still
+cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
+
 ROAD-68 has an explicit crossing-layer topology stage in progress, with roadbed clearance
 validation, preview/commit identity and version-91 sparse persistence. Filled openings,
 embankments, player over/under controls and the university reconstruction remain pending

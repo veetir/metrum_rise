@@ -82,6 +82,8 @@ pub(crate) enum RoadSignKind {
     Yield,
     /// B6, stop.
     Stop,
+    /// B5 over D2: give way and mandatory counterclockwise circulation.
+    RoundaboutEntry,
 }
 
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
@@ -1174,18 +1176,24 @@ pub(super) fn emit_road_signs(
                     if count == 0 {
                         continue;
                     }
+                    let roundabout = graph
+                        .node_adjacency(node)
+                        .iter()
+                        .any(|&id| !graph.edge(id).deleted && graph.edge(id).roundabout);
                     let kind = match approach_control(graph, node, edge_id) {
                         ApproachControl::Priority => RoadSignKind::Priority,
+                        ApproachControl::Yield if roundabout => RoadSignKind::RoundaboutEntry,
                         ApproachControl::Yield => RoadSignKind::Yield,
                         ApproachControl::Stop => RoadSignKind::Stop,
                         ApproachControl::Uncontrolled => continue,
                     };
                     let away = if at_start { 1.0 } else { -1.0 };
                     let direction = -away;
+                    let setback = if roundabout { 2.0 } else { 16.0 };
                     let station = if at_start {
-                        visible[0].s_m + 16.0
+                        visible[0].s_m + setback
                     } else {
-                        visible.last().unwrap().s_m - 16.0
+                        visible.last().unwrap().s_m - setback
                     };
                     if let Some((sign, placed)) = place(
                         sections, terrain, &poles, station, away, direction, direction, kind,

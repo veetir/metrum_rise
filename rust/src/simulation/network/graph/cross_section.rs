@@ -122,6 +122,9 @@ impl Edge {
         bkw: u8,
         median: Option<RoadMedian>,
     ) -> Result<(), &'static str> {
+        if self.roundabout && (fwd != 1 || bkw != 0 || median.is_some()) {
+            return Err("roundabout_requires_single_circulating_lane");
+        }
         if let Some(median) = median {
             median.validate()?;
             if self.primary_type != TransitType::Road || self.allowed_types & TransitFlags::CAR == 0

@@ -78,6 +78,8 @@ pub struct Edge {
     pub median: Option<super::RoadMedian>,
     /// Authored lane transitions at the stored start and end; absent on legacy roads.
     pub lane_tapers: Option<Box<[Option<super::RoadLaneTaper>; 2]>>,
+    /// Circulating carriageway; has precedence over entering arms regardless of road hierarchy.
+    pub roundabout: bool,
     /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
     /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.

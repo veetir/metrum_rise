@@ -35,7 +35,7 @@ pub(crate) struct ControlledMovement {
 // Structural EdgeClass describes bridges/tunnels, not a road hierarchy. Until the importer
 // authors priority, use design speed, through-lane count, then carriageway width. Pockets
 // retain the original section's rank, so adding a turning lane cannot change right of way.
-fn rank(edge: &Edge) -> (i32, u16, i32) {
+fn rank(edge: &Edge) -> (bool, i32, u16, i32) {
     let (lanes, width) = edge.pocket_taper().map_or(
         (
             u16::from(edge.fwd_lanes) + u16::from(edge.bkw_lanes),
@@ -50,6 +50,7 @@ fn rank(edge: &Edge) -> (i32, u16, i32) {
         },
     );
     (
+        edge.roundabout,
         (edge.speed_limit * 1000.0).round() as i32,
         lanes,
         (width * 1000.0).round() as i32,
@@ -60,6 +61,16 @@ fn rank(edge: &Edge) -> (i32, u16, i32) {
 pub(crate) fn approach_control(graph: &RegionGraph, node: u32, edge: usize) -> ApproachControl {
     if graph.node(node).node_type == NodeType::LaneTransition {
         return ApproachControl::Uncontrolled;
+    }
+    if graph.edge(edge).roundabout {
+        return ApproachControl::Uncontrolled;
+    }
+    if graph
+        .node_adjacency(node)
+        .iter()
+        .any(|&id| !graph.edge(id).deleted && graph.edge(id).roundabout)
+    {
+        return ApproachControl::Yield;
     }
     let mut min = rank(graph.edge(edge));
     let mut max = min;
@@ -77,7 +88,7 @@ pub(crate) fn approach_control(graph: &RegionGraph, node: u32, edge: usize) -> A
         ApproachControl::Uncontrolled
     } else if rank(graph.edge(edge)) == max {
         ApproachControl::Priority
-    } else if max.0 >= 16_667 && graph.edge(edge).speed_limit <= 8.334 {
+    } else if max.1 >= 16_667 && graph.edge(edge).speed_limit <= 8.334 {
         ApproachControl::Stop
     } else {
         ApproachControl::Yield
@@ -90,31 +101,6 @@ fn flat(p: Vector3) -> Vector2 {
 fn cross(a: Vector2, b: Vector2) -> f32 {
     a.x * b.y - a.y * b.x
 }
-fn point_segment(p: Vector2, a: Vector2, b: Vector2) -> f32 {
-    let v = b - a;
-    let t = if v.length_squared() > 0.0 {
-        ((p - a).dot(v) / v.length_squared()).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    p.distance_squared_to(a + v * t)
-}
-fn segment_distance(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> f32 {
-    let ab = b - a;
-    let cd = d - c;
-    let det = cross(ab, cd);
-    if det.abs() > 1.0e-8 {
-        let u = cross(c - a, cd) / det;
-        let v = cross(c - a, ab) / det;
-        if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
-            return 0.0;
-        }
-    }
-    point_segment(a, c, d)
-        .min(point_segment(b, c, d))
-        .min(point_segment(c, a, b))
-        .min(point_segment(d, a, b))
-}
 
 fn conflicts(a: &Lane, b: &Lane) -> bool {
     // Swept vehicle width with clearance. This is compile-time geometry work;
@@ -122,7 +108,12 @@ fn conflicts(a: &Lane, b: &Lane) -> bool {
     let clearance: f32 = 2.2;
     a.geometry.windows(2).any(|p| {
         b.geometry.windows(2).any(|q| {
-            segment_distance(flat(p[0]), flat(p[1]), flat(q[0]), flat(q[1])) < clearance * clearance
+            super::geometry::segment_distance_squared_xz(
+                flat(p[0]),
+                flat(p[1]),
+                flat(q[0]),
+                flat(q[1]),
+            ) < clearance * clearance
         })
     })
 }

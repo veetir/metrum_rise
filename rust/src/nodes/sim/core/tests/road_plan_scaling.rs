@@ -18,6 +18,7 @@ enum CellScenario {
     Snapshot,
     Memory,
     Pocket,
+    Roundabout,
 }
 
 #[test]
@@ -73,6 +74,12 @@ fn populated_pocket_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::Pocket);
 }
 
+#[test]
+#[ignore = "populated roundabout preview locality; run release without competing work"]
+fn populated_roundabout_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Roundabout);
+}
+
 fn measure_populated_road_plan_scaling(
     paved: bool,
     zoning_only: bool,
@@ -84,7 +91,10 @@ fn measure_populated_road_plan_scaling(
     if scenario == CellScenario::Memory {
         memory::calibrate(&mut memory_phase);
     }
-    let cells = !matches!(scenario, CellScenario::None | CellScenario::Pocket);
+    let cells = !matches!(
+        scenario,
+        CellScenario::None | CellScenario::Pocket | CellScenario::Roundabout
+    );
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
@@ -281,7 +291,7 @@ fn measure_populated_road_plan_scaling(
                 .road_surface
                 .published_generation_matches_source()
         );
-        if scenario == CellScenario::Pocket {
+        if matches!(scenario, CellScenario::Pocket | CellScenario::Roundabout) {
             use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
             let request = PocketRequest {
                 edge: 0,
@@ -291,20 +301,47 @@ fn measure_populated_road_plan_scaling(
                 length: 80.0,
                 taper: 28.0,
             };
+            let roundabout = crate::simulation::network::roundabouts::RoundaboutRequest {
+                center: Vector3::new(0.0, 0.0, -140.0),
+                diameter: 40.0,
+                angles: vec![0.0, 1.4, 3.0, 4.7],
+                replace: None,
+            };
             let mut prepare = [0.0; 31];
             let mut preview = [0.0; 31];
             for iteration in 0..34 {
                 let start = Instant::now();
-                let layout = PocketLayout::prepare(&core.region_graph, request).unwrap();
-                assert!(core.pocket_layout_refusal(&layout).is_none());
-                std::hint::black_box(layout);
+                if scenario == CellScenario::Roundabout {
+                    let layout =
+                        crate::simulation::network::roundabouts::RoundaboutLayout::prepare(
+                            &core.region_graph,
+                            roundabout.clone(),
+                        )
+                        .unwrap();
+                    assert!(core.roundabout_layout_refusal(&layout).is_none());
+                    std::hint::black_box(layout);
+                } else {
+                    let layout = PocketLayout::prepare(&core.region_graph, request).unwrap();
+                    assert!(core.pocket_layout_refusal(&layout).is_none());
+                    std::hint::black_box(layout);
+                }
                 let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
                 let start = Instant::now();
-                let (mesh, roads) = core
-                    .transit_network
-                    .road_surface
-                    .compile_pocket_preview(&core.region_graph, &core.heightmap, request)
-                    .unwrap();
+                let (mesh, roads) = if scenario == CellScenario::Roundabout {
+                    core.transit_network
+                        .road_surface
+                        .compile_roundabout_preview(
+                            &core.region_graph,
+                            &core.heightmap,
+                            roundabout.clone(),
+                        )
+                        .unwrap()
+                } else {
+                    core.transit_network
+                        .road_surface
+                        .compile_pocket_preview(&core.region_graph, &core.heightmap, request)
+                        .unwrap()
+                };
                 let terrain = core.compile_pocket_preview_terrain(&roads).unwrap();
                 assert!(terrain.preview_patches().is_some());
                 let preview_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -335,7 +372,12 @@ fn measure_populated_road_plan_scaling(
             prepare.sort_by(f64::total_cmp);
             preview.sort_by(f64::total_cmp);
             eprintln!(
-                "POCKET_PLAN_SCALING {}",
+                "{} {}",
+                if scenario == CellScenario::Roundabout {
+                    "ROUNDABOUT_PLAN_SCALING"
+                } else {
+                    "POCKET_PLAN_SCALING"
+                },
                 serde_json::json!({"remote_buildings":remote_buildings,"remote_roads":background_roads,"parcels":core.zoning.parcels().len(),"agents":core.agents.len(),"samples":31,"setup_excluded":true,"prepare_p50_ms":prepare[15],"preview_p50_ms":preview[15],"identical_local_products":true})
             );
             continue;

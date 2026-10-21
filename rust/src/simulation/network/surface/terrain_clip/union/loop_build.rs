@@ -2,6 +2,7 @@
 
 //! Terrain-clip sourced loop construction.
 
+use super::super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, backend::RoadVec2};
 use super::*;
 
 impl RoadSurfaceSystem {
@@ -10,7 +11,7 @@ impl RoadSurfaceSystem {
         topology: RoadSurfaceTerrainClipLoopTopology,
         source_edges: &[TerrainClipSourceEdge],
         source_edge_index: &TerrainClipSourceEdgeIndex,
-    ) -> Result<RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipExportError> {
+    ) -> Result<Option<RoadSurfaceTerrainClipLoop>, RoadSurfaceTerrainClipExportError> {
         let contour = Self::compact_overlay_contour_by_key(outer_contour).map_err(|error| {
             RoadSurfaceTerrainClipExportError::RepeatedOverlayPointCycle {
                 shape_index: topology.shape_index,
@@ -23,6 +24,14 @@ impl RoadSurfaceSystem {
             }
         })?;
         if contour.len() < 3 {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_collapsed_contour shape={} contour={} raw={:?} compact={:?}",
+                topology.shape_index,
+                topology.contour_index,
+                outer_contour,
+                contour
+            );
             return Err(RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             });
@@ -260,7 +269,23 @@ impl RoadSurfaceSystem {
         }
 
         Self::close_terrain_clip_source_edges(&mut output_edges);
+        // Source recovery already removes sub-resolution connector edges. A micron-wide
+        // overlay hole can consequently become two exactly reversed, height-matched edges.
+        // Drop only this proven zero-area result inside the existing numeric dust budget;
+        // real holes and unresolved source/height conflicts retain their normal checks.
+        if Self::terrain_clip_is_collapsed_numeric_loop(&contour, &output_edges) {
+            return Ok(None);
+        }
         if output_edges.len() < 3 {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_collapsed_output shape={} contour={} raw={:?} compact={:?} edges={:?}",
+                topology.shape_index,
+                topology.contour_index,
+                outer_contour,
+                contour,
+                output_edges
+            );
             return Err(RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             });
@@ -293,9 +318,35 @@ impl RoadSurfaceSystem {
             });
         }
         let points_world = output_edges.iter().map(|edge| edge.start).collect();
-        Ok(RoadSurfaceTerrainClipLoop {
+        Ok(Some(RoadSurfaceTerrainClipLoop {
             points_world,
             source_edges: output_edges,
-        })
+        }))
+    }
+
+    fn terrain_clip_is_collapsed_numeric_loop(
+        contour: &NodeOverlayContour,
+        edges: &[RoadSurfaceTerrainClipSourceEdge],
+    ) -> bool {
+        let [a, b] = edges else {
+            return false;
+        };
+        if !Self::world_points_same_for_boundary(a.start, b.end)
+            || !Self::world_points_same_for_boundary(a.end, b.start)
+            || !Self::overlay_heights_equal(a.start.y, b.end.y)
+            || !Self::overlay_heights_equal(a.end.y, b.start.y)
+        {
+            return false;
+        }
+        let budget = Self::overlay_numeric_area_budget_m2(
+            Self::overlay_contour_perimeter_m(contour),
+            contour.len(),
+        );
+        let width = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        Self::overlay_contour_area_f64(contour).abs() <= f64::from(budget)
+            && contour.iter().all(|p| {
+                Self::point_segment_distance_squared_xz(RoadVec2::new(p[0], p[1]), a.start, a.end)
+                    <= width * width
+            })
     }
 }

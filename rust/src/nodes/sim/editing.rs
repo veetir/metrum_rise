@@ -2522,6 +2522,7 @@ mod tests {
         let start = graph.node(start_node).pos;
         let end = graph.node(end_node).pos;
         graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -2572,6 +2573,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -2745,6 +2747,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -3362,6 +3365,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -3419,6 +3423,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -4210,6 +4215,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(8.0, 0.0, 0.0), NodeType::Junction);
         let edge_idx = core.region_graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,

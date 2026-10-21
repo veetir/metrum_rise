@@ -325,6 +325,7 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,

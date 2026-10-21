@@ -12,6 +12,7 @@ mod tests {
 
     fn road_edge(start_node: u32, end_node: u32, start: Vector3, end: Vector3, width: f32) -> Edge {
         Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -49,6 +50,7 @@ mod tests {
 
         // Edge 0: Left to Center (-X to 0) (Horizontal Main Road Part 1)
         g.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -79,6 +81,7 @@ mod tests {
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
@@ -109,6 +112,7 @@ mod tests {
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,

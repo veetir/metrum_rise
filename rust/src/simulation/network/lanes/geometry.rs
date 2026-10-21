@@ -283,3 +283,31 @@ fn taper_lane_geometry(
     }
     geometry
 }
+
+fn point_segment(p: Vector2, a: Vector2, b: Vector2) -> f32 {
+    let v = b - a;
+    let t = if v.length_squared() > 0.0 {
+        ((p - a).dot(v) / v.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance_squared_to(a + v * t)
+}
+/// Squared separation of two planar segments, including crossing and degenerate segments.
+pub(crate) fn segment_distance_squared_xz(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> f32 {
+    let cross = |a: Vector2, b: Vector2| a.x * b.y - a.y * b.x;
+    let ab = b - a;
+    let cd = d - c;
+    let det = cross(ab, cd);
+    if det.abs() > 1.0e-8 {
+        let u = cross(c - a, cd) / det;
+        let v = cross(c - a, ab) / det;
+        if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
+            return 0.0;
+        }
+    }
+    point_segment(a, c, d)
+        .min(point_segment(b, c, d))
+        .min(point_segment(c, a, b))
+        .min(point_segment(d, a, b))
+}

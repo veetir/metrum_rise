@@ -5,6 +5,7 @@
 use super::*;
 
 mod road_tool;
+mod roundabouts;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -165,61 +166,8 @@ impl SimulationNode {
             &core.heightmap,
             request,
         ) {
-            Ok((mut scene, roads)) => {
-                let Some(patches) = core
-                    .compile_pocket_preview_terrain(&roads)
-                    .and_then(|terrain| terrain.preview_patches())
-                else {
-                    result.set("is_valid", false);
-                    result.set("is_pending", true);
-                    result.set("invalid_reason", "surface_preview_pending");
-                    return result;
-                };
-                let mut payloads = Array::<VarDictionary>::new();
-                for patch in patches {
-                    let mut data = if patch.input_road_loops == 0 {
-                        Self::terrain_patch_dict(&patch.patch, &[])
-                    } else {
-                        Self::cached_refined_terrain_patch_dict(&patch, false, &[])
-                    };
-                    data.set(
-                        "terrain_revision",
-                        i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
-                    );
-                    data.set(
-                        "surface_generation",
-                        i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
-                    );
-                    data.set("render_step_mm", i64::from(patch.key.render_step_mm));
-                    data.set(
-                        "terrain_requires_engineered_refinement",
-                        patch.input_road_loops > 0,
-                    );
-                    payloads.push(&data);
-                }
-                result.set("terrain_preview", vdict! { "patches": payloads });
-
-                scene.source_mesh_generation = core.cached_road_mesh_generation;
-                let meshes = scene
-                    .replacement_chunks
-                    .iter()
-                    .filter_map(|key| {
-                        core.cached_road_mesh_chunks
-                            .get(key)
-                            .map(|mesh| (*key, Arc::clone(mesh)))
-                    })
-                    .collect();
-                scene.retain_existing(&meshes);
-                scene.retained_revision = self.pocket_preview_revision;
-                result.set("is_valid", true);
-                result.set(
-                    "junction_preview",
-                    Self::road_junction_preview_dict(&scene, core.road_tool_surface_generation, 0),
-                );
-                result.set(
-                    "request_id",
-                    i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
-                );
+            Ok((scene, roads)) => {
+                result = self.local_layout_preview_result(&core, scene, &roads);
             }
             Err(reason) => {
                 result.set("is_valid", false);
@@ -698,5 +646,75 @@ impl SimulationNode {
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
+    }
+}
+
+impl SimulationNode {
+    fn local_layout_preview_result(
+        &self,
+        core: &crate::nodes::sim::core::SimCore,
+        mut scene: crate::simulation::network::render::road::preview::RoadJunctionPreview,
+        roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
+    ) -> VarDictionary {
+        let mut result = VarDictionary::new();
+        let Some(patches) = core
+            .compile_pocket_preview_terrain(roads)
+            .and_then(|terrain| terrain.preview_patches())
+        else {
+            result.set("is_valid", false);
+            result.set("is_pending", true);
+            result.set("invalid_reason", "surface_preview_pending");
+            return result;
+        };
+        let mut payloads = Array::<VarDictionary>::new();
+        for patch in patches {
+            let mut data = if patch.input_road_loops == 0 {
+                Self::terrain_patch_dict(&patch.patch, &[])
+            } else {
+                Self::cached_refined_terrain_patch_dict(&patch, false, &[])
+            };
+            data.set(
+                "terrain_revision",
+                i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+            );
+            data.set(
+                "surface_generation",
+                i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
+            );
+            data.set("render_step_mm", i64::from(patch.key.render_step_mm));
+            data.set(
+                "terrain_requires_engineered_refinement",
+                patch.input_road_loops > 0,
+            );
+            payloads.push(&data);
+        }
+        result.set("terrain_preview", vdict! { "patches": payloads });
+
+        scene.source_mesh_generation = core.cached_road_mesh_generation;
+        let meshes = scene
+            .replacement_chunks
+            .iter()
+            .filter_map(|key| {
+                core.cached_road_mesh_chunks
+                    .get(key)
+                    .map(|mesh| (*key, Arc::clone(mesh)))
+            })
+            .collect();
+        scene.retain_existing(&meshes);
+        scene.retained_revision = self.pocket_preview_revision;
+        result.set("is_valid", true);
+        result.set(
+            "junction_preview",
+            Self::road_junction_preview_dict(&scene, core.road_tool_surface_generation, 0),
+        );
+        result.set(
+            "request_id",
+            i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+        );
+        result.set(
+            "surface_generation",
+            i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
+        );
+        result
     }
 }

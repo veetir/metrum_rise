@@ -1126,6 +1126,7 @@ pub fn split_edge(
     }
 
     let mut new_edge = Edge {
+        roundabout: graph.edge(edge_id).roundabout,
         crossing_level,
         lane_tapers: None,
         median: median.map(|mut median| {

@@ -21,6 +21,7 @@ pub mod interaction;
 pub mod lanes;
 pub(crate) mod pockets;
 pub(crate) mod road_edit;
+pub(crate) mod roundabouts;
 pub mod topology;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -60,6 +61,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         .sum();
 
     graph::Edge {
+        roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
         median: None,

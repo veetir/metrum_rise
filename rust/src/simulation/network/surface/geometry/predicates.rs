@@ -46,7 +46,7 @@ impl RoadSurfaceSystem {
         inside
     }
 
-    pub(super) fn point_segment_distance_squared_xz(
+    pub(in crate::simulation::network::surface) fn point_segment_distance_squared_xz(
         point: RoadVec2,
         start: RoadVec3,
         end: RoadVec3,

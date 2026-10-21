@@ -20,6 +20,7 @@ mod tests {
         let edges = [(n0, n1), (n1, n2)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                roundabout: false,
                 crossing_level: 0,
                 lane_tapers: None,
                 median: None,
@@ -102,6 +103,7 @@ mod tests {
         let edges = [(n0, n1), (n2, n1), (n3, n1)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                roundabout: false,
                 crossing_level: 0,
                 lane_tapers: None,
                 median: None,
@@ -166,6 +168,7 @@ mod tests {
         let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
 
         graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,

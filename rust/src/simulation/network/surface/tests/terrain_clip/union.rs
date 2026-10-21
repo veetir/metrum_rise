@@ -6,6 +6,33 @@ use super::*;
 use crate::simulation::network::surface::backend::RoadVec3;
 
 #[test]
+fn terrain_clip_union_discards_a_height_matched_reversed_numeric_hole() {
+    let outer = [
+        RoadVec3::new(0.0, 0.0, -30.0),
+        RoadVec3::new(20.0, 0.0, -30.0),
+        RoadVec3::new(20.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+    ];
+    // The rotated ring produced this 1.75 m long, approximately one-micron wide hole.
+    let hole = [
+        RoadVec3::new(10.633308, 0.12, -24.275761),
+        RoadVec3::new(11.313586, 0.0, -25.888126),
+        RoadVec3::new(11.313585, 0.0, -25.888127),
+    ];
+    let sources = [
+        terrain_clip_loop_for_node_test(&outer, 0),
+        terrain_clip_loop_for_node_test(&hole, 1),
+    ];
+    let result = RoadSurfaceSystem::union_terrain_clip_boundary_export(&sources).unwrap();
+    assert_eq!(result.loops.len(), 1);
+    assert_eq!(
+        result.loop_topologies[0].role,
+        RoadSurfaceTerrainClipContourRole::Outer
+    );
+    assert_eq!(result.loops[0].points_world.len(), 4);
+}
+
+#[test]
 fn terrain_clip_union_exports_hole_contours_for_ring_footprint() {
     let y = 2.0;
     let rectangles = [

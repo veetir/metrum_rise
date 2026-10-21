@@ -53,6 +53,17 @@ pub(super) fn save_network(
         }
     }
 
+    {
+        let mut stmt = tx.prepare("INSERT INTO roundabout_edges VALUES (?1)")?;
+        for (id, edge) in graph.edges().iter().enumerate() {
+            if edge.roundabout
+                && let Some(saved) = maps.edge_old_to_new.get(&id)
+            {
+                stmt.execute([usize_to_i64(*saved)?])?;
+            }
+        }
+    }
+
     // 2. Edges
     {
         let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, median_start_setback, median_end_setback) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
@@ -260,6 +271,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             }
             let edge = Edge {
                 crossing_level: 0,
+                roundabout: false,
                 lane_tapers: None,
                 median,
                 start_node,
@@ -285,6 +297,27 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             edge.validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, median)
                 .map_err(SaveLoadError::custom)?;
             graph.add_edge(edge);
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='roundabout_edges'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt = conn.prepare("SELECT edge_id FROM roundabout_edges ORDER BY edge_id")?;
+            for row in stmt.query_map([], |row| row.get::<_, i64>(0))? {
+                let id = i64_to_usize(row?)?;
+                if id >= graph.edge_count() {
+                    return Err(SaveLoadError::custom("invalid roundabout edge"));
+                }
+                let edge = graph.edge_mut(id);
+                if edge.fwd_lanes != 1
+                    || edge.bkw_lanes != 0
+                    || edge.class != crate::simulation::network::types::EdgeClass::Standard
+                {
+                    return Err(SaveLoadError::custom("invalid roundabout carriageway"));
+                }
+                edge.roundabout = true;
+            }
         }
     }
 

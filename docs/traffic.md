@@ -27,7 +27,7 @@ Implementation lives mainly in:
 
 Stage 1a adds automatic vehicle right of way to the existing connector reservations. It is a staged
 implementation: zebra priority, fixed-time signals, authored control/major-road selection, all-way stop,
-control previews/undo, importer setters and explicit roundabout entry priority are still pending.
+control previews/undo and importer setters are still pending. ROAD-62 now supplies explicit roundabout entry priority (below).
 The signalised Prisma reference is **not** represented by this stage's priority capture.
 
 At a mixed-hierarchy junction the higher road has priority. Hierarchy is the ordered tuple
@@ -81,6 +81,27 @@ routes must obey the same crossing authority. Do not patch this with a late conn
 Save format remains 91: all policy and scratch are derived. Loading an old save deliberately
 changes junction behavior but leaves road/lane geometry and legal routes unchanged. No player
 save is rewritten; captures use fresh blank worlds.
+
+### Roundabout entry priority — ROAD-62
+
+Circulating carriageways have an explicit persisted role, ahead of the existing automatic
+(speed, original lanes, original width) hierarchy. Every entering arm yields to conflicting
+circulating connectors, including an 80 km/h approach to a 20 km/h ring; circulation never
+acquires an obligation to yield to an entering arm. Circulating arms do not emit B1 road-priority
+signs. Entering arms emit the B5/D2 compound sign from the same policy. Existing connector
+conflicts, downstream entry-slot checks and stable handoff claims apply without a separate
+roundabout tick loop. Ordinary roads retain their original hierarchy and right-hand rules.
+
+No new agent fields or runtime allocations are introduced. All added classification occurs
+at local lane/sign rebuilding. The tangent-continuous single-lane road ring uses the existing
+connector path builder and NET-07 routing; no new U-turn exception is needed. A targeted test
+loads six uneven arms with 36 cars taking the long path around the ring and verifies drainage
+and bit-identical final edge/distance/speed results with one and four Rayon workers. This
+fixture has open exits; it does not promise flow through physically blocked downstream roads.
+
+Geometry/tool contracts, first-slice limits and fresh acceptance evidence live in
+[ROAD-62](roads.md#single-lane-roundabout-authoring--road-62-first-slice). Two-lane destination
+lane choice, spiral exits and pedestrian crossing priority remain pending.
 
 #### Stage 1a acceptance — 2026-10-20/21
 
@@ -1087,7 +1108,7 @@ The measured ignored tests are
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
 - automatic vehicle priority/yield/stop control is implemented in TRAFFIC-06 stage 1a; zebra priority, fixed-time lights,
-  authored controls, importer hooks and explicit roundabout entry priority remain pending
+  authored controls and importer hooks remain pending; explicit single-lane roundabout entry priority is implemented by ROAD-62
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild

@@ -323,6 +323,7 @@ fn add_world_road(
     let points = vec![graph.node(start).pos, midpoint, graph.node(end).pos];
 
     graph.add_edge(Edge {
+        roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
         median: None,

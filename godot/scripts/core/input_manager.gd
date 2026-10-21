@@ -19,6 +19,7 @@ extends Node
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
+var roundabout_tool: Node3D
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
@@ -33,7 +34,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -53,6 +54,11 @@ var _alt_orbit := false
 var _last_gesture := ""
 
 func _ready():
+	roundabout_tool = Node3D.new()
+	roundabout_tool.name = "RoundaboutTool"
+	roundabout_tool.set_script(load("res://scripts/tools/roundabout_tool.gd"))
+	get_parent().call_deferred("add_child", roundabout_tool)
+
 	if not has_node("../CulDeSacTool"):
 		var rt = Node3D.new()
 		rt.name = "CulDeSacTool"
@@ -213,6 +219,7 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
+			KEY_O: _toggle_tool(Tool.ROUNDABOUT)
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_E:
@@ -399,6 +406,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.fwd_lanes = 0
 					road_tool.bkw_lanes = 0
 					road_tool._update_lanes_label()
+		Tool.ROUNDABOUT:
+			if roundabout_tool: roundabout_tool.active = enabled
 		Tool.CUL_DE_SAC:
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled

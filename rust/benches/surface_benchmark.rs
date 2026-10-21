@@ -249,6 +249,7 @@ fn bench_edge(start_node: u32, end_node: u32, x: usize, z: usize, horizontal: bo
         .sum();
 
     Edge {
+        roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
         median: None,

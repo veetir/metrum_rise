@@ -23,6 +23,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     for i in 0..3 {
         let geometry = vec![points[i], points[i + 1]];
         graph.add_edge(Edge {
+            roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
             median: None,
