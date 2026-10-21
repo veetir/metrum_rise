@@ -175,6 +175,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clustered_profile_knots_do_not_fold_a_median_band() {
+        let surface = RoadSurfaceSystem::new(512.0);
+        let points = [
+            RoadVec3::ZERO,
+            RoadVec3::new(4.0, 0.0, 0.0),
+            RoadVec3::new(4.019, 0.0, 0.001),
+            RoadVec3::new(8.0, 0.0, 0.3),
+        ];
+        let cumulative = surface.build_cumulative_distances(&points);
+        let frame = SpanTangentFrame {
+            start_s_m: 0.0,
+            end_s_m: cumulative[3],
+            start_tangent: RoadVec2::X,
+            end_tangent: surface.segment_tangent_xz(&points, 2),
+        };
+        let section = |s| {
+            let (center, tangent) = surface.sample_polyline(&points, &cumulative, s, Some(&frame));
+            let lateral = RoadVec3::new(-tangent.y, 0.0, tangent.x) * 3.38;
+            [center - lateral, center + lateral]
+        };
+        let a = section(cumulative[1]);
+        let b = section(cumulative[2]);
+        assert!(
+            RoadSurfaceSystem::make_boundary_loop_polygon(vec![a[0], b[0], b[1], a[1]]).is_some()
+        );
+    }
+
+    #[test]
     fn inserted_samples_keep_short_profile_interval_bands_unfolded() {
         let surface = RoadSurfaceSystem::new(512.0);
         // Logged junction profile: a 13 cm vertical interval has only 1.6 cm of plan run.

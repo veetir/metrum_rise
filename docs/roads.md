@@ -1516,6 +1516,28 @@ The additional construction work is O(1) per connector and adds no per-agent tic
 Explicit straight whitelist nodes receive bounded vehicle-lane-only mouth insets, so their
 connectors advance over a positive span while graph clips and every roadbed band stay unchanged.
 
+**Importer stress follow-up (2026-10-20).** An ordinary endpoint taper protects its own
+span rather than the entire edge. Junction splitting preserves the original start/end taper
+on its owning half. Pocket addition, resizing and removal retain a non-overlapping ordinary
+taper at the remote end; overlapping spans remain refused. Clustered longitudinal profile
+knots inside the existing 0.125 m sampling clearance use shared neighboring secant support,
+preventing folded span bands without changing node-owned rail or exact-mouth directions.
+These changes remain local: O(candidate stroke segments × local edge profile points) for
+the intersection guard, O(log P) support lookup at a clustered knot, and O(1) taper metadata
+work. No agent-tick work or allocations are added.
+
+Fresh validation: 2,590 Rust library tests pass (147 ignored), Clippy all-targets is clean,
+and the pocket Godot bridge passes. The importer has 58 passing Python tests, including
+projected median-junction pinning and preservation of an explicit straight throat through
+curve fitting. Unprofiled release locality fixtures run alone with `RAYON_NUM_THREADS=4`
+and `METRUM_DEBUG=0`: `$TEST_BINARY populated_road_plan_scaling --ignored --nocapture
+--test-threads=1` and the corresponding `populated_pocket_plan_scaling` command. From 0 to
+100,000 remote buildings (24 to 600,024 agents, 4 to 100,004 parcels, 0 to 391 remote roads),
+local products stay identical. Road worker p50 is 1.280/1.277/1.303/1.283 ms; pocket prepare
+p50 is 0.0419/0.0434/0.0451/0.0429 ms and preview p50 is 18.02/18.84/18.18/17.77 ms.
+Road snapshot setup is separately measured at 0.006/0.011/0.042/0.142 ms. These are current
+build locality measurements, not a before/after speedup claim. Logs belong under `$ARTIFACTS`.
+
 **Acceptance.** Test transition fork/merge order, both stored directions, 1–4 lanes, opposing
 pockets, median/outer-band coordinates, physical vehicle support, blocked merges, save round
 trips, agent-safe edits/undo, preview equality and legacy roadbed hashes. Run the whole Rust

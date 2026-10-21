@@ -1049,6 +1049,7 @@ pub fn split_edge(
     let bkw_lanes = old_edge.bkw_lanes;
     let bus_lanes = old_edge.bus_lanes;
     let median = old_edge.median;
+    let lane_tapers = old_edge.lane_tapers.as_deref().copied();
     let speed_limit = old_edge.speed_limit;
     let class = old_edge.class;
     let crossing_level = old_edge.crossing_level;
@@ -1063,6 +1064,8 @@ pub fn split_edge(
     graph.edges[edge_id].end_node = junction_node_id;
     graph.edges[edge_id].geometry = part1_geo;
     graph.edges[edge_id].physical_geometry = part1_physical;
+    graph.edges[edge_id].lane_tapers =
+        lane_tapers.and_then(|ends| ends[0].map(|taper| Box::new([Some(taper), None])));
     let (cost, length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&graph.edges[edge_id]);
     graph.edges[edge_id].base_cost = cost;
@@ -1079,8 +1082,9 @@ pub fn split_edge(
     let mut new_edge = Edge {
         roundabout: graph.edge(edge_id).roundabout,
         crossing_level,
-        lane_tapers: None,
         bus_lanes,
+        lane_tapers: lane_tapers
+            .and_then(|ends| ends[1].map(|taper| Box::new([None, Some(taper)]))),
         median: median.map(|mut median| {
             median.start_setback_m = 0.0;
             median

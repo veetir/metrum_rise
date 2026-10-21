@@ -11,6 +11,7 @@ const Network := preload("res://scripts/tools/map_import_network.gd")
 var _output := ""
 var _results: Dictionary = {}
 var _fatal := false
+var _source_junctions := {}
 var _deferred: Array = []
 var _junction_slides: Array = [-12.0, -8.0, 8.0, 12.0]
 var _junction_clearance := 12.0
@@ -35,6 +36,18 @@ func _run() -> void:
 		_fail("Invalid map plan")
 		return
 	var plan: Dictionary = parsed
+	var endpoint_uses := {}
+	for source in plan["strokes"]:
+		if int(source["fwd_lanes"])+int(source["bkw_lanes"]) == 0:
+			continue
+		for point in [source["points_xz"][0], source["points_xz"][-1]]:
+			var key := Vector2(point[0], point[1])
+			endpoint_uses[key] = int(endpoint_uses.get(key, 0))+1
+		for point in source.get("junctions_xz", []):
+			_source_junctions[Vector2(point[0], point[1])] = true
+	for point in endpoint_uses:
+		if endpoint_uses[point] > 1:
+			_source_junctions[point] = true
 	_junction_slides = plan["parameters"].get("junction_slide_m", _junction_slides)
 	_junction_clearance = float(plan["parameters"].get("junction_clearance_m", _junction_clearance))
 	if FileAccess.get_sha256(world_path) != String(plan["world_sha256"]):
@@ -104,6 +117,7 @@ func _run() -> void:
 		if _results["roads"].size() % 20 == 0:
 			_checkpoint(simulation)
 	if not roads_repaired:
+		_checkpoint(simulation)
 		await _retry_deferred(simulation)
 		await _repair_network(simulation)
 	for record in _results["roads"]:
@@ -316,15 +330,26 @@ func _retry_deferred(simulation: Node) -> void:
 		_deferred = []
 		var before := 0
 		var after := 0
+		var processed := 0
 		for entry in pending:
 			var record: Dictionary = entry["record"]
 			before += record["pieces"].size()
-			record["failed_pieces"].erase(entry["failure"])
-			await _place(simulation, entry["stroke"], entry["failure"]["points_xz"], record, 4, "deferred/%d" % sweep)
+			# Retrying a settled network must not create another trimmed, detached fragment.
+			var reason := await _attempt(simulation, entry["stroke"], entry["failure"]["points_xz"], record, "deferred_exact/%d" % sweep)
+			if reason.is_empty():
+				record["failed_pieces"].erase(entry["failure"])
+				record["pieces"].append(record["attempts"][-1]["points_xz"])
+			else:
+				entry["failure"]["reason"] = reason
+				_deferred.append(entry)
 			after += record["pieces"].size()
 			_finish_record(record)
 			if _fatal:
 				return
+			processed += 1
+			if processed % 20 == 0:
+				_write_results()
+				_checkpoint(simulation)
 		_write_results()
 		_checkpoint(simulation)
 		if after == before:
@@ -351,22 +376,27 @@ func _length(points: Array) -> float:
 		total += Vector2(points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]).length()
 	return total
 
+func _source_point(simulation: Node, stroke: Dictionary, pos: Vector2) -> Vector3:
+	# A visible surface can be an existing bridge deck above this source road.
+	var world := Vector3(pos.x, simulation.get_height_at(pos), pos.y)
+	if stroke.get("bridge", false):
+		world.y += 6.0
+	elif stroke.get("tunnel", false):
+		world.y -= 6.0
+	return world
+
 func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, strategy: String) -> String:
 	var xyz := []
 	var placed := []
 	for i in points.size():
 		var p: Array = points[i]
 		var pos := Vector2(float(p[0]), float(p[1]))
-		var world := Vector3(pos.x, simulation.get_world_surface_height(pos), pos.y)
-		if stroke.get("bridge", false):
-			world.y += 6.0
-		elif stroke.get("tunnel", false):
-			world.y -= 6.0
+		var world := _source_point(simulation, stroke, pos)
 		var snapped: Variant = simulation.get_closest_network_point(world, 2.0)
 		if i == 0 or i == points.size()-1:
 			# The commit's snap flag only enables 2 m graph matching. The player's
 			# cursor also projects the clicked position onto a node/edge beforehand.
-			if snapped is Vector3 and strategy != "water_unsnapped" and not strategy.begins_with("junction_slide/"):
+			if snapped is Vector3 and absf(snapped.y-world.y) < 4.5 and strategy != "water_unsnapped" and not strategy.begins_with("junction_slide/"):
 				world = snapped
 		xyz.append([world.x, world.y, world.z])
 		placed.append([world.x, world.z])
@@ -399,7 +429,7 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 		MetrumDebug.log("road", "map_import_attempt id=%s strategy=%s points=%d lanes=%d/%d" % [stroke["id"], strategy, xyz.size(), stroke["fwd_lanes"], stroke["bkw_lanes"]])
 		outcome = await _replay(simulation, attempt)
 	var reason := String(outcome.get("reason", ""))
-	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "median_style": stroke.get("median_style", 0), "median_width_m": stroke.get("median_width_m", 0.0), "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
+	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "median_style": stroke.get("median_style", 0), "median_width_m": stroke.get("median_width_m", 0.0), "detail": outcome.get("detail", ""), "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
 	if reason == "replay_timeout" or reason == "validation_unavailable":
 		_fatal = true
 		_fail("Unknown road completion for %s: %s" % [stroke["id"], reason])
@@ -428,7 +458,7 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	while true:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:
-			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed")), "metrics": simulation.get_road_benchmark_state()["command"]}
+			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed")), "detail": result.get("detail", ""), "metrics": simulation.get_road_benchmark_state()["command"]}
 		if Time.get_ticks_msec() >= deadline:
 			return {"by": "commit", "reason": "replay_timeout"}
 		await process_frame
@@ -506,6 +536,11 @@ func _slide_candidates(simulation: Node, points: Array) -> Array:
 			candidates.append({"points_xz": adjusted, "strategy": "junction_slide/%d/%.1fm" % [endpoint, float(shift)]})
 	return candidates
 
+func _endpoint_can_trim(stroke: Dictionary, point: Array) -> bool:
+	# Bisection boundaries and authored junctions must meet the adjacent piece exactly.
+	var original: Array = stroke["points_xz"]
+	return (point == original[0] or point == original[-1]) and not _source_junctions.has(Vector2(point[0], point[1]))
+
 func _place(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, depth: int, strategy: String) -> void:
 	if _fatal:
 		return
@@ -533,7 +568,7 @@ func _place(simulation: Node, stroke: Dictionary, points: Array, record: Diction
 			await _place(simulation, stroke, part, record, depth+1, "split/%d" % (depth+1))
 		return
 	# Bounded endpoint retries: exact nearby network node first, then a short
-	# endpoint trim. Every attempted geometry and validator result is retained.
+	# free-terminal trim. Authored junctions and bisection boundaries stay pinned.
 	for adjustment in ["node", "trim3", "trim6"]:
 		var adjusted: Array = points.duplicate(true)
 		for endpoint in [0, adjusted.size()-1]:
@@ -544,6 +579,8 @@ func _place(simulation: Node, stroke: Dictionary, points: Array, record: Diction
 					var node_pos: Vector3 = simulation.get_node_pos(node_id)
 					adjusted[endpoint] = [node_pos.x, node_pos.z]
 			else:
+				if not _endpoint_can_trim(stroke, points[endpoint]):
+					continue
 				var neighbor := 1 if endpoint == 0 else adjusted.size()-2
 				var q := Vector2(adjusted[neighbor][0], adjusted[neighbor][1])
 				var tip := Vector2(p.x, p.z)

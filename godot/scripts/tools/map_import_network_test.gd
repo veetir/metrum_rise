@@ -7,6 +7,12 @@ class Fixture extends Node:
 	var positions := [Vector3(0,0,0), Vector3(2,0,0), Vector3(12,0,10), Vector3(22,0,10), Vector3(-12,0,10), Vector3(-22,0,10), Vector3(0,0,-12), Vector3(0,0,-22)]
 	var links := [[0,1], [2,3], [4,5], [6,7]]
 
+	func get_height_at(_pos: Vector2) -> float:
+		return 7.0
+
+	func get_world_surface_height(_pos: Vector2) -> float:
+		return 13.0
+
 	func get_node_pos(id: int) -> Vector3:
 		return positions[id]
 
@@ -38,9 +44,17 @@ class Fixture extends Node:
 		links.append([a,b])
 
 func _run() -> void:
+	var stroke := {"points_xz": [[0.0, 0.0], [100.0, 0.0]]}
+	assert(_endpoint_can_trim(stroke, [0.0, 0.0]))
+	assert(not _endpoint_can_trim(stroke, [50.0, 0.0]))
+	_source_junctions[Vector2(0.0, 0.0)] = true
+	assert(not _endpoint_can_trim(stroke, [0.0, 0.0]))
 	_results = {"repairs": []}
 	var fixture := Fixture.new()
 	root.add_child(fixture)
+	assert(_source_point(fixture, {}, Vector2.ZERO).y == 7.0)
+	assert(_source_point(fixture, {"bridge": true}, Vector2.ZERO).y == 13.0)
+	assert(_source_point(fixture, {"tunnel": true}, Vector2.ZERO).y == 1.0)
 	await _repair_network(fixture)
 	assert(Network.inspect_network(fixture, 0.0)["components"] == 1)
 	assert(_results["repairs"].size() == 3)

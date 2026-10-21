@@ -57,6 +57,67 @@ def synthetic_tiff(path, east=100, north=200, crs=3067):
     path.write_bytes(b'II' + struct.pack('<HIH', 42, 8, len(entries)) + b''.join(directory) + b'\0'*4 + payload)
 
 
+class PocketLaneTest(unittest.TestCase):
+    def test_directional_turn_tags_keep_travel_order(self):
+        from tools.map_import.pockets import turn_lanes
+        p = {'oneway': 0, 'lanes_forward': 3, 'lanes_backward': 2,
+             'turn_lanes_forward': 'left|through|right',
+             'turn_lanes_backward': 'through;left|right'}
+        rules = turn_lanes(p)
+        self.assertEqual([r['direction'] for r in rules], [1, -1])
+        self.assertEqual(rules[1]['lanes'], [('through', 'left'), ('right',)])
+        self.assertFalse(any(r['reason'] for r in rules))
+
+    def test_osm_whitelist_keeps_untagged_approach_connections(self):
+        from unittest.mock import patch
+        from tools.map_import.pockets import prepare_rules
+        edges = [
+            {'id': 0, 'a': 0, 'b': 1, 'fwd': 1, 'bkw': 0, 'points': [[-50, 0, 0], [0, 0, 0]]},
+            {'id': 1, 'a': 1, 'b': 2, 'fwd': 1, 'bkw': 0, 'points': [[0, 0, 0], [50, 0, 0]]},
+            {'id': 2, 'a': 1, 'b': 3, 'fwd': 1, 'bkw': 1, 'points': [[0, 0, 0], [0, 0, -50]]},
+        ]
+        audit = {'source_audit': [{'edge': 0, 'junction': 1, 'at_start': False,
+                                  'lanes': [('through',)], 'source_gap_m': 0, 'source_id': 'osm/test'}]}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'city.sqlite'
+            with sqlite3.connect(path) as c:
+                c.execute('CREATE TABLE saved_lanes(lane_id INTEGER PRIMARY KEY,edge_id,lane_idx,node_id,from_lane_id,to_lane_id)')
+                c.executemany('INSERT INTO saved_lanes VALUES (?,?,?,?,?,?)', [
+                    (10, 0, 0, -1, -1, -1), (11, 1, 0, -1, -1, -1),
+                    (12, 2, 0, -1, -1, -1), (13, 2, -1, -1, -1, -1),
+                    (20, -1, 0, 1, 10, 11), (21, -1, 0, 1, 10, 12), (22, -1, 0, 1, 13, 11),
+                ])
+            with patch('tools.map_import.pockets.read_save', return_value=({}, edges)), patch('tools.map_import.pockets.prepare', return_value=audit):
+                result = prepare_rules(path, {}, [])
+        self.assertEqual(result['actions'][0]['rules'], [(0, 0, 1, 0), (2, -1, 1, 0)])
+        self.assertEqual(result['actions'][0]['restricted_native_connectors'], 1)
+
+    def test_turn_sector_matches_game_boundary(self):
+        from tools.map_import.pockets import movement
+        self.assertEqual(movement((1, 0), (1, 1)), 'through')
+        self.assertEqual(movement((1, 0), (0, 1)), 'right')
+        self.assertEqual(movement((1, 0), (0, -1)), 'left')
+
+    def test_reverse_one_way_and_bad_count_are_explicit(self):
+        from tools.map_import.pockets import turn_lanes
+        rules = turn_lanes({'oneway': -1, 'lanes': 4, 'turn_lanes': 'left|through|through|right'})
+        self.assertEqual(rules[0]['direction'], -1)
+        self.assertEqual(rules[0]['reason'], '')
+        rules = turn_lanes({'oneway': 1, 'lanes': 3, 'turn_lanes': 'through|right'})
+        self.assertEqual(rules[0]['reason'], 'tag_lane_count_mismatch')
+
+
+class ConnectivityDirectionTest(unittest.TestCase):
+    def test_one_way_terminal_is_distinct_from_physical_disconnect(self):
+        from tools.map_import.connectivity import directed_components, topology
+        edges = [{'id': 0, 'a': 0, 'b': 1, 'fwd': 1, 'bkw': 1},
+                 {'id': 1, 'a': 1, 'b': 2, 'fwd': 1, 'bkw': 0}]
+        self.assertEqual(len(topology({}, edges)[0]), 1)
+        self.assertEqual(directed_components(edges)['strong_component_sizes'], [2, 1])
+        edges[1]['bkw'] = 1
+        self.assertEqual(directed_components(edges)['strong_components'], 1)
+
+
 class ProjectionTest(unittest.TestCase):
     def test_known_tm35fin_points(self):
         # EPSG:3067 control values rounded to millimetres, independent of implementation.
@@ -220,6 +281,18 @@ class WaterBedTest(unittest.TestCase):
 
 
 class CurveTest(unittest.TestCase):
+    def test_explicit_straight_throat_survives_curve_fitting(self):
+        from tools.map_import.curves import smooth, straight_throat
+        source = [(-100, -40), (-45, 0), (0, 0), (42, 0), (110, 30)]
+        points, tangents = straight_throat(source, (0, 0), 75)
+        cooked = smooth(points, fixed_tangents=tangents)
+        self.assertEqual((cooked[0], cooked[-1]), (source[0], source[-1]))
+        throat = [p for p in cooked if -75 <= p[0] <= 75]
+        self.assertGreater(len(throat), 30)
+        self.assertTrue(all(p[1] == 0 for p in throat))
+        self.assertIn((0, 0), cooked)
+        self.assertEqual(straight_throat(source, (99, 99), 75), (source, {}))
+
     def test_interpolates_survey_vertices_and_shares_tangents(self):
         from tools.map_import.curves import smooth
         from tools.map_import.geometry import distance
@@ -426,6 +499,17 @@ class ConflationTest(unittest.TestCase):
         result, audit = conflate(list(map(road, fs)), {})
         self.assertEqual(len(result), 3)
         self.assertTrue(all(a['status'] == 'fallback' for a in audit['carriageways']))
+
+    def test_projected_median_junction_is_pinned_before_curve_fitting(self):
+        from tools.map_import.curves import prepare_curves
+        fs = [feature('main', [(-100, -30), (0, 0), (100, 0), (200, 30)]),
+              feature('side', [(50, 0), (50, 80)])]
+        strokes, _, _ = prepare_streets(list(map(road, fs)), (-300, -300, 300, 300), 1)
+        strokes = prepare_curves(strokes, fs)
+        main = next(s for s in strokes if 'main' in s['source_ids'])
+        side = next(s for s in strokes if 'side' in s['source_ids'])
+        self.assertIn(tuple(side['points_xz'][0]), main['points_xz'])
+        self.assertIn((50, 0), main['junctions_xz'])
 
     def test_convergence_preserves_shared_tip_and_side_street(self):
         fs = [feature('a', [(0, 0), (25, -5), (100, -5), (125, 0)], ['tip0', 'a1', 'a2', 'tip1'], road_class='primary', name='Main', oneway=1),

@@ -152,8 +152,15 @@ def snap_endpoints(roads, only_kind=None):
         for i in (0, len(f['points'])-1):
             p = f['points'][i]
             hit = index.nearest(p, POLICY['endpoint_snap_m'], lambda s: s[0] != f['id'])
-            if not hit or hit[0] < .01:
+            if not hit:
                 continue
+            if hit[0] < .01:
+                target = hit[3][3][0]
+                # Median reattachment already projected this endpoint onto the segment.
+                # It still needs a target vertex so curve fitting preserves the junction.
+                if (any(distance(p, end) < .01 for end in (hit[3][1], hit[3][2]))
+                        or f['properties'].get('layer', 0) != target['properties'].get('layer', 0)):
+                    continue
             q = tuple(round(v, 3) for v in hit[2])
             node = f'snap/{q[0]:.3f}/{q[1]:.3f}'
             f['points'][i], f['node_ids'][i] = q, node

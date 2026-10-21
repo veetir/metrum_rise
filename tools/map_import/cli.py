@@ -111,7 +111,7 @@ def prepare(args):
     conflation['roundabouts'] = roundabouts
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])
-    strokes = prepare_curves(strokes, features)
+    strokes = prepare_curves(strokes, features, [{'name': 'Savilahdentie', 'centre_xz': prisma, 'radius_m': 75}])
     preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=[], water_fills=[])
     zones = []
     survey = inspect(features, args.world, box)

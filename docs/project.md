@@ -72,6 +72,9 @@ controls and paired road/terrain/prop previews. Version-90 split transitions pre
 lane distances and existing reservations. Fresh whole-suite, matched release and real-game
 capture checks pass; existing-save roadbed hashes match and no agent-tick regression is detected
 ([ROAD-67](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35)).
+Importer stress checks now preserve remote ordinary tapers through junction splits and pocket
+edits, and stabilize clustered span profile knots. Fresh 2,590-test Rust, Clippy, bridge and
+populated-map locality checks pass (see the ROAD-67 follow-up in `roads.md`).
 Single-turn connector paths now use tangent arcs, fixing initial counter-steer and divided-bend
 kinks while preserving roadbed geometry and the existing agent tick.
 The imported-save ridges are fixed: straight median transitions retain longitudinal grade

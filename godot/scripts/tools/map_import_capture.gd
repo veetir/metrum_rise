@@ -9,8 +9,8 @@ func _initialize() -> void:
 
 func _run() -> void:
 	var args := OS.get_cmdline_user_args()
-	if args.size() != 3:
-		push_error("Expected save path, output directory, before/after prefix")
+	if args.size() < 3 or args.size() > 4:
+		push_error("Expected save path, output directory, prefix, optional views JSON")
 		quit(2)
 		return
 	var main: Node = load("res://scenes/Main.tscn").instantiate()
@@ -38,7 +38,11 @@ func _run() -> void:
 	DisplayServer.window_set_size(Vector2i(1200, 900))
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 60
-	var views: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://../maps/processed/kuopio_sw/shots/views.json"))
+	var views: Variant = JSON.parse_string(FileAccess.get_file_as_string(args[3] if args.size() == 4 else "res://../maps/processed/kuopio_sw/shots/views.json"))
+	if not views is Array:
+		push_error("Views JSON must be an array")
+		quit(2)
+		return
 	var output := ProjectSettings.globalize_path(args[1])
 	DirAccess.make_dir_recursive_absolute(output)
 	for view in views:

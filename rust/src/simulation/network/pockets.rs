@@ -114,7 +114,12 @@ impl PocketLayout {
                 joined.fwd_lanes = profile.from_fwd;
                 joined.bkw_lanes = profile.from_bkw;
                 joined.median = pocket.median;
-                joined.lane_tapers = None;
+                // Retain ordinary tapers at the two remote ends when editing a pocket pair.
+                let ends = [
+                    graph.edge(first).lane_tapers.as_ref().and_then(|t| t[0]),
+                    graph.edge(second).lane_tapers.as_ref().and_then(|t| t[1]),
+                ];
+                joined.lane_tapers = ends.iter().any(Option::is_some).then(|| Box::new(ends));
                 joined.width = f32::from(profile.from_fwd + profile.from_bkw) * LANE_WIDTH
                     + profile.from_median_m;
                 joined.end_clip = graph.edge(second).end_clip;
@@ -129,9 +134,6 @@ impl PocketLayout {
                     pocket_id,
                 )
             } else {
-                if selected.lane_tapers.is_some() {
-                    return Err("pocket_overlaps_transition");
-                }
                 (
                     vec![(id, selected.clone())],
                     selected.clone(),
@@ -213,6 +215,13 @@ impl PocketLayout {
         } else {
             base.start_clip
         };
+        if base.lane_tapers.as_ref().is_some_and(|ends| {
+            ends[usize::from(!at_start)].is_some()
+                || ends[usize::from(at_start)]
+                    .is_some_and(|far| span + far.length_m + 12.0 >= total)
+        }) {
+            return Err("pocket_overlaps_transition");
+        }
         if span + far_clip + 12.0 >= total {
             return Err("pocket_road_too_short");
         }
@@ -653,22 +662,187 @@ pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3], leve
             if conflict || edge.lane_tapers.is_none() || edge.crossing_level != level {
                 return;
             }
+            let total: f32 = edge
+                .geometry
+                .windows(2)
+                .map(|p| p[0].distance_to(p[1]))
+                .sum();
             for a in points.windows(2) {
+                let mut station = 0.0;
                 for b in edge.geometry.windows(2) {
-                    if let Some((t, _u)) =
+                    if let Some((t, u)) =
                         super::interaction::find_intersection_2d(a[0], a[1], b[0], b[1])
                     {
                         let pa = a[0].lerp(a[1], t);
-                        if pa.distance_to(edge.geometry[0]) > 0.2
+                        let pb = b[0].lerp(b[1], u);
+                        let at = station + b[0].distance_to(pb);
+                        // Endpoint count/median tapers protect their span, not the whole road.
+                        // Authored pockets retain the pair-wide guard needed by their editor.
+                        let protected = edge.pocket_taper().is_some()
+                            || edge.lane_tapers.as_ref().is_some_and(|ends| {
+                                ends.iter().enumerate().any(|(end, taper)| {
+                                    taper.is_some_and(|t| {
+                                        (if end == 0 { at } else { total - at }) <= t.length_m
+                                    })
+                                })
+                            });
+                        if protected
+                            && pa.distance_to(edge.geometry[0]) > 0.2
                             && pa.distance_to(*edge.geometry.last().unwrap()) > 0.2
                         {
                             conflict = true;
                             return;
                         }
                     }
+                    station += b[0].distance_to(b[1]);
                 }
             }
         },
     );
     conflict
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::zoning::ZoningSystem;
+
+    #[test]
+    fn pocket_add_resize_and_remove_preserve_a_remote_ordinary_taper() {
+        let mut graph = RegionGraph::new();
+        let junction = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(400.0, 0.0, 0.0), NodeType::LaneTransition);
+        let far = RoadLaneTaper {
+            length_m: 28.0,
+            from_fwd: 2,
+            from_bkw: 2,
+            from_median_m: 5.3,
+            left_pocket: false,
+            right_pocket: false,
+        };
+        let road = Edge {
+            start_node: junction,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 20.0,
+            physical_length: 400.0,
+            geometry: vec![Vector3::ZERO, graph.node(end).pos],
+            physical_geometry: vec![Vector3::ZERO, graph.node(end).pos],
+            median: super::super::graph::RoadMedian::from_tool(2, 6.0).unwrap(),
+            lane_tapers: Some(Box::new([None, Some(far)])),
+            ..Default::default()
+        };
+        graph.add_edge(road.clone());
+        for z in [-100.0, 100.0] {
+            let node = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+            graph.add_edge(Edge {
+                end_node: node,
+                geometry: vec![Vector3::ZERO, graph.node(node).pos],
+                physical_geometry: vec![Vector3::ZERO, graph.node(node).pos],
+                physical_length: 100.0,
+                lane_tapers: None,
+                ..road.clone()
+            });
+        }
+        let mut request = PocketRequest {
+            edge: 0,
+            at_start: true,
+            left: true,
+            right: true,
+            length: 60.0,
+            taper: 20.0,
+        };
+        let layout = PocketLayout::prepare(&graph, request).unwrap();
+        assert_eq!(
+            layout.pieces[1].lane_tapers.as_deref(),
+            Some(&[None, Some(far)])
+        );
+        layout.apply(&mut graph);
+        request.length = 80.0;
+        let layout = PocketLayout::prepare(&graph, request).unwrap();
+        assert_eq!(
+            layout.pieces[1].lane_tapers.as_deref(),
+            Some(&[None, Some(far)])
+        );
+        layout.apply(&mut graph);
+        request.left = false;
+        request.right = false;
+        let layout = PocketLayout::prepare(&graph, request).unwrap();
+        assert_eq!(layout.pieces.len(), 1);
+        assert_eq!(
+            layout.pieces[0].lane_tapers.as_deref(),
+            Some(&[None, Some(far)])
+        );
+        layout.apply(&mut graph);
+        graph.edge_mut(0).lane_tapers.as_mut().unwrap()[0] = Some(far);
+        request.left = true;
+        assert!(matches!(
+            PocketLayout::prepare(&graph, request),
+            Err("pocket_overlaps_transition")
+        ));
+    }
+
+    #[test]
+    fn distant_junction_can_split_an_ordinary_end_taper_and_preserve_its_owner() {
+        let mut graph = RegionGraph::new();
+        let a = Vector3::ZERO;
+        let b = Vector3::new(400.0, 0.0, 0.0);
+        let start = graph.add_node(a, NodeType::Junction);
+        let end = graph.add_node(b, NodeType::LaneTransition);
+        let taper = RoadLaneTaper {
+            length_m: 28.0,
+            from_fwd: 2,
+            from_bkw: 2,
+            from_median_m: 5.3,
+            left_pocket: false,
+            right_pocket: false,
+        };
+        graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 20.0,
+            physical_length: 400.0,
+            geometry: vec![a, b],
+            physical_geometry: vec![a, b],
+            lane_tapers: Some(Box::new([None, Some(taper)])),
+            ..Default::default()
+        });
+        let cross = |x, y| [Vector3::new(x, y, -50.0), Vector3::new(x, y, 50.0)];
+        assert!(!stroke_splits_pocket(&graph, &cross(200.0, 0.0)));
+        assert!(stroke_splits_pocket(&graph, &cross(390.0, 0.0)));
+        assert!(!stroke_splits_pocket(&graph, &cross(390.0, 6.0)));
+        graph.edge_mut(0).lane_tapers.as_mut().unwrap()[1]
+            .as_mut()
+            .unwrap()
+            .right_pocket = true;
+        assert!(stroke_splits_pocket(&graph, &cross(200.0, 0.0)));
+        graph.edge_mut(0).lane_tapers.as_mut().unwrap()[1] = Some(taper);
+        let junction = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
+        super::super::topology::split_edge(
+            &mut TransitNetwork::new(),
+            &mut graph,
+            0,
+            0,
+            0.5,
+            junction,
+            &mut ZoningSystem::new(&WorldConfig::default()),
+            &mut BuildingAllocator::new(),
+        );
+        assert!(graph.edge(0).lane_tapers.is_none());
+        assert_eq!(
+            graph.edge(1).lane_tapers.as_deref(),
+            Some(&[None, Some(taper)])
+        );
+        assert_eq!(graph.edge(1).end_node, end);
+    }
 }
