@@ -35,9 +35,11 @@ func _run() -> void:
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.far = 10000.0
 	main.get_node("SceneLighting").pin_hour_of_day(12.0)
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_set_size(Vector2i(1200, 900))
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 60
+	var saved_view: PackedFloat32Array = camera.get_view_state()
 	var views: Variant = JSON.parse_string(FileAccess.get_file_as_string(args[3] if args.size() == 4 else "res://../maps/processed/kuopio_sw/shots/views.json"))
 	if not views is Array:
 		push_error("Views JSON must be an array")
@@ -46,12 +48,14 @@ func _run() -> void:
 	var output := ProjectSettings.globalize_path(args[1])
 	DirAccess.make_dir_recursive_absolute(output)
 	for view in views:
-		var p := Vector3(view["x"], 1000.0, view["z"])
+		var p := Vector3(view.get("x", 0.0), 1000.0, view.get("z", 0.0))
 		camera.set_view_state(PackedFloat32Array([p.x, 100.0, p.z, 0.0, -1.5, 1000.0, 1.0]))
 		camera.position = p
 		camera.rotation = Vector3(-PI/2.0, 0.0, 0.0)
-		camera.size = view["height_m"]
-		if view.has("eye_xz"):
+		camera.size = view.get("height_m", 1000.0)
+		if view.get("saved_camera", false):
+			camera.set_view_state(saved_view)
+		elif view.has("eye_xz"):
 			var simulation: Node = main.get_node("SimulationNode")
 			var eye: Array = view["eye_xz"]
 			var target: Array = view.get("target_xz", [view["x"], view["z"]])

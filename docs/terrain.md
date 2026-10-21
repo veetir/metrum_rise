@@ -3641,6 +3641,113 @@ Current deterministic rules:
 - water save/load persists one dense row-major baseline-depth snapshot at the serialization boundary
 - no source/sink, velocity, or flux state exists in the shipped runtime
 
+#### Complete importer lake beds — WATER-05 (2026-10-21)
+
+The Kuopio road importer lowers authored fills to their measured levels (Kallavesi `82.41 m`).
+NLS DEM lake samples describe the old water **surface**, not bathymetry. The former bed pass
+lowered shallow wet samples by 2 m only inside the road crop, whose north edge is
+`z=261.63356 m`. At `(-2000,100)` the saved terrain was `82.381 m` with `0.029 m` depth;
+at `(-2000,400)` it was `80.381 m` with `2.029 m` depth. Both saved surfaces were `82.41 m`.
+The renderer's existing `0.26 m` shoreline fade exposed grass through the centimetre-deep part.
+The straight boundary belongs to the importer crop, not a render patch, stale upload or a
+second gameplay mask. Changing the shader would alter legitimate shallows in unrelated saves.
+
+`tools/map_import/water_beds.py` now prepares the **complete edited fills**, independent of the
+road crop. It preserves the existing 2 m lowering for depths in `(0.001,0.2) m`, changing no dry
+samples or unrelated fills. The importer writes an atomic derived `water-world.sqlite`, hashes
+it in `plan.json`, and loads it before applying measured fill levels and constructing roads.
+The source world stays read-only. This replaces millions of individual terrain-brush calls,
+each of which would clone patch publication state. Preparation is O(world samples + flooded
+cells per edited fill), O(world samples) scratch; simulation, rendering and save schema are
+unchanged. There is no new tick or per-agent work.
+
+For already imported cities, an explicit offline repair writes a **new** save from a read-only
+source. Only shallow wet samples at the plan's edited levels qualify; terrain and baseline
+depth change together, keeping their sum fixed. It avoids loaded-road terrain-brush
+resynchronization. All other tables, including roads, agents, camera and weather, retain their
+exact rows. It refuses an existing output. Example (outputs must be under ignored importer data):
+
+```bash
+python3.12 -m tools.map_import.water_beds --source "$SOURCE_SAVE" \
+  --output maps/processed/kuopio_sw/water-05/city.sqlite \
+  --plan maps/processed/kuopio_sw/plan.json
+```
+
+Fresh acceptance on `f0e4e03b` plus this importer change, Apple M2 Pro, Python 3.12, upstream
+Godot 4.7.2, with the same release dylib SHA-256 on both sides
+(`4026d35d2c2f01bfb47673db64195fa37282f50b296022a7d92a9750eac5ae09`):
+
+- 59 importer tests pass, including fill continuation across crop/source-chunk edges,
+  preservation of unrelated lakes/dry samples, exact other-table preservation and idempotence.
+- `cargo test --lib`: 2,590 passed, 147 ignored. `cargo test --test growth_scenario`: four passed
+  (matching macOS 26.5 SDK). `cargo clippy --all-targets`: clean.
+- The full preparation CLI and actual importer apply path pass (water-only smoke plan).
+  Complete source-world preparation deepens 1,506,443 samples in a fresh `1.67 s` setup run;
+  this is an offline preparation observation, not a gameplay or render benchmark.
+- Full-database comparisons of `water-bug.sqlite` and `kuopio-sw-pockets.sqlite` against their
+  new repaired copies change exactly 1,490,407 source heights and their depths. Across all
+  3,243,601 samples: **zero** wet/dry changes, **zero** dry-height changes and **zero** water-plane
+  changes. Only `terrain_state` and `water_state` differ; every other table matches exactly.
+- `import_water_level_test.gd` loads both versions read-only, checks the plane at both sides
+  of the old crop, verifies actual depth, and validates water refusal/dry-land water eligibility.
+  Nineteen headless water/importer/terrain/road/traffic/camera bridge suites pass. The windowed
+  `terrain_overlay_shader_test` reports two existing canopy-floor lighting failures (sky
+  transmission and far sun occlusion); its test, shaders, lighting input and native library
+  are unchanged from the baseline. No unrelated shader change is included.
+
+Ten windowed PNGs were inspected against the supplied `water_bug.png`: before/after saved
+camera, crop shore, north continuation, Valkeinen and Kolmisoppi. The saved view reproduces the
+reported cut-off before repair and continuous water after it. Both north/south crop boundaries
+disappear; Valkeinen's already-correct shore is preserved. The capture harness now supports the
+saved camera and explicitly requests windowed mode. The first window stalled until activation;
+its eventual captures and the fresh after run are real Metal renders, not reconstructed images.
+The improved `kuopio-sw-pockets.sqlite` is installed, with the exact original copied to
+`kuopio-sw-pockets-before-water.sqlite`; `water-bug.sqlite` remains byte-for-byte unchanged.
+A version-71 `lake-reflection.sqlite` control could not load because its household table lacks
+`gross_daily_wages`, an existing loader limitation on this unchanged native build. The supported
+version-88 `niirala-import.sqlite` control loads in both runs; its two windowed shore captures
+were inspected without a water/terrain change, and its complete file hash stays identical.
+
+Matched unprofiled release idle runs use the existing `idle_frame_benchmark.gd`: three alternating
+before/after process pairs, the original/repaired `water-bug` data, identical saved camera and
+weather, noon, 1200 × 900, four Rayon workers, `METRUM_DEBUG=0`, vsync off, `max_fps=0`.
+Each process settles separately, warms up 120 frames and measures 600, with no concurrent builds,
+tests or other task Godot processes. Setup/load is excluded. Values are per-process medians:
+
+| Pair | Original frame, ms | Repaired frame, ms | Original render CPU, ms | Repaired render CPU, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 16.951 | 16.985 | 1.145 | 1.127 |
+| 2 | 16.894 | 17.010 | 1.147 | 1.162 |
+| 3 | 16.943 | 17.007 | 1.172 | 1.151 |
+| Median | 16.943 | 17.007 | 1.147 | 1.151 |
+
+The measured frame increase is `0.064 ms` (`0.38%`); this is acceptance of the corrected view,
+not a speedup or a general scaling bound. Metal returns zero for viewport GPU timing here,
+so these runs do not establish GPU cost. Two generated vegetation draws disappear as the
+formerly centimetre-deep water now excludes them; road data and water sample membership stay fixed.
+Reproduce each side/pair with distinct metrics output:
+
+```bash
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle \
+METRUM_IDLE_BENCH_SAVE_PATH="$SIDE_SAVE" METRUM_IDLE_BENCH_HOUR=12 \
+METRUM_IDLE_BENCH_POSES=saved METRUM_IDLE_BENCH_VARIANTS=full METRUM_IDLE_BENCH_PATHS=none \
+METRUM_IDLE_BENCH_WARMUP_FRAMES=120 METRUM_IDLE_BENCH_FRAMES=600 \
+METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH="$ARTIFACTS/idle-pair-side.json" \
+perl -e 'alarm 900; exec @ARGV' godot --windowed --resolution 1200x900 --path godot -- \
+  --gameplay-road-benchmark
+```
+
+Targeted correctness commands: `python3.12 -m unittest tools.test_map_import`, plus
+`godot --headless --path "$ISOLATED_PROJECT" --script res://tests/import_water_level_test.gd --
+"$ORIGINAL_SAVE" "$REPAIRED_SAVE"`. The other individually run bridge scripts are
+`map_import_network_test` (under `scripts/tools`), `water_reflection_math_test`,
+`surface_patch_debug_test`, `network_tool_chunk_renderer_test`, `road_junction_preview_test`,
+`road_preview_stream_test`, `road_cross_section_test`, `road_turn_lanes_test`, `road_pockets_test`,
+`road_pockets_legacy_test`, `road_trajectory_test`, `vehicle_ground_support_test`,
+`zoning_road_tool_test`, `zoning_cells_tool_test`, `road_benchmark_metrics_test`,
+`road_preview_metrics_test`, `road_rejection_report_test` and `camera_save_load_test`
+(under `tests`, all `.gd`).
+
 Water diagnostics compare cached upload bytes with the current authored baseline (`AUDIT-01-W1`).
 The retired `depth_data` array fallback and duplicate baseline/visible source-statistics fields are
 removed. Cached min/max/count/sum decode the actual native f32 payload; they no longer report a

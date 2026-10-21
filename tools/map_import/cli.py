@@ -13,8 +13,8 @@ Apply using the deployed extension directly, with TMPDIR set as in CLAUDE.md:
 
 All geometry is sent through player validation and acknowledged commit APIs.
 Detached streets remain in the save for local repair rather than being undone.
-World editor fill operations change the produced save only. A separate water-bed
-pass gives the DEM's flat water surfaces depth through the terrain brush.
+World editor fill operations change the produced save only. A derived world
+copy gives complete edited fills bathymetry before roads are built.
 """
 
 import argparse
@@ -53,7 +53,7 @@ def safe_output(path):
     path = path.resolve()
     if not path.is_relative_to(ROOT / 'maps/processed'):
         raise ValueError('Outputs must stay under maps/processed')
-    for name in ('neutral.json', 'plan.json', 'report.json', 'summary.txt', 'apply_results.json', 'city.sqlite'):
+    for name in ('neutral.json', 'plan.json', 'report.json', 'summary.txt', 'apply_results.json', 'city.sqlite', 'water-world.sqlite'):
         check = subprocess.run(['git', 'check-ignore', '-q', str(path/name)], cwd=ROOT, check=False)
         if check.returncode != 0:
             raise ValueError(f'Output is not git-ignored: {path/name}')
@@ -115,7 +115,10 @@ def prepare(args):
     preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=[], water_fills=[])
     zones = []
     survey = inspect(features, args.world, box)
-    beds = prepare_initial(args.world, box, survey['water_edits'])
+    output.mkdir(parents=True, exist_ok=True)
+    bed_world = output/'water-world.sqlite'
+    beds = prepare_initial(args.world, survey['water_edits'], bed_world)
+    beds['world_sha256'] = digest(bed_world)
     plan = {'schema_version': 1, 'source_sha256': digest(args.source), 'world_sha256': digest(args.world),
             'source_license': 'OpenStreetMap contributors, ODbL; local derived data',
             'world_transform': transform.record(), 'target_box_xz': box,

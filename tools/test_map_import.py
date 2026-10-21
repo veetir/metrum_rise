@@ -254,23 +254,75 @@ class MappingTest(unittest.TestCase):
 
 
 class WaterBedTest(unittest.TestCase):
-    def test_bed_plan_changes_only_wet_samples_inside_box(self):
+    def test_beds_cover_complete_edited_fill_and_preserve_other_lakes(self):
         from tools.map_import.water_beds import prepare_initial
         with tempfile.TemporaryDirectory() as directory:
-            world = Path(directory)/'world.sqlite'
-            heights = [5.0]*9
-            heights[4] = 4.95
+            world, output = (Path(directory)/name for name in ('world.sqlite', 'beds.sqlite'))
+            heights = [5.0]*35
+            for i in (15, 16, 17):
+                heights[i] = 4.95
+            heights[19] = 4.9  # Separate, unedited lake.
             with sqlite3.connect(world) as c:
                 c.executescript('CREATE TABLE world_definition_meta(width_m,height_m,terrain_cell_m,terrain_chunk_m);'
-                                'INSERT INTO world_definition_meta VALUES(20,20,10,30);'
+                                'INSERT INTO world_definition_meta VALUES(60,40,10,30);'
                                 'CREATE TABLE world_terrain_chunks(chunk_x,chunk_z,width_samples,height_samples,source_height_blob_f32_le);'
                                 'CREATE TABLE world_lake_fills(x,z,y);CREATE TABLE world_open_water_fills(x,z,y);')
-                c.execute('INSERT INTO world_terrain_chunks VALUES(0,0,3,3,?)',(struct.pack('<9f',*heights),))
-                c.execute('INSERT INTO world_lake_fills VALUES(0,0,101)')
-            edits = [{'seed_xz':[0,0],'new_seed_xz':[0,0],'new_surface_m':99.03}]
-            result = prepare_initial(world,(-5,-5,5,5),edits)
-            self.assertEqual(result['samples_xzy'], [[0.0,0.0,97.0]])
-            self.assertLess(result['radius_m'],10)
+                for z in range(2):
+                    for x in range(3):
+                        width, height = min(3, 7-x*3), min(3, 5-z*3)
+                        values = [heights[(z*3+row)*7+x*3+col] for row in range(height) for col in range(width)]
+                        c.execute('INSERT INTO world_terrain_chunks VALUES(?,?,?,?,?)',
+                                  (x, z, width, height, struct.pack('<'+'f'*len(values), *values)))
+                c.execute('INSERT INTO world_lake_fills VALUES(-10,0,99.5)')
+                c.execute('INSERT INTO world_lake_fills VALUES(20,0,98.03)')
+            original = world.read_bytes()
+            edits = [{'seed_xz': [-10,0], 'new_seed_xz': [-10,0], 'new_surface_m': 99.03}]
+            result = prepare_initial(world, edits, output)
+            self.assertEqual(result['samples'], 3)  # Includes both sides of a road crop at x=-5.
+            self.assertEqual(world.read_bytes(), original)
+            fills = [{'kind': 'auto', 'seed_xz': [-10,0], 'surface_m': 99.03},
+                     {'kind': 'lake', 'seed_xz': [20,0], 'surface_m': 98.03}]
+            before, after = (WaterMask.load(p, fills) for p in (world, output))
+            self.assertEqual([v > .001 for v in before.depth], [v > .001 for v in after.depth])
+            for i in range(35):
+                if i in (15, 16, 17):
+                    self.assertAlmostEqual(after.heights[i]+after.depth[i], 99.03, places=4)
+                    self.assertGreater(after.depth[i], 2)
+                else:
+                    self.assertEqual(after.heights[i], before.heights[i])
+                    self.assertEqual(after.depth[i], before.depth[i])
+
+    def test_city_repair_preserves_level_mask_and_all_other_rows(self):
+        from tools.map_import.water_beds import repair_save
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, repeated = (Path(directory)/name for name in ('source.sqlite', 'fixed.sqlite', 'again.sqlite'))
+            heights = (4.95, 5.0, 4.9, 4.85, 4.95)
+            depths = (.03, 0, .03, 2.03, .001)
+            with sqlite3.connect(source) as c:
+                c.executescript('CREATE TABLE terrain_state(width,height,height_blob_f32_le);'
+                                'CREATE TABLE water_state(width,height,baseline_depth_blob_f32_le);'
+                                "CREATE TABLE roads(id,geometry);INSERT INTO roads VALUES(7, x'1234');")
+                c.execute('INSERT INTO terrain_state VALUES(5,1,?)', (struct.pack('<5f', *heights),))
+                c.execute('INSERT INTO water_state VALUES(5,1,?)', (struct.pack('<5f', *depths),))
+            original = source.read_bytes()
+            edits = [{'new_surface_m': 99.03}]
+            self.assertEqual(repair_save(source, output, edits)['samples'], 1)
+            self.assertEqual(source.read_bytes(), original)
+            with sqlite3.connect(output) as c:
+                new_heights = struct.unpack('<5f', c.execute('SELECT height_blob_f32_le FROM terrain_state').fetchone()[0])
+                new_depths = struct.unpack('<5f', c.execute('SELECT baseline_depth_blob_f32_le FROM water_state').fetchone()[0])
+                self.assertEqual(c.execute('SELECT * FROM roads').fetchall(), [(7, b'\x12\x34')])
+            for i in range(5):
+                self.assertEqual(new_depths[i] > .001, struct.unpack('<f', struct.pack('<f', depths[i]))[0] > .001)
+                self.assertAlmostEqual(new_heights[i]*20+new_depths[i], heights[i]*20+depths[i], places=4)
+                if i:
+                    self.assertEqual(new_heights[i], struct.unpack('<f', struct.pack('<f', heights[i]))[0])
+                    self.assertEqual(new_depths[i], struct.unpack('<f', struct.pack('<f', depths[i]))[0])
+            self.assertEqual(repair_save(output, repeated, edits)['samples'], 0)
+            with self.assertRaises(ValueError):
+                repair_save(source, source, edits)
+            with self.assertRaises(ValueError):
+                repair_save(source, output, edits)
 
     def test_tiff_lzw_dictionary_and_clear_codes(self):
         from tools.map_import.source_dem import lzw

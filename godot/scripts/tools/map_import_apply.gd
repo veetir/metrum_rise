@@ -53,6 +53,11 @@ func _run() -> void:
 	if FileAccess.get_sha256(world_path) != String(plan["world_sha256"]):
 		_fail("World definition hash differs from prepared plan")
 		return
+	var beds: Dictionary = plan["water_beds"]
+	var bed_world := plan_path.get_base_dir().path_join("water-world.sqlite")
+	if FileAccess.get_sha256(bed_world) != String(beds["world_sha256"]):
+		_fail("Water-bed world hash differs from prepared plan")
+		return
 	_results = {"schema_version": 1, "plan_sha256": FileAccess.get_sha256(plan_path),
 		"complete": false, "saved": false, "save_path": "", "roads": [], "zoning": [], "parcels": []}
 	var simulation := SimulationNode.new()
@@ -65,7 +70,7 @@ func _run() -> void:
 	if resumed:
 		if not _load_resume(simulation, _resolve_path(args["resume"]), plan_path):
 			return
-	elif not simulation.load_world_definition(world_path):
+	elif not simulation.load_world_definition(bed_world):
 		_fail("World definition failed to load")
 		return
 	simulation.set_simulation_speed(0.0)
@@ -76,13 +81,7 @@ func _run() -> void:
 		return
 	if not resumed:
 		_results["water"] = _adjust_water(simulation, plan.get("water_edits", []))
-		var beds: Dictionary = plan.get("water_beds", {})
-		if not beds.is_empty():
-			simulation.begin_terrain_stroke()
-			for sample in beds["samples_xzy"]:
-				simulation.level_terrain_stroke_step(Vector2(sample[0], sample[1]), beds["radius_m"], sample[2], 1.0)
-			simulation.end_terrain_stroke()
-			_results["water_beds"] = {"lowering_m": beds["lowering_m"], "samples": beds["samples_xzy"].size()}
+		_results["water_beds"] = beds
 		_results["forest"] = _clear_forest(simulation, plan["target_box_xz"])
 	var accepted := {}
 	var prior := {}
