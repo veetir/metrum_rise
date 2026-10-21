@@ -203,6 +203,74 @@ Build identities, exact commands, timing tables and the populated-road locality 
 The corresponding authoring scope and pending signs, islands, interchange presets and import
 mapping are recorded in [roads.md](roads.md#restricted-ramp-stubs--road-69-first-slice).
 
+### Bus-only car exclusion — ROAD-72 lane-use slice
+
+Reserved physical ribbons remain in road geometry but are absent from the car `LaneSystem`.
+Existing car spawning, frontage, lane-change and connector queries therefore cannot select
+them. Default movement allocation uses the remaining general lanes. Car routing removes
+all-bus directional traversals and filters explicit whitelist pairs naming a reserved source
+or target; walking is retained. Legal right-turn connectors may cross a reserved ribbon, but
+longitudinal bus/right-turn sharing is pending. NET-07's dead-end-only U-turn rule is unchanged.
+There is no bus vehicle mode yet; `Edge::lane_use` exposes the saved class permission for its
+future lane graph. No agent layout, movement loop or tick allocation changes.
+
+Saved masks and transactional edit behavior are owned by
+[the road contract](roads.md#bus-only-lane-authoring--road-72-lane-use-slice).
+
+### ROAD-72 release traffic verification — 2026-10-21
+
+Baseline is `c81d4477`; final source/build identities and road acceptance are in
+[roads.md](roads.md#lane-use-slice-verification--2026-10-21). The agent layout and tick loops
+are unchanged. All six PERF-06 mode/tier work dictionaries match exactly across builds and
+repeated fresh fixtures; agent work grows 3× from 10k to 30k and lane work remains constant.
+
+The first 15 alternating process pairs show +10.5% network and +5.8% egress at 10k (ratios of
+medians). A focused 30-pair repeat on the same binaries does not reproduce a stable positive
+increment. Short-test process timing is variable, so neither campaign establishes a speedup.
+The repeat below shows process medians in milliseconds and the median paired percent change
+with its deterministic 10,000-resample percentile bootstrap interval:
+
+| Mode / agents | Baseline ms | Candidate ms | Paired change %, 95% interval |
+|---|---:|---:|---:|
+| `network` / 10000 | 0.738 | 0.625 | -13.9 [-28.8, -2.3] |
+| `network` / 30000 | 1.417 | 1.335 | -7.8 [-13.6, +0.5] |
+| `access_egress` / 10000 | 0.700 | 0.737 | -0.5 [-6.2, +13.9] |
+| `access_egress` / 30000 | 1.703 | 1.723 | -1.4 [-8.5, +0.4] |
+| `access_ingress` / 10000 | 0.475 | 0.432 | -5.9 [-24.7, +19.4] |
+| `access_ingress` / 30000 | 0.887 | 0.830 | -4.4 [-17.3, +2.6] |
+
+To check production cost without test-only counters, the existing Criterion `agent_benchmark`
+was freshly built for both sources. Eight workers, 30 samples, 2 s warmup and an 8 s requested
+measurement window; construction is outside timed ticks. The first three inherited-policy
+process pairs are too variable for timing acceptance: paired ratios span 0.663–2.141 at 100k
+and 0.643–1.422 at 1M. One bounded follow-up applies macOS application resource policies
+(`taskpolicy -a`) equally to both builds, with three alternating process pairs and no global
+system-setting change:
+
+| Agents | Baseline median ms | Candidate median ms | Change | Observed paired ratio range |
+|---:|---:|---:|---:|---:|
+| 100000 | 3.611 | 3.609 | -0.1% | 0.900–1.001 |
+| 1000000 | 44.263 | 42.580 | -3.8% | 0.948–1.034 |
+
+Production benchmark SHA-256: baseline `61aa987b0049284569717a2dfcf484e3094243d64fce95eec3a5b2d1fdfd24ad`, candidate `7f6c801f7cd8c773252e417a576f8b21604b8718e3006bb72e8db49a91367658`.
+
+The controlled medians change −0.1%/−3.8%, within the observed process-pair variation.
+This detects no material added production tick cost on these fixtures and is not a speedup
+claim. The fixture is one long road, so these results do not establish routing-heavy whole-city
+or rendering-FPS acceptance. Earlier ROAD-69 short-test timing remains separately documented.
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 CRITERION_HOME="$ARTIFACTS/criterion" \
+  "$BENCH_BINARY" --bench 'AgentSystem::tick/on_road/(100000|1000000)$' \
+  --noplot --save-baseline roads-bs-inherited-pair
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 CRITERION_HOME="$ARTIFACTS/application-criterion" \
+  taskpolicy -a "$BENCH_BINARY" --bench 'AgentSystem::tick/on_road/(100000|1000000)$' \
+  --noplot --save-baseline roads-bs-application-pair
+```
+
 ### Shared lane occupancy contract (TRAFFIC-02)
 
 All live lane acquisitions use `agents/lane_state.rs`: building egress and ingress rollback,

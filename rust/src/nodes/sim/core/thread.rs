@@ -78,6 +78,15 @@ pub(crate) enum SimCommand {
         /// Acceptance after dependent caches and query snapshots have been published.
         completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
     },
+    /// Change saved bus-only lane ribbons and rebuild all dependent car access.
+    ChangeRoadBusLanes {
+        /// Selected physical road.
+        edge: usize,
+        /// Forward/backward centre-outward bus-only bit masks.
+        masks: [u8; 2],
+        /// Completion after routing, lanes and rendering are published.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
     /// Add a pocket using a hidden degree-two split and the standard road transaction.
     ChangeRoadPocket {
         /// Selected source road.
@@ -360,6 +369,33 @@ pub(crate) fn run_sim_thread(
                     let (committed, rejection, snapshots) = {
                         let mut c = core.lock().expect("simulation core lock poisoned");
                         let committed = c.change_road_cross_section(edge, lanes.0, lanes.1, median);
+                        let rejection = c.last_road_rejection.take().unwrap_or_default();
+                        let snapshots = road_tool_snapshots_from_core(&c);
+                        (committed, rejection, snapshots)
+                    };
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadBusLanes {
+                    edge,
+                    masks,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) = {
+                        let mut c = core.lock().expect("simulation core lock poisoned");
+                        let committed = c.change_road_bus_lanes(edge, masks);
                         let rejection = c.last_road_rejection.take().unwrap_or_default();
                         let snapshots = road_tool_snapshots_from_core(&c);
                         (committed, rejection, snapshots)

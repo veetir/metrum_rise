@@ -133,6 +133,21 @@ pub(super) fn save_network(
         }
     }
 
+    {
+        let mut stmt = tx.prepare("INSERT INTO road_bus_lanes VALUES (?1,?2,?3)")?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            if edge.bus_lanes != [0; 2]
+                && let Some(&saved_id) = maps.edge_old_to_new.get(&old_id)
+            {
+                stmt.execute(params![
+                    usize_to_i64(saved_id)?,
+                    edge.bus_lanes[0],
+                    edge.bus_lanes[1]
+                ])?;
+            }
+        }
+    }
+
     // 3. Geometry
     {
         let mut stmt = tx.prepare("INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
@@ -273,6 +288,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 crossing_level: 0,
                 roundabout: false,
                 lane_tapers: None,
+                bus_lanes: [0; 2],
                 median,
                 start_node,
                 end_node,
@@ -387,6 +403,28 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                     .edge_mut(id)
                     .lane_tapers
                     .get_or_insert_with(|| Box::new([None, None]))[end] = Some(taper);
+            }
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row(
+            "SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_bus_lanes'",
+            [],
+            |row| row.get(0),
+        )?;
+        if exists {
+            let mut stmt = conn.prepare(
+                "SELECT edge_id,forward_mask,backward_mask FROM road_bus_lanes ORDER BY edge_id",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                let masks = [i64_to_u8(row.get(1)?)?, i64_to_u8(row.get(2)?)?];
+                graph
+                    .validate_bus_lane_edit(id, masks)
+                    .map_err(SaveLoadError::custom)?;
+                graph.edge_mut(id).bus_lanes = masks;
             }
         }
     }

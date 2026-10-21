@@ -304,6 +304,7 @@ fn road_test_edge(
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node,
         end_node,

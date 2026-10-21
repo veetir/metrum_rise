@@ -252,6 +252,7 @@ fn bench_edge(start_node: u32, end_node: u32, x: usize, z: usize, horizontal: bo
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node,
         end_node,

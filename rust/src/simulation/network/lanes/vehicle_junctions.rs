@@ -39,7 +39,7 @@ pub fn build_vehicle_connections_at_node(
         if edge.deleted {
             continue;
         }
-        if edge.fwd_lanes + edge.bkw_lanes > 0 {
+        if edge.car_lane_count(true) + edge.car_lane_count(false) > 0 {
             vehicle_deg += 1;
         }
 

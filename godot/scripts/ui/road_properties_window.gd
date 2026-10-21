@@ -7,6 +7,7 @@
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const LaneUseControls = preload("res://scripts/ui/road_lane_use_controls.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 var _simulation_node: Node
@@ -14,6 +15,7 @@ var _select_tool: Node
 
 var _window: Window
 var _warning_label: Label
+var _lane_use: VBoxContainer
 var _no_build_check: CheckBox
 var _class_buttons: Array[Button] = []
 var _selected_edges: Array[int] = []
@@ -22,6 +24,8 @@ var _last_screen_pos := Vector2.ZERO
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
 	_select_tool = select_tool
+	if _lane_use != null:
+		_lane_use.setup(simulation_node, select_tool)
 
 func _ready() -> void:
 	_build_window()
@@ -56,7 +60,11 @@ func _build_window() -> void:
 
 	var root_vbox := VBoxContainer.new()
 	root_vbox.add_theme_constant_override("separation", 10)
-	margin.add_child(root_vbox)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	margin.add_child(scroll)
+	root_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(root_vbox)
 
 	_warning_label = Label.new()
 	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -80,6 +88,10 @@ func _build_window() -> void:
 	UIStyle.set_font_size(_no_build_check, 14)
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	root_vbox.add_child(_no_build_check)
+
+	_lane_use = LaneUseControls.new()
+	_lane_use.setup(_simulation_node, _select_tool)
+	root_vbox.add_child(_lane_use)
 
 	add_child(_window)
 	WindowResizeHandles.install(_window)
@@ -113,6 +125,7 @@ func _refresh() -> void:
 	if _selected_edges.is_empty() or _simulation_node == null:
 		return
 
+	_lane_use.show_edge(_selected_edges[0] if _selected_edges.size() == 1 else -1)
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""

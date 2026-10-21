@@ -90,10 +90,20 @@ impl VehicleTurns {
                 let mut pairs: Vec<_> = node
                     .lane_connections
                     .iter()
-                    .filter(|&(&(edge, lane), _)| graph.is_vehicle_turn_rule(edge, lane))
+                    .filter(|&(&(edge, lane), _)| {
+                        graph.is_vehicle_turn_rule(edge, lane)
+                            && !graph
+                                .get_edge(edge)
+                                .is_some_and(|edge| edge.signed_lane_is_bus(lane))
+                    })
                     .flat_map(|(&(incoming, _), targets)| {
                         targets
                             .iter()
+                            .filter(|&&(edge, lane)| {
+                                !graph
+                                    .get_edge(edge)
+                                    .is_some_and(|edge| edge.signed_lane_is_bus(lane))
+                            })
                             .map(move |&(outgoing, _)| (incoming, outgoing))
                     })
                     .collect();
@@ -187,5 +197,69 @@ mod tests {
             }
             assert_eq!(turns.allowed[3], [(0, 1), (0, 2)]);
         }
+    }
+}
+
+#[cfg(test)]
+mod bus_tests {
+    use super::*;
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn car_hierarchy_filters_bus_sources_targets_and_traversals() {
+        let mut graph = RegionGraph::new();
+        for p in [
+            Vector3::new(-100., 0., 0.),
+            Vector3::ZERO,
+            Vector3::new(100., 0., 0.),
+        ] {
+            graph.add_node(p, NodeType::Junction);
+        }
+        for i in 0..2 {
+            let points = vec![graph.node(i).pos, graph.node(i + 1).pos];
+            graph.add_edge(Edge {
+                start_node: i,
+                end_node: i + 1,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                width: 14.,
+                fwd_lanes: 2,
+                bkw_lanes: 2,
+                base_cost: 10.,
+                physical_length: 100.,
+                geometry: points.clone(),
+                physical_geometry: points,
+                ..Default::default()
+            });
+        }
+        graph.edge_mut(0).bus_lanes = [2, 0];
+        graph.edge_mut(1).bus_lanes = [2, 0];
+        for (from, to, expected) in [(1, 0, false), (0, 1, false), (1, 1, false), (0, 0, true)] {
+            graph.remove_lane_connection(1, (0, 0));
+            graph.remove_lane_connection(1, (0, 1));
+            graph.add_lane_connection(1, 0, from, 1, to);
+            let turns = VehicleTurns::build(&graph);
+            assert_eq!(turns.permits(1, 0, 1), expected);
+            assert_eq!(CchGraph::vehicle_turn_allowed(&graph, 1, 0, 1), expected);
+        }
+        graph.remove_lane_connection(1, (0, 0));
+        graph.remove_lane_connection(1, (0, 1));
+        graph.edge_mut(0).bus_lanes = [3, 0];
+        let mut cch = CchGraph::build(&graph);
+        cch.customize(&graph);
+        assert!(
+            cch.find_path(0, 2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
+                .is_none()
+        );
+        assert!(
+            cch.find_path(0, 2, usize::MAX, usize::MAX, &graph, TransitFlags::FOOT)
+                .is_some()
+        );
+        assert!(
+            cch.find_path(2, 0, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
+                .is_some()
+        );
     }
 }

@@ -3,6 +3,7 @@
 //! Compiled roadbed rendering split by ownership and visual layer.
 
 mod bridge;
+mod bus;
 mod coverage;
 mod earthwork;
 mod geometry;

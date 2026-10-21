@@ -80,6 +80,19 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         }
         let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
         emit_approach_arrows(mesh, graph, lane_system, edge_idx);
+        if edge.bus_lanes != [0; 2] {
+            super::bus::emit_bus_markings(
+                mesh,
+                graph,
+                road_surface,
+                terrain,
+                edge_idx,
+                crosswalk_endpoint_flags
+                    .get(&edge_idx)
+                    .copied()
+                    .unwrap_or((false, false)),
+            );
+        }
         if total_lanes <= 1 {
             continue;
         }
@@ -381,7 +394,8 @@ fn emit_approach_arrows(
     }
 }
 
-fn edge_lane_marking_s_range(
+// Shared by line paint and reserved-lane surfacing so neither obscures a zebra corridor.
+pub(super) fn edge_lane_marking_s_range(
     edge: &Edge,
     sections: &[RoadSurfaceSection],
     crosswalk_endpoint_flags: (bool, bool),

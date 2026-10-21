@@ -26,6 +26,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
+            bus_lanes: [0; 2],
             median: None,
             start_node: nodes[i],
             end_node: nodes[i + 1],

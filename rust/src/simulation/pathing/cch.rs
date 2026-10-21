@@ -217,7 +217,15 @@ impl CchGraph {
         for (&(e_from, lane_idx), targets) in &graph.node(node).lane_connections {
             if e_from == in_edge
                 && graph.is_vehicle_turn_rule(e_from, lane_idx)
-                && targets.iter().any(|&(e_to, _)| e_to == out_edge)
+                && !graph
+                    .get_edge(e_from)
+                    .is_some_and(|edge| edge.signed_lane_is_bus(lane_idx))
+                && targets.iter().any(|&(e_to, lane)| {
+                    e_to == out_edge
+                        && !graph
+                            .get_edge(e_to)
+                            .is_some_and(|edge| edge.signed_lane_is_bus(lane))
+                })
             {
                 traffic_log!(
                     "[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)"
@@ -369,6 +377,7 @@ mod tests {
             roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
+            bus_lanes: [0; 2],
             median: None,
             start_node: 0,
             end_node: 0,

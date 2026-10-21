@@ -78,6 +78,9 @@ pub struct Edge {
     pub median: Option<super::RoadMedian>,
     /// Authored lane transitions at the stored start and end; absent on legacy roads.
     pub lane_tapers: Option<Box<[Option<super::RoadLaneTaper>; 2]>>,
+    /// Bus-only lane masks, forward then backward; bit zero is the innermost lane.
+    /// Zero preserves legacy general traffic. Set through the road lane-use transaction.
+    pub bus_lanes: [u8; 2],
     /// Circulating carriageway; has precedence over entering arms regardless of road hierarchy.
     pub roundabout: bool,
     /// Design speed in m/s used for pathfinding cost calculation.
@@ -120,7 +123,7 @@ impl Edge {
         } else {
             self.bkw_lanes
         };
-        if lanes > 0 {
+        if lanes > 0 && self.car_lane_count(is_fwd) > 0 {
             self.allowed_types
         } else {
             self.allowed_types & TransitFlags::FOOT

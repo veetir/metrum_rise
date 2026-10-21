@@ -63,19 +63,6 @@ pub(super) fn is_left_movement(
     ) == LEFT
 }
 
-fn lane_rank(index: i8, count: usize) -> usize {
-    let center_rank = if index >= 0 {
-        index as usize
-    } else {
-        (-i16::from(index) - 1) as usize
-    };
-    if config::DRIVE_ON_LEFT {
-        count - 1 - center_rank
-    } else {
-        center_rank
-    }
-}
-
 fn lane_mask(rank: usize, count: usize, available: u8) -> u8 {
     if count == 1 || available.count_ones() <= 1 {
         return available;
@@ -143,6 +130,8 @@ pub(super) struct DefaultLaneUse {
     incoming: Vector2,
     available: u8,
     count: usize,
+    source: usize,
+    is_fwd: bool,
     node: u32,
     left_pocket: bool,
     right_pocket: bool,
@@ -153,19 +142,12 @@ impl DefaultLaneUse {
     pub(super) fn new(graph: &RegionGraph, edge: usize, node: u32) -> Self {
         let incoming = -outward(graph, edge, node);
         let approach = graph.edge(edge);
-        let count = usize::from(if approach.end_node == node {
-            approach.fwd_lanes
-        } else {
-            approach.bkw_lanes
-        });
+        let is_fwd = approach.end_node == node;
+        let count = usize::from(approach.car_lane_count(is_fwd));
         let mut available = 0;
         for &other in graph.node_adjacency(node) {
             let arm = graph.edge(other);
-            let outgoing = if arm.start_node == node {
-                arm.fwd_lanes
-            } else {
-                arm.bkw_lanes
-            };
+            let outgoing = arm.car_lane_count(arm.start_node == node);
             if other != edge && !arm.deleted && outgoing > 0 {
                 available |= movement(incoming, outward(graph, other, node));
             }
@@ -183,6 +165,8 @@ impl DefaultLaneUse {
             incoming,
             available,
             count,
+            source: edge,
+            is_fwd,
             node,
         }
     }
@@ -227,7 +211,18 @@ impl DefaultLaneUse {
     /// Tests a lane pair without allocating or querying unrelated roads.
     pub(super) fn allows(&self, graph: &RegionGraph, from: i8, edge: usize, to: i8) -> bool {
         let turn = movement(self.incoming, outward(graph, edge, self.node));
-        let rank = lane_rank(from, self.count);
+        let source = graph.edge(self.source);
+        let physical_rank = if from >= 0 {
+            from as usize
+        } else {
+            (-i16::from(from) - 1) as usize
+        };
+        let rank = source.car_lane_rank(self.is_fwd, physical_rank);
+        let rank = if config::DRIVE_ON_LEFT {
+            self.count - 1 - rank
+        } else {
+            rank
+        };
         if self.mask(rank) & turn == 0 {
             return false;
         }
@@ -240,18 +235,20 @@ impl DefaultLaneUse {
             }
         }
         let target = graph.edge(edge);
-        let target_count = usize::from(if target.start_node == self.node {
-            target.fwd_lanes
+        let is_fwd = target.start_node == self.node;
+        let target_count = usize::from(target.car_lane_count(is_fwd));
+        let physical_rank = if to >= 0 {
+            to as usize
         } else {
-            target.bkw_lanes
-        });
-        target_matches(
-            group_rank,
-            group_count,
-            lane_rank(to, target_count),
-            target_count,
-            turn,
-        )
+            (-i16::from(to) - 1) as usize
+        };
+        let target_rank = target.car_lane_rank(is_fwd, physical_rank);
+        let target_rank = if config::DRIVE_ON_LEFT {
+            target_count - 1 - target_rank
+        } else {
+            target_rank
+        };
+        target_matches(group_rank, group_count, target_rank, target_count, turn)
     }
 }
 
@@ -270,6 +267,8 @@ mod tests {
                 incoming: Vector2::new(1.0, 0.0),
                 available: 7,
                 count: expected.len(),
+                source: 0,
+                is_fwd: true,
                 node: 0,
                 left_pocket: left,
                 right_pocket: right,
@@ -474,6 +473,126 @@ mod junction_tests {
                     lanes.clear();
                     assert!(lanes.turn_preparation.is_empty());
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bus_tests {
+    use super::*;
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use std::collections::HashSet;
+
+    #[test]
+    fn bus_lanes_leave_all_car_turns_and_local_rebuild_matches_full() {
+        for bus_mask in [1, 2, 4, 3, 6, 7] {
+            for forward in [true, false] {
+                let mut graph = RegionGraph::new();
+                let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+                for (index, pos) in [
+                    Vector3::new(-120., 0., 0.),
+                    Vector3::new(120., 0., 0.),
+                    Vector3::new(0., 0., 120.),
+                    Vector3::new(0., 0., -120.),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let end = graph.add_node(pos, NodeType::Junction);
+                    let (start_node, end_node, points) = if forward {
+                        (end, center, vec![pos, Vector3::ZERO])
+                    } else {
+                        (center, end, vec![Vector3::ZERO, pos])
+                    };
+                    graph.add_edge(Edge {
+                        start_node,
+                        end_node,
+                        primary_type: TransitType::Road,
+                        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                        fwd_lanes: 3,
+                        bkw_lanes: 3,
+                        width: 21.,
+                        physical_length: 120.,
+                        speed_limit: 14.,
+                        geometry: points.clone(),
+                        physical_geometry: points,
+                        bus_lanes: if index == 0 {
+                            if forward {
+                                [bus_mask, 0]
+                            } else {
+                                [0, bus_mask]
+                            }
+                        } else {
+                            [0; 2]
+                        },
+                        ..Default::default()
+                    });
+                }
+                graph.rebuild_intersection_clips();
+                let mut lanes = LaneSystem::new();
+                lanes.rebuild(&mut graph);
+                let incoming: Vec<_> = lanes.edge_lanes[&0]
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        lanes.lanes[id].lane_type == LaneType::Vehicle
+                            && lanes.lanes[id].is_fwd == forward
+                    })
+                    .collect();
+                assert_eq!(incoming.len(), 3 - bus_mask.count_ones() as usize);
+                let mut targets = HashSet::new();
+                for &id in &incoming {
+                    let lane = &lanes.lanes[id];
+                    let rank = if lane.lane_idx >= 0 {
+                        lane.lane_idx as u8
+                    } else {
+                        (-i16::from(lane.lane_idx) - 1) as u8
+                    };
+                    assert_eq!(
+                        graph.edge(0).lane_use(forward, rank),
+                        crate::simulation::network::graph::LaneUse::General
+                    );
+                    for &next in &lane.next_lanes {
+                        let next = &lanes.lanes[next];
+                        if next.edge_id != usize::MAX {
+                            targets.insert(next.edge_id);
+                        } else {
+                            for &target in &next.next_lanes {
+                                targets.insert(lanes.lanes[target].edge_id);
+                            }
+                        }
+                    }
+                }
+                if bus_mask != 7 {
+                    assert!(
+                        targets.is_superset(&HashSet::from([1, 2, 3])),
+                        "mask={bus_mask} targets={targets:?}"
+                    );
+                }
+                assert_eq!(
+                    graph.edge(0).traversal_flags(forward) & TransitFlags::CAR != 0,
+                    bus_mask != 7
+                );
+                let roles = |lanes: &LaneSystem| -> Vec<_> {
+                    lanes.edge_lanes[&0]
+                        .iter()
+                        .map(|&id| {
+                            let l = &lanes.lanes[id];
+                            (
+                                l.is_fwd,
+                                l.lane_idx,
+                                l.lane_type == LaneType::Vehicle,
+                                l.geometry.clone(),
+                            )
+                        })
+                        .collect()
+                };
+                let before = roles(&lanes);
+                lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([0]));
+                assert_eq!(before, roles(&lanes));
             }
         }
     }

@@ -10,6 +10,36 @@ use crate::simulation::network::types::EdgeClass;
 use std::collections::HashSet;
 
 impl SimCore {
+    /// Applies saved lane permissions through the existing agent, entrance, routing and undo gate.
+    pub(crate) fn change_road_bus_lanes(&mut self, id: usize, masks: [u8; 2]) -> bool {
+        self.last_road_rejection = None;
+        let Some(edge) = self.region_graph.get_edge(id) else {
+            return self.refuse_cross_section("invalid_road");
+        };
+        if let Err(reason) = self.region_graph.validate_bus_lane_edit(id, masks) {
+            return self.refuse_cross_section(reason);
+        }
+        if edge.bus_lanes == masks {
+            return true;
+        }
+        let nodes = HashSet::from([edge.start_node, edge.end_node]);
+        let dirty =
+            LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, &HashSet::from([id]));
+        let undo_nodes = dirty
+            .iter()
+            .flat_map(|&id| {
+                let edge = self.region_graph.edge(id);
+                [edge.start_node, edge.end_node]
+            })
+            .collect();
+        self.transit_network.begin_road_edit();
+        self.push_network_undo_for_local_topology(dirty.clone(), undo_nodes);
+        self.transit_network
+            .mark_surface_dirty_from_sets(&self.region_graph, &dirty, &nodes);
+        self.region_graph.edge_mut(id).bus_lanes = masks;
+        self.finish_road_section_edit(dirty)
+    }
+
     /// Changes one live road without replacing its topology. Local discovery is O(local degree),
     /// geometry O(affected samples); existing agent/access/CCH publication costs are unchanged.
     pub(crate) fn change_road_cross_section(
@@ -36,6 +66,9 @@ impl SimCore {
                     other != id && self.region_graph.edge(other).pocket_taper().is_some()
                 })
         });
+        if edge.bus_lanes != [0; 2] && (edge.fwd_lanes != fwd || edge.bkw_lanes != bkw) {
+            return self.refuse_cross_section("clear_bus_lanes_before_count_edit");
+        }
         if edge.pocket_taper().is_some() || edits_pocket_base {
             return self.refuse_cross_section("edit_pocket_controls");
         }
@@ -207,6 +240,79 @@ mod tests {
     use crate::simulation::network::lanes::LaneType;
     use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
+
+    #[test]
+    fn bus_lane_edit_preserves_roadbed_rebuilds_car_access_and_undo() {
+        let mut core = SimCore::new(WorldConfig {
+            width_m: 512.0,
+            height_m: 512.0,
+            terrain_cell_m: 4.0,
+            terrain_chunk_m: 128.0,
+            ..WorldConfig::default()
+        });
+        let start = core
+            .region_graph
+            .add_node(Vector3::new(-100., 0., 0.), NodeType::Junction);
+        let end = core
+            .region_graph
+            .add_node(Vector3::new(100., 0., 0.), NodeType::Junction);
+        let points = vec![
+            core.region_graph.node(start).pos,
+            core.region_graph.node(end).pos,
+        ];
+        let id = core.region_graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 14.,
+            speed_limit: 14.,
+            physical_length: 200.,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        });
+        core.region_graph.rebuild_intersection_clips();
+        core.transit_network
+            .lane_system
+            .rebuild(&mut core.region_graph);
+        core.precompute_road_mesh_data();
+        let before = core.transit_network.road_surface.compiled_sections()[&id].clone();
+        assert!(!core.change_road_bus_lanes(id, [4, 0]));
+        assert_eq!(core.region_graph.edge(id).bus_lanes, [0; 2]);
+        assert!(core.change_road_bus_lanes(id, [2, 2]));
+        assert_eq!(
+            before,
+            core.transit_network.road_surface.compiled_sections()[&id]
+        );
+        let physical = &core.transit_network.lane_system.edge_lanes[&id];
+        assert_eq!(
+            physical
+                .iter()
+                .filter(
+                    |&&i| core.transit_network.lane_system.lanes[i].lane_type == LaneType::Vehicle
+                )
+                .count(),
+            2
+        );
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge(id).bus_lanes, [0; 2]);
+        assert_eq!(
+            before,
+            core.transit_network.road_surface.compiled_sections()[&id]
+        );
+        assert_eq!(
+            core.transit_network.lane_system.edge_lanes[&id]
+                .iter()
+                .filter(
+                    |&&i| core.transit_network.lane_system.lanes[i].lane_type == LaneType::Vehicle
+                )
+                .count(),
+            4
+        );
+    }
 
     #[test]
     fn crossing_override_rebuilds_median_surface_and_undo_restores_continuity() {

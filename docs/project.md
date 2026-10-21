@@ -22,6 +22,16 @@ bridge abutment cutouts retain ground beneath airborne sections
 ([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)). Both broken saves and the full
 medians save have been checked numerically and in street-level/overhead captures.
 
+ROAD-72 has a bus-only lane-use slice: per-lane Road Properties controls, red/BUS markings,
+car lane/frontage/routing exclusion, undo and version-94 persistence. Bus vehicles are not yet
+simulated. Longitudinal right-turn sharing, stops/bays/shelters, median/verge planting, OSM tag
+mapping and complete Prisma bus-stop reconstruction remain pending
+([bus lane scope](roads.md#bus-only-lane-authoring--road-72-lane-use-slice)).
+Fresh 2,632-test Rust suite, clean Clippy, 21 native bridges, six version-93 save comparisons and
+three inspected windowed captures pass. Local products remain bounded as background populations
+grow; controlled production tick medians change −0.1% at 100k and −3.8% at 1M, with timing
+variation recorded in the owning acceptance notes.
+
 TRAFFIC-06 stage 1a adds automatic major/minor priority, equal-road right-hand yielding,
 full stops on low-speed approaches to faster roads and B1/B5/B6 poles.
 Local conflict admission uses existing lane reservations and resolves circular right-hand

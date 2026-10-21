@@ -68,6 +68,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node: start,
         end_node: end,

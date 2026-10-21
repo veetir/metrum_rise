@@ -50,6 +50,7 @@ impl RampLayout {
         if edge.primary_type != TransitType::Road
             || edge.class != EdgeClass::Standard
             || edge.median.is_none()
+            || edge.bus_lanes != [0; 2]
             || edge.roundabout
             || edge.lane_tapers.is_some()
             || edge.fwd_lanes == 0

@@ -1728,6 +1728,191 @@ centers expose the remaining visual scope above; no visual parity with those det
 Captures are local and uncommitted. No player save was touched or task save created; every
 Godot process started for this slice was closed.
 
+### Bus-only lane authoring — ROAD-72 (lane-use slice)
+
+Roads store two one-byte `bus_lanes` masks, forward/backward with bit zero beside the
+median. `LaneUse::General` is the zero/default state; `LaneUse::BusOnly` reserves that physical
+ribbon for future public transport. The current agent modes contain no bus simulation.
+`Edge::lane_use` is the mode-selection hook: future bus lane rebuilding can retain every
+vehicle ribbon while the current car lane builder excludes reserved ribbons.
+
+No car lane ID exists for a bus-only ribbon. Lane changes, spawning, building frontage and
+junction connectors therefore cannot choose it. Default junction movement allocation counts
+only retained general lanes, preserving left/through/right turns wherever a car lane remains.
+An all-bus direction removes its car traversal flag from CCH; walking stays available. Explicit
+whitelists retain whitelist mode but discard pairs whose source or target names a reserved
+lane. Cars may cross the ribbon on legal junction turns. **Longitudinal right-turn sharing is
+not authored in this slice**; a bus lane cannot yet become a car approach pocket. NET-07's
+physical dead-end U-turn rule is unchanged.
+
+Road Properties exposes a checkbox per directional lane on a single selected edge. The
+`change_road_bus_lanes(edge, forward_mask, backward_mask)` Rust entry point queues one normal
+road transaction and reports completion through `get_road_commit_result`. This is also the
+importer-facing permission setter; OSM `busway`/`lanes:bus` decoding is still pending. Edits use
+the existing bounded undo capture, render publication gate, lane invalidation/reattachment,
+entrance rebuild, CCH rebuild and flow-field invalidation. Geometry is unchanged. Ordinary
+road splits retain both masks. Count edits, turn-pocket edits and ramp creation refuse
+unsupported combinations rather than shifting saved permissions to another physical lane;
+clear the bus masks before those edits. Applying bus use to a taper or its adjoining narrow
+base is refused by the shared edit/load validator.
+
+The existing road marking layer emits red ribbons and repeated white BUS strokes on the
+compiled visible road sections, clipped by the same zebra-clearance range as ordinary lane
+lines. It shares ordinary marking lighting and cloud shadows.
+Letters follow both stored travel directions, recur every 60 m, and use a midpoint fallback
+on visible spans between 16 m and the repeat distance. No new material or per-frame node is
+created. Save version **94** adds sparse `road_bus_lanes` rows with compacted edge IDs; old
+schemas default to zero masks, and invalid masks/owners return a load error.
+
+Permission/count/rank queries are O(1), allocation-free. Lane/turn rebuilding remains bounded
+by local arms and lanes. Red paint emission is O(reserved lanes × visible sections); each
+constant-size word samples those sections in O(log sections). Ordinary roads return before
+new render allocations. No per-agent or per-tick allocation, spatial scan, new index or agent
+field is added. Existing road transaction costs for agent reattachment and CCH remain explicit.
+
+**Scope:** this is the first lane-use slice. Bus stops, slice-B bus bays, shelters, deterministic
+median/verge trees and shrubs, OSM stop/tag decoding and the complete Prisma reconstruction
+remain pending. The capture fixture is a reference-inspired divided junction, not the imported
+Prisma junction or an acceptance claim for its bus stop.
+
+#### Lane-use slice verification — 2026-10-21
+
+Fresh final validation passes **2,632 release library tests, zero failures, 150 ignored**,
+including eight bus regressions. `cargo clippy --all-targets` has no warnings. Release builds,
+changed-file-only rustfmt checks and `bash -n run.sh` pass. Coverage includes masks/ranks,
+taper-base refusal, full/local connector rebuilding, CCH/whitelist filtering, save migration,
+undo, deterministic paint and geometric exclusion of the actual zebra corridors.
+
+```sh
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+cargo test --manifest-path rust/Cargo.toml --release --lib bus_
+cargo test --manifest-path rust/Cargo.toml --release --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo build --manifest-path rust/Cargo.toml --release --lib
+cargo bench --manifest-path rust/Cargo.toml --bench road_chunk_benchmark --no-run
+cargo bench --manifest-path rust/Cargo.toml --bench agent_benchmark --no-run
+```
+
+All **21 repository Godot bridge scripts** pass individually on the final extension:
+
+```sh
+for CASE in road_bus_streetscape_test road_cross_section_test road_turn_lanes_test \
+  road_pockets_test road_pockets_legacy_test road_trajectory_test \
+  road_junction_control_test road_roundabouts_test road_ramps_test \
+  road_grade_separation_test network_tool_chunk_renderer_test \
+  road_junction_preview_test road_preview_stream_test vehicle_ground_support_test \
+  junction_debug_overlay_test street_lamp_grid_test zoning_road_tool_test \
+  road_benchmark_metrics_test road_preview_metrics_test agent_inspector_test; do
+  METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot --headless \
+    --path "$GODOT_PROJECT" --script "res://tests/$CASE.gd"
+done
+METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot \
+  --path "$GODOT_PROJECT" --script res://tests/road_marking_lighting_test.gd
+METRUM_DEBUG=0 METRUM_BS_CAPTURE=1 perl -e 'alarm 900; exec @ARGV' godot \
+  --path "$GODOT_PROJECT" --script res://tests/road_bus_streetscape_test.gd
+```
+
+`$GODOT_PROJECT` is an isolated project mirror with the task's `MetrumRoadsBS` app-data name.
+Local copies of the older ramp/grade bridge scripts replace their save prefixes with
+`roads-bs-`; their repository sources are unchanged. The two resource-in-use shutdown
+diagnostics from `network_tool_chunk_renderer_test` and `road_junction_preview_test` also
+reproduce on the exact baseline with zero exits and no assertion failures. The inspector's
+serial baseline/candidate comparisons and final serial run pass.
+
+Six actual **version-93 saves** made by the baseline extension load with zero bus masks and
+identical roadbed attribute digests: plain/divided straight and skewed junctions, plus right
+and combined turn pockets. Existing Rust road/lane/connector goldens and the native pocket
+legacy hashes also match. The new bridge checks both split halves, invalid masks, checkbox
+transactions, version-94 round trips and three live car trips (left/through/right) that avoid
+the reserved ribbon.
+
+Three final windowed PNGs were inspected in `captures/bus_streetscape/`:
+`prisma_bus_lanes_overhead.png`, `prisma_bus_lane_street.png` and `bus_lettering.png`.
+They show red ribbons, both lettering directions, existing median lamps and clear zebras.
+Comparison used the supplied Prisma street-view and map references. This is a divided-junction
+lane-use demonstration; the full Prisma layout and its stop remain pending. Background trees
+are existing terrain vegetation. The harness saves only `roads-bs-lanes.sqlite` in that capture
+directory and closes its game instance.
+
+Matched unprofiled controls use baseline **`c81d4477b1d8ebe3c93a24e75595711b758f3e1e`**,
+Apple M2 Pro, Rust 1.98.1, upstream Godot 4.7.2/API 4.5 and SDK 26.5. `METRUM_DEBUG=0`;
+four Rayon workers for road work, eight for traffic. No builds or game instances run during
+measurements. Baseline/candidate sources are compiled separately and their executables retained.
+The final feature source digest (sorted changed/new Rust/GDScript/run.sh paths, NUL, bytes,
+NUL) is `a2a0cc1c6fe46f2bf8ffa7a87dfe88f35711f81f67638b926c6e9ee8cba8b108`.
+
+| Executable | Baseline SHA-256 | Candidate SHA-256 |
+|---|---|---|
+| Release tests | `b496d50efe0ede5cf36b4e9585c2eebf0649cf6f42bd9f016d064b0223b30a9b` | `0b4214cd8d313b07afd6eb047d11e60e3b750ddc53d436ad691ad58f1e9b999d` |
+| Road chunks | `8f789c01c23f5da2c2a9b957a2b140e818e30274ab892f83e50ead6db93e57e8` | `936f2fc78512783938b4cd4993684bca128476572e702a5d7afca56e881b097b` |
+| Godot extension | `7c0831b4512c22d569b1f41c63147756390352f47dbed64d6f48f1f651c6c914` | `8d67feccb5ced53f19dc3d439e3c444e40231841b131f309ab53697f5d15a1ff` |
+
+Road chunk runs use two alternating process pairs, 20 samples, 1 s warmup and the existing
+3 s measurement target. Every fixture checks its output signature. Values below are medians
+of the two process point estimates; they establish no speedup claim.
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$BENCH_BINARY" --bench --noplot \
+  --save-baseline roads-bs-build-pair
+```
+
+| Resident chunks | Local emit µs, baseline → candidate | Full emit ms, baseline → candidate | Dirty compile + local emit µs, baseline → candidate |
+|---:|---:|---:|---:|
+| 1 | 49.094 → 48.996 | 0.046 → 0.046 | 89.578 → 87.673 |
+| 64 | 49.234 → 49.506 | 2.581 → 2.587 | 91.928 → 91.483 |
+| 256 | 49.706 → 49.223 | 10.558 → 10.842 | 102.121 → 101.608 |
+| 1024 | 49.352 → 49.695 | 47.194 → 46.274 | 173.855 → 170.514 |
+
+Three alternating process pairs of `incremental_lane_rebuild_scaling` use 21 setup-free samples
+per process. Local geometry/connectors/crossings match across builds and background sizes.
+General roads bypass mask bit counts and rank filtering when their masks are zero.
+
+| Background roads | Lane rebuild µs, baseline → candidate |
+|---:|---:|
+| 0 | 23.917 → 24.125 |
+| 1000 | 22.916 → 22.958 |
+| 10000 | 21.875 → 21.416 |
+| 100000 | 21.375 → 21.333 |
+
+The populated pocket planner likewise uses three alternating process pairs and 31 samples.
+The local neighborhood remains fixed while background buildings, parcels, agents and roads grow.
+The largest fixture contains 100,000 remote buildings, 100,004 parcels, 600,024 agents and
+391 remote roads. Construction and snapshot setup stay outside the repeated planning timings;
+each build asserts identical local products at every background tier.
+
+| Remote buildings | Prepare µs, baseline → candidate | Road + terrain preview ms, baseline → candidate |
+|---:|---:|---:|
+| 0 | 46.333 → 45.333 | 18.886 → 19.096 |
+| 1000 | 46.334 → 48.500 | 19.652 → 19.310 |
+| 10000 | 46.417 → 49.416 | 19.364 → 19.747 |
+| 100000 | 48.583 → 46.500 | 19.658 → 19.466 |
+
+Junction compilation uses three alternating process pairs, 21 samples per process and matching
+product digests. Medians are milliseconds:
+
+| Fixture | Baseline | Candidate |
+|---|---:|---:|
+| `flat_t` | 12.675 | 12.390 |
+| `sloped_t` | 17.710 | 17.420 |
+| `flat_cross` | 20.556 | 19.264 |
+| `sloped_cross` | 23.463 | 20.584 |
+| `sloped_oblique` | 35.630 | 33.677 |
+| `sloped_five` | 101.559 | 99.571 |
+| `total` | 211.592 | 202.645 |
+
+Exact ignored-test commands, run from `rust/` with the worker settings above:
+
+```sh
+"$TEST_BINARY" simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" simulation::network::surface::tests::junction::compile_benchmark::junction_compile_constant_factors --exact --ignored --nocapture --test-threads=1
+```
+
+Traffic work counts, the variable short timing signal and the bounded production comparison
+are recorded in [traffic.md](traffic.md#road-72-release-traffic-verification--2026-10-21).
+Logs and binaries remain local under `$ARTIFACTS`. Stops/bays, shelters, planting, right-turn
+sharing and OSM tag decoding are still open; this verification accepts only the lane-use slice.
+
 ### Restricted ramp stubs — ROAD-69 (first slice)
 
 The road menu's **Ramp** tool uses two clicks: select a straight divided road, then an outer

@@ -54,6 +54,9 @@ impl PocketLayout {
         {
             return Err("edit_ramp_controls");
         }
+        if selected.bus_lanes != [0; 2] {
+            return Err("clear_bus_lanes_before_pocket_edit");
+        }
         let existing =
             selected.pocket_taper().map(|_| id).or_else(|| {
                 let node = if at_start {
@@ -137,6 +140,9 @@ impl PocketLayout {
                     id,
                 )
             };
+        if originals.iter().any(|(_, edge)| edge.bus_lanes != [0; 2]) {
+            return Err("clear_bus_lanes_before_pocket_edit");
+        }
         if base.primary_type != TransitType::Road || base.class != EdgeClass::Standard {
             return Err("pocket_requires_surface_road");
         }

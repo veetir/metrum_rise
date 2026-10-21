@@ -59,6 +59,41 @@ impl SimulationNode {
         self.road_commit_request_id
     }
 
+    /// Queues bus-only lane masks (bit zero innermost, forward then backward).
+    /// Importers translate busway/lanes:bus tags to these physical lane permissions.
+    /// Cars may cross a reserved ribbon through legal right-turn junction connectors.
+    #[func]
+    pub fn change_road_bus_lanes(
+        &mut self,
+        edge: i32,
+        forward_mask: i32,
+        backward_mask: i32,
+    ) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if let (Ok(edge), Ok(fwd), Ok(bkw)) = (
+            usize::try_from(edge),
+            u8::try_from(forward_mask),
+            u8::try_from(backward_mask),
+        ) {
+            let _ = self
+                .cmd_tx
+                .send(crate::nodes::sim::core::SimCommand::ChangeRoadBusLanes {
+                    edge,
+                    masks: [fwd, bkw],
+                    completion,
+                });
+        } else {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_bus_lane_mask".into(),
+                detail: "invalid_bus_lane_mask".into(),
+            });
+        }
+        self.road_commit_request_id
+    }
+
     /// Adds road-end turn lanes through a hidden transition node; poll normal road completion.
     #[func]
     pub fn change_road_pocket(
@@ -194,6 +229,8 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         vdict! { "fwd_lanes": i32::from(edge.fwd_lanes), "bkw_lanes": i32::from(edge.bkw_lanes),
+        "bus_forward_mask": i32::from(edge.bus_lanes[0]),
+        "bus_backward_mask": i32::from(edge.bus_lanes[1]),
         "crossing_level": edge.crossing_level,
         "median_style": edge.median.map_or(0, |median| median.style as i32),
         "median_width": edge.median.map_or(0.0, |median| median.width_m) }

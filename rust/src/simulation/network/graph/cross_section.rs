@@ -160,6 +160,10 @@ impl super::RegionGraph {
         if (edge.primary_type == TransitType::Foot) != (fwd == 0 && bkw == 0) {
             return Err("cross_section_cannot_change_transit_mode");
         }
+        if edge.bus_lanes[0] as u16 >= (1_u16 << fwd) || edge.bus_lanes[1] as u16 >= (1_u16 << bkw)
+        {
+            return Err("clear_bus_lanes_before_removing_lanes");
+        }
         self.remove_from_spatial_index(id);
         let edge = self.edge_mut(id);
         edge.fwd_lanes = fwd;

@@ -96,6 +96,20 @@ impl LaneSystem {
         let mut edge_lane_indices = Vec::new();
 
         let mut build_lane = |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32| {
+            // Bus vehicles are not simulated yet. Their authored ribbon remains in the roadbed,
+            // but cannot enter any car lane, frontage, lane-change or connector query.
+            if l_type == LaneType::Vehicle
+                && edge.lane_use(
+                    is_fwd,
+                    if l_idx >= 0 {
+                        l_idx as u8
+                    } else {
+                        (-i16::from(l_idx) - 1) as u8
+                    },
+                ) == super::super::graph::LaneUse::BusOnly
+            {
+                return;
+            }
             build_one_lane(
                 &mut self.lanes,
                 lane_map,

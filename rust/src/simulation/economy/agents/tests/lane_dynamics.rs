@@ -401,6 +401,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
+            bus_lanes: [0; 2],
             median: None,
             start_node: na,
             end_node: nb,

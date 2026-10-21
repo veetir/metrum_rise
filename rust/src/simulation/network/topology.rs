@@ -1096,6 +1096,7 @@ pub fn split_edge(
     let width = old_edge.width;
     let fwd_lanes = old_edge.fwd_lanes;
     let bkw_lanes = old_edge.bkw_lanes;
+    let bus_lanes = old_edge.bus_lanes;
     let median = old_edge.median;
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
@@ -1129,6 +1130,7 @@ pub fn split_edge(
         roundabout: graph.edge(edge_id).roundabout,
         crossing_level,
         lane_tapers: None,
+        bus_lanes,
         median: median.map(|mut median| {
             median.start_setback_m = 0.0;
             median

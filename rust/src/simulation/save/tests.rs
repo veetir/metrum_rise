@@ -128,6 +128,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node: start,
         end_node: end,
@@ -187,6 +188,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node: n0,
         end_node: n1,
@@ -1399,6 +1401,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         roundabout: false,
         crossing_level: 0,
         lane_tapers: None,
+        bus_lanes: [0; 2],
         median: None,
         start_node: n0,
         end_node: n1,
@@ -1960,4 +1963,31 @@ fn roundabout_roles_round_trip_and_legacy_tables_default_to_ordinary_roads() {
         loaded.edge(0).physical_geometry
     );
     assert_eq!(old.edge(0).geometry, loaded.edge(0).geometry);
+}
+
+#[test]
+fn bus_lane_save_round_trip_legacy_absence_and_invalid_masks() {
+    let (mut graph, id) = snapshot_test_graph();
+    graph.edge_mut(id).bus_lanes = [1, 0];
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        network::load_graph(&conn).unwrap().edge(0).bus_lanes,
+        [1, 0]
+    );
+    conn.execute_batch("UPDATE road_bus_lanes SET forward_mask=128")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+    conn.execute_batch("UPDATE road_bus_lanes SET edge_id=999")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+    conn.execute_batch("DROP TABLE road_bus_lanes").unwrap();
+    assert_eq!(
+        network::load_graph(&conn).unwrap().edge(0).bus_lanes,
+        [0; 2]
+    );
 }

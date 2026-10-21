@@ -773,6 +773,7 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
             roundabout: false,
             crossing_level: 0,
             lane_tapers: None,
+            bus_lanes: [0; 2],
             median: None,
             start_node: start,
             end_node: end,
