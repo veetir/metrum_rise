@@ -429,7 +429,7 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		tool.set_road_preview_mode(1)
 		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full preview can be shown again")
 		_test_preview_resource_reuse(tool, terrain, points, full, label == "t")
-		_test_terrain_delta(tool, points, full)
+		await _test_terrain_delta(tool, points, full)
 		if not tool._terrain_preview._patches.is_empty():
 			terrain.patch_render_will_change.emit(tool._terrain_preview._patches.keys()[0])
 			_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Terrain invalidation retires the paired road preview")
@@ -498,6 +498,10 @@ func _test_terrain_delta(tool: Node3D, points: PackedVector3Array, full: Diction
 	var held: PackedInt64Array = tool._terrain_preview.revisions()
 	_expect(not held.is_empty(), "displayed preview terrain must advertise its revisions")
 	var delta: Variant = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, held)
+	var deadline := Time.get_ticks_msec() + 10000
+	while delta == null and Time.get_ticks_msec() < deadline:
+		await process_frame
+		delta = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, held)
 	_expect(delta is Dictionary and delta.has("terrain_preview"), "a poll with held revisions still returns the result")
 	if not delta is Dictionary or not delta.has("terrain_preview"):
 		return
@@ -511,6 +515,13 @@ func _test_terrain_delta(tool: Node3D, points: PackedVector3Array, full: Diction
 		if revision != dropped:
 			partial_held.append(revision)
 	var partial: Variant = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, partial_held)
+	deadline = Time.get_ticks_msec() + 10000
+	while partial == null and Time.get_ticks_msec() < deadline:
+		await process_frame
+		partial = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, partial_held)
+	_expect(partial is Dictionary and partial.has("terrain_preview"), "withholding one revision returns the revised result")
+	if not partial is Dictionary or not partial.has("terrain_preview"):
+		return
 	var fresh := {}
 	for data in partial["terrain_preview"]["patches"]:
 		if not data["unchanged"]:

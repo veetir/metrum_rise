@@ -1069,6 +1069,32 @@ impl RoadSurfaceSystem {
                 None,
             );
         }
+        // The authored stroke and its splits share structural frontage policy as well as
+        // render ownership. Keep deep open cuts out of ordinary ground-level zoning.
+        let mut preview_edges = HashSet::from([new_edge_idx]);
+        for split in &splits {
+            if preview_edges.contains(&split.edge_id) {
+                preview_edges.insert(split.new_edge_id);
+            }
+        }
+        if edge_class == EdgeClass::Standard
+            && prepared_points.iter().any(|point| {
+                point.y
+                    < terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+                        - PREVIEW_CLEARANCE_M
+            })
+            && (crossing_level != 0
+                || !self
+                    .crossing_neighbors_in_source(
+                        existing_graph,
+                        validation_graph.edge(new_edge_idx),
+                    )
+                    .is_empty())
+        {
+            for &id in &preview_edges {
+                validation_graph.edge_mut(id).no_building_spawn = true;
+            }
+        }
         for &id in &required_edge_ids {
             let skip = HashSet::from([id]);
             if let Some(refused) =
@@ -1252,12 +1278,6 @@ impl RoadSurfaceSystem {
 
         // Split descendants of the authored stroke remain new preview geometry. Existing
         // approaches belong to the bounded visible junction edit, not the compiler's halo.
-        let mut preview_edges = HashSet::from([new_edge_idx]);
-        for split in &splits {
-            if preview_edges.contains(&split.edge_id) {
-                preview_edges.insert(split.new_edge_id);
-            }
-        }
         let preview_nodes: HashSet<_> = preview_edges
             .iter()
             .flat_map(|&id| {
@@ -1742,7 +1762,7 @@ impl RoadSurfaceSystem {
         }) {
             return None;
         }
-        Self::complete_validation_surface_context(
+        self.complete_validation_surface_context(
             &mut validation_graph,
             existing_graph,
             &mut node_map,
@@ -1768,7 +1788,9 @@ impl RoadSurfaceSystem {
     // context for its spans. A remote JunctionN must not become a terminal just because only
     // one of its approaches is recompiled. Halo edges are never added to the dirty ledger.
     // Two fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    #[allow(clippy::too_many_arguments)]
     fn complete_validation_surface_context(
+        &self,
         local: &mut RegionGraph,
         source: &RegionGraph,
         nodes: &mut HashMap<u32, u32>,
@@ -1777,6 +1799,23 @@ impl RoadSurfaceSystem {
         required_nodes: &[u32],
         extension: Option<&RoadExtensionReprofile>,
     ) {
+        // Structural incidence is independent of graph adjacency and extends beyond the
+        // topology snap halo. Import the exact live R-tree candidates used by compile_dirty,
+        // then complete their endpoint incidence below. Otherwise commit dirties owners/chunks
+        // absent from a seemingly ready preview (notably long diagonal upper approaches).
+        let mut crossing_sources = Vec::new();
+        for &id in required_edges {
+            crossing_sources.extend(self.crossing_neighbors_in_source(source, local.edge(id)));
+        }
+        crossing_sources.sort_unstable();
+        crossing_sources.dedup();
+        let mut crossing_local = Vec::new();
+        for id in crossing_sources {
+            Self::copy_validation_graph_edge(local, source, nodes, edges, id, extension);
+            if let Some(&local_id) = edges.get(&id) {
+                crossing_local.push(local_id);
+            }
+        }
         let copy_incidence = |local: &mut RegionGraph,
                               nodes: &mut HashMap<u32, u32>,
                               edges: &mut HashMap<usize, usize>,
@@ -1794,6 +1833,7 @@ impl RoadSurfaceSystem {
             }
         };
         let mut dirty: HashSet<_> = required_edges.iter().copied().collect();
+        dirty.extend(crossing_local);
         for &node in required_nodes {
             dirty.extend(local.node_adjacency(node).iter().copied());
         }

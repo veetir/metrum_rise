@@ -2,6 +2,8 @@
 
 //! Edit-time clearance between explicitly layered road corridors.
 
+mod profile;
+
 use super::span::SpanQuad;
 use super::{RoadPreviewValidation, RoadSurfaceBand, RoadSurfaceSection, RoadSurfaceSystem};
 use crate::simulation::network::graph::RegionGraph;
@@ -52,7 +54,20 @@ impl RoadSurfaceSystem {
         edge.median = prepared.median;
         edge.width += prepared.median.map_or(0.0, |median| median.width_m);
         let id = candidate.add_edge(edge);
-        self.crossing_clearance_violation(&candidate, id, source, &HashSet::new())
+        // This isolated quick graph has no source incident arms yet. Exact topology solves
+        // their shared junction mouths and checks the remaining span-owned overlap below.
+        let mut connected = HashSet::new();
+        for &endpoint in [
+            prepared.points.first().unwrap(),
+            prepared.points.last().unwrap(),
+        ] {
+            for other in source.get_edges_near_point(endpoint, 0.001) {
+                if edges_share_endpoint(&candidate, id, source, other) {
+                    connected.insert(other);
+                }
+            }
+        }
+        self.crossing_clearance_violation(&candidate, id, source, &connected)
             .unwrap_or(validation)
     }
 
@@ -97,9 +112,32 @@ impl RoadSurfaceSystem {
             return None;
         }
         let sections = self.compile_edge_sections(candidate, id);
+        if sections.len() < 2 {
+            return None;
+        }
         for other in neighbors {
             let other_edge = source.edge(other);
             let other_sections = self.compile_edge_sections(source, other);
+            if other_sections.len() < 2 {
+                continue;
+            }
+            // A deliberately shared endpoint is an at-grade junction across layer labels.
+            // Its node-owned pavement has no vertical-clearance requirement. Use the same
+            // clipped span ranges as rendering; all other interior overlap still needs clearance.
+            let shared_endpoint = edges_share_endpoint(candidate, id, source, other);
+            let owned = |graph: &RegionGraph, edge_id, sections: &[RoadSurfaceSection]| {
+                if shared_endpoint {
+                    self.visible_corridor_index_range_for_edge(graph, edge_id, sections)
+                } else {
+                    Some((0, sections.len().saturating_sub(1)))
+                }
+            };
+            let Some((a_start, a_end)) = owned(candidate, id, &sections) else {
+                continue;
+            };
+            let Some((b_start, b_end)) = owned(source, other, &other_sections) else {
+                continue;
+            };
             let candidate_above = edge.crossing_level > other_edge.crossing_level;
             let lower = if candidate_above { other_edge } else { edge };
             let required = if lower.allowed_types & TransitFlags::CAR != 0 {
@@ -107,8 +145,8 @@ impl RoadSurfaceSystem {
             } else {
                 FOOT_CYCLE_CLEARANCE_M
             };
-            for a in sections.windows(2) {
-                for b in other_sections.windows(2) {
+            for a in sections[a_start..=a_end].windows(2) {
+                for b in other_sections[b_start..=b_end].windows(2) {
                     let upper = if candidate_above { a } else { b };
                     let lower = if candidate_above { b } else { a };
                     if let Some(gap) = section_pair_gap(upper, lower) {
@@ -126,6 +164,17 @@ impl RoadSurfaceSystem {
         }
         None
     }
+}
+
+fn edges_share_endpoint(a: &RegionGraph, aid: usize, b: &RegionGraph, bid: usize) -> bool {
+    let a = &a.edge(aid).physical_geometry;
+    let b = &b.edge(bid).physical_geometry;
+    a.first().into_iter().chain(a.last()).any(|&p| {
+        b.first()
+            .into_iter()
+            .chain(b.last())
+            .any(|&q| p.distance_squared_to(q) <= 1e-6)
+    })
 }
 
 fn corridor_corners(pair: &[RoadSurfaceSection]) -> [DVec3; 4] {
@@ -164,7 +213,11 @@ fn band_quad(
     ])
 }
 
-fn section_pair_gap(upper: &[RoadSurfaceSection], lower: &[RoadSurfaceSection]) -> Option<f64> {
+/// Returns the minimum paved-band vertical gap over the sections' exact XZ overlap.
+pub(super) fn section_pair_gap(
+    upper: &[RoadSurfaceSection],
+    lower: &[RoadSurfaceSection],
+) -> Option<f64> {
     if !overlap_bounds(&corridor_corners(upper), &corridor_corners(lower)) {
         return None;
     }
@@ -210,6 +263,34 @@ fn overlap_bounds(a: &[DVec3], b: &[DVec3]) -> bool {
 
 // Affine heights attain their minimum difference at a vertex of the clipped intersection.
 fn triangle_gap(upper: [DVec3; 3], lower: [DVec3; 3]) -> Option<f64> {
+    let (input, count) = triangle_overlap(upper, lower)?;
+    let height = |triangle: [DVec3; 3], point: DVec2| {
+        let a = xz(triangle[0]);
+        let ab = xz(triangle[1]) - a;
+        let ac = xz(triangle[2]) - a;
+        let determinant = ab.perp_dot(ac);
+        if determinant.abs() < 1e-10 {
+            return None;
+        }
+        let offset = point - a;
+        Some(
+            triangle[0].y
+                + offset.perp_dot(ac) / determinant * (triangle[1].y - triangle[0].y)
+                + ab.perp_dot(offset) / determinant * (triangle[2].y - triangle[0].y),
+        )
+    };
+    let mut gap = f64::INFINITY;
+    for point in &input[..count] {
+        gap = gap.min(height(upper, *point)? - height(lower, *point)?);
+    }
+    Some(gap)
+}
+
+/// Clips XZ triangles into a fixed stack buffer, returning its populated vertex count.
+pub(super) fn triangle_overlap(
+    upper: [DVec3; 3],
+    lower: [DVec3; 3],
+) -> Option<([DVec2; 8], usize)> {
     let mut input = [DVec2::ZERO; 8];
     input[..3].copy_from_slice(&upper.map(xz));
     let mut count = 3;
@@ -262,26 +343,7 @@ fn triangle_gap(upper: [DVec3; 3], lower: [DVec3; 3]) -> Option<f64> {
     if area.abs() < 1e-12 {
         return None;
     }
-    let height = |triangle: [DVec3; 3], point: DVec2| {
-        let a = xz(triangle[0]);
-        let ab = xz(triangle[1]) - a;
-        let ac = xz(triangle[2]) - a;
-        let determinant = ab.perp_dot(ac);
-        if determinant.abs() < 1e-10 {
-            return None;
-        }
-        let offset = point - a;
-        Some(
-            triangle[0].y
-                + offset.perp_dot(ac) / determinant * (triangle[1].y - triangle[0].y)
-                + ab.perp_dot(offset) / determinant * (triangle[2].y - triangle[0].y),
-        )
-    };
-    let mut gap = f64::INFINITY;
-    for point in &input[..count] {
-        gap = gap.min(height(upper, *point)? - height(lower, *point)?);
-    }
-    Some(gap)
+    Some((input, count))
 }
 
 #[cfg(test)]
@@ -368,6 +430,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shared_endpoint_uses_junction_ownership_but_retains_interior_clearance() {
+        let surface = RoadSurfaceSystem::new(128.0);
+        let mut graph = RegionGraph::new();
+        let points = [
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 10.0),
+        ];
+        let nodes = points.map(|p| graph.add_node(p, NodeType::Junction));
+        for i in 0..2 {
+            let mut edge = build_surface_edge(
+                nodes[i],
+                nodes[i + 1],
+                points[i..=i + 1].to_vec(),
+                1,
+                1,
+                EdgeClass::Standard,
+            );
+            edge.crossing_level = i as i16;
+            graph.add_edge(edge);
+        }
+        graph.rebuild_intersection_clips();
+        assert!(
+            surface
+                .crossing_clearance_violation(&graph, 1, &graph, &HashSet::from([1]))
+                .is_none()
+        );
+
+        // Sharing a junction must not exempt a second crossing farther along a looping road.
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(-80.0, 0.0, 0.0), NodeType::Junction);
+        let joint = graph.add_node(Vector3::new(0.0, 6.0, -80.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 6.0, 80.0), NodeType::Junction);
+        graph.add_edge(build_surface_edge(
+            start,
+            joint,
+            vec![
+                graph.node(start).pos,
+                Vector3::new(80.0, 0.0, 0.0),
+                Vector3::new(80.0, 6.0, -80.0),
+                graph.node(joint).pos,
+            ],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+        let mut edge = build_surface_edge(
+            joint,
+            end,
+            vec![
+                graph.node(joint).pos,
+                Vector3::new(0.0, 3.0, 0.0),
+                graph.node(end).pos,
+            ],
+            1,
+            1,
+            EdgeClass::Standard,
+        );
+        edge.crossing_level = 1;
+        graph.add_edge(edge);
+        graph.rebuild_intersection_clips();
+        assert!(
+            surface
+                .crossing_clearance_violation(&graph, 1, &graph, &HashSet::from([1]))
+                .is_some()
+        );
     }
 
     #[test]

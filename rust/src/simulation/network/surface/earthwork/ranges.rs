@@ -33,6 +33,15 @@ impl RoadSurfaceSystem {
             }
 
             if edge.class == EdgeClass::Bridge {
+                // Filled approaches hand their junction footprint to the existing node
+                // earthwork owner; ordinary exposed bridge junctions still keep the ground.
+                if self
+                    .compiled_visual_span_pieces
+                    .get(&edge_idx)
+                    .is_some_and(|piece| piece.filled_crossing.is_some())
+                {
+                    return true;
+                }
                 continue;
             }
 

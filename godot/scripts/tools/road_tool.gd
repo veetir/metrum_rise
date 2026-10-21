@@ -44,6 +44,12 @@ var _edit_message: String = ""
 var _candidate_cache_median_style: int = -1
 var _candidate_cache_median_width: float = -1.0
 var altitude_offset: float = 0.0
+var crossing_mode: int = 0 # Junction, Over, Under; Rust owns the solved profile and level.
+var crossing_level: int = 0
+var _crossing_profile_key: Array = []
+var _crossing_profile: Dictionary = {}
+var _crossing_refusal: Dictionary = {}
+var _crossing_highlight = preload("res://scripts/renderers/road_crossing_highlight.gd").new()
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 var zoning_grid_snap_enabled: bool = false
@@ -210,6 +216,7 @@ func _process(delta):
 	if current_path != null and _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos):
 		_queue_preview_update()
 	if not active:
+		_crossing_highlight.clear()
 		_clear_sticky_network_snap()
 		if _info_label:
 			_info_label.visible = false
@@ -256,6 +263,36 @@ func _refresh_cross_section_label() -> void:
 
 func cycle_median() -> void:
 	set_median((median_style + 1) % 4, [3.0, 1.0, 5.0, 2.0][(median_style + 1) % 4])
+
+func set_crossing_mode(mode: int) -> void:
+	crossing_mode = clampi(mode, 0, 2)
+	crossing_level = 0
+	simulation_node.set_road_tool_crossing_level(0)
+	_crossing_profile_key = []
+	_crossing_refusal = {}
+	_crossing_highlight.clear()
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_queue_preview_update()
+	_refresh_cross_section_label()
+
+func _prepare_crossing_points(points: PackedVector3Array) -> PackedVector3Array:
+	_crossing_refusal = {}
+	if crossing_mode == 0 or points.size() < 2:
+		return points
+	var key: Array = [points, crossing_mode, fwd_lanes, bkw_lanes, median_style, median_width, simulation_node.get_road_tool_surface_generation()]
+	if key != _crossing_profile_key:
+		_crossing_profile_key = key
+		_crossing_profile = simulation_node.prepare_road_crossing(points, fwd_lanes, bkw_lanes, crossing_mode == 1)
+		_crossing_highlight.clear()
+		if _crossing_profile.get("is_valid", false):
+			_crossing_highlight.show_roads(self, simulation_node, _crossing_profile.crossed_edges)
+	if not _crossing_profile.get("is_valid", false):
+		_crossing_refusal = _crossing_profile
+		return points
+	crossing_level = int(_crossing_profile.crossing_level)
+	simulation_node.set_road_tool_crossing_level(crossing_level)
+	return _crossing_profile.points
 
 func set_median(style: int, width: float) -> void:
 	var reason: String = simulation_node.set_road_tool_median(style, width)
@@ -580,7 +617,7 @@ func _refresh_preview_curve() -> PackedVector3Array:
 					current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
 					_stroke_end_dir = Vector3(t_end.x, 0.0, t_end.z).normalized()
 
-	return _road_surface_points_from_curve(current_path.curve)
+	return _prepare_crossing_points(_road_surface_points_from_curve(current_path.curve))
 
 func _queue_preview_update() -> void:
 	if current_path == null:
@@ -591,6 +628,8 @@ func _queue_preview_update() -> void:
 	_preview_update_pending = true
 
 func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
+	if not _crossing_refusal.is_empty():
+		return _crossing_refusal
 	if points.size() < 2:
 		return {
 			"is_valid": false,
@@ -623,6 +662,8 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 	return validation
 
 func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
+	if not _crossing_refusal.is_empty():
+		return _crossing_refusal
 	if points.size() < 2:
 		return {
 			"is_valid": false,
@@ -969,6 +1010,10 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Crossing clearance %.1f m / %.1f m (below deck)" % [float(preview.get("clearance_m", 0.0)), float(preview.get("required_clearance_m", 0.0))]
 		"grade_separation_grade":
 			return "Separated road exceeds the 16% grade limit"
+		"crossing_not_found":
+			return "Draw across an existing road"
+		"crossing_approach_too_short":
+			return "Leave more room for the crossing approaches"
 		"bridge_clearance":
 			return "Bridge clearance %.1f m / %.1f m" % [
 				float(preview.get("clearance_m", 0.0)),
@@ -1160,6 +1205,8 @@ func _commit_reaches_border() -> bool:
 	return false
 
 func cancel_road():
+	_crossing_highlight.clear()
+	_crossing_profile_key = []
 	current_state = State.IDLE
 	_start_dir = Vector3.ZERO
 	_has_road_tangent = false

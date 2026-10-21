@@ -92,6 +92,9 @@ impl RoadSurfaceSystem {
         for polygon in piece.earthwork_surface_polygons() {
             Self::visit_visual_polygon_triangles(polygon, visitor);
         }
+        if let Some(crossing) = &piece.filled_crossing {
+            Self::visit_surface_triangles(crossing.fill_triangles(), visitor);
+        }
     }
 
     #[cfg(test)]

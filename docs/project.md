@@ -58,11 +58,17 @@ Fresh 2,624-test release and fifteen native bridge checks pass; ten windowed cap
 1M-agent tick medians change +1.8%; the instrumented short 30k network timing discrepancy
 remains open in the owning verification notes.
 
-ROAD-68 has an explicit crossing-layer topology stage in progress, with roadbed clearance
-validation, preview/commit identity and version-91 sparse persistence. Filled openings,
-embankments, player over/under controls and the university reconstruction remain pending
-([slice C status](roads.md#explicit-layered-crossings--road-68-slice-c-topology-stage)).
-Agent-tick timing acceptance is still open.
+ROAD-68 slice C is complete: Junction/Over/Under controls solve bounded-grade profiles with
+exact preview/commit and undo; layered roads compile solid grass fill/open cuts, box openings,
+abutments, tapered wings and low open parapets. The new `roads-c-uni-underpass.sqlite` keeps
+Yliopistonranta on the ground/low embankment and joins parking at grade with a refuge/zebra.
+Fresh 2,644-test release and native/legacy checks pass; nine production captures were inspected
+against the Finnish photos ([design and acceptance](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)).
+The historical short PERF-06 timing uncertainty is explained separately from current sustained
+measurements: the completion adds a measured 1.1% at 1M agents and 4.4% in full network mesh
+emission, while local planning remains bounded with identical products. ROAD-73 tracks a refused
+sloping plain-to-median terrain boundary; the accepted
+continuous parking refuge does not resolve that distinct transition defect.
 The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
 strip without changing physical geometry. ROAD-61 blank-world probes reproduce erased buried
 profiles and quick/exact tunnel-validation disagreement; its structural fix remains planned

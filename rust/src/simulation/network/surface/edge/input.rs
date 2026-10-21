@@ -217,7 +217,10 @@ impl RoadSurfaceSystem {
         if level == 0 && !different_layer {
             return Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
         }
-        let mut points = Self::simplify_road_alignment_points(raw);
+        // Structural constraint knots can be closer than the ordinary 0.5 m alignment
+        // simplifier permits. Dropping one can reduce the clearance at a plateau boundary.
+        let mut points = raw.to_vec();
+        points.dedup();
         if snap && points.len() >= 2 {
             for index in [0, points.len() - 1] {
                 if let Some(node) = graph.find_node_within(points[index], config::SNAP_TOLERANCE) {
@@ -232,7 +235,17 @@ impl RoadSurfaceSystem {
                 }
             }
         }
-        let class = if points.iter().any(|p| {
+        let grounded_ends = points.first().zip(points.last()).is_some_and(|(a, b)| {
+            [a, b].iter().all(|p| {
+                (p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE).abs()
+                    <= PREVIEW_CLEARANCE_M
+            })
+        });
+        let class = if different_layer && grounded_ends {
+            // Ground-to-ground crossings own a mixed cut/fill corridor. The compiled
+            // opening supplies its structure; hills along the approaches are not tunnels.
+            EdgeClass::Standard
+        } else if points.iter().any(|p| {
             p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE > PREVIEW_CLEARANCE_M
         }) {
             EdgeClass::Bridge

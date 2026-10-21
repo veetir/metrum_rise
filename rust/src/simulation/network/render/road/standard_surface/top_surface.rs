@@ -117,7 +117,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
         } else {
             asphalt.for_each(emit_asphalt);
         }
-        if edge.class == EdgeClass::Bridge {
+        if let Some(crossing) = &piece.filled_crossing {
+            super::bridge::emit_filled_crossing(mesh, crossing);
+        } else if edge.class == EdgeClass::Bridge {
             let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
                 continue;
             };

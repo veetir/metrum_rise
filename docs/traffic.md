@@ -1029,6 +1029,19 @@ the contract runs. Matched alternating process pairs remain reserved for milesto
 and claimed speedups. The short contract is run serially with no concurrent build or measurement;
 the 30-minute Criterion `agent_benchmark` is no longer a routine gate.
 
+ROAD-68 completion check (2026-10-22), versus queued predecessor `1a4ea348`: fifteen alternating
+release process pairs/eight workers match all six work dictionaries and scaling bounds. All
+short timing intervals include zero (10,000 paired bootstrap resamples, seed 68); opposite
+10k/30k ingress shifts remain inconclusive. Three alternating sustained Criterion pairs give
+100k ticks 2.8647 → 2.8982 ms (+1.17%) and 1M ticks 37.8215 → 38.2545 ms (+1.14%). All three
+1M pairs are slightly higher, so this is recorded as a small measured increase, not dismissed
+as noise. No agent dispatch, hot Edge fields or per-agent allocation policy changes in this
+completion; structures live on compiled span owners. The earlier topology-stage comparison
+against `cce4554e` had conflicting short cohorts whose cause remains unknown; a later
+predecessor comparison cannot retrospectively resolve it. Commands, exact binary identities,
+fixture-setup failures and completed cohorts are recorded in
+[ROAD-68 performance acceptance](roads.md#completion-performance-and-perf-06-interpretation--2026-10-22).
+
 Movement now owns route-query scratch by fixed contiguous agent ranges, retaining the existing
 small-city serial threshold and separate ordered dynamic movement. Scoped TLS access restores
 the previous scratch on return or unwind; this preserves planner entry points while making

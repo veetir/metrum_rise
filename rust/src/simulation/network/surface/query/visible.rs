@@ -327,7 +327,8 @@ impl RoadSurfaceSystem {
         self.tunnel_visible_section_ranges(sections, start_index, end_index, terrain)
     }
 
-    fn visible_corridor_index_range_for_edge(
+    /// Returns the span-owned section range, excluding pavement owned by endpoint junctions.
+    pub(in crate::simulation::network::surface) fn visible_corridor_index_range_for_edge(
         &self,
         graph: &RegionGraph,
         edge_idx: usize,

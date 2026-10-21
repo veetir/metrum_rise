@@ -11,12 +11,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod boundary;
+mod filled_crossing;
 mod geometry;
 mod model;
 mod planning;
 mod ranges;
 mod stamping;
 
+pub(crate) use filled_crossing::FilledCrossing;
 pub(crate) use planning::RoadEarthworkPlan;
 use stamping::{EarthworkChunkStampResult, EarthworkStampStats};
 

@@ -15,6 +15,8 @@ var _forward: int
 var _backward: int
 var _median_style: int
 var _median_width: float
+var _crossing_mode: int
+var _crossing_level: int
 var _snap: bool
 var _target: Vector2i
 var _generation: int
@@ -32,6 +34,8 @@ func _init(tool: Node3D, input_points: PackedVector3Array, request_id: int) -> v
 	_backward = tool.bkw_lanes
 	_median_style = tool.median_style
 	_median_width = tool.median_width
+	_crossing_mode = tool.crossing_mode
+	_crossing_level = tool.crossing_level
 	_snap = tool._snap_to_roads_enabled()
 	_target = Vector2i(tool._sticky_network_snap.get("snap_edge", -1), tool._sticky_network_snap.get("snap_node", -1))
 	_generation = tool.simulation_node.get_road_tool_surface_generation()
@@ -44,6 +48,7 @@ func matches_context(tool: Node3D) -> bool:
 		and _mode == tool.draw_mode and _state == tool.current_state
 		and _forward == tool.fwd_lanes and _backward == tool.bkw_lanes
 		and _median_style == tool.median_style and _median_width == tool.median_width
+		and _crossing_mode == tool.crossing_mode and _crossing_level == tool.crossing_level
 		and _snap == tool._snap_to_roads_enabled()
 		and _target.x == int(tool._sticky_network_snap.get("snap_edge", -1))
 		and _target.y == int(tool._sticky_network_snap.get("snap_node", -1))

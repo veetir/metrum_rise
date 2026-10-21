@@ -279,6 +279,7 @@ impl SimulationNode {
         let attempt = rejection.report(
             RejectedBy::Tool,
             RoadAttempt {
+                crossing_level: self.road_tool_crossing_level,
                 points: &points,
                 fwd_lanes,
                 bkw_lanes,

@@ -224,6 +224,20 @@ func _build_ui():
 	spline_btn.toggle_mode = true
 	spline_btn.focus_mode = Control.FOCUS_NONE
 	mode_row.add_child(spline_btn)
+
+	var crossing_row := HBoxContainer.new()
+	var crossing_label := Label.new()
+	crossing_label.text = "Crossing"
+	crossing_label.custom_minimum_size.x = 92.0
+	crossing_row.add_child(crossing_label)
+	var crossing_choice := OptionButton.new()
+	for crossing_name in ["Junction", "Over", "Under"]:
+		crossing_choice.add_item(crossing_name)
+	crossing_choice.focus_mode = Control.FOCUS_NONE
+	crossing_choice.tooltip_text = "Cross an existing road with a junction, a raised road, or a road in a cut. Leave room for the approaches."
+	crossing_choice.item_selected.connect(road_tool.set_crossing_mode)
+	crossing_row.add_child(crossing_choice)
+	road_options_menu.add_child(crossing_row)
 	
 	var snap_row := HBoxContainer.new()
 	var snap_label := Label.new()

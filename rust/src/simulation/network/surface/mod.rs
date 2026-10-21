@@ -43,7 +43,7 @@ pub(crate) use cache::ChunkCacheKind;
 pub(crate) use cache::RoadSurfaceTopologyUndo;
 pub(crate) use earthwork::RoadEarthworkPlan;
 pub(crate) use earthwork::{
-    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
+    FilledCrossing, RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy,
 };

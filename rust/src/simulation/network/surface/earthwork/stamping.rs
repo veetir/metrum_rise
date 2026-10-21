@@ -560,6 +560,9 @@ impl RoadSurfaceSystem {
                 height_offset_m,
             );
         }
+        if let Some(crossing) = &piece.filled_crossing {
+            builder.collect_triangles(crossing.fill_triangles(), height_offset_m);
+        }
     }
 
     pub(super) fn collect_node_stamp_input(

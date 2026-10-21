@@ -61,6 +61,7 @@ impl RoadSurfaceSystem {
         if !self.topology_undo_is_valid(&undo, affected_edge_ids, affected_node_ids) {
             return false;
         }
+        let crossing_dependents = self.filled_crossing_dependents(affected_edge_ids);
         self.note_compile_invalidation();
 
         let mut affected_edges = affected_edge_ids.iter().copied().collect::<Vec<_>>();
@@ -116,6 +117,28 @@ impl RoadSurfaceSystem {
         }
         for node_id in affected_node_ids {
             self.dirty_nodes.remove(node_id);
+        }
+        self.dirty_edges.extend(crossing_dependents);
+        // A restored lower road may introduce an opening into a bridge which currently has
+        // none. Its restored owner chunks bound discovery without scanning resident spans.
+        for edge_idx in affected_edge_ids {
+            let Some(chunks) = self.surface_span_chunks.get(edge_idx) else {
+                continue;
+            };
+            for chunk in chunks.iter() {
+                if let Some(owners) = self.surface_chunk_spans.get(chunk) {
+                    for owner in owners.iter() {
+                        if !affected_edge_ids.contains(owner)
+                            && self
+                                .compiled_visual_span_pieces
+                                .get(owner)
+                                .is_some_and(|piece| piece.edge_class != EdgeClass::Tunnel)
+                        {
+                            self.dirty_edges.insert(*owner);
+                        }
+                    }
+                }
+            }
         }
 
         crate::debug_log!(

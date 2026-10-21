@@ -218,7 +218,17 @@ impl RoadTopologyPlan {
             })
             .collect::<Vec<_>>();
         local.set_placement_identities(edge_ids.clone(), node_ids.clone());
-        let (replaced_edges, replaced_nodes) = self.commit_recompiled_sources(local, source);
+        let (mut replaced_edges, replaced_nodes) = self.commit_recompiled_sources(local, source);
+        // Layered support is geometric incidence rather than graph adjacency. Include the
+        // same local neighbor owners that compile_dirty recompiles, and their old/new chunks.
+        for &id in &self.dirty_edges {
+            for neighbor in surface.crossing_neighbors(local, id) {
+                let live = edge_ids[neighbor];
+                if live < source.edge_count() {
+                    replaced_edges.insert(live);
+                }
+            }
+        }
         self.roads = Some(Arc::new(PlannedRoadSurfaceQuery::capture(
             local,
             surface,

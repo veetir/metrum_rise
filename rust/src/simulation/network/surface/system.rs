@@ -246,6 +246,13 @@ impl RoadPreviewTopologyReuse {
         sections: &[RoadSurfaceSection],
     ) -> Option<RoadPreviewSpanTopologyReuse> {
         let edge = graph.edge(edge_idx);
+        // Layered bridge support also depends on nearby lower corridors. Its own section
+        // identity alone cannot certify a preview artifact after an edit to the lower road.
+        if edge.class == EdgeClass::Bridge
+            || !surface.crossing_neighbors(graph, edge_idx).is_empty()
+        {
+            return None;
+        }
         let candidate_key = if self
             .spans
             .get(&edge_idx)
@@ -748,6 +755,7 @@ impl RoadSurfaceSystem {
         sorted_nodes.dedup();
 
         let mut span_edge_ids: HashSet<usize> = self.dirty_edges.iter().copied().collect();
+        span_edge_ids.extend(self.filled_crossing_dependents(&self.dirty_edges));
         for &node_id in &sorted_nodes {
             if node_id as usize >= graph.node_adjacency_count() {
                 continue;
@@ -755,6 +763,14 @@ impl RoadSurfaceSystem {
             for &edge_idx in graph.node_adjacency(node_id) {
                 span_edge_ids.insert(edge_idx);
             }
+        }
+        // Crossing support is an independent geometric owner, not graph adjacency. Rebuild
+        // nearby layered spans and prior lower dependencies, including after deletion.
+        for &edge_idx in &edge_ids {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            span_edge_ids.extend(self.crossing_neighbors(graph, edge_idx));
         }
         let mut sorted_span_edges: Vec<usize> = span_edge_ids.into_iter().collect();
         sorted_span_edges.sort_unstable();

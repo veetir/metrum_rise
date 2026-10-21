@@ -85,6 +85,8 @@ pub(in crate::simulation::save) fn restore_lane_references(
     }
     let lanes = &network.lane_system;
     let mut remap = HashMap::new();
+    let mut retired_roads = HashMap::new();
+    let mut retired = std::collections::HashSet::new();
     let mut roads = conn.prepare("SELECT lane_id, edge_id, is_fwd, lane_idx FROM saved_lanes WHERE edge_id != -1 ORDER BY lane_id")?;
     let mut rows = roads.query([])?;
     while let Some(row) = rows.next()? {
@@ -92,18 +94,24 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let edge = i64_to_usize(row.get(1)?)?;
         let fwd: bool = row.get(2)?;
         let idx: i8 = row.get(3)?;
-        let id = lanes
-            .edge_lanes
-            .get(&edge)
-            .and_then(|ids| {
-                ids.iter().copied().find(|&id| {
-                    let lane = &lanes.lanes[id];
-                    lane.is_fwd == fwd && lane.lane_idx == idx
-                })
+        let id = lanes.edge_lanes.get(&edge).and_then(|ids| {
+            ids.iter().copied().find(|&id| {
+                let lane = &lanes.lanes[id];
+                lane.is_fwd == fwd && lane.lane_idx == idx
             })
-            .ok_or_else(|| {
-                SaveLoadError::custom(format!("saved lane {old} has no matching road lane"))
-            })?;
+        });
+        let Some(id) = id else {
+            // Junction clipping can consume a short offset lane when an older road is rebuilt.
+            // Only an authored physical slot may retire; nonexistent edges/slots still refuse.
+            if valid_road_lane_slot(graph, edge, fwd, idx) {
+                retired_roads.insert(old, (edge, fwd));
+                retired.insert(old);
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved lane {old} has no matching road lane"
+            )));
+        };
         remap.insert(old, id);
     }
     let mut connectors = conn.prepare("SELECT lane_id, node_id, from_lane_id, to_lane_id FROM saved_lanes WHERE edge_id = -1 ORDER BY lane_id")?;
@@ -113,6 +121,35 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let node = i64_to_usize(row.get(1)?)?;
         let from = i64_to_usize(row.get(2)?)?;
         let to = i64_to_usize(row.get(3)?)?;
+        if retired_roads.contains_key(&from) || retired_roads.contains_key(&to) {
+            // A connector to a clipped-away lane also disappears. Validate both directed
+            // endpoints before retiring it so corrupted references do not become loadable.
+            let endpoint = |old, incoming| {
+                let identity = retired_roads.get(&old).copied().or_else(|| {
+                    remap.get(&old).map(|&id| {
+                        let lane = &lanes.lanes[id];
+                        (lane.edge_id, lane.is_fwd)
+                    })
+                });
+                identity.is_some_and(|(edge, fwd)| {
+                    graph.get_edge(edge).is_some_and(|edge| {
+                        let terminal = if fwd == incoming {
+                            edge.end_node
+                        } else {
+                            edge.start_node
+                        };
+                        terminal as usize == node
+                    })
+                })
+            };
+            if endpoint(from, true) && endpoint(to, false) {
+                retired.insert(old);
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved connector {old} has invalid retired lane endpoints"
+            )));
+        }
         // Saves from before footpath arms stopped counting as vehicle junction arms hold a
         // connector where the road now links straight through. Agents on it replan below.
         if let (Some(&from), Some(&to)) = (remap.get(&from), remap.get(&to))
@@ -154,6 +191,14 @@ pub(in crate::simulation::save) fn restore_lane_references(
     // whole save. A lane of the wrong mode still refuses it (TRAFFIC-02).
     let mut repaired = 0;
     for i in 0..agents.len() {
+        if retired.contains(&agents.current_lane_id[i])
+            || retired.contains(&(agents.lane_change_from_lane_id[i] as usize))
+        {
+            clear_agent_travel_state(agents, i);
+            agents.lane_change_from_lane_id[i] = u32::MAX;
+            repaired += 1;
+            continue;
+        }
         let old = agents.current_lane_id[i];
         if old != usize::MAX {
             let mode = agents.transit_mode[i];
@@ -232,6 +277,30 @@ pub(in crate::simulation::save) fn restore_lane_references(
         }
     }
     Ok(())
+}
+
+fn valid_road_lane_slot(graph: &RegionGraph, edge: usize, fwd: bool, idx: i8) -> bool {
+    use crate::simulation::network::types::{TransitFlags, TransitType};
+    if edge >= graph.edge_count() {
+        return false;
+    }
+    let edge = graph.edge(edge);
+    if edge.deleted || edge.physical_geometry.len() < 2 {
+        return false;
+    }
+    if edge.allowed_types & TransitFlags::FOOT != 0 {
+        if edge.primary_type == TransitType::Foot {
+            return idx == 0;
+        }
+        if idx == 100 || idx == -100 {
+            return true;
+        }
+    }
+    if fwd {
+        idx >= 0 && (idx as u8) < edge.fwd_lanes
+    } else {
+        idx < 0 && (-i16::from(idx) - 1) < i16::from(edge.bkw_lanes)
+    }
 }
 
 fn retired_default_vehicle_connector(

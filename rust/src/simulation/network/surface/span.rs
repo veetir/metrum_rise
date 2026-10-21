@@ -99,6 +99,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub(in crate::simulation::network::surface) earthwork_surface_order: Box<[u32]>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
+    /// Multi-height support at explicitly layered crossings; absent on ordinary bridges.
+    pub(crate) filled_crossing: Option<Box<super::earthwork::FilledCrossing>>,
 }
 
 impl RoadSurfaceVisualSpanPiece {
@@ -149,6 +151,7 @@ impl RoadSurfaceVisualSpanPiece {
             earthwork_surface_order: self.earthwork_surface_order.clone(),
             earthwork_outer_boundary_loops: self.earthwork_outer_boundary_loops.clone(),
             render_earthwork_faces,
+            filled_crossing: self.filled_crossing.clone(),
         }
     }
 }
@@ -402,8 +405,14 @@ impl RoadSurfaceSystem {
         let visible_geometry_ms = elapsed_ms(visible_geometry_start);
 
         let earthwork_regions_start = road_debug.then(Instant::now);
-        let earthwork_ranges =
+        let filled_crossing = self.compile_filled_crossing(graph, terrain, edge_idx, &sections);
+        let mut earthwork_ranges =
             self.earthwork_section_ranges_for_edge(graph, edge_idx, edge, &sections, terrain);
+        if let Some(crossing) = &filled_crossing {
+            // A filled span supports its whole pavement, not only the contacting ends
+            // of an exposed bridge. Only the underpass opening interrupts that carrier.
+            earthwork_ranges = crossing.support_ranges(&sections, &visible_ranges);
+        }
         let reuse_visible_regions_for_earthwork =
             edge.class == EdgeClass::Standard && earthwork_ranges == visible_ranges;
         let (terrain_clip_boundary_loops, span_earthwork_support_regions, bridge_outer_loops) =
@@ -418,7 +427,12 @@ impl RoadSurfaceSystem {
                     self.resolve_span_regions_for_ranges(&sections, &earthwork_ranges, edge.class)?;
                 Self::sort_span_owned_regions(&sections, &mut clearance_regions.regions);
                 let terrain_clip_boundary_loops = match edge.class {
-                    EdgeClass::Standard => visible_terrain_clip_boundary_loops,
+                    EdgeClass::Standard if filled_crossing.is_none() => {
+                        visible_terrain_clip_boundary_loops
+                    }
+                    EdgeClass::Standard => {
+                        std::mem::take(&mut clearance_regions.terrain_clip_boundary_loops)
+                    }
                     EdgeClass::Bridge => {
                         std::mem::take(&mut clearance_regions.terrain_clip_boundary_loops)
                     }
@@ -433,7 +447,8 @@ impl RoadSurfaceSystem {
         let earthwork_regions_ms = elapsed_ms(earthwork_regions_start);
         let earthwork_geometry_start = road_debug.then(Instant::now);
         let (earthwork_outer_boundary_loops, render_earthwork_faces) =
-            if edge.class == EdgeClass::Bridge {
+            if edge.class == EdgeClass::Bridge || filled_crossing.is_some() {
+                // The filled shell owns these slopes and portal walls, including cuts.
                 (bridge_outer_loops, Vec::new())
             } else {
                 let earthwork_boundary_segments =
@@ -525,6 +540,7 @@ impl RoadSurfaceSystem {
             earthwork_surface_order: Self::earthwork_surface_order(&render_earthwork_faces),
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
+            filled_crossing,
         };
         piece.surface_query = Arc::new(piece.surface_triangle_grid());
         piece.shrink_retained();

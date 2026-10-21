@@ -59,6 +59,35 @@ fn upper(height: f32) -> Vec<Vector3> {
 }
 
 #[test]
+fn crossing_preview_includes_structural_neighbors_outside_the_topology_snap_halo() {
+    let mut core = SimCore::new(WorldConfig {
+        width_m: 512.0,
+        height_m: 512.0,
+        terrain_cell_m: 4.0,
+        terrain_chunk_m: 64.0,
+        ..WorldConfig::default()
+    });
+    core.create_blank_world_internal(512.0, 512.0, 4.0, 64.0, 0.0)
+        .unwrap();
+    build(&mut core, lower(), 1, 0, None);
+    // Outside the old topology bounds, but inside the compiler's structural halo. Although
+    // unchanged and not actually crossed, its recompile dirties farther terrain chunks.
+    build(
+        &mut core,
+        vec![
+            Vector3::new(40.0, 0.0, 100.0),
+            Vector3::new(40.0, 0.0, 220.0),
+        ],
+        1,
+        0,
+        None,
+    );
+    let retained = core.region_graph.edge(1).physical_geometry.clone();
+    build(&mut core, upper(6.0), 1, 1, None);
+    assert_eq!(core.region_graph.edge(1).physical_geometry, retained);
+}
+
+#[test]
 fn preview_commit_and_reverse_build_order_keep_the_crossing_unrelated() {
     for foot in [false, true] {
         for upper_first in [false, true] {

@@ -57,6 +57,146 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     (graph, network)
 }
 
+#[test]
+fn clipped_road_lane_and_its_connector_retire_but_invalid_references_refuse() {
+    let (mut graph, mut network) = fixture();
+    let old_lane = network.lane_system.edge_lanes[&1][0];
+    let mut agents = AgentSystem::new();
+    add_agent(&mut agents, old_lane, &graph, &network.lane_system);
+    agents.lane_change_from_lane_id[0] = old_lane as u32;
+    graph.edge_mut(1).start_clip = 1000.0;
+    network.lane_system.rebuild(&mut graph);
+    assert!(network.lane_system.edge_lanes[&1].is_empty());
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    conn.execute("INSERT INTO network_runtime_state VALUES (1, 0)", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (?1, 1, 1, 0, -1, -1, -1, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10000, 2, 1, 0, -1, -1, -1, 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10001, -1, 1, 0, 2, ?1, 10000, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    let version = crate::simulation::save::schema::SAVE_VERSION;
+    restore_lane_references(
+        &conn,
+        version,
+        &mut agents,
+        &graph,
+        &mut network,
+        &BuildingAllocator::new(),
+    )
+    .unwrap();
+    assert_eq!(agents.current_lane_id[0], usize::MAX);
+    assert_eq!(agents.lane_change_from_lane_id[0], u32::MAX);
+    assert!(agents.current_path[0].is_empty());
+    // Endpoint corruption must not disappear along with a legitimate retired lane.
+    conn.execute(
+        "UPDATE saved_lanes SET node_id = 1 WHERE lane_id = 10001",
+        [],
+    )
+    .unwrap();
+    assert!(
+        restore_lane_references(
+            &conn,
+            version,
+            &mut AgentSystem::new(),
+            &graph,
+            &mut network,
+            &BuildingAllocator::new()
+        )
+        .is_err()
+    );
+    conn.execute("DELETE FROM saved_lanes WHERE lane_id = 10001", [])
+        .unwrap();
+    // A connector cannot serve as another connector's physical road endpoint.
+    let from = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            lane.is_fwd && lane.lane_idx == 0
+        })
+        .unwrap();
+    let to = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            !lane.is_fwd && lane.lane_idx == -1
+        })
+        .unwrap();
+    assert!(
+        network.lane_system.lanes[from]
+            .next_lanes
+            .iter()
+            .any(|&id| {
+                let lane = &network.lane_system.lanes[id];
+                lane.edge_id == usize::MAX && lane.next_lanes.first() == Some(&to)
+            })
+    );
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10002, 2, 0, -1, -1, -1, -1, 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10003, -1, 1, 0, 3, 10000, 10002, 0, 0)",
+        [],
+    )
+    .unwrap();
+    restore_lane_references(
+        &conn,
+        version,
+        &mut AgentSystem::new(),
+        &graph,
+        &mut network,
+        &BuildingAllocator::new(),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10004, -1, 1, 0, 2, ?1, 10003, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    assert!(
+        restore_lane_references(
+            &conn,
+            version,
+            &mut AgentSystem::new(),
+            &graph,
+            &mut network,
+            &BuildingAllocator::new()
+        )
+        .is_err()
+    );
+    conn.execute("DELETE FROM saved_lanes WHERE lane_id >= 10002", [])
+        .unwrap();
+    conn.execute("UPDATE saved_lanes SET lane_idx = 7 WHERE edge_id = 1", [])
+        .unwrap();
+    assert!(
+        restore_lane_references(
+            &conn,
+            version,
+            &mut AgentSystem::new(),
+            &graph,
+            &mut network,
+            &BuildingAllocator::new()
+        )
+        .is_err()
+    );
+}
+
 fn add_agent(
     agents: &mut AgentSystem,
     lane_id: usize,

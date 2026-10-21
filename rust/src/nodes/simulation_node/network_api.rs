@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod crossings;
 mod ramps;
 mod road_tool;
 mod roundabouts;

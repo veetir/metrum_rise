@@ -94,6 +94,28 @@ Structural terrain stamping may still be used for explicit bridge / tunnel / ret
 ordinary grounded roads must solve the road / terrain boundary through road-owned top surfaces plus
 Rust-generated stitched terrain topology.
 
+`ROAD-68` layered crossings add a compiled box opening to the upper span. Its grass fill faces
+join the pavement edge to source ground at 1:2 (up to an 18 m setback); concrete soffits,
+abutments, tapered wing walls and low upstands with open rails close the structure. The lower
+road retains its own paved surface and cut. The opening covers the lower road's complete roadbed, including sidewalks,
+with 0.75 m side allowance, projected through the upper fill envelope for skew crossings.
+The filled pavement uses the whole span-owned ground carrier, rather than an exposed bridge's
+endpoint-only abutment support. Strips touching the opening are excluded from stamping and
+terrain cutouts. Span fill stops at node-owned mouths; filled junctions use the existing node
+earthwork owner. Only the solid slope faces outside the opening enter the existing structural stamper
+and visible-ground queries; source terrain remains immutable. The multi-height concrete/deck
+volume stays a road mesh rather than a heightfield stamp. Fill uses the existing grass material
+and cloud-shadow lighting.
+
+Both road owners participate in the existing surface/earthwork owner grid. A changed or removed
+lower road invalidates its upper structure through the cached owner chunks; new positions use
+the existing road R-tree. Preview query certificates and undo include the same dependent owners.
+No second spatial index or city-wide dependency scan is introduced. Explicit raised crossing
+approaches retain solid fill after splitting or removal of the lower road. Ordinary level-zero
+valley and water bridges retain their existing deck/pier treatment. See the
+[ROAD-68 completion contract](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)
+for tool behavior and acceptance.
+
 ### 4. Placed Client Surfaces Stay Fixed Under Later Terrain Edits
 
 Placement and later terrain authoring are separate operations.

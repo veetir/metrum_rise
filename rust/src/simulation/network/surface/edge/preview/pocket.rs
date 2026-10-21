@@ -99,7 +99,7 @@ impl RoadSurfaceSystem {
         }
         let required_edges: Vec<_> = edges.values().copied().collect();
         let required_nodes: Vec<_> = nodes.values().copied().collect();
-        Self::complete_validation_surface_context(
+        self.complete_validation_surface_context(
             &mut graph,
             source,
             &mut nodes,

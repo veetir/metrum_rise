@@ -88,7 +88,14 @@ impl PlannedRoadSurfaceQuery {
                 let Some(actual) = surface.compiled_visual_span_pieces.get(&live) else {
                     return false;
                 };
-                if **actual != expected.clone_with_edge_identity(live) {
+                let mut expected = expected.clone_with_edge_identity(live);
+                if let Some(crossing) = &mut expected.filled_crossing {
+                    for owner in &mut crossing.lower_edges {
+                        *owner = self.edge_ids[*owner];
+                    }
+                    crossing.lower_edges.sort_unstable();
+                }
+                if **actual != expected {
                     return false;
                 }
             }
