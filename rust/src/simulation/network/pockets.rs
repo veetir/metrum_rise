@@ -48,6 +48,12 @@ impl PocketLayout {
             .get_edge(id)
             .filter(|e| !e.deleted)
             .ok_or("invalid_road")?;
+        if [selected.start_node, selected.end_node]
+            .into_iter()
+            .any(|node| graph.node(node).node_type == NodeType::Ramp)
+        {
+            return Err("edit_ramp_controls");
+        }
         let existing =
             selected.pocket_taper().map(|_| id).or_else(|| {
                 let node = if at_start {
@@ -139,6 +145,9 @@ impl PocketLayout {
         } else {
             base.end_node
         };
+        if graph.node(junction).node_type == NodeType::Ramp {
+            return Err("edit_ramp_controls");
+        }
         let total = RegionGraph::new().calculate_length(&base.physical_geometry);
         base.physical_length = total;
         if !left && !right {
@@ -619,21 +628,23 @@ pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3], leve
         Vector3::new(max.x, 0.0, max.y),
         |id| {
             let edge = graph.edge(id);
-            if conflict || edge.deleted || edge.lane_tapers.is_none() {
+            if conflict || edge.deleted {
                 return;
             }
             // A separated interior crossing is safe, but an authored same-point endpoint
             // must not attach a third arm to a protected pocket transition on either layer.
             for point in [points[0], *points.last().unwrap()] {
                 for node in [edge.start_node, edge.end_node] {
-                    if graph.node(node).node_type == NodeType::LaneTransition
-                        && point.distance_to(graph.node(node).pos) < 0.2
+                    if matches!(
+                        graph.node(node).node_type,
+                        NodeType::LaneTransition | NodeType::Ramp
+                    ) && point.distance_to(graph.node(node).pos) < 0.2
                     {
                         conflict = true;
                     }
                 }
             }
-            if conflict || edge.crossing_level != level {
+            if conflict || edge.lane_tapers.is_none() || edge.crossing_level != level {
                 return;
             }
             for a in points.windows(2) {

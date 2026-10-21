@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 92;
+pub const SAVE_VERSION: i64 = 93;
 
 /// First version storing the weather: scenario, transition, cloud drift, wind clock and schedule.
 ///
@@ -617,6 +617,7 @@ pub fn node_type_to_i64(value: NodeType) -> i64 {
     match value {
         NodeType::Junction => 0,
         NodeType::LaneTransition => 6,
+        NodeType::Ramp => 7,
         NodeType::Station => 1,
         NodeType::Harbor => 2,
         NodeType::Airport => 3,
@@ -629,6 +630,7 @@ pub fn node_type_from_i64(value: i64) -> Result<NodeType, SaveLoadError> {
     match value {
         0 => Ok(NodeType::Junction),
         6 => Ok(NodeType::LaneTransition),
+        7 => Ok(NodeType::Ramp),
         1 => Ok(NodeType::Station),
         2 => Ok(NodeType::Harbor),
         3 => Ok(NodeType::Airport),

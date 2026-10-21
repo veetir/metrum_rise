@@ -20,6 +20,7 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub(crate) mod pockets;
+pub(crate) mod ramps;
 pub(crate) mod road_edit;
 pub(crate) mod roundabouts;
 pub mod topology;

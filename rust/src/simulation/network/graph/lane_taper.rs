@@ -49,9 +49,18 @@ impl Edge {
     }
 
     pub(crate) fn pocket_surface_shift(&self) -> f32 {
-        self.pocket_taper().map_or(0.0, |(end, taper)| {
+        self.pocket_taper().map_or(0.0, |(_, taper)| {
             if taper.right_pocket {
-                LANE_WIDTH * 0.5 * side() * if end == 0 { 1.0 } else { -1.0 }
+                // The wider direction owns the outer lane, whether it gains or drops it.
+                // Existing approach pockets have exactly the same directional difference.
+                LANE_WIDTH
+                    * 0.5
+                    * side()
+                    * if self.fwd_lanes > taper.from_fwd {
+                        1.0
+                    } else {
+                        -1.0
+                    }
             } else {
                 0.0
             }

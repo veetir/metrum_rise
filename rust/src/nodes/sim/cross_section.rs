@@ -23,6 +23,12 @@ impl SimCore {
         let Some(edge) = self.region_graph.get_edge(id).filter(|edge| !edge.deleted) else {
             return self.refuse_cross_section("invalid_road");
         };
+        if [edge.start_node, edge.end_node].into_iter().any(|node| {
+            self.region_graph.node(node).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        }) {
+            return self.refuse_cross_section("edit_ramp_controls");
+        }
         let edits_pocket_base = [edge.start_node, edge.end_node].into_iter().any(|node| {
             self.region_graph.node(node).node_type
                 == crate::simulation::network::types::NodeType::LaneTransition

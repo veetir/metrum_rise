@@ -19,6 +19,7 @@ enum CellScenario {
     Memory,
     Pocket,
     Roundabout,
+    Ramp,
 }
 
 #[test]
@@ -80,6 +81,12 @@ fn populated_roundabout_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::Roundabout);
 }
 
+#[test]
+#[ignore = "populated ramp preview locality; run release without competing work"]
+fn populated_ramp_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Ramp);
+}
+
 fn measure_populated_road_plan_scaling(
     paved: bool,
     zoning_only: bool,
@@ -93,7 +100,7 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = !matches!(
         scenario,
-        CellScenario::None | CellScenario::Pocket | CellScenario::Roundabout
+        CellScenario::None | CellScenario::Pocket | CellScenario::Roundabout | CellScenario::Ramp
     );
     let mut core = test_core();
     road_terrain_plan::commit_ready(
@@ -163,6 +170,27 @@ fn measure_populated_road_plan_scaling(
             core.region_graph.add_edge(edge);
         }
         core.region_graph.rebuild_intersection_clips();
+    }
+    let ramp_edge = core.region_graph.edge_count();
+    if scenario == CellScenario::Ramp {
+        let a = Vector3::new(-600.0, 0.0, -400.0);
+        let b = Vector3::new(600.0, 0.0, -400.0);
+        let mut edge = edge_template.clone();
+        edge.start_node = core.region_graph.add_node(a, NodeType::Junction);
+        edge.end_node = core.region_graph.add_node(b, NodeType::Junction);
+        edge.geometry = vec![a, b];
+        edge.physical_geometry = edge.geometry.clone();
+        edge.physical_length = 1200.0;
+        edge.fwd_lanes = 2;
+        edge.bkw_lanes = 2;
+        edge.width = 19.0;
+        edge.median = crate::simulation::network::graph::RoadMedian::from_tool(2, 5.0).unwrap();
+        edge.allowed_types = TransitFlags::CAR;
+        edge.speed_limit = 100.0 / 3.6;
+        core.region_graph.add_edge(edge);
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, ramp_edge);
     }
     let first_background_edge = core.region_graph.edge_count();
     let mut previous_pocket_mesh: Option<String> = None;
@@ -291,7 +319,10 @@ fn measure_populated_road_plan_scaling(
                 .road_surface
                 .published_generation_matches_source()
         );
-        if matches!(scenario, CellScenario::Pocket | CellScenario::Roundabout) {
+        if matches!(
+            scenario,
+            CellScenario::Pocket | CellScenario::Roundabout | CellScenario::Ramp
+        ) {
             use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
             let request = PocketRequest {
                 edge: 0,
@@ -307,11 +338,34 @@ fn measure_populated_road_plan_scaling(
                 angles: vec![0.0, 1.4, 3.0, 4.7],
                 replace: None,
             };
+            let ramp = crate::simulation::network::ramps::RampRequest {
+                edge: ramp_edge,
+                station: 600.0,
+                forward: true,
+                exit: true,
+                points: vec![
+                    Vector3::new(0.0, 0.0, -400.0),
+                    Vector3::new(200.0, 0.0, -300.0),
+                ],
+                length: 80.0,
+                taper: 35.0,
+            };
             let mut prepare = [0.0; 31];
             let mut preview = [0.0; 31];
             for iteration in 0..34 {
                 let start = Instant::now();
-                if scenario == CellScenario::Roundabout {
+                if scenario == CellScenario::Ramp {
+                    let layout = crate::simulation::network::ramps::RampLayout::prepare(
+                        &core.region_graph,
+                        ramp.clone(),
+                    )
+                    .unwrap();
+                    assert!(
+                        core.road_layout_corridor_refusal(layout.corridors())
+                            .is_none()
+                    );
+                    std::hint::black_box(layout);
+                } else if scenario == CellScenario::Roundabout {
                     let layout =
                         crate::simulation::network::roundabouts::RoundaboutLayout::prepare(
                             &core.region_graph,
@@ -327,7 +381,12 @@ fn measure_populated_road_plan_scaling(
                 }
                 let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
                 let start = Instant::now();
-                let (mesh, roads) = if scenario == CellScenario::Roundabout {
+                let (mesh, roads) = if scenario == CellScenario::Ramp {
+                    core.transit_network
+                        .road_surface
+                        .compile_ramp_preview(&core.region_graph, &core.heightmap, ramp.clone())
+                        .unwrap()
+                } else if scenario == CellScenario::Roundabout {
                     core.transit_network
                         .road_surface
                         .compile_roundabout_preview(
@@ -373,7 +432,9 @@ fn measure_populated_road_plan_scaling(
             preview.sort_by(f64::total_cmp);
             eprintln!(
                 "{} {}",
-                if scenario == CellScenario::Roundabout {
+                if scenario == CellScenario::Ramp {
+                    "RAMP_PLAN_SCALING"
+                } else if scenario == CellScenario::Roundabout {
                     "ROUNDABOUT_PLAN_SCALING"
                 } else {
                     "POCKET_PLAN_SCALING"

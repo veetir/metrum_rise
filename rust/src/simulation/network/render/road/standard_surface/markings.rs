@@ -15,7 +15,7 @@ use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, Lane, LaneSyste
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem,
 };
-use crate::simulation::network::types::TransitType;
+use crate::simulation::network::types::{NodeType, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Color, Vector2, Vector3};
 use std::collections::{BTreeSet, HashMap};
@@ -261,7 +261,7 @@ fn emit_lane_marking_sections(
     }
 }
 
-fn arrow_mask(lane: &Lane, lanes: &LaneSystem) -> u8 {
+fn arrow_mask(lane: &Lane, lanes: &LaneSystem, node_type: NodeType) -> u8 {
     let Some(input) = lane.geometry.windows(2).rev().find_map(|pair| {
         Vector2::new(pair[1].x - pair[0].x, pair[1].z - pair[0].z).try_normalized()
     }) else {
@@ -279,7 +279,11 @@ fn arrow_mask(lane: &Lane, lanes: &LaneSystem) -> u8 {
         }) else {
             return;
         };
-        mask |= if input.dot(output) >= std::f32::consts::FRAC_1_SQRT_2 {
+        // A shallow ramp fork is a directional choice even below the ordinary junction's
+        // 45-degree threshold. Collinear through lanes keep their straight arrows.
+        mask |= if input.dot(output) >= std::f32::consts::FRAC_1_SQRT_2
+            && (node_type != NodeType::Ramp || input.cross(output).abs() <= 1.0e-5)
+        {
             2
         } else if input.cross(output) < 0.0 {
             1
@@ -331,7 +335,7 @@ fn emit_approach_arrows(
         if lane.lane_type != LaneType::Vehicle || graph.node_adjacency(end).len() < 3 {
             continue;
         }
-        let mask = arrow_mask(lane, lanes);
+        let mask = arrow_mask(lane, lanes, graph.node(end).node_type);
         if mask == 0 {
             continue;
         }
@@ -586,6 +590,29 @@ pub(super) fn emit_marking_segment(
 mod tests {
     use super::*;
     #[test]
+    fn shallow_ramp_exits_keep_directional_arrows_in_both_stored_directions() {
+        for sign in [1.0, -1.0] {
+            let mut lanes = LaneSystem::new();
+            let mut incoming = Lane {
+                edge_id: 0,
+                geometry: vec![Vector3::new(-10.0 * sign, 0.0, 0.0), Vector3::ZERO],
+                ..Default::default()
+            };
+            incoming.next_lanes.push(1);
+            lanes.lanes.push(incoming);
+            lanes.lanes.push(Lane {
+                edge_id: 1,
+                geometry: vec![Vector3::ZERO, Vector3::new(10.0 * sign, 0.0, 5.0 * sign)],
+                ..Default::default()
+            });
+            assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Junction), 2);
+            assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Ramp), 4);
+            lanes.lanes[1].geometry[1].z = 0.0;
+            assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Ramp), 2);
+        }
+    }
+
+    #[test]
     fn arrows_follow_actual_connectors_and_whitelist_removal() {
         let mut lanes = LaneSystem::new();
         let source = Lane {
@@ -612,12 +639,12 @@ mod tests {
             lanes.lanes.push(connector);
             lanes.lanes[0].next_lanes.push(next);
         }
-        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 7);
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Junction), 7);
         lanes.lanes[0].geometry.push(Vector3::ZERO);
         lanes.lanes[1].geometry.insert(0, Vector3::ZERO);
-        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 7);
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Junction), 7);
         lanes.lanes[0].next_lanes.clear();
         lanes.lanes[0].next_lanes.push(5);
-        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes), 2);
+        assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Junction), 2);
     }
 }

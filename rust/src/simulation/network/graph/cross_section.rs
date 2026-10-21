@@ -177,6 +177,20 @@ impl super::RegionGraph {
     /// Tests matching directional groups, style and local setbacks in O(local degree).
     pub(crate) fn median_continues_at_node(&self, id: usize, node: u32) -> bool {
         let node = self.get_valid_node(node);
+        if self.node(node).node_type == crate::simulation::network::types::NodeType::Ramp {
+            let mut main = self
+                .node_adjacency(node)
+                .iter()
+                .copied()
+                .filter(|&edge| !self.edge(edge).deleted && self.edge(edge).median.is_some());
+            let (Some(a), Some(b)) = (main.next(), main.next()) else {
+                return false;
+            };
+            return main.next().is_none()
+                && (id == a || id == b)
+                && self.edge(a).median.map(|m| (m.style, m.width_m))
+                    == self.edge(b).median.map(|m| (m.style, m.width_m));
+        }
         if self.node(node).node_type == crate::simulation::network::types::NodeType::LaneTransition
         {
             return self.node_adjacency(node).len() == 2

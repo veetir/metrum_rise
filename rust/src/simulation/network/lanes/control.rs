@@ -59,7 +59,10 @@ fn rank(edge: &Edge) -> (bool, i32, u16, i32) {
 
 /// Derives B1/B5/B6 signing from local incident roads, without scanning the network.
 pub(crate) fn approach_control(graph: &RegionGraph, node: u32, edge: usize) -> ApproachControl {
-    if graph.node(node).node_type == NodeType::LaneTransition {
+    if matches!(
+        graph.node(node).node_type,
+        NodeType::LaneTransition | NodeType::Ramp
+    ) {
         return ApproachControl::Uncontrolled;
     }
     if graph.edge(edge).roundabout {
@@ -125,7 +128,10 @@ impl LaneSystem {
             return;
         };
         self.controlled.resize_with(self.lanes.len(), || None);
-        if graph.node(node as u32).node_type == NodeType::LaneTransition {
+        if matches!(
+            graph.node(node as u32).node_type,
+            NodeType::LaneTransition | NodeType::Ramp
+        ) {
             return;
         }
         let mut incoming = std::collections::HashMap::new();

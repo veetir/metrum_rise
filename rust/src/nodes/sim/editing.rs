@@ -1855,6 +1855,15 @@ impl SimCore {
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
             let node_id = self.region_graph.get_valid_node(node_id as u32);
+            if self.region_graph.node_adjacency(node_id).iter().any(|&id| {
+                let e = self.region_graph.edge(id);
+                [e.start_node, e.end_node].into_iter().any(|n| {
+                    self.region_graph.node(n).node_type
+                        == crate::simulation::network::types::NodeType::Ramp
+                })
+            }) {
+                return self.refuse_cross_section("edit_ramp_controls");
+            }
             let old_pos = self.region_graph.node(node_id).pos;
             if old_pos == pos {
                 return false;
@@ -1961,6 +1970,14 @@ impl SimCore {
         to_edge: i32,
         to_lane: i32,
     ) {
+        if (node_id as usize) < self.region_graph.node_count()
+            && self.region_graph.node(node_id).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        {
+            self.refuse_cross_section("edit_ramp_controls");
+            return;
+        }
+
         traffic_log!(
             "[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}"
         );
@@ -2024,6 +2041,14 @@ impl SimCore {
 
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
+        if (node_id as usize) < self.region_graph.node_count()
+            && self.region_graph.node(node_id).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        {
+            self.refuse_cross_section("edit_ramp_controls");
+            return;
+        }
+
         if (node_id as usize) < self.region_graph.node_count() {
             self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
             let keys: Vec<_> = self
@@ -2107,6 +2132,14 @@ impl SimCore {
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        if (node_id as usize) < self.region_graph.node_count()
+            && self.region_graph.node(node_id).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        {
+            self.refuse_cross_section("edit_ramp_controls");
+            return;
+        }
+
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }

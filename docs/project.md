@@ -39,6 +39,15 @@ all-target Clippy and fourteen individual road bridges pass; populated planning 
 identical local products through 100,000 background buildings. Synchronous previews still
 cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
 
+ROAD-69 has a first restricted ramp-stub authoring slice: the road-menu Ramp tool snaps to a
+straight divided road, adds a directional deceleration/acceleration lane, retains the main
+separator and publishes an undoable one-way fork/merge with paired previews and version-93
+persistence. Gore paint/signs, right-turn islands, diamond/loop presets, curved grading and OSM
+link mapping remain open ([ramp scope](roads.md#restricted-ramp-stubs--road-69-first-slice)).
+Fresh 2,624-test release and fifteen native bridge checks pass; ten windowed captures were inspected. Sustained
+1M-agent tick medians change +1.8%; the instrumented short 30k network timing discrepancy
+remains open in the owning verification notes.
+
 ROAD-68 has an explicit crossing-layer topology stage in progress, with roadbed clearance
 validation, preview/commit identity and version-91 sparse persistence. Filled openings,
 embankments, player over/under controls and the university reconstruction remain pending

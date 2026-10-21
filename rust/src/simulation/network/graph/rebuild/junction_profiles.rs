@@ -363,7 +363,10 @@ impl RegionGraph {
                 if !affected_nodes.contains(&node_id) {
                     continue;
                 }
-                if self.nodes[node_id as usize].node_type != NodeType::Junction {
+                if !matches!(
+                    self.nodes[node_id as usize].node_type,
+                    NodeType::Junction | NodeType::Ramp
+                ) {
                     continue;
                 }
                 incidents_by_node
@@ -517,7 +520,10 @@ impl RegionGraph {
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
-        if self.nodes.get(node_id as usize)?.node_type != NodeType::Junction {
+        if !matches!(
+            self.nodes.get(node_id as usize)?.node_type,
+            NodeType::Junction | NodeType::Ramp
+        ) {
             return None;
         }
         let affected_nodes = HashSet::from([node_id]);

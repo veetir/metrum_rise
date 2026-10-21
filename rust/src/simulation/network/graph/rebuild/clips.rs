@@ -279,7 +279,10 @@ impl RegionGraph {
                 .and_then(|ends| ends[end])
                 .map_or(0.0, |t| t.length_m);
         }
-        if self.nodes[node_id as usize].node_type != NodeType::Junction {
+        if !matches!(
+            self.nodes[node_id as usize].node_type,
+            NodeType::Junction | NodeType::Ramp
+        ) {
             return 0.0;
         }
         if !Self::node_requires_clip(stats) {

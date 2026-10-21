@@ -19,6 +19,7 @@ extends Node
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
+var ramp_tool: Node3D
 var roundabout_tool: Node3D
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
@@ -34,7 +35,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT, RAMP }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -54,6 +55,11 @@ var _alt_orbit := false
 var _last_gesture := ""
 
 func _ready():
+	ramp_tool = Node3D.new()
+	ramp_tool.name = "RampTool"
+	ramp_tool.set_script(load("res://scripts/tools/ramp_tool.gd"))
+	get_parent().call_deferred("add_child", ramp_tool)
+
 	roundabout_tool = Node3D.new()
 	roundabout_tool.name = "RoundaboutTool"
 	roundabout_tool.set_script(load("res://scripts/tools/roundabout_tool.gd"))
@@ -406,6 +412,10 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.fwd_lanes = 0
 					road_tool.bkw_lanes = 0
 					road_tool._update_lanes_label()
+		Tool.RAMP:
+			if ramp_tool:
+				ramp_tool.active = enabled
+				if not enabled: ramp_tool.cancel()
 		Tool.ROUNDABOUT:
 			if roundabout_tool: roundabout_tool.active = enabled
 		Tool.CUL_DE_SAC:

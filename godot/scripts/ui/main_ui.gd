@@ -288,6 +288,12 @@ func _build_ui():
 	road_sub_menu.add_child(ow2_btn)
 	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
 
+	var ramp_btn := Button.new()
+	ramp_btn.text = "Ramp"
+	ramp_btn.focus_mode = Control.FOCUS_NONE
+	road_sub_menu.add_child(ramp_btn)
+	ramp_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.RAMP))
+
 	var roundabout_btn := Button.new()
 	roundabout_btn.text = "Roundabout (O)"
 	roundabout_btn.focus_mode = Control.FOCUS_NONE

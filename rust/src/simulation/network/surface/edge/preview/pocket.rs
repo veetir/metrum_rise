@@ -11,6 +11,29 @@ use crate::simulation::network::surface::PlannedRoadSurfaceQuery;
 use std::sync::Arc;
 
 impl RoadSurfaceSystem {
+    /// Ramp stubs share bounded surface and terrain replacement with other topology edits.
+    pub(crate) fn compile_ramp_preview(
+        &self,
+        source: &RegionGraph,
+        terrain: &TerrainSystem,
+        request: crate::simulation::network::ramps::RampRequest,
+    ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
+        use crate::simulation::network::ramps::RampLayout;
+        let layout = RampLayout::prepare(source, request.clone())?;
+        self.compile_local_layout_preview(
+            source,
+            terrain,
+            layout.originals.iter().map(|(id, _)| *id).collect(),
+            |graph, _, edges| {
+                let request = crate::simulation::network::ramps::RampRequest {
+                    edge: edges[&request.edge],
+                    ..request
+                };
+                Ok(RampLayout::prepare(graph, request)?.apply(graph))
+            },
+        )
+    }
+
     /// Roundabouts use the same local surface, terrain ownership and render pipeline as endpoint edits.
     pub(crate) fn compile_roundabout_preview(
         &self,

@@ -179,6 +179,30 @@ resamples (seed 606); the median of pair ratios differs from the ratio of indepe
 This establishes neither a speedup nor saturated signal/junction throughput. Road rebuild,
 locality and visual evidence belong to the [ROAD-60 acceptance](roads.md#road-signs-road-60).
 
+### Restricted ramp movement — ROAD-69 first slice
+
+Ramp stubs use the existing physical lanes, node-to-node routing states and target-lane
+reservations. Their explicit fork whitelist connects through lanes by rank, isolates the
+opposite carriageway, and dedicates the added outer lane to the one-way stub. The downstream
+acceleration taper merges that added lane into its adjacent through lane using the existing
+slice B fork/drop mapping and gap checks. `Ramp` nodes have no ordinary right-hand, stop or
+priority admission cache and no zebras; ordinary junctions at later ramp terminals keep their
+existing automatic controls. No new tick loop, agent field, hot-path allocation or U-turn
+exception is added. Source/target lane offsets are still rebuilt, never decided in GDScript.
+
+Fresh verification on the ROAD-69 release: the complete library suite passes 2,624 tests,
+including shared blocked-merge serialization. The native ramp bridge drives an exit or entry
+plus both through carriageways in all four direction/role combinations. Thirty alternating
+PERF-06 process pairs with eight Rayon workers retain identical work counters. The 30k network
+short-test paired ratio is 1.117 (95% interval 1.029–1.229), so its timing acceptance remains open.
+Three matched sustained production pairs measure 2.890→2.861 ms at 100k and 37.647→38.331 ms
+at 1M on-road agents; the latter is a +1.8% observed change within process-pair variation.
+Build identities, exact commands, timing tables and the populated-road locality check are recorded in the
+[road acceptance](roads.md#first-slice-release-verification--2026-10-21).
+
+The corresponding authoring scope and pending signs, islands, interchange presets and import
+mapping are recorded in [roads.md](roads.md#restricted-ramp-stubs--road-69-first-slice).
+
 ### Shared lane occupancy contract (TRAFFIC-02)
 
 All live lane acquisitions use `agents/lane_state.rs`: building egress and ingress rollback,

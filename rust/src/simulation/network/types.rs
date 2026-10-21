@@ -57,6 +57,8 @@ pub enum NodeType {
     Border,
     /// Degree-two lane fork/merge with continuous sidewalks and no zebra or priority control.
     LaneTransition,
+    /// Restricted one-way ramp fork/merge; through carriageways retain their separator.
+    Ramp,
 }
 
 /// Architectural classification of a road edge.

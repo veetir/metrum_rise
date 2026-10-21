@@ -12,7 +12,14 @@ impl SimCore {
         &self,
         layout: &RoundaboutLayout,
     ) -> Option<&'static str> {
-        for edge in layout.corridors() {
+        self.road_layout_corridor_refusal(layout.corridors())
+    }
+
+    pub(crate) fn road_layout_corridor_refusal<'a>(
+        &self,
+        edges: impl Iterator<Item = &'a crate::simulation::network::graph::Edge>,
+    ) -> Option<&'static str> {
+        for edge in edges {
             let points = &edge.physical_geometry;
             let half =
                 crate::simulation::network::surface::RoadSurfaceSystem::visual_roadbed_half_width_m(
