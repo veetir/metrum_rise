@@ -418,6 +418,25 @@ impl RegionGraph {
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
+        let physical = self.reconstruct_junction_endpoint_profile_plane(node_id, false)?;
+        if physical.grade() > JUNCTION_PROFILE_REJECT_MAX_GRADE
+            && let Some(control) = self.reconstruct_junction_endpoint_profile_plane(node_id, true)
+            && control.grade() <= JUNCTION_PROFILE_MOUTH_MAX_GRADE
+        {
+            // A legacy eased profile can contain a longitudinal spike that an ill-conditioned
+            // bend fit amplifies into crossfall. Canonical control pins supply independent
+            // evidence: only replace a rejected-grade fit with a design-grade control plane.
+            // Supported steep hills retain their physical plane, including grades above 50%.
+            return Some(control);
+        }
+        Some(physical)
+    }
+
+    fn reconstruct_junction_endpoint_profile_plane(
+        &self,
+        node_id: u32,
+        control_supports: bool,
+    ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
         // Cross-section transitions can own a visual Bend on a straight alignment. The
         // finalizer does not solve a crossing plane there: two longitudinal profiles cannot
@@ -448,7 +467,7 @@ impl RegionGraph {
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
             }
-            let points = if edge.physical_geometry.len() >= 2 {
+            let points = if !control_supports && edge.physical_geometry.len() >= 2 {
                 &edge.physical_geometry
             } else {
                 &edge.geometry

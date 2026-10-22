@@ -3,6 +3,7 @@
 //! Simulation snapshot persistence regressions.
 
 mod cell_zoning;
+mod road_junction_geometry;
 
 use super::*;
 use crate::assets::AssetManifest;

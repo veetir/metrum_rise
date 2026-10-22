@@ -17,6 +17,8 @@ pub(super) struct SpanTangentFrame {
     pub(super) start_tangent: RoadVec2,
     /// Exact end-mouth direction supplied to both span and node compilers.
     pub(super) end_tangent: RoadVec2,
+    /// Quadratic-knot derivative used only when the ordinary frame failed geometry validation.
+    pub(super) nonuniform_knots: bool,
 }
 
 impl RoadSurfaceSystem {
@@ -57,12 +59,18 @@ impl RoadSurfaceSystem {
             let (frame_start_s, start_tangent) = if start_s <= frame.start_s_m {
                 (frame.start_s_m, frame.start_tangent)
             } else {
-                (start_s, self.vertex_tangent_xz(points, index))
+                (
+                    start_s,
+                    self.vertex_tangent_xz(points, index, frame.nonuniform_knots),
+                )
             };
             let (frame_end_s, end_tangent) = if end_s >= frame.end_s_m {
                 (frame.end_s_m, frame.end_tangent)
             } else {
-                (end_s, self.vertex_tangent_xz(points, index + 1))
+                (
+                    end_s,
+                    self.vertex_tangent_xz(points, index + 1, frame.nonuniform_knots),
+                )
             };
             let frame_t = f64::from(
                 (clamped_s - frame_start_s) / (frame_end_s - frame_start_s).max(SAMPLE_EPSILON_M),
@@ -82,17 +90,35 @@ impl RoadSurfaceSystem {
         )
     }
 
-    fn vertex_tangent_xz(&self, points: &[RoadVec3], index: usize) -> RoadVec2 {
+    fn vertex_tangent_xz(&self, points: &[RoadVec3], index: usize, nonuniform: bool) -> RoadVec2 {
         if index == 0 {
             return self.segment_tangent_xz(points, 0);
         }
         if index + 1 >= points.len() {
             return self.segment_tangent_xz(points, index - 1);
         }
-        // Preserve segment lengths before normalization: a centimetre profile interval must
-        // not amplify float-coordinate roundoff as much as its metre-long neighbours.
-        let delta = points[index + 1] - points[index - 1];
-        let tangent = RoadVec2::new(delta.x, delta.z);
+        if !nonuniform {
+            let delta = points[index + 1] - points[index - 1];
+            let tangent = RoadVec2::new(delta.x, delta.z);
+            return if tangent.length_squared() > 1e-8 {
+                tangent.normalize()
+            } else {
+                self.segment_tangent_xz(points, index)
+            };
+        }
+        let before = points[index] - points[index - 1];
+        let after = points[index + 1] - points[index];
+        let before = RoadVec2::new(before.x, before.z);
+        let after = RoadVec2::new(after.x, after.z);
+        let a = before.length();
+        let b = after.length();
+        if a <= f64::EPSILON || b <= f64::EPSILON {
+            return self.segment_tangent_xz(points, index);
+        }
+        // Derivative of the three-point quadratic on nonuniform XZ arc-length knots.
+        // The centered secant weights the long interval twice: a nearby inserted knot
+        // then concentrates the entire turn into centimetres and folds the offset kerb.
+        let tangent = before * (b / a) + after * (a / b);
         if tangent.length_squared() > 1e-8 {
             tangent.normalize()
         } else {
@@ -160,6 +186,7 @@ mod tests {
         ];
         let cumulative = surface.build_cumulative_distances(&points);
         let frame = SpanTangentFrame {
+            nonuniform_knots: true,
             start_s_m: 0.0,
             end_s_m: cumulative[3],
             start_tangent: surface.sample_polyline(&points, &cumulative, 0.0, None).1,
@@ -189,6 +216,44 @@ mod tests {
                 );
             }
             previous = next;
+        }
+    }
+    #[test]
+    fn nonuniform_corner_knots_do_not_concentrate_turn_into_short_interval() {
+        let surface = RoadSurfaceSystem::new(512.0);
+        let direction = RoadVec3::new(3.0_f64.to_radians().cos(), 0.0, 3.0_f64.to_radians().sin());
+        let points = [
+            RoadVec3::new(-2.0, 0.0, 0.0),
+            RoadVec3::ZERO,
+            direction * 0.08,
+            direction * 2.08,
+        ];
+        let cumulative = surface.build_cumulative_distances(&points);
+        let frame = SpanTangentFrame {
+            nonuniform_knots: true,
+            start_s_m: 0.0,
+            end_s_m: cumulative[3],
+            start_tangent: surface.segment_tangent_xz(&points, 0),
+            end_tangent: surface.segment_tangent_xz(&points, 2),
+        };
+        let rail = |s| {
+            let (p, tangent) = surface.sample_polyline(&points, &cumulative, s, Some(&frame));
+            let lateral = RoadVec3::new(-tangent.y, 0.0, tangent.x) * 3.5;
+            [p - lateral, p, p + lateral]
+        };
+        let a = rail(cumulative[1]);
+        let b = rail(cumulative[2]);
+        for band in 0..2 {
+            assert!(
+                RoadSurfaceSystem::make_boundary_loop_polygon(vec![
+                    a[band],
+                    b[band],
+                    b[band + 1],
+                    a[band + 1]
+                ])
+                .is_some(),
+                "a three-degree bend must not fold its kerb across an inserted 8 cm knot"
+            );
         }
     }
 }

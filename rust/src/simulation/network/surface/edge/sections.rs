@@ -49,6 +49,16 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
     ) -> Vec<RoadSurfaceSection> {
+        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, false)
+    }
+
+    /// Rebuilds span-knot frames while retaining the exact source mouths and center stations.
+    pub(in crate::simulation::network::surface) fn compile_edge_sections_with_tangent_frame(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        nonuniform_knots: bool,
+    ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
         let points: Vec<RoadVec3> = self
             .edge_points(edge)
@@ -167,6 +177,7 @@ impl RoadSurfaceSystem {
                 end_tangent = end_pass_through_tangent.unwrap_or(end_tangent);
             }
             SpanTangentFrame {
+                nonuniform_knots,
                 start_s_m,
                 end_s_m,
                 start_tangent,

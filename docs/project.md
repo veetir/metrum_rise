@@ -6,6 +6,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-73 has a partial compiler checkpoint: the KYS crossfall spike and 27 rejected imported
+span owners are repaired. The imported-map sweep still reports 3 rejected spans, 3 rejected
+junction nodes, 7 oversized kerb steps and 3 distinct terrain-export conflicts. Bioteknia's
+coupled height/material ownership and the complete KYS view remain open
+([diagnosis and acceptance](roads.md#imported-junction-geometry--road-73-partial)).
+
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
 hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
 crossable beside ordinary junctions without zebra clearance. Arrows now require authored or

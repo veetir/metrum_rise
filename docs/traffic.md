@@ -217,6 +217,16 @@ future lane graph. No agent layout, movement loop or tick allocation changes.
 Saved masks and transactional edit behavior are owned by
 [the road contract](roads.md#bus-only-lane-authoring--road-72-lane-use-slice).
 
+### Imported road compiler checkpoint — ROAD-73
+
+The ROAD-73 span-frame repair keeps successful existing section geometry and all lane
+identities unchanged. Rejected spans may receive a validated nonuniform knot frame; surface
+queries and node mouths share its exact retained sections. No agent layout, movement loop,
+reservation policy, NET-07 behavior or tick-time allocation changes. The unresolved imported
+short-link height discontinuities require a joint node/material/terrain fix; an isolated
+longitudinal reprofile is not accepted. Fault counts, legacy checks and performance evidence
+are owned by [the ROAD-73 road contract](roads.md#imported-junction-geometry--road-73-partial).
+
 ### ROAD-72 release traffic verification — 2026-10-21
 
 Baseline is `c81d4477`; final source/build identities and road acceptance are in

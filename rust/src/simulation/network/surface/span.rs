@@ -366,13 +366,49 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         edge_idx: usize,
     ) -> Option<RoadSurfaceVisualSpanPiece> {
+        if edge_idx >= graph.edge_count() {
+            return None;
+        }
+        let original = self.compiled_sections.get(&edge_idx)?;
+        self.compile_visual_span_piece_from_sections(graph, terrain, edge_idx, Arc::clone(original))
+            .or_else(|| {
+                // A frame retry must not regenerate around malformed or foreign band data.
+                // Prove that these are precisely this graph's original compiler inputs first.
+                if self.compile_edge_sections(graph, edge_idx).as_slice() != original.as_slice() {
+                    return None;
+                }
+                // Filled-crossing shells independently rebuild neighboring source sections.
+                // A repaired frame cannot publish beside that unresolved structural producer.
+                // Keep its generation rejected until both consumers can share the same frame.
+                if !self.crossing_neighbors(graph, edge_idx).is_empty() {
+                    return None;
+                }
+                // Preserve every successfully validated frame. A rejected nonuniform knot
+                // layout gets the quadratic derivative, then the complete same surface,
+                // support and terrain-boundary validation; no approximate acceptance gate.
+                let sections = self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true);
+                self.compile_visual_span_piece_from_sections(
+                    graph,
+                    terrain,
+                    edge_idx,
+                    Arc::new(sections),
+                )
+            })
+    }
+
+    fn compile_visual_span_piece_from_sections(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_idx: usize,
+        sections: Arc<Vec<RoadSurfaceSection>>,
+    ) -> Option<RoadSurfaceVisualSpanPiece> {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         if edge_idx >= graph.edge_count() {
             return None;
         }
         let edge = graph.edge(edge_idx);
-        let sections = Arc::clone(self.compiled_sections.get(&edge_idx)?);
         let visible_ranges_start = road_debug.then(Instant::now);
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, &sections);

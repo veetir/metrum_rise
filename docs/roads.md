@@ -2775,6 +2775,193 @@ RAYON_NUM_THREADS=4 METRUM_DEBUG=0 CRITERION_HOME="$ARTIFACTS/criterion-side-pai
   'compile_(all_grid|dirty_lane_width_change)'
 ```
 
+### Imported junction geometry — ROAD-73 (partial)
+
+**Open, 2026-10-22.** This checkpoint fixes two compiler defects, not the whole imported
+junction problem. It does not satisfy the clean KYS/Bioteknia view acceptance yet.
+
+- The KYS slip bend at saved node 136 (roads 123/137) fits a 245% transverse grade from
+  independently eased physical centreline supports. Its canonical control supports fit 6.63%.
+  A physical fit above the existing 50% rejection bound may use independently reconstructed
+  controls only when those controls satisfy the existing 16% mouth design bound. Supported
+  steep profiles and ordinary fits keep their existing arithmetic. Longitudinal physical
+  heights, authored nodes, topology and save bytes are unchanged; no terrain sample or
+  arbitrary clamp supplies road height. The exact two-edge SQL regression retains both
+  saved profiles and checks that the compiler stops inventing 7.7–8.1 m lateral excursions.
+- Closely spaced inserted profile knots can concentrate a turn into centimetres when span
+  normals interpolate length-weighted centred secants. Only a span rejected by the complete
+  existing surface/support/boundary compiler is rebuilt with the derivative of the three-point
+  quadratic on nonuniform horizontal arc-length knots. The replacement faces the same full
+  validation. Successful original frames remain byte-identical; no angular threshold, score,
+  relaxed validator or terrain workaround selects an output. Initial publication, dirty
+  publication and the node-move preview retain the exact section allocation owned by the
+  validated span, so node mouths, queries, rendering and terrain cannot diverge.
+
+The normal compile path adds constant owner/cache checks, without a new spatial index or
+per-agent/per-tick work. A rejected frame adds at most one existing section/span compilation;
+its complexity and scratch remain a constant multiple of that owner's existing compiler.
+The regular crossfall fit and new guard arithmetic add no allocation; the existing singular-fit
+solver is unchanged. Only a rejected physical fit performs the second endpoint-local control
+support traversal. Rejected-frame certification also uses the existing road-edge R-tree to
+exclude layered structural neighbors, O(P + log E + K log K) for P source points and K local
+hits. Filled-crossing shells currently rebuild raw neighboring sections independently; frame
+repair beside them remains rejected until both products share the resolved frame. Ordinary
+successful layered roads are unchanged. A targeted dirty-publication regression verifies that
+adding such a shell cannot replace the prior validated repaired span. No save schema or lane
+identities change.
+
+#### Imported-map sweep and remaining work
+
+The opt-in `simulation::save::tests::road_junction_geometry::audit_imported_junction_geometry`
+opens SQLite with `SQLITE_OPEN_READ_ONLY`. It uses the existing partial-validation mode only
+for diagnostics; production publication and load rejection stay atomic. The sweep visits all
+1,684 source roads and every successfully compiled junction, probing terrain export within
+24 m of each compiled node. It also records oversized same-XZ kerb steps, lateral section
+excursions and source-profile grades. These are separate signatures, not a count of unique
+junctions or proof that every visible defect has been found. Diagnostic terrain probes run
+serially to bound overlay scratch; production span/node compilation retains its Rayon workers.
+
+Fresh comparison against queued predecessor `cd09557a572c3bfe3fca17e028fcd5e534bd59d7`
+on `kuopio-sw-pockets.sqlite`:
+
+| Signature | Before | Candidate |
+|---|---:|---:|
+| Rejected span owners | 30 | 3: 140, 319, 992 |
+| Rejected node owners | 5 | 3: 89, 135, 222 |
+| Compiled spans / nodes | 1,654 / 1,076 | 1,681 / 1,078 |
+| Same-XZ kerb steps over 0.25 m | 7 | 7 |
+| Section lateral excursions over 1 m | 15 | 13 |
+| Local terrain-export failures / distinct reported boundaries | 3 / 2 | 5 / 3 |
+
+The newly observable terrain conflict near Bioteknia is a 493 mm disagreement between
+retained road owners, not a tolerance-sized seam. The other reported boundaries disagree by
+4 mm near `(382.629,1292.723)` and 87 mm near `(-937.408,1992.194)`. Source profiles contain
+31 roads with a segment grade above 50%; this is a diagnostic candidate list, not 31 proven
+compiler failures. Road 322 at Bioteknia reaches 331% and exposes incompatible endpoint
+profile windows. Changing its longitudinal curve alone creates new kerb-height conflicts;
+its fix must reconcile the shared node/material carriers and terrain boundaries together.
+Do not hide this by relaxing boundary-height agreement or changing the user save.
+
+KYS owner 140 and node 135 still block the complete KYS view; nodes 89/222 and owners
+319/992 fail at independent height/ownership/strip stages. The earlier refused 19 m + 19 m
+university plain-to-median variant remains part of ROAD-73. All these failures remain open.
+The full named snapshots still refuse production loading, so complete before/after views
+cannot yet be accepted. Capture tooling preserves exact retained road rows in local excerpts;
+excerpts are diagnostics, not evidence that the full imported map publishes.
+
+```sh
+METRUM_JUNCTION_SAVE="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/saves/kuopio-sw-pockets.sqlite" \
+METRUM_JUNCTION_OUTPUT="$ARTIFACTS/audit" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$TEST_BINARY" simulation::save::tests::road_junction_geometry::audit_imported_junction_geometry \
+  --exact --ignored --nocapture --test-threads=1
+python3 tools/road_junction_capture_fixtures.py
+METRUM_JUNCTION_SAVE="$ARTIFACTS/fixtures/roads-junction-bioteknia.sqlite" METRUM_JUNCTION_PHASE=after \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/godot-captures-final/project" \
+  --script res://tests/road_junction_geometry_capture.gd
+```
+
+#### Checkpoint verification and matched release measurements
+
+Fresh final library validation: **2,653 passed, 153 ignored**, including the exact KYS SQL
+fixture, nonuniform-knot strip regression, initial/dirty shared-section publication and
+layered-shell atomic rejection. `cargo clippy --all-targets` passes with only the two existing
+`chunks_exact_to_as_chunks` warnings in untouched `standard_surface/bus.rs:206–207`.
+Rustdoc has no missing-doc warnings; its two existing link warnings remain in
+`vegetation_api.rs:157` and `span/quads.rs:180`.
+
+```sh
+RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --lib -- --test-threads=4
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo doc --manifest-path rust/Cargo.toml --no-deps
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+cargo bench --manifest-path rust/Cargo.toml --bench road_chunk_benchmark --bench surface_benchmark --no-run
+```
+
+All 23 individually launched native bridges pass: `field_edit_tool`, `surface_patch_debug`,
+`vehicle_ground_support`, `network_tool_chunk_renderer`, `road_benchmark_metrics`,
+`road_preview_metrics`, `road_junction_preview`, `road_preview_stream`, `road_cross_section`,
+`road_bus_streetscape`, `road_turn_lanes`, `road_pockets`, `road_pockets_legacy`,
+`road_trajectory`, `road_junction_control`, `zoning_road_tool`, `road_grade_separation`,
+`road_filled_underpass`, `road_ramps`, `road_roundabouts`, `road_marking_rules`,
+`junction_debug_overlay`, `road_rejection_report`. The first grade-separation run lost a debug
+car after edit/undo; its isolated final rerun passed without a code/test change. Both logs are
+retained, rather than treating the first run as a pass. The legacy bridge retains all four
+v94 roadbed hashes. Each script uses an isolated application-data profile:
+
+```sh
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_ROADS_B_CONTRACT_DIR="$ARTIFACTS/legacy-v94" \
+  perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ARTIFACTS/godot-tests-final/project" \
+  --script res://tests/road_pockets_legacy_test.gd
+# Repeat the command with each of the other listed *_test.gd scripts.
+```
+
+Measurements use Apple M2 Pro, rustc 1.98.1 (`48a229cea`), macOS SDK 26.5, Godot 4.7.2
+(`ed1daf0bf`), `RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`, matched unprofiled release binaries,
+and serial workloads with no concurrent build/test/game. The predecessor is `cd09557a572c`;
+the final ten-file Rust/SQL source fingerprint is
+`a6b63064089a1d18524ed8036ea7077148625f7580521560f89ac2ec91eec398`.
+`$ARTIFACTS/build-identity-final.json` records the input paths and per-binary SHA-256 values.
+The baseline test executable adds the diagnostic audit only; its production compiler is the
+predecessor. Criterion uses the existing fixtures: 20 samples/1 s warmup for chunks and
+10 samples/3 s warmup for surface compilation. These are compiler/renderer measurements,
+not simulation-tick or allocation-profile claims.
+
+| Workload, increasing resident chunks 1 / 64 / 256 / 1,024 | Before | Final |
+|---|---|---|
+| Local chunk emission, µs | 35.151 / 35.597 / 35.886 / 35.523 | 34.831 / 35.315 / 35.813 / 35.495 |
+| Full emission, ms | 0.032736 / 1.8752 / 7.6545 / 33.017 | 0.032746 / 1.8846 / 7.6473 / 32.980 |
+| Dirty compile + chunk emission, µs | 71.386 / 75.486 / 83.748 / 143.81 | 72.111 / 75.431 / 86.465 / 142.94 |
+| Full surface grid, s | 1.5111 | 1.5080 |
+| Dirty lane-width surface edit, ms | 22.971 | 22.823 |
+| Dirty terrain surface edit, ms | 5.8561 | 5.9003 |
+
+Fixed-neighborhood locality uses 100 repeated plans per tier, 0 / 1k / 10k / 100k background
+buildings, up to 600,024 agents, 100,004 parcels and 391 remote roads. **All local products
+match** at every tier on both builds. Candidate repeated worker p50 is
+1.210 / 1.212 / 1.278 / 1.251 ms (before 1.188 / 1.275 / 1.260 / 1.323); full worker p50 is
+5.644 / 5.683 / 5.841 / 5.780 ms (before 5.420 / 5.677 / 5.597 / 5.701). One-time snapshot
+cost is recorded separately: 0.013 / 0.010 / 0.038 / 0.132 ms final. Cell node-move accepted
+p50 is 2.977 / 3.120 / 3.060 / 3.203 ms; blocked p50 stays 0.273–0.280 ms. Work follows the
+fixed affected neighborhood rather than the background population.
+
+The unchanged Godot mock-payload upload fixture also passes: 20 warmups, 101 samples,
+8,190 vertices per changed chunk. At 1,024 resident chunks and 0 / 1 / 4 / 16 changed chunks,
+complete-upload medians are 34 / 4,871 / 14,269 / 56,871 µs before and
+31 / 4,866 / 14,692 / 58,807 µs final. The larger mock uploads measured about 3% higher;
+this fixture does not call the changed Rust compiler. No frontend speedup is claimed.
+
+Build each side separately, retain its executable, and run from `rust/` once per side:
+
+```sh
+# First side: use --save-baseline road73-before instead of --baseline road73-before.
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$BENCH_BINARY" --bench --noplot --baseline road73-before
+# The surface_benchmark executable uses the same flags plus:
+# 'RoadSurfaceSystem/(compile_all_grid|compile_dirty_lane_width_change|compile_dirty_changed_terrain)$'
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" populated_road_plan_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" populated_cell_node_move_validation_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot --headless \
+  --path "$ARTIFACTS/godot-tests-final/project" --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+#### Captures and incomplete visual acceptance
+
+Inspected final windowed overhead/street pairs under `$ARTIFACTS/after/`:
+`legacy_overhead.png` / `legacy_street.png`, `south_curve_overhead.png` /
+`south_curve_street.png`, and `west_curve_overhead.png` / `west_curve_street.png`.
+The legacy pair was compared against the same v94 fixture's `$ARTIFACTS/before/` pair;
+road geometry is preserved and a car drives through the junction on both builds. South
+(source owners 1338/1339) and west (656) show continuous asphalt and ordinary kerbs with
+settled terrain. Their matched predecessor loads fail, so no valid matching before PNGs
+exist. These are cropped diagnostic networks, with cut-off remote arms visible overhead.
+The east excerpt still fails terrain residency and is excluded from accepted captures.
+
+The supplied `kys_pond.png` and `bioteknia.png` were inspected and retained as before views.
+The KYS target was assessed against `user-2026-10-21/kys-1.png`, `kys-2.png`, `kys-3.png`
+and `kys-top.png` (layout only). The full KYS/Bioteknia loads still fail, so there are **no
+accepted after views** of those two scenes and no claim that KYS now reads like its Finnish
+street references. South/west are geometry checks at other locations, not KYS layout matches.
+All three user-save SHA-256 values match their pre-task values. ROAD-73 remains open.
+
 ### Bridge abutment cutout bounds — ROAD-71
 
 A bridge abutment cutout ends at the last contacting section on each endpoint's existing

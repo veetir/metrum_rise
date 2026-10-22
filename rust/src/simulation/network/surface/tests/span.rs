@@ -619,3 +619,89 @@ fn assert_indexed_polygon_clearance_matches_scan(piece: &RoadSurfaceVisualSpanPi
         |_| true
     ));
 }
+
+fn nonuniform_span_graph() -> (RegionGraph, usize) {
+    let mut graph = RegionGraph::new();
+    let angle = 3.0_f32.to_radians();
+    let direction = Vector3::new(angle.cos(), 0.0, angle.sin());
+    let points = vec![
+        Vector3::new(-5.0, 0.0, 0.0),
+        Vector3::new(-2.0, 0.0, 0.0),
+        Vector3::ZERO,
+        direction * 0.08,
+        direction * 5.0,
+    ];
+    let a = graph.add_node(points[0], NodeType::Junction);
+    let b = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+    let mut edge = test_edge(
+        a,
+        b,
+        points,
+        3.5,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    );
+    edge.bkw_lanes = 0;
+    let id = graph.add_edge(edge);
+    (graph, id)
+}
+
+#[test]
+fn rejected_nonuniform_span_rebuilds_and_publishes_its_own_sections() {
+    let (graph, id) = nonuniform_span_graph();
+    let terrain = flat_terrain(64, 64);
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    let ordinary = surface.compile_edge_sections(&graph, id);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let span = &surface.compiled_visual_span_pieces()[&id];
+    assert_ne!(
+        span.sections.as_ref(),
+        &ordinary,
+        "the ordinary offset frame must actually be repaired"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&surface.compiled_sections()[&id], &span.sections),
+        "node mouths, terrain and rendering must read the exact repaired section buffer"
+    );
+    surface.mark_edge_dirty(&graph, id);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let span = &surface.compiled_visual_span_pieces()[&id];
+    assert!(std::sync::Arc::ptr_eq(
+        &surface.compiled_sections()[&id],
+        &span.sections
+    ));
+}
+
+#[test]
+fn repaired_frame_cannot_diverge_from_a_new_layered_crossing_shell() {
+    let (mut graph, lower) = nonuniform_span_graph();
+    let terrain = flat_terrain(64, 64);
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let original = std::sync::Arc::clone(&surface.compiled_visual_span_pieces()[&lower]);
+    let start = Vector3::new(0.0, 8.0, -20.0);
+    let end = Vector3::new(0.0, 8.0, 20.0);
+    let a = graph.add_node(start, NodeType::Junction);
+    let b = graph.add_node(end, NodeType::Junction);
+    let mut edge = test_edge(
+        a,
+        b,
+        vec![start, end],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    );
+    edge.crossing_level = 1;
+    let upper = graph.add_edge(edge);
+    surface.mark_edge_dirty(&graph, upper);
+    assert!(
+        !surface.compile_dirty(&graph, &terrain),
+        "a shell built from raw lower sections cannot publish with a repaired lower frame"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&original, &surface.compiled_visual_span_pieces()[&lower]),
+        "the failed structural generation must retain the prior validated span"
+    );
+}

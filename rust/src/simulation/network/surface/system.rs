@@ -686,6 +686,17 @@ impl RoadSurfaceSystem {
         self.published_generation_matches_source()
     }
 
+    /// Retains failed-generation products exclusively for opt-in geometry diagnostics.
+    #[cfg(test)]
+    pub(crate) fn compile_partial_for_geometry_audit(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+    ) {
+        self.retain_partial_validation_artifacts = true;
+        self.compile_dirty(graph, terrain);
+    }
+
     pub(crate) fn compile_dirty_with_reason(
         &mut self,
         graph: &RegionGraph,
@@ -878,6 +889,7 @@ impl RoadSurfaceSystem {
             if let Some(span_piece) = span_piece {
                 reused_span_topology_count += usize::from(topology_reused);
                 zero_copy_span_artifact_count += usize::from(zero_copy);
+                staging.retain_span_sections(&span_piece);
                 staging
                     .compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
@@ -1564,11 +1576,27 @@ impl RoadSurfaceSystem {
     ) {
         self.remove_span_piece_coverage(edge_idx);
         if let Some(span_piece) = span_piece {
+            self.retain_span_sections(&span_piece);
             self.insert_span_piece_coverage(&span_piece);
             self.compiled_visual_span_pieces
                 .insert(edge_idx, span_piece);
         } else {
             self.compiled_visual_span_pieces.remove(&edge_idx);
+        }
+    }
+
+    /// Publishes the same section allocation used by the validated span and its mouth profiles.
+    pub(in crate::simulation::network::surface) fn retain_span_sections(
+        &mut self,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        if !self
+            .compiled_sections
+            .get(&piece.edge_idx)
+            .is_some_and(|sections| Arc::ptr_eq(sections, &piece.sections))
+        {
+            self.compiled_sections
+                .insert(piece.edge_idx, Arc::clone(&piece.sections));
         }
     }
 
