@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Reopens only an importer-owned save and retries refused pieces after the full network exists.
-## Uses the same road validation/commit and short gap repair path as the initial apply.
+## Explicit legacy gap repair runner; fresh application never invents these connections.
 extends "res://scripts/tools/map_import_apply.gd"
 
 func _run() -> void:
 	var args := _arguments()
 	Engine.max_fps = 60
-	_junction_clearance = 24.0
 	_output = _resolve_path(String(args.get("output", "../maps/processed/kuopio_sw/repair")))
 	var base := _resolve_path(String(args.get("base", "../maps/processed/kuopio_sw/run1")))
 	var plan_path := _resolve_path(String(args.get("plan", "../maps/processed/kuopio_sw/plan.json")))
@@ -23,7 +22,7 @@ func _run() -> void:
 	_results["complete"] = false
 	_results["saved"] = false
 	_results["repair_base"] = base
-	_results["repair_policy"] = {"junction_approach_clearance_m": _junction_clearance, "gap_radius_m": 40.0, "targets_per_endpoint": 4}
+	_results["repair_policy"] = {"gap_radius_m": 40.0, "targets_per_endpoint": 4}
 	var simulation := SimulationNode.new()
 	root.add_child(simulation)
 	simulation.load_all_asset_packs(_resolve_path(String(args.get("packs", "res://bootstrap/mods"))))

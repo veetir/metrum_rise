@@ -29,7 +29,7 @@ import subprocess
 from .mapping import POLICY, map_role, table
 from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
 from .curves import prepare_curves
-from .survey import inspect
+from .survey import apply_road_surveys, inspect, university_access
 from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
@@ -54,7 +54,9 @@ def safe_output(path):
     if not path.is_relative_to(ROOT / 'maps/processed'):
         raise ValueError('Outputs must stay under maps/processed')
     for name in ('neutral.json', 'plan.json', 'report.json', 'summary.txt', 'apply_results.json', 'city.sqlite', 'water-world.sqlite'):
-        check = subprocess.run(['git', 'check-ignore', '-q', str(path/name)], cwd=ROOT, check=False)
+        check = subprocess.run(['/bin/bash', '-c',
+                                'exec git -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false "$@"',
+                                'map-import-git', 'check-ignore', '-q', str(path/name)], cwd=ROOT, check=False)
         if check.returncode != 0:
             raise ValueError(f'Output is not git-ignored: {path/name}')
     return path
@@ -103,12 +105,16 @@ def prepare(args):
     # Keep neutral source geometry immutable; conflation owns its working copy.
     from copy import deepcopy
     roads = deepcopy(roads)
+    road_surveys = apply_road_surveys(roads, args.include_park_paths)
     roundabouts = collapse_roundabouts(features, roads, decisions)
     roads, conflation = conflate(roads, decisions)
     from .medians import simplify_prisma
     prisma = tuple(round(v, 3) for v in transform.world(*tm35fin(62.887133, 27.629350)))
     roads, conflation['prisma'] = simplify_prisma(roads, prisma, decisions)
+    roads, access_survey = university_access(roads, decisions)
+    conflation['university_access'] = access_survey
     conflation['roundabouts'] = roundabouts
+    conflation['road_surveys'] = road_surveys
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])
     strokes = prepare_curves(strokes, features, [{'name': 'Savilahdentie', 'centre_xz': prisma, 'radius_m': 75}])
@@ -124,7 +130,10 @@ def prepare(args):
             'world_transform': transform.record(), 'target_box_xz': box,
             'center_wgs84': [args.lat, args.lon], 'center_world_xz': center,
             'parameters': {'size_m': args.size_m, 'simplify_m': args.simplify_m, 'include_park_paths': args.include_park_paths, **POLICY},
-            'water_edits': survey['water_edits'], 'water_beds': beds, 'capabilities': table(), 'strokes': strokes, 'zoning': zones}
+            'water_edits': survey['water_edits'], 'water_beds': beds, 'capabilities': table(), 'strokes': strokes, 'zoning': zones,
+            'survey_crossings': [r for r in access_survey if r.get('marked')],
+            'roundabouts': [r for r in roundabouts if r['status'] == 'planned' and
+                            box[0] <= r['centre_xz'][0] <= box[2] and box[1] <= r['centre_xz'][1] <= box[3]]}
     # Validate an outcome before replacing any previous products.
     plan_bytes = (json.dumps(plan, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode()
     outcome = json.loads(args.outcome.read_text()) if args.outcome else None

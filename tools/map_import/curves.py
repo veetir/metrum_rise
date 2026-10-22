@@ -65,9 +65,11 @@ def prepare_curves(strokes, features, straight_throats=()):
     for s in strokes:
         sources = [lookup[i] for i in s['source_ids'] if i in lookup]
         s['names'] = sorted({f['properties']['name'] for f in sources if f['properties']['name']})
-        s['layer'] = max((f['properties'].get('layer', 0) for f in sources), default=0)
-        s['bridge'] = any(f['properties'].get('bridge') for f in sources)
-        s['tunnel'] = any(f['properties'].get('tunnel') for f in sources)
+        # Authoring semantics come from the retained segment, not the union of
+        # provenance IDs: opposing chains may include a distant short bridge.
+        s.setdefault('layer', 0)
+        s.setdefault('bridge', False)
+        s.setdefault('tunnel', False)
         s['source_points_xz'] = s['points_xz']
         controls, tangents = s['points_xz'], {}
         for throat in straight_throats:

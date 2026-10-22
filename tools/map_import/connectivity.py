@@ -24,8 +24,11 @@ def read_save(path):
             shapes[i].append([x, y, z])
         edges = [dict(zip(('id', 'a', 'b', 'fwd', 'bkw', 'class', 'median_style', 'median_width', 'length_m'), row))
                  for row in c.execute('SELECT edge_id,start_node,end_node,fwd_lanes,bkw_lanes,class,median_style,median_width,physical_length FROM network_edges WHERE fwd_lanes+bkw_lanes>0')]
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        marked = set(c.execute('SELECT node_id,edge_id FROM road_crosswalks WHERE marked=1')) if 'road_crosswalks' in tables else set()
         for e in edges:
             e['points'] = shapes[e['id']]
+            e['marked_nodes'] = [n for n in (e['a'], e['b']) if (n, e['id']) in marked]
     return nodes, edges
 
 
@@ -102,6 +105,10 @@ def attribute(edges, index):
         p = [(a[j]+b[j])/2 for j in (0, 2)]
         hit = index.nearest(p, 35)
         e['source'] = hit[3][3] if hit else {}
+        # Persisted edges may run opposite to their attributed source section.
+        # Directional permissions must follow the local source tangent, not IDs.
+        e['source_forward'] = bool(hit and sum((b[j]-a[j])*(hit[3][2][k]-hit[3][1][k])
+                                              for k, j in enumerate((0, 2))) >= 0)
 
 
 def analyse(path, plan):

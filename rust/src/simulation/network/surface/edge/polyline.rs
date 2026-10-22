@@ -185,6 +185,7 @@ mod tests {
         ];
         let cumulative = surface.build_cumulative_distances(&points);
         let frame = SpanTangentFrame {
+            nonuniform_knots: true,
             start_s_m: 0.0,
             end_s_m: cumulative[3],
             start_tangent: RoadVec2::X,

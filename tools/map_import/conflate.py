@@ -16,13 +16,15 @@ from .mapping import POLICY
 
 
 def collapse_roundabouts(features, roads, decisions):
-    """Replace small traffic circles with ordinary multi-arm junction centres.
+    """Stage closed motor-traffic rings for ROAD-62 atomic junction replacement.
 
-    The road tool has no roundabout mode. Dropping the circle while retaining
-    its approach arms breaks the car network, so incident source nodes must be
-    remapped in the same preparation pass. Groups use shared OSM node IDs.
+    Shared source nodes group split OSM ring ways. Approaches temporarily meet
+    at the ring centre; apply replaces that junction through the player API.
+    Foot/cycle rings are not vehicle roundabouts. Invalid/open rings are reported
+    without moving their approaches. Work is linear in ring nodes plus sorting.
     """
-    circles = sorted((f for f in features if f['properties'].get('roundabout') and not f['issues']), key=lambda f: f['id'])
+    circles = sorted((f for f in features if f['properties'].get('roundabout') and not f['issues']
+                      and f['properties'].get('road_class') not in ('cycleway', 'footway', 'path', 'pedestrian')), key=lambda f: f['id'])
     parents = list(range(len(circles)))
     def root(i):
         while parents[i] != i:
@@ -45,15 +47,28 @@ def collapse_roundabouts(features, roads, decisions):
             continue
         lo = tuple(min(p[j] for p in points) for j in range(2))
         hi = tuple(max(p[j] for p in points) for j in range(2))
-        if distance(lo, hi) > POLICY['roundabout_max_diameter_m']:
+        degree = defaultdict(int)
+        for f in fs:
+            for a, b in zip(f['node_ids'], f['node_ids'][1:]):
+                degree[a] += 1
+                degree[b] += 1
+        diameter = max(hi[j]-lo[j] for j in range(2)) + 3.5
+        if any(n != 2 for n in degree.values()) or diameter > 60.0:
+            audit.append({'source_ids': [f['id'] for f in fs], 'status': 'unsupported',
+                          'reason': 'open_or_oversized_ring', 'diameter_m': round(diameter, 3)})
             continue
         centre = tuple(round((lo[j]+hi[j])/2, 3) for j in range(2))
         node = 'roundabout/'+min(f['id'] for f in fs)
         for f in fs:
             for n in f['node_ids']:
                 remap[n] = node, centre
-            decisions[f['id'], 'road'] = {'action': 'skip', 'reason': 'roundabout_as_ordinary_junction', 'priority': 0}
-        audit.append({'source_ids': [f['id'] for f in fs], 'centre_xz': centre})
+            decisions[f['id'], 'road'] = {'action': 'skip', 'reason': 'roundabout_player_replacement', 'priority': 0}
+        audit.append({'source_ids': [f['id'] for f in fs], 'centre_xz': centre,
+                      'diameter_m': round(diameter, 3), 'status': 'planned',
+                      'source_lanes': max(int(f['properties'].get('lanes') or 1) for f in fs),
+                      'imported_lanes': 1,
+                      'remaining': 'two_lane_entry_selection_and_spiral_exits' if any(
+                          (f['properties'].get('lanes') or 1) > 1 for f in fs) else ''})
     for f, _ in roads:
         for i, n in enumerate(f['node_ids']):
             if n in remap:
@@ -121,7 +136,7 @@ def conflate(roads, decisions):
     streets = SegmentIndex((f['id'], f['points'], f) for f, m in changed if m['action'] == 'road')
     result, dropped = [], []
     for f, m in changed:
-        if m['action'] != 'footpath':
+        if m['action'] != 'footpath' or f['properties'].get('survey_underpass'):
             result.append((f, m))
             continue
         total, parallel = 0, 0

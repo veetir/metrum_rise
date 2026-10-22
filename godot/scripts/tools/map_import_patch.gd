@@ -46,6 +46,22 @@ func _run() -> void:
 				if result["reason"].is_empty():
 					break
 			result["attempts"] = record["attempts"]
+		elif kind == "bus_lanes":
+			result.merge(await _finish_request(simulation, simulation.change_road_bus_lanes(int(action["edge"]), int(action["masks"][0]), int(action["masks"][1]))))
+		elif kind == "crosswalk":
+			var node := int(action["node"])
+			var edge := int(action["edge"])
+			var marked := bool(action["marked"])
+			var preview: Dictionary = simulation.preview_crosswalk(node, edge, marked)
+			if preview.get("is_valid", false):
+				simulation.set_crosswalk_override(node, edge, marked)
+				result["committed"] = simulation.has_crosswalk(node, edge) == marked
+				if not result["committed"]:
+					result["reason"] = "requested_crosswalk_has_no_generated_marking"
+					result["junction_arms"] = simulation.get_node_connection_count(node)
+			else:
+				result["committed"] = false
+				result["reason"] = preview.get("invalid_reason", "crosswalk_preview_failed")
 		elif kind == "clear_lane_rules":
 			simulation.clear_lane_connections(int(action["node"]))
 			result["committed"] = true

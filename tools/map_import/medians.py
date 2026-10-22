@@ -30,7 +30,9 @@ def carriageway_chains(roads):
     ends = defaultdict(list)
     for i, (f, _) in enumerate(candidates):
         p = f['properties']
-        key = p.get('name') or p.get('ref'), p['road_class']
+        key = (p.get('name') or p.get('ref'), p['road_class'],
+               p.get('layer', 0), p.get('bridge', False), p.get('tunnel', False),
+               p.get('survey_cross_section'))
         ids = f['node_ids'][::p['oneway']]
         ends[key, ids[0], 'out'].append(i)
         ends[key, ids[-1], 'in'].append(i)
@@ -38,7 +40,10 @@ def carriageway_chains(roads):
     for seed, (f, _) in enumerate(candidates):
         if seed in used:
             continue
-        key = f['properties'].get('name') or f['properties'].get('ref'), f['properties']['road_class']
+        p = f['properties']
+        key = (p.get('name') or p.get('ref'), p['road_class'],
+               p.get('layer', 0), p.get('bridge', False), p.get('tunnel', False),
+               p.get('survey_cross_section'))
         members = deque([seed])
         used.add(seed)
         for start in (False, True):
@@ -101,7 +106,7 @@ def merge_carriageways(roads, decisions):
         measured[c['id']] = total, matched, hits
     extents = defaultdict(list)
     for c in chains:
-        extents[c['key']].extend(c['points'])
+        extents[c['key'][:2]].extend(c['points'])
     axes = {key: int(max(p[1] for p in pts)-min(p[1] for p in pts) > max(p[0] for p in pts)-min(p[0] for p in pts))
             for key, pts in extents.items()}
     active = {c['id'] for c in chains if measured[c['id']][0] and measured[c['id']][1]/measured[c['id']][0] >= POLICY['parallel_fraction']}
@@ -114,7 +119,7 @@ def merge_carriageways(roads, decisions):
             audit.append({'name': c['key'][0], 'road_class': c['key'][1], 'source_ids': [f['id'] for f in c['features']], 'status': 'fallback',
                           'reason': 'irregular_or_unpaired_carriageway', 'paired_m': round(matched, 3), 'length_m': round(total, 3)})
             continue
-        axis = axes[c['key']]
+        axis = axes[c['key'][:2]]
         keep = c['points'][-1][axis] >= c['points'][0][axis]
         opponents = [chain_lookup[cid] for cid in sorted({cid for cid, _ in hits}) if cid in active]
         opposing = min(o['lanes'] for o in opponents)
@@ -150,8 +155,23 @@ def merge_carriageways(roads, decisions):
             g['node_ids'] = [f'median/{p[0]:.3f}/{p[1]:.3f}' for p in g['points']]
             g['source_ids'] = sorted(local_sources)
             g['properties']['oneway'] = 0
+            g['_source_end_nodes'] = [f['node_ids'][::f['properties']['oneway']][i] for i in (0, -1)]
             m = mappings[f['id']]
+            if f['properties'].get('survey_cross_section') == 'university_2026_10_22':
+                section = {'median_style': 3, 'median_width_m': 2.0, 'bus_masks': [4, 4]}
             retained.append((g, {**m, 'oneway': 0, 'fwd_lanes': c['lanes'], 'bkw_lanes': opposing, **section}))
+    # One named-road axis keeps the retained direction consistent through short
+    # structures. Shared source endpoint IDs then supply exact joints across levels;
+    # independent closest-point midlines can disagree at those same source nodes.
+    joints = {}
+    for f, _ in sorted(retained, key=lambda r: r[0]['id']):
+        for node, point in zip(f['_source_end_nodes'], (f['points'][0], f['points'][-1])):
+            joints.setdefault(node, point)
+    for f, _ in retained:
+        for end, node in zip((0, -1), f.pop('_source_end_nodes')):
+            f['points'][end] = joints[node]
+            q = joints[node]
+            f['node_ids'][end] = f'median/{q[0]:.3f}/{q[1]:.3f}'
     median_index = SegmentIndex((f['id'], f['points'], f) for f, _ in retained)
     for f, m in roads:
         chain = by_source.get(f['id'])

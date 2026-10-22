@@ -818,14 +818,14 @@ mod tests {
             ..Default::default()
         });
         let cross = |x, y| [Vector3::new(x, y, -50.0), Vector3::new(x, y, 50.0)];
-        assert!(!stroke_splits_pocket(&graph, &cross(200.0, 0.0)));
-        assert!(stroke_splits_pocket(&graph, &cross(390.0, 0.0)));
-        assert!(!stroke_splits_pocket(&graph, &cross(390.0, 6.0)));
+        assert!(!stroke_splits_pocket(&graph, &cross(200.0, 0.0), 0));
+        assert!(stroke_splits_pocket(&graph, &cross(390.0, 0.0), 0));
+        assert!(!stroke_splits_pocket(&graph, &cross(390.0, 6.0), 1));
         graph.edge_mut(0).lane_tapers.as_mut().unwrap()[1]
             .as_mut()
             .unwrap()
             .right_pocket = true;
-        assert!(stroke_splits_pocket(&graph, &cross(200.0, 0.0)));
+        assert!(stroke_splits_pocket(&graph, &cross(200.0, 0.0), 0));
         graph.edge_mut(0).lane_tapers.as_mut().unwrap()[1] = Some(taper);
         let junction = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
         super::super::topology::split_edge(

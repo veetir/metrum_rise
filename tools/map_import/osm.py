@@ -29,6 +29,22 @@ def speed(value):
     return v * 1.609344 if v is not None and len(pieces) > 1 and pieces[1] == 'mph' else v
 
 
+def marked_crossing(tags):
+    """None means no paint authority; explicit absent markings override crossing type."""
+    markings = tags.get('crossing:markings')
+    if markings in ('no', 'none'):
+        return False
+    if markings:
+        return True
+    if (tags.get('highway') == 'crossing' or tags.get('footway') == 'crossing'
+            or tags.get('cycleway') == 'crossing'):
+        if tags.get('crossing') in ('marked', 'zebra', 'uncontrolled', 'traffic_signals'):
+            return True
+        if tags.get('crossing') in ('no', 'unmarked'):
+            return False
+    return None
+
+
 def assemble_rings(members, ways, nodes):
     """Join endpoint-connected member ways by role, preserving open fragments."""
     rings = []
@@ -103,7 +119,12 @@ class OsmAdapter:
                      'track_grade': tags.get('tracktype', ''), 'surface': tags.get('surface', ''),
                      'access': tags.get('motorcar', tags.get('motor_vehicle', tags.get('vehicle', tags.get('access', '')))), 'footway': tags.get('footway', ''),
                      'oneway_confirmed': tags.get('oneway:source') == 'survey',
-                     'roundabout': tags.get('junction') in ('roundabout', 'circular'),
+                     'roundabout': tags.get('junction') == 'roundabout',
+                     'crossing_marked': marked_crossing(tags),
+                     'junction_control': tags.get('highway') if tags.get('highway') in ('give_way', 'stop', 'traffic_signals') else None,
+                     'control_direction': tags.get('direction', tags.get('traffic_signals:direction', '')),
+                     'bus_lanes_forward': tags.get('bus:lanes:forward', tags.get('bus:lanes', '')),
+                     'bus_lanes_backward': tags.get('bus:lanes:backward', ''),
                      'bridge': tags.get('bridge', 'no') != 'no', 'tunnel': tags.get('tunnel', 'no') != 'no',
                      'layer': number(tags.get('layer')) or 0, 'building_use': building_use,
                      'landuse': tags.get('landuse'), 'relation_type': tags.get('type', ''),

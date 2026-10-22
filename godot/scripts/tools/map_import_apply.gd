@@ -7,14 +7,12 @@
 ## Source speeds and building footprints remain in neutral.json. Final save is paused.
 extends SceneTree
 
+const Features := preload("res://scripts/tools/map_import_features.gd")
 const Network := preload("res://scripts/tools/map_import_network.gd")
 var _output := ""
 var _results: Dictionary = {}
 var _fatal := false
-var _source_junctions := {}
 var _deferred: Array = []
-var _junction_slides: Array = [-12.0, -8.0, 8.0, 12.0]
-var _junction_clearance := 12.0
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -36,20 +34,6 @@ func _run() -> void:
 		_fail("Invalid map plan")
 		return
 	var plan: Dictionary = parsed
-	var endpoint_uses := {}
-	for source in plan["strokes"]:
-		if int(source["fwd_lanes"])+int(source["bkw_lanes"]) == 0:
-			continue
-		for point in [source["points_xz"][0], source["points_xz"][-1]]:
-			var key := Vector2(point[0], point[1])
-			endpoint_uses[key] = int(endpoint_uses.get(key, 0))+1
-		for point in source.get("junctions_xz", []):
-			_source_junctions[Vector2(point[0], point[1])] = true
-	for point in endpoint_uses:
-		if endpoint_uses[point] > 1:
-			_source_junctions[point] = true
-	_junction_slides = plan["parameters"].get("junction_slide_m", _junction_slides)
-	_junction_clearance = float(plan["parameters"].get("junction_clearance_m", _junction_clearance))
 	if FileAccess.get_sha256(world_path) != String(plan["world_sha256"]):
 		_fail("World definition hash differs from prepared plan")
 		return
@@ -88,7 +72,8 @@ func _run() -> void:
 	for record in _results["roads"]:
 		prior[record["id"]] = record
 		accepted[record["id"]] = record.get("accepted_length_m", 0.0) > 0.0
-	var roads_repaired := false
+	var roundabouts_applied := _results.has("roundabouts")
+	var roads_repaired := roundabouts_applied
 	for stroke in plan["strokes"]:
 		if prior.has(stroke["id"]):
 			var record: Dictionary = prior[stroke["id"]]
@@ -97,7 +82,10 @@ func _run() -> void:
 			continue
 		if stroke["kind"] == "footpath" and not roads_repaired:
 			await _retry_deferred(simulation)
-			await _repair_network(simulation)
+			_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
+			if not _roundabout_completion_known():
+				return
+			roundabouts_applied = true
 			roads_repaired = true
 		var record := {"id": stroke["id"], "attempts": [], "pieces": [], "failed_pieces": []}
 		_results["roads"].append(record)
@@ -118,7 +106,10 @@ func _run() -> void:
 	if not roads_repaired:
 		_checkpoint(simulation)
 		await _retry_deferred(simulation)
-		await _repair_network(simulation)
+	if not roundabouts_applied:
+		_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
+		if not _roundabout_completion_known():
+			return
 	for record in _results["roads"]:
 		_finish_record(record)
 		accepted[record["id"]] = record["accepted_length_m"] > 0.0
@@ -162,6 +153,13 @@ func _run() -> void:
 		quit(2)
 		return
 	quit(0 if _results["saved"] else 2)
+
+func _roundabout_completion_known() -> bool:
+	for record: Dictionary in _results.get("roundabouts", []):
+		if record.get("unknown_completion", false):
+			_fail("Unknown roundabout completion; stop before another topology request")
+			return false
+	return true
 
 func _load_resume(simulation: Node, folder: String, plan_path: String) -> bool:
 	var local_maps := ProjectSettings.globalize_path("res://../maps/processed/").simplify_path()+"/"
@@ -333,7 +331,7 @@ func _retry_deferred(simulation: Node) -> void:
 		for entry in pending:
 			var record: Dictionary = entry["record"]
 			before += record["pieces"].size()
-			# Retrying a settled network must not create another trimmed, detached fragment.
+			# Retry the exact refused source geometry against the settled network.
 			var reason := await _attempt(simulation, entry["stroke"], entry["failure"]["points_xz"], record, "deferred_exact/%d" % sweep)
 			if reason.is_empty():
 				record["failed_pieces"].erase(entry["failure"])
@@ -375,13 +373,9 @@ func _length(points: Array) -> float:
 		total += Vector2(points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]).length()
 	return total
 
-func _source_point(simulation: Node, stroke: Dictionary, pos: Vector2) -> Vector3:
+func _source_point(simulation: Node, _stroke: Dictionary, pos: Vector2) -> Vector3:
 	# A visible surface can be an existing bridge deck above this source road.
 	var world := Vector3(pos.x, simulation.get_height_at(pos), pos.y)
-	if stroke.get("bridge", false):
-		world.y += 6.0
-	elif stroke.get("tunnel", false):
-		world.y -= 6.0
 	return world
 
 func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, strategy: String) -> String:
@@ -395,7 +389,7 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 		if i == 0 or i == points.size()-1:
 			# The commit's snap flag only enables 2 m graph matching. The player's
 			# cursor also projects the clicked position onto a node/edge beforehand.
-			if snapped is Vector3 and absf(snapped.y-world.y) < 4.5 and strategy != "water_unsnapped" and not strategy.begins_with("junction_slide/"):
+			if snapped is Vector3 and absf(snapped.y-world.y) < 4.5 and strategy != "water_unsnapped":
 				world = snapped
 		xyz.append([world.x, world.y, world.z])
 		placed.append([world.x, world.z])
@@ -441,6 +435,19 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	var median_reason: String = simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width_m", 0.0)))
 	if not median_reason.is_empty():
 		return {"by": "importer", "reason": median_reason}
+	var level := int(attempt.get("layer", 0))
+	if level == 0:
+		level = 1 if attempt.get("bridge", false) else (-1 if attempt.get("tunnel", false) else 0)
+	var level_reason: String = simulation.set_road_tool_crossing_level(level)
+	if not level_reason.is_empty():
+		return {"by": "importer", "reason": level_reason}
+	if attempt.get("tunnel", false):
+		var profile: Dictionary = simulation.prepare_road_crossing(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), false)
+		if profile.get("is_valid", false):
+			points = profile.points
+			simulation.set_road_tool_crossing_level(profile.crossing_level)
+		elif profile.get("invalid_reason", "") != "crossing_not_found":
+			return {"by": "tool", "reason": profile.get("invalid_reason", "crossing_profile_failed")}
 	var deadline := Time.get_ticks_msec() + 600000
 	var validation: Dictionary = {}
 	while Time.get_ticks_msec() < deadline:
@@ -488,63 +495,10 @@ func _split(points: Array, junctions: Array) -> Array:
 		station += run
 	return []
 
-func _slide_candidates(simulation: Node, points: Array) -> Array:
-	var candidates := []
-	for endpoint in [0, points.size()-1]:
-		var old_tip := Vector2(points[endpoint][0], points[endpoint][1])
-		var hit: Variant = simulation.get_closest_network_point(Vector3(old_tip.x, 0.0, old_tip.y), 8.0)
-		if not hit is Vector3:
-			continue
-		var snap: Vector3 = hit
-		var edge_id: int = simulation.get_hovered_edge(snap.x, snap.z)
-		if edge_id < 0:
-			continue
-		var geometry: PackedVector3Array = simulation.get_edge_geometry_3d(edge_id)
-		var tangent := Vector2.ZERO
-		var nearest := INF
-		for i in range(1, geometry.size()):
-			var a := Vector2(geometry[i-1].x, geometry[i-1].z)
-			var b := Vector2(geometry[i].x, geometry[i].z)
-			if a.distance_to(b) < 0.05:
-				continue
-			var q := Geometry2D.get_closest_point_to_segment(Vector2(snap.x, snap.z), a, b)
-			var gap := q.distance_to(Vector2(snap.x, snap.z))
-			if gap < nearest:
-				nearest = gap
-				tangent = (b-a).normalized()
-		if tangent == Vector2.ZERO:
-			continue
-		for shift in _junction_slides:
-			var probe := Vector2(snap.x, snap.z) + tangent * float(shift)
-			var target: Variant = simulation.get_closest_network_point(Vector3(probe.x, 0.0, probe.y), 1.0)
-			if not target is Vector3:
-				continue
-			var moved: Vector3 = target
-			if Vector2(moved.x, moved.z).distance_to(old_tip) < 4.0:
-				continue
-			var adjusted: Array = points.duplicate(true)
-			# Remove the old tip's short control segments, which would otherwise
-			# turn an on-road junction slide into a sharp return to the old node.
-			while adjusted.size() > 2:
-				var neighbor := 1 if endpoint == 0 else adjusted.size()-2
-				if old_tip.distance_to(Vector2(adjusted[neighbor][0], adjusted[neighbor][1])) >= _junction_clearance:
-					break
-				adjusted.remove_at(neighbor)
-			var tip := 0 if endpoint == 0 else adjusted.size()-1
-			adjusted[tip] = [moved.x, moved.z]
-			candidates.append({"points_xz": adjusted, "strategy": "junction_slide/%d/%.1fm" % [endpoint, float(shift)]})
-	return candidates
-
-func _endpoint_can_trim(stroke: Dictionary, point: Array) -> bool:
-	# Bisection boundaries and authored junctions must meet the adjacent piece exactly.
-	var original: Array = stroke["points_xz"]
-	return (point == original[0] or point == original[-1]) and not _source_junctions.has(Vector2(point[0], point[1]))
-
 func _place(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, depth: int, strategy: String) -> void:
 	if _fatal:
 		return
 	var reason := await _attempt(simulation, stroke, points, record, strategy)
-	var original_reason := reason
 	if _fatal:
 		return
 	if reason.is_empty():
@@ -566,49 +520,6 @@ func _place(simulation: Node, stroke: Dictionary, points: Array, record: Diction
 		for part in _split(points, stroke.get("junctions_xz", [])):
 			await _place(simulation, stroke, part, record, depth+1, "split/%d" % (depth+1))
 		return
-	# Bounded endpoint retries: exact nearby network node first, then a short
-	# free-terminal trim. Authored junctions and bisection boundaries stay pinned.
-	for adjustment in ["node", "trim3", "trim6"]:
-		var adjusted: Array = points.duplicate(true)
-		for endpoint in [0, adjusted.size()-1]:
-			var p := Vector3(adjusted[endpoint][0], 0.0, adjusted[endpoint][1])
-			if adjustment == "node":
-				var node_id: int = simulation.get_closest_node(p, 18.0)
-				if node_id >= 0:
-					var node_pos: Vector3 = simulation.get_node_pos(node_id)
-					adjusted[endpoint] = [node_pos.x, node_pos.z]
-			else:
-				if not _endpoint_can_trim(stroke, points[endpoint]):
-					continue
-				var neighbor := 1 if endpoint == 0 else adjusted.size()-2
-				var q := Vector2(adjusted[neighbor][0], adjusted[neighbor][1])
-				var tip := Vector2(p.x, p.z)
-				var moved := tip.move_toward(q, minf(3.0 if adjustment == "trim3" else 6.0, tip.distance_to(q)*0.4))
-				adjusted[endpoint] = [moved.x, moved.y]
-		if adjusted == points or _length(adjusted) < 5.0:
-			continue
-		reason = await _attempt(simulation, stroke, adjusted, record, adjustment)
-		if _fatal:
-			return
-		if reason.is_empty():
-			record["pieces"].append(record["attempts"][-1]["points_xz"])
-			return
-	if stroke.get("kind", "road") == "road" and original_reason in ["surface_geometry_invalid", "render_geometry_invalid", "junction_arm_angle"]:
-		for candidate in _slide_candidates(simulation, points):
-			reason = await _attempt(simulation, stroke, candidate["points_xz"], record, candidate["strategy"])
-			if _fatal:
-				return
-			if reason.is_empty():
-				record["pieces"].append(record["attempts"][-1]["points_xz"])
-				return
-	if int(stroke["fwd_lanes"])+int(stroke["bkw_lanes"]) > 2 and reason in ["surface_geometry_invalid", "render_geometry_invalid", "junction_arm_angle", "road_tight_curve"]:
-		var narrow: Dictionary = stroke.duplicate(true)
-		narrow["fwd_lanes"] = mini(1, int(stroke["fwd_lanes"]))
-		narrow["bkw_lanes"] = mini(1, int(stroke["bkw_lanes"]))
-		reason = await _attempt(simulation, narrow, points, record, "lane_fit_after_refusal")
-		if reason.is_empty():
-			record["pieces"].append(record["attempts"][-1]["points_xz"])
-			return
 	var failure := {"points_xz": points, "reason": reason}
 	record["failed_pieces"].append(failure)
 	if stroke.get("kind", "road") == "road":

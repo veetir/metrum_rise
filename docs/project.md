@@ -57,11 +57,22 @@ terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the 
 layout still needs that importer repair
 ([design and acceptance](roads.md#imported-junction-geometry--road-73)).
 
+ROAD-76 brings the Kuopio importer onto the current road chain. Structure extents now survive
+carriageway conflation, the blanket bridge lift is removed, and source rings use ROAD-62's
+atomic replacement. The university rebuild preserves 3+3 lanes, a median and outer bus lanes,
+with a short filled opening and parking access at grade. Its three native captures and exact
+save/reload checks pass; `roads-c-uni-underpass-v2.sqlite` is installed separately. ROAD-76
+remains incomplete: the full checkpoint refuses load at two junction owners, the source-layout
+parking arm still refuses compilation, and both real ring replacements refuse. No
+`kuopio-sw-v2.sqlite` is installed; full-city reference acceptance is pending
+([import contract](roads.md#kuopio-import-integration--road-76-now-road-81)).
+
+
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
 hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
 crossable beside ordinary junctions without zebra clearance. Arrows now require authored or
 lane-dependent turn use, pockets or ramps; plain 1+1 approaches re-render without them.
-OSM crossing mapping remains the importer integration task
+ROAD-76 supplies source crossing and turn-lane actions after topology
 ([marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75)).
 
 Road cross-sections support painted, grass and paved medians plus in-place lane/median editing
@@ -108,7 +119,7 @@ circulating priority. The 2026-10-25 preview repair removes cursor jumps to the 
 under simulation-lock contention, retries transient results at a stationary pointer and
 explains permanent terrain refusals. Fresh repair validation: 2,863 library tests, Clippy and
 seven road/traffic bridges pass. Compact presets, splitter islands, yield paint, tree/art
-presets, two-lane spiral rules and OSM way mapping remain open. Historical first-slice
+presets and two-lane spiral rules remain open. ROAD-81 supplies OSM ring mapping; actual median/multilane approaches still exceed the replacement contract. Historical first-slice
 validation passed 2,619 release tests, Clippy and fourteen road bridges; populated planning
 retained identical local products through 100,000 background buildings. Synchronous previews still
 cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
@@ -126,6 +137,8 @@ ROAD-68 slice C is complete: Junction/Over/Under controls solve bounded-grade pr
 exact preview/commit and undo; layered roads compile solid grass fill/open cuts, box openings,
 abutments, tapered wings and low open parapets. The new `roads-c-uni-underpass.sqlite` keeps
 Yliopistonranta on the ground/low embankment and joins parking at grade with a refuge/zebra.
+ROAD-76 corrects that reconstruction's 1+1 downgrade to the surveyed 3+3 section with a median
+and bus lanes, and confines its nonzero level to the short opening.
 Fresh 2,644-test release and native/legacy checks pass; nine production captures were inspected
 against the Finnish photos ([design and acceptance](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)).
 The historical short PERF-06 timing uncertainty is explained separately from current sustained

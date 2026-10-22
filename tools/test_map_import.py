@@ -57,6 +57,125 @@ def synthetic_tiff(path, east=100, north=200, crs=3067):
     path.write_bytes(b'II' + struct.pack('<HIH', 42, 8, len(entries)) + b''.join(directory) + b'\0'*4 + payload)
 
 
+class RoadFeatureIntegrationTest(unittest.TestCase):
+    def test_bus_permissions_follow_the_saved_edge_direction(self):
+        from unittest.mock import patch
+        from tools.map_import.features import prepare
+        nodes = {0: [0, 0, 0], 1: [60, 0, 0]}
+        source = {'id': 'main', 'source_ids': ['main'], 'points_xz': [(0, 0), (60, 0)],
+                  'fwd_lanes': 3, 'bkw_lanes': 2, 'bus_masks': [4, 0]}
+        for reverse in (False, True):
+            a, b = (1, 0) if reverse else (0, 1)
+            edges = [{'id': 0, 'a': a, 'b': b, 'fwd': 2 if reverse else 3,
+                      'bkw': 3 if reverse else 2, 'points': [nodes[a], nodes[b]]}]
+            with patch('tools.map_import.features.read_save', return_value=(nodes, edges)), \
+                 patch('tools.map_import.features.prepare_rules', return_value={'actions': [], 'source_audit': []}):
+                result = prepare('unused', {'strokes': [source]}, [])
+            self.assertEqual(result['actions'], [
+                {'kind': 'bus_lanes', 'edge': 0, 'masks': [0, 4] if reverse else [4, 0]}])
+
+    def test_feature_actions_use_the_source_arm_and_preserve_unsupported_controls(self):
+        from unittest.mock import patch
+        from tools.map_import.features import prepare
+        nodes = {0: [-60, 0, 0], 1: [0, 0, 0], 2: [60, 0, 0], 3: [0, 0, 60]}
+        source = {'source_ids': ['osm/way/main'], 'fwd_lanes': 2, 'bkw_lanes': 2, 'bus_masks': [2, 2]}
+        edges = [{'id': 0, 'a': 0, 'b': 1, 'fwd': 2, 'bkw': 2, 'points': [nodes[0], nodes[1]], 'source': source},
+                 {'id': 1, 'a': 1, 'b': 2, 'fwd': 1, 'bkw': 1, 'points': [nodes[1], nodes[2]], 'source': {'source_ids': ['osm/way/main']}},
+                 {'id': 2, 'a': 1, 'b': 3, 'fwd': 1, 'bkw': 1, 'points': [nodes[1], nodes[3]], 'source': {'source_ids': ['osm/way/side']}}]
+        main = feature('osm/way/main', [(-60, 0), (-10, 0), (60, 0)], ['a', 'osm/node/mark', 'b'])
+        mark = feature('osm/node/mark', [(-10, 0)], crossing_marked=True)
+        control = feature('osm/node/signal', [(0, 0)], junction_control='traffic_signals')
+        with patch('tools.map_import.features.read_save', return_value=(nodes, edges)), \
+             patch('tools.map_import.features.source_index', return_value=None), \
+             patch('tools.map_import.features.attribute'), \
+             patch('tools.map_import.features.prepare_rules', return_value={'actions': [], 'source_audit': []}):
+            result = prepare('unused', {}, [main, mark, control])
+        self.assertEqual(result['actions'], [
+            {'kind': 'bus_lanes', 'edge': 0, 'masks': [2, 2]},
+            {'kind': 'crosswalk', 'node': 1, 'edge': 0, 'marked': True, 'source_id': 'osm/node/mark'}])
+        self.assertTrue(any(r.get('reason') == 'TRAFFIC_06_authored_control_API_pending' for r in result['source_audit']))
+
+    def test_crossing_way_only_authors_at_shared_source_nodes(self):
+        from collections import defaultdict
+        from tools.map_import.features import crossing_intents
+        way = feature('osm/way/zebra', [(0, -10), (0, 0), (0, 10)], ['a', 'cross', 'b'], road_class='footway', crossing_marked=True)
+        membership = defaultdict(set, {'a': {way['id']}, 'cross': {way['id'], 'osm/way/main'}, 'b': {way['id']}})
+        intents, audit = crossing_intents([way], membership)
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0]['points'], [(0, 0)])
+        self.assertEqual(intents[0]['road_source_ids'], {'osm/way/main'})
+        self.assertEqual(audit, [])
+
+    def test_crossing_markings_override_signal_and_type(self):
+        from tools.map_import.osm import marked_crossing
+        self.assertTrue(marked_crossing({'highway': 'crossing', 'crossing': 'zebra'}))
+        self.assertTrue(marked_crossing({'highway': 'footway', 'footway': 'crossing', 'crossing': 'marked'}))
+        self.assertFalse(marked_crossing({'highway': 'cycleway', 'cycleway': 'crossing', 'crossing': 'unmarked'}))
+        self.assertFalse(marked_crossing({'highway': 'crossing', 'crossing': 'traffic_signals', 'crossing:markings': 'no'}))
+        self.assertIsNone(marked_crossing({'highway': 'traffic_signals'}))
+        self.assertIsNone(marked_crossing({'highway': 'crossing'}))
+        self.assertTrue(marked_crossing({'crossing:markings': 'ladder'}))
+
+    def test_source_extent_survives_provenance_union_and_curve_fitting(self):
+        from tools.map_import.curves import prepare_curves
+        ground = feature('ground', [(0, 0), (40, 0)], ['a', 'joint'])
+        bridge = feature('bridge', [(40, 0), (60, 0)], ['joint', 'b'], bridge=True, layer=1)
+        ground['source_ids'] = ['ground', 'bridge']
+        strokes, _ = build_strokes([road(ground), road(bridge)], (-100, -100, 100, 100))
+        prepare_curves(strokes, [ground, bridge])
+        self.assertEqual([(s['bridge'], s['layer']) for s in strokes], [(True, 1), (False, 0)])
+
+    def test_carriageway_chains_end_at_structure_boundaries(self):
+        from tools.map_import.medians import carriageway_chains
+        a = feature('a', [(0, 0), (40, 0)], ['a', 'joint'], road_class='primary', name='main', oneway=1, lanes=3)
+        b = feature('b', [(40, 0), (60, 0)], ['joint', 'b'], road_class='primary', name='main', oneway=1, lanes=2, bridge=True, layer=1)
+        self.assertEqual(len(carriageway_chains([road(a), road(b)])), 2)
+
+    def test_short_bridge_keeps_the_retained_direction_and_exact_source_joint(self):
+        from tools.map_import.medians import merge_carriageways
+        fs = [
+            feature('a', [(0, 0), (-100, 80)], ['a', 'joint-a'], road_class='primary', name='main', oneway=1, lanes=3),
+            feature('b', [(-92, 88), (8, 8)], ['joint-b', 'b'], road_class='primary', name='main', oneway=1, lanes=3),
+            feature('c', [(-100, 80), (-110, 110)], ['joint-a', 'c'], road_class='primary', name='main', oneway=1, lanes=3, bridge=True, layer=1),
+            feature('d', [(-102, 118), (-92, 88)], ['d', 'joint-b'], road_class='primary', name='main', oneway=1, lanes=3, bridge=True, layer=1)]
+        result, _ = merge_carriageways(list(map(road, fs)), {})
+        self.assertEqual(len(result), 2)
+        a, b = [f for f, _ in result]
+        self.assertEqual(a['points'][0], b['points'][-1])
+        self.assertEqual(a['node_ids'][0], b['node_ids'][-1])
+
+    def test_university_survey_keeps_six_lanes_and_bus_permissions(self):
+        from tools.map_import.survey import apply_road_surveys
+        from tools.map_import.medians import merge_carriageways
+        a = feature('osm/way/1119987974', [(0, 0), (40, 0)], road_class='primary', name='main', oneway=1, lanes=2, bridge=True, layer=1)
+        b = feature('osm/way/1119987976', [(40, 12), (0, 12)], road_class='primary', name='main', oneway=1, lanes=2, bridge=True, layer=1)
+        roads = [road(a), road(b)]
+        self.assertEqual(len(apply_road_surveys(roads)), 2)
+        result, _ = merge_carriageways(roads, {})
+        self.assertEqual(len(result), 1)
+        m = result[0][1]
+        self.assertEqual((m['fwd_lanes'], m['bkw_lanes']), (3, 3))
+        self.assertEqual((m['median_style'], m['median_width_m'], m['bus_masks']), (3, 2.0, [4, 4]))
+
+    def test_two_lane_ring_explicitly_records_single_lane_limit(self):
+        f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)
+        audit = collapse_roundabouts([f], [], {})
+        self.assertEqual(audit[0]['diameter_m'], 23.5)
+        self.assertEqual(audit[0]['source_lanes'], 2)
+        self.assertEqual(audit[0]['imported_lanes'], 1)
+        self.assertIn('spiral_exits', audit[0]['remaining'])
+
+    def test_open_and_cycle_rings_do_not_move_car_approaches(self):
+        open_ring = feature('open', [(0, 0), (20, 0), (20, 20)], ['a', 'b', 'c'], roundabout=True)
+        cycle = feature('cycle', [(0, 0), (20, 0), (20, 20), (0, 0)], ['a', 'b', 'c', 'a'], roundabout=True, road_class='cycleway')
+        arm = feature('arm', [(-50, 0), (0, 0)], ['x', 'a'])
+        roads = [road(arm)]
+        original = copy.deepcopy(roads)
+        self.assertEqual(collapse_roundabouts([cycle], roads, {}), [])
+        self.assertEqual(collapse_roundabouts([open_ring], roads, {})[0]['status'], 'unsupported')
+        self.assertEqual(roads, original)
+
+
 class PocketLaneTest(unittest.TestCase):
     def test_directional_turn_tags_keep_travel_order(self):
         from tools.map_import.pockets import turn_lanes
@@ -463,7 +582,7 @@ class ConflationTest(unittest.TestCase):
         actual = prepare_streets(cars+[path], box, 1)[0]
         self.assertEqual([s for s in actual if s['kind'] == 'road'], expected)
 
-    def test_roundabout_approaches_remap_to_one_ordinary_junction(self):
+    def test_roundabout_approaches_stage_atomic_player_replacement(self):
         circle = feature('circle', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True)
         fs = [feature('west', [(-100, 0), (0, 0)], ['w', 'a']),
               feature('east', [(20, 20), (100, 20)], ['c', 'e'])]
@@ -473,7 +592,7 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(audit[0]['centre_xz'], (10, 10))
         self.assertEqual(roads[0][0]['node_ids'][-1], roads[1][0]['node_ids'][0])
         self.assertEqual(roads[0][0]['points'][-1], (10, 10))
-        self.assertEqual(decisions['circle', 'road']['reason'], 'roundabout_as_ordinary_junction')
+        self.assertEqual(decisions['circle', 'road']['reason'], 'roundabout_player_replacement')
 
     def test_parallel_paths_drop_but_shortcut_survives(self):
         fs = [feature('r', [(0, 0), (200, 0)]),

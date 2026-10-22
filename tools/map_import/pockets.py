@@ -47,7 +47,7 @@ def prepare(path, plan, features):
     for f in features:
         p = f['properties']
         name = p.get('name')
-        if not name or len(f['points']) < 2:
+        if len(f['points']) < 2:
             continue
         for spec in turn_lanes(p):
             record = {'source_id': f['id'], 'name': name, **spec}
@@ -71,7 +71,7 @@ def prepare(path, plan, features):
                         if gap > maximum_gap:
                             continue
                         for e in incident[n]:
-                            if name not in e['source'].get('names', []):
+                            if f['id'] not in e['source'].get('source_ids', []) and (not name or name not in e['source'].get('names', [])):
                                 continue
                             at_start = e['a'] == n
                             if not (e['bkw'] if at_start else e['fwd']):

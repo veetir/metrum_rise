@@ -566,7 +566,9 @@ It now uses `TRAFFIC-08`; upstream's `TRAFFIC-06` planning row remains preserved
 Stage 1a adds automatic vehicle right of way to the existing connector reservations. It is a staged
 implementation: zebra priority, fixed-time signals, authored control/major-road selection, all-way stop,
 control previews/undo and importer setters are still pending. ROAD-62 now supplies explicit roundabout entry priority (below).
-The signalised Prisma reference is **not** represented by this stage's priority capture.
+The signalised Prisma reference is **not** represented by this stage's priority capture. ROAD-76 preserves imported
+`give_way`, `stop` and `traffic_signals` intent and reports the absent authored-control API;
+it does not silently replace signalised control with an imported stop/yield claim.
 
 At a mixed-hierarchy junction the higher road has priority. Hierarchy is the ordered tuple
 (design speed in mm/s, original through-lane count, original carriageway width in mm).

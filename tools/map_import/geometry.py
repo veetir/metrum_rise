@@ -238,6 +238,9 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
                                 'points_xz': clipped, 'road_class': original['class'],
                                 'kind': m['action'], 'fwd_lanes': m['fwd_lanes'], 'bkw_lanes': m['bkw_lanes'],
                                 'median_style': m.get('median_style', 0), 'median_width_m': m.get('median_width_m', 0),
+                                'bus_masks': m.get('bus_masks', [0, 0]),
+                                'layer': original['signature'][6][2],
+                                'bridge': original['signature'][6][0], 'tunnel': original['signature'][6][1],
                                 'snap': True, 'priority': m['priority'], 'length_m': round(size, 3),
                                 'junctions_xz': [p for p in clipped[1:-1] if p in pinned]})
     strokes.sort(key=lambda s: (s['priority'], s['_order_sources'], s['points_xz']))

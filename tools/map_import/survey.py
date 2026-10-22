@@ -151,3 +151,65 @@ def coast_residuals(features,terrain,box,surface,feature_id,step=2):
                     hit=index.nearest(p,150)
                     if hit:residuals.append(hit[0])
     return {'box_xz':box,'surface_m':surface,'shoreline_residuals':quantiles(residuals),'note':'Coast fragments, not an invented closed Kallavesi polygon.'}
+
+
+def apply_road_surveys(roads, include_park_paths=True):
+    """Apply the user's Oct 22 university section survey to the working copy.
+
+    Source IDs bound this correction; neutral OSM records remain unchanged.
+    The two short bridge ways incorrectly say two lanes per carriageway. The
+    user's six-lane/median/bus-lane contract overrides those tags, not geometry.
+    """
+    university = {'osm/way/'+s for s in ('37568149', '613918836', '1119987973',
+                                       '1119987974', '1119987975', '1119987976')}
+    audit = []
+    for f, m in roads:
+        if include_park_paths and f['id'] in ('osm/way/1119987950', 'osm/way/1119987951'):
+            # Current photos show a light-traffic opening; the cached OSM extract
+            # still describes the older restricted-height motor access.
+            f['properties'].update(road_class='footway', survey_underpass=True, tunnel=True)
+            m.update(action='footpath', fwd_lanes=0, bkw_lanes=0, priority=6)
+            audit.append({'source_id': f['id'], 'reason': 'surveyed_light_traffic_underpass',
+                          'reference': 'user-2026-10-21/university-underpass-1.png'})
+        if f['id'] not in university:
+            continue
+        f['properties'].update(lanes=3, through_lanes=3, survey_cross_section='university_2026_10_22')
+        m.update(fwd_lanes=3, bkw_lanes=0)
+        audit.append({'source_id': f['id'], 'lanes_per_direction': 3,
+                      'median_style': 3, 'median_width_m': 2.0, 'median_width_is_surveyed': False,
+                      'bus_lane_rank': 2, 'reference': 'user-2026-10-21/university-1.png',
+                      'authority': 'user_cross_section_2026_10_22'})
+    return audit
+
+
+
+def university_access(roads, decisions):
+    """Use the photographed ordinary two-way parking arm instead of two OSM slips.
+
+    The reference point selects the surveyed main-road source only. Projection
+    reuses SegmentIndex; normal source endpoint preparation creates the junction.
+    """
+    main = [(f, m) for f, m in roads if f['properties'].get('survey_cross_section') == 'university_2026_10_22']
+    access = next((f for f, _ in roads if f['id'] == 'osm/way/1119987953'), None)
+    if not main or access is None:
+        return roads, []
+    index = SegmentIndex((f['id'], f['points'], f) for f, _ in main)
+    hit = index.nearest((-502.0, 1206.7), 12.0)
+    if not hit:
+        return roads, [{'reason': 'surveyed_university_main_not_found'}]
+    q = tuple(round(v, 3) for v in hit[2])
+    result = []
+    for f, m in roads:
+        if f['id'] == 'osm/way/1119987954':
+            decisions[f['id'], 'road'] = {**m, 'action': 'skip', 'reason': 'surveyed_two_way_parking_access'}
+            continue
+        if f['id'] == access['id']:
+            parking, node = f['points'][-1], f['node_ids'][-1]
+            f['points'] = [parking, q]
+            f['node_ids'] = [node, f'median/{q[0]:.3f}/{q[1]:.3f}']
+            f['properties'].update(road_class='service', oneway=0, layer=0, bridge=False, tunnel=False)
+            m.update(oneway=0, fwd_lanes=1, bkw_lanes=1, median_style=3, median_width_m=2.0, priority=4)
+        result.append((f, m))
+    return result, [{'source_ids': [access['id'], 'osm/way/1119987954'], 'point_xz': q,
+                     'marked': True, 'road_source_ids': [access['id']],
+                     'reference': 'user-2026-10-21/university_yliopistonranta_level_junction.png'}]

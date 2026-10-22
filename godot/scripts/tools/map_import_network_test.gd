@@ -44,17 +44,12 @@ class Fixture extends Node:
 		links.append([a,b])
 
 func _run() -> void:
-	var stroke := {"points_xz": [[0.0, 0.0], [100.0, 0.0]]}
-	assert(_endpoint_can_trim(stroke, [0.0, 0.0]))
-	assert(not _endpoint_can_trim(stroke, [50.0, 0.0]))
-	_source_junctions[Vector2(0.0, 0.0)] = true
-	assert(not _endpoint_can_trim(stroke, [0.0, 0.0]))
 	_results = {"repairs": []}
 	var fixture := Fixture.new()
 	root.add_child(fixture)
 	assert(_source_point(fixture, {}, Vector2.ZERO).y == 7.0)
-	assert(_source_point(fixture, {"bridge": true}, Vector2.ZERO).y == 13.0)
-	assert(_source_point(fixture, {"tunnel": true}, Vector2.ZERO).y == 1.0)
+	assert(_source_point(fixture, {"bridge": true}, Vector2.ZERO).y == 7.0)
+	assert(_source_point(fixture, {"tunnel": true}, Vector2.ZERO).y == 7.0)
 	await _repair_network(fixture)
 	assert(Network.inspect_network(fixture, 0.0)["components"] == 1)
 	assert(_results["repairs"].size() == 3)

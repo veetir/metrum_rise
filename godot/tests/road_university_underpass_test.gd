@@ -14,6 +14,7 @@ func run() -> void:
 	var capture_enabled := OS.get_environment("METRUM_ROADS_C2_CAPTURE") == "1"
 	if capture_enabled:
 		await setup_capture_scene()
+		output = ProjectSettings.globalize_path("res://../captures/road_76/university")
 		var capture_output := OS.get_environment("METRUM_JUNCTION_CAPTURE_OUTPUT")
 		if not capture_output.is_empty():
 			output = capture_output
@@ -102,22 +103,51 @@ func run() -> void:
 		quit(failures)
 		return
 	points = over.points
-	simulation.set_road_tool_crossing_level(over.crossing_level)
-	if not await build(points, 3, 3, 3, 2.0):
-		expect(false, "Ground-following main road with short box opening")
-		quit(failures)
-		return
-	# The outer lane in each direction is reserved for buses through the same saved
-	# lane-use mutator as the normal inspector. All source joints keep the full 3+3 bed.
-	var main_owners := {}
-	for p: Vector3 in points:
-		var id: int = simulation.get_hovered_edge(p.x, p.z)
-		if id >= 0 and not main_owners.has(id):
-			var section: Dictionary = simulation.get_road_cross_section(id)
+	# Keep the explicit level local to the source's short opening. Six profile
+	# stations on each side retain the box wings; the parking junction lies outside.
+	var cuts := [0, points.size() - 1]
+	for end in 2:
+		var best := INF
+		for i in points.size():
+			var q: Vector3 = bridge[0 if end == 0 else -1]
+			var gap: float = Vector2(points[i].x - q.x, points[i].z - q.z).length_squared()
+			if gap < best:
+				best = gap
+				cuts[end] = i
+	cuts[0] = maxi(1, cuts[0] - 6)
+	cuts[1] = mini(points.size() - 2, cuts[1] + 6)
+	for part: Dictionary in [
+		{"points": points.slice(0, cuts[0] + 1), "level": 0},
+		{"points": points.slice(cuts[0], cuts[1] + 1), "level": over.crossing_level},
+		{"points": points.slice(cuts[1]), "level": 0}]:
+		# The level-zero ground solver owns its end height. Reuse that exact joint
+		# when the next level begins, as the player's snapped endpoint does.
+		for end in [0, part.points.size() - 1]:
+			var node: int = simulation.get_closest_node(part.points[end], 3.0)
+			if node >= 0:
+				var joint: Vector3 = simulation.get_node_pos(node)
+				if Vector2(joint.x - part.points[end].x, joint.z - part.points[end].z).length() < 0.01:
+					part.points[end] = joint
+		simulation.set_road_tool_crossing_level(part.level)
+		var checked: Dictionary = simulation.validate_road_candidate_with_snap(part.points, 3, 3, true)
+		expect(checked.get("is_valid", false), "Local opening part level %s endpoints %s/%s: %s" % [part.level, part.points[0], part.points[-1], checked])
+		if not await build(part.points, 3, 3, 3, 2.0):
+			expect(false, "Six-lane main road with local box opening")
+			quit(failures)
+			return
+	# Source reconstruction must retain all six lanes: the outer slot in each
+	# direction is reserved for buses. Permissions use the same edit gate as UI.
+	var main_ids := {}
+	for shape: PackedVector3Array in [approach, points]:
+		for p: Vector3 in shape:
+			var edge: int = simulation.get_hovered_edge(p.x, p.z)
+			var section: Dictionary = simulation.get_road_cross_section(edge)
 			if section.get("fwd_lanes", 0) == 3 and section.get("bkw_lanes", 0) == 3:
-				main_owners[id] = true
-				var reserved := await finish_request(simulation.change_road_bus_lanes(id, 4, 4))
-				expect(reserved.get("committed", false), "Reserve Yliopistonranta bus lanes: %s" % reserved)
+				main_ids[edge] = true
+	for edge: int in main_ids:
+		var bus := await finish_request(simulation.change_road_bus_lanes(edge, 4, 4))
+		expect(bus.get("committed", false), "Six-lane university bus permissions: " + str(bus))
+	simulation.set_road_tool_crossing_level(0)
 	# The existing parking endpoint reaches the ground-level road through an ordinary
 	# T junction. A 2 m paved refuge and requested zebra reuse the existing median tools.
 	var access_end := points[0]
@@ -166,10 +196,11 @@ func run() -> void:
 		expect(main_section.get("fwd_lanes", 0) == 3 and main_section.get("bkw_lanes", 0) == 3, "Yliopistonranta retains 3+3 lanes")
 		expect(main_section.get("median_style", 0) == 3, "Yliopistonranta retains its paved median")
 		expect(main_section.get("bus_forward_mask", 0) == 4 and main_section.get("bus_backward_mask", 0) == 4, "Yliopistonranta retains both bus lanes")
+		expect(main_section.get("median_width", 0.0) == 2.0, "Main-road median survives the crossing")
 		expect(simulation.get_edge_class(main_edge) == 0, "Yliopistonranta uses a grounded mixed cut/fill corridor")
 		expect(simulation.get_edge_class(access_edge) == 0, "Parking access is an ordinary surface road")
-		expect(simulation.get_road_cross_section(main_edge).get("crossing_level", -2) == 1, "Ground-following main-road level")
-		expect(simulation.get_road_cross_section(access_edge).get("crossing_level", -2) == 1, "Parking access shares the main-road level")
+		expect(simulation.get_road_cross_section(main_edge).get("crossing_level", -2) == 0, "Main road outside the short opening stays at grade")
+		expect(simulation.get_road_cross_section(access_edge).get("crossing_level", -2) == 0, "Parking access shares the ground-level main road")
 		var digest := university_contract_digest()
 		expect(simulation.save_game(destination), "Write new university reconstruction")
 		expect(simulation.load_game(destination), "Reload new university reconstruction")
