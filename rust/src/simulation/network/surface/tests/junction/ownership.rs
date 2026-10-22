@@ -195,6 +195,7 @@ fn headlight_house_t_junction() -> (RegionGraph, u32) {
 #[test]
 fn headlight_house_crosswalks_use_local_road_normals_and_shared_routes() {
     let (mut graph, center) = headlight_house_t_junction();
+    graph.preserve_legacy_zebras();
     let mut lanes = crate::simulation::network::lanes::LaneSystem::new();
     lanes.rebuild(&mut graph);
     let mut checked = 0;

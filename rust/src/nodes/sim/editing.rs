@@ -2132,83 +2132,46 @@ impl SimCore {
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        if (node_id as usize) < self.region_graph.node_count()
-            && self.region_graph.node(node_id).node_type
-                == crate::simulation::network::types::NodeType::Ramp
+        if edge_id < 0
+            || !self
+                .region_graph
+                .crosswalk_arm_eligible(node_id, edge_id as usize)
         {
-            self.refuse_cross_section("edit_ramp_controls");
+            self.refuse_cross_section("invalid_crosswalk_arm");
             return;
         }
-
-        if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
+        if self
+            .region_graph
+            .node(node_id)
+            .crosswalk_overrides
+            .get(&(edge_id as usize))
+            == Some(&enabled)
+        {
             return;
         }
-        let affected: HashSet<usize> = self
+        let affected: HashSet<_> = self
             .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        let changes_median = affected
+        let nodes = affected
             .iter()
-            .any(|&id| self.region_graph.edge(id).median.is_some());
-        if changes_median {
-            self.transit_network.begin_road_edit();
-        }
-        self.push_network_undo_for_local_topology(
-            if changes_median {
-                affected.clone()
-            } else {
-                HashSet::from([edge_id as usize])
-            },
-            HashSet::from([node_id]),
+            .flat_map(|&id| {
+                let edge = self.region_graph.edge(id);
+                [edge.start_node, edge.end_node]
+            })
+            .collect();
+        self.transit_network.begin_road_edit();
+        self.push_network_undo_for_local_topology(affected.clone(), nodes);
+        self.transit_network.mark_surface_dirty_from_sets(
+            &self.region_graph,
+            &affected,
+            &HashSet::from([node_id]),
         );
         self.region_graph
             .set_crosswalk_override(node_id, edge_id as usize, enabled);
-        if changes_median {
-            self.transit_network.mark_surface_dirty_from_sets(
-                &self.region_graph,
-                &affected,
-                &HashSet::from([node_id]),
-            );
-            self.mark_local_network_render_dirty();
-            if !self.validate_staged_road_render_with_plan(None) {
-                return;
-            }
-        }
-        let lane_edges = if changes_median {
-            crate::simulation::network::lanes::LaneSystem::incremental_rebuild_edge_closure(
-                &self.region_graph,
-                &affected,
-            )
-        } else {
-            affected.clone()
-        };
-        self.agents.invalidate_lane_ids_for_edges(
-            &lane_edges,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.transit_network
-            .lane_system
-            .rebuild_edges_incremental(&mut self.region_graph, &affected);
-        self.agents.reattach_invalidated_lanes_for_edges(
-            &lane_edges,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.rebuild_building_entrances_internal();
-        if changes_median {
-            self.transit_network
-                .rebuild_cch_and_check(&self.region_graph);
-            self.transit_network.flow_fields.mark_all_dirty();
-            self.precompute_road_mesh_data();
-            self.terrain_dirty = true;
-        }
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
+        self.finish_road_section_edit(affected);
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.

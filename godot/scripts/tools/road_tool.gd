@@ -36,6 +36,9 @@ var pocket_taper := 35.0
 var _pocket_selection: Dictionary = {}
 var _pocket_preview_key: Array = []
 var _pocket_preview_valid := false
+var _local_edit_preview_active := false
+var _local_edit_zoning_revision := -1
+var _local_edit_field_revision := -1
 var _pocket_pending_patches: Dictionary = {}
 var _preview_prop_keys: Array[Vector2i] = []
 var _cross_section_label: Label
@@ -205,9 +208,13 @@ func _process(delta):
 	if active and edit_pocket and _has_last_world_mouse_pos and _edit_request_id == 0:
 		_update_pocket_hover()
 	if _junction_preview.generation >= 0 and (
-		not active
+		(not active and not _local_edit_preview_active)
 		or _junction_preview.generation != simulation_node.get_road_tool_surface_generation()
-		or not _preview_zoning_revision_is_current(_preview_cache_surface)
+		or (not _local_edit_preview_active and not _preview_zoning_revision_is_current(_preview_cache_surface))
+		or (_local_edit_preview_active and (
+			_local_edit_zoning_revision != simulation_node.get_zoning_overlay_revision()
+			or _local_edit_field_revision != simulation_node.get_agriculture_field_overlay_revision()
+		))
 	):
 		_clear_preview_visual()
 		if current_path != null:
@@ -368,8 +375,14 @@ func _update_pocket_hover() -> void:
 	var preview: Dictionary = simulation_node.preview_road_pocket(int(selected.edge), bool(selected.at_start), pocket_left, pocket_right, pocket_length, pocket_taper)
 	_pocket_preview_valid = bool(preview.get("is_valid", false))
 	_edit_message = "" if _pocket_preview_valid else _preview_invalid_text(preview)
+	show_local_edit_preview(preview)
+	_refresh_cross_section_label()
+
+## Shows an already compiled local edit using the road and terrain replacement renderers.
+func show_local_edit_preview(preview: Dictionary) -> bool:
+	var valid := bool(preview.get("is_valid", false))
 	var staged: Array = []
-	if _pocket_preview_valid:
+	if valid:
 		# Streamed-out patches need no replacement; residency invalidation retries the hover.
 		var payloads: Array = preview.get("terrain_preview", {}).get("patches", [])
 		_pocket_pending_patches.clear()
@@ -381,21 +394,28 @@ func _update_pocket_hover() -> void:
 			terrain_node.patch_render_will_change.connect(_pocket_patch_will_change)
 		payloads = payloads.filter(func(data: Dictionary) -> bool: return terrain_node.patches.has(Vector2i(data.patch_x, data.patch_z)))
 		staged = _terrain_preview.stage(terrain_node, payloads, int(preview.surface_generation))
-	var installed := _pocket_preview_valid and not staged.is_empty() and _junction_preview.show_preview(self, preview.get("junction_preview", {}), int(preview.get("request_id", 0)))
+	var installed := valid and not staged.is_empty() and _junction_preview.show_preview(self, preview.get("junction_preview", {}), int(preview.get("request_id", 0)))
 	if installed:
 		clear_road_prop_preview(_preview_prop_keys)
 		_preview_prop_keys = set_road_prop_preview(_junction_preview.prop_chunks(preview.junction_preview))
 		_terrain_preview.commit(terrain_node, staged, int(preview.request_id), _invalidate_terrain_preview)
+		_local_edit_preview_active = true
+		_local_edit_zoning_revision = simulation_node.get_zoning_overlay_revision()
+		_local_edit_field_revision = simulation_node.get_agriculture_field_overlay_revision()
 	else:
 		_terrain_preview.discard(staged)
 		_clear_preview_visual()
 		# Resident road/terrain chunks may still be uploading the current generation.
-		if _pocket_preview_valid or bool(preview.get("is_pending", false)):
+		if valid or bool(preview.get("is_pending", false)):
 			_pocket_preview_key = []
-	_refresh_cross_section_label()
+	return installed
+
+## Whether a local edit still owns a visible replacement, including while the road tool is inactive.
+func has_local_edit_preview() -> bool:
+	return _local_edit_preview_active and _junction_preview.generation >= 0
 
 func _pocket_patch_will_change(key: Vector2i) -> void:
-	if edit_pocket and _pocket_pending_patches.has(key):
+	if (edit_pocket or _local_edit_preview_active) and _pocket_pending_patches.has(key):
 		_pocket_preview_key = []
 		_clear_preview_visual()
 
@@ -778,6 +798,7 @@ func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary)
 		_clear_preview_visual()
 
 func _clear_preview_visual() -> void:
+	_local_edit_preview_active = false
 	clear_road_prop_preview(_preview_prop_keys)
 	_preview_prop_keys.clear()
 	_terrain_preview.clear()

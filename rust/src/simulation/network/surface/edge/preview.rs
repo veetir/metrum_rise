@@ -2108,6 +2108,15 @@ impl RoadSurfaceSystem {
         }
         let local_edge = validation_graph.add_edge(copied_edge);
         copied_edges.insert(edge_idx, local_edge);
+        for (source, local) in [(edge.start_node, start_node), (edge.end_node, end_node)] {
+            if let Some(&marked) = existing_graph
+                .node(source)
+                .crosswalk_overrides
+                .get(&edge_idx)
+            {
+                validation_graph.set_crosswalk_override(local, local_edge, marked);
+            }
+        }
     }
 
     fn validation_endpoint_existing_node(

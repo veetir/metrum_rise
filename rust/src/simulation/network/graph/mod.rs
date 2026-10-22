@@ -3,6 +3,7 @@
 //! Road network graph data structures and spatial indexing.
 
 mod cross_section;
+mod crossings;
 mod lane_access;
 mod lane_taper;
 pub use lane_access::LaneUse;

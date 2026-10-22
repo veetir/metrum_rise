@@ -11,6 +11,30 @@ use crate::simulation::network::surface::PlannedRoadSurfaceQuery;
 use std::sync::Arc;
 
 impl RoadSurfaceSystem {
+    /// Zebra edits use the same bounded surface compiler and override as publication.
+    pub(crate) fn compile_crosswalk_preview(
+        &self,
+        source: &RegionGraph,
+        terrain: &TerrainSystem,
+        node: u32,
+        edge: usize,
+        marked: bool,
+    ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
+        if !source.crosswalk_arm_eligible(node, edge) {
+            return Err("invalid_crosswalk_arm");
+        }
+        self.compile_local_layout_preview(
+            source,
+            terrain,
+            source.node_adjacency(node).to_vec(),
+            |graph, nodes, edges| {
+                let node = nodes[&node];
+                graph.set_crosswalk_override(node, edges[&edge], marked);
+                Ok(graph.node_adjacency(node).to_vec())
+            },
+        )
+    }
+
     /// Ramp stubs share bounded surface and terrain replacement with other topology edits.
     pub(crate) fn compile_ramp_preview(
         &self,

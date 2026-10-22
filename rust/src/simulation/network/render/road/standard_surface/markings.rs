@@ -328,6 +328,34 @@ fn lane_point(lane: &Lane, d: f32) -> Vector3 {
     lane.geometry[index].lerp(lane.geometry[index + 1], fraction)
 }
 
+fn approach_needs_arrows(
+    graph: &RegionGraph,
+    lanes: &LaneSystem,
+    lane: &Lane,
+    ids: &[usize],
+    end: u32,
+    mask: u8,
+) -> bool {
+    let node = graph.node(end);
+    let road = graph.edge(lane.edge_id);
+    if node.node_type == NodeType::Ramp
+        || node
+            .lane_connections
+            .contains_key(&(lane.edge_id, lane.lane_idx))
+        || road
+            .pocket_taper()
+            .is_some_and(|(at_start, _)| (at_start == 0) != lane.is_fwd)
+    {
+        return true;
+    }
+    ids.iter().any(|&other| {
+        let other = &lanes.lanes[other];
+        other.lane_type == LaneType::Vehicle
+            && other.is_fwd == lane.is_fwd
+            && arrow_mask(other, lanes, node.node_type) != mask
+    })
+}
+
 fn emit_approach_arrows(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
@@ -345,11 +373,11 @@ fn emit_approach_arrows(
         } else {
             road.start_node
         };
-        if lane.lane_type != LaneType::Vehicle || graph.node_adjacency(end).len() < 3 {
+        if lane.lane_type != LaneType::Vehicle {
             continue;
         }
         let mask = arrow_mask(lane, lanes, graph.node(end).node_type);
-        if mask == 0 {
+        if mask == 0 || !approach_needs_arrows(graph, lanes, lane, ids, end, mask) {
             continue;
         }
         for back in [12.0, 42.0] {
@@ -624,6 +652,74 @@ mod tests {
             lanes.lanes[1].geometry[1].z = 0.0;
             assert_eq!(arrow_mask(&lanes.lanes[0], &lanes, NodeType::Ramp), 2);
         }
+    }
+
+    #[test]
+    fn arrows_require_authored_or_differing_lane_use() {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            ..Default::default()
+        });
+        let mut lanes = LaneSystem::new();
+        let incoming = Lane {
+            edge_id: 0,
+            geometry: vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::ZERO],
+            next_lanes: crate::simulation::network::lanes::LaneSuccessors::one(2),
+            ..Default::default()
+        };
+        lanes.lanes.push(incoming.clone());
+        lanes.lanes.push(incoming);
+        for (edge, point) in [
+            (1, Vector3::new(100.0, 0.0, 0.0)),
+            (2, Vector3::new(0.0, 0.0, -100.0)),
+        ] {
+            lanes.lanes.push(Lane {
+                edge_id: edge,
+                geometry: vec![Vector3::ZERO, point],
+                ..Default::default()
+            });
+        }
+        let required = |graph: &RegionGraph, lanes: &LaneSystem, ids: &[usize]| {
+            let mask = arrow_mask(&lanes.lanes[0], lanes, graph.node(end).node_type);
+            approach_needs_arrows(graph, lanes, &lanes.lanes[0], ids, end, mask)
+        };
+        assert!(
+            !required(&graph, &lanes, &[0]),
+            "plain single-lane approach"
+        );
+        assert!(
+            !required(&graph, &lanes, &[0, 1]),
+            "uniform multi-lane approach"
+        );
+        lanes.lanes[1].next_lanes = crate::simulation::network::lanes::LaneSuccessors::one(3);
+        assert!(required(&graph, &lanes, &[0, 1]), "differing actual turns");
+        graph.add_lane_connection(end, 0, 0, 1, 0);
+        assert!(
+            required(&graph, &lanes, &[0]),
+            "explicit imported/player lane use"
+        );
+        // Explicit turn:lanes also paints a degree-two approach; degree alone is not authority.
+        let next = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: end,
+            end_node: next,
+            ..Default::default()
+        });
+        lanes.lanes[0].length = 100.0;
+        lanes.lanes[0].cum_dist = vec![0.0, 100.0];
+        lanes.edge_lanes.insert(0, vec![0]);
+        let mut mesh = NetworkMeshData::default();
+        emit_approach_arrows(&mut mesh, &graph, &lanes, 0);
+        assert!(!mesh.marking_vertices.is_empty());
+        graph.nodes[end as usize].lane_connections.clear();
+        graph.nodes[end as usize].node_type = NodeType::Ramp;
+        assert!(required(&graph, &lanes, &[0]), "shallow ramp selection");
     }
 
     #[test]

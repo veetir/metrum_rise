@@ -51,7 +51,7 @@ pub struct Node {
     /// Pedestrians bypass this table entirely.
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
     /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
-    /// If an edge ID is missing, default procedural generation decides.
+    /// Missing arms are unmarked; false removes paint without prohibiting legal crossing.
     pub crosswalk_overrides: HashMap<usize, bool>,
 }
 

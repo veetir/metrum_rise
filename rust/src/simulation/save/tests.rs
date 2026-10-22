@@ -1991,3 +1991,28 @@ fn bus_lane_save_round_trip_legacy_absence_and_invalid_masks() {
         [0; 2]
     );
 }
+
+#[test]
+fn zebra_arms_round_trip_false_overrides_and_legacy_default() {
+    let (mut graph, edge) = snapshot_test_graph();
+    let start = graph.edge(edge).start_node;
+    let end = graph.edge(edge).end_node;
+    graph.set_crosswalk_override(start, edge, true);
+    graph.set_crosswalk_override(end, edge, false);
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let loaded = network::load_graph(&conn).unwrap();
+    assert!(loaded.arm_has_zebra(0, 0));
+    assert_eq!(loaded.node(1).crosswalk_overrides.get(&0), Some(&false));
+    conn.execute_batch("UPDATE road_crosswalks SET edge_id=999")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+    conn.execute_batch("DROP TABLE road_crosswalks").unwrap();
+    let legacy = network::load_graph(&conn).unwrap();
+    assert!(legacy.arm_has_zebra(0, 0));
+    assert!(legacy.arm_has_zebra(1, 0));
+}

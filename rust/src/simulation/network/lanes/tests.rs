@@ -203,7 +203,12 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
     };
     let (live_geometry, live_length) = sidewalk(&lanes);
     let (loaded_geometry, loaded_length) = sidewalk(&loaded);
-    assert!(live_geometry.iter().all(|point| point.y != 0.0));
+    for point in &live_geometry {
+        let surface_y = road_surface
+            .sample_visible_surface_height(&graph, &terrain, point.x, point.z)
+            .unwrap();
+        assert!((point.y + CURB_STEP_HEIGHT_M - surface_y).abs() < 1e-4);
+    }
     assert_eq!(live_geometry, loaded_geometry);
     assert_eq!(live_length, loaded_length);
 }
@@ -363,6 +368,7 @@ fn build_pedestrian_junction(
         }));
     }
     graph.rebuild_adjacency_list();
+    graph.preserve_legacy_zebras();
 
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
@@ -698,6 +704,7 @@ fn test_crosswalk_counts() {
         });
     }
     graph.rebuild_adjacency_list();
+    graph.preserve_legacy_zebras();
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
 

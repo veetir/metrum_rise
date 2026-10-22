@@ -36,6 +36,8 @@ pub struct SidewalkMouth {
     pub dir: Vector3,
     /// Planar sidewalk tangent pointing from the junction into the physical lane body.
     pub sidewalk_dir: Vector3,
+    /// Zebra-only distance between the physical sidewalk end and compiled node mouth.
+    pub crossing_inset_m: f32,
     /// ID of the inbound lane relative to the junction.
     pub in_id: usize,
     /// ID of the outbound lane relative to the junction.
@@ -171,11 +173,11 @@ fn sidewalk_corner_route(
     end: &SidewalkMouth,
     node_pos: Vector3,
 ) -> Vec<Vector3> {
-    // Physical sidewalk lanes end at the zebra, CROSSWALK_INSET metres beyond the
-    // compiled node mouth. Restore those node-mouth tangent points before asking the
+    // Marked arms end beyond the node mouth; unmarked arms have no zebra inset.
+    // Restore the node-mouth tangent points before asking the
     // road-surface side-join backend for its canonical rounded corner.
-    let start_corner_mouth = start.mouth_world_pos - start.sidewalk_dir * config::CROSSWALK_INSET;
-    let end_corner_mouth = end.mouth_world_pos - end.sidewalk_dir * config::CROSSWALK_INSET;
+    let start_corner_mouth = start.mouth_world_pos - start.sidewalk_dir * start.crossing_inset_m;
+    let end_corner_mouth = end.mouth_world_pos - end.sidewalk_dir * end.crossing_inset_m;
     let start_xz = RoadVec2::new(
         f64::from(start_corner_mouth.x),
         f64::from(start_corner_mouth.z),
@@ -433,6 +435,9 @@ fn nearest_point_on_polyline_xz(polyline: &[Vector3], point: Vector3) -> Option<
         })
         .min_by(|a, b| a.2.total_cmp(&b.2))
         .map(|(index, nearest, _)| (index, nearest))
+        // A straight unmarked seam can collapse its sidewalk corner to one point.
+        // Footpaths still attach at that point, in both travel directions.
+        .or_else(|| polyline.first().copied().map(|point| (0, point)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,16 +449,18 @@ fn append_pedestrian_connection(
     node_id: usize,
     start: &SidewalkMouth,
     end: &SidewalkMouth,
-    geometry: Vec<Vector3>,
+    mut geometry: Vec<Vector3>,
     crosswalk: Option<LaneCrosswalk>,
 ) {
-    if geometry.len() < 2 {
+    if geometry.is_empty() {
         return;
+    }
+    // Unmarked straight continuations can have coincident sidewalk mouths. Retain a
+    // stationary connector, as for same-side reversals, instead of severing the route.
+    if geometry.len() == 1 {
+        geometry.push(geometry[0]);
     }
     let length = polyline_length(&geometry);
-    if length <= CONNECTION_POINT_EPSILON_M {
-        return;
-    }
 
     let connection_id = lanes.len();
     lanes.push(Lane {
@@ -486,16 +493,18 @@ fn append_pedestrian_step(
     outgoing_steps: &mut [Vec<usize>],
     start_mouth: usize,
     end_mouth: usize,
-    geometry: Vec<Vector3>,
+    mut geometry: Vec<Vector3>,
     crosswalk: Option<LaneCrosswalk>,
 ) {
-    if geometry.len() < 2 {
+    if geometry.is_empty() {
         return;
+    }
+    // Unmarked straight continuations can have coincident sidewalk mouths. Retain a
+    // stationary connector, as for same-side reversals, instead of severing the route.
+    if geometry.len() == 1 {
+        geometry.push(geometry[0]);
     }
     let length = polyline_length(&geometry);
-    if length <= CONNECTION_POINT_EPSILON_M {
-        return;
-    }
 
     let step_id = steps.len();
     steps.push(PedestrianStep {
@@ -530,6 +539,10 @@ fn pedestrian_route_tree(
 
         for &step_id in &outgoing_steps[current] {
             let step = &steps[step_id];
+            // Settled mouths cannot be reparented through a zero-length cycle.
+            if visited[step.end_mouth] {
+                continue;
+            }
             let candidate = distance[current] + step.length;
             let old = distance[step.end_mouth];
             if candidate + CONNECTION_POINT_EPSILON_M < old
@@ -739,6 +752,11 @@ pub fn build_pedestrian_connections_at_node(
                     angle: arm_angle,
                     dir,
                     sidewalk_dir,
+                    crossing_inset_m: if graph.arm_has_zebra(node_id as u32, e_idx) {
+                        config::CROSSWALK_INSET
+                    } else {
+                        0.0
+                    },
                     in_id,
                     out_id,
                     mouth_world_pos,
@@ -780,6 +798,7 @@ pub fn build_pedestrian_connections_at_node(
             angle: dir.z.atan2(dir.x),
             dir,
             sidewalk_dir: dir,
+            crossing_inset_m: 0.0,
             in_id,
             out_id,
             mouth_world_pos,
@@ -851,7 +870,11 @@ pub fn build_pedestrian_connections_at_node(
     let mut outgoing_steps = (0..mouths.len())
         .map(|_| Vec::with_capacity(2))
         .collect::<Vec<_>>();
-    let mut crosswalks_added = 0;
+    // A marked arm at this junction is the nearby crossing; unmarked routes are only
+    // offered when none exists. Continuous raised separators remain barriers.
+    let has_zebra = arms
+        .iter()
+        .any(|arm| graph.arm_has_zebra(node_id as u32, arm.edge_idx));
     for arm in &arms {
         let edge_idx = arm.edge_idx;
         let clockwise = &mouths[arm.clockwise_mouth];
@@ -863,17 +886,9 @@ pub fn build_pedestrian_connections_at_node(
         };
         let start = &mouths[start_index];
         let end = &mouths[end_index];
-        let crosswalk_override = graph.nodes[node_id]
-            .crosswalk_overrides
-            .get(&edge_idx)
-            .copied();
-        if graph.nodes[node_id].node_type
-            == crate::simulation::network::types::NodeType::LaneTransition
-            || crosswalk_override == Some(false)
-            || (crosswalk_override.is_none() && road_degree == 2 && crosswalks_added >= 1)
-            || (crosswalk_override.is_none()
-                && graph.edge(edge_idx).median.is_some()
-                && graph.median_continues_at_node(edge_idx, node_id as u32))
+        let marked = graph.arm_has_zebra(node_id as u32, edge_idx);
+        if !graph.crosswalk_arm_eligible(node_id as u32, edge_idx)
+            || (!marked && (has_zebra || graph.median_continues_at_node(edge_idx, node_id as u32)))
         {
             continue;
         }
@@ -907,7 +922,7 @@ pub fn build_pedestrian_connections_at_node(
             route.clone(),
             Some(LaneCrosswalk {
                 edge_id: edge_idx,
-                marking: Some(marking),
+                marking: marked.then_some(marking),
             }),
         );
         append_pedestrian_step(
@@ -921,7 +936,6 @@ pub fn build_pedestrian_connections_at_node(
                 marking: None,
             }),
         );
-        crosswalks_added += 1;
     }
 
     // Adjacent arms connect around their shared sidewalk corner. The old direct

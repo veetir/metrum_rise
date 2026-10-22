@@ -148,6 +148,23 @@ pub(super) fn save_network(
         }
     }
 
+    {
+        let mut stmt =
+            tx.prepare("INSERT INTO road_crosswalks(node_id,edge_id,marked) VALUES (?1,?2,?3)")?;
+        let mut rows = Vec::new();
+        for (&old, &saved) in &maps.node_old_to_new {
+            for (&edge, &marked) in &graph.node(old).crosswalk_overrides {
+                if let Some(&edge) = maps.edge_old_to_new.get(&edge) {
+                    rows.push((saved, edge, marked));
+                }
+            }
+        }
+        rows.sort_unstable();
+        for (node, edge, marked) in rows {
+            stmt.execute(params![node, usize_to_i64(edge)?, marked])?;
+        }
+    }
+
     // 3. Geometry
     {
         let mut stmt = tx.prepare("INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
@@ -448,6 +465,34 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             }
             graph.add_lane_connection(nid, fe, fl, te, tl);
         }
+    }
+    let has_crosswalks: bool = conn.query_row(
+        "SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_crosswalks'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_crosswalks {
+        let mut stmt = conn.prepare(
+            "SELECT node_id,edge_id,marked FROM road_crosswalks ORDER BY node_id,edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let node = i64_to_u32(row.get(0)?)?;
+            let edge = i64_to_usize(row.get(1)?)?;
+            let marked: i64 = row.get(2)?;
+            if node as usize >= graph.node_count()
+                || !graph
+                    .get_edge(edge)
+                    .is_some_and(|e| e.start_node == node || e.end_node == node)
+                || !(0..=1).contains(&marked)
+                || (marked == 1 && !graph.crosswalk_arm_eligible(node, edge))
+            {
+                return Err(SaveLoadError::custom("invalid crosswalk arm"));
+            }
+            graph.set_crosswalk_override(node, edge, marked != 0);
+        }
+    } else {
+        graph.preserve_legacy_zebras();
     }
     if !geometry.is_empty() || !physical_geometry.is_empty() {
         return Err(SaveLoadError::custom("orphan edge geometry"));

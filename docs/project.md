@@ -6,6 +6,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
+hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
+crossable beside ordinary junctions without zebra clearance. Arrows now require authored or
+lane-dependent turn use, pockets or ramps; plain 1+1 approaches re-render without them.
+OSM crossing mapping remains the importer integration task
+([marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75)).
+
 Road cross-sections support painted, grass and paved medians plus in-place lane/median editing
 ([ROAD-66](roads.md#central-medians-and-in-place-cross-section-changes--road-66)).
 Slice B is complete: default junction lane use and advance lane choice, median/kerb turn pockets,

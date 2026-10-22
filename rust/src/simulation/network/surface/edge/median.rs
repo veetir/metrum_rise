@@ -44,10 +44,13 @@ impl MedianEnds {
             } else {
                 edge.end_clip
             };
-            let zebra_end = clip
-                + crate::config::CROSSWALK_INSET
-                + crate::config::CROSSWALK_LENGTH_M * 0.5
-                + ZEBRA_CLEARANCE_M;
+            let zebra_end = if graph.arm_has_zebra(node, id) {
+                clip + crate::config::CROSSWALK_INSET
+                    + crate::config::CROSSWALK_LENGTH_M * 0.5
+                    + ZEBRA_CLEARANCE_M
+            } else {
+                clip
+            };
             Some(boundary.max(zebra_end) + extra)
         };
         Self {
@@ -91,5 +94,47 @@ impl MedianEnds {
         }
         samples.sort_by(f32::total_cmp);
         samples.dedup_by(|a, b| (*a - *b).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::{Edge, RoadMedian};
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use godot::prelude::*;
+
+    #[test]
+    fn only_a_marked_arm_reserves_zebra_clearance() {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)];
+        let id = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            width: 12.0,
+            median: RoadMedian::from_tool(2, 5.0).unwrap(),
+            physical_length: 100.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        });
+        let unmarked = MedianEnds::for_edge(&graph, id, 100.0, None);
+        assert_eq!(unmarked.start, Some(0.0));
+        assert!(unmarked.scale(3.0) > 0.0);
+        graph.set_crosswalk_override(start, id, true);
+        let marked = MedianEnds::for_edge(&graph, id, 100.0, None);
+        assert_eq!(marked.start, Some(6.25));
+        assert_eq!(marked.scale(3.0), 0.0);
+        graph.set_crosswalk_override(start, id, false);
+        assert_eq!(
+            MedianEnds::for_edge(&graph, id, 100.0, None).start,
+            unmarked.start
+        );
     }
 }

@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 94;
+pub const SAVE_VERSION: i64 = 95;
 
 /// First version storing the weather: scenario, transition, cloud drift, wind clock and schedule.
 ///
@@ -242,6 +242,7 @@ CREATE TABLE network_nodes(
     z REAL NOT NULL,
     node_type INTEGER NOT NULL
 );
+CREATE TABLE road_crosswalks(node_id INTEGER NOT NULL, edge_id INTEGER NOT NULL, marked INTEGER NOT NULL CHECK(marked IN (0,1)), PRIMARY KEY(node_id,edge_id));
 CREATE TABLE road_bus_lanes(edge_id INTEGER PRIMARY KEY, forward_mask INTEGER NOT NULL, backward_mask INTEGER NOT NULL);
 CREATE TABLE road_lane_tapers(edge_id INTEGER NOT NULL, end_index INTEGER NOT NULL, length_m REAL NOT NULL, from_fwd INTEGER NOT NULL, from_bkw INTEGER NOT NULL, from_median REAL NOT NULL, left_pocket INTEGER NOT NULL, right_pocket INTEGER NOT NULL, PRIMARY KEY(edge_id, end_index));
 CREATE TABLE network_edges(

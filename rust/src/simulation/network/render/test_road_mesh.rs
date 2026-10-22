@@ -774,6 +774,8 @@ mod tests {
             }
         }
 
+        graph.preserve_legacy_zebras();
+        network.lane_system.rebuild(&mut graph);
         let terrain = TerrainSystem::new(256, 256);
         let mesh_data = network.generate_mesh_data(&graph, &terrain);
         (graph, mesh_data, terrain)
@@ -2746,6 +2748,7 @@ mod tests {
             0,
         ));
         graph.rebuild_adjacency_list();
+        graph.preserve_legacy_zebras();
 
         let mut lane_system = crate::simulation::network::lanes::LaneSystem::new();
         lane_system.rebuild(&mut graph);

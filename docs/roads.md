@@ -2794,11 +2794,208 @@ fails on the old padding. The final combined library/bridge validation and all 1
 window captures above include this correction; edge 1438 no longer exposes sky beside its
 abutment.
 
+### Authored zebras and selective lane arrows — ROAD-74 / ROAD-75
+
+New road arms have **no zebra**. `RegionGraph::arm_has_zebra(node, edge)` is the single paint
+and clearance authority: an eligible road arm must have an explicit true entry in
+`Node.crosswalk_overrides`. False removes paint and signs without banning legal pedestrian
+crossing. Only marked arms reserve the 4 m inset, stripe half-length and 1 m median clearance;
+unmarked median noses start at their solved mouth plus any independently authored setback.
+Unmarked sidewalk lanes reach the mouth. Coincident straight sidewalk mouths retain stationary
+connectors; settled route-tree vertices are never reparented through a zero-length cycle.
+
+The Selection tool's existing junction-arm squares now have **Zebra on/off** labels. Hover shows
+the exact replacement road, median, terrain and signs using the existing local layout compiler;
+click applies the displayed choice through the road publication/agent reattachment gate. Moving
+away cancels the preview. Each change has one undo checkpoint. Save **95** adds sparse
+`road_crosswalks(node_id, edge_id, marked)` rows, remapped through snapshot identities, sorted
+for serialization and validated on load. Splits/pockets retain the existing override remapping.
+
+**Compatibility decision.** Files through v94 contain no import provenance or saved crossing
+overrides. On load, their old deterministic procedural zebra selection is frozen into explicit
+true entries. Thus existing player-built roads keep their zebras. New arms remain unmarked.
+Old imported files necessarily receive the same preservation; importer integration must replace
+that legacy selection with source metadata. Vehicle geometry/connectivity is unchanged. Removing
+paint deliberately changes unmarked sidewalk mouths, median noses, signs and mesh partitioning.
+
+**Importer hook.** New imports start with absent/false arm entries. Resolve an OSM crossing node
+to the correct final junction arm after topology splitting, then call
+`set_crosswalk_override(node, edge, marked)` before compiling surfaces and lanes. A marked
+`highway=crossing` with `crossing=marked|zebra|uncontrolled|traffic_signals`, or a positive
+`crossing:markings` value, authors paint; explicit absent-marking values (`no`, `none`) suppress
+it. Signals alone on an ordinary junction do not imply a zebra. When integrating already imported
+pre-v95 graphs, clear the legacy zebra entries on imported arms first. Store final true/false
+entries in `road_crosswalks`; an empty table intentionally means no zebras. Prisma's current
+`prisma-1..4.png` street views override the obsolete zebra in `prisma-top.png`. OSM parsing and
+source-to-arm mapping belong to the later importer task.
+
+Pedestrian crossing steps and zebra paint are now independent. When a junction has marked arms,
+routes use those nearby crossings; otherwise ordinary eligible arms allow perpendicular unmarked
+crossings beside the junction. Continuous medians, ramp/transition topology and foot-only access
+retain their existing barriers/continuity. This follows [Tieliikennelaki §16](https://www.finlex.fi/fi/lainsaadanto/2018/729):
+use a nearby marked crossing or grade-separated path, otherwise cross perpendicularly beside a
+nearby junction. The lane graph models nearby marked arms within the same junction; this slice
+does not introduce a world-wide search for nearby overpasses. Vehicle/pedestrian admission and
+signal priority remain TRAFFIC-06 work.
+
+Arrows render only for an explicitly authored vehicle lane whitelist (including imported
+`turn:lanes`), a pocket approach, a ramp fork/merge, or same-direction lanes with differing actual
+turn masks. Uniform single-lane approaches, including ordinary 1+1 residential streets, emit no
+arrows. Uniform multi-lane approaches also omit redundant arrows. Painted directions still derive
+from permitted connector targets, including the existing shallow-ramp rule. Importers should use
+the existing vehicle lane-connection authoring for `turn:lanes`; there is no new arrow-only cache.
+All saved maps re-render arrows from these rules, without editing their SQLite files.
+
+Costs: zebra lookup is O(1), allocation-free. Legacy migration is load-only
+O(E + sum(degree log degree)). Arrow decisions are rebuild-only O(L² × local successor count)
+per approach, with the existing maximum four directional lanes and no additional allocations.
+Zebra preview copies only the existing incidence halo, then uses the existing road/terrain
+compiler. No per-agent fields, dispatch or tick-time allocations are added.
+
+#### Marking-rule acceptance — 2026-10-22
+
+The frozen release library run passes **2,649 tests**, zero failures, 152 ignored (138.18 s,
+four test threads and four Rayon workers). Coverage includes no implicit zebras, marked versus
+unmarked pedestrian reachability, stationary sidewalk seams, median clearance, immutable preview
+versus committed chunks, arrow selection and actual arrow emission at degree-two authored
+approaches, sparse save identities, false entries and old-save migration. Four v94 SQLite
+fixtures freshly recorded with predecessor `f70c6dbe` load with their original four roadbed
+SHA-256 values unchanged; new unmarked fixtures have separate deliberate expectations.
+
+Fresh `cargo clippy --all-targets` completes with only two pre-existing `chunks_exact` warnings
+in unchanged bus-test statements. `cargo doc --no-deps` reports zero missing-doc warnings and
+two existing link warnings. No new dependencies, engine changes or agent-tick allocations.
+
+All **21** individually launched road/traffic bridge scripts return zero. The chunk renderer
+and junction-preview tests also emit their existing ObjectDB/resource cleanup diagnostics at
+exit; both report PASS. The other final logs contain no errors. The new zebra bridge exercises
+preview immutability, add/remove, undo and reload; selection gesture stubs also verify a rejected
+preview cannot commit.
+
+Reproduction (use the installed macOS SDK supported by the linker):
+
+```sh
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" --test-threads=4
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  cargo clippy --manifest-path rust/Cargo.toml --all-targets
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  cargo doc --manifest-path rust/Cargo.toml --no-deps
+METRUM_ROADS_B_CONTRACT_DIR="$ARTIFACTS/legacy-v94" \
+  perl -e 'alarm 900; exec @ARGV' godot --headless --path godot \
+  --script res://tests/road_pockets_legacy_test.gd
+```
+
+Bridge command used for each script, in an isolated project profile sharing the deployed
+library and scripts (application name `MetrumRoadMarkingTests`, no player settings/saves):
+
+```sh
+for test in network_tool_chunk_renderer road_benchmark_metrics road_preview_metrics \
+  road_junction_preview road_preview_stream road_cross_section road_bus_streetscape \
+  road_turn_lanes road_pockets road_pockets_legacy road_trajectory road_junction_control \
+  road_roundabouts road_ramps road_grade_separation road_filled_underpass \
+  road_rejection_report selection_gesture vehicle_ground_support junction_debug_overlay \
+  road_marking_rules; do
+  METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot --headless \
+    --path "$GODOT_PROJECT" --script "res://tests/${test}_test.gd"
+done
+```
+
+Fresh matched **unprofiled release** measurements compare the exact predecessor `f70c6dbe`
+with the frozen candidate tested above, alternating process order with no concurrent Godot,
+build or benchmark. Baseline executable SHA-256:
+`76893fa226a663d6170436ac5ccb8cba053f796af477704e562b5badf351222f`;
+candidate: `faf788913fc8b8aadcaba6078bd8dd388a36eae9ba05331a035ea1735ec2e505`.
+macOS arm64, upstream Godot 4.7.2/API 4.5; `METRUM_DEBUG=0`. PERF-06 uses 15 process pairs and
+eight Rayon workers; road previews five pairs and four workers; populated pocket planning three
+pairs and four workers. The new zebra preview uses three candidate processes/four workers,
+31 timed samples after three warmups per population level. Setup is excluded.
+
+PERF-06 median elapsed milliseconds (10k / 30k agents):
+
+| Mode | Predecessor | Candidate |
+| --- | --- | --- |
+| Network | 0.539 / 0.947 | 0.524 / 0.919 |
+| Access egress | 0.656 / 1.584 | 0.638 / 1.600 |
+| Access ingress | 0.359 / 0.615 | 0.323 / 0.607 |
+
+All six work dictionaries match between builds; the existing test also verifies deterministic
+repeats and 3× work scaling. Mixed short timing changes are recorded without claiming a tick
+speedup. Neighboring-cross preview medians are flat 14.277 → 13.771 ms and sloped
+21.380 → 20.703 ms (p95 medians 15.065 → 14.734 and 22.444 → 21.962 ms). These
+products intentionally lose default paint in the candidate.
+
+Populated locality medians, milliseconds (median of each process's p50):
+
+| Background buildings | Pocket predecessor | Pocket candidate | Zebra candidate |
+| --- | --- | --- | --- |
+| 0 | 18.002 | 17.617 | 16.029 |
+| 1,000 | 17.957 | 18.306 | 16.575 |
+| 10,000 | 18.468 | 18.228 | 16.560 |
+| 100,000 | 18.571 | 18.198 | 16.637 |
+
+The fixed local products match at every background level within each build. The fixture grows
+background roads 0/4/40/391, parcels 4/1,004/10,004/100,004 and agents
+24/6,024/60,024/600,024. Zebra preview cost follows the fixed neighborhood rather than world
+population. This measures repeated preview compilation, not the existing global agent
+invalidation, entrance refresh and CCH work of committed road publication, which this slice
+reuses. No claim of whole-edit locality is made.
+
+Exact benchmark commands, invoked once per process in the cohorts above with the appropriate
+preserved `$TEST_BINARY`:
+
+```sh
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --ignored --exact --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" \
+  simulation::network::render::road::preview::tests::benchmark_neighboring_cross_preview \
+  --ignored --exact --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" \
+  nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling \
+  --ignored --exact --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" \
+  nodes::sim::core::tests::road_plan_scaling::populated_crosswalk_plan_scaling \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+Native captures use `tools/road_marking_capture_fixtures.py` and
+`METRUM_MARKINGS_CAPTURE=before|after` with `road_marking_rules_test.gd`, the predecessor and
+candidate libraries respectively. Both phases have Prisma/Niirala overhead and street views;
+the candidate also captures unmarked, live preview, authored zebra and traffic states. The live
+preview persists while Selection owns it and does not mutate authoritative paint. A simulated
+arrival of a previously absent terrain patch clears that preview, which then reinstalls. A car clears
+the authored crossing. The final native runs have no script errors.
+
+```sh
+python3 tools/road_marking_capture_fixtures.py
+METRUM_DEBUG=0 METRUM_MARKINGS_CAPTURE=after \
+  perl -e 'alarm 900; exec @ARGV' godot --path godot \
+  --script res://tests/road_marking_rules_test.gd
+```
+
+Prisma was compared with `user-2026-10-21/prisma-1.png` through `prisma-4.png` and the reported
+`prisma_zebras.png`: zebras/signs and their median clearance disappear, while lane-use arrows
+remain on restricted approaches. The older `prisma-top.png` zebra is deliberately disregarded.
+Niirala was compared with `niirala_arrows.png`: the ordinary 1+1 approach loses its arrows;
+legacy zebras stay. These are marking comparisons, not a completed reconstruction: imported
+lane use, sidewalks, missing buildings and landscaping still differ from street photographs.
+
+**Capture limitation:** the full user `prisma.sqlite` is already refused by the preserved
+predecessor's surface compiler on 28 spans outside the viewed neighborhood. This slice does not
+repair that geometry. The read-only fixture utility copies exact nearby ownership (60 Prisma,
+33 Niirala roads), retaining source nodes and terrain, and remaps retained edge references.
+Only the candidate Prisma copy receives an empty crossing table, emulating the later importer
+integration. Thus its capture proves the no-zebra rule, not completed OSM tag plumbing. Both
+source saves' SHA-256 hashes are unchanged. Captures, fixtures, logs and binaries stay local in
+`$ARTIFACTS`; none are committed.
+
 ## Pedestrian Junction Crossings
 
-One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
+One authoritative pedestrian crossing record drives routing; its optional marking drives zebra rendering:
 
-- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`
+- a crossable arm has a pedestrian crossing step; only authored zebras emit a `CrosswalkMarking`
 - the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
   segment stored by the marking
 - routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
@@ -2808,7 +3005,7 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
 - every incoming sidewalk mouth has one precomputed route to each reachable outbound sidewalk
   mouth; ordinary edge routing selects the shortest route to an arm, while exact building access
   can select either sidewalk without falling back to a side-to-side lane reselection
-- physical road-sidewalk lanes terminate at the configured crosswalk inset, exactly matching the
+- physical road-sidewalk lanes terminate at the marked inset or unmarked mouth, exactly matching the
   first and last points of their junction connectors, so walkers cannot pass a zebra and backtrack
 - a corner route falls back to the node-centred arc only when the rounded route would cut into the
   asphalt of either arm, judged against the arm centrelines (`TRAFFIC-04`). The old test compared
@@ -2817,9 +3014,9 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
   walkers across the lawn on curved roads
 - a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
   road or reattaching farther along the reverse sidewalk
-- degree-two junctions keep the deterministic single-crosswalk policy, except a continuous
-  median omits the default crossing; a user override opens that median before the requested zebra.
-  Higher-degree junctions may expose one crossing per eligible arm
+- old degree-two zebra selections are preserved on load; new paint is explicitly authored.
+  A requested zebra opens a continuous median before the crossing. Unmarked crossings cannot
+  pass through a continuous median
 - a crossing is square to the road where it is drawn (`ROAD-64`): the midpoint of the two sidewalk
   lane ends is projected onto the arm's physical edge, and both kerb points sit at that one station,
   asphalt half-width either side along the local normal. Before, the two sidewalk lanes were trimmed
@@ -2842,7 +3039,8 @@ never plan a route onto one; footpaths had been dead ends since pedestrians move
   point and follows the corner to the sidewalk on either side; reaching the other side of the road
   uses the arms' crosswalks as before. At a single road arm it joins both sidewalks directly.
   Footpaths meeting only footpaths connect through the node.
-- Road arms, their crosswalks and the single-crosswalk rule at degree-two nodes are unchanged.
+- Footpath attachment preserves road-arm ownership; current marked/unmarked crossing selection
+  follows ROAD-74 above, including preserved legacy degree-two paint.
 - The node records these pedestrian routes as turn rules keyed by the footpath edge, as sidewalk
   routes are keyed by lane index ±100. `RegionGraph::is_vehicle_turn_rule` tells both apart from
   player-set car turn rules, so neither puts a junction into car whitelist mode. Until this was

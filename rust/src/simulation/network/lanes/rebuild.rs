@@ -126,8 +126,10 @@ impl LaneSystem {
                             == crate::simulation::network::types::NodeType::LaneTransition
                         {
                             1.0 - config::CROSSWALK_INSET - clip
-                        } else {
+                        } else if graph.arm_has_zebra(node, edge_idx) {
                             0.0
+                        } else {
+                            -config::CROSSWALK_INSET
                         }
                     };
                     (

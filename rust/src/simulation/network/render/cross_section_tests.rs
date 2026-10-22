@@ -173,6 +173,7 @@ fn median_free_road_products_match_pre_median_fixtures() {
     let mut roadbed_actual = Vec::new();
     for (arms, slope) in [(1, false), (2, false), (3, false), (4, false), (3, true)] {
         let (mut graph, terrain) = fixture(arms, slope);
+        graph.preserve_legacy_zebras();
         let mut surface = RoadSurfaceSystem::new(128.0);
         assert!(surface.compile_dirty(&graph, &terrain));
         let mut lanes = LaneSystem::new();
@@ -275,13 +276,13 @@ fn median_free_road_products_match_pre_median_fixtures() {
             17143503236276419293
         ]
     );
-    // The combined hashes include ROAD-67's restricted connectors and the tangent circular
-    // turn follow-up. The unchanged roadbed hashes above remain the geometry acceptance gate.
+    // ROAD-74 deliberately removes the unmarked degree-two arm's sidewalk inset; its
+    // combined lane hash changes. All five roadbed hashes above remain unchanged.
     assert_eq!(
         actual,
         vec![
             7042786987200519549,
-            16177303824768118247,
+            11348737907244005827,
             17072291034510577630,
             437264782030988095,
             9851663238608887122
@@ -491,6 +492,7 @@ fn median_setbacks_and_divided_to_undivided_handoffs_compile() {
             median.end_setback_m = 2.0;
             graph.set_edge_cross_section(0, 1, 1, Some(median)).unwrap();
             graph.rebuild_intersection_clips();
+            graph.set_crosswalk_override(0, 0, true);
             let mut surface = RoadSurfaceSystem::new(128.0);
             assert!(
                 surface.compile_dirty(&graph, &terrain),

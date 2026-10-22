@@ -37,10 +37,13 @@ var _highlight_tween: Tween = null
 
 # Node Selection
 var selected_node: int = -1
+var _node_visual_generation := -1
 
 var lane_spheres = []
 var connection_lines = []
 var crosswalk_toggles = []
+var _crosswalk_preview_key: Array = []
+var _crosswalk_preview_valid := false
 
 var _drag_source: Dictionary = {}
 var drag_line_mesh: MeshInstance3D
@@ -96,6 +99,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			if selected_node != -1:
 				var clicked_cw = _get_hovered_cw_toggle(pos)
 				if clicked_cw != null:
+					_update_crosswalk_preview()
+					if not _crosswalk_preview_valid:
+						return
+					_clear_crosswalk_preview()
 					simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw)
 					_build_node_visuals(selected_node)
 					if get_node_or_null("../RoadTool"):
@@ -157,6 +164,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(_delta):
 	if not active: return
 	
+	if selected_node != -1 and _node_visual_generation != simulation_node.get_road_tool_surface_generation():
+		_build_node_visuals(selected_node)
+	if selected_node != -1 and _drag_source.is_empty():
+		_update_crosswalk_preview()
 	if not _drag_source.is_empty():
 		_update_drag_line()
 	elif selected_node == -1 and _mouse_pressed:
@@ -169,6 +180,7 @@ func _process(_delta):
 # ── Node Visuals ─────────────────────────────────────────────────────────────
 
 func _clear_node_visuals():
+	_clear_crosswalk_preview()
 	for s in lane_spheres:
 		s.mesh_inst.queue_free()
 		if s.has("label_inst") and s.label_inst:
@@ -179,11 +191,13 @@ func _clear_node_visuals():
 	connection_lines.clear()
 	for c in crosswalk_toggles:
 		c.mesh_inst.queue_free()
+		c.label_inst.queue_free()
 	crosswalk_toggles.clear()
 	if drag_line_mesh: drag_line_mesh.mesh = null
 
 func _build_node_visuals(node_id: int):
 	_clear_node_visuals()
+	_node_visual_generation = simulation_node.get_road_tool_surface_generation()
 	
 	var unique_edges = {}
 	var lanes = simulation_node.get_node_lanes(node_id)
@@ -256,7 +270,16 @@ func _build_node_visuals(node_id: int):
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		mesh_inst.material_override = mat
 		
+		var label := Label3D.new()
+		label.text = "Zebra on" if has_cw else "Zebra off"
+		label.text += " · hover to preview, click to toggle"
+		label.font_size = 32
+		label.pixel_size = 0.008
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		add_child(label)
+		label.global_position = mesh_inst.global_position + Vector3(0, 1.5, 0)
 		crosswalk_toggles.push_back({
+			"label_inst": label,
 			"edge_id": edge_id,
 			"pos": mesh_inst.global_position,
 			"mesh_inst": mesh_inst,
@@ -281,6 +304,26 @@ func _build_node_visuals(node_id: int):
 			add_child(line_inst)
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
+
+func _clear_crosswalk_preview() -> void:
+	if not _crosswalk_preview_key.is_empty():
+		get_node("../RoadTool")._clear_preview_visual()
+	_crosswalk_preview_key = []
+	_crosswalk_preview_valid = false
+
+func _update_crosswalk_preview() -> void:
+	var hovered = _get_hovered_cw_toggle(_world_position(get_viewport().get_mouse_position()))
+	if hovered == null:
+		_clear_crosswalk_preview()
+		return
+	var key: Array = [selected_node, hovered.edge_id, hovered.has_cw, simulation_node.get_road_tool_surface_generation(), simulation_node.get_zoning_overlay_revision(), simulation_node.get_agriculture_field_overlay_revision()]
+	if key == _crosswalk_preview_key and get_node("../RoadTool").has_local_edit_preview():
+		return
+	_crosswalk_preview_key = key
+	var preview: Dictionary = simulation_node.preview_crosswalk(selected_node, hovered.edge_id, not hovered.has_cw)
+	_crosswalk_preview_valid = get_node("../RoadTool").show_local_edit_preview(preview)
+	if not _crosswalk_preview_valid:
+		_crosswalk_preview_key = []
 
 func _world_position(screen_position: Vector2):
 	var camera = get_viewport().get_camera_3d()

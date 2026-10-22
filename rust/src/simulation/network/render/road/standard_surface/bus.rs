@@ -186,6 +186,7 @@ mod tests {
             });
         }
         graph.rebuild_intersection_clips();
+        graph.preserve_legacy_zebras();
         let terrain = TerrainSystem::with_chunking(257, 257, 1.0, 32, 0.0);
         let mut surface = RoadSurfaceSystem::new(128.0);
         surface.compile_dirty(&graph, &terrain);
@@ -242,6 +243,7 @@ mod tests {
                 ..Default::default()
             });
             graph.rebuild_intersection_clips();
+            graph.preserve_legacy_zebras();
             let terrain = TerrainSystem::with_chunking(257, 257, 1., 32, 0.);
             let mut surface = RoadSurfaceSystem::new(128.);
             surface.compile_dirty(&graph, &terrain);

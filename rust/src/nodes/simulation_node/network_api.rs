@@ -641,6 +641,33 @@ impl SimulationNode {
         self.lock_core().clear_lane_connections_internal(node_id);
     }
 
+    /// Builds an immutable per-arm zebra preview, including median and terrain replacement.
+    #[func]
+    pub fn preview_crosswalk(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> VarDictionary {
+        self.pocket_preview_revision = self.pocket_preview_revision.wrapping_add(1).max(1);
+        let core = self.lock_core();
+        let preview = usize::try_from(edge_id)
+            .map_err(|_| "invalid_crosswalk_arm")
+            .and_then(|edge| {
+                core.transit_network.road_surface.compile_crosswalk_preview(
+                    &core.region_graph,
+                    &core.heightmap,
+                    node_id,
+                    edge,
+                    enabled,
+                )
+            });
+        match preview {
+            Ok((scene, roads)) => self.local_layout_preview_result(&core, scene, &roads),
+            Err(reason) => vdict! { "is_valid": false, "invalid_reason": reason },
+        }
+    }
+
     /// Toggles a user override for a crosswalk at a specific road mouth.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {

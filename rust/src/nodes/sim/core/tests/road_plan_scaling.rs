@@ -18,6 +18,7 @@ enum CellScenario {
     Snapshot,
     Memory,
     Pocket,
+    Crosswalk,
     Roundabout,
     Ramp,
 }
@@ -76,6 +77,12 @@ fn populated_pocket_plan_scaling() {
 }
 
 #[test]
+#[ignore = "populated per-arm zebra preview locality; run release without competing work"]
+fn populated_crosswalk_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Crosswalk);
+}
+
+#[test]
 #[ignore = "populated roundabout preview locality; run release without competing work"]
 fn populated_roundabout_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::Roundabout);
@@ -100,7 +107,11 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = !matches!(
         scenario,
-        CellScenario::None | CellScenario::Pocket | CellScenario::Roundabout | CellScenario::Ramp
+        CellScenario::None
+            | CellScenario::Pocket
+            | CellScenario::Crosswalk
+            | CellScenario::Roundabout
+            | CellScenario::Ramp
     );
     let mut core = test_core();
     road_terrain_plan::commit_ready(
@@ -152,7 +163,7 @@ fn measure_populated_road_plan_scaling(
         insert_populated_site(&mut core, building);
     }
     let edge_template = core.region_graph.edge(0).clone();
-    if scenario == CellScenario::Pocket {
+    if matches!(scenario, CellScenario::Pocket | CellScenario::Crosswalk) {
         let start = core.region_graph.edge(0).end_node;
         for z in [-100.0, 100.0] {
             let end = core
@@ -321,7 +332,10 @@ fn measure_populated_road_plan_scaling(
         );
         if matches!(
             scenario,
-            CellScenario::Pocket | CellScenario::Roundabout | CellScenario::Ramp
+            CellScenario::Pocket
+                | CellScenario::Crosswalk
+                | CellScenario::Roundabout
+                | CellScenario::Ramp
         ) {
             use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
             let request = PocketRequest {
@@ -354,7 +368,12 @@ fn measure_populated_road_plan_scaling(
             let mut preview = [0.0; 31];
             for iteration in 0..34 {
                 let start = Instant::now();
-                if scenario == CellScenario::Ramp {
+                if scenario == CellScenario::Crosswalk {
+                    assert!(
+                        core.region_graph
+                            .crosswalk_arm_eligible(core.region_graph.edge(0).end_node, 0)
+                    );
+                } else if scenario == CellScenario::Ramp {
                     let layout = crate::simulation::network::ramps::RampLayout::prepare(
                         &core.region_graph,
                         ramp.clone(),
@@ -381,7 +400,18 @@ fn measure_populated_road_plan_scaling(
                 }
                 let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
                 let start = Instant::now();
-                let (mesh, roads) = if scenario == CellScenario::Ramp {
+                let (mesh, roads) = if scenario == CellScenario::Crosswalk {
+                    core.transit_network
+                        .road_surface
+                        .compile_crosswalk_preview(
+                            &core.region_graph,
+                            &core.heightmap,
+                            core.region_graph.edge(0).end_node,
+                            0,
+                            true,
+                        )
+                        .unwrap()
+                } else if scenario == CellScenario::Ramp {
                     core.transit_network
                         .road_surface
                         .compile_ramp_preview(&core.region_graph, &core.heightmap, ramp.clone())
@@ -432,7 +462,9 @@ fn measure_populated_road_plan_scaling(
             preview.sort_by(f64::total_cmp);
             eprintln!(
                 "{} {}",
-                if scenario == CellScenario::Ramp {
+                if scenario == CellScenario::Crosswalk {
+                    "CROSSWALK_PLAN_SCALING"
+                } else if scenario == CellScenario::Ramp {
                     "RAMP_PLAN_SCALING"
                 } else if scenario == CellScenario::Roundabout {
                     "ROUNDABOUT_PLAN_SCALING"

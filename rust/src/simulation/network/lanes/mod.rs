@@ -49,7 +49,7 @@ pub struct CrosswalkMarking {
     pub end: Vector3,
 }
 
-/// Street crossing walked by a pedestrian junction connector that is a single crosswalk.
+/// Street crossing walked by a single pedestrian connector, with optional zebra paint.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaneCrosswalk {
     /// Road edge crossed, in either travel direction.

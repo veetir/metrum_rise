@@ -1010,6 +1010,18 @@ Traffic code is a hot path. New traffic behavior must preserve these rules:
 - keep route planning and traffic movement separate; local traffic behavior must not trigger
   per-tick CCH pathfinding
 
+### Unmarked pedestrian junction routes — ROAD-74
+
+Zebra authoring no longer gates legal crossing connectivity. Ordinary unmarked junction arms
+retain perpendicular pedestrian steps when the junction has no marked arm; marked arms remain
+the nearby crossing choice. Unmarked sidewalks reach the solved mouth without zebra inset.
+Coincident straight mouths use stationary connectors, and rebuild-only shortest-route trees
+never reparent settled mouths through zero-length cycles. LaneCrosswalk carries crossing identity
+without requiring paint. Ramp and transition continuity, continuous median barriers and NET-07
+vehicle U-turn rules are unchanged. Zebra/turning-vehicle priority and signals remain the pending
+TRAFFIC-06 stages; this slice changes route construction, not agent admission. See
+[road marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75).
+
 ### Short agent-tick contract (`PERF-06`)
 
 Routine traffic changes use the ignored release test
@@ -1028,6 +1040,14 @@ release baseline executable beside the current executable and report both build 
 the contract runs. Matched alternating process pairs remain reserved for milestone comparisons
 and claimed speedups. The short contract is run serially with no concurrent build or measurement;
 the 30-minute Criterion `agent_benchmark` is no longer a routine gate.
+
+ROAD-74/75 check (2026-10-22), versus queued predecessor `f70c6dbe`: fifteen alternating
+unprofiled release process pairs/eight workers match all six work dictionaries and deterministic
+scaling checks. Network medians at 10k/30k agents are 0.539/0.947 → 0.524/0.919 ms;
+egress 0.656/1.584 → 0.638/1.600 ms; ingress 0.359/0.615 → 0.323/0.607 ms. These mixed short
+measurements establish the contract check, not a tick speedup. Agent dispatch and tick-time
+allocation policy are unchanged. Exact binary identities and commands are in
+[marking-rule acceptance](roads.md#marking-rule-acceptance--2026-10-22).
 
 ROAD-68 completion check (2026-10-22), versus queued predecessor `1a4ea348`: fifteen alternating
 release process pairs/eight workers match all six work dictionaries and scaling bounds. All
