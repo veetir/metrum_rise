@@ -64,8 +64,7 @@ impl RoadSurfaceSystem {
                     ));
                 }
             };
-        let material_grade = super::NodeMaterialGradeField::for_input(&input).map(Arc::new);
-        rails.material_grade = material_grade.clone();
+        rails.material_grade = self.node_material_grade_fields.get(&node_id).cloned();
         let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
@@ -87,7 +86,9 @@ impl RoadSurfaceSystem {
             &input,
             &rails,
             &ownership,
-            material_grade.as_deref(),
+            self.node_material_grade_fields
+                .get(&node_id)
+                .map(AsRef::as_ref),
         ) {
             Ok(heights) => heights,
             Err(error) => {
@@ -210,17 +211,7 @@ impl RoadSurfaceSystem {
                 }
             };
         let rails_ms = elapsed_ms(rails_start);
-        let material_grade = super::NodeMaterialGradeField::for_input(&input).map(|field| {
-            if let Some(previous) =
-                previous_topology.and_then(|cache| cache.material_grade.as_ref())
-                && field.same_source(previous)
-            {
-                Arc::clone(previous)
-            } else {
-                Arc::new(field)
-            }
-        });
-        let grade = material_grade.as_ref();
+        let grade = self.node_material_grade_fields.get(&node_id);
         let same_grade = match (
             grade,
             previous_topology.and_then(|cache| cache.material_grade.as_ref()),
@@ -335,7 +326,9 @@ impl RoadSurfaceSystem {
                 &input,
                 &rails,
                 &ownership,
-                material_grade.as_deref(),
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
             ) {
                 Ok(heights) => heights,
                 Err(error) => {
@@ -656,7 +649,7 @@ impl RoadSurfaceSystem {
                 Some(super::NodeCanonicalSurfaceCompileResult {
                     regions,
                     topology_cache: Some(super::NodeCanonicalTopologyCache {
-                        material_grade: material_grade.clone(),
+                        material_grade: self.node_material_grade_fields.get(&node_id).cloned(),
                         rail_topology: if retain_whole_topology {
                             rail_topology
                         } else {

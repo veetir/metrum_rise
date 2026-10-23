@@ -45,6 +45,7 @@ impl RoadSurfaceSystem {
         self.compiled_visual_span_pieces.clear();
         self.compiled_visual_node_pieces.clear();
         self.compiled_visual_node_inputs.clear();
+        self.node_material_grade_fields.clear();
         self.compiled_visual_node_earthwork_boundaries.clear();
         self.compiled_visual_node_topologies.clear();
         self.node_topology_recency.clear();
@@ -217,6 +218,7 @@ impl RoadSurfaceSystem {
         self.remove_node_piece_coverage(node_id);
         self.compiled_visual_node_pieces.remove(&node_id);
         self.compiled_visual_node_inputs.remove(&node_id);
+        self.node_material_grade_fields.remove(&node_id);
         self.compiled_visual_node_earthwork_boundaries
             .remove(&node_id);
         self.compiled_visual_node_topologies.remove(&node_id);

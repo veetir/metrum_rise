@@ -1137,6 +1137,11 @@ impl RoadSurfaceSystem {
             if validation_graph.get_valid_node(local_node_id) != local_node_id {
                 continue;
             }
+            if let Some(grade) = self.node_material_grade_fields.get(&source_node_id) {
+                validation_surface
+                    .node_material_grade_fields
+                    .insert(local_node_id, Arc::clone(grade));
+            }
             if let Some(topology) = self.compiled_visual_node_topologies.get(&source_node_id) {
                 validation_surface
                     .compiled_visual_node_topologies

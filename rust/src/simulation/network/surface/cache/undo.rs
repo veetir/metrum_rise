@@ -32,6 +32,7 @@ impl RoadSurfaceSystem {
             .into_iter()
             .map(|node_id| RoadSurfaceNodeTopologyUndo {
                 node_id,
+                material_grade: self.node_material_grade_fields.get(&node_id).cloned(),
                 piece: self.compiled_visual_node_pieces.get(&node_id).cloned(),
                 input: self.compiled_visual_node_inputs.get(&node_id).cloned(),
                 earthwork_boundaries: self
@@ -78,6 +79,7 @@ impl RoadSurfaceSystem {
             self.remove_node_piece_coverage(node_id);
             self.compiled_visual_node_pieces.remove(&node_id);
             self.compiled_visual_node_inputs.remove(&node_id);
+            self.node_material_grade_fields.remove(&node_id);
             self.compiled_visual_node_earthwork_boundaries
                 .remove(&node_id);
             self.compiled_visual_node_topologies.remove(&node_id);
@@ -96,6 +98,9 @@ impl RoadSurfaceSystem {
             }
         }
         for node in undo.nodes {
+            if let Some(grade) = node.material_grade {
+                self.node_material_grade_fields.insert(node.node_id, grade);
+            }
             if let Some(piece) = node.piece {
                 self.insert_node_piece_coverage(&piece);
                 self.compiled_visual_node_pieces.insert(node.node_id, piece);

@@ -84,6 +84,8 @@ pub struct RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) retain_node_provenance: bool,
     /// Keeps successful pieces from a transient bounded validation compile for required-set checks.
     pub(in crate::simulation::network::surface) retain_partial_validation_artifacts: bool,
+    pub(in crate::simulation::network::surface) node_material_grade_fields:
+        imbl::HashMap<u32, Arc<super::node::NodeMaterialGradeField>>,
     pub(crate) compiled_sections: HashMap<usize, Arc<Vec<RoadSurfaceSection>>>,
     pub(crate) compiled_visual_span_pieces: HashMap<usize, Arc<RoadSurfaceVisualSpanPiece>>,
     pub(crate) compiled_visual_node_pieces: HashMap<u32, Arc<RoadSurfaceVisualNodePiece>>,
@@ -418,6 +420,7 @@ impl RoadSurfaceSystem {
             retain_complete_node_topology_for_replay: false,
             retain_node_provenance: cfg!(test) || crate::debug::Channel::Road.enabled(),
             retain_partial_validation_artifacts: false,
+            node_material_grade_fields: imbl::HashMap::new(),
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
@@ -718,6 +721,7 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_span_pieces.insert(id, Arc::new(piece));
             }
         }
+        self.conform_junction_mouth_grades(graph, terrain, edges, None);
         for &id in nodes {
             if let Some(mut input) = self.visual_node_compile_input(graph, id) {
                 if chords {
@@ -850,6 +854,7 @@ impl RoadSurfaceSystem {
             self.chunk_origin_x_m,
             self.chunk_origin_z_m,
         );
+        staging.node_material_grade_fields = self.node_material_grade_fields.clone();
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         staging.retain_complete_node_topology_for_replay =
             self.retain_complete_node_topology_for_replay;
@@ -935,6 +940,12 @@ impl RoadSurfaceSystem {
                 failed_span_ids.push(edge_idx);
             }
         }
+        failed_span_ids.extend(staging.conform_junction_mouth_grades(
+            graph,
+            terrain,
+            &span_candidates,
+            Some(&sorted_nodes),
+        ));
         let spans_ms = elapsed_ms(spans_start);
         if !failed_span_ids.is_empty() {
             let failure_label = format!(
@@ -1183,6 +1194,7 @@ impl RoadSurfaceSystem {
         let prune_start = road_debug.then(Instant::now);
         self.prune_stale_cache_entries(graph);
         let prune_ms = elapsed_ms(prune_start);
+        self.node_material_grade_fields = staging.node_material_grade_fields.clone();
         for &edge_idx in &sorted_span_edges {
             if let Some(sections) = staging.compiled_sections.remove(&edge_idx) {
                 self.compiled_sections.insert(edge_idx, sections);
@@ -1196,6 +1208,7 @@ impl RoadSurfaceSystem {
             self.remove_node_piece_coverage(node_id);
             self.compiled_visual_node_pieces.remove(&node_id);
             self.compiled_visual_node_inputs.remove(&node_id);
+            self.node_material_grade_fields.remove(&node_id);
             self.compiled_visual_node_earthwork_boundaries
                 .remove(&node_id);
             self.compiled_visual_node_topologies.remove(&node_id);
@@ -1413,6 +1426,8 @@ impl RoadSurfaceSystem {
                 failed_span_ids.push(edge_idx);
             }
         }
+        failed_span_ids
+            .extend(staging.conform_junction_mouth_grades(graph, terrain, &edge_ids, None));
         let spans_ms = elapsed_ms(spans_start);
         if !failed_span_ids.is_empty() {
             let failure_label = format!(
@@ -1689,6 +1704,7 @@ impl RoadSurfaceSystem {
         } else {
             self.compiled_visual_node_pieces.remove(&node_id);
             self.compiled_visual_node_inputs.remove(&node_id);
+            self.node_material_grade_fields.remove(&node_id);
             self.compiled_visual_node_earthwork_boundaries
                 .remove(&node_id);
             self.compiled_visual_node_topologies.remove(&node_id);
@@ -1741,7 +1757,12 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn collect_compile_work<I, O, F>(items: &[I], parallel_min_items: usize, work: F) -> Vec<O>
+    /// Runs independent owner work with the existing Rayon threshold and stable result order.
+    pub(in crate::simulation::network::surface) fn collect_compile_work<I, O, F>(
+        items: &[I],
+        parallel_min_items: usize,
+        work: F,
+    ) -> Vec<O>
     where
         I: Clone + Send + Sync,
         O: Send,

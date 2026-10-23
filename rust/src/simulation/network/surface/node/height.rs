@@ -36,6 +36,7 @@ mod field;
 mod grade;
 mod handoff;
 mod model;
+mod mouth_conformity;
 mod patch;
 mod seams;
 mod source_edges;

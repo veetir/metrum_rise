@@ -280,3 +280,67 @@ fn imported_short_approaches_keep_ordinary_kerb_steps() {
         }
     }
 }
+
+#[test]
+fn bioteknia_grade_conformity_survives_dirty_compilation_and_undo() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_dirty(&graph, &terrain);
+    assert!(
+        surface.published_generation_matches_source(),
+        "{:?}",
+        surface.last_compile_failure_label()
+    );
+    let spans = surface.compiled_visual_span_pieces().clone();
+    let nodes = surface.compiled_visual_node_pieces().clone();
+    let edge_ids = (0..graph.edge_count()).collect();
+    let node_ids = (0..graph.node_count() as u32).collect();
+    let undo = surface.capture_topology_undo(&edge_ids, &node_ids).unwrap();
+    surface.mark_edge_dirty(&graph, 3);
+    surface.compile_dirty(&graph, &terrain);
+    assert_eq!(surface.compiled_visual_span_pieces(), &spans);
+    assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
+    assert!(surface.restore_topology_undo(undo, &edge_ids, &node_ids));
+    surface.mark_edge_dirty(&graph, 3);
+    surface.compile_dirty(&graph, &terrain);
+    assert_eq!(surface.compiled_visual_span_pieces(), &spans);
+    assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
+}
+
+#[test]
+fn bioteknia_complete_mouth_profile_matches_junction_grade() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_owners_for_geometry_audit(
+        &graph,
+        &terrain,
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8],
+        &[0, 2, 4, 5],
+        false,
+    );
+    assert!(surface.compiled_visual_node_pieces().contains_key(&4));
+    assert_eq!(
+        surface.mouth_height_discontinuities_for_geometry_audit(&graph),
+        vec![],
+        "the full transverse mouth grade must match, including interior material boundaries"
+    );
+}

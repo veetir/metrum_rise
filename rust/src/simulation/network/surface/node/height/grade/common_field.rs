@@ -26,10 +26,43 @@ impl NodeMaterialGradeField {
     }
 
     /// Reconstructs the shared grade only when all ordinary source material levels are proved.
-    pub(in crate::simulation::network::surface::node) fn for_input(
+    pub(in crate::simulation::network::surface::node::height) fn for_input(
         input: &NodeArrangementInput,
     ) -> Option<Self> {
         Self::from_input(input, &super::contacts::declared_levels(input)?)
+    }
+
+    /// Returns exact crossings of a transverse band with the solved grade triangles.
+    pub(in crate::simulation::network::surface::node::height) fn band_breaks(
+        &self,
+        a: RoadVec2,
+        b: RoadVec2,
+    ) -> Vec<f64> {
+        let axis = b - a;
+        let a_key = SurfaceXzKey::from_road_xz(a);
+        let b_key = SurfaceXzKey::from_road_xz(b);
+        let mut breaks = vec![0.0, 1.0];
+        for triangle in &self.triangles {
+            let vertices = [triangle.a_xz, triangle.b_xz, triangle.c_xz];
+            for i in 0..3 {
+                let c = vertices[i];
+                let other = vertices[(i + 1) % 3] - c;
+                let determinant = axis.perp_dot(other);
+                if determinant == 0.0 {
+                    continue;
+                }
+                let delta = c - a;
+                let t = delta.perp_dot(other) / determinant;
+                let u = delta.perp_dot(axis) / determinant;
+                let key = SurfaceXzKey::from_road_xz(a + axis * t);
+                if t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u) && key != a_key && key != b_key {
+                    breaks.push(t);
+                }
+            }
+        }
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup_by_key(|t| SurfaceXzKey::from_road_xz(a + axis * *t));
+        breaks
     }
 
     /// Builds one deterministic grade from the junction centre and every material boundary along each mouth.
