@@ -254,3 +254,66 @@ fn arrangement_vertex_requires_explicit_owner() {
         Err(NodeArrangementError::EmptyOwnerSet { .. })
     ));
 }
+
+#[test]
+fn a_micro_contour_reaches_cdt_disposal_without_rejecting_its_junction() {
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+    let main = test_height_region_with_seams(
+        RoadSurfaceBandKind::Sidewalk,
+        sidewalk,
+        vec![
+            height_vertex(0.0, 0.0, 106.8),
+            height_vertex(1.0, 0.0, 106.8),
+            height_vertex(1.0, 1.0, 106.8),
+            height_vertex(0.0, 1.0, 106.8),
+        ],
+        Vec::new(),
+    );
+    let mut micro = test_height_region_with_seams(
+        RoadSurfaceBandKind::Sidewalk,
+        sidewalk,
+        [
+            [808.973452, 1131.612277],
+            [808.974254, 1131.613079],
+            [811.196066, 1133.833983],
+            [808.974307, 1131.613132],
+        ]
+        .into_iter()
+        .map(|[x, z]| height_vertex(x, z, 106.8))
+        .collect(),
+        Vec::new(),
+    );
+    micro.area_m2 = 2.4e-8;
+    let heights = NodeHeightSolution {
+        node_id: 1035,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![micro, main],
+    };
+    let mut arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("numeric contour cleanup must not invalidate the entire junction");
+    assert_eq!(
+        arrangement.regions().len(),
+        2,
+        "retain source seams through arrangement construction"
+    );
+    let triangles=crate::simulation::network::surface::RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+        .expect("the existing CDT area budget discards only the microscopic top region");
+    assert_eq!(triangles.regions.len(), 1);
+    assert_eq!(triangles.regions[0].source_region_index, 1);
+    arrangement.attach_triangulation(&triangles).unwrap();
+    assert!(
+        arrangement
+            .faces()
+            .iter()
+            .all(|face| face.region().index() == 1)
+    );
+    let mut missing = triangles.clone();
+    missing.regions.clear();
+    assert!(
+        matches!(
+            arrangement.attach_triangulation(&missing),
+            Err(NodeArrangementError::TriangulationRegionCountMismatch { .. })
+        ),
+        "discarding a real region still fails attachment"
+    );
+}

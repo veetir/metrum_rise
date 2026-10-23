@@ -153,6 +153,7 @@ pub(super) fn triangulate_arrangement_region(
     canonicalize_boundary_constraint_numeric_dust_vertices(&mut constraints, &vertices);
 
     Ok(NodeTriangulatedRegion {
+        source_region_index: region_index,
         kind: owner.kind(),
         owner,
         height_field_id,

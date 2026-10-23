@@ -387,7 +387,9 @@ fn remove_immediate_backtracking_arrangement_vertices(
     loop_vertices: &mut Vec<NodeArrangementVertexId>,
     vertices: &[NodeArrangementVertex],
 ) {
-    if loop_vertices.len() < 3 {
+    // Keep a closed contour for the CDT's existing numeric-region discard path.
+    // Collapsing the final triangle here rejects the entire junction before that check.
+    if loop_vertices.len() <= 3 {
         return;
     }
     let Some(index) = (0..loop_vertices.len()).find(|index| {

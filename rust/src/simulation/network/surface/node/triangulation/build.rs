@@ -140,6 +140,14 @@ fn triangulation_error_is_discardable_numeric_region(
     ) {
         return false;
     }
+    arrangement_region_is_numeric(arrangement, region)
+}
+
+/// Certifies a discarded top region against the existing overlay numeric-area budget.
+pub(in crate::simulation::network::surface) fn arrangement_region_is_numeric(
+    arrangement: &NodeArrangement,
+    region: &NodeOwnedRegion,
+) -> bool {
     let shape = overlay_shape_from_arrangement_region(arrangement, region);
     let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
     area_m2 <= RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&shape)

@@ -74,23 +74,39 @@ impl NodeArrangement {
                 triangulation_piece_kind: triangulation.piece_kind,
             });
         }
-        if self.regions.len() != triangulation.regions.len() {
-            return Err(NodeArrangementError::TriangulationRegionCountMismatch {
-                arrangement_region_count: self.regions.len(),
-                triangulation_region_count: triangulation.regions.len(),
-            });
-        }
-        profile.validation_ms = elapsed_profile_ms(validation_start);
-
-        for (region_index, triangulated_region) in triangulation.regions.iter().enumerate() {
-            let region_id = NodeOwnedRegionId(region_index);
-            let arrangement_region = self
+        let count_error = || NodeArrangementError::TriangulationRegionCountMismatch {
+            arrangement_region_count: self.regions.len(),
+            triangulation_region_count: triangulation.regions.len(),
+        };
+        let mut retained = vec![false; self.regions.len()];
+        for triangulated in &triangulation.regions {
+            let region_index = triangulated.source_region_index;
+            let region = self
                 .regions
                 .get(region_index)
                 .ok_or(NodeArrangementError::MissingHeightRegion { region_index })?;
-            if arrangement_region.owner != triangulated_region.owner {
+            if retained[region_index] {
+                return Err(count_error());
+            }
+            if region.owner != triangulated.owner
+                || region.height_field_id != triangulated.height_field_id
+            {
                 return Err(NodeArrangementError::RegionOwnerMismatch { region_index });
             }
+            retained[region_index] = true;
+        }
+        for (index, region) in self.regions.iter().enumerate() {
+            if !retained[index]
+                && !super::super::triangulation::arrangement_region_is_numeric(self, region)
+            {
+                return Err(count_error());
+            }
+        }
+        profile.validation_ms = elapsed_profile_ms(validation_start);
+
+        for triangulated_region in &triangulation.regions {
+            let region_index = triangulated_region.source_region_index;
+            let region_id = NodeOwnedRegionId(region_index);
             for triangle in &triangulated_region.triangles {
                 let insert_start = profile_enabled.then(Instant::now);
                 let vertex_count_before = self.vertices.len();
