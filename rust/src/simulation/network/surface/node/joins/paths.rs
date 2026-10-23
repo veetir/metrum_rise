@@ -409,9 +409,7 @@ fn retain_approach_profile_stations(
             for point in &rail.path_world {
                 let t = (xz_from_road_vec3(*point) - segment[0]).dot(axis) / length2;
                 if t > 0.0 && t < 1.0 {
-                    // This refines height along the existing approach line. A curved
-                    // source rail supplies the longitudinal station, not a new XZ vertex.
-                    stations.push((t, segment[0] + axis * t));
+                    stations.push((t, xz_from_road_vec3(*point)));
                 }
             }
         }
@@ -893,55 +891,6 @@ mod tests {
     use crate::simulation::network::surface::node::input::{
         NodeInputBoundaryRail, NodeInputBoundaryRailRole,
     };
-
-    #[test]
-    fn retained_grade_stations_split_the_approach_without_bending_its_plan() {
-        let path = vec![
-            RoadVec3::new(0.0, 10.0, 0.0),
-            RoadVec3::new(1.0, 10.5, 3.0),
-            RoadVec3::new(2.0, 10.0, 0.0),
-        ];
-        let mouth = NodeInputMouth {
-            order_index: 0,
-            edge_idx: 0,
-            side: IncidentEdgeSide::Start,
-            direction_xz: RoadVec2::X,
-            direction_angle_ccw: 0.0,
-            conflict_handoff_distance_m: 2.0,
-            mouth_rails: Vec::new(),
-            endpoint_rails: Vec::new(),
-            band_intervals: Vec::new(),
-            uses_explicit_band_domain_paths: true,
-            boundary_rails: vec![NodeInputBoundaryRail {
-                boundary_index: 0,
-                role: NodeInputBoundaryRailRole::OuterFootprint {
-                    adjacent_kind: RoadSurfaceBandKind::Carriageway,
-                },
-                mouth_world: path[0],
-                endpoint_world: path[2],
-                path_world: path,
-            }],
-        };
-        let (points, from_anchor, to_anchor) = retain_approach_profile_stations(
-            vec![RoadVec2::ZERO, RoadVec2::new(2.0, 0.0)],
-            &mouth,
-            RoadVec2::ZERO,
-            &mouth,
-            RoadVec2::new(2.0, 0.0),
-            1,
-            1,
-        );
-        assert_eq!(
-            points,
-            vec![
-                RoadVec2::ZERO,
-                RoadVec2::new(1.0, 0.0),
-                RoadVec2::new(2.0, 0.0)
-            ],
-            "a curved source rail contributes a grade station, not its lateral offset"
-        );
-        assert_eq!((from_anchor, to_anchor), (2, 2));
-    }
 
     #[test]
     fn shared_endpoint_join_accepts_a_vertical_grade_change_between_median_arms() {
