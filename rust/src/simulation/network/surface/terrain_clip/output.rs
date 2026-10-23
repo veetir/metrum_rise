@@ -493,6 +493,25 @@ impl RoadSurfaceSystem {
         if candidates.is_empty() {
             return TerrainClipOutputSourceSelection::Missing;
         }
+        if let Some((start, end)) = canonical_segment
+            && candidates
+                .iter()
+                .all(|candidate| candidate.source_index == candidates[0].source_index)
+        {
+            let direction = end - start;
+            let aligned = |candidate: &TerrainClipSourceEdge| {
+                let source = candidate.end - candidate.start;
+                source.x * direction.x + source.z * direction.z > 0.0
+            };
+            // A folded input boundary can expose coincident half-edges with opposite
+            // orientation at a material handoff. Only the half-edge following the union
+            // contour owns its exterior. Distinct input loops retain ambiguity checks.
+            if candidates.iter().any(aligned)
+                && candidates.iter().any(|candidate| !aligned(candidate))
+            {
+                candidates.retain(aligned);
+            }
+        }
         candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
         let visible_count = candidates.partition_point(|candidate| {
             candidate.kind != RoadSurfaceTerrainClipEdgeKind::SpanHandoff
@@ -540,11 +559,13 @@ impl RoadSurfaceSystem {
                 .take(6)
                 .map(|candidate| {
                     format!(
-                        "{:?}:{}:{}:{:?}",
+                        "{:?}:{}:{}:{:?}:world={:?}->{:?}",
                         candidate.kind,
                         candidate.source_index,
                         candidate.edge_index,
-                        candidate.source
+                        candidate.source,
+                        candidate.start,
+                        candidate.end
                     )
                 })
                 .collect::<Vec<_>>()
