@@ -101,6 +101,34 @@ impl RoadSurfaceSystem {
                 )
             })
         })
+        .or_else(|| {
+            if input.kind == RoadSurfaceVisualNodePieceKind::Terminal
+                || !input
+                    .mouths
+                    .iter()
+                    .any(|mouth| mouth.uses_explicit_band_domain_paths)
+                || !self
+                    .visual_node_compile_input(graph, node_id)
+                    .is_some_and(|source| source.topology_eq_ignoring_edge_identity(input))
+                || input
+                    .mouths
+                    .iter()
+                    .any(|mouth| !self.crossing_neighbors(graph, mouth.edge_idx).is_empty())
+            {
+                return None;
+            }
+            let mut chord_input = input.clone();
+            for mouth in &mut chord_input.mouths {
+                mouth.uses_explicit_band_domain_paths = false;
+            }
+            self.compile_visual_node_piece_with_earthwork_boundaries_once(
+                graph,
+                terrain,
+                node_id,
+                &chord_input,
+                None,
+            )
+        })
     }
 
     fn compile_visual_node_piece_with_earthwork_boundaries_once(

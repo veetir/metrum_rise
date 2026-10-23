@@ -243,6 +243,10 @@ fn imported_tight_terminal_curve_publishes_a_complete_span() {
     let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
     surface.compile_owners_for_geometry_audit(&graph, &terrain, &[0, 1, 2, 3], &[2], false);
     assert!(surface.compiled_visual_span_pieces().contains_key(&1));
+    assert!(
+        surface.compiled_visual_node_pieces().contains_key(&2),
+        "the adjacent junction retains its declared kerb contact"
+    );
     for (edge, original) in graph.edges().iter().zip(original) {
         assert_eq!(edge.physical_geometry, original.physical_geometry);
         assert_eq!(edge.geometry, original.geometry);
