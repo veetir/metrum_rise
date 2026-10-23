@@ -3,7 +3,7 @@
 //! Earthwork boundary segment extraction, loop assembly, and winding orientation.
 
 use super::super::{
-    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem,
     backend::{RoadVec2, RoadVec3},
 };
 use super::model::{
@@ -174,7 +174,7 @@ impl RoadSurfaceSystem {
                 .map(|segment| segment.inner_start)
                 .collect::<Vec<_>>();
             if Self::earthwork_signed_polygon_area_xz(&point_loop).abs()
-                <= f64::from(SAMPLE_EPSILON_M)
+                <= f64::from(super::super::NODE_OVERLAY_MIN_AREA_M2)
             {
                 crate::debug_log!(
                     "road",
