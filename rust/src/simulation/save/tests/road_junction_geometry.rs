@@ -369,3 +369,42 @@ fn curved_terminal_cap_keeps_the_approach_grade_at_its_mouth() {
         "a generated terminal cap inherits the curved approach's grade, not a flat node elevation"
     );
 }
+
+#[test]
+fn terrain_window_keeps_overlapping_junction_contributors_complete() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_query_cohort.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_owners_for_geometry_audit(
+        &graph,
+        &terrain,
+        &(0..8).collect::<Vec<_>>(),
+        &[1, 3, 4, 5, 7],
+        false,
+    );
+    for node in [1, 3, 4, 5, 7] {
+        assert!(
+            surface.compiled_visual_node_pieces().contains_key(&node),
+            "required junction {node} must be compiled"
+        );
+    }
+    let pivot = graph.node(7).pos;
+    let export = surface.terrain_cdt_road_loops_for_world_bounds(
+        &graph,
+        pivot.x - 24.0,
+        pivot.z - 24.0,
+        pivot.x + 24.0,
+        pivot.z + 24.0,
+    );
+    assert!(
+        export.is_ok(),
+        "partial-window selection must not expose a buried boundary outside the window: {export:?}"
+    );
+}
