@@ -62,6 +62,15 @@ impl RoadSurfaceSystem {
         {
             input.coalesce_grade_subdivisions();
         }
+        if let Some(source) = self
+            .node_material_grade_fields
+            .get(&node_id)
+            .and_then(|field| field.source_plan(node_id))
+        {
+            // Geometry is a source product. Internal span conformance changes its
+            // height, not which approach knots or side-join contours define its plan.
+            input = source.clone();
+        }
         let (mut rails, _) =
             match Self::build_node_rail_contours_from_input_with_profile(&input, false) {
                 Ok(result) => result,
@@ -219,6 +228,15 @@ impl RoadSurfaceSystem {
             .is_some_and(|field| field.cohort_nodes().is_some())
         {
             input.coalesce_grade_subdivisions();
+        }
+        if let Some(source) = self
+            .node_material_grade_fields
+            .get(&node_id)
+            .and_then(|field| field.source_plan(node_id))
+        {
+            // Geometry is a source product. Internal span conformance changes its
+            // height, not which approach knots or side-join contours define its plan.
+            input = source.clone();
         }
         let input_ms = elapsed_ms(input_start);
 

@@ -37,6 +37,7 @@ impl NodeMaterialGradeField {
             return Some(Self {
                 geometry: std::sync::Arc::clone(&self.geometry),
                 cohort_nodes: self.cohort_nodes.clone(),
+                source_plans: self.source_plans.clone(),
             });
         }
         let keys = supports.keys().copied().collect::<Vec<_>>();
@@ -101,6 +102,7 @@ impl NodeMaterialGradeField {
                 gradient: self.geometry.gradient,
             }),
             cohort_nodes: self.cohort_nodes.clone(),
+            source_plans: self.source_plans.clone(),
         })
     }
 }

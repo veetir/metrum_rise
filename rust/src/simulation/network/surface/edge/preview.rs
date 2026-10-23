@@ -1145,7 +1145,7 @@ impl RoadSurfaceSystem {
                         .entry(key)
                         .or_insert_with(|| {
                             grade
-                                .with_remapped_cohort_nodes(&source_node_ids)
+                                .with_remapped_cohort_nodes(&source_node_ids, &source_edge_ids)
                                 .map(Arc::new)
                         })
                         .clone()

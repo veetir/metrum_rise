@@ -16,6 +16,7 @@ use spade::{DelaunayTriangulation, Point2, Triangulation};
 pub(in crate::simulation::network::surface) struct NodeMaterialGradeField {
     geometry: std::sync::Arc<NodeMaterialGradeGeometry>,
     cohort_nodes: Option<std::sync::Arc<[u32]>>,
+    source_plans: Option<std::sync::Arc<BTreeMap<u32, NodeArrangementInput>>>,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ impl NodeMaterialGradeField {
     /// Checks the exact source certificate before reusing a cached grade.
     pub(in crate::simulation::network::surface::node) fn same_source(&self, other: &Self) -> bool {
         self.cohort_nodes == other.cohort_nodes
+            && self.source_plans == other.source_plans
             && self.geometry.supports == other.geometry.supports
             && self.geometry.origin == other.geometry.origin
             && self.geometry.gradient == other.geometry.gradient
@@ -198,6 +200,7 @@ impl NodeMaterialGradeField {
                 gradient,
             }),
             cohort_nodes,
+            source_plans: None,
         })
     }
 
@@ -285,8 +288,28 @@ impl NodeMaterialGradeField {
         let mut nodes = inputs.iter().map(|(node, _)| *node).collect::<Vec<_>>();
         nodes.sort_unstable();
         nodes.dedup();
-        Self::with_supports(supports, origin, gradient, Some(nodes.into()))?
-            .with_coverage_bounds(coverage_bounds)
+        let mut field = Self::with_supports(supports, origin, gradient, Some(nodes.into()))?
+            .with_coverage_bounds(coverage_bounds)?;
+        field.source_plans = Some(std::sync::Arc::new(
+            inputs
+                .iter()
+                .map(|(node, input)| {
+                    let mut input = input.clone();
+                    input.coalesce_grade_subdivisions();
+                    (*node, input)
+                })
+                .collect(),
+        ));
+        Some(field)
+    }
+
+    /// Returns the source plan captured by this solve. Dirty mouth compilation
+    /// replaces the grade and its source plans together before rebuilding geometry.
+    pub(in crate::simulation::network::surface::node) fn source_plan(
+        &self,
+        node: u32,
+    ) -> Option<&NodeArrangementInput> {
+        self.source_plans.as_ref()?.get(&node)
     }
 
     /// Retains the bounded dependency cohort alongside its shared immutable geometry.
@@ -298,6 +321,7 @@ impl NodeMaterialGradeField {
     pub(in crate::simulation::network::surface) fn with_remapped_cohort_nodes(
         &self,
         node_map: &std::collections::HashMap<u32, u32>,
+        edge_map: &std::collections::HashMap<usize, usize>,
     ) -> Option<Self> {
         let mut nodes = self
             .cohort_nodes()?
@@ -306,9 +330,27 @@ impl NodeMaterialGradeField {
             .collect::<Option<Vec<_>>>()?;
         nodes.sort_unstable();
         nodes.dedup();
+        let source_plans = if let Some(plans) = &self.source_plans {
+            Some(std::sync::Arc::new(
+                plans
+                    .iter()
+                    .map(|(node, input)| {
+                        let mut input = input.clone();
+                        input.node_id = *node_map.get(node)?;
+                        for mouth in &mut input.mouths {
+                            mouth.edge_idx = *edge_map.get(&mouth.edge_idx)?;
+                        }
+                        Some((input.node_id, input))
+                    })
+                    .collect::<Option<BTreeMap<_, _>>>()?,
+            ))
+        } else {
+            None
+        };
         Some(Self {
             geometry: std::sync::Arc::clone(&self.geometry),
             cohort_nodes: Some(nodes.into()),
+            source_plans,
         })
     }
 
