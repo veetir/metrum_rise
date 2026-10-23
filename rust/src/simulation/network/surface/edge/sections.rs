@@ -49,7 +49,7 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
     ) -> Vec<RoadSurfaceSection> {
-        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, false)
+        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, false, false)
     }
 
     /// Rebuilds span-knot frames while retaining the exact source mouths and center stations.
@@ -58,8 +58,15 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
         nonuniform_knots: bool,
+        endpoint_loft: bool,
     ) -> Vec<RoadSurfaceSection> {
-        self.compile_edge_sections_with_profile(graph, edge_idx, nonuniform_knots, false)
+        self.compile_edge_sections_with_profile(
+            graph,
+            edge_idx,
+            nonuniform_knots,
+            endpoint_loft,
+            false,
+        )
     }
 
     fn compile_edge_sections_with_profile(
@@ -67,6 +74,7 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
         nonuniform_knots: bool,
+        endpoint_loft: bool,
         reconcile_crossfall: bool,
     ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
@@ -203,11 +211,36 @@ impl RoadSurfaceSystem {
                 end_tangent,
             }
         });
+        let transport_axis = if endpoint_loft {
+            let delta = points[points.len() - 1] - points[0];
+            let axis = RoadVec2::new(delta.x, delta.z).normalize_or_zero();
+            if axis.length_squared() == 0.0
+                || !points.windows(2).all(|pair| {
+                    let delta = pair[1] - pair[0];
+                    RoadVec2::new(delta.x, delta.z).dot(axis) > 0.0
+                })
+            {
+                return Vec::new();
+            }
+            let start = start_pass_through_tangent
+                .unwrap_or_else(|| self.sample_polyline(&points, &cumulative, 0.0, None).1);
+            let end = end_pass_through_tangent.unwrap_or_else(|| {
+                self.sample_polyline(&points, &cumulative, total_length_m, None)
+                    .1
+            });
+            Some((start, end))
+        } else {
+            None
+        };
         let sections: Vec<RoadSurfaceSection> = sample_distances
             .into_iter()
             .map(|s_m| {
                 let (center, sampled_tangent_xz) =
                     self.sample_polyline(&points, &cumulative, s_m, span_frame.as_ref());
+                let sampled_tangent_xz = transport_axis
+                    .map_or(sampled_tangent_xz, |(start, end)| {
+                        start.lerp(end, f64::from(s_m / total_length_m)).normalize()
+                    });
                 let mut tangent_xz = if s_m <= SAMPLE_EPSILON_M {
                     start_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else if total_length_m - s_m <= SAMPLE_EPSILON_M {
@@ -293,6 +326,7 @@ impl RoadSurfaceSystem {
                 graph,
                 edge_idx,
                 nonuniform_knots,
+                endpoint_loft,
                 true,
             );
         }

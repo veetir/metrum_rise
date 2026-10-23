@@ -386,13 +386,24 @@ impl RoadSurfaceSystem {
                 // Preserve every successfully validated frame. A rejected nonuniform knot
                 // layout gets the quadratic derivative, then the complete same surface,
                 // support and terrain-boundary validation; no approximate acceptance gate.
-                let sections = self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true);
+                let sections =
+                    self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true, false);
                 self.compile_visual_span_piece_from_sections(
                     graph,
                     terrain,
                     edge_idx,
                     Arc::new(sections),
                 )
+                .or_else(|| {
+                    let sections =
+                        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true, true);
+                    self.compile_visual_span_piece_from_sections(
+                        graph,
+                        terrain,
+                        edge_idx,
+                        Arc::new(sections),
+                    )
+                })
             })
     }
 
@@ -428,6 +439,12 @@ impl RoadSurfaceSystem {
             .collect();
 
         if surface_polygon_order.iter().all(|order| order.is_empty()) {
+            crate::debug_log!(
+                "road",
+                "span_no_visible_regions edge={} ranges={:?}",
+                edge_idx,
+                visible_ranges
+            );
             return None;
         }
 
