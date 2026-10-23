@@ -578,14 +578,14 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
 }
 
 #[test]
-fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
+fn kuopio_saved_reference_compiles_without_rewriting_source_profiles() {
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
     );
     let mut core = test_core();
     core.load_game_internal(fixture).unwrap();
-    // The rejected junction is a local repair, not permission to regrade the city.
+    // Material grading resolves this junction in the compiler without regrading its source.
     let connection =
         rusqlite::Connection::open_with_flags(fixture, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -621,8 +621,8 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
         }
     }
     assert!(
-        repaired_points > 0,
-        "fixture no longer exercises rejected-junction repair"
+        repaired_points == 0,
+        "junction compilation must preserve its saved physical profile"
     );
     core.precompute_road_mesh_data();
     assert!(
