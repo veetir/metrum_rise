@@ -676,3 +676,90 @@ fn footpath_tie_in_noding_matches_seam_extraction_and_footprint_union() {
         assert!(footprint.iter().all(|shape| shape.len() == 1));
     }
 }
+
+#[test]
+fn touching_a_kerb_contact_cannot_reclassify_a_whole_sidewalk() {
+    let rails = junction_contour_set(false);
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails).unwrap();
+    let mut regions = ownership.owned_regions;
+    let (index, seam) = regions
+        .iter()
+        .enumerate()
+        .find_map(|(i, region)| {
+            if region.kind != RoadSurfaceBandKind::Sidewalk {
+                return None;
+            }
+            region
+                .seam_constraints
+                .iter()
+                .find(|constraint| {
+                    raised_step_curb_owner_for_sidewalk_constraint(
+                        constraint.owner,
+                        constraint.opposite_owner,
+                        region.owner,
+                    )
+                    .is_some()
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::RaisedStepContact { .. }
+                        )
+                })
+                .cloned()
+                .map(|constraint| (i, constraint))
+        })
+        .unwrap();
+    let sidewalk = regions[index].owner;
+    let carriageway = regions
+        .iter()
+        .find(|region| region.kind == RoadSurfaceBandKind::Carriageway)
+        .unwrap()
+        .owner;
+    let start = NodeOwnedRegionArrangementKey::from_ownership_key(ownership_key_from_road_point(
+        seam.start_xz,
+    ));
+    let end = NodeOwnedRegionArrangementKey::from_ownership_key(ownership_key_from_road_point(
+        seam.end_xz,
+    ));
+    let mut arrangement = unsupported_asphalt_contact_arrangement(sidewalk, carriageway, index);
+    arrangement.diagnostics = vec![
+        NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+            region_index: index,
+            owner: sidewalk,
+            opposite_owner: carriageway,
+            start,
+            end,
+        },
+    ];
+    let a = seam.start_xz;
+    let b = seam.end_xz;
+    regions[index].shape = vec![vec![
+        [a.x, a.y],
+        [b.x, b.y],
+        [b.x + 100.0, b.y + 100.0],
+        [a.x + 100.0, a.y + 100.0],
+    ]];
+    regions[index].seam_constraints = vec![seam];
+    assert!(
+        source_authorized_curb_owner_for_sidewalk_asphalt_sliver(
+            &regions[index],
+            sidewalk,
+            start,
+            end,
+            &rails.constraints
+        )
+        .is_some(),
+        "the endpoint-only contact check would promote this region"
+    );
+    let points = canonical_points_for_rail_set(&rails);
+    let context = NodeCarrierProvenanceContext::new(&rails, &points);
+    assert!(
+        !promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
+            &mut regions,
+            &arrangement,
+            &rails.constraints,
+            &context
+        )
+    );
+    assert_eq!(regions[index].kind, RoadSurfaceBandKind::Sidewalk);
+    assert_eq!(regions[index].owner, sidewalk);
+}
