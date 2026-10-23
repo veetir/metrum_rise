@@ -61,6 +61,25 @@ impl NodeHeightSolution {
         let total_start = road_debug.then(Instant::now);
         validate_input_ownership_pair(input, ownership)?;
 
+        if let Some(grade) = grade.filter(|field| field.cohort_nodes().is_some()) {
+            // The ownership closure certifies every carrier point. Interior mouths are
+            // derived from this same grade and cannot supply an independent 3D carrier.
+            let error = || NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "cohort_grade_missing_source_carrier",
+            };
+            let mut regions = grade.height_regions(input, ownership).ok_or_else(error)?;
+            if !super::grade::apply_source_material_contact_grades(input, &mut regions, Some(grade))
+            {
+                return Err(error());
+            }
+            validate_explicit_material_seam_heights(&regions)?;
+            validate_shared_source_height_agreement(&regions)?;
+            return Ok(Self {
+                node_id: ownership.node_id,
+                piece_kind: ownership.piece_kind,
+                regions,
+            });
+        }
         let fields_start = road_debug.then(Instant::now);
         let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
         let fields_ms = elapsed_profile_ms(fields_start);

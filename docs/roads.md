@@ -2943,6 +2943,28 @@ and storage per populated tile, reused across its emitted triangles. Visible poi
 existing local cells without allocation; only an occluded nonroad candidate visits connected
 contributors. The lane/agent carriageway query remains unchanged.
 
+Connected, positively overlapping ordinary junction kernels with incompatible asphalt grades
+share one source-constrained grade across their local adjacency component. Saved node centres
+and exterior mouth profiles are immutable supports; internal mouths are derived products.
+All components solve from the same pre-conformance snapshot before their incident spans are
+conformed, so a neighbouring component cannot acquire another component's generated samples
+as source authority. Internal spans sample the same grade. All material triangles are sliced together with
+the grade-facet graph on the existing integer overlay grid; constrained boundaries retain
+their returned CDT chains. The grade hull extends across the complete restored roadbed while
+preserving all source facets and support heights. Exact grid-area predicates discard only
+collinear faces, never real slivers. Conforming longest-edge subdivision resolves only faces rejected by the existing aspect
+validator, without moving the source boundary or changing its area budget. Matching retained
+boundary contacts publish exact declared kerb-step extents after refinement. Material ownership
+coalesces equal-level derived band subdivisions rather than creating new material owners.
+
+The existing triangle/contributor grids select overlaps; component discovery follows source
+road adjacency, O(local incidence + indexed overlap candidates), with no city-wide dirty scan.
+Only the affected component and its incident spans recompile. The grade geometry is immutable
+and shared by `Arc`; previews remap component IDs once per shared field, and undo invalidates
+any derived neighbours outside its bounded ledger. Source SQL regressions exercise non-affine
+boundary chains, near-parallel grade facets, millimetre support ties, dirty recompilation,
+preview remapping and undo. The source graph and saves remain unchanged.
+
 Local preview context includes the fixed third incidence layer needed by crossfall supports'
 short-link endpoint grades. Without it, a full-width university approach differed by 6 mm
 between planning and commit despite identical source sections. This is a bounded adjacency

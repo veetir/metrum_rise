@@ -140,6 +140,20 @@ impl RoadSurfaceSystem {
                 incoming_owner_index,
                 incoming_source,
             } => {
+                crate::debug_log!(
+                    "road",
+                    "node_boundary_source_conflict node={} point=({},{},{}) owners={:?}/{}:{:?}/{} sources={:?}:{:?}",
+                    arrangement.node_id(),
+                    x_key,
+                    z_key,
+                    y_mm,
+                    existing_owner_kind,
+                    existing_owner_index,
+                    incoming_owner_kind,
+                    incoming_owner_index,
+                    existing_source,
+                    incoming_source
+                );
                 let _ = (
                     *x_key,
                     *z_key,

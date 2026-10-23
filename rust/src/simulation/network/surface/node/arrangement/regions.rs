@@ -3,7 +3,9 @@
 //! Height-owned arrangement region construction.
 
 use super::super::super::{NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M};
-use super::super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
+use super::super::height::{
+    NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeMaterialGradeField,
+};
 use super::super::height::{NodeHeightedRegion, NodeHeightedVertex};
 use super::super::keys::{
     SURFACE_MM_PER_M, SURFACE_XZ_KEY_SCALE, SurfaceSegmentParameter, SurfaceXzKey,
@@ -51,6 +53,7 @@ impl NodeArrangement {
     pub(super) fn node_pending_region_edges(
         &mut self,
         pending_regions: &mut [PendingArrangementRegion],
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<(), NodeArrangementError> {
         let split_keys = self
             .vertices
@@ -63,6 +66,7 @@ impl NodeArrangement {
                 pending.height_field_id,
                 &mut pending.outer_loop,
                 &split_keys,
+                material_grade,
             )?;
             for hole in &mut pending.holes {
                 self.node_pending_loop_edges(
@@ -70,6 +74,7 @@ impl NodeArrangement {
                     pending.height_field_id,
                     hole,
                     &split_keys,
+                    material_grade,
                 )?;
             }
         }
@@ -82,6 +87,7 @@ impl NodeArrangement {
         height_field_id: NodeBandHeightFieldId,
         loop_vertices: &mut Vec<NodeArrangementVertexId>,
         split_keys: &BTreeSet<NodeArrangementKey>,
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<(), NodeArrangementError> {
         if loop_vertices.len() < 3 {
             return Ok(());
@@ -108,6 +114,7 @@ impl NodeArrangement {
                     &end,
                     split_key,
                     parameter,
+                    material_grade,
                 )?;
                 if noded.last().copied() != Some(split_id) {
                     noded.push(split_id);
@@ -119,6 +126,7 @@ impl NodeArrangement {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_split_vertex_on_arrangement_edge(
         &mut self,
         owner: NodeBandOwner,
@@ -127,26 +135,58 @@ impl NodeArrangement {
         end: &NodeArrangementVertex,
         split_key: NodeArrangementKey,
         parameter: SurfaceSegmentParameter,
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
         let split_surface_key = split_key.surface_key();
         let point_xz = split_surface_key.to_road_xz();
-        let (height_m, grade_authority) = self
-            .existing_owner_vertex_at_split_key(split_key, owner, height_field_id)
-            .unwrap_or_else(|| {
-                let height_mm =
-                    interpolate_height_i64(start.height_mm(), end.height_mm(), parameter);
-                let height_m = height_mm as f64 / SURFACE_MM_PER_M;
-                (
-                    height_m,
-                    NodeGradeVertexAuthority::new(
-                        point_xz,
+        let (height_m, grade_authority) =
+            self.existing_owner_vertex_at_split_key(split_key, owner, height_field_id)
+                .unwrap_or_else(|| {
+                    // A noded boundary keeps the same declared material level on the
+                    // solved grade. Linear endpoint interpolation would erase that proof
+                    // and can cross a piecewise-affine grade breakpoint.
+                    if let (
+                        Some(grade),
+                        NodeGradeCarrierDecision::DeclaredMaterialContact { level_mm: a, .. },
+                        NodeGradeCarrierDecision::DeclaredMaterialContact { level_mm: b, .. },
+                    ) = (
+                        material_grade,
+                        start.grade_authority().decision,
+                        end.grade_authority().decision,
+                    ) && a == b
+                    {
+                        let base = grade.height_at(point_xz);
+                        let height = base + a as f64 / SURFACE_MM_PER_M;
+                        return (
+                            height,
+                            NodeGradeVertexAuthority::new(
+                                point_xz,
+                                height,
+                                owner,
+                                height_field_id,
+                                NodeGradeCarrierDecision::DeclaredMaterialContact {
+                                    base_height_mm:
+                                        super::super::keys::SurfaceHeightMmKey::from_m_f64(base)
+                                            .as_i64(),
+                                    level_mm: a,
+                                },
+                            ),
+                        );
+                    }
+                    let height_mm =
+                        interpolate_height_i64(start.height_mm(), end.height_mm(), parameter);
+                    let height_m = height_mm as f64 / SURFACE_MM_PER_M;
+                    (
                         height_m,
-                        owner,
-                        height_field_id,
-                        NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
-                    ),
-                )
-            });
+                        NodeGradeVertexAuthority::new(
+                            point_xz,
+                            height_m,
+                            owner,
+                            height_field_id,
+                            NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
+                        ),
+                    )
+                });
         self.insert_vertex_with_grade_authority(
             point_xz,
             height_m,

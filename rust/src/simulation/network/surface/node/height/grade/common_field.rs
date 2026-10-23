@@ -2,14 +2,24 @@
 
 //! Continuous junction grade interpolated from its centre and exact span-mouth supports.
 
+mod coverage;
+mod refinement;
+
 use super::super::super::input::NodeArrangementInput;
 use super::super::model::NodeBandHeightTriangle;
 use super::*;
+use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind};
 use spade::{DelaunayTriangulation, Point2, Triangulation};
 
 /// Shared piecewise affine grade; material offsets are applied separately.
 #[derive(Debug)]
 pub(in crate::simulation::network::surface) struct NodeMaterialGradeField {
+    geometry: std::sync::Arc<NodeMaterialGradeGeometry>,
+    cohort_nodes: Option<std::sync::Arc<[u32]>>,
+}
+
+#[derive(Debug)]
+struct NodeMaterialGradeGeometry {
     supports: BTreeMap<SurfaceXzKey, f64>,
     triangles: Vec<NodeBandHeightTriangle>,
     hull: Vec<[(RoadVec2, f64); 2]>,
@@ -20,9 +30,10 @@ pub(in crate::simulation::network::surface) struct NodeMaterialGradeField {
 impl NodeMaterialGradeField {
     /// Checks the exact source certificate before reusing a cached grade.
     pub(in crate::simulation::network::surface::node) fn same_source(&self, other: &Self) -> bool {
-        self.supports == other.supports
-            && self.origin == other.origin
-            && self.gradient == other.gradient
+        self.cohort_nodes == other.cohort_nodes
+            && self.geometry.supports == other.geometry.supports
+            && self.geometry.origin == other.geometry.origin
+            && self.geometry.gradient == other.geometry.gradient
     }
 
     /// Reconstructs the shared grade only when all ordinary source material levels are proved.
@@ -42,7 +53,7 @@ impl NodeMaterialGradeField {
         let a_key = SurfaceXzKey::from_road_xz(a);
         let b_key = SurfaceXzKey::from_road_xz(b);
         let mut breaks = vec![0.0, 1.0];
-        for triangle in &self.triangles {
+        for triangle in &self.geometry.triangles {
             let vertices = [triangle.a_xz, triangle.b_xz, triangle.c_xz];
             for i in 0..3 {
                 let c = vertices[i];
@@ -107,20 +118,7 @@ impl NodeMaterialGradeField {
             )))
             .or_insert(center.y);
         let origin = (RoadVec2::new(center.x, center.z), center.y);
-        let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0, 0.0, 0.0, 0.0, 0.0);
-        for (key, &height) in &supports {
-            let delta = key.to_road_xz() - origin.0;
-            xx += delta.x * delta.x;
-            xz += delta.x * delta.y;
-            zz += delta.y * delta.y;
-            xy += delta.x * (height - origin.1);
-            zy += delta.y * (height - origin.1);
-        }
-        let det = xx * zz - xz * xz;
-        if det <= f64::EPSILON * (xx * zz).max(1.0) {
-            return None;
-        }
-        let gradient = RoadVec2::new((xy * zz - zy * xz) / det, (xx * zy - xz * xy) / det);
+        let gradient = fit_gradient(&supports, origin)?;
         // A common affine source grade already has the legacy exact solution. Keep
         // its geometry and carrier identities instead of replacing them with new proofs.
         // Independently rounded source/support keys may differ by one millimetre.
@@ -152,6 +150,15 @@ impl NodeMaterialGradeField {
         if planar {
             return None;
         }
+        Self::with_supports(supports, origin, gradient, None)
+    }
+
+    fn with_supports(
+        supports: BTreeMap<SurfaceXzKey, f64>,
+        origin: (RoadVec2, f64),
+        gradient: RoadVec2,
+        cohort_nodes: Option<std::sync::Arc<[u32]>>,
+    ) -> Option<Self> {
         let mut cdt = DelaunayTriangulation::<Point2<f64>>::new();
         for key in supports.keys() {
             let point = key.to_road_xz();
@@ -183,20 +190,246 @@ impl NodeMaterialGradeField {
             .map(|edge| edge.positions().map(sample))
             .collect();
         Some(Self {
-            supports,
-            triangles,
-            hull,
-            origin,
-            gradient,
+            geometry: std::sync::Arc::new(NodeMaterialGradeGeometry {
+                supports,
+                triangles,
+                hull,
+                origin,
+                gradient,
+            }),
+            cohort_nodes,
         })
     }
 
+    /// Solves one grade from saved centres and the cohort's exterior mouth supports.
+    /// Interior handoffs are compiler products, so they do not constrain the shared solve.
+    pub(in crate::simulation::network::surface) fn for_cohort(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        inputs: &[(u32, NodeArrangementInput)],
+        internal_edges: &std::collections::BTreeSet<usize>,
+        coverage_bounds: [f64; 4],
+    ) -> Option<Self> {
+        let mut supports = BTreeMap::new();
+        let mut centres = std::collections::BTreeSet::new();
+        for &(node, _) in inputs {
+            let point = graph.node(node).pos;
+            let key =
+                SurfaceXzKey::from_road_xz(RoadVec2::new(f64::from(point.x), f64::from(point.z)));
+            let height = f64::from(point.y);
+            if let Some(previous) = supports.insert(key, height)
+                && SurfaceHeightMmKey::from_m_f64(previous)
+                    != SurfaceHeightMmKey::from_m_f64(height)
+            {
+                return None;
+            }
+            centres.insert(key);
+        }
+        for (node, input) in inputs {
+            let levels = super::contacts::declared_levels(input).or_else(|| {
+                crate::debug_log!("road", "cohort_grade_material_levels_failed node={}", node);
+                None
+            })?;
+            for mouth in &input.mouths {
+                let internal = internal_edges.contains(&mouth.edge_idx);
+                let terminal = input.piece_kind == crate::simulation::network::surface::RoadSurfaceVisualNodePieceKind::Terminal;
+                if internal && !terminal {
+                    continue;
+                }
+                for band in &mouth.band_intervals {
+                    let level = levels[&NodeBandHeightFieldId::new(
+                        mouth.order_index,
+                        band.band_index,
+                        band.band_kind,
+                    )];
+                    let points = if internal {
+                        [band.endpoint_start_world, band.endpoint_end_world]
+                    } else {
+                        [band.mouth_start_world, band.mouth_end_world]
+                    };
+                    for point in points {
+                        let key = SurfaceXzKey::from_road_xz(RoadVec2::new(point.x, point.z));
+                        let height = point.y - level;
+                        if let Some(previous) = supports.get_mut(&key) {
+                            if SurfaceHeightMmKey::from_m_f64(*previous)
+                                .as_i64()
+                                .abs_diff(SurfaceHeightMmKey::from_m_f64(height).as_i64())
+                                > 1
+                            {
+                                crate::debug_log!(
+                                    "road",
+                                    "cohort_grade_support_conflict node={} key={:?} existing={} incoming={} centre={}",
+                                    node,
+                                    key,
+                                    *previous,
+                                    height,
+                                    centres.contains(&key)
+                                );
+                                return None;
+                            }
+                            if !centres.contains(&key) {
+                                *previous = previous.min(height);
+                            }
+                        } else {
+                            supports.insert(key, height);
+                        }
+                    }
+                }
+            }
+        }
+        let point = graph.node(inputs.first()?.0).pos;
+        let origin = (
+            RoadVec2::new(f64::from(point.x), f64::from(point.z)),
+            f64::from(point.y),
+        );
+        let gradient = fit_gradient(&supports, origin)?;
+        let mut nodes = inputs.iter().map(|(node, _)| *node).collect::<Vec<_>>();
+        nodes.sort_unstable();
+        nodes.dedup();
+        Self::with_supports(supports, origin, gradient, Some(nodes.into()))?
+            .with_coverage_bounds(coverage_bounds)
+    }
+
+    /// Retains the bounded dependency cohort alongside its shared immutable geometry.
+    pub(in crate::simulation::network::surface) fn cohort_nodes(&self) -> Option<&[u32]> {
+        self.cohort_nodes.as_deref()
+    }
+
+    /// Rebinds preview-local node identities without copying the grade triangulation.
+    pub(in crate::simulation::network::surface) fn with_remapped_cohort_nodes(
+        &self,
+        node_map: &std::collections::HashMap<u32, u32>,
+    ) -> Option<Self> {
+        let mut nodes = self
+            .cohort_nodes()?
+            .iter()
+            .map(|node| node_map.get(node).copied())
+            .collect::<Option<Vec<_>>>()?;
+        nodes.sort_unstable();
+        nodes.dedup();
+        Some(Self {
+            geometry: std::sync::Arc::clone(&self.geometry),
+            cohort_nodes: Some(nodes.into()),
+        })
+    }
+
+    /// Evaluates the common grade only on the ownership solver's proved source carriers.
+    pub(in crate::simulation::network::surface::node::height) fn height_regions(
+        &self,
+        input: &NodeArrangementInput,
+        ownership: &crate::simulation::network::surface::node::ownership::NodeBooleanOwnership,
+    ) -> Option<Vec<NodeHeightedRegion>> {
+        use super::super::evaluate::{
+            height_carrier_provenance_by_key, heighted_shape_area_m2,
+            resolved_height_authority_key, source_noded_contour_points,
+        };
+        let levels = super::contacts::declared_levels(input)?;
+        let provenance = height_carrier_provenance_by_key(ownership);
+        let mut regions = Vec::new();
+        for region in &ownership.owned_regions {
+            let id = NodeBandHeightFieldId::new(
+                region.source_mouth_order_index,
+                region.source_band_index?,
+                region.kind,
+            );
+            let level = if let Some(&level) = levels.get(&id) {
+                level
+            } else if input.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
+                let mut matching = levels
+                    .iter()
+                    .filter_map(|(id, &level)| (id.kind() == region.kind).then_some(level));
+                let level = matching.next()?;
+                if matching.any(|other| other != level) {
+                    return None;
+                }
+                level
+            } else {
+                return None;
+            };
+            let shape = region
+                .shape
+                .iter()
+                .map(|contour| {
+                    source_noded_contour_points(contour, region)
+                        .into_iter()
+                        .map(|p| {
+                            let point = RoadVec2::new(p[0], p[1]);
+                            let source = *provenance.get(&resolved_height_authority_key(
+                                region.owner,
+                                id,
+                                region.claim_priority,
+                                point,
+                            ))?;
+                            let base = self.height_at(point);
+                            let height = base + level;
+                            Some(NodeHeightedVertex {
+                                point_xz: point,
+                                height_m: height,
+                                height_field_id: id,
+                                height_authority: None,
+                                source_provenance: Some(source),
+                                grade_authority: Some(
+                                    NodeGradeVertexAuthority::new_with_source_provenance(
+                                        point,
+                                        height,
+                                        region.owner,
+                                        id,
+                                        NodeGradeCarrierDecision::DeclaredMaterialContact {
+                                            base_height_mm: SurfaceHeightMmKey::from_m_f64(base)
+                                                .as_i64(),
+                                            level_mm: SurfaceHeightMmKey::from_m_f64(level)
+                                                .as_i64(),
+                                        },
+                                        Some(source),
+                                    ),
+                                ),
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let area_m2 = heighted_shape_area_m2(&shape);
+            if shape.first()?.len() < 3 {
+                let source_area = RoadSurfaceSystem::overlay_shape_area_m2(&region.shape);
+                let budget =
+                    RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&region.shape);
+                if area_m2 == 0.0 && source_area <= budget {
+                    continue;
+                }
+                crate::debug_log!(
+                    "road",
+                    "cohort_grade_degenerate_source node={} owner={:?} source_area={} stored_area={} budget={} shape={:?}",
+                    input.node_id,
+                    region.owner,
+                    source_area,
+                    region.area_m2,
+                    budget,
+                    region.shape
+                );
+                return None;
+            }
+            regions.push(NodeHeightedRegion {
+                kind: region.kind,
+                owner: region.owner,
+                height_field_id: id,
+                shape,
+                area_m2,
+                seam_constraints: region.seam_constraints.clone(),
+            });
+        }
+        Some(regions)
+    }
+
     /// Samples the continuous grade, extending its affine trend outside the mouth hull.
-    pub(in crate::simulation::network::surface::node) fn height_at(&self, point: RoadVec2) -> f64 {
-        if let Some(&height) = self.supports.get(&SurfaceXzKey::from_road_xz(point)) {
+    pub(in crate::simulation::network::surface) fn height_at(&self, point: RoadVec2) -> f64 {
+        if let Some(&height) = self
+            .geometry
+            .supports
+            .get(&SurfaceXzKey::from_road_xz(point))
+        {
             return height;
         }
         if let Some(height) = self
+            .geometry
             .triangles
             .iter()
             .find_map(|triangle| triangle.height_at_exact(point))
@@ -205,9 +438,11 @@ impl NodeMaterialGradeField {
         }
         // Convex-boundary projection is unique. Interpolating the boundary residual
         // preserves continuity at hull edges and vertices, including outer kerb corners.
-        let trend = |point: RoadVec2| self.origin.1 + self.gradient.dot(point - self.origin.0);
+        let trend = |point: RoadVec2| {
+            self.geometry.origin.1 + self.geometry.gradient.dot(point - self.geometry.origin.0)
+        };
         let mut nearest = None;
-        for &[a, b] in &self.hull {
+        for &[a, b] in &self.geometry.hull {
             let axis = b.0 - a.0;
             let t = ((point - a.0).dot(axis) / axis.length_squared()).clamp(0.0, 1.0);
             let projection = a.0 + axis * t;
@@ -219,6 +454,29 @@ impl NodeMaterialGradeField {
         }
         trend(point) + nearest.map_or(0.0, |(_, height)| height)
     }
+}
+
+fn fit_gradient(
+    supports: &BTreeMap<SurfaceXzKey, f64>,
+    origin: (RoadVec2, f64),
+) -> Option<RoadVec2> {
+    let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (key, &height) in supports {
+        let delta = key.to_road_xz() - origin.0;
+        xx += delta.x * delta.x;
+        xz += delta.x * delta.y;
+        zz += delta.y * delta.y;
+        xy += delta.x * (height - origin.1);
+        zy += delta.y * (height - origin.1);
+    }
+    let det = xx * zz - xz * xz;
+    if det <= f64::EPSILON * (xx * zz).max(1.0) {
+        return None;
+    }
+    Some(RoadVec2::new(
+        (xy * zz - zy * xz) / det,
+        (xx * zy - xz * xy) / det,
+    ))
 }
 
 #[cfg(test)]

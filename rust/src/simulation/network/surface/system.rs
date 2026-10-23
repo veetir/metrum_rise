@@ -710,6 +710,9 @@ impl RoadSurfaceSystem {
         nodes: &[u32],
         chords: bool,
     ) {
+        if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+            crate::debug::set_mask(crate::debug::Channel::Road.bit());
+        }
         for id in 0..graph.edge_count() {
             let sections = self.compile_edge_sections(graph, id);
             self.compiled_sections.insert(id, Arc::new(sections));
@@ -736,6 +739,12 @@ impl RoadSurfaceSystem {
                     self.compiled_visual_node_pieces.insert(id, Arc::new(piece));
                 }
             }
+        }
+        let products = self
+            .compile_junction_grade_cohorts(graph, terrain, nodes, None)
+            .expect("selected owners must compile their shared grade");
+        for (node, input, result) in products.nodes {
+            self.apply_node_compile_result_with_earthwork_boundaries(node, input, Some(result));
         }
     }
 
@@ -803,7 +812,12 @@ impl RoadSurfaceSystem {
             node_ids.insert(graph.get_valid_node(edge.end_node));
         }
 
-        let mut sorted_nodes: Vec<u32> = node_ids.into_iter().collect();
+        self.extend_grade_cohort_nodes(&mut node_ids);
+        let mut sorted_nodes: Vec<u32> = node_ids
+            .into_iter()
+            .filter(|node| (*node as usize) < graph.node_count())
+            .map(|node| graph.get_valid_node(node))
+            .collect();
         sorted_nodes.sort_unstable();
         sorted_nodes.dedup();
 
@@ -1030,7 +1044,7 @@ impl RoadSurfaceSystem {
                 (node_id, input, refresh_earthwork, preview_candidate)
             })
             .collect::<Vec<_>>();
-        let node_results: Vec<(
+        let mut node_results: Vec<(
             u32,
             RoadSurfaceVisualNodeCompileInput,
             Option<NodeVisualCompileResult>,
@@ -1160,6 +1174,44 @@ impl RoadSurfaceSystem {
             if partial_failure_label.is_none() {
                 partial_failure_label = Some(failure_label);
             }
+        }
+        // The initial pass supplies exact local footprints. Join only connected kernels
+        // with positive asphalt overlap; unchanged neighbors are read through resident Arcs.
+        for (node, _, result, _, _) in &node_results {
+            if let Some(result) = result {
+                staging
+                    .compiled_visual_node_pieces
+                    .insert(*node, Arc::clone(&result.piece));
+            }
+        }
+        let cohort =
+            match staging.compile_junction_grade_cohorts(graph, terrain, &sorted_nodes, Some(self))
+            {
+                Ok(products) => products,
+                Err(label) => {
+                    self.latch_compile_failure(label);
+                    return;
+                }
+            };
+        if !cohort.nodes.is_empty() {
+            let repaired = cohort.nodes.iter().map(|p| p.0).collect::<HashSet<_>>();
+            node_results.retain(|result| !repaired.contains(&result.0));
+            node_results.extend(cohort.nodes.into_iter().map(|(node, input, result)| {
+                (
+                    node,
+                    input,
+                    with_retained_parts(Some(result), retain_topologies, retain_provenance),
+                    false,
+                    0.0,
+                )
+            }));
+            node_results.sort_unstable_by_key(|p| p.0);
+            sorted_nodes.extend(repaired);
+            sorted_nodes.sort_unstable();
+            sorted_nodes.dedup();
+            sorted_span_edges.extend(cohort.edges);
+            sorted_span_edges.sort_unstable();
+            sorted_span_edges.dedup();
         }
         let reused_node_topology_count = node_results.iter().filter(|result| result.3).count();
         let reused_node_height_topology_count = node_results
@@ -1544,6 +1596,20 @@ impl RoadSurfaceSystem {
             );
         }
 
+        let cohort = match staging.compile_junction_grade_cohorts(graph, terrain, &node_ids, None) {
+            Ok(products) => products,
+            Err(label) => {
+                self.latch_compile_failure(label);
+                return;
+            }
+        };
+        for (node, input, result) in cohort.nodes {
+            staging.apply_node_compile_result_with_earthwork_boundaries(
+                node,
+                input,
+                with_retained_parts(Some(result), retain_topologies, retain_provenance),
+            );
+        }
         let chunk_cache_start = road_debug.then(Instant::now);
         staging
             .dirty_surface_chunks
@@ -1676,7 +1742,7 @@ impl RoadSurfaceSystem {
         );
     }
 
-    fn apply_node_compile_result_with_earthwork_boundaries(
+    pub(in crate::simulation::network::surface) fn apply_node_compile_result_with_earthwork_boundaries(
         &mut self,
         node_id: u32,
         input: RoadSurfaceVisualNodeCompileInput,

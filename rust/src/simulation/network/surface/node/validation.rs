@@ -109,3 +109,10 @@ impl NodeValidationEdgeKey {
         self.start == self.end
     }
 }
+
+/// Reuses the carriageway quality limit when subdividing certified grade facets.
+pub(in crate::simulation::network::surface) fn needs_aspect_refinement(
+    points: [super::backend::RoadVec3; 3],
+) -> bool {
+    triangles::needs_aspect_refinement(points)
+}

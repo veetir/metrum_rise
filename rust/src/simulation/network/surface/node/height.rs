@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod authority;
 mod build;
 mod carriers;
+mod cohort;
 mod evaluate;
 mod field;
 mod grade;

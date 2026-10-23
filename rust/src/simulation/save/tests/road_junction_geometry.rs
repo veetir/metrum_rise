@@ -44,6 +44,9 @@ fn kys_crossfall_uses_control_supports_without_rewriting_physical_relief() {
 #[test]
 #[ignore = "read-only imported-map audit; set METRUM_JUNCTION_SAVE and METRUM_JUNCTION_OUTPUT"]
 fn audit_imported_junction_geometry() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
     let path = std::env::var("METRUM_JUNCTION_SAVE").unwrap();
     let output = std::path::PathBuf::from(std::env::var("METRUM_JUNCTION_OUTPUT").unwrap());
     fs::create_dir_all(&output).unwrap();
@@ -359,6 +362,7 @@ fn audit_imported_junction_geometry() {
         "material_mesh":material_mesh,"failure":surface.last_compile_failure_label(),"failed_nodes":surface.failed_node_ids(),
         "missing_spans":missing_spans,"oversized_kerb_steps":walls,"terrain_export_failures":terrain_failures,
         "steep_source_profiles":steep_source_profiles,"steep_visible_span_profiles":steep_visible_span_profiles,"section_outliers":outliers,"steep_node_planes":nodes,
+        "junction_grade_conflicts":surface.junction_grade_conflicts_for_geometry_audit(&graph),
         "mouth_height_discontinuities":surface.mouth_height_discontinuities_for_geometry_audit(&graph),
         "spans":surface.compiled_visual_span_pieces().len(),"nodes":surface.compiled_visual_node_pieces().len()});
     fs::write(
@@ -381,6 +385,28 @@ fn audit_imported_junction_geometry() {
     let mut transit = TransitNetwork::new_for_world(&config);
     let loaded = network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, &mut terrain);
     eprintln!("load_runtime={loaded:?}");
+    assert!(
+        loaded.is_ok(),
+        "the full save runtime must load: {loaded:?}"
+    );
+    assert_eq!(
+        report["published"], true,
+        "the sweep must inspect a fully published map"
+    );
+    for signature in [
+        "missing_spans",
+        "failed_nodes",
+        "oversized_kerb_steps",
+        "terrain_export_failures",
+        "junction_grade_conflicts",
+        "mouth_height_discontinuities",
+    ] {
+        assert!(
+            report[signature].as_array().unwrap().is_empty(),
+            "remaining {signature}: {}",
+            report[signature]
+        );
+    }
 }
 
 #[test]
@@ -607,6 +633,11 @@ fn terrain_window_keeps_overlapping_junction_contributors_complete() {
             "required junction {node} must be compiled"
         );
     }
+    assert_eq!(
+        surface.junction_grade_conflicts_for_geometry_audit(&graph),
+        Vec::new(),
+        "connected overlapping asphalt must have one grade"
+    );
     let pivot = graph.node(7).pos;
     let export = surface.terrain_cdt_road_loops_for_world_bounds(
         &graph,
@@ -674,4 +705,110 @@ fn terrain_window_keeps_overlapping_junction_contributors_complete() {
         overlaps.is_empty(),
         "chunk publication must retain the material partition: {overlaps:?}"
     );
+}
+
+#[test]
+fn shared_grade_refinement_preserves_source_contacts_and_facet_quality() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_grade_breaks.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(6000.0, 6000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_owners_for_geometry_audit(
+        &graph,
+        &terrain,
+        &[
+            2, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 17, 21, 22, 27, 28, 31, 32, 33, 36, 37, 38, 44,
+            47, 48, 51, 52,
+        ],
+        &[
+            3, 8, 9, 11, 12, 13, 14, 16, 19, 58, 27, 54, 31, 42, 43, 33, 37,
+        ],
+        false,
+    );
+    for node in [
+        3, 8, 9, 11, 12, 13, 14, 16, 19, 58, 27, 54, 31, 42, 43, 33, 37,
+    ] {
+        assert!(surface.compiled_visual_node_pieces().contains_key(&node));
+    }
+    assert!(
+        surface
+            .junction_grade_conflicts_for_geometry_audit(&graph)
+            .is_empty()
+    );
+}
+
+#[test]
+fn shared_grade_cohort_survives_dirty_compilation_undo_and_preview() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_query_cohort.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 89.7 / crate::config::HEIGHT_SCALE);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    assert!(
+        surface.compile_dirty(&graph, &terrain),
+        "{:?}",
+        surface.last_compile_failure_label()
+    );
+    assert!(
+        surface
+            .junction_grade_conflicts_for_geometry_audit(&graph)
+            .is_empty()
+    );
+    let spans = surface.compiled_visual_span_pieces().clone();
+    let nodes = surface.compiled_visual_node_pieces().clone();
+    let edge_ids = std::collections::HashSet::from([3]);
+    let node_ids = std::collections::HashSet::from([4, 5]);
+    let undo = surface.capture_topology_undo(&edge_ids, &node_ids).unwrap();
+    surface.mark_edge_dirty(&graph, 3);
+    assert!(
+        surface.compile_dirty(&graph, &terrain),
+        "{:?}",
+        surface.last_compile_failure_label()
+    );
+    assert_eq!(surface.compiled_visual_span_pieces(), &spans);
+    assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
+    assert!(surface.restore_topology_undo(undo, &edge_ids, &node_ids));
+    assert!(
+        surface.compile_dirty(&graph, &terrain),
+        "{:?}",
+        surface.last_compile_failure_label()
+    );
+    assert_eq!(surface.compiled_visual_span_pieces(), &spans);
+    assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
+    let start = graph.node(0).pos;
+    let direction = (start - graph.node(1).pos).normalized();
+    let end = Vector3::new(
+        start.x + direction.x * 80.0,
+        89.7,
+        start.z + direction.z * 80.0,
+    );
+    let preview = surface.compile_preview_surface_mesh_only_with_existing_surface(
+        &[start, end],
+        1,
+        1,
+        &terrain,
+        &graph,
+        &surface,
+    );
+    assert!(
+        preview.is_valid,
+        "a terminal extension must retain the whole remapped grade cohort: {:?}",
+        preview.validation
+    );
+    assert_eq!(surface.compiled_visual_span_pieces(), &spans);
+    assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
 }

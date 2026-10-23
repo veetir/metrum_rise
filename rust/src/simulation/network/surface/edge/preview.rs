@@ -1133,14 +1133,30 @@ impl RoadSurfaceSystem {
         // Only immutable topology candidates cross into the transient compiler. Fresh local
         // mouths, exact rail/height keys and contributor checks still decide all reuse. O(N)
         // lookups over the copied neighborhood, independent of the resident network size.
+        let mut remapped_grades = HashMap::new();
         for (&source_node_id, &local_node_id) in &source_node_ids {
             if validation_graph.get_valid_node(local_node_id) != local_node_id {
                 continue;
             }
             if let Some(grade) = self.node_material_grade_fields.get(&source_node_id) {
-                validation_surface
-                    .node_material_grade_fields
-                    .insert(local_node_id, Arc::clone(grade));
+                let mapped = if grade.cohort_nodes().is_some() {
+                    let key = Arc::as_ptr(grade) as usize;
+                    remapped_grades
+                        .entry(key)
+                        .or_insert_with(|| {
+                            grade
+                                .with_remapped_cohort_nodes(&source_node_ids)
+                                .map(Arc::new)
+                        })
+                        .clone()
+                } else {
+                    Some(Arc::clone(grade))
+                };
+                if let Some(mapped) = mapped {
+                    validation_surface
+                        .node_material_grade_fields
+                        .insert(local_node_id, mapped);
+                }
             }
             if let Some(topology) = self.compiled_visual_node_topologies.get(&source_node_id) {
                 validation_surface
@@ -1849,6 +1865,22 @@ impl RoadSurfaceSystem {
             let edge = local.edge(id);
             compile_nodes.insert(local.get_valid_node(edge.start_node));
             compile_nodes.insert(local.get_valid_node(edge.end_node));
+        }
+        let mut cohort_sources = nodes
+            .iter()
+            .filter_map(|(&source, &mapped)| {
+                compile_nodes
+                    .contains(&local.get_valid_node(mapped))
+                    .then_some(source)
+            })
+            .collect::<HashSet<_>>();
+        self.extend_grade_cohort_nodes(&mut cohort_sources);
+        let mut cohort_sources = cohort_sources.into_iter().collect::<Vec<_>>();
+        cohort_sources.sort_unstable();
+        for source_node in cohort_sources {
+            let mapped =
+                Self::copy_validation_graph_node(local, source, nodes, source_node, extension);
+            compile_nodes.insert(mapped);
         }
         copy_incidence(local, nodes, edges, &compile_nodes);
         for &node in &compile_nodes {

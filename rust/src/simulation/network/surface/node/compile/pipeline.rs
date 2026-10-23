@@ -44,7 +44,8 @@ impl RoadSurfaceSystem {
         kind: RoadSurfaceVisualNodePieceKind,
         mouths: &[OrderedIncidentPieceMouth],
     ) -> Option<String> {
-        let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
+        let mut input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths)
+        {
             Ok(input) => input,
             Err(error) => {
                 let error = serde_json::to_string(&format!("{error:?}"))
@@ -54,6 +55,13 @@ impl RoadSurfaceSystem {
                 ));
             }
         };
+        if self
+            .node_material_grade_fields
+            .get(&node_id)
+            .is_some_and(|field| field.cohort_nodes().is_some())
+        {
+            input.coalesce_grade_subdivisions();
+        }
         let (mut rails, _) =
             match Self::build_node_rail_contours_from_input_with_profile(&input, false) {
                 Ok(result) => result,
@@ -100,7 +108,13 @@ impl RoadSurfaceSystem {
             }
         };
         let (mut arrangement, _, precomputed_explicit_steps) =
-            match NodeArrangement::from_height_solution_with_profile(&heights, false) {
+            match NodeArrangement::from_height_solution_with_profile(
+                &heights,
+                false,
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
+            ) {
                 Ok(result) => result,
                 Err(error) => {
                     return Some(Self::node_compile_failure_debug_dump(
@@ -131,6 +145,15 @@ impl RoadSurfaceSystem {
                 ));
             }
         };
+        let mut triangulation = triangulation;
+        if let Some(field) = self.node_material_grade_fields.get(&node_id)
+            && field.cohort_nodes().is_some()
+            && field
+                .refine_triangulation(&mut triangulation, &arrangement)
+                .is_none()
+        {
+            return Some("{\"failed_stage\":\"shared_grade_refinement\"}".to_owned());
+        }
         match Self::validate_node_triangulation_solution(&triangulation) {
             Ok(_) => {}
             Err(error) => {
@@ -182,13 +205,21 @@ impl RoadSurfaceSystem {
         let total_start = road_debug.then(Instant::now);
 
         let input_start = road_debug.then(Instant::now);
-        let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
+        let mut input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths)
+        {
             Ok(input) => input,
             Err(error) => {
                 self.log_node_input_extraction_error(node_id, kind, &error);
                 return None;
             }
         };
+        if self
+            .node_material_grade_fields
+            .get(&node_id)
+            .is_some_and(|field| field.cohort_nodes().is_some())
+        {
+            input.coalesce_grade_subdivisions();
+        }
         let input_ms = elapsed_ms(input_start);
 
         let rails_start = road_debug.then(Instant::now);
@@ -341,7 +372,13 @@ impl RoadSurfaceSystem {
 
             let arrangement_start = road_debug.then(Instant::now);
             let (mut arrangement, arrangement_profile, precomputed_explicit_steps) =
-                match NodeArrangement::from_height_solution_with_profile(&heights, road_debug) {
+                match NodeArrangement::from_height_solution_with_profile(
+                    &heights,
+                    road_debug,
+                    self.node_material_grade_fields
+                        .get(&node_id)
+                        .map(AsRef::as_ref),
+                ) {
                     Ok(result) => result,
                     Err(error) => {
                         self.log_node_validation_report(
@@ -376,6 +413,20 @@ impl RoadSurfaceSystem {
                     return None;
                 }
             };
+            let mut triangulation = triangulation;
+            if let Some(field) = self.node_material_grade_fields.get(&node_id)
+                && field.cohort_nodes().is_some()
+                && field
+                    .refine_triangulation(&mut triangulation, &arrangement)
+                    .is_none()
+            {
+                crate::debug_log!(
+                    "road",
+                    "node_cohort_grade_refinement_failed node={}",
+                    node_id
+                );
+                return None;
+            }
             let triangulation_ms = elapsed_ms(triangulation_start);
 
             let triangulation_validation_start = road_debug.then(Instant::now);

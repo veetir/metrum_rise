@@ -402,7 +402,7 @@ fn push_triangle_to_layer(
     color: Color,
     normal: Vector3,
 ) {
-    if !matches!(layer, MeshLayer::Road | MeshLayer::Marking)
+    if !matches!(layer, MeshLayer::Marking)
         && material_partition::emit_triangle(mesh, layer, vertices, uvs, color, normal)
     {
         return;

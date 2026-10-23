@@ -2,6 +2,7 @@
 
 //! Cross-owner carriageway precedence for connected, same-level roadbeds.
 
+use super::backend::godot_vec3_to_road;
 use super::*;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
@@ -178,6 +179,47 @@ impl MaterialTile {
 }
 
 impl RoadSurfaceSystem {
+    /// Reports independently graded overlapping source-connected node carriageways.
+    #[cfg(test)]
+    pub(crate) fn junction_grade_conflicts_for_geometry_audit(
+        &self,
+        graph: &RegionGraph,
+    ) -> Vec<(u32, u32)> {
+        let mut conflicts = BTreeSet::new();
+        for (&node, a) in &self.compiled_visual_node_pieces {
+            let Some(level) = owner_level(graph, RoadMaterialOwner::Node(node)) else {
+                continue;
+            };
+            for &id in graph.node_adjacency(node) {
+                let e = graph.edge(id);
+                if e.deleted
+                    || e.class != EdgeClass::Standard
+                    || e.primary_type != TransitType::Road
+                    || e.crossing_level != level
+                {
+                    continue;
+                }
+                let start = graph.get_valid_node(e.start_node);
+                let other = if start == node {
+                    graph.get_valid_node(e.end_node)
+                } else {
+                    start
+                };
+                if other <= node
+                    || owner_level(graph, RoadMaterialOwner::Node(other)) != Some(level)
+                {
+                    continue;
+                }
+                if let Some(b) = self.compiled_visual_node_pieces.get(&other)
+                    && node_grade_overlap(a, b, false) == Some(true)
+                {
+                    conflicts.insert((node, other));
+                }
+            }
+        }
+        conflicts.into_iter().collect()
+    }
+
     /// Validates final uploaded nonroad tops against asphalt, allowing only the upload's
     /// coordinate-rounding strip. Used by the read-only imported-map acceptance sweep.
     #[cfg(test)]
@@ -284,7 +326,9 @@ impl RoadSurfaceSystem {
         for other in edges.chain(nodes) {
             if other == owner
                 || owner_level(graph, other) != Some(level)
-                || !owners_connected(graph, owner, other, level)
+                || !(owners_connected(graph, owner, other, level)
+                    || self.owners_share_grade_cohort(graph, owner, other)
+                    || self.owners_share_grade_cohort(graph, other, owner))
             {
                 continue;
             }
@@ -324,8 +368,18 @@ impl RoadSurfaceSystem {
         &self,
         graph: &RegionGraph,
         owner: RoadMaterialOwner,
+        mask_carriageway: bool,
     ) -> Option<RoadSurfaceMaterialMask> {
         let level = owner_level(graph, owner)?;
+        if mask_carriageway
+            && !owner_nodes(graph, owner).iter().any(|node| {
+                self.node_material_grade_fields
+                    .get(node)
+                    .is_some_and(|field| field.cohort_nodes().is_some())
+            })
+        {
+            return None;
+        }
         let target = self.material_source(owner)?;
         let bounds = target.grid().bounds_xz;
         let (edges, nodes) = self.collect_spatial_query_contributors_for_bounds(
@@ -339,8 +393,13 @@ impl RoadSurfaceSystem {
         {
             if other == owner
                 || owner_level(graph, other) != Some(level)
-                || !owners_connected(graph, owner, other, level)
+                || !(owners_connected(graph, owner, other, level)
+                    || self.owners_share_grade_cohort(graph, owner, other)
+                    || self.owners_share_grade_cohort(graph, other, owner))
             {
+                continue;
+            }
+            if mask_carriageway && !self.asphalt_owner_precedes(graph, other, owner) {
                 continue;
             }
             let Some(source) = self.material_source(other) else {
@@ -354,7 +413,7 @@ impl RoadSurfaceSystem {
                 let local_bounds = triangle_bounds(triangle);
                 target.grid().items_in_bounds(local_bounds).any(|item| {
                     let (nonroad, target_road) = target.triangle(item);
-                    !target_road && material_triangles_overlap(triangle, nonroad)
+                    mask_carriageway == target_road && material_triangles_overlap(triangle, nonroad)
                 })
             });
             if overlaps {
@@ -365,6 +424,58 @@ impl RoadSurfaceSystem {
             sources,
             tiles: HashMap::new(),
         })
+    }
+
+    fn owners_share_grade_cohort(
+        &self,
+        graph: &RegionGraph,
+        a: RoadMaterialOwner,
+        b: RoadMaterialOwner,
+    ) -> bool {
+        let a_nodes = owner_nodes(graph, a);
+        let b_nodes = owner_nodes(graph, b);
+        a_nodes.into_iter().any(|a| {
+            self.node_material_grade_fields
+                .get(&a)
+                .and_then(|field| field.cohort_nodes())
+                .is_some_and(|members| b_nodes.iter().all(|b| members.binary_search(b).is_ok()))
+        })
+    }
+
+    fn asphalt_owner_precedes(
+        &self,
+        graph: &RegionGraph,
+        source: RoadMaterialOwner,
+        target: RoadMaterialOwner,
+    ) -> bool {
+        let RoadMaterialOwner::Node(node) = source else {
+            return false;
+        };
+        if !self
+            .node_material_grade_fields
+            .get(&node)
+            .is_some_and(|field| field.cohort_nodes().is_some())
+        {
+            return false;
+        }
+        match target {
+            RoadMaterialOwner::Span(_) => {
+                owner_nodes(graph, target).contains(&node)
+                    || self.owners_share_grade_cohort(graph, source, target)
+            }
+            RoadMaterialOwner::Node(other) => {
+                self.owners_share_grade_cohort(graph, source, target)
+                    && (
+                        keys::SurfaceXzKey::from_world_xz(godot_vec3_to_road(graph.node(node).pos)),
+                        node,
+                    ) < (
+                        keys::SurfaceXzKey::from_world_xz(godot_vec3_to_road(
+                            graph.node(other).pos,
+                        )),
+                        other,
+                    )
+            }
+        }
     }
 
     fn material_source(&self, owner: RoadMaterialOwner) -> Option<MaterialSource> {
@@ -426,7 +537,11 @@ fn owner_nodes(graph: &RegionGraph, owner: RoadMaterialOwner) -> [u32; 2] {
     }
 }
 
-fn owner_level(graph: &RegionGraph, owner: RoadMaterialOwner) -> Option<i16> {
+/// Returns the source crossing level only for an ordinary same-level roadbed owner.
+pub(in crate::simulation::network::surface) fn owner_level(
+    graph: &RegionGraph,
+    owner: RoadMaterialOwner,
+) -> Option<i16> {
     match owner {
         RoadMaterialOwner::Span(id) => {
             let edge = graph.edge(id);
@@ -555,4 +670,39 @@ fn triangle_overlap_points(a: [RoadVec3; 3], b: [RoadVec3; 3]) -> ([RoadVec2; 8]
         }
     }
     (points, len)
+}
+
+/// Tests actual carriageway intersections using the pieces' existing triangle grids.
+/// The flag distinguishes a positive overlap from an incompatible independently solved grade.
+pub(in crate::simulation::network::surface) fn node_grade_overlap(
+    a: &RoadSurfaceVisualNodePiece,
+    b: &RoadSurfaceVisualNodePiece,
+    full_roadbed: bool,
+) -> Option<bool> {
+    let mut overlaps = false;
+    for item in a.surface_query.items_in_bounds(b.surface_query.bounds_xz) {
+        let (triangle, road) = a.surface_query_triangle(item);
+        if !full_roadbed && !road {
+            continue;
+        }
+        for other in b.surface_query.items_in_bounds(triangle_bounds(triangle)) {
+            let (other, other_road) = b.surface_query_triangle(other);
+            if (!full_roadbed && !other_road) || !material_triangles_overlap(triangle, other) {
+                continue;
+            }
+            overlaps = true;
+            let (points, len) = triangle_overlap_points(triangle, other);
+            if road
+                && other_road
+                && points[..len].iter().any(|&point| {
+                    RoadSurfaceSystem::triangle_height_at_xz(&triangle, point)
+                        .zip(RoadSurfaceSystem::triangle_height_at_xz(&other, point))
+                        .is_some_and(|(a, b)| (a - b).abs() > 0.001)
+                })
+            {
+                return Some(true);
+            }
+        }
+    }
+    overlaps.then_some(false)
 }

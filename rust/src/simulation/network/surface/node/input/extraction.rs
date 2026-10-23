@@ -19,6 +19,77 @@ impl RoadSurfaceSystem {
 }
 
 impl NodeArrangementInput {
+    /// Keeps material ownership independent of derived transverse grade samples.
+    /// A shared grade retains those samples; equal-level same-kind bands are one domain.
+    pub(in crate::simulation::network::surface) fn coalesce_grade_subdivisions(&mut self) {
+        use crate::simulation::network::surface::keys::SurfaceHeightMmKey;
+        for mouth in &mut self.mouths {
+            let mut groups: Vec<(usize, usize)> = Vec::new();
+            for (i, band) in mouth.band_intervals.iter().enumerate() {
+                if let Some((_, last)) = groups.last_mut() {
+                    let previous = &mouth.band_intervals[*last];
+                    let connected = [
+                        (previous.mouth_end_world, band.mouth_start_world),
+                        (previous.endpoint_end_world, band.endpoint_start_world),
+                    ]
+                    .into_iter()
+                    .all(|(a, b)| {
+                        road_vec3_xz(a) == road_vec3_xz(b)
+                            && SurfaceHeightMmKey::from_m_f64(a.y)
+                                == SurfaceHeightMmKey::from_m_f64(b.y)
+                    });
+                    if previous.band_kind == band.band_kind && connected {
+                        *last = i;
+                        continue;
+                    }
+                }
+                groups.push((i, i));
+            }
+            if groups.len() == mouth.band_intervals.len() {
+                continue;
+            }
+            let mut intervals = Vec::with_capacity(groups.len());
+            let mut boundaries = Vec::with_capacity(groups.len() + 1);
+            boundaries.push(mouth.boundary_rails[0].clone());
+            for (index, (first, last)) in groups.into_iter().enumerate() {
+                let mut band = mouth.band_intervals[first].clone();
+                let end = &mouth.band_intervals[last];
+                band.band_index = index;
+                band.mouth_end_world = end.mouth_end_world;
+                band.endpoint_end_world = end.endpoint_end_world;
+                band.end_path_world = end.end_path_world.clone();
+                intervals.push(band);
+                let mut boundary = mouth.boundary_rails[last + 1].clone();
+                boundary.boundary_index = index + 1;
+                boundaries.push(boundary);
+            }
+            let profile = |kind| {
+                intervals
+                    .iter()
+                    .map(|band| NodeInputProfileRail {
+                        profile_kind: kind,
+                        band_index: band.band_index,
+                        band_kind: band.band_kind,
+                        start_world: if kind == NodeInputProfileKind::Mouth {
+                            band.mouth_start_world
+                        } else {
+                            band.endpoint_start_world
+                        },
+                        end_world: if kind == NodeInputProfileKind::Mouth {
+                            band.mouth_end_world
+                        } else {
+                            band.endpoint_end_world
+                        },
+                    })
+                    .collect()
+            };
+            mouth.mouth_rails = profile(NodeInputProfileKind::Mouth);
+            mouth.endpoint_rails = profile(NodeInputProfileKind::Endpoint);
+            mouth.boundary_rails = boundaries;
+            mouth.band_intervals = intervals;
+        }
+    }
+
     pub(crate) fn from_ordered_mouths(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,

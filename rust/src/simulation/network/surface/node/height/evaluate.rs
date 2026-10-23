@@ -174,7 +174,7 @@ impl NodeResolvedHeightAuthorityMap {
     }
 }
 
-fn resolved_height_authority_key(
+pub(super) fn resolved_height_authority_key(
     owner: NodeBandOwner,
     height_field_id: NodeBandHeightFieldId,
     claim_priority: NodeGeneratedContourClaimPriority,
@@ -188,7 +188,7 @@ fn resolved_height_authority_key(
     }
 }
 
-fn height_carrier_provenance_by_key(
+pub(super) fn height_carrier_provenance_by_key(
     ownership: &NodeBooleanOwnership,
 ) -> BTreeMap<NodeResolvedHeightAuthorityKey, NodeHeightCarrierProvenanceKey> {
     let mut candidates_by_key =
@@ -408,7 +408,7 @@ pub(super) fn heighted_vertex(
     })
 }
 
-fn source_authorized_contour_points(
+pub(super) fn source_authorized_contour_points(
     contour: &NodeOverlayContour,
     region: &NodeBooleanOwnedRegion,
 ) -> NodeOverlayContour {
@@ -417,6 +417,21 @@ fn source_authorized_contour_points(
     }
     let source_keys = material_transition_constraint_point_keys(region);
     let contour = canonicalize_contour_source_endpoint_dust(contour, &source_keys);
+    node_contour_source_points(&contour, &source_keys)
+}
+
+/// Nodes source seams without moving any already proved ownership vertex.
+pub(super) fn source_noded_contour_points(
+    contour: &NodeOverlayContour,
+    region: &NodeBooleanOwnedRegion,
+) -> NodeOverlayContour {
+    node_contour_source_points(contour, &material_transition_constraint_point_keys(region))
+}
+
+fn node_contour_source_points(
+    contour: &NodeOverlayContour,
+    source_keys: &BTreeSet<SurfaceXzKey>,
+) -> NodeOverlayContour {
     let mut output = Vec::with_capacity(contour.len());
     let mut insertions = Vec::new();
     for index in 0..contour.len() {
@@ -424,7 +439,7 @@ fn source_authorized_contour_points(
         let end = contour[(index + 1) % contour.len()];
         output.push(start);
         append_source_authorized_points_for_contour_edge(
-            &source_keys,
+            source_keys,
             start,
             end,
             &mut insertions,
@@ -525,7 +540,7 @@ fn canonicalize_contour_source_endpoint_dust(
         .collect()
 }
 
-fn heighted_shape_area_m2(shape: &NodeHeightedShape) -> f32 {
+pub(super) fn heighted_shape_area_m2(shape: &NodeHeightedShape) -> f32 {
     let Some((outer, holes)) = shape.split_first() else {
         return 0.0;
     };

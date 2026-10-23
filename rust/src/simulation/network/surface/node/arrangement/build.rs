@@ -6,7 +6,7 @@ use super::super::backend::RoadVec2;
 use super::super::band_semantics::raised_step_band_rank;
 use super::super::height::{
     NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightCarrierProvenanceKey,
-    NodeHeightSolution,
+    NodeHeightSolution, NodeMaterialGradeField,
 };
 use super::super::keys::SurfaceHeightMmKey;
 use super::super::ownership::NodeCarrierProvenanceOrigin;
@@ -182,13 +182,15 @@ impl NodeArrangement {
     pub(crate) fn from_height_solution(
         heights: &NodeHeightSolution,
     ) -> Result<Self, NodeArrangementError> {
-        Self::from_height_solution_with_profile(heights, false)
+        Self::from_height_solution_with_profile(heights, false, None)
             .map(|(arrangement, _, _)| arrangement)
     }
 
-    pub(crate) fn from_height_solution_with_profile(
+    /// Builds the arrangement while retaining shared-grade proofs at noded boundaries.
+    pub(in crate::simulation::network::surface) fn from_height_solution_with_profile(
         heights: &NodeHeightSolution,
         profile_enabled: bool,
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<
         (
             Self,
@@ -217,7 +219,10 @@ impl NodeArrangement {
             .sum();
 
         let noding_start = profile_enabled.then(Instant::now);
-        arrangement.node_pending_region_edges(&mut pending_regions)?;
+        arrangement.node_pending_region_edges(
+            &mut pending_regions,
+            material_grade.filter(|g| g.cohort_nodes().is_some()),
+        )?;
         profile.noding_ms = elapsed_profile_ms(noding_start);
         profile.pending_edges_after = pending_regions
             .iter()

@@ -235,10 +235,26 @@ impl RoadSurfaceSystem {
             .collect::<Vec<_>>();
         node_grade_authorities.sort();
         node_grade_authorities.dedup();
+        // Multiple original carriers can certify one point on the same solved material
+        // grade. Retain all their provenance records, but give their identical owner,
+        // field, XZ, height and declared base/level one boundary authority identity.
+        let mut declared_indices = BTreeMap::new();
         let authority_indices = node_grade_authorities
             .iter()
             .enumerate()
-            .map(|(index, authority)| (*authority, index))
+            .map(|(index, authority)| {
+                let index = if matches!(
+                    authority.decision,
+                    height::NodeGradeCarrierDecision::DeclaredMaterialContact { .. }
+                ) {
+                    let mut key = *authority;
+                    key.source_provenance = None;
+                    *declared_indices.entry(key).or_insert(index)
+                } else {
+                    index
+                };
+                (*authority, index)
+            })
             .collect::<BTreeMap<_, _>>();
         let top_height_context = NodeExportTopHeightContext::from_arrangement(
             arrangement,

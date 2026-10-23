@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// Mesh-job-local material certificates and reusable clipping scratch.
 #[derive(Debug, Default)]
 pub(in crate::simulation::network::render) struct MaterialPartition {
-    masks: HashMap<NetworkMeshOwner, RoadSurfaceMaterialMask>,
+    masks: HashMap<(NetworkMeshOwner, bool), RoadSurfaceMaterialMask>,
     items: Vec<u32>,
     clips: Vec<RoadMaterialClipTriangle>,
     /// Invalidates the payload if a local material union cannot be compiled.
@@ -135,8 +135,12 @@ pub(super) fn prepare(
             NetworkMeshOwner::Edge(id) => RoadMaterialOwner::Span(id),
             NetworkMeshOwner::Node(id) => RoadMaterialOwner::Node(id),
         };
-        if let Some(mask) = surface.material_partition_mask(graph, source) {
-            mesh.material_partition.masks.insert(owner, mask);
+        for carriageway in [false, true] {
+            if let Some(mask) = surface.material_partition_mask(graph, source, carriageway) {
+                mesh.material_partition
+                    .masks
+                    .insert((owner, carriageway), mask);
+            }
         }
     }
 }
@@ -152,7 +156,8 @@ pub(super) fn emit_triangle(
     let Some(owner) = mesh.current_owner else {
         return false;
     };
-    if !mesh.material_partition.masks.contains_key(&owner) {
+    let key = (owner, matches!(layer, MeshLayer::Road));
+    if !mesh.material_partition.masks.contains_key(&key) {
         return false;
     }
     let bounds = vertices.into_iter().fold(
@@ -176,7 +181,7 @@ pub(super) fn emit_triangle(
     let mut partition = std::mem::take(&mut mesh.material_partition);
     if partition
         .masks
-        .get_mut(&owner)
+        .get_mut(&key)
         .and_then(|mask| mask.collect_clips(bounds, &mut partition.items, &mut partition.clips))
         .is_none()
     {

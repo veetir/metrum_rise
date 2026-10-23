@@ -63,6 +63,16 @@ impl RoadSurfaceSystem {
             return false;
         }
         let crossing_dependents = self.filled_crossing_dependents(affected_edge_ids);
+        // Shared grades may touch source records outside the graph undo ledger. Rebuild
+        // those derived owners locally after restoring the authoritative graph checkpoint.
+        let mut grade_dependents = affected_node_ids.clone();
+        self.extend_grade_cohort_nodes(&mut grade_dependents);
+        for node in &undo.nodes {
+            if let Some(members) = node.material_grade.as_ref().and_then(|f| f.cohort_nodes()) {
+                grade_dependents.extend(members.iter().copied());
+            }
+        }
+        grade_dependents.retain(|node| !affected_node_ids.contains(node));
         self.note_compile_invalidation();
 
         let mut affected_edges = affected_edge_ids.iter().copied().collect::<Vec<_>>();
@@ -123,6 +133,7 @@ impl RoadSurfaceSystem {
         for node_id in affected_node_ids {
             self.dirty_nodes.remove(node_id);
         }
+        self.dirty_nodes.extend(grade_dependents);
         self.dirty_edges.extend(crossing_dependents);
         // A restored lower road may introduce an opening into a bridge which currently has
         // none. Its restored owner chunks bound discovery without scanning resident spans.
