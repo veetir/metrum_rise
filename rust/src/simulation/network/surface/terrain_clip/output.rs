@@ -446,8 +446,8 @@ impl RoadSurfaceSystem {
         end: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> TerrainClipOutputSourceSelection {
-        let mut candidates = Self::terrain_clip_source_edges_at_world_xz_point(start, source_edges);
-        candidates.extend(Self::terrain_clip_source_edges_at_world_xz_point(
+        let mut candidates = Self::terrain_clip_source_edges_at_world_point(start, source_edges);
+        candidates.extend(Self::terrain_clip_source_edges_at_world_point(
             end,
             source_edges,
         ));
@@ -464,7 +464,7 @@ impl RoadSurfaceSystem {
         Self::unique_terrain_clip_output_source(candidates, "dust_connector", Some((start, end)))
     }
 
-    pub(super) fn terrain_clip_source_edges_at_world_xz_point(
+    pub(super) fn terrain_clip_source_edges_at_world_point(
         point: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipSourceEdge> {
@@ -475,12 +475,22 @@ impl RoadSurfaceSystem {
             .filter(|&source_edge| {
                 let source_start = [source_edge.start.x, source_edge.start.z];
                 let source_end = [source_edge.end.x, source_edge.end.z];
-                let Some(_t) =
+                let Some(t) =
                     Self::overlay_segment_parameter(overlay_point, source_start, source_end)
                 else {
                     return false;
                 };
-                true
+                // Ownership follows the solved exterior height. A buried edge can touch
+                // the same XZ corner without owning the reconstructed top-envelope cut.
+                let source_y = super::geometry::interpolate_height_f64(
+                    source_edge.start.y,
+                    source_edge.end.y,
+                    t,
+                );
+                SurfaceHeightMmKey::from_m_f64(source_y)
+                    .as_i64()
+                    .abs_diff(SurfaceHeightMmKey::from_m_f64(point.y).as_i64())
+                    <= super::heights::TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM
             })
             .collect()
     }
@@ -1263,6 +1273,60 @@ mod tests {
         assert_eq!(owner.source_band_index, 0);
         assert_eq!(owner.kind, RoadSurfaceBandKind::Sidewalk);
         assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
+    }
+
+    #[test]
+    fn dust_connector_owner_selection_excludes_buried_corner_edges() {
+        let start = RoadVec3::new(0.0, 10.0, 0.0);
+        let end = RoadVec3::new(0.0002, 10.0, 0.0002);
+        let source = |a, b, node_id, owner_index| TerrainClipSourceEdge {
+            start: a,
+            end: b,
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind: RoadSurfaceVisualNodePieceKind::Bend,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index,
+                boundary_source: None,
+            },
+            source_index: node_id as usize,
+            edge_index: owner_index,
+        };
+        let a = source(RoadVec3::new(-1.0, 10.0, 0.0), start, 1, 0);
+        let b = source(end, RoadVec3::new(1.0, 10.0, 0.0002), 1, 1);
+        let buried = source(
+            RoadVec3::new(0.0, 9.997, -1.0),
+            RoadVec3::new(0.0, 9.997, 1.0),
+            2,
+            0,
+        );
+        for candidates in [[a, b, buried], [buried, b, a]] {
+            let TerrainClipOutputSourceSelection::Source(selected) =
+                RoadSurfaceSystem::terrain_clip_output_dust_connector_source(
+                    start,
+                    end,
+                    &candidates,
+                )
+            else {
+                panic!("the exterior owners must remain canonical above the buried corner");
+            };
+            assert!(matches!(
+                selected.source,
+                RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id: 1, .. }
+            ));
+        }
+        let mut conflicting = buried;
+        conflicting.start.y = 10.0;
+        conflicting.end.y = 10.0;
+        assert!(matches!(
+            RoadSurfaceSystem::terrain_clip_output_dust_connector_source(
+                start,
+                end,
+                &[a, b, conflicting]
+            ),
+            TerrainClipOutputSourceSelection::Ambiguous(_)
+        ));
     }
 
     #[allow(clippy::too_many_arguments)]
