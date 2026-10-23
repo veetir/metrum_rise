@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Reserved-lane red surfacing and BUS lettering on the authoritative sampled road ribbon.
+//! Finnish reserved-lane BUS lettering on the authoritative sampled road ribbon.
 
-use super::super::{MeshLayer, NetworkMeshData};
-use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
+use super::super::NetworkMeshData;
+use super::geometry::section_world_point_at_lateral_offset;
 use super::markings::{edge_lane_marking_s_range, emit_marking_segment};
 use crate::config;
 use crate::simulation::network::graph::{LaneUse, RegionGraph};
 use crate::simulation::network::surface::{RoadSurfaceSection, RoadSurfaceSystem};
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Color, Vector2, Vector3};
+use godot::prelude::{Color, Vector3};
 
 pub(super) fn emit_bus_markings(
     mesh: &mut NetworkMeshData,
@@ -45,30 +45,6 @@ pub(super) fn emit_bus_markings(
                 let last_s = span.last().unwrap().s_m.min(marking_range.1);
                 if last_s <= first_s {
                     continue;
-                }
-                for pair in span.windows(2) {
-                    let start_s = pair[0].s_m.max(first_s);
-                    let end_s = pair[1].s_m.min(last_s);
-                    if end_s <= start_s {
-                        continue;
-                    }
-                    let fractions =
-                        [start_s, end_s].map(|s| (s - pair[0].s_m) / (pair[1].s_m - pair[0].s_m));
-                    let corners = [(0, -1.0), (0, 1.0), (1, 1.0), (1, -1.0)].map(|(end, side)| {
-                        let lateral = offset + side * (config::LANE_WIDTH * 0.5 - 0.08);
-                        section_world_point_at_lateral_offset(&pair[0], lateral)
-                            .zip(section_world_point_at_lateral_offset(&pair[1], lateral))
-                            .map(|(a, b)| a.lerp(b, fractions[end]))
-                    });
-                    if let [Some(a), Some(b), Some(c), Some(d)] = corners {
-                        emit_surface_quad(
-                            mesh,
-                            MeshLayer::Marking,
-                            [a, b, c, d].map(|p| p + Vector3::UP * 0.009),
-                            [Vector2::new(0.0, 2.0); 4],
-                            Color::from_rgba(0.48, 0.09, 0.055, 1.0),
-                        );
-                    }
                 }
                 // Stations are edge-relative and independent of chunk residency or frame order.
                 let begin = ((first_s + 8.0) / 60.0).ceil() as usize;
@@ -155,6 +131,7 @@ mod tests {
     use crate::simulation::network::lanes::LaneSystem;
     use crate::simulation::network::render::road::RoadRenderer;
     use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use godot::prelude::Vector2;
 
     #[test]
     fn bus_paint_leaves_the_actual_zebra_corridors_clear() {
@@ -192,7 +169,16 @@ mod tests {
         surface.compile_dirty(&graph, &terrain);
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
-        let mesh = RoadRenderer.generate_mesh_data_with_surface(&graph, &lanes, &terrain, &surface);
+        let mut mesh = NetworkMeshData::new();
+        for edge in 0..graph.edge_count() {
+            emit_bus_markings(&mut mesh, &graph, &surface, &terrain, edge, (true, false));
+        }
+        assert!(!mesh.marking_vertices.is_empty());
+        assert!(
+            mesh.marking_colors
+                .iter()
+                .all(|color| *color == Color::WHITE)
+        );
         let crossings: Vec<_> = (0..lanes.lanes.len())
             .filter_map(|id| lanes.crosswalk_marking(id))
             .collect();
@@ -201,19 +187,12 @@ mod tests {
             for t in [0.125, 0.875] {
                 let sample = crossing.start.lerp(crossing.end, t);
                 let sample = Vector2::new(sample.x, sample.z);
-                for (triangle, colors) in mesh
-                    .marking_vertices
-                    .chunks_exact(3)
-                    .zip(mesh.marking_colors.chunks_exact(3))
-                {
-                    if colors[0].r <= colors[0].g * 3.0 {
-                        continue;
-                    }
+                for triangle in mesh.marking_vertices.as_chunks::<3>().0.iter() {
                     let p = [triangle[0], triangle[1], triangle[2]].map(|v| Vector2::new(v.x, v.z));
                     let sides = [0, 1, 2].map(|i| (p[(i + 1) % 3] - p[i]).cross(sample - p[i]));
                     assert!(
                         !(sides.iter().all(|&s| s >= -1e-4) || sides.iter().all(|&s| s <= 1e-4)),
-                        "Bus surfacing covers zebra on edge {} at {sample:?}",
+                        "BUS lettering covers zebra on edge {} at {sample:?}",
                         crossing.edge_id
                     );
                 }
@@ -261,7 +240,7 @@ mod tests {
             assert_eq!(plain.curb_vertices, bus.curb_vertices);
             assert_eq!(bus.marking_vertices, again.marking_vertices);
             assert_eq!(bus.marking_colors, again.marking_colors);
-            assert!(bus.marking_colors.iter().any(|c| c.r > c.g * 3.));
+            assert!(bus.marking_colors.iter().all(|c| c.r == c.g && c.g == c.b));
             assert!(bus.marking_colors.contains(&Color::WHITE));
             assert!(
                 bus.marking_vertices
