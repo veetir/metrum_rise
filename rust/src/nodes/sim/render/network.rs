@@ -165,6 +165,10 @@ impl SimCore {
 
     pub(crate) fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
         let mut dict = VarDictionary::new();
+        dict.set(
+            "road_mesh_compilation_succeeded",
+            mesh_data.render_compilation_succeeded(),
+        );
         // Certified off the Godot main thread; Godot still checks Variant types and counts.
         dict.set(
             "road_mesh_payload_validated",

@@ -25,6 +25,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
+    super::super::material_partition::prepare(mesh, graph, road_surface, coverage);
     emit_compiled_earthwork_mesh(mesh, graph, road_surface, terrain, coverage);
 
     for &edge_idx in &coverage.edge_indices {

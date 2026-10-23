@@ -6,10 +6,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-ROAD-73 has a partial compiler checkpoint: the KYS crossfall spike and 27 rejected imported
-span owners are repaired. The imported-map sweep still reports 3 rejected spans, 3 rejected
-junction nodes, 7 oversized kerb steps and 3 distinct terrain-export conflicts. Bioteknia's
-coupled height/material ownership and the complete KYS view remain open
+ROAD-73 remains open. The compiler repairs are now split into locally tested commits covering
+junction material/mouth grades, short links, exact terrain seams and cross-owner nonroad
+composition. The native university rebuild passes at full 3+3 width with both bus lanes and a
+paved median. A prior continuation sweep reached zero for the four original signatures and
+passed all 3,502 terrain CDT windows; those are historical measurements until final acceptance
+is rerun. Connected junctions 227/419/420 still need coherent overlapping asphalt grades.
+KYS road 138's unwelded terminal is tracked separately as an importer input fault
 ([diagnosis and acceptance](roads.md#imported-junction-geometry--road-73-partial)).
 
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,

@@ -7,7 +7,7 @@ use godot::prelude::{Color, Vector2, Vector3, Vector4};
 use std::collections::HashSet;
 
 /// Attributes interpolated when a road triangle is partitioned.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(in crate::simulation::network::render) struct Vertex {
     pub(in crate::simulation::network::render) p: Vector3,
     pub(in crate::simulation::network::render) n: Vector3,
@@ -17,7 +17,8 @@ pub(in crate::simulation::network::render) struct Vertex {
 }
 
 impl Vertex {
-    fn lerp(self, other: Self, t: f32) -> Self {
+    /// Interpolates every uploaded attribute at an exact geometric cut parameter.
+    pub(in crate::simulation::network::render) fn lerp(self, other: Self, t: f32) -> Self {
         Self {
             p: self.p.lerp(other.p, t),
             n: self.n.lerp(other.n, t),

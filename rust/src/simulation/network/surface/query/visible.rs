@@ -3,8 +3,9 @@
 //! Visible-surface sampling, raycast, and section-range queries.
 
 use super::super::{
-    RoadLaneSurfaceQuery, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTriangleQueryIndex,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece, SurfaceChunkKey, SurfaceTriangleGrid,
+    RoadLaneSurfaceQuery, RoadMaterialOwner, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceTriangleQueryIndex, RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece,
+    SurfaceChunkKey, SurfaceTriangleGrid,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
@@ -102,7 +103,22 @@ impl RoadSurfaceSystem {
             if let Some(piece) = self.compiled_visual_node_pieces.get(&node_id)
                 && let Some(sample) = piece.sample_visible_height(point)
             {
-                keep_max_height(&mut top_surface, sample);
+                let carriageway = piece.sample_height(point, true);
+                if carriageway != Some(sample)
+                    && self.material_nonroad_is_occluded(
+                        graph,
+                        RoadMaterialOwner::Node(node_id),
+                        point,
+                        &include_edge,
+                        &include_node,
+                    )
+                {
+                    if let Some(height) = carriageway {
+                        keep_max_height(&mut top_surface, height);
+                    }
+                } else {
+                    keep_max_height(&mut top_surface, sample);
+                }
             }
         }
         for &edge_idx in edge_indices.into_iter().flat_map(|owners| owners.iter()) {
@@ -112,7 +128,22 @@ impl RoadSurfaceSystem {
             if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx)
                 && let Some(sample) = piece.sample_visible_height(point)
             {
-                keep_max_height(&mut top_surface, sample);
+                let carriageway = piece.sample_height(point, true);
+                if carriageway != Some(sample)
+                    && self.material_nonroad_is_occluded(
+                        graph,
+                        RoadMaterialOwner::Span(edge_idx),
+                        point,
+                        &include_edge,
+                        &include_node,
+                    )
+                {
+                    if let Some(height) = carriageway {
+                        keep_max_height(&mut top_surface, height);
+                    }
+                } else {
+                    keep_max_height(&mut top_surface, sample);
+                }
             }
         }
 
@@ -274,21 +305,62 @@ impl RoadSurfaceSystem {
         let mut best_t = f64::INFINITY;
         let mut best_hit = None;
 
-        self.visit_visible_top_surface_query_triangles(
-            graph,
-            terrain,
-            edge_indices.iter().copied(),
-            node_ids.iter().copied(),
-            &mut |triangle| {
-                update_closest_ray_hit(
-                    triangle,
-                    ray_origin_road,
-                    ray_dir_road,
-                    &mut best_t,
-                    &mut best_hit,
-                );
-            },
-        );
+        let mut visit = |owner, carriageway: bool, triangle| {
+            if !Self::top_surface_triangle_is_renderable_xz(triangle) {
+                return;
+            }
+            let Some(t) = road_ray_triangle_intersection_t(triangle, ray_origin_road, ray_dir_road)
+            else {
+                return;
+            };
+            if t > best_t {
+                return;
+            }
+            let hit = ray_origin_road + ray_dir_road * t;
+            if !carriageway
+                && self.material_nonroad_is_occluded(
+                    graph,
+                    owner,
+                    RoadVec2::new(hit.x, hit.z),
+                    &|_| true,
+                    &|_| true,
+                )
+            {
+                return;
+            }
+            best_t = t;
+            best_hit = Some(hit);
+        };
+        for &node_id in &node_ids {
+            if !self.node_uses_visible_surface(graph, terrain, node_id) {
+                continue;
+            }
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            for (carriageway, polygon) in piece
+                .road_surface_polygons()
+                .map(|p| (true, p))
+                .chain(piece.curb_surface_polygons().map(|p| (false, p)))
+                .chain(piece.sidewalk_surface_polygons().map(|p| (false, p)))
+            {
+                for triangle in polygon.triangles() {
+                    visit(RoadMaterialOwner::Node(node_id), carriageway, triangle);
+                }
+            }
+        }
+        for &edge_id in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_id) else {
+                continue;
+            };
+            for region in piece.span_owned_regions.iter() {
+                let carriageway =
+                    region.owner().kind == super::super::RoadSurfaceBandKind::Carriageway;
+                for triangle in piece.region_quad(region).triangles() {
+                    visit(RoadMaterialOwner::Span(edge_id), carriageway, *triangle);
+                }
+            }
+        }
         self.visit_visible_earthwork_query_triangles(
             graph,
             terrain,

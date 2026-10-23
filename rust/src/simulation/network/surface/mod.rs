@@ -21,6 +21,7 @@ mod grade_separation;
 mod incident;
 mod indices;
 mod keys;
+mod material_partition;
 mod node;
 mod overlay;
 mod paths;
@@ -34,6 +35,9 @@ pub use backend::{RoadVec2, RoadVec3};
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
 pub(crate) use edge::RoadPreviewVisualMesh;
 pub use edge::{PreviewRoadSurfaceResult, RoadPreviewValidation};
+pub(crate) use material_partition::{
+    RoadMaterialClipTriangle, RoadMaterialOwner, RoadSurfaceMaterialMask,
+};
 pub use node::RoadSurfaceVisualNodePiece;
 pub(crate) use query::{ray_xz_interval_for_bounds, road_ray_triangle_intersection_t};
 pub use span::{RoadSurfaceVisualSpanPiece, SpanQuad};
@@ -80,7 +84,8 @@ const WORLD_POINT_DEDUP_DISTANCE_M: f32 = 1.0e-4;
 const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 =
     WORLD_POINT_DEDUP_DISTANCE_M * WORLD_POINT_DEDUP_DISTANCE_M;
 // Shared overlay/geometry area floor: one 1 mm quantized square keeps closure slivers visible.
-const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
+/// Shared minimum physical area for compiled material polygons and fragments.
+pub(in crate::simulation::network) const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
 // Self-checks that compare two backend results allow a small fixed-grid residual budget.
 const NODE_OVERLAY_NUMERIC_AREA_EPS_M2: f32 = NODE_OVERLAY_MIN_AREA_M2 * 16.0;
 const NODE_OVERLAY_NUMERIC_DUST_WIDTH_M: f32 = WORLD_POINT_DEDUP_DISTANCE_M;

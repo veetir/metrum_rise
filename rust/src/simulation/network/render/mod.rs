@@ -111,6 +111,7 @@ pub struct NetworkMeshData {
     // clipping triangles heuristically or rebuilding unrelated roads in the same chunk.
     current_owner: Option<NetworkMeshOwner>,
     crosswalks: HashMap<NetworkMeshOwner, Vec<road::crosswalks::Crossing>>,
+    material_partition: road::material_partition::MaterialPartition,
     owner_ranges: [Vec<OwnedVertexRange>; 7],
     chunk_partition: Option<NetworkMeshChunkPartition>,
     // Set only by `seal`: the type is not `Clone`, so the certified buffers cannot change
@@ -162,6 +163,7 @@ impl NetworkMeshData {
             road_signs: Vec::new(),
             current_owner: None,
             crosswalks: HashMap::new(),
+            material_partition: Default::default(),
             owner_ranges: Default::default(),
             chunk_partition: None,
             render_payload_validated: false,
@@ -188,10 +190,17 @@ impl NetworkMeshData {
 
     /// Consumes a partitioning sink and returns its non-empty chunk-local meshes.
     pub(crate) fn into_partitioned_chunks(mut self) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
-        self.chunk_partition
+        let mut chunks = self
+            .chunk_partition
             .take()
             .map(|partition| partition.chunks)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.material_partition.failed {
+            for chunk in chunks.values_mut() {
+                chunk.material_partition.failed = true;
+            }
+        }
+        chunks
     }
 
     /// Reports whether every material layer is empty.
@@ -217,8 +226,15 @@ impl NetworkMeshData {
     /// components. The certificate travels with these exact immutable buffers so the Godot
     /// boundary can skip its per-vertex scan. O(vertices); run it on the producing thread.
     pub(crate) fn seal(mut self) -> Arc<Self> {
-        self.render_payload_validated = self.render_payload_is_valid();
+        self.render_payload_validated =
+            !self.material_partition.failed && self.render_payload_is_valid();
+        self.material_partition.release_working_storage();
         Arc::new(self)
+    }
+
+    /// Reports whether geometry compilation completed before buffer certification.
+    pub(crate) fn render_compilation_succeeded(&self) -> bool {
+        !self.material_partition.failed
     }
 
     /// Reports whether `seal` certified these buffers; uncertified meshes need full validation.
@@ -245,52 +261,53 @@ impl NetworkMeshData {
                     c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite()
                 })
         }
-        [
-            (
-                &self.earthwork_vertices,
-                &self.earthwork_normals,
-                &self.earthwork_uvs,
-                &self.earthwork_colors,
-            ),
-            (
-                &self.curb_vertices,
-                &self.curb_normals,
-                &self.curb_uvs,
-                &self.curb_colors,
-            ),
-            (
-                &self.raised_step_vertices,
-                &self.raised_step_normals,
-                &self.raised_step_uvs,
-                &self.raised_step_colors,
-            ),
-            (
-                &self.sidewalk_vertices,
-                &self.sidewalk_normals,
-                &self.sidewalk_uvs,
-                &self.sidewalk_colors,
-            ),
-            (
-                &self.road_vertices,
-                &self.road_normals,
-                &self.road_uvs,
-                &self.road_colors,
-            ),
-            (
-                &self.marking_vertices,
-                &self.marking_normals,
-                &self.marking_uvs,
-                &self.marking_colors,
-            ),
-            (
-                &self.concrete_vertices,
-                &self.concrete_normals,
-                &self.concrete_uvs,
-                &self.concrete_colors,
-            ),
-        ]
-        .into_iter()
-        .all(|(vertices, normals, uvs, colors)| layer_valid(vertices, normals, uvs, colors))
+        !self.material_partition.failed
+            && [
+                (
+                    &self.earthwork_vertices,
+                    &self.earthwork_normals,
+                    &self.earthwork_uvs,
+                    &self.earthwork_colors,
+                ),
+                (
+                    &self.curb_vertices,
+                    &self.curb_normals,
+                    &self.curb_uvs,
+                    &self.curb_colors,
+                ),
+                (
+                    &self.raised_step_vertices,
+                    &self.raised_step_normals,
+                    &self.raised_step_uvs,
+                    &self.raised_step_colors,
+                ),
+                (
+                    &self.sidewalk_vertices,
+                    &self.sidewalk_normals,
+                    &self.sidewalk_uvs,
+                    &self.sidewalk_colors,
+                ),
+                (
+                    &self.road_vertices,
+                    &self.road_normals,
+                    &self.road_uvs,
+                    &self.road_colors,
+                ),
+                (
+                    &self.marking_vertices,
+                    &self.marking_normals,
+                    &self.marking_uvs,
+                    &self.marking_colors,
+                ),
+                (
+                    &self.concrete_vertices,
+                    &self.concrete_normals,
+                    &self.concrete_uvs,
+                    &self.concrete_colors,
+                ),
+            ]
+            .into_iter()
+            .all(|(vertices, normals, uvs, colors)| layer_valid(vertices, normals, uvs, colors))
             && self.median_grass.as_ref().is_none_or(|grass| {
                 layer_valid(&grass.vertices, &grass.normals, &grass.uvs, &grass.colors)
             })

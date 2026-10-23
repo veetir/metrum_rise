@@ -2777,8 +2777,11 @@ RAYON_NUM_THREADS=4 METRUM_DEBUG=0 CRITERION_HOME="$ARTIFACTS/criterion-side-pai
 
 ### Imported junction geometry — ROAD-73 (partial)
 
-**Open, 2026-10-22.** This checkpoint fixes two compiler defects, not the whole imported
-junction problem. It does not satisfy the clean KYS/Bioteknia view acceptance yet.
+**Completion validation in progress, 2026-10-23.** The initial checkpoint repaired KYS crossfall
+and rejected span frames. The completion adds shared material grading, exact median handoffs,
+short-link profile reconciliation and source-backed terrain triangulation. A prior continuation build reached zero for the original four
+sweep signatures; its measurements below are historical. Final full-snapshot views and release
+acceptance remain outstanding for the current commit series. The initial two root causes were:
 
 - The KYS slip bend at saved node 136 (roads 123/137) fits a 245% transverse grade from
   independently eased physical centreline supports. Its canonical control supports fit 6.63%.
@@ -2810,6 +2813,156 @@ successful layered roads are unchanged. A targeted dirty-publication regression 
 adding such a shell cannot replace the prior validated repaired span. No save schema or lane
 identities change.
 
+#### Completion compiler contracts
+
+The completion builds retain protected endpoint and mouth stations while adding median-nose
+samples. A nose may replace ordinary cadence samples, but cannot delete either side's exact
+handoff. Small valid boundary loops use the shared **area** floor (`1e-6 m²`), rather than
+comparing an area against a one-millimetre **distance** tolerance.
+
+A rejected ordinary span has a final, fully validated endpoint-frame loft when its centreline
+is monotone along the endpoint chord. Its exact source centres and longitudinal stations are
+retained. A rejected ordinary non-terminal node may likewise retry chords between its exact
+mouth and endpoint profiles when the input identity is certified. Both repairs use the existing
+full geometry validators and exclude neighboring layered structures through the existing road
+R-tree. Originally successful products retain their original path.
+
+Junction material heights now share one continuous grade instead of independently extended
+owner planes. Ordinary band offsets must be proved at both the endpoint and mouth: carriageway
+zero, raised kerb/sidewalk/median zero or 120 mm. The grade interpolates the junction centre and
+every material boundary along each mouth with deterministic Delaunay triangles. Interior
+kerb points are supports too: pinning only the outer ends can leave a 384 mm mouth seam. Outside their convex
+hull it continues the fitted affine trend plus the residual at the unique nearest hull point.
+Span mouths conform to the same immutable grade. A transverse band is split at actual grade-triangle
+crossings; redundant breaks are removed only after certifying both endpoint profiles within the
+existing one-millimetre height-tie budget. The split pattern stays aligned along the span and
+mirrored material layers preserve terminal-cap pairing. This prevents a sidewalk whose endpoints
+match from cutting across a non-affine junction grade between those endpoints. Exact canonical
+support keys take priority over nearby triangle edges. The shared field is retained in the existing
+persistent-cache pattern, with O(1) snapshot cloning, local dirty updates and bounded undo records.
+Materials then apply their declared offsets. Generated contacts cannot flatten a source-declared
+kerb; contacts with proved equal levels still share a component and level. Source intersection
+provenance evaluates the shared grade at the actual Boolean vertex, rather than comparing
+independent path extrapolations. Boundary export retains the exact owner-bound common-base
+proof at a nominal material corner. Height changes invalidate the cached arrangement; shared-grade
+ownership can retain its existing rail-certified topology, including a uniform height translation.
+The arrangement, step extraction and boundary export carry this exact common-base proof, so a
+120 mm kerb corner is not mistaken for an unauthorized height conflict. Independent grades and
+unproved provenance remain strict errors. Common affine inputs retain their existing carrier
+identities and geometry, including the flat-junction golden fixtures.
+
+A short ordinary link can have two incompatible generated endpoint windows. When those windows
+cover the entire link, a retained source segment exceeds the existing 50% rejection grade, and
+the fixed node elevations admit a grade within the existing 16% mouth bound, compilation uses
+one longitudinal grade between those nodes. Coverage uses the same crossing cores and 32 m
+blend zones as endpoint finalization. The original station lattice and XZ alignment remain exact;
+the source graph and SQLite rows remain unchanged. Both endpoint crossfall reconstruction and
+section generation consume the resolved grade. Independently validated control crossfall still
+supplies the existing rejected-physical-fit fallback, before any coupled fit is considered.
+This removes Bioteknia's 331% asphalt ramp rather than merely hiding its terrain wall.
+
+Grounded crossfall is also independent of mesh ownership. When both 32 m endpoint zones overlap,
+the compiler first checks the actual rendered carriageway-edge grades. A derived edge exceeding
+the existing 50% rejection bound, with a source centreline inside that bound, certifies a second
+compile interpolating the planes along the full physical link. Previously the two fades were
+squeezed into the remaining span interval, which can be only 0.5 m; even a valid centreline could
+then grow steep asphalt edges and kerb ramps. Valid original transitions retain their exact
+arithmetic, including the flat-junction fixtures. Structural profiles retain their absolute blending.
+
+For terrain removal, a numeric-dust connector between solved exterior edges inherits those
+edges' top-envelope anchor heights. An edge buried inside the roadbed union that only touches
+the corner does not own the exterior cut. Longer unresolved dust runs still require unambiguous
+heights; all recovered output edges still require source provenance. Coincident opposing
+half-edges from one source loop select its outward boundary orientation. Different source loops
+or incompatible owners remain ambiguous. The sloping plain-to-paved-median regression covers
+both 1+1 and full 3+3 bus-lane sections without narrowing the latter.
+
+Terrain CDT preserves the roadbed union's micrometre XZ identity separately from its existing
+millimetre height and guide-incidence budgets. Distinct kerb corners cannot be welded merely
+because they occupy one millimetre cell. Short-segment projection/intersection math uses the
+same topology floor. Rectangle clipping first bounds the source contour to the tile in f64, then uses the same
+micrometre lattice to split disconnected components. Source recovery accounts for bounded
+halo/core rounding while still requiring matching source heights. Seam hardening removes only
+ordered, exactly collinear source-grid vertices; straightening a small curved corner can expose
+terrain inside the visible roadbed. Side probes stay within half the nearest boundary
+clearance, queried through the existing guide-noding R-tree; a fixed 5 cm probe must not jump
+across a narrow hole and discard its source rails. Road constraint intersections use
+integer predicates on source-grid endpoints. Interpolated off-grid points retain a straight
+carrier only within its f64 construction-error bound; no metric buffer invents collinear overlap
+or extends a segment beyond its actual endpoints.
+
+A finite-width ordinary kerb return is concrete geometry, rather than a cliff in source terrain.
+That classification requires all three vertices to be constrained road vertices, source-backed
+material owners from one node with one owner per material, a sub-millimetre return of the
+declared 120 mm step, and a valid ground grade after removing that offset. Incident-vertex
+ownership supplies the proof even when the small face has only a carriageway boundary edge.
+Terrain export validates every interior source-edge handoff, preserving both exact endpoints
+of a material-step corner rather than silently replacing one. A standard span may contribute its
+proven cross-section handoff; opposite carriageways remain separate bands of one span material.
+The material step is removed in millimetre-key arithmetic, so f32 subtraction cannot leave an
+altitude-dependent ULP across a micrometre-wide return. Numeric-dust handoffs retain the
+existing millimetre incidence/height-tie budget; larger gaps and unproved steps remain errors. It uses the existing concrete vertical
+face bucket. It neither merges conflicting heights nor omits faces; larger steps, unrelated
+owners and unsourced terrain remain subject to the original strict validation. The Rust/Godot
+terrain cache contract advances to revision 15.
+
+Terrain-window queries retain complete overlapping node-footprint cohorts through the existing
+spatial contributor index. A selected node loop is exported whole, so a neighbouring cutout that
+covers its exterior outside the requested rectangle must be included too. Otherwise an interior
+height handoff can become a false union exterior and reject a valid query. Expansion follows
+node-footprint bounds only, never the bounds of a potentially city-long span. Each node is visited
+once; source ordering remains deterministic. The exact eight-road SQL regression reproduces
+the window near source node 789 and its neighbouring junctions 227/230/419/420.
+
+Polygon CDT export resolves returned vertex coordinates back to the original source points.
+Touching contours can repeat a position; Spade merges those vertices, so its handles cannot be
+used as indices into the unchanged input array. Coincident coordinates with conflicting height
+keys remain a compilation error. A touching-hole regression preserves both polygon area and
+source height.
+
+The v94 and v95 roadbed matrices deliberately update the two nonplanar median junction grades.
+Matched native comparison against `3f4abd8d` retains every XZ triangle and vertex count; only
+the source-certified grade, corresponding normals and height-dependent ordering change.
+The largest asphalt height adjustments are 17.6 mm and 16.1 mm. Non-median contracts remain
+byte-identical. Both matrices pass with the recorded repaired grade hashes.
+
+Connected same-level roadbed owners now compose materials before mesh emission. A junction's
+sidewalk or kerb cannot cover a neighbouring owner's carriageway merely because each owner
+partitioned its own materials correctly. The existing 32 m contributor grid and owner-local
+triangle grids select graph-connected overlaps; structural spans and mixed pedestrian/road
+nodes retain their separate contracts. Only positive-area source overlaps create a material mask.
+The mesh job unions foreign asphalt on demand per existing query tile, then uses constrained
+triangulation with exterior-edge provenance. Attribute-preserving subtraction removes nonroad
+surfaces and internal vertical faces while retaining real exterior kerbs; UVs and source grade
+are interpolated rather than replaced. Internal asphalt diagonals are not exterior kerbs.
+Visible-height and ray picking apply the same precedence. Ordinary owners without an overlap
+retain their existing emitted triangles. This does not alter source sections, save rows or the
+terrain footprint, since every removed nonroad portion is covered by compiled asphalt.
+Tile work follows indexed local triangles, with O(T log T + intersections) overlay/triangulation
+and storage per populated tile, reused across its emitted triangles. Visible point queries use
+existing local cells without allocation; only an occluded nonroad candidate visits connected
+contributors. The lane/agent carriageway query remains unchanged.
+
+Local preview context includes the fixed third incidence layer needed by crossfall supports'
+short-link endpoint grades. Without it, a full-width university approach differed by 6 mm
+between planning and commit despite identical source sections. This is a bounded adjacency
+closure, never recursive graph traversal. Finnish bus lanes retain ordinary asphalt and white
+BUS lettering; the inherited red fill was removed to match the supplied references.
+
+All new work is compile/edit time. For A mouth supports and V node vertices, grade construction
+uses O(A log A) triangulation and O(V log V) grouping. Per canonical contact, component resolution
+is bounded by its local owner/constraint set (worst-case cubic in its owner count), followed by
+O(A) triangle/hull sampling without query allocation. The temporary arrangement grade-contact
+map is O(V) storage with O(log V) owner lookups. Short-link conditioning traverses local source
+profiles and incident roads only. There is no city scan, simulation-tick work, per-agent allocation,
+new global spatial index, save schema change or lane-identity change. Production owners retain
+Rayon compilation; the opt-in audit serializes terrain patches to bound diagnostic scratch.
+CDT boundary clearance reuses the existing per-tile constraint index: O(log E + K) per local
+probe with no query allocation, preserving the existing tile-local noding complexity.
+Material-return provenance replaces the existing per-CDT boundary-vertex flags with a fixed
+owner cohort: O(V + E + F) work and O(V) temporary storage. Final source-chain validation is
+O(V), with no new allocation for an already complete chain.
+
 #### Imported-map sweep and remaining work
 
 The opt-in `simulation::save::tests::road_junction_geometry::audit_imported_junction_geometry`
@@ -2821,48 +2974,91 @@ excursions and source-profile grades. These are separate signatures, not a count
 junctions or proof that every visible defect has been found. Diagnostic terrain probes run
 serially to bound overlay scratch; production span/node compilation retains its Rayon workers.
 
-Fresh comparison against queued predecessor `cd09557a572c3bfe3fca17e028fcd5e534bd59d7`
-on `kuopio-sw-pockets.sqlite`:
+The completion sweep publishes **1,684 spans / 1,081 nodes** with no rejected span or node
+owners, no oversized same-XZ kerb steps and no terrain-export failures. It also reports no
+mouth-height discontinuities. The production CDT sweep covers **3,502 windows, zero failures**.
+The full emitted material mesh certifies finite, complete buffers (3,058,050 vertices before
+numeric-fragment filtering); the exact eight-road query regression checks flat and chunked
+material composition against asphalt with an upload-rounding area bound.
 
-| Signature | Before | Candidate |
-|---|---:|---:|
-| Rejected span owners | 30 | 3: 140, 319, 992 |
-| Rejected node owners | 5 | 3: 89, 135, 222 |
-| Compiled spans / nodes | 1,654 / 1,076 | 1,681 / 1,078 |
-| Same-XZ kerb steps over 0.25 m | 7 | 7 |
-| Section lateral excursions over 1 m | 15 | 13 |
-| Local terrain-export failures / distinct reported boundaries | 3 / 2 | 5 / 3 |
+| Original signature | Queued predecessor | Checkpoint `3f4abd8d` | Completion candidate |
+|---|---:|---:|---:|
+| Rejected span owners | 30 | 3 | 0 |
+| Rejected node owners | 5 | 3 | 0 |
+| Same-XZ kerb steps over 0.25 m | 7 | 7 | 0 |
+| Distinct local terrain-export conflicts | 2 | 3 | 0 |
 
-The newly observable terrain conflict near Bioteknia is a 493 mm disagreement between
-retained road owners, not a tolerance-sized seam. The other reported boundaries disagree by
-4 mm near `(382.629,1292.723)` and 87 mm near `(-937.408,1992.194)`. Source profiles contain
-31 roads with a segment grade above 50%; this is a diagnostic candidate list, not 31 proven
-compiler failures. Road 322 at Bioteknia reaches 331% and exposes incompatible endpoint
-profile windows. Changing its longitudinal curve alone creates new kerb-height conflicts;
-its fix must reconcile the shared node/material carriers and terrain boundaries together.
-Do not hide this by relaxing boundary-height agreement or changing the user save.
+**Visual acceptance is still open.** Connected carriageway owners can overlap at different
+grades even after each owner passes its local validators. In the exact node 227/230/419/420
+cohort, node 227 versus 419 overlaps by 4.516 m² with up to 349 mm height disagreement;
+419 versus 420 has 2.774 m² / 362 mm, and 419 versus span 377 has 1.230 m² / 369 mm.
+The KYS probe also finds connected nodes 135/155 disagreeing by up to 161 mm in their
+carriageway overlap. These are compiler composition faults, not importer exceptions. The
+shared grade currently reconciles materials within one junction; the remaining work must
+reconcile connected overlapping junction owners and their intervening spans before publication.
+A zero count for the original four signatures does not establish clean asphalt.
 
-KYS owner 140 and node 135 still block the complete KYS view; nodes 89/222 and owners
-319/992 fail at independent height/ownership/strip stages. The earlier refused 19 m + 19 m
-university plain-to-median variant remains part of ROAD-73. All these failures remain open.
-The full named snapshots still refuse production loading, so complete before/after views
-cannot yet be accepted. Capture tooling preserves exact retained road rows in local excerpts;
-excerpts are diagnostics, not evidence that the full imported map publishes.
+The full KYS/Bioteknia snapshots now load and all requested native capture runs settle. KYS
+still includes the separately identified unwelded road-138 terminal, described below. The
+university plain-to-paved-median scenario now commits at 3+3 with bus lanes; narrowing to 1+1
+is unnecessary. The source graph and SQLite bytes remain unchanged by compiler repairs.
 
 ```sh
 METRUM_JUNCTION_SAVE="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/saves/kuopio-sw-pockets.sqlite" \
-METRUM_JUNCTION_OUTPUT="$ARTIFACTS/audit" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
-  "$TEST_BINARY" simulation::save::tests::road_junction_geometry::audit_imported_junction_geometry \
-  --exact --ignored --nocapture --test-threads=1
-python3 tools/road_junction_capture_fixtures.py
-METRUM_JUNCTION_SAVE="$ARTIFACTS/fixtures/roads-junction-bioteknia.sqlite" METRUM_JUNCTION_PHASE=after \
-  perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/godot-captures-final/project" \
+METRUM_JUNCTION_OUTPUT="$ARTIFACTS/audit" METRUM_JUNCTION_MESH=1 RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$TEST_BINARY" audit_imported_junction_geometry --ignored --nocapture --test-threads=1
+# Repeat with METRUM_JUNCTION_TERRAIN_PATCHES=all to exercise production terrain CDT windows.
+METRUM_JUNCTION_SAVE="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/saves/kys-pond.sqlite" \
+METRUM_JUNCTION_PHASE=after METRUM_JUNCTION_CAPTURE_OUTPUT="$ARTIFACTS/after/kys" \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/godot-tests/project" \
   --script res://tests/road_junction_geometry_capture.gd
 ```
 
-#### Checkpoint verification and matched release measurements
+#### Imported source profile defects — ROAD-73-IMPORT
 
-Fresh final library validation: **2,653 passed, 153 ignored**, including the exact KYS SQL
+KYS also contains an unwelded road endpoint: source road **138** is a 16.58 m wide 1+2 road
+with a 6.08 m grass median, from node **153** `(-55.6753, 97.6597, 933.2645)` to node 154.
+Node 153 has degree one and lies inside node 16's compiled carriageway, whose height there is
+about 97.5279 m. The approximately 132 mm difference does not describe a separated crossing.
+The source has no junction connection at that endpoint. Its terminal kerb/sidewalk is the large
+ribbon crossing the KYS view; the unwelded terminal cannot be silently removed or welded by
+material compilation. The importer follow-up must resolve the intended topology/duplicate
+alignment, retaining the supplied street views as authority. This is separate from connected
+junction 227/419/420's remaining compiler grade overlap.
+
+The completion sweep also measures longitudinal grade on **visible span regions**, separately
+from the four ROAD-73 surface/terrain signatures. Ten retained inputs already contain steep
+control and physical profiles. They require importer profile/structure preparation, rather than
+an arbitrary renderer regrade. Source rows and node elevations are not modified by compilation.
+The owning importer follow-up is `ROAD-73-IMPORT` in the roadmap.
+
+| Source owner | Nodes | Class | Horizontal length, m | Fixed-end grade | Retained control maximum grade |
+|---|---|---|---:|---:|---:|
+| 28 | 41 → 20 | Bridge | 20.12 | −29.6% | 345.6% |
+| 31 | 43 → 1660 | Standard | 546.71 | 0.0% | 54.0% |
+| 51 | 66 → 23 | Bridge | 61.85 | −8.6% | 248.1% |
+| 355 | 395 → 396 | Tunnel | 16.91 | 41.2% | 510.4% |
+| 837 | 885 → 568 | Standard | 72.36 | 8.2% | 99.0% |
+| 1031 | 1106 → 1107 | Standard | 12.19 | −21.8% | 1407.7% |
+| 1117 | 1199 → 1116 | Tunnel | 47.53 | 15.7% | 185.3% |
+| 1177 | 576 → 1199 | Tunnel | 7.21 | −80.8% | 161.7% |
+| 1487 | 1591 → 1592 | Standard, isolated | 34.57 | −4.8% | 95.2% |
+| 1496 | 1597 → 1598 | Standard, short split | 0.26 | 0.7% | 51.6% |
+
+Owners 28/355/1031/1177 cannot satisfy the normal 16% authoring bound with their fixed node
+positions: even a straight longitudinal grade between the current endpoints is too steep.
+The other owners retain an interior source spike, require an engineered structural approach,
+or lack the connected endpoint constraints needed to identify a junction-profile overlap.
+Owner 1487 has degree-one endpoints at both ends; it is not a junction. Owner 1496 is shorter
+than the existing one-metre profile solve minimum. The compiler retains those source contracts;
+the importer must produce the intended alignment/levels and weld splits before publication.
+These cases are outside the KYS/Bioteknia target views. The original 31 steep raw profiles
+remain in the read-only source diagnostic because fixing compiler output never rewrites them.
+
+#### Historical checkpoint verification and matched release measurements
+
+The following results describe the earlier checkpoint, not the current completion build.
+Its library validation: **2,653 passed, 153 ignored**, including the exact KYS SQL
 fixture, nonuniform-knot strip regression, initial/dirty shared-section publication and
 layered-shell atomic rejection. `cargo clippy --all-targets` passes with only the two existing
 `chunks_exact_to_as_chunks` warnings in untouched `standard_surface/bus.rs:206–207`.
@@ -2943,9 +3139,10 @@ RAYON_NUM_THREADS=4 METRUM_DEBUG=0 perl -e 'alarm 900; exec @ARGV' godot --headl
   --path "$ARTIFACTS/godot-tests-final/project" --script res://tests/road_chunk_renderer_benchmark.gd
 ```
 
-#### Captures and incomplete visual acceptance
+#### Historical checkpoint captures and incomplete visual acceptance
 
-Inspected final windowed overhead/street pairs under `$ARTIFACTS/after/`:
+The following capture outcomes describe the earlier checkpoint.
+Inspected windowed overhead/street pairs under `$ARTIFACTS/after/`:
 `legacy_overhead.png` / `legacy_street.png`, `south_curve_overhead.png` /
 `south_curve_street.png`, and `west_curve_overhead.png` / `west_curve_street.png`.
 The legacy pair was compared against the same v94 fixture's `$ARTIFACTS/before/` pair;

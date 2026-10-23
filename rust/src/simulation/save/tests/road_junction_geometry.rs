@@ -619,4 +619,59 @@ fn terrain_window_keeps_overlapping_junction_contributors_complete() {
         export.is_ok(),
         "partial-window selection must not expose a buried boundary outside the window: {export:?}"
     );
+    let lanes = crate::simulation::network::lanes::LaneSystem::new();
+    let mesh = crate::simulation::network::render::road::RoadRenderer
+        .generate_mesh_data_with_surface(&graph, &lanes, &terrain, &surface)
+        .seal();
+    assert!(
+        mesh.render_payload_validated(),
+        "material union must compile into a publishable mesh"
+    );
+    let overlaps = crate::simulation::network::surface::RoadSurfaceSystem::material_mesh_overlaps_for_geometry_audit(&mesh);
+    if let Some(&(index, road, _, _)) = overlaps.first() {
+        let nonroad = mesh
+            .curb_vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .chain(mesh.sidewalk_vertices.as_chunks::<3>().0.iter())
+            .nth(index)
+            .unwrap();
+        panic!(
+            "foreign sidewalks/kerbs cannot cross connected asphalt: {overlaps:?} nonroad={nonroad:?} road={:?}",
+            mesh.road_vertices.as_chunks::<3>().0[road]
+        );
+    }
+    let chunks = surface
+        .surface_chunk_cache()
+        .keys()
+        .chain(surface.earthwork_chunk_cache().keys())
+        .copied()
+        .collect();
+    let mut lanes = lanes;
+    let chunked = crate::simulation::network::render::road::RoadRenderer
+        .generate_mesh_chunks_with_surface(&graph, &mut lanes, &terrain, &surface, &chunks);
+    let mut assembled = crate::simulation::network::render::NetworkMeshData::new();
+    let (ox, oz) = surface.chunk_origin_m();
+    for ((x, z), mesh) in chunked {
+        let offset = Vector3::new(
+            ox + x as f32 * surface.chunk_span_m(),
+            0.0,
+            oz + z as f32 * surface.chunk_span_m(),
+        );
+        assembled
+            .road_vertices
+            .extend(mesh.road_vertices.iter().map(|v| *v + offset));
+        assembled
+            .curb_vertices
+            .extend(mesh.curb_vertices.iter().map(|v| *v + offset));
+        assembled
+            .sidewalk_vertices
+            .extend(mesh.sidewalk_vertices.iter().map(|v| *v + offset));
+    }
+    let overlaps = crate::simulation::network::surface::RoadSurfaceSystem::material_mesh_overlaps_for_geometry_audit(&assembled);
+    assert!(
+        overlaps.is_empty(),
+        "chunk publication must retain the material partition: {overlaps:?}"
+    );
 }

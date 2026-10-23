@@ -16,6 +16,7 @@ use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 
 /// Intersection crosswalk markings.
 pub mod crosswalks;
+pub(in crate::simulation::network::render) mod material_partition;
 pub(crate) mod preview;
 /// Cosmetic Finnish crossing and speed-limit sign placement.
 pub(crate) mod road_signs;
@@ -401,6 +402,11 @@ fn push_triangle_to_layer(
     color: Color,
     normal: Vector3,
 ) {
+    if !matches!(layer, MeshLayer::Road | MeshLayer::Marking)
+        && material_partition::emit_triangle(mesh, layer, vertices, uvs, color, normal)
+    {
+        return;
+    }
     if matches!(layer, MeshLayer::Road) {
         let triangle = std::array::from_fn(|i| super::ownership::Vertex {
             p: vertices[i],

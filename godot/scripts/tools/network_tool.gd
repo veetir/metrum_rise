@@ -627,6 +627,9 @@ func _place_road_chunk_instance(
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure.
 func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
+	# A failed material union cannot be rescued by a finite-buffer fallback scan.
+	if chunk_data.get("road_mesh_compilation_succeeded", true) != true:
+		return false
 	_ensure_road_mesh_materials()
 	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
 	# certificate falls back to the full scan; a malformed one rejects the chunk.
