@@ -371,6 +371,7 @@ mod tests {
         let purpose = NodeGeneratedContourPurpose::JunctionSideJoin;
         let claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
         let rails = NodeRailContourSet {
+            material_grade: None,
             node_id: 1,
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             contours: vec![NodeGeneratedContour {
@@ -436,6 +437,7 @@ mod tests {
             segment_end: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(3.0, 0.0)),
         };
         let rails = NodeRailContourSet {
+            material_grade: None,
             node_id: 1,
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             contours: Vec::new(),

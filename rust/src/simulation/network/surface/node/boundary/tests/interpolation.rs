@@ -176,6 +176,7 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -232,6 +233,7 @@ fn missing_boundary_height_rejects_subbudget_run() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -298,6 +300,7 @@ fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() 
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -356,6 +359,7 @@ fn missing_boundary_height_interpolation_rejects_overbudget_same_owner_connector
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -396,6 +400,7 @@ fn missing_boundary_height_interpolation_rejects_overbudget_run() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };

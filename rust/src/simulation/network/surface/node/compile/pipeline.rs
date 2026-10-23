@@ -54,16 +54,18 @@ impl RoadSurfaceSystem {
                 ));
             }
         };
-        let (rails, _) = match Self::build_node_rail_contours_from_input_with_profile(&input, false)
-        {
-            Ok(result) => result,
-            Err(error) => {
-                return Some(Self::node_compile_failure_debug_dump(
-                    "rail_generation",
-                    NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
-                ));
-            }
-        };
+        let (mut rails, _) =
+            match Self::build_node_rail_contours_from_input_with_profile(&input, false) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Some(Self::node_compile_failure_debug_dump(
+                        "rail_generation",
+                        NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
+                    ));
+                }
+            };
+        let material_grade = super::NodeMaterialGradeField::for_input(&input).map(Arc::new);
+        rails.material_grade = material_grade.clone();
         let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
@@ -81,17 +83,21 @@ impl RoadSurfaceSystem {
                 report,
             ));
         }
-        let heights =
-            match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
-                Ok(heights) => heights,
-                Err(error) => {
-                    return Some(Self::node_compile_failure_debug_dump(
-                        "height_solution",
-                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
-                            .with_height_failure_context(&rails, &ownership),
-                    ));
-                }
-            };
+        let heights = match Self::build_node_height_solution_from_ownership(
+            &input,
+            &rails,
+            &ownership,
+            material_grade.as_deref(),
+        ) {
+            Ok(heights) => heights,
+            Err(error) => {
+                return Some(Self::node_compile_failure_debug_dump(
+                    "height_solution",
+                    NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                        .with_height_failure_context(&rails, &ownership),
+                ));
+            }
+        };
         let (mut arrangement, _, precomputed_explicit_steps) =
             match NodeArrangement::from_height_solution_with_profile(&heights, false) {
                 Ok(result) => result,
@@ -187,7 +193,7 @@ impl RoadSurfaceSystem {
         let input_ms = elapsed_ms(input_start);
 
         let rails_start = road_debug.then(Instant::now);
-        let (rails, rail_profile, reuse_status, rail_topology) =
+        let (mut rails, rail_profile, mut reuse_status, rail_topology) =
             match rails::NodeRailContourSet::from_input_with_profile_and_topology_reuse(
                 &input,
                 road_debug,
@@ -204,6 +210,37 @@ impl RoadSurfaceSystem {
                 }
             };
         let rails_ms = elapsed_ms(rails_start);
+        let material_grade = super::NodeMaterialGradeField::for_input(&input).map(|field| {
+            if let Some(previous) =
+                previous_topology.and_then(|cache| cache.material_grade.as_ref())
+                && field.same_source(previous)
+            {
+                Arc::clone(previous)
+            } else {
+                Arc::new(field)
+            }
+        });
+        let grade = material_grade.as_ref();
+        let same_grade = match (
+            grade,
+            previous_topology.and_then(|cache| cache.material_grade.as_ref()),
+        ) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => Arc::ptr_eq(current, previous),
+            _ => false,
+        };
+        if !same_grade {
+            // A shared grade proves carrier agreement independently of its heights.
+            // Raw rail reuse still certifies the source geometry and material levels.
+            // Its presence must agree; legacy independent carriers require a new check.
+            if grade.is_none()
+                || previous_topology.is_none_or(|cache| cache.material_grade.is_none())
+            {
+                reuse_status.ownership_reuse_safe = false;
+            }
+            reuse_status.arrangement_reuse_safe = false;
+        }
+        rails.material_grade = grade.cloned();
 
         let ownership_start = road_debug.then(Instant::now);
         let (ownership, ownership_incremental, ownership_reuse_stats) = if reuse_status
@@ -294,17 +331,21 @@ impl RoadSurfaceSystem {
             )
         } else {
             let heights_start = road_debug.then(Instant::now);
-            let heights =
-                match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
-                    Ok(heights) => heights,
-                    Err(error) => {
-                        let report =
-                            NodeValidationReport::from_height_field_error(node_id, kind, &error)
-                                .with_height_failure_context(&rails, &ownership);
-                        self.log_node_validation_report(&report);
-                        return None;
-                    }
-                };
+            let heights = match Self::build_node_height_solution_from_ownership(
+                &input,
+                &rails,
+                &ownership,
+                material_grade.as_deref(),
+            ) {
+                Ok(heights) => heights,
+                Err(error) => {
+                    let report =
+                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                            .with_height_failure_context(&rails, &ownership);
+                    self.log_node_validation_report(&report);
+                    return None;
+                }
+            };
             let heights_ms = elapsed_ms(heights_start);
 
             let arrangement_start = road_debug.then(Instant::now);
@@ -615,6 +656,7 @@ impl RoadSurfaceSystem {
                 Some(super::NodeCanonicalSurfaceCompileResult {
                     regions,
                     topology_cache: Some(super::NodeCanonicalTopologyCache {
+                        material_grade: material_grade.clone(),
                         rail_topology: if retain_whole_topology {
                             rail_topology
                         } else {

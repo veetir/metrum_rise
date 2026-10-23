@@ -592,7 +592,7 @@ fn generated_source_carrier_intersection_origin(
         || !candidates
             .iter()
             .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
-        || !source_carrier_intersection_heights_match(source, candidates, rails)
+        || !source_carrier_intersection_heights_match(source, point, candidates, rails)
     {
         return None;
     }
@@ -603,14 +603,27 @@ fn generated_source_carrier_intersection_origin(
 
 fn source_carrier_intersection_heights_match(
     source: NodeCarrierSourceKey,
+    point: NodeOwnershipPointKey,
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
     rails: &NodeRailContourSet,
 ) -> bool {
     let mut height_keys = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let Some(height_m) = source_segment_candidate_height(source, candidate, rails) else {
+        // The declared material level is constant within this source band. Its
+        // shared grade resolves the intersection once; separately extrapolated
+        // path chords no longer supply competing height authority there.
+        let height = rails
+            .material_grade
+            .as_ref()
+            .map(|grade| {
+                grade
+                    .height_at(super::super::keys::SurfaceXzKey::from_raw_tuple(point).to_road_xz())
+            })
+            .or_else(|| source_segment_candidate_height(source, candidate, rails));
+        let Some(height_m) = height else {
             return false;
         };
+
         height_keys.push(SurfaceHeightMmKey::from_m_f64(height_m));
     }
     let Some(reference) = height_keys.first().copied() else {

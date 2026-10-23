@@ -28,6 +28,18 @@ impl NodeBandHeightTriangle {
         ) {
             return Some(height_m);
         }
+        self.height_at_exact(point_xz)
+    }
+
+    /// Samples the canonical triangle without borrowing support from a nearby edge.
+    pub(in crate::simulation::network::surface::node) fn height_at_exact(
+        &self,
+        point_xz: RoadVec2,
+    ) -> Option<f64> {
+        let a = height_source_point_key(self.a_xz);
+        let b = height_source_point_key(self.b_xz);
+        let c = height_source_point_key(self.c_xz);
+        let p = height_source_point_key(point_xz);
         let area = height_triangle_area2(a, b, c);
         if area == 0 {
             return None;

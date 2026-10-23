@@ -71,7 +71,7 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
         );
     }
     let heights = match RoadSurfaceSystem::build_node_height_solution_from_ownership(
-        &input, &rails, &ownership,
+        &input, &rails, &ownership, None,
     ) {
         Ok(heights) => heights,
         Err(error) => {

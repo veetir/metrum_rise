@@ -22,7 +22,11 @@ fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
         .unwrap_or(0.0)
 }
 
+mod common_field;
+pub(in crate::simulation::network::surface) use common_field::NodeMaterialGradeField;
 mod constraints;
+mod contacts;
+pub(super) use contacts::apply_source_material_contact_grades;
 mod seams;
 mod shared_edges;
 mod shared_vertices;

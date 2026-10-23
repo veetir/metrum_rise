@@ -932,6 +932,7 @@ mod tests {
 
     fn empty_rails() -> NodeRailContourSet {
         NodeRailContourSet {
+            material_grade: None,
             node_id: 7,
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             contours: Vec::new(),

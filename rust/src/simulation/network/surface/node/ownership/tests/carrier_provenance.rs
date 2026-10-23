@@ -333,6 +333,7 @@ fn assert_generated_side_join_authority(kind: RoadSurfaceBandKind) {
         ],
     )]);
     let rails = NodeRailContourSet {
+        material_grade: None,
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         source_carriers: NodeSourceCarrierRegistry::from_rail_parts(
@@ -761,6 +762,7 @@ fn rails_with_source_height_keys(
         &height_carrier_points_by_source,
     );
     NodeRailContourSet {
+        material_grade: None,
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),
@@ -826,6 +828,7 @@ fn rails_with_source_surface(source: (RoadSurfaceBandKind, usize, usize)) -> Nod
         &height_carrier_points_by_source,
     );
     NodeRailContourSet {
+        material_grade: None,
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),

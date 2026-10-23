@@ -30,6 +30,16 @@ impl NodeFootprintBoundaryExportSources {
             direct_vertex_sources,
             direct_vertex_source_candidates,
             direct_vertex_source_conflicts,
+            declared_material_contacts: node_grade_authorities
+                .iter()
+                .map(|authority| {
+                    matches!(
+                        authority.decision,
+                        height::NodeGradeCarrierDecision::DeclaredMaterialContact { .. }
+                    )
+                    .then_some(*authority)
+                })
+                .collect(),
             grade_authority_source_provenance: node_grade_authorities
                 .iter()
                 .map(|authority| authority.source_provenance)

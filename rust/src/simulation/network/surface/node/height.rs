@@ -45,6 +45,7 @@ mod vertices;
 #[cfg(test)]
 mod tests;
 
+pub(in crate::simulation::network::surface) use grade::NodeMaterialGradeField;
 pub(crate) use grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 pub(crate) use model::{
     NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey, NodeHeightFieldError,

@@ -19,6 +19,55 @@ const FINAL_BOUNDARY_CONTEXT_PREVIOUS: u8 = 0b01;
 const FINAL_BOUNDARY_CONTEXT_NEXT: u8 = 0b10;
 
 impl NodeFootprintBoundaryExportSources {
+    fn declared_material_corner_candidate(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        candidates: &[NodeFootprintBoundaryHeightCandidate],
+        heights: &[i64],
+    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
+        let [lower, raised] = heights else {
+            return None;
+        };
+        let authority = |candidate: &NodeFootprintBoundaryHeightCandidate| {
+            let NodeFootprintBoundaryVertexSource::Direct(source) = candidate.source.source else {
+                return None;
+            };
+            let authority = self
+                .declared_material_contacts
+                .get(source.grade_authority_index)?
+                .as_ref()?;
+            (authority.key
+                == super::super::super::keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key())
+                && authority.owner
+                    == arrangement::NodeBandOwner::new(
+                        candidate.source.owner_kind,
+                        candidate.source.owner_index,
+                    )
+                && authority.height_key.as_i64() == candidate.height_mm)
+                .then_some(authority)
+        };
+        let low = candidates
+            .iter()
+            .find(|candidate| candidate.height_mm == *lower)?;
+        let high = candidates
+            .iter()
+            .find(|candidate| candidate.height_mm == *raised)?;
+        let low_authority = authority(low)?;
+        let high_authority = authority(high)?;
+        for candidate in candidates {
+            let current = authority(candidate)?;
+            let opposite = if candidate.height_mm == *lower {
+                high_authority
+            } else {
+                low_authority
+            };
+            if !current.shares_declared_material_base(*opposite) {
+                return None;
+            }
+        }
+        Some(*high)
+    }
+
     #[cfg(test)]
     pub(in crate::simulation::network::surface) fn height_mm_at_key(
         &mut self,
@@ -243,6 +292,11 @@ impl NodeFootprintBoundaryExportSources {
         ) {
             return Ok(Some(height_mm));
         }
+        if let Some(candidate) =
+            self.declared_material_corner_candidate(key, &exact_candidates, &heights)
+        {
+            return Ok(Some(candidate.height_mm));
+        }
         if let Some(candidate) = self.source_intersection_final_endpoint_rank_gap_candidate(
             key,
             &exact_candidates,
@@ -356,6 +410,11 @@ impl NodeFootprintBoundaryExportSources {
                 &self.explicit_vertical_step_segments,
                 &self.source_edges,
             ) {
+                return Ok(Some(candidate));
+            }
+            if let Some(candidate) =
+                self.declared_material_corner_candidate(key, &candidates, &heights)
+            {
                 return Ok(Some(candidate));
             }
             if let Some(candidate) = self.source_intersection_final_endpoint_rank_gap_candidate(

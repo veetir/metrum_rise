@@ -455,6 +455,7 @@ fn shared_source_height_conflict_dump_includes_constraint_context() {
         owned_regions: regions,
     };
     let rails = NodeRailContourSet {
+        material_grade: None,
         node_id: 13,
         piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
         contours: Vec::new(),

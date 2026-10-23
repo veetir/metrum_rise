@@ -37,6 +37,7 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -82,6 +83,7 @@ fn final_boundary_raised_step_footprint_height_accepts_endpoint_edge_authority()
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -127,6 +129,7 @@ fn final_boundary_rank_gap_footprint_height_rejects_endpoint_edge_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -190,6 +193,7 @@ fn final_boundary_source_intersection_rank_gap_accepts_endpoint_edge_authority()
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance,
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -234,6 +238,7 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -316,6 +321,7 @@ fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };

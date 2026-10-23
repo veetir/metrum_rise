@@ -37,6 +37,7 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -56,6 +57,7 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -120,6 +122,7 @@ fn explicit_step_segment_authorizes_raised_boundary_height_at_endpoint() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -185,6 +188,7 @@ fn explicit_step_segment_uses_semantic_raised_side_when_endpoint_rounding_invert
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -265,6 +269,7 @@ fn raised_step_height_accepts_equivalent_same_height_plateau_candidates() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -345,6 +350,7 @@ fn raised_step_height_uses_explicit_pair_with_unrelated_lower_plateau_candidate(
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -417,6 +423,7 @@ fn raised_step_height_accepts_separate_explicit_endpoint_step_groups() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(

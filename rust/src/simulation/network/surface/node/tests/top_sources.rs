@@ -83,3 +83,32 @@ fn node_top_surface_sources_preserve_explicit_material_seam_authority() {
         );
     }
 }
+
+#[test]
+fn explicit_step_lower_height_index_covers_sloping_hits_and_negatives() {
+    let (arrangement, steps) = arrangement_with_owner_pair_vertical_step_support_and_heights(
+        RoadSurfaceBandKind::Carriageway,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadVec2::ZERO,
+        RoadVec2::new(2.0, 0.0),
+        2.0,
+        2.2,
+        2.12,
+        2.32,
+    );
+    let index = NodeExportExplicitStepLowerEdges::new(&arrangement, &steps);
+    let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let midpoint = arrangement::NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    assert!(index.raised_vertex_matches_lower_height(raised, midpoint, 2100));
+    assert!(!index.raised_vertex_matches_lower_height(raised, midpoint, 2220));
+    assert!(!index.raised_vertex_matches_lower_height(
+        owner(RoadSurfaceBandKind::Sidewalk, 2),
+        midpoint,
+        2100
+    ));
+    assert!(!index.raised_vertex_matches_lower_height(
+        raised,
+        arrangement::NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.1)),
+        2100
+    ));
+}

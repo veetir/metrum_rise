@@ -78,6 +78,7 @@ pub(crate) struct NodeArrangementEdge {
     pub(super) constrains_shared_height: bool,
     pub(super) is_material_transition: bool,
     pub(super) has_applicable_material_source_constraint: bool,
+    pub(super) has_declared_material_grade_contact: bool,
     pub(super) seam_source: NodeSeamSource,
     pub(super) source_constraint_indices: Vec<usize>,
 }

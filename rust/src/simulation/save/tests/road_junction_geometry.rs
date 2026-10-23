@@ -248,3 +248,35 @@ fn imported_tight_terminal_curve_publishes_a_complete_span() {
         assert_eq!(edge.geometry, original.geometry);
     }
 }
+
+#[test]
+fn imported_short_approaches_keep_ordinary_kerb_steps() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/graded_continuation.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    let piece = &surface.compiled_visual_node_pieces()[&0];
+    for face in &piece.raised_step_face_polygons {
+        for (index, a) in face.points_world.iter().enumerate() {
+            for b in &face.points_world[index + 1..] {
+                if (a.x - b.x).hypot(a.z - b.z) < 0.001 {
+                    assert!(
+                        (a.y - b.y).abs() <= 0.121,
+                        "ordinary kerb: {:?}",
+                        face.points_world
+                    );
+                }
+            }
+        }
+    }
+}

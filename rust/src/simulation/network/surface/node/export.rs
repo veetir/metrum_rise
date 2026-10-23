@@ -550,6 +550,16 @@ fn candidate_height_split_conflicts_for_cohort(
                     if left_owner == right_owner {
                         continue;
                     }
+                    // A source-declared kerb contact remains valid at a corner even
+                    // when the two materials do not share a complete arrangement edge.
+                    if left.grade_authority().owner == *left_owner
+                        && right.grade_authority().owner == *right_owner
+                        && left
+                            .grade_authority()
+                            .shares_declared_material_base(right.grade_authority())
+                    {
+                        continue;
+                    }
                     if left_owner.kind() == right_owner.kind()
                         && grade_authorities_have_distinct_source_carrier_provenance(
                             left.grade_authority(),

@@ -3,6 +3,9 @@
 //! Raised-step boundary conflict tests.
 
 use super::*;
+use crate::simulation::network::surface::node::height::{
+    NodeGradeCarrierDecision, NodeGradeVertexAuthority,
+};
 
 #[test]
 fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
@@ -42,13 +45,14 @@ fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
             owner_index: raised_owner.owner_index(),
         }],
     );
-    let sources = NodeFootprintBoundaryExportSources {
+    let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
         final_height_edges: Vec::new(),
         final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -61,6 +65,30 @@ fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
         error,
         NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
     ));
+    sources.declared_material_contacts = vec![None; 93];
+    for (index, owner, height_m, level_mm) in
+        [(91, lower_owner, 0.0, 0), (92, raised_owner, 0.12, 120)]
+    {
+        sources.declared_material_contacts[index] = Some(NodeGradeVertexAuthority::new(
+            RoadVec2::ZERO,
+            height_m,
+            owner,
+            arrangement::NodeBandHeightFieldId::new(0, owner.owner_index(), owner.kind()),
+            NodeGradeCarrierDecision::DeclaredMaterialContact {
+                base_height_mm: 0,
+                level_mm,
+            },
+        ));
+    }
+    assert_eq!(sources.boundary_height_mm_at_key(key).unwrap(), Some(120));
+    sources.declared_material_contacts[91]
+        .as_mut()
+        .unwrap()
+        .owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 99);
+    assert!(
+        sources.boundary_height_mm_at_key(key).is_err(),
+        "a foreign owner cannot borrow a corner certificate"
+    );
 }
 
 #[test]
@@ -116,6 +144,7 @@ fn raised_step_footprint_height_accepts_multiple_explicit_raised_owners_with_ord
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(

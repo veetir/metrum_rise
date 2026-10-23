@@ -429,6 +429,11 @@ impl NodeArrangement {
         edge: &NodeArrangementEdge,
         constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Option<NodeBandOwner> {
+        if edge.has_declared_material_grade_contact {
+            return (!edge.constrains_shared_height)
+                .then_some(edge.opposite_owner)
+                .flatten();
+        }
         if edge.constrains_shared_height {
             if let Some(opposite_owner) = edge.opposite_owner
                 && edge.owner.kind() == opposite_owner.kind()

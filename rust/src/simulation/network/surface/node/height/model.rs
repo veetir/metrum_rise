@@ -279,6 +279,7 @@ pub(super) enum NodeHeightPatchAuthorityRole {
     },
 }
 
+#[derive(Debug)]
 pub(in crate::simulation::network::surface::node) struct NodeBandHeightTriangle {
     pub(super) a_xz: RoadVec2,
     pub(super) b_xz: RoadVec2,

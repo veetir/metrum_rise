@@ -22,8 +22,14 @@ impl RoadSurfaceSystem {
         input: &NodeArrangementInput,
         rails: &NodeRailContourSet,
         ownership: &NodeBooleanOwnership,
+        grade: Option<&super::NodeMaterialGradeField>,
     ) -> Result<NodeHeightSolution, NodeHeightFieldError> {
-        NodeHeightSolution::from_ownership_input_and_rails(input, Some(rails), ownership)
+        NodeHeightSolution::from_ownership_input_and_rails_with_grade(
+            input,
+            Some(rails),
+            ownership,
+            grade,
+        )
     }
 }
 
@@ -33,13 +39,23 @@ impl NodeHeightSolution {
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
-        Self::from_ownership_input_and_rails(input, None, ownership)
+        Self::from_ownership_input_and_rails_with_grade(input, None, ownership, None)
     }
 
+    #[cfg(test)]
     pub(super) fn from_ownership_input_and_rails(
         input: &NodeArrangementInput,
         rails: Option<&NodeRailContourSet>,
         ownership: &NodeBooleanOwnership,
+    ) -> Result<Self, NodeHeightFieldError> {
+        Self::from_ownership_input_and_rails_with_grade(input, rails, ownership, None)
+    }
+
+    pub(super) fn from_ownership_input_and_rails_with_grade(
+        input: &NodeArrangementInput,
+        rails: Option<&NodeRailContourSet>,
+        ownership: &NodeBooleanOwnership,
+        grade: Option<&super::NodeMaterialGradeField>,
     ) -> Result<Self, NodeHeightFieldError> {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
@@ -80,14 +96,16 @@ impl NodeHeightSolution {
         }
         let regions_ms = elapsed_profile_ms(regions_start);
         let normalization_start = road_debug.then(Instant::now);
-        match ownership.piece_kind {
-            RoadSurfaceVisualNodePieceKind::JunctionN => {
-                apply_junctionn_height_authority_normalization(&mut regions)?;
+        if !super::grade::apply_source_material_contact_grades(input, &mut regions, grade) {
+            match ownership.piece_kind {
+                RoadSurfaceVisualNodePieceKind::JunctionN => {
+                    apply_junctionn_height_authority_normalization(&mut regions)?;
+                }
+                RoadSurfaceVisualNodePieceKind::Bend => {
+                    apply_bend_height_authority_normalization(&mut regions)?;
+                }
+                RoadSurfaceVisualNodePieceKind::Terminal => {}
             }
-            RoadSurfaceVisualNodePieceKind::Bend => {
-                apply_bend_height_authority_normalization(&mut regions)?;
-            }
-            RoadSurfaceVisualNodePieceKind::Terminal => {}
         }
         let normalization_ms = elapsed_profile_ms(normalization_start);
         let seam_validation_start = road_debug.then(Instant::now);

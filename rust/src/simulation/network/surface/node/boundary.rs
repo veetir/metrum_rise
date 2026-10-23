@@ -134,6 +134,8 @@ pub(super) struct NodeFootprintBoundaryExportSources {
         BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
     direct_vertex_source_conflicts:
         BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
+    // Exact shared-grade certificates used only while exporting material corners.
+    declared_material_contacts: Vec<Option<height::NodeGradeVertexAuthority>>,
     grade_authority_source_provenance: Vec<Option<height::NodeHeightCarrierProvenanceKey>>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
 }
