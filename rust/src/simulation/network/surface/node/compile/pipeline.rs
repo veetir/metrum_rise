@@ -115,15 +115,13 @@ impl RoadSurfaceSystem {
                 report,
             ));
         }
-        let triangulation = match precomputed_explicit_steps.as_deref() {
-            Some(explicit_steps) => {
-                Self::build_node_triangulation_from_arrangement_with_explicit_steps(
-                    &arrangement,
-                    explicit_steps,
-                )
-            }
-            None => Self::build_node_triangulation_from_arrangement(&arrangement),
-        };
+        let triangulation = Self::build_node_triangulation_from_arrangement_with_grade(
+            &arrangement,
+            self.node_material_grade_fields
+                .get(&node_id)
+                .map(AsRef::as_ref),
+            precomputed_explicit_steps.as_deref(),
+        );
         let triangulation = match triangulation {
             Ok(triangulation) => triangulation,
             Err(error) => {
@@ -362,15 +360,13 @@ impl RoadSurfaceSystem {
             let arrangement_diag_ms = elapsed_ms(arrangement_diag_start);
 
             let triangulation_start = road_debug.then(Instant::now);
-            let triangulation = match precomputed_explicit_steps.as_deref() {
-                Some(explicit_steps) => {
-                    Self::build_node_triangulation_from_arrangement_with_explicit_steps(
-                        &arrangement,
-                        explicit_steps,
-                    )
-                }
-                None => Self::build_node_triangulation_from_arrangement(&arrangement),
-            };
+            let triangulation = Self::build_node_triangulation_from_arrangement_with_grade(
+                &arrangement,
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
+                precomputed_explicit_steps.as_deref(),
+            );
             let triangulation = match triangulation {
                 Ok(triangulation) => triangulation,
                 Err(error) => {

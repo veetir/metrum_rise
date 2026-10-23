@@ -5,6 +5,7 @@
 use super::coverage::overlay_shape_from_arrangement_region;
 use super::regions::triangulate_arrangement_region;
 use super::*;
+use crate::simulation::network::surface::node::height::NodeMaterialGradeField;
 use rayon::prelude::*;
 
 const PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS: usize = 8;
@@ -15,45 +16,39 @@ enum NodeTriangulatedRegionBuildResult {
 }
 
 impl RoadSurfaceSystem {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement(
         arrangement: &NodeArrangement,
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
         NodeTriangulationSolution::from_arrangement(arrangement)
     }
 
-    /// Triangulates an arrangement while carrying forward step extraction already needed by
-    /// arrangement conflict validation.
-    pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement_with_explicit_steps(
+    /// Triangulates with the resolved grade and any already extracted material steps.
+    pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement_with_grade(
         arrangement: &NodeArrangement,
-        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+        material_grade: Option<&NodeMaterialGradeField>,
+        explicit_steps: Option<&[NodeExplicitVerticalStepSegment]>,
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
-        NodeTriangulationSolution::from_arrangement_with_explicit_steps(
+        NodeTriangulationSolution::from_arrangement_with_optional_explicit_steps(
             arrangement,
-            explicit_vertical_step_segments,
+            explicit_steps,
+            material_grade,
         )
     }
 }
 
 impl NodeTriangulationSolution {
+    #[cfg(test)]
     pub(crate) fn from_arrangement(
         arrangement: &NodeArrangement,
     ) -> Result<Self, NodeTriangulationError> {
-        Self::from_arrangement_with_optional_explicit_steps(arrangement, None)
-    }
-
-    fn from_arrangement_with_explicit_steps(
-        arrangement: &NodeArrangement,
-        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
-    ) -> Result<Self, NodeTriangulationError> {
-        Self::from_arrangement_with_optional_explicit_steps(
-            arrangement,
-            Some(explicit_vertical_step_segments),
-        )
+        Self::from_arrangement_with_optional_explicit_steps(arrangement, None, None)
     }
 
     fn from_arrangement_with_optional_explicit_steps(
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: Option<&[NodeExplicitVerticalStepSegment]>,
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<Self, NodeTriangulationError> {
         if arrangement.regions().is_empty() {
             return Err(NodeTriangulationError::EmptyHeightSolution {
@@ -61,27 +56,36 @@ impl NodeTriangulationSolution {
             });
         }
 
-        let triangulated_regions = if arrangement.regions().len()
-            >= PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS
-        {
-            arrangement
-                .regions()
-                .par_iter()
-                .enumerate()
-                .map(|(region_index, region)| {
-                    triangulate_arrangement_region_for_solution(arrangement, region_index, region)
-                })
-                .collect::<Vec<_>>()
-        } else {
-            arrangement
-                .regions()
-                .iter()
-                .enumerate()
-                .map(|(region_index, region)| {
-                    triangulate_arrangement_region_for_solution(arrangement, region_index, region)
-                })
-                .collect::<Vec<_>>()
-        };
+        let triangulated_regions =
+            if arrangement.regions().len() >= PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS {
+                arrangement
+                    .regions()
+                    .par_iter()
+                    .enumerate()
+                    .map(|(region_index, region)| {
+                        triangulate_arrangement_region_for_solution(
+                            arrangement,
+                            region_index,
+                            region,
+                            material_grade,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                arrangement
+                    .regions()
+                    .iter()
+                    .enumerate()
+                    .map(|(region_index, region)| {
+                        triangulate_arrangement_region_for_solution(
+                            arrangement,
+                            region_index,
+                            region,
+                            material_grade,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
 
         let mut regions = Vec::with_capacity(triangulated_regions.len());
         let mut first_discarded_error = None;
@@ -116,16 +120,23 @@ fn triangulate_arrangement_region_for_solution(
     arrangement: &NodeArrangement,
     region_index: usize,
     region: &NodeOwnedRegion,
+    material_grade: Option<&NodeMaterialGradeField>,
 ) -> Result<NodeTriangulatedRegionBuildResult, NodeTriangulationError> {
-    triangulate_arrangement_region(arrangement.node_id(), region_index, arrangement, region)
-        .map(NodeTriangulatedRegionBuildResult::Region)
-        .or_else(|error| {
-            if triangulation_error_is_discardable_numeric_region(&error, arrangement, region) {
-                Ok(NodeTriangulatedRegionBuildResult::Discarded(error))
-            } else {
-                Err(error)
-            }
-        })
+    triangulate_arrangement_region(
+        arrangement.node_id(),
+        region_index,
+        arrangement,
+        region,
+        material_grade,
+    )
+    .map(NodeTriangulatedRegionBuildResult::Region)
+    .or_else(|error| {
+        if triangulation_error_is_discardable_numeric_region(&error, arrangement, region) {
+            Ok(NodeTriangulatedRegionBuildResult::Discarded(error))
+        } else {
+            Err(error)
+        }
+    })
 }
 
 fn triangulation_error_is_discardable_numeric_region(

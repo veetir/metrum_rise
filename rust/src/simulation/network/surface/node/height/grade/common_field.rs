@@ -220,3 +220,118 @@ impl NodeMaterialGradeField {
         trend(point) + nearest.map_or(0.0, |(_, height)| height)
     }
 }
+
+#[cfg(test)]
+mod guide_grade_tests {
+    use super::*;
+    use crate::simulation::network::surface::node::arrangement::NodeArrangement;
+    use crate::simulation::network::surface::node::height::NodeHeightSolution;
+    use crate::simulation::network::surface::node::input::{NodeInputBandInterval, NodeInputMouth};
+    use crate::simulation::network::surface::{
+        IncidentEdgeSide, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, RoadVec3,
+    };
+
+    #[test]
+    fn cdt_interior_guides_sample_the_resolved_non_affine_grade() {
+        let kind = RoadSurfaceBandKind::Carriageway;
+        let corners = [
+            RoadVec3::new(-20.0, -0.2, -20.0),
+            RoadVec3::new(20.0, 0.2, -20.0),
+            RoadVec3::new(20.0, 0.2, 20.0),
+            RoadVec3::new(-20.0, -0.2, 20.0),
+        ];
+        let input = NodeArrangementInput {
+            node_id: 0,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            mouths: (0..4)
+                .map(|i| NodeInputMouth {
+                    order_index: i,
+                    edge_idx: i,
+                    side: IncidentEdgeSide::Start,
+                    direction_xz: RoadVec2::X,
+                    direction_angle_ccw: 0.0,
+                    conflict_handoff_distance_m: 1.0,
+                    mouth_rails: Vec::new(),
+                    endpoint_rails: Vec::new(),
+                    boundary_rails: Vec::new(),
+                    uses_explicit_band_domain_paths: false,
+                    band_intervals: vec![NodeInputBandInterval {
+                        band_index: 0,
+                        band_kind: kind,
+                        mouth_start_world: corners[i],
+                        mouth_end_world: corners[(i + 1) % 4],
+                        endpoint_start_world: RoadVec3::new(0.0, 0.5, 0.0),
+                        endpoint_end_world: RoadVec3::new(0.0, 0.5, 0.0),
+                        start_path_world: Vec::new(),
+                        end_path_world: Vec::new(),
+                    }],
+                })
+                .collect(),
+        };
+        let levels = (0..4)
+            .map(|i| (NodeBandHeightFieldId::new(i, 0, kind), 0.0))
+            .collect();
+        let grade = NodeMaterialGradeField::from_input(&input, &levels).unwrap();
+        let owner = NodeBandOwner::new(kind, 0);
+        let field = NodeBandHeightFieldId::new(0, 0, kind);
+        let heights = NodeHeightSolution {
+            node_id: 0,
+            piece_kind: input.piece_kind,
+            regions: vec![NodeHeightedRegion {
+                kind,
+                owner,
+                height_field_id: field,
+                area_m2: 1600.0,
+                seam_constraints: Vec::new(),
+                shape: vec![
+                    corners
+                        .iter()
+                        .map(|p| NodeHeightedVertex {
+                            point_xz: RoadVec2::new(p.x, p.z),
+                            height_m: p.y,
+                            height_field_id: field,
+                            height_authority: None,
+                            source_provenance: None,
+                            grade_authority: Some(NodeGradeVertexAuthority::new(
+                                RoadVec2::new(p.x, p.z),
+                                p.y,
+                                owner,
+                                field,
+                                NodeGradeCarrierDecision::DeclaredMaterialContact {
+                                    base_height_mm: (p.y * 1000.0).round() as i64,
+                                    level_mm: 0,
+                                },
+                            )),
+                        })
+                        .collect(),
+                ],
+            }],
+        };
+        let arrangement = NodeArrangement::from_height_solution(&heights).unwrap();
+        let compile = |grade| {
+            RoadSurfaceSystem::build_node_triangulation_from_arrangement_with_grade(
+                &arrangement,
+                grade,
+                None,
+            )
+            .unwrap()
+        };
+        let plane_guides = compile(None);
+        assert!(
+            plane_guides.regions[0].vertices.iter().any(|v| {
+                let p = v.point_world;
+                (p.y - grade.height_at(RoadVec2::new(p.x, p.z))).abs() > 0.05
+            }),
+            "the fixture must expose the independently fitted guide plane"
+        );
+        let resolved = compile(Some(&grade));
+        assert!(resolved.regions[0].vertices.len() > corners.len());
+        for vertex in &resolved.regions[0].vertices {
+            let p = vertex.point_world;
+            assert!(
+                (p.y - grade.height_at(RoadVec2::new(p.x, p.z))).abs() < 1e-6,
+                "derived guide must sample the resolved grade: {p:?}"
+            );
+        }
+    }
+}
