@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## ROAD-67 roadbed contract recorded on 6ec0b858, excluding intentionally changed paint.
+## ROAD-67 roadbed contract, excluding intentionally changed paint.
+## ROAD-73 recomputes the two nonplanar median junction grades. Their XZ triangles and
+## counts match 3f4abd8d exactly; the largest asphalt height adjustment is 17.6 mm.
 ## An optional local record run writes hashes and roads-b-prefixed saves for load comparison.
 extends "res://tests/road_cross_section_test.gd"
 
-const EXPECTED: Array[String] = ["56579143fcfd507b8634b309e5818d40b6f101cdbc6630f4936ad7a2e1fb93ac", "b2c44f4bc925367153472c21a5b416ca4b930b187963a1e7a12e10294b24a595", "b1d5bb970405a3ce17d22d34ca92fe10b70f419e0be97030adea897f6f010f2e", "0b8df413d4c362077c2ebdb745f83e5e372419464c726c1d6cf72ebcd5e65abd"]
+const EXPECTED: Array[String] = ["56579143fcfd507b8634b309e5818d40b6f101cdbc6630f4936ad7a2e1fb93ac", "b2c44f4bc925367153472c21a5b416ca4b930b187963a1e7a12e10294b24a595", "063a051fb7deb7718016932860eb858294d1961ebc0ce4b3b3b9c7d315dff33a", "ccd15777f3d3b0ebfad559f6970bf6659f84118f1f2cda15b1d221fe4006fb54"]
 
 # New v95 roads deliberately omit zebra partitions and median zebra clearance.
-const UNMARKED_EXPECTED: Array[String] = ["8068b4901c45e21b9b65eb4fc63a640c3e0f61a5711f10de72fc48bbd3cd369e", "2a246b05934b10437929ccf5eac549c099ebf7c494ec862df33e595be1710f53", "e96a77b1a73f113f1cf6b35ba83fd434eeb69e0090e170d1bbddcb869c19ab9a", "7d5eccb2e407b92fd97346d4a681856d84652dd4f5a28a1e49ab11d9e5f91621"]
+const UNMARKED_EXPECTED: Array[String] = ["8068b4901c45e21b9b65eb4fc63a640c3e0f61a5711f10de72fc48bbd3cd369e", "2a246b05934b10437929ccf5eac549c099ebf7c494ec862df33e595be1710f53", "83383ebbec5d40ff8ed3b6a14ec068a0a881851fbfebfe30d113829945bb58a1", "5bc5105e63d1f7fde3964dcb9f26303f0bcc66e61074acaf218d358bedb99258"]
 
 func roadbed_digest() -> String:
 	var payload: Dictionary = simulation.get_road_mesh_data(true)
