@@ -11,6 +11,13 @@ use super::heights::interval_height_at;
 use super::model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+// Boundary grade authority is stored in millimetres. Adjacent envelope anchors
+// can differ from a fully covering carrier below that resolution; micrometre
+// equality incorrectly sends these real segments into endpoint-only recovery.
+fn terrain_clip_carrier_height_matches_output(source: f64, output: f64) -> bool {
+    SurfaceHeightMmKey::from_m_f64(source) == SurfaceHeightMmKey::from_m_f64(output)
+}
+
 enum TerrainClipOutputSourceSelection {
     Missing,
     Ambiguous(String),
@@ -381,9 +388,13 @@ impl RoadSurfaceSystem {
             if !Self::terrain_clip_interval_covers(interval, 0.0, 1.0) {
                 continue;
             }
-            if Self::overlay_heights_equal(interval_height_at(interval, 0.0), start.y)
-                && Self::overlay_heights_equal(interval_height_at(interval, 1.0), end.y)
-            {
+            if terrain_clip_carrier_height_matches_output(
+                interval_height_at(interval, 0.0),
+                start.y,
+            ) && terrain_clip_carrier_height_matches_output(
+                interval_height_at(interval, 1.0),
+                end.y,
+            ) {
                 candidates.push(source_edge);
             }
         }
@@ -405,9 +416,13 @@ impl RoadSurfaceSystem {
             if !Self::terrain_clip_interval_covers(interval, coverage_start_t, coverage_end_t) {
                 continue;
             }
-            if Self::overlay_heights_equal(interval_height_at(interval, start_t), start.y)
-                && Self::overlay_heights_equal(interval_height_at(interval, end_t), end.y)
-            {
+            if terrain_clip_carrier_height_matches_output(
+                interval_height_at(interval, start_t),
+                start.y,
+            ) && terrain_clip_carrier_height_matches_output(
+                interval_height_at(interval, end_t),
+                end.y,
+            ) {
                 candidates.push(prepared.edge);
             }
         }
@@ -1273,6 +1288,61 @@ mod tests {
         assert_eq!(owner.source_band_index, 0);
         assert_eq!(owner.kind, RoadSurfaceBandKind::Sidewalk);
         assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
+    }
+
+    #[test]
+    fn covering_carrier_keeps_ownership_beside_submillimetre_corner_anchors() {
+        let start = RoadVec3::new(0.0, 10.0004, 0.0);
+        let end = RoadVec3::new(1.0, 10.002, 0.0);
+        let source = |a, b, node_id| TerrainClipSourceEdge {
+            start: a,
+            end: b,
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind: RoadSurfaceVisualNodePieceKind::Bend,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 0,
+                boundary_source: None,
+            },
+            source_index: node_id as usize,
+            edge_index: 0,
+        };
+        let carrier = source(RoadVec3::new(0.0, 10.0003, 0.0), end, 1);
+        let corner = source(start, RoadVec3::new(0.0, 10.1, -1.0), 2);
+        let selected = RoadSurfaceSystem::terrain_clip_output_source_for_points(
+            start,
+            end,
+            &[corner, carrier],
+        )
+        .unwrap_or_else(|_| panic!("the full covering carrier must own this cut"));
+        assert!(matches!(
+            selected.source,
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id: 1, .. }
+        ));
+        let prepared = RoadSurfaceSystem::terrain_clip_prepared_sources_on_segment(
+            [start.x, start.z],
+            [end.x, end.z],
+            &[corner, carrier],
+        );
+        assert!(matches!(
+            RoadSurfaceSystem::terrain_clip_output_source_for_prepared_segment(
+                start, end, 0.0, 1.0, &prepared
+            ),
+            TerrainClipOutputSourceSelection::Source(_)
+        ));
+        let competing = source(carrier.start, carrier.end, 3);
+        assert!(
+            matches!(
+                RoadSurfaceSystem::terrain_clip_output_source_for_segment(
+                    start,
+                    end,
+                    &[carrier, competing]
+                ),
+                TerrainClipOutputSourceSelection::Ambiguous(_)
+            ),
+            "two full covering owners still require a provenance certificate"
+        );
     }
 
     #[test]
