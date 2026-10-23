@@ -812,3 +812,34 @@ fn shared_grade_cohort_survives_dirty_compilation_undo_and_preview() {
     assert_eq!(surface.compiled_visual_span_pieces(), &spans);
     assert_eq!(surface.compiled_visual_node_pieces(), &nodes);
 }
+
+#[test]
+fn refined_junction_steps_keep_declared_contacts_on_retained_top_edges() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_refined_steps.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(6000.0, 6000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    // Exact source neighbourhoods around imported nodes 1150 and 1628. The
+    // source-ID mapping is retained in the SQL header; source geometry is unchanged.
+    for node in [25, 27, 28, 31, 32, 43, 44] {
+        assert!(
+            surface.compiled_visual_node_pieces().contains_key(&node),
+            "junction {node} must retain its source-declared kerb step"
+        );
+    }
+    assert!(
+        surface
+            .junction_grade_conflicts_for_geometry_audit(&graph)
+            .is_empty()
+    );
+}

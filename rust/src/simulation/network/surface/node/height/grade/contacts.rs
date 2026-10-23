@@ -111,7 +111,12 @@ pub(in crate::simulation::network::surface::node::height) fn apply_source_materi
             offsets[component] = offsets[component].min(levels[&regions[r].height_field_id]);
         }
         let (r, c, v) = occurrences[0];
-        let base = field.height_at(regions[r].shape[c][v].point_xz);
+        // Contacts use the existing micrometre source-height grid. Quantize the
+        // common base before deriving its millimetre certificate as well: rounding
+        // the height later can otherwise cross a half-millimetre boundary.
+        let base = super::super::seams::quantize_source_height_m(
+            field.height_at(regions[r].shape[c][v].point_xz),
+        );
         for &(r, c, v) in occurrences {
             let region = &mut regions[r];
             let owner = owners.binary_search(&region.owner).unwrap();

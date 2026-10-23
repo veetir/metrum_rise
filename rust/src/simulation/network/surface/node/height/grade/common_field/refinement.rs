@@ -313,7 +313,16 @@ impl NodeMaterialGradeField {
         let mut boundaries =
             BTreeMap::<[SurfaceXzKey; 2], Vec<[NodeGradeVertexAuthority; 2]>>::new();
         for region in &solution.regions {
-            for &[a, b] in &region.boundary_constraints {
+            // The retained top mesh is authoritative after integer slicing. A
+            // sub-grid boundary sliver can leave a cut classified as an internal
+            // cell edge even though the adjacent material retains that same edge.
+            // Both endpoints must still prove the same declared grade and level.
+            let edges = region
+                .triangles
+                .iter()
+                .flat_map(|t| (0..3).map(move |i| [t.vertices[i], t.vertices[(i + 1) % 3]]))
+                .chain(region.boundary_constraints.iter().copied());
+            for [a, b] in edges {
                 let mut contacts = [
                     region.vertices[a].grade_authority,
                     region.vertices[b].grade_authority,
