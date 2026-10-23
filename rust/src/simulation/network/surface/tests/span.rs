@@ -800,4 +800,22 @@ fn derived_band_subdivision_cannot_expand_the_validated_material_domain() {
             .sum::<f64>()
     };
     assert!((area(&source) - area(&refined)).abs() < 1.0e-6);
+    let material_owners = refined
+        .terrain_clip_boundary_loops()
+        .iter()
+        .flat_map(|l| &l.source_edges)
+        .filter_map(|edge| match edge.source {
+            RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { owner, .. }
+                if owner.kind == RoadSurfaceBandKind::Carriageway =>
+            {
+                Some(owner.source_band_index)
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        material_owners,
+        std::collections::BTreeSet::from([0]),
+        "grade subdivisions must retain their continuous parent asphalt owner"
+    );
 }

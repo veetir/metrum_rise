@@ -50,7 +50,51 @@ impl RoadSurfaceSystem {
             }
             Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         }
+        // Geometric grade bands are not new material owners. Adjacent strips
+        // with the same material and exact continuous source interface share the
+        // first band's identity; real material changes and height steps stay split.
+        let owners = Self::span_terrain_material_band_owners(sections);
+        if owners.iter().enumerate().any(|(i, &owner)| i != owner) {
+            for edge in terrain_clip_boundary_loops
+                .iter_mut()
+                .flat_map(|l| &mut l.source_edges)
+            {
+                if let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { owner, .. } =
+                    &mut edge.source
+                {
+                    owner.source_band_index = owners[owner.source_band_index];
+                }
+            }
+        }
         Ok((outer_boundary_loops, terrain_clip_boundary_loops))
+    }
+
+    fn span_terrain_material_band_owners(sections: &[RoadSurfaceSection]) -> Vec<usize> {
+        let count = sections.first().map_or(0, |s| s.bands.len());
+        let mut owners = (0..count).collect::<Vec<_>>();
+        for i in 1..count {
+            if sections.iter().all(|section| {
+                let (Some(a), Some(b)) = (section.bands.get(i - 1), section.bands.get(i)) else {
+                    return false;
+                };
+                a.kind == b.kind
+                    && Self::span_points_share_canonical_position(
+                        Self::section_boundary_world_point_static(
+                            section,
+                            a.lateral_end_m,
+                            a.height_end_m,
+                        ),
+                        Self::section_boundary_world_point_static(
+                            section,
+                            b.lateral_start_m,
+                            b.height_start_m,
+                        ),
+                    )
+            }) {
+                owners[i] = owners[i - 1];
+            }
+        }
+        owners
     }
 
     fn build_span_boundary_run(
@@ -264,6 +308,41 @@ mod tests {
         RoadSurfaceBandKind, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSpanBandOwner,
         RoadSurfaceSpanRegionRole,
     };
+
+    #[test]
+    fn terrain_material_owners_preserve_real_separators_and_steps() {
+        use crate::simulation::network::surface::{RoadSurfaceBand, RoadVec2};
+        let band = |kind, start, end, y| RoadSurfaceBand {
+            kind,
+            lateral_start_m: start,
+            lateral_end_m: end,
+            height_start_m: y,
+            height_end_m: y,
+        };
+        let mut section = RoadSurfaceSection {
+            edge_idx: 0,
+            s_m: 0.0,
+            center_xz: RoadVec2::ZERO,
+            center_height_m: 0.0,
+            tangent_xz: RoadVec2::X,
+            lateral_xz: RoadVec2::Y,
+            bands: vec![
+                band(RoadSurfaceBandKind::Carriageway, 0.0, 1.0, 0.0),
+                band(RoadSurfaceBandKind::Carriageway, 1.0, 2.0, 0.0),
+                band(RoadSurfaceBandKind::Median, 2.0, 3.0, 0.12),
+                band(RoadSurfaceBandKind::Carriageway, 3.0, 4.0, 0.0),
+            ],
+        };
+        assert_eq!(
+            RoadSurfaceSystem::span_terrain_material_band_owners(&[section.clone()]),
+            vec![0, 0, 2, 3]
+        );
+        section.bands[1].height_start_m = 0.12;
+        assert_eq!(
+            RoadSurfaceSystem::span_terrain_material_band_owners(&[section]),
+            vec![0, 1, 2, 3]
+        );
+    }
 
     #[test]
     fn clip_source_endpoints_keep_first_canonical_match_and_unmatched_coordinates() {
