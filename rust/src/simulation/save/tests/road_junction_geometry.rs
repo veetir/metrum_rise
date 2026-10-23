@@ -170,3 +170,33 @@ fn audit_imported_junction_geometry() {
     let loaded = network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, &mut terrain);
     eprintln!("load_runtime={loaded:?}");
 }
+
+#[test]
+fn overlapping_bioteknia_profiles_resolve_one_continuous_longitudinal_grade() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let original = graph.edges().to_vec();
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    surface.compile_owners_for_geometry_audit(&graph, &terrain, &[5], &[], false);
+    let sections = &surface.compiled_sections()[&5];
+    assert!(sections.len() > 2);
+    for pair in sections.windows(2) {
+        let run = (pair[1].center_xz - pair[0].center_xz).length();
+        assert!(
+            f64::from((pair[1].center_height_m - pair[0].center_height_m).abs())
+                <= run * 0.16 + 0.0001,
+            "overlapping junction profiles must not leave a 331% ramp: {pair:?}"
+        );
+    }
+    for (edge, original) in graph.edges().iter().zip(original) {
+        assert_eq!(edge.physical_geometry, original.physical_geometry);
+        assert_eq!(edge.geometry, original.geometry);
+    }
+}

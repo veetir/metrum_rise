@@ -60,7 +60,7 @@ impl RoadSurfaceSystem {
         nonuniform_knots: bool,
     ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
-        let points: Vec<RoadVec3> = self
+        let mut points: Vec<RoadVec3> = self
             .edge_points(edge)
             .iter()
             .copied()
@@ -94,6 +94,18 @@ impl RoadSurfaceSystem {
         }
 
         let cumulative = self.build_cumulative_distances(&points);
+        if let Some((start_height, grade)) = graph.resolved_short_junction_link_grade(edge_idx) {
+            // Retain the source station lattice and XZ alignment. Both endpoint planes
+            // sample this same coupled grade, rather than pinning incompatible windows.
+            let mut station = 0.0_f32;
+            let mut previous = points[0];
+            for point in &mut points {
+                station +=
+                    RoadVec2::new(point.x - previous.x, point.z - previous.z).length() as f32;
+                previous = *point;
+                point.y = f64::from(start_height + grade * station);
+            }
+        }
         let total_length_m = *cumulative.last().unwrap_or(&0.0);
         let (start_kind, start_pass_through_tangent) =
             self.section_endpoint_kind_and_tangent(graph, edge_idx, edge, true);

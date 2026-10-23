@@ -697,6 +697,44 @@ impl RoadSurfaceSystem {
         self.compile_dirty(graph, terrain);
     }
 
+    /// Compiles only selected owners for read-only imported-geometry diagnosis.
+    #[cfg(test)]
+    pub(crate) fn compile_owners_for_geometry_audit(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edges: &[usize],
+        nodes: &[u32],
+        chords: bool,
+    ) {
+        for id in 0..graph.edge_count() {
+            let sections = self.compile_edge_sections(graph, id);
+            self.compiled_sections.insert(id, Arc::new(sections));
+        }
+        for &id in edges {
+            if let Some(piece) = self.compile_visual_span_piece(graph, terrain, id) {
+                self.retain_span_sections(&piece);
+                self.insert_span_piece_coverage(&piece);
+                self.compiled_visual_span_pieces.insert(id, Arc::new(piece));
+            }
+        }
+        for &id in nodes {
+            if let Some(mut input) = self.visual_node_compile_input(graph, id) {
+                if chords {
+                    for mouth in &mut input.mouths {
+                        mouth.uses_explicit_band_domain_paths = false;
+                    }
+                }
+                if let Some(piece) =
+                    self.compile_visual_node_piece_from_input(graph, terrain, id, &input)
+                {
+                    self.insert_node_piece_coverage(&piece);
+                    self.compiled_visual_node_pieces.insert(id, Arc::new(piece));
+                }
+            }
+        }
+    }
+
     pub(crate) fn compile_dirty_with_reason(
         &mut self,
         graph: &RegionGraph,

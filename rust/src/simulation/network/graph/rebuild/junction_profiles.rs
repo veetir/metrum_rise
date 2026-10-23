@@ -412,15 +412,86 @@ impl RegionGraph {
         (away.z - origin.z).atan2(away.x - origin.x)
     }
 
+    /// Resolves a short junction link whose overlapping endpoint profiles exceed the
+    /// existing rejection grade. Returns its fixed start height and horizontal grade.
+    /// Source geometry and supported longer/steeper corridors remain unchanged.
+    pub(crate) fn resolved_short_junction_link_grade(&self, edge_idx: usize) -> Option<(f32, f32)> {
+        let edge = self.edges.get(edge_idx)?;
+        if edge.deleted
+            || edge.class != crate::simulation::network::types::EdgeClass::Standard
+            || edge.primary_type != TransitType::Road
+        {
+            return None;
+        }
+        let points = if edge.physical_geometry.len() >= 2 {
+            &edge.physical_geometry
+        } else {
+            &edge.geometry
+        };
+        if points.len() < 3 {
+            return None;
+        }
+        let connected = [edge.start_node, edge.end_node]
+            .into_iter()
+            .filter(|&node| {
+                self.node_adjacency(self.get_valid_node(node))
+                    .iter()
+                    .filter(|&&id| {
+                        !self.edges[id].deleted && self.edges[id].primary_type == TransitType::Road
+                    })
+                    .take(2)
+                    .count()
+                    == 2
+            })
+            .count();
+        if connected != 2 {
+            return None;
+        }
+        let (mut length, mut rejected) = (0.0_f32, false);
+        for pair in points.windows(2) {
+            let run = Self::edge_profile_point_distance_m(pair[0], pair[1]);
+            length += run;
+            rejected |= (pair[1].y - pair[0].y).abs() > JUNCTION_PROFILE_REJECT_MAX_GRADE * run;
+        }
+        if !rejected || length <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+            return None;
+        }
+        // Use the same overlap cores as endpoint finalization, including wide or
+        // oblique intersections. An uncovered authored interior remains authoritative.
+        let coverage = 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M
+            + self.junction_profile_crossing_core_m(edge_idx, true)
+            + self.junction_profile_crossing_core_m(edge_idx, false);
+        if length > coverage {
+            return None;
+        }
+        let start = self
+            .nodes
+            .get(self.get_valid_node(edge.start_node) as usize)?
+            .pos
+            .y;
+        let end = self
+            .nodes
+            .get(self.get_valid_node(edge.end_node) as usize)?
+            .pos
+            .y;
+        let grade = (end - start) / length;
+        (grade.abs() <= JUNCTION_PROFILE_MOUTH_MAX_GRADE).then_some((start, grade))
+    }
+
     /// Reconstructs crossfall from the final physical profiles at the shared crossing core.
     /// This reads the solved surface; it neither chooses a new grade target nor reblends heights.
     pub(crate) fn solved_junction_endpoint_profile_plane(
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
-        let physical = self.reconstruct_junction_endpoint_profile_plane(node_id, false)?;
+        let physical = self.reconstruct_junction_endpoint_profile_plane(node_id, false, false)?;
+        let coupled_link = self
+            .node_adjacency(node_id)
+            .iter()
+            .any(|&edge| self.resolved_short_junction_link_grade(edge).is_some());
         if physical.grade() > JUNCTION_PROFILE_REJECT_MAX_GRADE
-            && let Some(control) = self.reconstruct_junction_endpoint_profile_plane(node_id, true)
+            && let Some(control) =
+                self.reconstruct_junction_endpoint_profile_plane(node_id, true, false)
             && control.grade() <= JUNCTION_PROFILE_MOUTH_MAX_GRADE
         {
             // A legacy eased profile can contain a longitudinal spike that an ill-conditioned
@@ -429,6 +500,9 @@ impl RegionGraph {
             // Supported steep hills retain their physical plane, including grades above 50%.
             return Some(control);
         }
+        if coupled_link {
+            return self.reconstruct_junction_endpoint_profile_plane(node_id, false, true);
+        }
         Some(physical)
     }
 
@@ -436,6 +510,7 @@ impl RegionGraph {
         &self,
         node_id: u32,
         control_supports: bool,
+        resolve_longitudinal: bool,
     ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
         // Cross-section transitions can own a visual Bend on a straight alignment. The
@@ -491,9 +566,24 @@ impl RegionGraph {
                 }
                 distance += run;
             }
-            let Some(sample) = sample else {
+            let Some(mut sample) = sample else {
                 continue;
             };
+            if resolve_longitudinal
+                && let Some((start_height, grade)) =
+                    self.resolved_short_junction_link_grade(edge_idx)
+            {
+                let station = if at_start {
+                    1.0
+                } else {
+                    points
+                        .windows(2)
+                        .map(|pair| Self::edge_profile_point_distance_m(pair[0], pair[1]))
+                        .sum::<f32>()
+                        - 1.0
+                };
+                sample.y = start_height + grade * station;
+            }
             let dx = f64::from(sample.x - origin.x);
             let dz = f64::from(sample.z - origin.z);
             let dy = f64::from(sample.y - origin.y);
