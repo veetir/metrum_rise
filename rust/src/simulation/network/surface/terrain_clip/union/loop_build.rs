@@ -244,6 +244,11 @@ impl RoadSurfaceSystem {
                         end,
                         context,
                     } => {
+                        let context = format!(
+                            "{context} contour_role={:?} contour_area_m2={:.12}",
+                            topology.role,
+                            Self::overlay_contour_area_f64(&contour).abs(),
+                        );
                         crate::debug_log!(
                             "road",
                             "terrain_clip_ambiguous_output_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
@@ -290,6 +295,13 @@ impl RoadSurfaceSystem {
                 source_loop_count: 0,
             });
         }
+        let output_edges = Self::complete_terrain_clip_source_edge_chain(output_edges).map_err(
+            |(start, end)| RoadSurfaceTerrainClipExportError::UnclosedOutputBoundary {
+                shape_index: topology.shape_index,
+                start,
+                end,
+            },
+        )?;
         let first_start = output_edges.first().map(|edge| edge.start).ok_or({
             RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,

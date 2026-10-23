@@ -204,6 +204,134 @@ impl RoadSurfaceSystem {
         }
     }
 
+    /// Retains every sourced endpoint, including a finite material-step corner return.
+    pub(super) fn complete_terrain_clip_source_edge_chain(
+        mut edges: Vec<RoadSurfaceTerrainClipSourceEdge>,
+    ) -> Result<Vec<RoadSurfaceTerrainClipSourceEdge>, (RoadVec3, RoadVec3)> {
+        for i in 0..edges.len() {
+            let next = (i + 1) % edges.len();
+            let a = edges[i].end;
+            let b = edges[next].start;
+            let ah = SurfaceHeightMmKey::from_m_f64(a.y).as_i64();
+            let bh = SurfaceHeightMmKey::from_m_f64(b.y).as_i64();
+            // Dust-chain recovery already proves this one-millimetre height tie. A run
+            // may skip several 0.1 mm edges; preserve the established CDT incidence budget.
+            if (a.x - b.x).hypot(a.z - b.z) <= f64::from(super::super::SAMPLE_EPSILON_M)
+                && ah.abs_diff(bh) <= super::heights::TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM
+            {
+                let key = Self::terrain_clip_world_key(a).min(Self::terrain_clip_world_key(b));
+                let point = key.to_road_xz();
+                let shared = RoadVec3::new(point.x, ah.max(bh) as f64 / 1000.0, point.y);
+                edges[i].end = shared;
+                edges[next].start = shared;
+            }
+        }
+        let gaps = edges
+            .iter()
+            .enumerate()
+            .filter(|(i, edge)| {
+                !Self::world_points_same_for_boundary(edge.end, edges[(i + 1) % edges.len()].start)
+            })
+            .count();
+        if gaps == 0 {
+            return Ok(edges);
+        }
+        let mut completed = Vec::with_capacity(edges.len() + gaps);
+        for (i, &edge) in edges.iter().enumerate() {
+            completed.push(edge);
+            let next = edges[(i + 1) % edges.len()];
+            if Self::world_points_same_for_boundary(edge.end, next.start) {
+                continue;
+            }
+            let connector = Self::terrain_clip_node_material_corner_connector(edge, next)
+                .ok_or((edge.end, next.start))?;
+            completed.push(connector);
+        }
+        Ok(completed)
+    }
+
+    fn terrain_clip_node_material_corner_connector(
+        a: RoadSurfaceTerrainClipSourceEdge,
+        b: RoadSurfaceTerrainClipSourceEdge,
+    ) -> Option<RoadSurfaceTerrainClipSourceEdge> {
+        use super::super::band_semantics::raised_step_band_rank;
+        let width = f64::from(super::super::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        if (a.end.x - b.start.x).hypot(a.end.z - b.start.z) > width {
+            return None;
+        }
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind: ak,
+            owner_index: ai,
+            boundary_source: Some(ap),
+        } = a.source
+        else {
+            return None;
+        };
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id: bn,
+            kind: bk,
+            owner_kind: bkind,
+            owner_index: bi,
+            boundary_source: Some(bp),
+        } = b.source
+        else {
+            return None;
+        };
+        if node_id != bn || kind != bk {
+            return None;
+        }
+        let ah = SurfaceHeightMmKey::from_m_f64(a.end.y).as_i64();
+        let bh = SurfaceHeightMmKey::from_m_f64(b.start.y).as_i64();
+        let proof = Some(NodeFootprintBoundarySegmentSource {
+            start: ap.end,
+            end: bp.start,
+        });
+        let (source, edge_kind) = if ah == bh && ak == bkind {
+            (
+                RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                    node_id,
+                    kind,
+                    owner_kind: ak,
+                    owner_index_a: ai.min(bi),
+                    owner_index_b: ai.max(bi),
+                    boundary_source: proof,
+                },
+                a.kind,
+            )
+        } else {
+            let step_mm = (f64::from(super::super::CURB_STEP_HEIGHT_M) * 1000.0).round() as u64;
+            if ah.abs_diff(bh) != step_mm {
+                return None;
+            }
+            let (low_kind, high_kind, high_owner, edge_kind) = if ah < bh {
+                (ak, bkind, bi, b.kind)
+            } else {
+                (bkind, ak, ai, a.kind)
+            };
+            if raised_step_band_rank(high_kind)? <= raised_step_band_rank(low_kind)? {
+                return None;
+            }
+            (
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    node_id,
+                    kind,
+                    owner_kind: high_kind,
+                    owner_index: high_owner,
+                    boundary_source: proof,
+                },
+                edge_kind,
+            )
+        };
+        Some(RoadSurfaceTerrainClipSourceEdge {
+            start: a.end,
+            end: b.start,
+            kind: edge_kind,
+            source,
+        })
+    }
+
     fn append_terrain_clip_source_edge(
         out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
         mut edge: RoadSurfaceTerrainClipSourceEdge,
@@ -770,6 +898,54 @@ mod tests {
     };
     use super::*;
     use crate::simulation::network::types::EdgeClass;
+
+    #[test]
+    fn terrain_clip_material_corner_keeps_both_exact_source_endpoints() {
+        let source =
+            |owner_kind, owner_index, a, b| RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: 796,
+                kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+                owner_kind,
+                owner_index,
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: RoadSurfaceSystem::canonical_output_boundary_vertex_source(a),
+                    end: RoadSurfaceSystem::canonical_output_boundary_vertex_source(b),
+                }),
+            };
+        let low = RoadVec3::new(-647.867727, 95.777, 1458.000701);
+        let high = RoadVec3::new(-647.8677256392291, 95.897, 1458.000702558227);
+        let before = RoadVec3::new(-648.295579, 95.779, 1457.533843);
+        let after = RoadVec3::new(-645.956995, 95.774, 1460.188692);
+        let a = RoadSurfaceTerrainClipSourceEdge {
+            start: before,
+            end: low,
+            kind: RoadSurfaceTerrainClipEdgeKind::FootprintBoundary,
+            source: source(RoadSurfaceBandKind::Carriageway, 9, before, low),
+        };
+        let b = RoadSurfaceTerrainClipSourceEdge {
+            start: high,
+            end: after,
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: source(RoadSurfaceBandKind::Sidewalk, 11, high, after),
+        };
+        let cap = RoadSurfaceSystem::terrain_clip_node_material_corner_connector(a, b).unwrap();
+        assert_eq!((cap.start, cap.end), (low, high));
+        let mut cliff = b;
+        cliff.start.y += 0.493;
+        assert!(RoadSurfaceSystem::terrain_clip_node_material_corner_connector(a, cliff).is_none());
+        let mut unrelated = b;
+        if let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. } =
+            &mut unrelated.source
+        {
+            *node_id += 1;
+        }
+        assert!(
+            RoadSurfaceSystem::terrain_clip_node_material_corner_connector(a, unrelated).is_none()
+        );
+        let mut gap = b;
+        gap.start.x += 0.01;
+        assert!(RoadSurfaceSystem::terrain_clip_node_material_corner_connector(a, gap).is_none());
+    }
 
     #[test]
     fn terrain_clip_output_canonicalizes_matching_span_handoff_covered_segment_source() {
