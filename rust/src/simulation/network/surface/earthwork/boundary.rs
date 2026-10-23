@@ -331,6 +331,17 @@ mod tests {
     }
 
     #[test]
+    fn earthwork_loop_assembly_uses_the_shared_polygon_area_floor() {
+        let loops = RoadSurfaceSystem::owned_region_boundary_segment_loops(vec![
+            boundary_segment(0.0,0.0,0.01,0.0),
+            boundary_segment(0.01,0.0,0.0,0.01),
+            boundary_segment(0.0,0.01,0.0,0.0),
+        ]).expect("a 50 mm² closed roadbed exceeds the 1 mm² overlay area floor");
+        assert_eq!(loops.len(),1);
+        assert_eq!(loops[0].len(),3);
+    }
+
+    #[test]
     fn earthwork_boundary_loop_assembly_rejects_open_chain() {
         let result = RoadSurfaceSystem::owned_region_boundary_segment_loops(vec![
             boundary_segment(0.0, 0.0, 1.0, 0.0),
