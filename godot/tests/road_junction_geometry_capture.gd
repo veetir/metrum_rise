@@ -7,7 +7,9 @@ extends "res://tests/road_filled_underpass_test.gd"
 func run() -> void:
 	await setup_capture_scene()
 	var phase := OS.get_environment("METRUM_JUNCTION_PHASE")
-	output = ProjectSettings.globalize_path("res://../captures/road_junction_geometry/" + phase)
+	output = OS.get_environment("METRUM_JUNCTION_CAPTURE_OUTPUT")
+	if output.is_empty():
+		output = ProjectSettings.globalize_path("res://../captures/road_junction_geometry_completion/" + phase)
 	DirAccess.make_dir_recursive_absolute(output)
 	var source := OS.get_environment("METRUM_JUNCTION_SAVE")
 	if not simulation.load_game(source):
@@ -38,6 +40,17 @@ func run() -> void:
 	elif source.get_file().contains("bioteknia"):
 		await native_capture("bioteknia_original", Vector3(-778.56964,98.94254,1471.5917),27.74849,-0.23,-2.933)
 		await native_capture("bioteknia_overhead", Vector3(-778.56964,98.94254,1471.5917),105,-1.1,-2.933)
+	elif source.get_file().contains("pockets"):
+		var nodes: Array[int] = [227, 985, 1050, 1605]
+		var selected := OS.get_environment("METRUM_JUNCTION_CAPTURE_NODES")
+		if not selected.is_empty():
+			nodes.clear()
+			for value in selected.split(","):
+				nodes.append(value.to_int())
+		for id in nodes:
+			var pivot: Vector3 = simulation.get_node_pos(id)
+			await native_capture("junction_%d_overhead" % id, pivot, 55, -0.95, -0.65)
+			await native_capture("junction_%d_street" % id, pivot, 24, -0.12, -0.65)
 	elif source.get_file().contains("curve"):
 		var pivot := Vector3(1205.44,85.82,3415.43)
 		var label := "south_curve"
@@ -51,7 +64,9 @@ func run() -> void:
 		await road_street_capture(label + "_street", pivot)
 	else:
 		await native_capture("kys_original", Vector3(-73.19017,98.29294,922.70374),152.47514,-0.596,-1.94)
+		await native_capture("kys_close_overhead", Vector3(-73.19017,98.29294,922.70374),70,-1.05,-1.94)
 		await native_capture("kys_street", Vector3(-73.19017,98.29294,922.70374),40,-0.08,-1.94)
+		await edge_street_capture("kys_carriageway", 47)
 	main.queue_free()
 	await process_frame
 	quit(failures)
@@ -75,3 +90,31 @@ func road_street_capture(label: String, probe: Vector3) -> void:
 	if horizontal > 1.0:
 		# Keep the eye on the source road, rather than in the adjoining tall grass.
 		await native_capture(label, target, horizontal / cos(0.12), -0.12, atan2(offset.x, offset.z))
+
+var _waited_for_full_load := false
+
+func native_capture(label: String, pivot: Vector3, distance: float, pitch: float, yaw: float) -> void:
+	if not _waited_for_full_load:
+		_waited_for_full_load = true
+		# Full imported worlds request background patches beyond the photographed junction.
+		# Give that initial production load its own budget, then certify the actual view.
+		var deadline := Time.get_ticks_msec() + 300000
+		while main.get_node("Terrain").has_pending_render_work(false) and Time.get_ticks_msec() < deadline:
+			await process_frame
+	await super.native_capture(label, pivot, distance, pitch, yaw)
+
+func capture_terrain_settled(pivot: Vector3, radius: float) -> bool:
+	return super.capture_terrain_settled(pivot, radius) and not main.get_node("Terrain").has_pending_render_work(false)
+
+func edge_street_capture(label: String, edge: int) -> void:
+	var points: PackedVector3Array = simulation.get_edge_geometry_3d(edge)
+	expect(points.size() >= 2, "Carriageway camera has a source road")
+	if points.size() < 2:
+		return
+	var direction := Vector2(points[1].x-points[0].x, points[1].z-points[0].z).normalized()
+	var lateral := Vector3(-direction.y, 0, direction.x) * 6.0
+	var target := points[0] + lateral
+	var eye := points[mini(10, points.size()-1)] + lateral
+	var offset := eye-target
+	var horizontal := Vector2(offset.x,offset.z).length()
+	await native_capture(label, target, horizontal/cos(0.12), -0.12, atan2(offset.x,offset.z))

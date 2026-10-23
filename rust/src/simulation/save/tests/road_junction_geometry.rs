@@ -58,9 +58,176 @@ fn audit_imported_junction_geometry() {
     let mut terrain = world::load_terrain(&conn, &config).unwrap();
     let mut graph = network::load_graph(&conn).unwrap();
     let mut transit = TransitNetwork::new_for_world(&config);
-    transit
-        .road_surface
-        .compile_partial_for_geometry_audit(&graph, &terrain);
+    let probe = std::env::var("METRUM_JUNCTION_PROBE_NODES");
+    if let Ok(selection) = &probe {
+        let nodes = selection
+            .split(',')
+            .map(|id| id.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        let mut edges = nodes
+            .iter()
+            .flat_map(|&id| graph.node_adjacency(id))
+            .copied()
+            .collect::<Vec<_>>();
+        edges.push(992);
+        edges.sort_unstable();
+        edges.dedup();
+        transit.road_surface.compile_owners_for_geometry_audit(
+            &graph,
+            &terrain,
+            &edges,
+            &nodes,
+            std::env::var("METRUM_JUNCTION_PROBE_CHORDS").as_deref() == Ok("1"),
+        );
+        fs::write(
+            output.join("geometry.txt"),
+            transit
+                .road_surface
+                .build_edge_geometry_debug_dump(&graph, &terrain, &edges),
+        )
+        .unwrap();
+        eprintln!(
+            "probe spans={:?} nodes={:?}",
+            transit.road_surface.compiled_visual_span_pieces().keys(),
+            transit.road_surface.compiled_visual_node_pieces().keys()
+        );
+        for &id in &nodes {
+            let pos = graph.node(id).pos;
+            eprintln!(
+                "probe terrain node={id}: {:?}",
+                transit
+                    .road_surface
+                    .terrain_cdt_road_loops_for_world_bounds(
+                        &graph,
+                        pos.x - 24.0,
+                        pos.z - 24.0,
+                        pos.x + 24.0,
+                        pos.z + 24.0
+                    )
+                    .map(|_| ())
+            );
+        }
+        if std::env::var("METRUM_JUNCTION_MESH").as_deref() == Ok("1") {
+            let lanes = crate::simulation::network::lanes::LaneSystem::new();
+            let mesh = crate::simulation::network::render::road::RoadRenderer
+                .generate_mesh_data_with_surface(&graph, &lanes, &terrain, &transit.road_surface)
+                .seal();
+            let points = |v: &[Vector3]| v.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>();
+            fs::write(output.join("mesh.json"), serde_json::to_vec(&serde_json::json!({"road":points(&mesh.road_vertices),"curb":points(&mesh.curb_vertices),"sidewalk":points(&mesh.sidewalk_vertices),"steps":points(&mesh.raised_step_vertices),"concrete":points(&mesh.concrete_vertices),"earthwork":points(&mesh.earthwork_vertices),"grass":mesh.median_grass.as_ref().map(|m| points(&m.vertices))})).unwrap()).unwrap();
+        }
+        if std::env::var("METRUM_JUNCTION_TERRAIN_PATCHES").is_err() {
+            return;
+        }
+    }
+    if probe.is_err() {
+        transit
+            .road_surface
+            .compile_partial_for_geometry_audit(&graph, &terrain);
+    }
+    if let Ok(selection) = std::env::var("METRUM_JUNCTION_TERRAIN_PATCHES") {
+        if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+            crate::debug::set_mask(crate::debug::Channel::Road.bit());
+        }
+        let surface = &transit.road_surface;
+        let margins =
+            surface.terrain_render_patch_grading_margins_for_visible_roads(&graph, &terrain, 2.0);
+        let keys = if selection == "all" {
+            margins.keys().copied().collect::<Vec<_>>()
+        } else {
+            selection
+                .split(';')
+                .map(|pair| {
+                    let (x, z) = pair.split_once(',').unwrap();
+                    (x.parse().unwrap(), z.parse().unwrap())
+                })
+                .collect()
+        };
+        let mut failures = Vec::new();
+        let mut window_count = 0;
+        for (x, z) in keys {
+            let patch = terrain.visual_patch_snapshot(x, z).unwrap();
+            let margin = crate::simulation::terrain::terrain_cdt_road_query_margin_m(
+                &terrain,
+                2.0,
+                margins.get(&(x, z)).copied().unwrap_or_default(),
+            );
+            let query = surface.terrain_cdt_road_loops_for_world_bounds(
+                &graph,
+                patch.world_origin_x - margin,
+                patch.world_origin_z - margin,
+                patch.world_origin_x + patch.world_size_x + margin,
+                patch.world_origin_z + patch.world_size_z + margin,
+            );
+            let (loops, sources) = match query {
+                Ok(query) => query,
+                Err(error) => {
+                    eprintln!("terrain patch {x},{z}: clip export {error:?}");
+                    failures.push(format!("{x},{z}: clip export {error:?}"));
+                    continue;
+                }
+            };
+            let input =
+                crate::nodes::simulation_node::SimulationNode::planned_road_terrain_patch_input(
+                    &terrain,
+                    &patch,
+                    &loops,
+                    sources,
+                    true,
+                    margin,
+                    2.0,
+                    None,
+                    crate::simulation::network::surface::RoadSurfaceView::new(&graph, surface),
+                );
+            window_count += input.windows.len();
+            let entries =
+                crate::nodes::sim::core::SimCore::build_refined_terrain_patch_cache_entries(vec![
+                    input,
+                ]);
+            for entry in entries {
+                if let Some(error) =
+                    crate::nodes::simulation_node::SimulationNode::cached_refined_cdt_failure_label(
+                        &entry,
+                    )
+                {
+                    failures.push(format!("{x},{z}: {error}"));
+                    fs::write(
+                        output.join(format!("terrain-{x}-{z}.txt")),
+                        format!(
+                            "key={:?} error={error}\nwindows={:#?}",
+                            entry.key,
+                            entry
+                                .windows
+                                .iter()
+                                .map(|window| (
+                                    &window.key,
+                                    window
+                                        .mesh_result
+                                        .as_ref()
+                                        .map(|mesh| (&mesh.stats, &mesh.road_seam_face_samples))
+                                ))
+                                .collect::<Vec<_>>()
+                        ),
+                    )
+                    .unwrap();
+                    eprintln!("terrain patch {x},{z}: {error}");
+                }
+            }
+            eprintln!(
+                "terrain patch {x},{z}: windows={window_count} failures={}",
+                failures.len()
+            );
+        }
+        fs::write(
+            output.join("terrain-results.json"),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"windows":window_count,"failures":failures}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        return;
+    }
     let surface = &transit.road_surface;
     let missing_spans = (0..graph.edge_count())
         .filter(|id| !surface.compiled_visual_span_pieces().contains_key(id))
@@ -99,6 +266,10 @@ fn audit_imported_junction_geometry() {
     terrain_failures.sort_by_key(|v| v.0);
     let mut outliers = Vec::new();
     let mut selected = BTreeSet::from([12, 47, 123, 136, 137, 140, 45, 61, 62, 321, 322]);
+    selected.extend(missing_spans.iter().copied());
+    for &(node, _) in &walls {
+        selected.extend(graph.node_adjacency(node));
+    }
     for (&edge, sections) in surface.compiled_sections() {
         let delta = sections
             .iter()
@@ -119,6 +290,28 @@ fn audit_imported_junction_geometry() {
     for &node in surface.failed_node_ids() {
         selected.extend(graph.node_adjacency(node));
     }
+    let mut steep_visible_span_profiles = Vec::new();
+    for (&id, piece) in surface.compiled_visual_span_pieces() {
+        let max_grade = piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| {
+                region.owner().kind
+                    == crate::simulation::network::surface::RoadSurfaceBandKind::Carriageway
+            })
+            .filter_map(|region| {
+                let a = &piece.sections[region.start_section_index()];
+                let b = &piece.sections[region.end_section_index()];
+                let run = (a.center_xz - b.center_xz).length();
+                (run > f64::EPSILON)
+                    .then_some(f64::from((a.center_height_m - b.center_height_m).abs()) / run)
+            })
+            .fold(0.0_f64, f64::max);
+        if max_grade > 0.5 {
+            steep_visible_span_profiles.push((id, max_grade));
+        }
+    }
+    steep_visible_span_profiles.sort_by_key(|item| item.0);
     let mut steep_source_profiles = Vec::new();
     for (id, edge) in graph.edges().iter().enumerate() {
         let maximum = edge
@@ -144,10 +337,29 @@ fn audit_imported_junction_geometry() {
             }
         }
     }
+    let material_mesh = if std::env::var("METRUM_JUNCTION_MESH").as_deref() == Ok("1") {
+        let lanes = crate::simulation::network::lanes::LaneSystem::new();
+        let mesh = crate::simulation::network::render::road::RoadRenderer
+            .generate_mesh_data_with_surface(&graph, &lanes, &terrain, surface)
+            .seal();
+        let valid = mesh.render_payload_validated();
+        eprintln!(
+            "compiled_material_mesh validated={valid} vertices={}",
+            mesh.vertex_count()
+        );
+        assert!(
+            valid,
+            "full imported material mesh must compile without rejected unions or invalid buffers"
+        );
+        Some(serde_json::json!({"validated":valid,"vertices":mesh.vertex_count()}))
+    } else {
+        None
+    };
     let report = serde_json::json!({"save":path,"published":surface.published_generation_matches_source(),
-        "failure":surface.last_compile_failure_label(),"failed_nodes":surface.failed_node_ids(),
+        "material_mesh":material_mesh,"failure":surface.last_compile_failure_label(),"failed_nodes":surface.failed_node_ids(),
         "missing_spans":missing_spans,"oversized_kerb_steps":walls,"terrain_export_failures":terrain_failures,
-        "steep_source_profiles":steep_source_profiles,"section_outliers":outliers,"steep_node_planes":nodes,
+        "steep_source_profiles":steep_source_profiles,"steep_visible_span_profiles":steep_visible_span_profiles,"section_outliers":outliers,"steep_node_planes":nodes,
+        "mouth_height_discontinuities":surface.mouth_height_discontinuities_for_geometry_audit(&graph),
         "spans":surface.compiled_visual_span_pieces().len(),"nodes":surface.compiled_visual_node_pieces().len()});
     fs::write(
         output.join("audit.json"),
