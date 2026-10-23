@@ -102,18 +102,36 @@ impl RoadSurfaceSystem {
         contours: &[NodeOverlayContour],
         fill_rule: FillRule,
     ) -> Option<NodeOverlayShapes> {
+        Self::overlay_union_contours_with_options(contours, fill_rule, Self::int_overlay_options())
+    }
+
+    /// Extracts simple terrain-cut rings, preserving point-touching components and real holes.
+    pub(super) fn overlay_union_terrain_contours(
+        contours: &[NodeOverlayContour],
+    ) -> Option<NodeOverlayShapes> {
+        Self::overlay_union_contours_with_options(
+            contours,
+            FillRule::NonZero,
+            IntOverlayOptions {
+                ogc: true,
+                ..Self::int_overlay_options()
+            },
+        )
+    }
+
+    fn overlay_union_contours_with_options(
+        contours: &[NodeOverlayContour],
+        fill_rule: FillRule,
+        options: IntOverlayOptions,
+    ) -> Option<NodeOverlayShapes> {
         if contours.is_empty() {
             return Some(Vec::new());
         }
         let origin = Self::int_grid_origin_for_contours(contours);
         let subject = Self::int_contours_from_overlay_contours(contours, origin)?;
         let clip = Vec::new();
-        let mut overlay = Overlay::with_contours_custom(
-            &subject,
-            &clip,
-            Self::int_overlay_options(),
-            Default::default(),
-        );
+        let mut overlay =
+            Overlay::with_contours_custom(&subject, &clip, options, Default::default());
         let shapes = overlay.overlay(OverlayRule::Union, fill_rule);
         Some(Self::filter_overlay_shapes_by_area(
             Self::overlay_shapes_from_int_shapes(shapes, origin),
