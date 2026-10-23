@@ -88,21 +88,22 @@ impl RoadSurfaceSystem {
         );
         let mut changed = Vec::new();
         for (edge, sections) in updates {
-            if let Some(sections) = sections {
+            if let Some((sections, parents)) = sections {
                 self.compiled_sections.insert(edge, Arc::new(sections));
-                changed.push(edge);
+                changed.push((edge, parents));
             }
         }
         let rebuilt = Self::collect_compile_work(
             &changed,
             super::super::super::PARALLEL_SPAN_COMPILE_MIN_ITEMS,
-            |edge| {
-                let band_count = self.compiled_sections[&edge][0].bands.len();
-                (
-                    edge,
-                    self.compile_visual_span_piece(graph, terrain, edge)
-                        .filter(|piece| piece.sections[0].bands.len() == band_count),
-                )
+            |(edge, ref parents)| {
+                let piece = self
+                    .compiled_visual_span_pieces
+                    .get(&edge)
+                    .and_then(|source| {
+                        self.compile_visual_span_subdivision(graph, terrain, edge, source, parents)
+                    });
+                (edge, piece)
             },
         );
         let mut failed = Vec::new();
@@ -206,7 +207,7 @@ impl RoadSurfaceSystem {
 fn conformed_sections(
     original: &[RoadSurfaceSection],
     ends: &[Option<MouthProjection>; 2],
-) -> Option<Vec<RoadSurfaceSection>> {
+) -> Option<(Vec<RoadSurfaceSection>, Vec<usize>)> {
     let first = original.first()?;
     let mut splits = vec![vec![0.0, 1.0]; first.bands.len()];
     for (band_index, parameters) in splits.iter_mut().enumerate() {
@@ -286,7 +287,12 @@ fn conformed_sections(
         }
         section.bands = bands;
     }
-    Some(sections)
+    let parents = splits
+        .iter()
+        .enumerate()
+        .flat_map(|(i, split)| std::iter::repeat_n(i, split.len() - 1))
+        .collect();
+    Some((sections, parents))
 }
 
 fn projection_weights(station: f32, start: f32, end: f32, total: f32) -> (f64, f64) {

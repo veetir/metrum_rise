@@ -705,3 +705,99 @@ fn repaired_frame_cannot_diverge_from_a_new_layered_crossing_shell() {
         "the failed structural generation must retain the prior validated span"
     );
 }
+
+#[test]
+fn derived_band_subdivision_cannot_expand_the_validated_material_domain() {
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let b = graph.add_node(Vector3::new(40.0, 0.0, 0.0), NodeType::Junction);
+    let edge = graph.add_edge(test_edge(
+        a,
+        b,
+        vec![Vector3::ZERO, Vector3::new(40.0, 0.0, 0.0)],
+        4.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR,
+    ));
+    let band = |kind, start, end, height| RoadSurfaceBand {
+        kind,
+        lateral_start_m: start,
+        lateral_end_m: end,
+        height_start_m: height,
+        height_end_m: height,
+    };
+    let section = |s| RoadSurfaceSection {
+        edge_idx: edge,
+        s_m: s,
+        center_xz: RoadVec2::new(f64::from(s), 0.0),
+        center_height_m: 0.0,
+        tangent_xz: RoadVec2::new(1.0, 0.0),
+        lateral_xz: RoadVec2::new(0.0, 1.0),
+        bands: vec![
+            band(RoadSurfaceBandKind::Carriageway, -2.0, 2.0, 0.0),
+            band(RoadSurfaceBandKind::Sidewalk, 2.0, 2.02, CURB_STEP_HEIGHT_M),
+        ],
+    };
+    let terrain = flat_terrain(64, 64);
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    let mut sections = vec![section(0.0), section(5.0), section(35.0), section(40.0)];
+    surface
+        .compiled_sections
+        .insert(edge, std::sync::Arc::new(sections.clone()));
+    let source = surface
+        .compile_visual_span_piece(&graph, &terrain, edge)
+        .unwrap();
+    assert!(
+        source
+            .span_owned_regions
+            .iter()
+            .all(|r| r.owner().kind == RoadSurfaceBandKind::Carriageway)
+    );
+    for section in &mut sections {
+        let sidewalk = section.bands[1].clone();
+        section.bands = (0..8)
+            .map(|i| {
+                band(
+                    RoadSurfaceBandKind::Carriageway,
+                    -2.0 + i as f32 * 0.5,
+                    -1.5 + i as f32 * 0.5,
+                    0.0,
+                )
+            })
+            .chain([sidewalk])
+            .collect();
+    }
+    surface
+        .compiled_sections
+        .insert(edge, std::sync::Arc::new(sections));
+    // A larger band count changes the ordinary strip cutoff. Grade subdivision must
+    // neither resurrect an excluded strip nor invent new footprint outside its parent.
+    let refined = surface
+        .compile_visual_span_subdivision(
+            &graph,
+            &terrain,
+            edge,
+            &source,
+            &[0, 0, 0, 0, 0, 0, 0, 0, 1],
+        )
+        .unwrap();
+    assert!(
+        refined
+            .span_owned_regions
+            .iter()
+            .all(|r| r.owner().kind == RoadSurfaceBandKind::Carriageway)
+    );
+    let area = |p: &RoadSurfaceVisualSpanPiece| {
+        p.span_owned_regions
+            .iter()
+            .map(|r| {
+                f64::from(RoadSurfaceSystem::signed_polygon_area_xz(
+                    r.quad(&p.sections).points(),
+                ))
+                .abs()
+            })
+            .sum::<f64>()
+    };
+    assert!((area(&source) - area(&refined)).abs() < 1.0e-6);
+}
