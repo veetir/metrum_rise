@@ -49,6 +49,45 @@ impl RoadSurfaceSystem {
         }
     }
 
+    fn cohort_source_footprint(
+        &mut self,
+        graph: &RegionGraph,
+        node: u32,
+        resident: Option<&Self>,
+    ) -> Result<crate::simulation::network::surface::NodeOverlayShapes, String> {
+        if let Some(resident) = resident {
+            for &edge in graph.node_adjacency(node) {
+                if let Some(sections) = resident.compiled_sections.get(&edge) {
+                    self.compiled_sections
+                        .entry(edge)
+                        .or_insert_with(|| Arc::clone(sections));
+                }
+                if let Some(piece) = resident.compiled_visual_span_pieces.get(&edge) {
+                    self.compiled_visual_span_pieces
+                        .entry(edge)
+                        .or_insert_with(|| Arc::clone(piece));
+                }
+            }
+        }
+        let input = self
+            .visual_node_compile_input(graph, node)
+            .ok_or_else(|| format!("cohort_source_footprint_input node={node}"))?;
+        let mut input =
+            Self::build_node_arrangement_input_from_mouths(node, input.kind, &input.mouths)
+                .map_err(|_| format!("cohort_source_footprint_arrangement_input node={node}"))?;
+        input.coalesce_grade_subdivisions();
+        let (rails, _) = Self::build_node_rail_contours_from_input_with_profile(&input, false)
+            .map_err(|_| format!("cohort_source_footprint_rails node={node}"))?;
+        let contours = rails
+            .contours
+            .iter()
+            .filter(|c| c.contributes_to_footprint())
+            .map(|c| c.points_xz.iter().map(|p| [p.x, p.y]).collect())
+            .collect::<Vec<_>>();
+        Self::overlay_union_contours(&contours)
+            .ok_or_else(|| format!("cohort_source_footprint_domain node={node}"))
+    }
+
     /// Traverses positive overlaps along source road adjacency, never a city-wide dirty scan.
     /// Work is O(local incidence + intersecting triangle-grid candidates). Saved centres and
     /// exterior mouths constrain the solve; interior mouths are products, not new authorities.
@@ -113,6 +152,92 @@ impl RoadSurfaceSystem {
                 }
             }
             if conflict && members.len() > 1 {
+                members.sort_unstable();
+                groups.push(members);
+            }
+        }
+        // Coalescing derived grade bands can restore material domains absent
+        // from the initial top triangulation. Close active components over the
+        // complete source roadbed footprints before solving any shared grade.
+        // Each reached node's footprint is built once; traversal follows existing
+        // source adjacency and never searches the city for new neighbours.
+        let initial_groups = groups;
+        let initial_group_by_node = initial_groups
+            .iter()
+            .enumerate()
+            .flat_map(|(i, group)| group.iter().map(move |&node| (node, i)))
+            .collect::<BTreeMap<_, _>>();
+        let active = initial_group_by_node
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut covered = BTreeSet::new();
+        let mut footprints = BTreeMap::new();
+        let mut groups = Vec::new();
+        for seed in active {
+            if !covered.insert(seed) {
+                continue;
+            }
+            let mut members = vec![seed];
+            let mut cursor = 0;
+            while cursor < members.len() {
+                let node = members[cursor];
+                cursor += 1;
+                if let Some(&initial) = initial_group_by_node.get(&node) {
+                    for &member in &initial_groups[initial] {
+                        if covered.insert(member) {
+                            members.push(member);
+                        }
+                    }
+                }
+                let Some(level) = owner_level(graph, RoadMaterialOwner::Node(node)) else {
+                    continue;
+                };
+                for &id in graph.node_adjacency(node) {
+                    let edge = graph.edge(id);
+                    if edge.deleted
+                        || edge.class != EdgeClass::Standard
+                        || edge.primary_type != TransitType::Road
+                        || edge.crossing_level != level
+                    {
+                        continue;
+                    }
+                    let start = graph.get_valid_node(edge.start_node);
+                    let other = if start == node {
+                        graph.get_valid_node(edge.end_node)
+                    } else {
+                        start
+                    };
+                    if covered.contains(&other)
+                        || owner_level(graph, RoadMaterialOwner::Node(other)) != Some(level)
+                        || !self.compiled_visual_node_pieces.contains_key(&other)
+                            && resident
+                                .is_none_or(|r| !r.compiled_visual_node_pieces.contains_key(&other))
+                    {
+                        continue;
+                    }
+                    for member in [node, other] {
+                        if let std::collections::btree_map::Entry::Vacant(entry) =
+                            footprints.entry(member)
+                        {
+                            entry.insert(self.cohort_source_footprint(graph, member, resident)?);
+                        }
+                    }
+                    let overlap = Self::overlay_binary_shapes(
+                        &footprints[&node],
+                        &footprints[&other],
+                        i_overlay::core::overlay_rule::OverlayRule::Intersect,
+                    )
+                    .ok_or_else(|| {
+                        format!("cohort_source_footprint_overlap nodes={node}/{other}")
+                    })?;
+                    if !overlap.is_empty() {
+                        covered.insert(other);
+                        members.push(other);
+                    }
+                }
+            }
+            if members.len() > 1 {
                 members.sort_unstable();
                 groups.push(members);
             }
