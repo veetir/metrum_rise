@@ -141,13 +141,10 @@ impl RoadSurfaceSystem {
             edge,
             &cumulative,
             mouth_policy,
-            start_profile_plane.is_some(),
-            end_profile_plane.is_some(),
+            (start_profile_plane.is_some(), end_profile_plane.is_some()),
             width_tapers,
+            median_ends,
         );
-        if edge.median.is_some() {
-            median_ends.add_samples(&mut sample_distances, total_length_m);
-        }
         if let Some(ends) = &edge.lane_tapers {
             for (end, taper) in ends.iter().enumerate() {
                 if let Some(taper) = taper {
@@ -559,10 +556,11 @@ impl RoadSurfaceSystem {
         edge: &Edge,
         cumulative: &[f32],
         mouth_policy: EdgeMouthPolicy,
-        has_start_profile: bool,
-        has_end_profile: bool,
+        profile_ends: (bool, bool),
         width_tapers: EdgeWidthTapers,
+        median_ends: super::median::MedianEnds,
     ) -> Vec<f32> {
+        let (has_start_profile, has_end_profile) = profile_ends;
         let Some(&total_length) = cumulative.last() else {
             return vec![0.0];
         };
@@ -673,6 +671,9 @@ impl RoadSurfaceSystem {
             }
         }
 
+        if edge.median.is_some() {
+            median_ends.add_samples(&mut samples, total_length, &protected_samples);
+        }
         samples.sort_by(f32::total_cmp);
         samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
         samples

@@ -70,17 +70,18 @@ impl MedianEnds {
         t * t * (3.0 - 2.0 * t)
     }
 
-    pub(super) fn add_samples(self, samples: &mut Vec<f32>, length: f32) {
+    pub(super) fn add_samples(self, samples: &mut Vec<f32>, length: f32, protected: &[f32]) {
         // A nose has its own one-metre station lattice. Mixing in the terrain/profile lattice
         // can split its tip into sub-centimetre kerb triangles which the surface quality
         // contract rejects, leaving holes in an otherwise complete ordered band partition.
         samples.retain(|&s| {
-            !self
-                .start
-                .is_some_and(|tip| s > tip && s < tip + NOSE_LENGTH_M)
-                && !self
-                    .end
-                    .is_some_and(|tip| s < tip && s > tip - NOSE_LENGTH_M)
+            protected.contains(&s)
+                || (!self
+                    .start
+                    .is_some_and(|tip| s > tip && s < tip + NOSE_LENGTH_M)
+                    && !self
+                        .end
+                        .is_some_and(|tip| s < tip && s > tip - NOSE_LENGTH_M))
         });
         for (tip, sign) in [(self.start, 1.0), (self.end, -1.0)] {
             if let Some(tip) = tip {
@@ -103,6 +104,23 @@ mod tests {
     use crate::simulation::network::graph::{Edge, RoadMedian};
     use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
     use godot::prelude::*;
+
+    #[test]
+    fn overlapping_noses_keep_exact_mouth_and_endpoint_stations() {
+        let ends = MedianEnds {
+            start: Some(2.0),
+            end: Some(3.0),
+        };
+        let protected = [0.0, 2.25, 2.75, 5.0];
+        let mut samples = protected.to_vec();
+        ends.add_samples(&mut samples, 5.0, &protected);
+        for station in protected {
+            assert!(
+                samples.contains(&station),
+                "lost protected station {station}"
+            );
+        }
+    }
 
     #[test]
     fn only_a_marked_arm_reserves_zebra_clearance() {
