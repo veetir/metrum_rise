@@ -386,7 +386,7 @@ pub(super) fn canonicalize_input_with_grading_bounds(
         }
     }
 
-    invalid_constraint_edges += node_road_constraint_edges(
+    let (noding_invalid_edges, constraint_index) = node_road_constraint_edges(
         &mut vertices,
         &mut vertex_lookup,
         input.patch,
@@ -394,9 +394,12 @@ pub(super) fn canonicalize_input_with_grading_bounds(
         &mut road_constraint_edges,
         &mut road_constraint_sources,
     );
+    invalid_constraint_edges += noding_invalid_edges;
     let internal_road_constraint_edges = retain_exposed_road_constraint_edges(
         &vertices,
         &road_loops,
+        &constraint_index,
+        input.patch,
         &mut road_constraint_edges,
         &mut road_constraint_sources,
     );

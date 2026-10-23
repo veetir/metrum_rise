@@ -103,9 +103,9 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
     source_sample_vertex_indices: &[usize],
     road_constraint_edges: &mut Vec<[usize; 2]>,
     road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
-) -> usize {
+) -> (usize, TerrainCdtRoadConstraintIndex) {
     if road_constraint_edges.len() < 2 {
-        return 0;
+        return (0, TerrainCdtRoadConstraintIndex::new());
     }
 
     let original_edges = road_constraint_edges.clone();
@@ -208,7 +208,7 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
         }
     }
 
-    split_road_constraints_at_source_samples(
+    let index = split_road_constraints_at_source_samples(
         &original_edges,
         vertices,
         source_sample_vertex_indices,
@@ -247,7 +247,7 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
     }
 
     *road_constraint_edges = noded_edges.into_iter().collect();
-    invalid_constraint_edges
+    (invalid_constraint_edges, index)
 }
 
 fn terrain_cdt_constraint_vertex_site_ownership(
@@ -273,13 +273,20 @@ fn terrain_cdt_constraint_vertex_site_ownership(
 pub(in crate::simulation::terrain::cdt) fn retain_exposed_road_constraint_edges(
     vertices: &[TerrainCdtVertex],
     road_loops: &[CanonicalTerrainCdtRoadLoop],
+    index: &TerrainCdtRoadConstraintIndex,
+    patch: TerrainCdtPatch,
     road_constraint_edges: &mut Vec<[usize; 2]>,
     road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
 ) -> usize {
     let mut internal_edges = Vec::new();
     road_constraint_edges.retain(|edge| {
-        let exposed =
-            road_constraint_edge_exposes_terrain(vertices[edge[0]], vertices[edge[1]], road_loops);
+        let exposed = road_constraint_edge_exposes_terrain(
+            vertices[edge[0]],
+            vertices[edge[1]],
+            road_loops,
+            index,
+            patch,
+        );
         if !exposed {
             internal_edges.push(*edge);
         }
@@ -295,23 +302,58 @@ fn road_constraint_edge_exposes_terrain(
     start: TerrainCdtVertex,
     end: TerrainCdtVertex,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
+    index: &TerrainCdtRoadConstraintIndex,
+    patch: TerrainCdtPatch,
 ) -> bool {
     let dx = end.x - start.x;
     let dz = end.z - start.z;
     let length = dx.hypot(dz);
-    if length <= CDT_EPSILON_M {
+    if same_xz(start, end) {
         return false;
     }
     let mid_x = (start.x + end.x) * 0.5;
     let mid_z = (start.z + end.z) * 0.5;
-    let probe_distance = MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M.min(length * 0.25);
+    let midpoint = TerrainCdtVertex::new(mid_x, start.height_m, mid_z);
+    // A fixed 5 cm probe can jump across a narrow hole and label both rails internal.
+    // Reuse the guide-noding index to bound each probe by half the exact clearance.
+    let max_probe = MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M.min(length * 0.25);
+    let bounds = AABB::from_corners(
+        [mid_x - max_probe, mid_z - max_probe],
+        [mid_x + max_probe, mid_z + max_probe],
+    );
+    let mut clearance = max_probe * 2.0;
+    for candidate in index.locate_in_envelope_intersecting(&bounds) {
+        let line = candidate.geom();
+        let a = TerrainCdtVertex::new(line.from[0], 0.0, line.from[1]);
+        let b = TerrainCdtVertex::new(line.to[0], 0.0, line.to[1]);
+        let t = segment_parameter(a, b, mid_x, mid_z).clamp(0.0, 1.0);
+        let distance = edge_length_xz_m(midpoint, interpolate_vertex(a, b, t));
+        // Ignore arithmetic roundoff on the supporting line, never a neighboring rail
+        // merely because the two probes fall in the same topology cell.
+        if distance <= coordinate_construction_roundoff_m(&[a, b, midpoint]) {
+            continue;
+        }
+        clearance = clearance.min(distance);
+    }
+    // Clip-generated rails are not source constraints, but also bound the two probes.
+    for distance in [
+        mid_x - patch.min_x,
+        patch.max_x - mid_x,
+        mid_z - patch.min_z,
+        patch.max_z - mid_z,
+    ] {
+        if distance > CDT_XZ_IDENTITY_GRID_M {
+            clearance = clearance.min(distance);
+        }
+    }
+    let probe_distance = max_probe.min(clearance * 0.5);
     let nx = -dz / length * probe_distance;
     let nz = dx / length * probe_distance;
     let height_m = (start.height_m + end.height_m) * 0.5;
     let left_probe = TerrainCdtVertex::new(mid_x + nx, height_m, mid_z + nz);
     let right_probe = TerrainCdtVertex::new(mid_x - nx, height_m, mid_z - nz);
-    road_exterior_support_point(left_probe, road_loops)
-        || road_exterior_support_point(right_probe, road_loops)
+    !point_inside_any_road_footprint(left_probe, road_loops)
+        || !point_inside_any_road_footprint(right_probe, road_loops)
 }
 
 fn split_road_constraints_at_source_samples(

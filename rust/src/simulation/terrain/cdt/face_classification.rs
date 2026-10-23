@@ -406,14 +406,6 @@ fn point_strictly_inside_triangle_xz(
     }
 }
 
-pub(super) fn road_exterior_support_point(
-    point: TerrainCdtVertex,
-    road_loops: &[CanonicalTerrainCdtRoadLoop],
-) -> bool {
-    !point_inside_any_road_footprint(point, road_loops)
-        && !point_on_any_road_loop_boundary(point, road_loops)
-}
-
 fn point_on_any_road_loop_boundary(
     point: TerrainCdtVertex,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
