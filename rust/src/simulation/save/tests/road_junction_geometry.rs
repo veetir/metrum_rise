@@ -348,3 +348,24 @@ fn bioteknia_complete_mouth_profile_matches_junction_grade() {
         "the full transverse mouth grade must match, including interior material boundaries"
     );
 }
+
+#[test]
+fn curved_terminal_cap_keeps_the_approach_grade_at_its_mouth() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/terminal_cap_grade.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_owners_for_geometry_audit(&graph, &terrain, &[1], &[2], false);
+    assert!(surface.compiled_visual_node_pieces().contains_key(&2));
+    assert_eq!(
+        surface.mouth_height_discontinuities_for_geometry_audit(&graph),
+        vec![],
+        "a generated terminal cap inherits the curved approach's grade, not a flat node elevation"
+    );
+}

@@ -11,16 +11,30 @@ pub(in crate::simulation::network::surface::node::height) fn apply_source_materi
     regions: &mut [NodeHeightedRegion],
     grade: Option<&super::common_field::NodeMaterialGradeField>,
 ) -> bool {
-    let Some(levels) = declared_levels(input) else {
+    let Some(mut levels) = declared_levels(input) else {
         return false;
     };
     for region in regions.iter() {
         if levels.contains_key(&region.height_field_id) {
             continue;
         }
-        return false;
+        // A terminal cap has generated band identities, but inherits its material
+        // level from the one source cross-section. It shares the approach grade
+        // even where a tight end curve overlaps the cap in plan.
+        if input.piece_kind != super::super::super::RoadSurfaceVisualNodePieceKind::Terminal {
+            return false;
+        }
+        let mut candidates = levels
+            .iter()
+            .filter_map(|(id, &level)| (id.kind() == region.kind).then_some(level));
+        let Some(level) = candidates.next() else {
+            return false;
+        };
+        if candidates.any(|other| other != level) {
+            return false;
+        }
+        levels.insert(region.height_field_id, level);
     }
-
     let built = grade
         .is_none()
         .then(|| super::common_field::NodeMaterialGradeField::from_input(input, &levels))
