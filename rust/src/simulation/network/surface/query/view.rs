@@ -96,6 +96,27 @@ impl PlannedRoadSurfaceQuery {
                     crossing.lower_edges.sort_unstable();
                 }
                 if **actual != expected {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_span_mismatch local={} live={} sections_match={} expected_sections={} actual_sections={}",
+                        local,
+                        live,
+                        actual.sections == expected.sections,
+                        expected.sections.len(),
+                        actual.sections.len(),
+                    );
+                    if crate::debug::Channel::Road.enabled()
+                        && let Some((expected, actual)) = expected
+                            .sections
+                            .iter()
+                            .zip(actual.sections.iter())
+                            .find(|(a, b)| a != b)
+                    {
+                        crate::debug_log!(
+                            "road",
+                            "road_plan_section_mismatch expected={expected:?} actual={actual:?}"
+                        );
+                    }
                     return false;
                 }
             }
@@ -109,6 +130,12 @@ impl PlannedRoadSurfaceQuery {
                 if !self.surface.compiled_visual_node_inputs[&local]
                     .topology_eq_ignoring_edge_identity(input)
                 {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_node_input_mismatch local={} live={}",
+                        local,
+                        live
+                    );
                     return false;
                 }
                 let expected = surface.replay_exact_preview_node_piece(
@@ -129,6 +156,12 @@ impl PlannedRoadSurfaceQuery {
                 );
                 let expected = surface.published_node_piece(expected.piece);
                 if surface.compiled_visual_node_pieces.get(&live) != Some(&expected) {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_node_piece_mismatch local={} live={}",
+                        local,
+                        live
+                    );
                     return false;
                 }
             }
