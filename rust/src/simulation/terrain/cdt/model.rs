@@ -8,7 +8,10 @@ mod ordering;
 
 pub(super) use ordering::*;
 
+// Incidence/height budgets remain millimetres; authoritative road XZ topology does not.
 pub(super) const CDT_EPSILON_M: f64 = 0.001;
+/// Authoritative roadbed topology grid, independent of terrain height/incidence budgets.
+pub(super) const CDT_XZ_IDENTITY_GRID_M: f64 = 0.000_001;
 pub(super) const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 pub(super) const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
 pub(super) const MAX_SEAM_QUALITY_SAMPLES: usize = 8;

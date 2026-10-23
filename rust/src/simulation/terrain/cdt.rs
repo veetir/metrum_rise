@@ -138,7 +138,7 @@ fn segments_have_metric_collinear_overlap(
     let second_dz = second_end.z - second_start.z;
     let first_length_m = first_dx.hypot(first_dz);
     let second_length_m = second_dx.hypot(second_dz);
-    if first_length_m <= CDT_EPSILON_M || second_length_m <= CDT_EPSILON_M {
+    if first_length_m <= CDT_XZ_IDENTITY_GRID_M || second_length_m <= CDT_XZ_IDENTITY_GRID_M {
         return false;
     }
 

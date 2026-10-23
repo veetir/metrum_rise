@@ -117,3 +117,31 @@ fn cdt_merges_subbudget_same_authority_seam_fragments_before_triangulation() {
         other => panic!("merged seam must preserve span authority, got {other:?}"),
     }
 }
+
+#[test]
+fn seam_hardening_keeps_noncollinear_submillimetre_road_corners() {
+    let points = vec![
+        TerrainCdtVertex::new(3.0, 0.12, 3.0),
+        TerrainCdtVertex::new(5.0, 0.12, 3.0),
+        TerrainCdtVertex::new(5.004, 0.12, 2.9995),
+        TerrainCdtVertex::new(7.0, 0.12, 3.0),
+        TerrainCdtVertex::new(7.0, 0.12, 7.0),
+        TerrainCdtVertex::new(3.0, 0.12, 7.0),
+    ];
+    let road = sourced_road_loop(
+        79,
+        0,
+        points.clone(),
+        test_span_boundary_source(79, TerrainCdtRoadBandKind::Sidewalk, 5),
+    );
+    let quality = harden_terrain_cdt_road_loop_seams(
+        points.clone(),
+        &road.source_edges,
+        TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+    );
+    assert_eq!(
+        quality.points, points,
+        "short curves must retain the exact road/terrain cut"
+    );
+    assert_eq!(quality.merged_subbudget_seam_edges, 0);
+}

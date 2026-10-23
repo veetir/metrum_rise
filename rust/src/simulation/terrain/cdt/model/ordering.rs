@@ -309,7 +309,7 @@ pub(in crate::simulation::terrain::cdt) fn normalize_edge_array(a: usize, b: usi
 pub(in crate::simulation::terrain::cdt) fn terrain_cdt_vertex_xz_key(
     vertex: TerrainCdtVertex,
 ) -> (i64, i64) {
-    (quantized_coord(vertex.x), quantized_coord(vertex.z))
+    (quantized_xz_coord(vertex.x), quantized_xz_coord(vertex.z))
 }
 
 pub(in crate::simulation::terrain::cdt) fn terrain_cdt_vertex_key(

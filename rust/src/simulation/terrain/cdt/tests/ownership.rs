@@ -450,3 +450,17 @@ fn road_loop_endpoint_on_another_loop_edge_splits_the_roadbed_constraint() {
             && (vertex.height_m - 0.12).abs() <= 0.0001
     }));
 }
+
+#[test]
+fn near_coincident_kerb_rails_intersect_only_at_the_shared_endpoint() {
+    let a = TerrainCdtVertex::new(-666.099032, 102.288, 1666.876382);
+    let b = TerrainCdtVertex::new(-665.385927, 102.219, 1669.740489);
+    let c = TerrainCdtVertex::new(-666.099033, 102.408, 1666.876382);
+    assert_eq!(
+        segment_intersections(a, b, c, b)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        vec![TerrainCdtVertex::new(b.x, 0.0, b.z)]
+    );
+}
