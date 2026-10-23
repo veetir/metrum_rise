@@ -5,6 +5,34 @@
 use super::*;
 
 #[test]
+fn renderable_small_boundary_uses_the_shared_area_floor() {
+    let points = [
+        backend::RoadVec3::new(-665.3129807088909, 95.19200134277344, 2097.2013362606426),
+        backend::RoadVec3::new(-665.2809360944084, 95.22282409667969, 2097.1112631674478),
+        backend::RoadVec3::new(-665.2945632364216, 95.19200134277344, 2097.2058903018574),
+    ];
+    let source = RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+        node_id: 0,
+        kind: RoadSurfaceVisualNodePieceKind::Bend,
+        owner_kind: RoadSurfaceBandKind::Carriageway,
+        owner_index: 0,
+        boundary_source: None,
+    };
+    let segments = (0..3)
+        .map(
+            |index| crate::simulation::network::surface::RoadSurfaceEarthworkBoundarySegment {
+                inner_start: points[index],
+                inner_end: points[(index + 1) % 3],
+                source,
+            },
+        )
+        .collect();
+    let loops = RoadSurfaceSystem::owned_region_boundary_segment_loops(segments).unwrap();
+    assert_eq!(loops.len(), 1);
+    assert_eq!(loops[0].len(), 3);
+}
+
+#[test]
 fn grounded_standard_roadbed_is_laterally_flat_and_footprint_stays_below_carriageway() {
     let mut terrain = TerrainSystem::with_chunking(129, 97, 1.0, 8, 0.0);
     for z in 0..97 {
