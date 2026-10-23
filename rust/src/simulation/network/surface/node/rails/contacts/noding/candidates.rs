@@ -1579,10 +1579,9 @@ mod tests {
             constraint_keys(shared_constraints[0]),
             constraint_keys(shared_constraints[1])
         );
-        assert_eq!(
-            constraint_keys(shared_constraints[0]),
-            generated_contour_keys(&cold_contours[2])
-        );
+        let mut closed_keys = generated_contour_keys(&cold_contours[2]);
+        closed_keys.push(closed_keys[0]);
+        assert_eq!(constraint_keys(shared_constraints[0]), closed_keys);
 
         let mut warm_contours = base_contours;
         let mut warm_constraints = base_constraints;
