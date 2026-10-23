@@ -53,120 +53,118 @@ impl NodeFootprintBoundaryExportSources {
         arrangement: &arrangement::NodeArrangement,
         top_height_context: &super::super::super::NodeExportTopHeightContext,
     ) -> Result<(), NodeBoundaryExportError> {
-        for edge in arrangement
-            .edges()
-            .iter()
-            .filter(|edge| edge.exposed_boundary())
-        {
-            let Some(start_vertex) = arrangement.vertices().get(edge.start().index()) else {
-                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
-            };
-            let Some(end_vertex) = arrangement.vertices().get(edge.end().index()) else {
-                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
-            };
-            if start_vertex.key() == end_vertex.key() {
-                continue;
-            }
-            let owner = edge.owner();
-            let start_source_kind = start_vertex
-                .grade_authority()
-                .source_provenance
-                .map_or(start_vertex.height_field_id().kind(), |provenance| {
-                    provenance.source_kind
-                });
-            let end_source_kind = end_vertex
-                .grade_authority()
-                .source_provenance
-                .map_or(end_vertex.height_field_id().kind(), |provenance| {
-                    provenance.source_kind
-                });
-            let start_source_kind = super::super::super::node_export_top_source_kind(
-                owner,
-                start_source_kind,
-                start_vertex.key(),
-                start_vertex.height_mm(),
-                top_height_context,
-            );
-            let end_source_kind = super::super::super::node_export_top_source_kind(
-                owner,
-                end_source_kind,
-                end_vertex.key(),
-                end_vertex.height_mm(),
-                top_height_context,
-            );
-            let height_mm = [
-                super::super::super::node_export_top_height_mm(
+        let chains = arrangement
+            .exposed_boundary_vertex_chains()
+            .map_err(|_| NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority)?;
+        for (edge_id, chain) in chains {
+            let edge = &arrangement.edges()[edge_id.index()];
+            for pair in chain.windows(2) {
+                let start_vertex = &arrangement.vertices()[pair[0].index()];
+                let end_vertex = &arrangement.vertices()[pair[1].index()];
+                if start_vertex.key() == end_vertex.key() {
+                    continue;
+                }
+                let owner = edge.owner();
+                let start_source_kind = start_vertex
+                    .grade_authority()
+                    .source_provenance
+                    .map_or(start_vertex.height_field_id().kind(), |provenance| {
+                        provenance.source_kind
+                    });
+                let end_source_kind = end_vertex
+                    .grade_authority()
+                    .source_provenance
+                    .map_or(end_vertex.height_field_id().kind(), |provenance| {
+                        provenance.source_kind
+                    });
+                let start_source_kind = super::super::super::node_export_top_source_kind(
                     owner,
                     start_source_kind,
                     start_vertex.key(),
                     start_vertex.height_mm(),
                     top_height_context,
-                ),
-                super::super::super::node_export_top_height_mm(
+                );
+                let end_source_kind = super::super::super::node_export_top_source_kind(
                     owner,
                     end_source_kind,
                     end_vertex.key(),
                     end_vertex.height_mm(),
                     top_height_context,
-                ),
-            ];
-            let start_point_key = ArrangementBoundaryPointKey {
-                x_key: start_vertex.key().x_key(),
-                z_key: start_vertex.key().z_key(),
-                y_mm: height_mm[0],
-            };
-            let end_point_key = ArrangementBoundaryPointKey {
-                x_key: end_vertex.key().x_key(),
-                z_key: end_vertex.key().z_key(),
-                y_mm: height_mm[1],
-            };
-            self.ensure_arrangement_exposed_boundary_vertex_source(start_point_key, owner)?;
-            self.ensure_arrangement_exposed_boundary_vertex_source(end_point_key, owner)?;
-            self.final_height_edges
-                .push(NodeFinalFootprintBoundaryHeightEdge {
+                );
+                let height_mm = [
+                    super::super::super::node_export_top_height_mm(
+                        owner,
+                        start_source_kind,
+                        start_vertex.key(),
+                        start_vertex.height_mm(),
+                        top_height_context,
+                    ),
+                    super::super::super::node_export_top_height_mm(
+                        owner,
+                        end_source_kind,
+                        end_vertex.key(),
+                        end_vertex.height_mm(),
+                        top_height_context,
+                    ),
+                ];
+                let start_point_key = ArrangementBoundaryPointKey {
+                    x_key: start_vertex.key().x_key(),
+                    z_key: start_vertex.key().z_key(),
+                    y_mm: height_mm[0],
+                };
+                let end_point_key = ArrangementBoundaryPointKey {
+                    x_key: end_vertex.key().x_key(),
+                    z_key: end_vertex.key().z_key(),
+                    y_mm: height_mm[1],
+                };
+                self.ensure_arrangement_exposed_boundary_vertex_source(start_point_key, owner)?;
+                self.ensure_arrangement_exposed_boundary_vertex_source(end_point_key, owner)?;
+                self.final_height_edges
+                    .push(NodeFinalFootprintBoundaryHeightEdge {
+                        start_point_key,
+                        end_point_key,
+                        owner_kind: owner.kind(),
+                        owner_index: owner.owner_index(),
+                    });
+                self.insert_final_footprint_boundary_vertex_source(start_point_key, owner)?;
+                self.insert_final_footprint_boundary_vertex_source(end_point_key, owner)?;
+                let Some(NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::Direct(start_source),
+                    ..
+                }) = self.unique_direct_vertex_source_for_owner_at_point(
+                    start_point_key,
+                    owner.kind(),
+                    owner.owner_index(),
+                )?
+                else {
+                    continue;
+                };
+                let Some(NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::Direct(end_source),
+                    ..
+                }) = self.unique_direct_vertex_source_for_owner_at_point(
+                    end_point_key,
+                    owner.kind(),
+                    owner.owner_index(),
+                )?
+                else {
+                    continue;
+                };
+                self.source_edges.push(NodeEarthworkBoundarySourceEdge {
                     start_point_key,
                     end_point_key,
+                    start_key: start_point_key.xz_key(),
+                    end_key: end_point_key.xz_key(),
+                    final_footprint_boundary: true,
+                    node_id: arrangement.node_id(),
+                    kind: arrangement.piece_kind(),
                     owner_kind: owner.kind(),
                     owner_index: owner.owner_index(),
+                    height_field_id: edge.height_field_id(),
+                    start_source,
+                    end_source,
                 });
-            self.insert_final_footprint_boundary_vertex_source(start_point_key, owner)?;
-            self.insert_final_footprint_boundary_vertex_source(end_point_key, owner)?;
-            let Some(NodeFootprintBoundaryDirectVertex {
-                source: NodeFootprintBoundaryVertexSource::Direct(start_source),
-                ..
-            }) = self.unique_direct_vertex_source_for_owner_at_point(
-                start_point_key,
-                owner.kind(),
-                owner.owner_index(),
-            )?
-            else {
-                continue;
-            };
-            let Some(NodeFootprintBoundaryDirectVertex {
-                source: NodeFootprintBoundaryVertexSource::Direct(end_source),
-                ..
-            }) = self.unique_direct_vertex_source_for_owner_at_point(
-                end_point_key,
-                owner.kind(),
-                owner.owner_index(),
-            )?
-            else {
-                continue;
-            };
-            self.source_edges.push(NodeEarthworkBoundarySourceEdge {
-                start_point_key,
-                end_point_key,
-                start_key: start_point_key.xz_key(),
-                end_key: end_point_key.xz_key(),
-                final_footprint_boundary: true,
-                node_id: arrangement.node_id(),
-                kind: arrangement.piece_kind(),
-                owner_kind: owner.kind(),
-                owner_index: owner.owner_index(),
-                height_field_id: edge.height_field_id(),
-                start_source,
-                end_source,
-            });
+            }
         }
         self.source_edges.sort_by(|a, b| {
             node_earthwork_source_edge_ordering(a, b)

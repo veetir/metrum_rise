@@ -18,6 +18,75 @@ fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
 }
 
 impl NodeArrangement {
+    /// Nodes each exposed source edge at retained top-mesh vertices of its owner and field.
+    pub(in crate::simulation::network::surface::node) fn exposed_boundary_vertex_chains(
+        &self,
+    ) -> Result<
+        Vec<(super::NodeArrangementEdgeId, Vec<NodeArrangementVertexId>)>,
+        NodeArrangementError,
+    > {
+        use crate::simulation::network::surface::segments;
+        use std::collections::{BTreeMap, BTreeSet};
+        let used = self
+            .faces
+            .iter()
+            .flat_map(|face| face.vertices)
+            .collect::<BTreeSet<_>>();
+        let mut by_key = BTreeMap::<_, Vec<_>>::new();
+        for id in used {
+            by_key
+                .entry(self.vertices[id.index()].key())
+                .or_default()
+                .push(id);
+        }
+        let index =
+            super::build::RelevantArrangementKeyIndex::new(&by_key.keys().copied().collect());
+        let mut chains = Vec::new();
+        for edge in self.edges.iter().filter(|edge| edge.exposed_boundary()) {
+            let start = self.vertices[edge.start.index()].key();
+            let end = self.vertices[edge.end.index()].key();
+            let mut chain = vec![edge.start, edge.end];
+            let mut conflict = None;
+            index.for_each_key_on_segment(start, end, |key| {
+                if key == start || key == end {
+                    return;
+                }
+                let mut matching = by_key[&key].iter().copied().filter(|id| {
+                    let vertex = &self.vertices[id.index()];
+                    vertex.height_field_id() == edge.height_field_id()
+                        && vertex.owners().contains(&edge.owner())
+                });
+                let Some(first) = matching.next() else {
+                    return;
+                };
+                if let Some(other) = matching.find(|id| {
+                    self.vertices[id.index()].height_mm()
+                        != self.vertices[first.index()].height_mm()
+                }) {
+                    conflict = Some(NodeArrangementError::DuplicateVertexHeightConflict {
+                        key,
+                        existing_height_mm: self.vertices[first.index()].height_mm(),
+                        incoming_height_mm: self.vertices[other.index()].height_mm(),
+                    });
+                    return;
+                }
+                chain.push(first);
+            });
+            if let Some(error) = conflict {
+                return Err(error);
+            }
+            chain.sort_unstable_by_key(|id| {
+                segments::segment_parameter_key(
+                    start.surface_key(),
+                    end.surface_key(),
+                    self.vertices[id.index()].key().surface_key(),
+                )
+            });
+            chains.push((edge.id, chain));
+        }
+        Ok(chains)
+    }
+
     pub(crate) fn push_face(
         &mut self,
         region: NodeOwnedRegionId,

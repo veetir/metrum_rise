@@ -2965,6 +2965,14 @@ any derived neighbours outside its bounded ledger. Source SQL regressions exerci
 boundary chains, near-parallel grade facets, millimetre support ties, dirty recompilation,
 preview remapping and undo. The source graph and saves remain unchanged.
 
+Terrain footprint export nodes each exposed ownership edge at retained top-mesh vertices
+from the same owner and height field. It reuses the arrangement's sorted segment-key index,
+then resolves footprint heights on those affine intervals. This prevents a terrain boundary
+from replacing a refined grade break with the original endpoint chord. A synthetic junction
+with a 250 mm boundary crest proves that both terrain intervals and their direct provenance
+survive export. The index and scratch remain local to one node, O(V log V + indexed edge
+candidates + output), with no world scan or persistent spatial index.
+
 Local preview context includes the fixed third incidence layer needed by crossfall supports'
 short-link endpoint grades. Without it, a full-width university approach differed by 6 mm
 between planning and commit despite identical source sections. This is a bounded adjacency

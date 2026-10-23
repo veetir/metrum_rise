@@ -722,13 +722,13 @@ impl MaterialHeightConflictIndex {
     }
 }
 
-struct RelevantArrangementKeyIndex {
+pub(super) struct RelevantArrangementKeyIndex {
     by_x: Vec<NodeArrangementKey>,
     by_z: Vec<NodeArrangementKey>,
 }
 
 impl RelevantArrangementKeyIndex {
-    fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
+    pub(super) fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
         let mut by_x = keys.iter().copied().collect::<Vec<_>>();
         by_x.sort_unstable_by_key(|key| (key.x_key, key.z_key));
         let mut by_z = keys.iter().copied().collect::<Vec<_>>();
@@ -736,7 +736,7 @@ impl RelevantArrangementKeyIndex {
         Self { by_x, by_z }
     }
 
-    fn for_each_key_on_segment(
+    pub(super) fn for_each_key_on_segment(
         &self,
         start: NodeArrangementKey,
         end: NodeArrangementKey,

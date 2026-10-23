@@ -317,3 +317,85 @@ fn a_micro_contour_reaches_cdt_disposal_without_rejecting_its_junction() {
         "discarding a real region still fails attachment"
     );
 }
+
+#[test]
+fn terrain_footprint_keeps_a_refined_non_affine_boundary_grade() {
+    use crate::simulation::network::surface::node::triangulation::{
+        NodeTriangulatedTriangle, NodeTriangulatedVertex,
+    };
+    use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec3};
+    let owner = owner(RoadSurfaceBandKind::Carriageway, 0);
+    let heights = NodeHeightSolution {
+        node_id: 11,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![test_height_region_with_seams(
+            RoadSurfaceBandKind::Carriageway,
+            owner,
+            vec![
+                height_vertex(0.0, 0.0, 10.0),
+                height_vertex(1.0, 0.0, 10.0),
+                height_vertex(1.0, 1.0, 10.0),
+                height_vertex(0.0, 1.0, 10.0),
+            ],
+            Vec::new(),
+        )],
+    };
+    let mut arrangement = NodeArrangement::from_height_solution(&heights).unwrap();
+    let mut triangles =
+        RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement).unwrap();
+    let region = &mut triangles.regions[0];
+    let corner = |x, z| {
+        region
+            .vertices
+            .iter()
+            .position(|v| v.point_world.x == x && v.point_world.z == z)
+            .unwrap()
+    };
+    let [a, b, c, d] = [
+        corner(0.0, 0.0),
+        corner(1.0, 0.0),
+        corner(1.0, 1.0),
+        corner(0.0, 1.0),
+    ];
+    let middle = region.vertices.len();
+    let midpoint = RoadVec3::new(0.5, 10.25, 0.0);
+    region.vertices.push(NodeTriangulatedVertex {
+        point_world: midpoint,
+        height_field_id: region.height_field_id,
+        grade_authority: NodeGradeVertexAuthority::new(
+            RoadVec2::new(0.5, 0.0),
+            10.25,
+            owner,
+            region.height_field_id,
+            NodeGradeCarrierDecision::SourceCarrier { authority: None },
+        ),
+    });
+    region.triangles = [[a, middle, d], [middle, c, d], [middle, b, c]]
+        .map(|vertices| NodeTriangulatedTriangle { vertices })
+        .to_vec();
+    region.boundary_constraints = vec![[a, middle], [middle, b], [b, c], [c, d], [d, a]];
+    arrangement.attach_triangulation(&triangles).unwrap();
+    let footprint = vec![vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]]];
+    let result =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint).unwrap();
+    let boundary = &result.earthwork_boundary_segments[0];
+    let bottom = boundary
+        .iter()
+        .filter(|e| e.inner_start.z == 0.0 && e.inner_end.z == 0.0)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bottom.len(),
+        2,
+        "the terrain cut must retain both affine grade intervals"
+    );
+    assert!(
+        bottom
+            .iter()
+            .all(|e| e.inner_start == midpoint || e.inner_end == midpoint)
+    );
+    assert!(
+        result.outer_boundary_loops[0]
+            .points_world
+            .contains(&midpoint)
+    );
+}

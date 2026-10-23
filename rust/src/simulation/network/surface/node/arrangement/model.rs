@@ -344,7 +344,7 @@ impl NodeArrangementVertexId {
 }
 
 impl NodeArrangementEdgeId {
-    #[cfg(test)]
+    /// Returns the edge position in its owning arrangement.
     pub(crate) fn index(self) -> usize {
         self.0
     }
