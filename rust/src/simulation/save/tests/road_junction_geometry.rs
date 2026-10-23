@@ -195,6 +195,33 @@ fn overlapping_bioteknia_profiles_resolve_one_continuous_longitudinal_grade() {
             "overlapping junction profiles must not leave a 331% ramp: {pair:?}"
         );
     }
+    for pair in sections.windows(2) {
+        for (a, b) in pair[0].bands.iter().zip(&pair[1].bands) {
+            if a.kind != crate::simulation::network::surface::RoadSurfaceBandKind::Carriageway {
+                continue;
+            }
+            for ((lateral_a, height_a), (lateral_b, height_b)) in [
+                (
+                    (a.lateral_start_m, a.height_start_m),
+                    (b.lateral_start_m, b.height_start_m),
+                ),
+                (
+                    (a.lateral_end_m, a.height_end_m),
+                    (b.lateral_end_m, b.height_end_m),
+                ),
+            ] {
+                let xz_a = pair[0].center_xz + pair[0].lateral_xz * f64::from(lateral_a);
+                let xz_b = pair[1].center_xz + pair[1].lateral_xz * f64::from(lateral_b);
+                assert!(
+                    f64::from((height_b - height_a).abs()) <= (xz_b - xz_a).length() * 0.5 + 0.001,
+                    "crossfall blending must not create a wall beside a valid centreline: stations={:?}, heights={:?}, run={}",
+                    [pair[0].s_m, pair[1].s_m],
+                    [height_a, height_b],
+                    (xz_b - xz_a).length()
+                );
+            }
+        }
+    }
     for (edge, original) in graph.edges().iter().zip(original) {
         assert_eq!(edge.physical_geometry, original.physical_geometry);
         assert_eq!(edge.geometry, original.geometry);

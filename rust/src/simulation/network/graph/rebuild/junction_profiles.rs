@@ -14,7 +14,8 @@ pub(super) const JUNCTION_PROFILE_SOLVE_SAMPLE_M: f32 = 12.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
 pub(super) const JUNCTION_PROFILE_MOUTH_MAX_GRADE: f32 = 0.16;
 const JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M: f32 = 0.5;
-const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
+/// Existing rejection bound for an unsupported derived grade.
+pub(crate) const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
 const JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M: f32 = 0.05;
@@ -68,6 +69,20 @@ impl JunctionEndpointProfilePlane {
     /// Evaluates the solved endpoint profile height at an arbitrary world XZ coordinate.
     pub(crate) fn height_at_xz(&self, x: f32, z: f32) -> f32 {
         self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
+    }
+
+    /// Interpolates solved heights and gradients at a common origin.
+    pub(crate) fn interpolate(self, other: Self, t: f32) -> Self {
+        Self {
+            origin: Vector3::new(
+                self.origin.x,
+                self.origin.y
+                    + (other.height_at_xz(self.origin.x, self.origin.z) - self.origin.y) * t,
+                self.origin.z,
+            ),
+            grade_x: self.grade_x + (other.grade_x - self.grade_x) * t,
+            grade_z: self.grade_z + (other.grade_z - self.grade_z) * t,
+        }
     }
 
     pub(super) fn grade(&self) -> f32 {

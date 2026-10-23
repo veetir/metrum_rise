@@ -10,7 +10,7 @@ use super::polyline::SpanTangentFrame;
 use super::{EdgeMouthPolicy, EdgeProfilePlaneBlend};
 use crate::config;
 use crate::simulation::network::graph::rebuild::{
-    JUNCTION_PROFILE_BLEND_ZONE_M, JunctionEndpointProfilePlane,
+    JUNCTION_PROFILE_BLEND_ZONE_M, JUNCTION_PROFILE_REJECT_MAX_GRADE, JunctionEndpointProfilePlane,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
@@ -58,6 +58,16 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
         nonuniform_knots: bool,
+    ) -> Vec<RoadSurfaceSection> {
+        self.compile_edge_sections_with_profile(graph, edge_idx, nonuniform_knots, false)
+    }
+
+    fn compile_edge_sections_with_profile(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        nonuniform_knots: bool,
+        reconcile_crossfall: bool,
     ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
         let mut points: Vec<RoadVec3> = self
@@ -193,7 +203,7 @@ impl RoadSurfaceSystem {
                 end_tangent,
             }
         });
-        sample_distances
+        let sections: Vec<RoadSurfaceSection> = sample_distances
             .into_iter()
             .map(|s_m| {
                 let (center, sampled_tangent_xz) =
@@ -226,6 +236,8 @@ impl RoadSurfaceSystem {
                 let profile_blend = mouth_policy.profile_range.and_then(|profile| {
                     Self::edge_profile_blend_for_section(
                         s_m,
+                        (edge.class == EdgeClass::Standard && reconcile_crossfall)
+                            .then_some(total_length_m),
                         profile,
                         start_profile_plane,
                         end_profile_plane,
@@ -267,7 +279,24 @@ impl RoadSurfaceSystem {
                     ),
                 }
             })
-            .collect()
+            .collect();
+        if !reconcile_crossfall
+            && edge.class == EdgeClass::Standard
+            && start_profile_plane.is_some()
+            && end_profile_plane.is_some()
+            && mouth_policy
+                .profile_range
+                .is_some_and(|(start, end)| end - start < 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M)
+            && crossfall_transition_exceeds_grade_bound(&sections)
+        {
+            return self.compile_edge_sections_with_profile(
+                graph,
+                edge_idx,
+                nonuniform_knots,
+                true,
+            );
+        }
+        sections
     }
 
     fn section_endpoint_kind_and_tangent(
@@ -332,12 +361,22 @@ impl RoadSurfaceSystem {
 
     fn edge_profile_blend_for_section(
         s_m: f32,
+        grounded_length_m: Option<f32>,
         profile_range: (f32, f32),
         start_profile_plane: Option<JunctionEndpointProfilePlane>,
         end_profile_plane: Option<JunctionEndpointProfilePlane>,
     ) -> Option<EdgeProfilePlaneBlend> {
         let (start_profile_s_m, end_profile_s_m) = profile_range;
         let span_m = (end_profile_s_m - start_profile_s_m).max(0.0);
+        if span_m < 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M
+            && let Some(length) = grounded_length_m.filter(|&length| length > SAMPLE_EPSILON_M)
+            && let (Some(start), Some(end)) = (start_profile_plane, end_profile_plane)
+        {
+            // Ownership may reserve all but half a metre for neighboring junctions.
+            // Crossfall is a physical profile: do not squeeze two fades into that sliver.
+            let t = Self::smootherstep((s_m / length).clamp(0.0, 1.0));
+            return EdgeProfilePlaneBlend::new(start.interpolate(end, t), 1.0);
+        }
         let fade_m = JUNCTION_PROFILE_BLEND_ZONE_M.min(span_m * 0.5);
 
         let start_blend = start_profile_plane.and_then(|plane| {
@@ -806,6 +845,44 @@ impl RoadSurfaceSystem {
             EdgeClass::Tunnel => TUNNEL_SECTION_STEP_M,
         }
     }
+}
+
+// Longitudinal source grades remain authoritative. This certifies only the extra
+// rendered edge grade when the longitudinal source itself remains inside the bound.
+fn crossfall_transition_exceeds_grade_bound(sections: &[RoadSurfaceSection]) -> bool {
+    sections.windows(2).any(|pair| {
+        let source_run = (pair[1].center_xz - pair[0].center_xz).length();
+        let source_rise = f64::from((pair[1].center_height_m - pair[0].center_height_m).abs());
+        if source_rise > source_run * f64::from(JUNCTION_PROFILE_REJECT_MAX_GRADE) + 0.001 {
+            return false;
+        }
+        pair[0].bands.iter().zip(&pair[1].bands).any(|(a, b)| {
+            if a.kind != super::super::RoadSurfaceBandKind::Carriageway {
+                return false;
+            }
+            [
+                (
+                    a.lateral_start_m,
+                    a.height_start_m,
+                    b.lateral_start_m,
+                    b.height_start_m,
+                ),
+                (
+                    a.lateral_end_m,
+                    a.height_end_m,
+                    b.lateral_end_m,
+                    b.height_end_m,
+                ),
+            ]
+            .into_iter()
+            .any(|(la, ya, lb, yb)| {
+                let rise = f64::from((yb - ya).abs());
+                let xz_a = pair[0].center_xz + pair[0].lateral_xz * f64::from(la);
+                let xz_b = pair[1].center_xz + pair[1].lateral_xz * f64::from(lb);
+                rise > (xz_b - xz_a).length() * f64::from(JUNCTION_PROFILE_REJECT_MAX_GRADE) + 0.001
+            })
+        })
+    })
 }
 
 #[cfg(test)]

@@ -7,7 +7,9 @@ mod clips;
 mod junction_profiles;
 mod terrain_sync;
 
-pub(crate) use junction_profiles::{JUNCTION_PROFILE_BLEND_ZONE_M, JunctionEndpointProfilePlane};
+pub(crate) use junction_profiles::{
+    JUNCTION_PROFILE_BLEND_ZONE_M, JUNCTION_PROFILE_REJECT_MAX_GRADE, JunctionEndpointProfilePlane,
+};
 
 #[cfg(test)]
 mod tests;
