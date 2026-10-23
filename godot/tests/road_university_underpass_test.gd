@@ -14,6 +14,10 @@ func run() -> void:
 	var capture_enabled := OS.get_environment("METRUM_ROADS_C2_CAPTURE") == "1"
 	if capture_enabled:
 		await setup_capture_scene()
+		var capture_output := OS.get_environment("METRUM_JUNCTION_CAPTURE_OUTPUT")
+		if not capture_output.is_empty():
+			output = capture_output
+			DirAccess.make_dir_recursive_absolute(output)
 	else:
 		simulation = ClassDB.instantiate("SimulationNode")
 		root.add_child(simulation)
@@ -73,14 +77,15 @@ func run() -> void:
 			await process_frame
 		expect(simulation.get_road_cross_section(item.edge).is_empty(), "Removal completes")
 	simulation.set_road_tool_crossing_level(0)
-	if not await build(approach, 3, 3, 0, 0):
+	if not await build(approach, 3, 3, 3, 2.0):
 		expect(false, "Grounded upstream approach")
 		quit(failures)
 		return
 	points[0] = simulation.get_node_pos(simulation.get_closest_node(approach[-1], 3.0))
+	expect(simulation.set_road_tool_median(3, 2.0).is_empty(), "Main-road paved median")
 	# Solve the ground alignment before adding the separate footpath. Over then raises
 	# only the short clearance envelope; the remainder stays on its ground profile.
-	var grounded: Dictionary = simulation.validate_road_candidate_with_snap(points, 1, 1, false)
+	var grounded: Dictionary = simulation.validate_road_candidate_with_snap(points, 3, 3, false)
 	var joint_start := points[0]
 	points = grounded.get("prepared_points", points)
 	# The ground sampler can differ from a retained junction by millimetres. Keep
@@ -90,17 +95,29 @@ func run() -> void:
 	if not await build(path, 0, 0, 0, 0):
 		quit(failures)
 		return
-	var over: Dictionary = simulation.prepare_road_crossing(points, 1, 1, true)
+	expect(simulation.set_road_tool_median(3, 2.0).is_empty(), "Restore main-road paved median")
+	var over: Dictionary = simulation.prepare_road_crossing(points, 3, 3, true)
 	expect(over.get("is_valid", false), "University Over profile: " + str(over.get("invalid_reason", "")))
 	if not over.get("is_valid", false):
 		quit(failures)
 		return
 	points = over.points
 	simulation.set_road_tool_crossing_level(over.crossing_level)
-	if not await build(points, 1, 1, 0, 0):
+	if not await build(points, 3, 3, 3, 2.0):
 		expect(false, "Ground-following main road with short box opening")
 		quit(failures)
 		return
+	# The outer lane in each direction is reserved for buses through the same saved
+	# lane-use mutator as the normal inspector. All source joints keep the full 3+3 bed.
+	var main_owners := {}
+	for p: Vector3 in points:
+		var id: int = simulation.get_hovered_edge(p.x, p.z)
+		if id >= 0 and not main_owners.has(id):
+			var section: Dictionary = simulation.get_road_cross_section(id)
+			if section.get("fwd_lanes", 0) == 3 and section.get("bkw_lanes", 0) == 3:
+				main_owners[id] = true
+				var reserved := await finish_request(simulation.change_road_bus_lanes(id, 4, 4))
+				expect(reserved.get("committed", false), "Reserve Yliopistonranta bus lanes: %s" % reserved)
 	# The existing parking endpoint reaches the ground-level road through an ordinary
 	# T junction. A 2 m paved refuge and requested zebra reuse the existing median tools.
 	var access_end := points[0]
@@ -145,6 +162,10 @@ func run() -> void:
 		camera.set_view_state(PackedFloat32Array([-548.65, 84.0, 1260.38, -1.76, -0.4, 65.0, 0.0]))
 	if failures == 0:
 		var main_edge: int = simulation.get_hovered_edge(-600, 1312)
+		var main_section: Dictionary = simulation.get_road_cross_section(main_edge)
+		expect(main_section.get("fwd_lanes", 0) == 3 and main_section.get("bkw_lanes", 0) == 3, "Yliopistonranta retains 3+3 lanes")
+		expect(main_section.get("median_style", 0) == 3, "Yliopistonranta retains its paved median")
+		expect(main_section.get("bus_forward_mask", 0) == 4 and main_section.get("bus_backward_mask", 0) == 4, "Yliopistonranta retains both bus lanes")
 		expect(simulation.get_edge_class(main_edge) == 0, "Yliopistonranta uses a grounded mixed cut/fill corridor")
 		expect(simulation.get_edge_class(access_edge) == 0, "Parking access is an ordinary surface road")
 		expect(simulation.get_road_cross_section(main_edge).get("crossing_level", -2) == 1, "Ground-following main-road level")

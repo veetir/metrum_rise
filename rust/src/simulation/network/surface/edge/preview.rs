@@ -1792,7 +1792,9 @@ impl RoadSurfaceSystem {
     // Mirror the compiler's explicit incidence frontier, then import read-only endpoint
     // context for its spans. A remote JunctionN must not become a terminal just because only
     // one of its approaches is recompiled. Halo edges are never added to the dirty ledger.
-    // Two fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    // Three fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    // The third supplies the far endpoint of each crossfall support link: its coupled
+    // longitudinal-grade certificate depends on both endpoints' crossing cores.
     #[allow(clippy::too_many_arguments)]
     fn complete_validation_surface_context(
         &self,
@@ -1859,6 +1861,15 @@ impl RoadSurfaceSystem {
             span_endpoints.insert(local.get_valid_node(edge.end_node));
         }
         copy_incidence(local, nodes, edges, &span_endpoints);
+        let mut profile_endpoints = HashSet::new();
+        for node in span_endpoints {
+            for &id in local.node_adjacency(node) {
+                let edge = local.edge(id);
+                profile_endpoints.insert(local.get_valid_node(edge.start_node));
+                profile_endpoints.insert(local.get_valid_node(edge.end_node));
+            }
+        }
+        copy_incidence(local, nodes, edges, &profile_endpoints);
     }
 
     #[allow(clippy::too_many_arguments)]
