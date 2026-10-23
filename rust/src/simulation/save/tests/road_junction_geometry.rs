@@ -843,3 +843,33 @@ fn refined_junction_steps_keep_declared_contacts_on_retained_top_edges() {
             .is_empty()
     );
 }
+
+#[test]
+fn refined_footprint_uses_one_canonical_grade_at_source_and_generated_vertices() {
+    if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
+        crate::debug::set_mask(crate::debug::Channel::Road.bit());
+    }
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_refined_boundary.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(6000.0, 6000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    // The refined boundary of imported node 1629 coincides with source contacts.
+    for node in [6, 8] {
+        assert!(
+            surface.compiled_visual_node_pieces().contains_key(&node),
+            "source and generated boundary contacts must have one canonical height"
+        );
+    }
+    assert!(
+        surface
+            .junction_grade_conflicts_for_geometry_audit(&graph)
+            .is_empty()
+    );
+}

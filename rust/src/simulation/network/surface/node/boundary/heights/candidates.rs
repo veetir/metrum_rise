@@ -669,6 +669,37 @@ impl NodeFootprintBoundaryExportSources {
         })
     }
 
+    fn candidate_is_recorded_final_endpoint(
+        &self,
+        candidate: &NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        let NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm } =
+            candidate.source.source
+        else {
+            return false;
+        };
+        let point = ArrangementBoundaryPointKey { x_key, z_key, y_mm };
+        point.xz_key() == key
+            && y_mm == candidate.height_mm
+            && self
+                .final_vertex_sources
+                .get(&point)
+                .is_some_and(|sources| {
+                    sources.iter().any(|source| {
+                        node_footprint_direct_vertices_share_source_identity(
+                            *source,
+                            candidate.source,
+                        )
+                    })
+                })
+            && self.final_height_edges.iter().any(|edge| {
+                edge.owner_kind == candidate.source.owner_kind
+                    && edge.owner_index == candidate.source.owner_index
+                    && (edge.start_point_key == point || edge.end_point_key == point)
+            })
+    }
+
     fn direct_candidate_has_final_boundary_context(
         &self,
         candidate: &NodeFootprintBoundaryHeightCandidate,
@@ -679,7 +710,8 @@ impl NodeFootprintBoundaryExportSources {
         if !matches!(
             candidate.source.source,
             NodeFootprintBoundaryVertexSource::Direct(_)
-        ) {
+        ) && !self.candidate_is_recorded_final_endpoint(candidate, key)
+        {
             return false;
         }
         self.final_height_edges.iter().any(|source_edge| {
@@ -818,7 +850,8 @@ impl NodeFootprintBoundaryExportSources {
         if !matches!(
             candidate.source.source,
             NodeFootprintBoundaryVertexSource::Direct(_)
-        ) {
+        ) && !self.candidate_is_recorded_final_endpoint(&candidate, key)
+        {
             return 0;
         }
         let context_sides =

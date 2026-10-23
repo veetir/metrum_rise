@@ -783,3 +783,50 @@ fn numeric_cleanup_support_rejects_non_endpoint_boundary_drift() {
         "numeric cleanup and sub-budget interpolation require source-edge support"
     );
 }
+
+#[test]
+fn recorded_final_endpoint_precedes_rounded_edge_interpolation() {
+    let mut sources = NodeFootprintBoundaryExportSources::from_owned_regions(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let a = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 10.0, 0.0));
+    let b = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 10.001, 0.0));
+    let c = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 10.003, 0.0));
+    let edge = |start_point_key, end_point_key| NodeFinalFootprintBoundaryHeightEdge {
+        start_point_key,
+        end_point_key,
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    sources.final_height_edges = vec![edge(a, b), edge(b, c), edge(a, c)];
+    let source = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+            x_key: b.x_key,
+            z_key: b.z_key,
+            y_mm: b.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    sources.direct_vertex_sources.insert(b, source);
+    sources.final_vertex_sources.insert(b, vec![source]);
+    assert_eq!(
+        sources
+            .boundary_height_mm_at_contour_key(b.xz_key(), a.xz_key(), c.xz_key())
+            .unwrap(),
+        Some(b.y_mm)
+    );
+    sources.final_vertex_sources.clear();
+    assert!(
+        sources
+            .boundary_height_mm_at_contour_key(b.xz_key(), a.xz_key(), c.xz_key())
+            .is_err(),
+        "an unrecorded canonical point must not override disagreeing edge interpolations"
+    );
+}
