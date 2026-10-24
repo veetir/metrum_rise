@@ -38,6 +38,11 @@ hour/day means remain inside the absolute time limits, but the cities' work is d
 | Fiscal stress 10k | 7.040 | 9.541 |
 | Fiscal stress 30k | 29.366 | 26.189 |
 
+The pre-merge road binary `0cc4a2ab` fails its 10k snapshot's exact save/reload preparation
+check: `vacancy_reserve` changes from 531 to 511 on reload, while the other recorded fields
+match. No full economy timing from that rejected snapshot is used. The table therefore
+compares plain upstream with merged, not the older road binary with merged.
+
 The prepared day-12 10k saves already diverge before loading: upstream has 7,186 employed
 agents and 2,481 network occupants; merged has 716 employed and 9,092 network occupants.
 Car speed on network lanes averages 4.954 versus 0.052 m/s. This establishes a dense-traffic
@@ -51,6 +56,19 @@ Upstream work-limit failures are baseline buyer sites 10 → 369, staffing trial
 searches 6,771 → 26,851. Their 10k→30k bound is 3.4283×. Merged failures are baseline supplier
 routes 144,303 → 530,202 and combined CCH searches 9,465 → 33,953; fiscal job-search keys
 7 → 59, against 3.5112×. These failures remain visible; none of the limits were weakened.
+
+The short `PERF-06` agent contract passes on all three binaries. Upstream and merged have
+identical work dictionaries in all six 10k/30k modes; the older road binary also counted the
+congestion pass that upstream deliberately removed. Fresh 30k per-tick observations, ms:
+
+| Mode | Road `0cc4a2ab` | Upstream `b75e03c9` | Merged `88133881` |
+| --- | ---: | ---: | ---: |
+| Network | 0.963 | 0.968 | 1.062 |
+| Access egress | 1.595 | 1.644 | 1.750 |
+| Access ingress | 0.604 | 0.809 | 0.686 |
+
+These are single short contract invocations, not repeated sustained-tick acceptance or
+evidence that the dense-city regression is repaired.
 
 Separately, the production bridge loads untouched populated upstream v107 saves at 10k and
 30k with exactly 7,396/11,042 and 20,359/31,597 buildings/agents. Both advance at least a full
