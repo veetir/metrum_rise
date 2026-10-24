@@ -88,6 +88,65 @@ legacy migration prototypes because their scheduler/runtime restoration was inco
 no prototype or relaxed version guard is committed. Compatibility with road-chain v88–v95
 and matching merged-build Kuopio captures remain blocked on a complete, approved migration.
 
+Fresh matched road measurements compare pre-merge `0cc4a2ab` and merged Rust `88133881`,
+serially after all correctness runs and fixture preparation, unprofiled release, Rust 1.98.1,
+macOS SDK 26.5, Apple M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`. No CPU affinity is
+available on this host. These road checks pass; the separate traffic/economy integration
+acceptance fails as recorded under [TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09).
+
+| Road chunk workload | Before | Merged |
+| --- | ---: | ---: |
+| Targeted emission, 1 occupied chunk | 42.644 µs | 42.438 µs |
+| Targeted emission, 1,024 occupied chunks | 44.452 µs | 43.290 µs |
+| Full emission, 1,024 occupied chunks | 42.409 ms | 41.573 ms |
+| Dirty compile + targeted emission, 1,024 chunks | 220.410 µs | 215.620 µs |
+| Godot one-chunk drain, 4 resident chunks | 4.312 ms | 4.370 ms |
+| Godot one-chunk drain, 4,096 resident chunks | 4.358 ms | 4.368 ms |
+| Godot 16-chunk drain, 1,024 resident chunks | 58.863 ms | 58.869 ms |
+
+Criterion values are point estimates; Godot values are medians of 101 samples after 20
+warmups. The headless Godot boundary measures validation, ArrayMesh/scene mutation and command
+drain, not physical GPU upload or rendered fps. Both runs pass fixture/retained-instance gates.
+
+The six populated locality checks hold the affected neighborhood fixed while background
+buildings increase through 0/1k/10k/100k, reaching 600k background agents and additional remote
+roads/parcels. Both builds preserve identical local products across their background tiers.
+P50 milliseconds below show **0 / 100k background buildings**; discovery/setup is excluded.
+
+| Local product | Before | Merged |
+| --- | ---: | ---: |
+| Paved full worker | 6.379 / 6.470 | 6.445 / 6.512 |
+| Cell full worker | 5.429 / 5.517 | 5.428 / 5.489 |
+| Pocket preview | 18.052 / 17.963 | 18.322 / 17.890 |
+| Zebra preview | 16.491 / 16.531 | 16.608 / 16.516 |
+| Roundabout preview | 43.148 / 42.621 | 42.874 / 42.399 |
+| Ramp preview | 27.749 / 28.150 | 28.197 / 27.829 |
+
+Ramp layout preparation increases from 62.9 to 83.7 µs at 100k background buildings, with
+owned-pool entry now included; it remains flat across background tiers. The dispatch cost
+has not been isolated from the other merged preparation work. One-time query
+snapshot costs stay separate: paved 16.2/125.5 → 19.0/141.0 µs and cell 8.0/144.3 →
+5.2/215.5 µs (0/100k). Those snapshot observations are one sample per edit, not repeated-plan
+timing or evidence of a statistically established speed change.
+
+Commands, applied to each preserved release binary with the settings above:
+
+```bash
+"$BENCH_BINARY" --bench
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_cell_road_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_pocket_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_crosswalk_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_roundabout_plan_scaling --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" nodes::sim::core::tests::road_plan_scaling::populated_ramp_plan_scaling --exact --ignored --nocapture --test-threads=1
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$GODOT_PROJECT" --script res://tests/road_chunk_renderer_benchmark.gd
+```
+
+The baseline Prisma/KYS overhead and street views were inspected against
+`user-2026-10-21/prisma-1.png` and `user-2026-10-21/kys-1.png`. They do not reconstruct the
+reference signals/gantries, signs, mature trees and outstanding imported-layout detail.
+No merged-build visual or fps improvement is claimed while the same source saves cannot load.
+
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
 Road/yard shader bodies and material setup are shared; the old inline stripe code is removed
