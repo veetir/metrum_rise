@@ -2,6 +2,8 @@
 
 //! Allocation-free admission over occupied junction neighborhoods and immutable lane buckets.
 
+mod reservations;
+
 use super::super::data::{AgentSystem, AgentVec};
 use super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, planned_next_connector,
@@ -9,6 +11,7 @@ use super::lane_nav::{
 use super::traffic::{connector_turn_speed, lane_entry_slot_clear};
 use crate::config::IDM_B;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
 struct Request {
@@ -16,6 +19,8 @@ struct Request {
     eligible: bool,
     clear: bool,
     granted: bool,
+    batchable: bool,
+    winner: usize,
     index: usize,
     low: usize,
     component: usize,
@@ -28,6 +33,8 @@ impl Default for Request {
             eligible: false,
             clear: false,
             granted: false,
+            batchable: false,
+            winner: usize::MAX,
             index: usize::MAX,
             low: usize::MAX,
             component: usize::MAX,
@@ -46,6 +53,8 @@ pub(crate) struct JunctionAdmission {
     stack: Vec<usize>,
     candidates: Vec<usize>,
     next_index: usize,
+    reservations: reservations::Reservations,
+    component_open: Vec<AtomicBool>,
 }
 
 impl JunctionAdmission {
@@ -82,16 +91,66 @@ impl JunctionAdmission {
             .filter(|&id| {
                 self.requests
                     .get(id)
-                    .is_some_and(|r| r.granted && r.agent == agent)
+                    .is_some_and(|r| (r.granted || r.batchable) && r.agent == agent)
             })
             .map(|id| connector_turn_speed(&lanes.lanes[id]))
             .reduce(f32::min)
             .unwrap_or(0.0)
     }
 
+    /// Tests zone leases and downstream storage immediately before a serial entry.
+    pub(super) fn storage_and_zones_clear(
+        &self,
+        connector: usize,
+        network: &TransitNetwork,
+    ) -> bool {
+        self.reservations.clear(connector, network)
+            && self.reservations.exit_available(connector, network)
+    }
+
+    /// Books downstream storage and the first ordered movement-step zones after admission.
+    pub(super) fn reserve_path(&self, connector: usize, network: &TransitNetwork) {
+        self.reservations.reserve(connector, network);
+        if let Some(request) = self.requests.get(connector) {
+            if let Some(open) = self.component_open.get(request.component) {
+                open.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// After the cycle winner entered, admits compatible movements from that same closed cycle.
+    pub(super) fn batch_allows(&self, agent: usize, connector: usize) -> bool {
+        self.requests.get(connector).is_some_and(|r| {
+            r.agent == agent
+                && r.batchable
+                && self.component_open[r.component].load(Ordering::Relaxed)
+        })
+    }
+
+    /// Protects the downstream prefix against frontage, border and lateral entry.
+    pub(super) fn external_entry_clear(&self, lane: usize, distance: f32) -> bool {
+        self.reservations.external_entry_clear(lane, distance)
+    }
+
+    /// Converts a connector's reserved downstream space into actual lane occupancy.
+    pub(super) fn release_exit(&self, connector: usize, out: usize, network: &TransitNetwork) {
+        self.reservations.release_exit(connector, out, network);
+    }
+
+    /// Distance to the first unowned conflict interval, including body clearance.
+    pub(crate) fn connector_travel_limit(
+        &self,
+        connector: usize,
+        distance: f32,
+        network: &TransitNetwork,
+    ) -> f32 {
+        self.reservations.travel_limit(connector, distance, network)
+    }
+
     fn prepare_buffers(&mut self, lanes: usize, nodes: usize) {
         for &id in &self.touched {
             self.requests[id] = Request::default();
+            self.component_open[id].store(false, Ordering::Relaxed);
         }
         for &id in &self.nodes {
             self.node_seen[id] = false;
@@ -102,6 +161,10 @@ impl JunctionAdmission {
             .resize_with(lanes.max(self.requests.len()), Request::default);
         self.node_seen
             .resize(nodes.max(self.node_seen.len()), false);
+        self.component_open
+            .resize_with(lanes.max(self.component_open.len()), || {
+                AtomicBool::new(false)
+            });
         self.touched.reserve(lanes);
         self.nodes.reserve(nodes);
         self.stack.reserve(lanes);
@@ -175,6 +238,9 @@ impl JunctionAdmission {
                 self.nodes.push(node);
             }
         }
+        self.nodes.sort_unstable();
+        self.reservations
+            .prepare(agents, buckets, &self.nodes, network, delta);
         // Admission shares sparse global lane IDs and one Tarjan stack. Keep this bounded
         // arbitration ordered; per-agent speed and ordinary movement remain parallel.
         for n in 0..self.nodes.len() {
@@ -243,11 +309,9 @@ impl JunctionAdmission {
                 let exit_clear = lanes.lanes[id]
                     .next_lanes
                     .first()
-                    .is_some_and(|&out| lane_entry_slot_clear(out, buckets));
-                let clear = control
-                    .conflicts
-                    .iter()
-                    .all(|&other| buckets.get(other).is_none_or(Vec::is_empty));
+                    .is_some_and(|&out| lane_entry_slot_clear(out, buckets))
+                    && self.reservations.exit_available(id, network);
+                let clear = self.reservations.clear(id, network);
                 // An occupied crossing prevents entry without cancelling a waiting car's
                 // precedence. Otherwise a minor stream can keep following itself across
                 // the junction while the major approach is repeatedly marked ineligible.
@@ -270,13 +334,17 @@ impl JunctionAdmission {
                     let root = self.requests[id].component;
                     if root == id {
                         self.requests[root].low = usize::MAX;
+                        self.requests[root].winner = usize::MAX;
                     }
                 }
             }
             for &id in ids {
                 if self.requests.get(id).is_some_and(|r| r.eligible) {
                     let root = self.requests[id].component;
-                    self.requests[root].low = self.requests[root].low.min(self.requests[id].agent);
+                    if self.requests[id].agent < self.requests[root].low {
+                        self.requests[root].low = self.requests[id].agent;
+                        self.requests[root].winner = id;
+                    }
                 }
             }
             for &id in ids {
@@ -289,6 +357,25 @@ impl JunctionAdmission {
                 let root = self.requests[id].component;
                 self.requests[id].granted = self.requests[id].clear
                     && self.requests[id].agent == self.requests[root].low
+                    && control.yields_to.iter().all(|&other| {
+                        !self.requests[other].eligible
+                            || self.requests[other].agent == self.requests[id].agent
+                            || self.requests[other].component == root
+                    });
+            }
+            for &id in ids {
+                if !self
+                    .requests
+                    .get(id)
+                    .is_some_and(|r| r.eligible && r.clear && !r.granted)
+                {
+                    continue;
+                }
+                let root = self.requests[id].component;
+                let winner = self.requests[root].winner;
+                let control = lanes.controlled_movement(id).unwrap();
+                self.requests[id].batchable = self.requests[winner].granted
+                    && !control.conflicts.contains(&winner)
                     && control.yields_to.iter().all(|&other| {
                         !self.requests[other].eligible
                             || self.requests[other].agent == self.requests[id].agent

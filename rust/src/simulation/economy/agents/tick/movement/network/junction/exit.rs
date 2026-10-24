@@ -4,7 +4,7 @@
 
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::slices::{MovementSlices, enter_lane};
-use super::super::super::super::traffic::{claim_lane_entry, lane_entry_slot_clear};
+use super::super::super::super::traffic::lane_entry_slot_clear;
 use super::LaneEndAction;
 use crate::simulation::economy::agents::MODE_CAR;
 use crate::simulation::network::TransitNetwork;
@@ -34,7 +34,7 @@ pub(super) unsafe fn exit_connector_lane(
                 // entry just as we do for connector entry and direct road continuations.
                 if *slices.tmode.get(i) == MODE_CAR
                     && (!lane_entry_slot_clear(tgt_road_lane, lane_buckets)
-                        || !claim_lane_entry(i, tgt_road_lane, lane_claims))
+                        || !lane_claims.claim_connector_exit(i, lane_id, tgt_road_lane))
                 {
                     *s_lane_d.get_mut(i) = lane.length;
                     return LaneEndAction::Break;

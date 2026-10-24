@@ -8,10 +8,11 @@ use super::runtime::dispatch_agents;
 use super::slices::RawSlice;
 use super::traffic::{
     LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_MIN_SPEED_GAIN_MS, braking_speed_for_distance,
-    connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear, limit_speed_change,
-    live_lane_bucket_transit, overtake_follow_gap, planned_lane_change_target,
+    connector_turn_speed, continuation_headroom, idm_gap_bucket, idm_new_speed,
+    lane_change_gap_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
+    planned_lane_change_target,
 };
-use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B};
+use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B, IDM_S_MIN};
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -87,8 +88,24 @@ impl AgentSystem {
                 } else {
                     f32::MAX
                 };
+                let gap = gap.min(
+                    continuation_headroom(
+                        i,
+                        lid,
+                        my_d,
+                        junction_brake_lookahead_m(cur_spd.max(v_max)),
+                        transit_network,
+                        buckets,
+                    ) + IDM_S_MIN,
+                );
                 let mut target_speed = idm_new_speed(cur_spd, v_max, gap, delta);
 
+                if transit == TRANSIT_INTERSECTION {
+                    target_speed = target_speed.min(braking_speed_for_distance(
+                        0.0,
+                        admission.connector_travel_limit(lid, my_d, transit_network),
+                    ));
+                }
                 if transit == TRANSIT_NETWORK {
                     if let Some(lane) = transit_network.lane_system.lanes.get(lid) {
                         let dist_to_end = (lane.length - my_d).max(0.0);

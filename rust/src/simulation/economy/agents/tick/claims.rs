@@ -62,12 +62,24 @@ impl<'a> LaneClaimContext<'a> {
         let Some((admission, network)) = self.junctions else {
             return true;
         };
-        if !admission.allows(agent, connector, network) {
+        if (!admission.allows(agent, connector, network)
+            && !admission.batch_allows(agent, connector))
+            || !admission.storage_and_zones_clear(connector, network)
+            || network.lane_system.lanes[connector]
+                .next_lanes
+                .first()
+                .is_some_and(|&out| {
+                    self.owners.get(out).is_some_and(|owner| {
+                        let owner = owner.load(Ordering::Relaxed);
+                        owner != usize::MAX && owner != agent
+                    })
+                })
+        {
             return false;
         }
         network
             .lane_system
-            .controlled_movement(connector)
+            .reservation_movement(connector)
             .is_none_or(|control| {
                 control.conflicts.iter().all(|&other| {
                     self.owners.get(other).is_none_or(|owner| {
@@ -105,6 +117,51 @@ impl<'a> LaneClaimContext<'a> {
         agent_idx: usize,
         lane_id: usize,
     ) -> bool {
+        self.claim_lane_at(agent_idx, lane_id, 0.0)
+    }
+
+    /// Claims a handoff at its actual station without consuming reserved exit storage.
+    pub(super) fn claim_lane_at(&self, agent_idx: usize, lane_id: usize, distance: f32) -> bool {
+        if self
+            .junctions
+            .is_some_and(|(a, _)| !a.external_entry_clear(lane_id, distance))
+        {
+            return false;
+        }
+        self.try_lane_owner(agent_idx, lane_id)
+    }
+
+    /// Claims a departure from an already occupied road slot, freeing rather than using storage.
+    pub(super) fn claim_lane_departure(&self, agent: usize, lane: usize) -> bool {
+        self.try_lane_owner(agent, lane)
+    }
+
+    /// Uses previously reserved exit space; ordinary gap and claim checks still apply.
+    pub(super) fn claim_connector_exit(&self, agent: usize, connector: usize, out: usize) -> bool {
+        if !self.try_lane_owner(agent, out) {
+            return false;
+        }
+        if let Some((admission, network)) = self.junctions {
+            admission.release_exit(connector, out, network);
+        }
+        true
+    }
+
+    /// Reserves zones only for the connector actually chosen by the routing candidate loop.
+    pub(super) fn reserve_connector(&self, connector: usize) {
+        if let Some((admission, network)) = self.junctions {
+            admission.reserve_path(connector, network);
+        }
+    }
+
+    /// Prevents any connector step from crossing an unowned zone boundary.
+    pub(super) fn connector_travel_limit(&self, connector: usize, distance: f32) -> f32 {
+        self.junctions.map_or(f32::MAX, |(a, n)| {
+            a.connector_travel_limit(connector, distance, n)
+        })
+    }
+
+    fn try_lane_owner(&self, agent_idx: usize, lane_id: usize) -> bool {
         let Some(owner) = self.owners.get(lane_id) else {
             return false;
         };

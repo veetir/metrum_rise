@@ -159,7 +159,7 @@ impl LaneSystem {
     /// Compiles stable paired resources for this junction only.
     pub(super) fn rebuild_node_zones(&mut self, node: usize) {
         let mut ids = self.node_lanes.get(&node).cloned().unwrap_or_default();
-        ids.retain(|&id| self.controlled_movement(id).is_some());
+        ids.retain(|&id| self.reservation_movement(id).is_some());
         ids.sort_unstable();
         let mut zones = Vec::new();
         for (index, &a) in ids.iter().enumerate() {

@@ -7,7 +7,7 @@ use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::{junction_approach_lane, junction_approach_node};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
-    LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change, claim_lane_entry,
+    LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change,
     lane_change_finished, lane_change_gap_clear, planned_lane_change_target,
 };
 use crate::simulation::network::TransitNetwork;
@@ -110,7 +110,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
             }
             return lane_id;
         };
-        if !claim_lane_entry(i, choice.target_lane_id, lane_claims) {
+        if !lane_claims.claim_lane_at(i, choice.target_lane_id, lane_d) {
             traffic_log!(
                 "[LANE_CHANGE_WAIT] agent={} lane={} target_lane={} reason=target-entry-claimed",
                 i,

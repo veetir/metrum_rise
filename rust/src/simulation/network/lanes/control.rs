@@ -25,6 +25,8 @@ pub(crate) enum ApproachControl {
 
 /// Static movement admission data, indexed by the connector's ordinary lane ID.
 pub(crate) struct ControlledMovement {
+    // Ramps/transitions need collision resources without statutory junction priority.
+    signed: bool,
     /// Physical approach lane supplying this connector.
     pub(crate) incoming: usize,
     /// Paired overlap resources ordered along this connector.
@@ -133,12 +135,10 @@ impl LaneSystem {
             return;
         };
         self.controlled.resize_with(self.lanes.len(), || None);
-        if matches!(
+        let unsigned = matches!(
             graph.node(node as u32).node_type,
             NodeType::LaneTransition | NodeType::Ramp
-        ) {
-            return;
-        }
+        );
         let mut incoming = std::collections::HashMap::new();
         for &edge in graph.node_adjacency(node as u32) {
             if let Some(lanes) = self.edge_lanes.get(&edge) {
@@ -158,12 +158,14 @@ impl LaneSystem {
                 continue;
             };
             let mut data = ControlledMovement {
+                signed: !unsigned,
                 incoming: source,
                 zones: Vec::new(),
                 conflicts: Vec::new(),
                 yields_to: Vec::new(),
-                stop: approach_control(graph, node as u32, self.lanes[source].edge_id)
-                    == ApproachControl::Stop,
+                stop: !unsigned
+                    && approach_control(graph, node as u32, self.lanes[source].edge_id)
+                        == ApproachControl::Stop,
             };
             for &other in ids {
                 if other == id {
@@ -215,7 +217,7 @@ impl LaneSystem {
                         }
                     }
                 };
-                if yields {
+                if yields && !unsigned {
                     data.yields_to.push(other);
                 }
             }
@@ -226,6 +228,12 @@ impl LaneSystem {
 
     /// Static control for a connector, absent for sidewalk corners and direct continuations.
     pub(crate) fn controlled_movement(&self, lane: usize) -> Option<&ControlledMovement> {
+        self.reservation_movement(lane)
+            .filter(|movement| movement.signed)
+    }
+
+    /// Collision/storage products, including unsigned ramp and transition connectors.
+    pub(crate) fn reservation_movement(&self, lane: usize) -> Option<&ControlledMovement> {
         self.controlled.get(lane)?.as_ref()
     }
 }

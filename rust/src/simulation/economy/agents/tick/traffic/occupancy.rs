@@ -33,6 +33,55 @@ pub(in crate::simulation::economy::agents::tick) fn idm_gap_bucket(
     }
 }
 
+/// Static forward room across a lane boundary; a leader's tail does not disappear on exit.
+/// O(local successors), skipped when the boundary is beyond the requested lookahead.
+pub(in crate::simulation::economy::agents::tick) fn continuation_headroom(
+    agent: usize,
+    lane_id: usize,
+    distance: f32,
+    lookahead: f32,
+    network: &crate::simulation::network::TransitNetwork,
+    buckets: &[Vec<(f32, usize)>],
+) -> f32 {
+    let Some(lane) = network.lane_system.lanes.get(lane_id) else {
+        return f32::MAX;
+    };
+    let remaining = lane.length - distance;
+    if remaining > lookahead + CAR_LENGTH + IDM_S_MIN {
+        return f32::MAX;
+    }
+    lane.next_lanes
+        .iter()
+        .filter_map(|&next| {
+            buckets
+                .get(next)
+                .and_then(|b| b.iter().find(|&&(_, id)| id != agent))
+                .map(|&(d, _)| (remaining + d - CAR_LENGTH - IDM_S_MIN).max(0.0))
+        })
+        .fold(f32::MAX, f32::min)
+}
+
+/// Hard movement bound against the retained leader snapshot, including next-lane tails.
+/// O(log lane occupants + local successors), with stable agent ordering for legacy overlaps.
+pub(in crate::simulation::economy::agents::tick) fn lane_motion_headroom(
+    agent: usize,
+    lane: usize,
+    distance: f32,
+    travel: f32,
+    network: &crate::simulation::network::TransitNetwork,
+    buckets: &[Vec<(f32, usize)>],
+) -> f32 {
+    let own = buckets.get(lane).map_or(f32::MAX, |b| {
+        let next = b.partition_point(|&(d, id)| d < distance || (d == distance && id <= agent));
+        b.get(next).map_or(f32::MAX, |&(d, _)| {
+            (d - distance - CAR_LENGTH - IDM_S_MIN).max(0.0)
+        })
+    });
+    own.min(continuation_headroom(
+        agent, lane, distance, travel, network, buckets,
+    ))
+}
+
 /// Returns whether a car can occupy `attach_d` without violating static separation.
 pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
     bucket: &[(f32, usize)],
@@ -122,6 +171,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
         if lane_claims.connector_allowed(agent_idx, candidate)
             && claim_lane_entry(agent_idx, candidate, lane_claims)
         {
+            lane_claims.reserve_connector(candidate);
             return ConnectorEntry::Enter(candidate);
         }
     }
