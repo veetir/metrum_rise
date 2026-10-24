@@ -7,8 +7,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Snapshot
 
 Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
-from `b75e03c9` is combined with the road chain; all targets pass `cargo check`. Save migration,
-full runtime verification and matched merged-build acceptance remain pending. Pocket edits now
+from `b75e03c9` is combined with the road chain. Fresh coverage passes all 2,846 library cases,
+four growth integrations and 58 native suites; six pre-existing Mac bridge failures reproduce
+and one legacy-save bridge is blocked. Legacy save migration and matched performance/capture
+acceptance remain pending. Pocket edits now
 journal frontage changes for the rolling census, with a forward/undo regression. The
 road edit and preview entry points now use upstream's owned Rayon pool, with a regression
 that disables the global pool. The

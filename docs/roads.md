@@ -46,8 +46,8 @@ The combined schema writes version 108 and reads upstream version 107 directly. 
 follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
 the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
 retired congestion column/value; authored geometry, profiles and clip values are preserved.
-Legacy road-chain migration, the full merged correctness/bridge suite, matched performance contracts and final
-capture comparison remain integration gates; this checkpoint does not claim them complete.
+Legacy road-chain migration, matched performance contracts and final capture comparison remain
+integration gates; this checkpoint does not claim them complete.
 
 Pocket frontage commits now apply their remaps through the allocator's existing row-change
 hook, as split/undo already do, so the rolling census and indexed readers see both forward
@@ -64,8 +64,29 @@ stay on their calling threads; only Rust data crosses the pool boundary. This ad
 dispatch at edit/preview entry points, with no new tick/agent work or change to local query
 bounds. A fresh child-process regression disables the global pool and exercises roundabout
 preview, ramp fork prediction, zebra publication and retained meshes; it passes, as does
-the queued-command publication regression and all-target Clippy. Native bridges are being
-rerun against this runtime.
+the queued-command publication regression and all-target Clippy.
+
+Fresh correctness coverage of `88133881`: all 2,846 library cases pass, with 165 ignored;
+the interrupted full run completed 2,845 cases and its sole unfinished case was resumed on
+the identical executable. All four growth integration cases pass; the manual scaling case
+is ignored and there are no doc tests. The 65-script native inventory has 58 passes, six
+failures and one blocked case. Every runnable road bridge passes, including the four ramp
+directions, roundabout, zebra preview/commit, bus lane, cross-section, pocket, layered-road
+and grade-separation suites. The university-underpass case needs legacy loading.
+
+The six native failures are pre-existing on this Mac: asset-selection Ctrl+click, plus five
+rendering suites. Controls using the preserved pre-merge library and unchanged test/material
+sources reproduce exactly 5/5 building-window, 5/5 dawn-paving, 3/3 plot-material, 2/2 terrain
+canopy and 29/29 vegetation-level assertion failures (before/after). The vegetation appearance
+contract passes with its required headless/dummy backend; running that CPU-bounds contract
+with a real renderer is not a valid check.
+
+The read-only production bridge probe loads the plain-upstream v107 fixture. It rejects
+`kuopio-sw-pockets`, `kys-pond`, `bioteknia` and `prisma` (v90), and `uni-underpass` (v88).
+All five source SHA-256 hashes remain unchanged. Automatic approval review rejected the
+legacy migration prototypes because their scheduler/runtime restoration was incomplete;
+no prototype or relaxed version guard is committed. Compatibility with road-chain v88–v95
+and matching merged-build Kuopio captures remain blocked on a complete, approved migration.
 
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
