@@ -844,6 +844,9 @@ moves its entities between the tiers' phase buckets.
   its wait (`max_preempted_less_wait_ms`) are each at most 8 ms. `tools/sim02_gate.py perf07`
   checks it and fails a run that misses it or lacks the scheduler statistics. 100k at 32× is
   reported but not required: it is deferred to `PERF-08`.
+  A run must observe at least one thread's scheduler counters (`preemption_threads > 0`).
+  On hosts without those counters the benchmark still emits numeric wait fields; these do
+  not establish that frames were unpreempted, and the gate rejects them as unmeasured.
 - **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
   case: one
   complete 100k candidate run in `economy.md` averaged about 161 ms per hour and 328 ms per daily

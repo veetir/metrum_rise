@@ -9,11 +9,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 import perf_contract
+from sim02_gate import perf07_acceptance
 from perf_contract import (BOUNDED, PHASES, check_fiscal_coverage, check_limits,
                            run_test, selected_phases)
 
 
 class ContractTests(unittest.TestCase):
+    def test_frame_budget_requires_observed_scheduler_statistics(self):
+        row = dict(residents=30000, speed=1, max_unpreempted_ms=1.0,
+                   p999_ms=1.0, max_preempted_less_wait_ms=0.0)
+        for watched in (None, 0):
+            sample = dict(row)
+            if watched is not None:
+                sample["preemption_threads"] = watched
+            accepted, failures = perf07_acceptance([sample])
+            self.assertFalse(accepted[0]["pass"])
+            self.assertIn("scheduler statistics not measured", " ".join(failures))
+        accepted, failures = perf07_acceptance([dict(row, preemption_threads=9)])
+        self.assertTrue(accepted[0]["pass"])
+        self.assertEqual(failures, [])
+
     def rows(self):
         rows = []
         for tier, scale in ((10000, 1), (30000, 3)):
