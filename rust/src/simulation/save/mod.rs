@@ -41,7 +41,9 @@ mod camera;
 mod cell_zoning;
 mod census_inputs;
 mod demand_queues;
+mod format;
 mod handles;
+mod legacy;
 pub mod network;
 mod scheduler;
 pub mod schema;
@@ -538,13 +540,7 @@ pub(crate) fn load_from_sqlite(
     registry: &crate::assets::AssetRegistry,
 ) -> SaveLoadResult<LoadedSimulation> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
-        row.get(0)
-    })?;
-    // Version 107 is upstream's scheduler schema; road additions are optional on read.
-    if !(107..=SAVE_VERSION).contains(&version) {
-        return Err(SaveLoadError::custom("version mismatch"));
-    }
+    let format = format::SaveFormat::read(&conn)?;
     let camera = camera::load_camera_state(&conn)?;
     let config = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
@@ -581,13 +577,17 @@ pub(crate) fn load_from_sqlite(
         seconds_per_day: time_r.4,
     };
     validate_time_state(&time, time_r.5)?;
-    let weather = weather::load_weather_state(&conn)?;
+    let weather = if format.weather() {
+        weather::load_weather_state(&conn)?
+    } else {
+        WeatherState::default()
+    };
 
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let resource_deposits = world::load_resource_deposits(&conn, &config)?;
     let demand_row = conn.query_row(
-        "SELECT households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled, exit_eligible_today FROM demand_state LIMIT 1",
+        &format.query("SELECT households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled, exit_eligible_today FROM demand_state LIMIT 1", &[(93, "exit_eligible_today", "0")]),
         [],
         |r| {
             Ok(DemandStateRow {
@@ -612,36 +612,61 @@ pub(crate) fn load_from_sqlite(
         demand_row.cheat_max_demands_enabled,
     );
     demand.exit_eligible_today = demand_row.exit_eligible_today;
-    let (admission, removal): (Vec<u8>, Vec<u8>) = conn.query_row(
-        "SELECT admission, removal FROM demand_diagnostics WHERE singleton = 1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    demand
-        .restore_household_diagnostics(&admission, &removal)
-        .map_err(SaveLoadError::custom)?;
-    world::load_demand_hour_plan(&conn, &mut demand)?;
-    let planning_setup: Option<Vec<u8>> = conn
-        .query_row(
+    if format.since(104) {
+        let (admission, removal): (Vec<u8>, Vec<u8>) = conn.query_row(
+            "SELECT admission, removal FROM demand_diagnostics WHERE singleton = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        demand
+            .restore_household_diagnostics(&admission, &removal)
+            .map_err(SaveLoadError::custom)?;
+    }
+    if format.since(101) {
+        world::load_demand_hour_plan(&conn, &mut demand)?;
+    }
+    let planning_setup: Option<Vec<u8>> = if format.since(106) {
+        conn.query_row(
             "SELECT setup FROM demand_planning_setup WHERE singleton = 1",
             [],
             |r| r.get(0),
         )
-        .optional()?;
-    let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
-    let scheduler = scheduler::load(&conn)?;
+        .optional()?
+    } else {
+        None
+    };
+    let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn, format)?;
+    let mut scheduler = scheduler::load_compatible(&conn, format, &time)?;
     demand
         .restore_snapshot_sweep(&scheduler.demand_snapshot)
         .map_err(SaveLoadError::custom)?;
-    let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
-    let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
+    let pollution =
+        world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state", format)?;
+    let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state", format)?;
 
     let mut graph = network::load_graph(&conn)?;
-    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
-    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
-    let vacancy_order = world::load_vacancy_order(&conn, allocator.buildings.len())?;
-    let mut households = world::load_households(&conn)?;
-    let mut logistics = world::load_shipments(&conn)?;
+    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, format)?;
+    let mut allocator = world::load_buildings(
+        &conn,
+        registry,
+        &zoning.profiles,
+        format,
+        &time,
+        scheduler.logistics_hour_ticks,
+    )?;
+    let vacancy_order = if format.since(95) {
+        world::load_vacancy_order(&conn, allocator.buildings.len())?
+    } else {
+        crate::simulation::buildings::allocator::SavedVacancyOrder {
+            stale: true,
+            ..Default::default()
+        }
+    };
+    let mut households = world::load_households(&conn, format)?;
+    let mut logistics = world::load_shipments(&conn, format, scheduler.logistics_hour_ticks)?;
+    if !format.since(102) {
+        scheduler.logistics_next_shipment_id = logistics.first_free_shipment_id();
+    }
     if scheduler.logistics_next_shipment_id < logistics.first_free_shipment_id() {
         return Err(SaveLoadError::custom(
             "saved shipment id counter is behind a saved shipment",
@@ -651,19 +676,56 @@ pub(crate) fn load_from_sqlite(
     let mut resource_extraction =
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
-    let mut agents = agents::load_agents(&conn, time_r.5)?;
-    allocator.building_handles = handles::load(
-        &conn,
-        handles::HandleKind::Buildings,
-        allocator.buildings.len(),
-    )?;
-    households.handles = handles::load(
-        &conn,
-        handles::HandleKind::Households,
-        households.households.len(),
-    )?;
-    agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
-    demand_queues::load(&conn, &mut allocator, &mut households, &mut demand)?;
+    if !format.since(93) {
+        legacy::restore_accounting(&conn, &mut households, &mut allocator)?;
+    }
+    let mut agents = agents::load_agents(&conn, time_r.5, format)?;
+    if format.since(87) {
+        allocator.building_handles = handles::load(
+            &conn,
+            handles::HandleKind::Buildings,
+            allocator.buildings.len(),
+        )?;
+        households.handles = handles::load(
+            &conn,
+            handles::HandleKind::Households,
+            households.households.len(),
+        )?;
+        agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
+    } else {
+        allocator
+            .building_handles
+            .register_appended(allocator.buildings.len());
+        households
+            .handles
+            .register_appended(households.households.len());
+        agents.handles.register_appended(agents.len());
+        legacy::restore_dense_agent_references(&conn, &mut households, &mut logistics, &agents)?;
+    }
+    if format.since(103) {
+        demand_queues::load(&conn, &mut allocator, &mut households, &mut demand)?;
+    }
+    if !format.since(91) {
+        legacy::restore_trip_events(&mut scheduler, &mut households, &mut logistics, &agents)?;
+    }
+    if !format.since(88) {
+        legacy::restore_construction_events(&mut scheduler, &mut pending_demand_spawns, &allocator);
+    }
+    if format.since(88) && !format.since(90) {
+        legacy::restore_completion_events(&mut scheduler, &allocator);
+    }
+    if format.since(91) && !format.since(102) {
+        for &(slot, _, kind, id) in &scheduler.events {
+            if matches!(kind, 2 | 3)
+                && let Some(index) = logistics.shipment_index(id)
+            {
+                logistics.shipments[index].trip_event_slot = slot;
+            }
+        }
+    }
+    scheduler
+        .events
+        .sort_unstable_by_key(|event| (event.0, event.1));
     if let Some(setup) = planning_setup {
         demand
             .restore_planning_setup(&setup, &allocator)
@@ -751,8 +813,9 @@ pub(crate) fn load_from_sqlite(
     resource_extraction.apply_work_area_scales(&mut allocator);
     agriculture.apply_work_area_scales(&mut allocator);
     // A repaired load no longer matches the saved copy; its first census copies the city.
-    if quarantined_parcels.is_empty() {
-        (households.census_inputs, households.census_run) = census_inputs::load(&conn)?;
+    if quarantined_parcels.is_empty() && format.since(97) {
+        (households.census_inputs, households.census_run) =
+            census_inputs::load(&conn, format, &scheduler)?;
     }
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
@@ -785,7 +848,20 @@ pub(crate) fn load_from_sqlite(
         &allocator,
         &transit_network,
         quarantined_parcels.is_empty(),
+        format,
     )?;
+
+    if !format.since(91) {
+        legacy::restore_unstarted_freight(
+            &mut scheduler,
+            &mut logistics,
+            &mut allocator,
+            &mut treasury.balance,
+        )?;
+        scheduler
+            .events
+            .sort_unstable_by_key(|event| (event.0, event.1));
+    }
 
     // Desirability is a function of pollution and noise: the front of the fronts, and the back
     // of the backs, whose rows the sweep has not composed yet are rewritten before they swap in.

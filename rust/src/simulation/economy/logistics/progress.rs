@@ -32,7 +32,7 @@ impl ShipmentSystem {
     /// Loads the cargo of every unloaded shipment with an id of at least `first_id` at its
     /// source and lists it for a carrier departure (`SIM-02-E`); a shipment whose endpoints are
     /// no longer ready fails at once. O(log S) plus O(1) per shipment from `first_id` on.
-    pub(super) fn load_new_shipments(
+    pub(crate) fn load_new_shipments(
         &mut self,
         first_id: u64,
         allocator: &mut BuildingAllocator,

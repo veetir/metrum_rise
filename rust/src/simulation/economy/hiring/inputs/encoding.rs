@@ -170,6 +170,17 @@ fn read_usage(reader: &mut Reader<'_>) -> Result<BuildingElectricityUsage, Strin
 
 /// Writes `building`, its road edge through `edge` (the saved edge id, or [`NO_REF`]).
 pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn(usize) -> u64) {
+    put_building_version(out, building, edge, 108, 0, 0);
+}
+
+pub(super) fn put_building_version(
+    out: &mut Writer,
+    building: &Building,
+    edge: &impl Fn(usize) -> u64,
+    version: i64,
+    ticks: u32,
+    slot: u64,
+) {
     let Building {
         center_x,
         center_y,
@@ -237,7 +248,9 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
         out.u16(value);
     }
     out.u64(*parcel_id);
-    out.u64(*applicant_seed);
+    if version >= 99 {
+        out.u64(*applicant_seed);
+    }
     out.u32(*build_generation);
     out.u8(*zone_type as u8);
     for value in [facing_dir.x, facing_dir.y, *frontage_t, *side_offset] {
@@ -276,7 +289,13 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
     ] {
         out.f32(value);
     }
-    out.u64(*shipment_cooldown_until_slot);
+    if version >= 102 {
+        out.u64(*shipment_cooldown_until_slot);
+    } else {
+        let hour = crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+        let remaining = (*shipment_cooldown_until_slot / hour).saturating_sub(slot / hour);
+        out.u32(ticks.saturating_add(remaining as u32));
+    }
     for value in [
         *daily_owa_input_value,
         *daily_local_input_value,
@@ -319,11 +338,25 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
 
 /// Reads a building written by [`put_building`]; its edge is the saved edge id.
 pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String> {
+    read_building_version(reader, 108, 0, 0, 0)
+}
+
+pub(super) fn read_building_version(
+    reader: &mut Reader<'_>,
+    version: i64,
+    dense: usize,
+    ticks: u32,
+    slot: u64,
+) -> Result<Building, String> {
     let [center_x, center_y, support_height_m] = [reader.f32()?, reader.f32()?, reader.f32()?];
     let [width_cells, depth_cells, zone_profile_runtime_id] =
         [reader.u16()?, reader.u16()?, reader.u16()?];
     let parcel_id = reader.u64()?;
-    let applicant_seed = reader.u64()?;
+    let applicant_seed = if version >= 99 {
+        reader.u64()?
+    } else {
+        dense as u64
+    };
     let build_generation = reader.u32()?;
     let zone_byte = reader.u8()?;
     let zone_type = ZoneType::from_u8(zone_byte);
@@ -362,7 +395,14 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
         profit_tax_budget_baseline,
         last_day_profit,
     ] = [reader.f32()?, reader.f32()?, reader.f32()?, reader.f32()?];
-    let shipment_cooldown_until_slot = reader.u64()?;
+    let shipment_cooldown_until_slot = if version >= 102 {
+        reader.u64()?
+    } else {
+        let deadline = reader.u32()?;
+        let hours = u64::from(deadline.saturating_sub(ticks));
+        (slot / crate::simulation::core::scheduler::SLOTS_PER_HOUR + hours)
+            * crate::simulation::core::scheduler::SLOTS_PER_HOUR
+    };
     let [
         daily_owa_input_value,
         daily_local_input_value,

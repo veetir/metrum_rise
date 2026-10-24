@@ -2,6 +2,7 @@
 
 //! Serialization for terrain, water, buildings, and zoning systems.
 
+use super::format::SaveFormat;
 use crate::nodes::sim::core::PendingDemandSpawnAction;
 use crate::simulation::agriculture::{AgricultureSystem, FieldSite, validate_field_polygon_world};
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
@@ -9,6 +10,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator, Saved
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::request_queue::RequestQueue;
 use crate::simulation::core::scheduler::{LEVELER_MINUTES, MinuteLeveler};
+use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -704,9 +706,10 @@ type QueueStateRow = (
     (i64, i64),
 );
 
-fn load_household_queue_state(
+fn load_household_queue_state_compatible(
     conn: &Connection,
     households: &mut HouseholdSystem,
+    format: SaveFormat,
 ) -> SaveLoadResult<()> {
     let (
         (credit, first_minute, counts),
@@ -715,7 +718,7 @@ fn load_household_queue_state(
         (job_sweep_handles, job_sweep_hour, job_sweep_next_chunk),
         (admission_credit, admission_rate),
     ): QueueStateRow = conn.query_row(
-        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate FROM household_queue_state WHERE singleton = 1",
+        &format.query("SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate FROM household_queue_state WHERE singleton = 1", &[(103, "admission_credit", "0"), (103, "admission_rate", "0")]),
         [],
         |row| {
             Ok((
@@ -881,12 +884,15 @@ pub(super) fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> 
     Ok(())
 }
 
-fn load_supplier_roll(conn: &Connection) -> SaveLoadResult<SupplierRoll> {
+fn load_supplier_roll_compatible(
+    conn: &Connection,
+    format: SaveFormat,
+) -> SaveLoadResult<SupplierRoll> {
     let ((front_hour, sweep_handles, sweep_hour, sweep_next_chunk), current): (
         (i64, i64, i64, i64),
         [bool; 2],
     ) = conn.query_row(
-        "SELECT front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk, front_current, sweep_current FROM freight_supplier_sweep WHERE singleton = 1",
+        &format.query("SELECT front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk, front_current, sweep_current FROM freight_supplier_sweep WHERE singleton = 1", &[(99, "front_current", "0"), (99, "sweep_current", "0")]),
         [],
         |row| {
             Ok((
@@ -1185,9 +1191,10 @@ pub(super) fn load_resource_deposits(
 
 pub(super) fn load_pending_demand_spawns(
     conn: &Connection,
+    format: SaveFormat,
 ) -> SaveLoadResult<VecDeque<PendingDemandSpawnAction>> {
     let mut stmt = conn.prepare(
-        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id, permit, counted FROM pending_demand_spawns ORDER BY sequence ASC",
+        &format.query("SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id, permit, counted FROM pending_demand_spawns ORDER BY sequence ASC", &[(88, "spawn_id", "sequence"), (99, "permit", "X'00'"), (99, "counted", "0")]),
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -1390,6 +1397,7 @@ pub(super) fn load_zoning(
     conn: &Connection,
     config: &WorldConfig,
     graph: &RegionGraph,
+    format: SaveFormat,
 ) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
     let mut cell_lots = super::cell_zoning::load(conn, &mut zoning, graph)?;
@@ -1463,7 +1471,9 @@ pub(super) fn load_zoning(
     if !cell_lots.is_empty() {
         return Err(SaveLoadError::custom("cell lot references missing parcel"));
     }
-    super::cell_zoning::load_lot_queue(conn, &mut zoning)?;
+    if format.since(94) {
+        super::cell_zoning::load_lot_queue(conn, &mut zoning)?;
+    }
     if !quarantined_parcels.is_empty() {
         crate::debug_log!(
             "save",
@@ -1480,6 +1490,9 @@ pub(super) fn load_buildings(
     conn: &Connection,
     registry: &crate::assets::AssetRegistry,
     profiles: &crate::simulation::zoning::profiles::ZoningProfileRegistry,
+    format: SaveFormat,
+    time: &TimeSystem,
+    logistics_hour_ticks: u32,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
     let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
@@ -1497,12 +1510,28 @@ pub(super) fn load_buildings(
     //      37=commercial_activity_floor_scale 38=paid_workers_in_window 39=funded_job_capacity
     //      40=unpaid_cash_wages_in_window 41=service_sales_capacity
     //      42=service_sales_profile_runtime_id 43=funded_activity 44=applicant_seed
-    allocator.next_applicant_seed = i64_to_u64(conn.query_row(
-        "SELECT next_applicant_seed FROM building_seed_state WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?)?;
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id")?;
+    if format.since(99) {
+        allocator.next_applicant_seed = i64_to_u64(conn.query_row(
+            "SELECT next_applicant_seed FROM building_seed_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)?;
+    }
+    let sql = format.query("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id", &[
+        (102, "shipment_cooldown_until_slot", "shipment_cooldown_until_tick"),
+        (89, "shipment_cooldown_until_tick", "shipment_cooldown_hours"),
+        (90, "construction_complete_slot", "construction_remaining_hours"),
+        (92, "hourly_economy_activity", "0"),
+        (92, "commercial_activity_floor_scale", "0"),
+        (93, "paid_workers_in_window", "0"),
+        (93, "funded_job_capacity", "0"),
+        (93, "unpaid_cash_wages_in_window", "0"),
+        (95, "service_sales_capacity", "0"),
+        (95, "service_sales_profile_runtime_id", "0"),
+        (95, "funded_activity", "0"),
+        (99, "applicant_seed", "building_id"),
+    ]);
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -1573,10 +1602,33 @@ pub(super) fn load_buildings(
             operating_budget: row.get(12)?,
             profit_tax_budget_baseline: row.get(13)?,
             last_day_profit: row.get(14)?,
-            shipment_cooldown_until_slot: i64_to_u64(row.get(15)?)?,
+            shipment_cooldown_until_slot: {
+                let saved = i64_to_u64(row.get(15)?)?;
+                if format.since(102) {
+                    saved
+                } else {
+                    let remaining = if format.since(89) {
+                        saved.saturating_sub(u64::from(logistics_hour_ticks))
+                    } else {
+                        saved
+                    };
+                    (time.absolute_slot() / crate::simulation::core::scheduler::SLOTS_PER_HOUR
+                        + remaining)
+                        * crate::simulation::core::scheduler::SLOTS_PER_HOUR
+                }
+            },
             level: row.get::<_, i64>(19)?.clamp(1, 255) as u8,
             construction_total_hours: i64_to_u16(row.get(20)?)?,
-            construction_complete_slot: i64_to_u64(row.get(21)?)?,
+            construction_complete_slot: {
+                let saved = i64_to_u64(row.get(21)?)?;
+                if format.since(90) || saved == 0 {
+                    saved
+                } else {
+                    (time.absolute_slot() / crate::simulation::core::scheduler::SLOTS_PER_HOUR
+                        + saved)
+                        * crate::simulation::core::scheduler::SLOTS_PER_HOUR
+                }
+            },
             broken,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
@@ -1626,12 +1678,17 @@ pub(super) fn load_buildings(
         };
         building.set_inventory_units(resource_runtime_id, amount);
     }
-    let city_input_day: String = conn.query_row(
-        "SELECT city_input_day FROM electricity_day_state WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    allocator.city_input_day = from_json(&city_input_day)?;
+    if !format.since(99) {
+        allocator.next_applicant_seed = allocator.buildings.len() as u64;
+    }
+    if format.since(93) {
+        let city_input_day: String = conn.query_row(
+            "SELECT city_input_day FROM electricity_day_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        allocator.city_input_day = from_json(&city_input_day)?;
+    }
     Ok(allocator)
 }
 
@@ -1877,24 +1934,44 @@ pub(super) fn load_vacancy_order(
     Ok(saved)
 }
 
-pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
+pub(super) fn load_households(
+    conn: &Connection,
+    format: SaveFormat,
+) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let (removed, day, last_day, coal): (String, String, String, f64) = conn.query_row(
+    if format.since(93) {
+        let (removed, day, last_day, coal): (String, String, String, f64) = conn.query_row(
         "SELECT removed_buildings, day_totals, last_day_totals, coal_inventory_kg FROM electricity_day_state WHERE singleton = 1",
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    households.removed_electricity = from_json(&removed)?;
-    households.day_totals = from_json(&day)?;
-    households.last_day_totals = from_json(&last_day)?;
-    households.coal_inventory_kg = coal;
-    if !households.removed_electricity.is_valid() {
-        return Err(SaveLoadError::custom(
-            "invalid removed-building electricity account",
-        ));
+        households.removed_electricity = from_json(&removed)?;
+        households.day_totals = from_json(&day)?;
+        households.last_day_totals = from_json(&last_day)?;
+        households.coal_inventory_kg = coal;
+        if !households.removed_electricity.is_valid() {
+            return Err(SaveLoadError::custom(
+                "invalid removed-building electricity account",
+            ));
+        }
+    } else {
+        let removed: String = conn.query_row(
+            "SELECT removed_buildings FROM electricity_day_state WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        households.removed_electricity.settlement =
+            super::legacy::load_removed_electricity(&removed)?.settlement;
     }
-    load_city_hour(conn, &mut households)?;
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id")?;
+    if format.since(95) {
+        load_city_hour(conn, &mut households)?;
+    }
+    let sql = format.query("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id", &[
+        (87, "shopping_agent_slot", "shopping_agent_id"),
+        (87, "shopping_agent_generation", "0"),
+        (93, "paid_workers_in_window", "0"),
+    ]);
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -1979,45 +2056,57 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             households.restore_electricity_account(hid, usage, unpaid, local);
         }
     }
-    let mut stmt = conn.prepare(
-        "SELECT kind, slot, household_slot, household_generation FROM household_requests ORDER BY kind, sequence",
+    if format.since(93) {
+        let mut stmt = conn.prepare(
+        &format.query("SELECT kind, slot, household_slot, household_generation FROM household_requests ORDER BY kind, sequence", &[(102, "kind, slot,", "kind, 0,")]),
     )?;
-    let mut rows = stmt.query([])?;
-    let mut queues = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-    while let Some(row) = rows.next()? {
-        let handle = handle_from_db(row.get(2)?, row.get(3)?)?;
-        let kind = row.get::<_, i64>(0)?;
-        if kind == 1 {
-            households.exits.push_back(handle);
-            continue;
+        let mut rows = stmt.query([])?;
+        let mut queues = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        while let Some(row) = rows.next()? {
+            let handle = handle_from_db(row.get(2)?, row.get(3)?)?;
+            let kind = row.get::<_, i64>(0)?;
+            if kind == 1 {
+                households.exits.push_back(handle);
+                continue;
+            }
+            let queued_slot = row
+                .get::<_, Option<i64>>(1)?
+                .ok_or_else(|| SaveLoadError::custom("household request without its queue slot"))?;
+            let queue = match kind {
+                0 => 0,
+                2..=4 => kind as usize - 1,
+                _ => return Err(SaveLoadError::custom("unknown household request kind")),
+            };
+            queues[queue].push((i64_to_u64(queued_slot)?, handle));
         }
-        let queued_slot = row
-            .get::<_, Option<i64>>(1)?
-            .ok_or_else(|| SaveLoadError::custom("household request without its queue slot"))?;
-        let queue = match kind {
-            0 => 0,
-            2..=4 => kind as usize - 1,
-            _ => return Err(SaveLoadError::custom("unknown household request kind")),
-        };
-        queues[queue].push((i64_to_u64(queued_slot)?, handle));
+        let [reviews, rehousing, restocks, visits] = queues;
+        households.housing_reviews = RequestQueue::restore(reviews);
+        households.rehousing = RequestQueue::restore(rehousing);
+        households.restock_requests = RequestQueue::restore(restocks);
+        households.visit_requests = RequestQueue::restore(visits);
     }
-    let [reviews, rehousing, restocks, visits] = queues;
-    households.housing_reviews = RequestQueue::restore(reviews);
-    households.rehousing = RequestQueue::restore(rehousing);
-    households.restock_requests = RequestQueue::restore(restocks);
-    households.visit_requests = RequestQueue::restore(visits);
-    load_household_queue_state(conn, &mut households)?;
+    if format.since(102) {
+        load_household_queue_state_compatible(conn, &mut households, format)?;
+    }
     Ok(households)
 }
 
-pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
+pub(super) fn load_shipments(
+    conn: &Connection,
+    format: SaveFormat,
+    hour_ticks: u32,
+) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
     let payload = load_runtime_economy_tuning()
         .map_err(SaveLoadError::custom)?
         .logistics
         .truck_payload_kg;
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot FROM shipments ORDER BY shipment_id")?;
+    let leg_start = format!("MAX(0, {hour_ticks} - queued_hours)");
+    let mut stmt = conn.prepare(&format.query("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot FROM shipments ORDER BY shipment_id", &[
+        (87, "carrier_slot", "carrier_agent_id"), (87, "carrier_generation", "0"),
+        (91, "cargo_loaded", "0"), (102, "trip_event_slot", "0"), (102, "leg_started_hour", &leg_start),
+    ]))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let resource = i64_to_u16(row.get(1)?)?;
@@ -2083,18 +2172,22 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             },
         );
     }
-    let mut request_stmt = conn.prepare("SELECT slot, kind, building_slot, building_generation FROM freight_requests ORDER BY position")?;
-    let mut request_rows = request_stmt.query([])?;
-    while let Some(row) = request_rows.next()? {
-        logistics.freight_requests.push_back(FreightRequest {
-            slot: i64_to_u64(row.get(0)?)?,
-            kind: FreightRequestKind::from_code(row.get(1)?)
-                .ok_or_else(|| SaveLoadError::custom("unknown freight request kind"))?,
-            building: handle_from_db(row.get(2)?, row.get(3)?)?,
-        });
+    if format.since(102) {
+        let mut request_stmt = conn.prepare("SELECT slot, kind, building_slot, building_generation FROM freight_requests ORDER BY position")?;
+        let mut request_rows = request_stmt.query([])?;
+        while let Some(row) = request_rows.next()? {
+            logistics.freight_requests.push_back(FreightRequest {
+                slot: i64_to_u64(row.get(0)?)?,
+                kind: FreightRequestKind::from_code(row.get(1)?)
+                    .ok_or_else(|| SaveLoadError::custom("unknown freight request kind"))?,
+                building: handle_from_db(row.get(2)?, row.get(3)?)?,
+            });
+        }
+        logistics.rebuild_request_pending();
     }
-    logistics.rebuild_request_pending();
-    logistics.supplier_roll = load_supplier_roll(conn)?;
+    if format.since(95) {
+        logistics.supplier_roll = load_supplier_roll_compatible(conn, format)?;
+    }
     Ok(logistics)
 }
 
@@ -2212,9 +2305,15 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
     conn: &Connection,
     config: &WorldConfig,
     table: &str,
+    format: SaveFormat,
 ) -> SaveLoadResult<T> {
-    let raw: (i64, i64, Vec<u8>, Vec<u8>) = conn.query_row(
-        &format!("SELECT width, height, grid_blob_f32_le, back_blob_f32_le FROM {table} LIMIT 1"),
+    let raw: (i64, i64, Vec<u8>, Option<Vec<u8>>) = conn.query_row(
+        &format.query(
+            &format!(
+                "SELECT width, height, grid_blob_f32_le, back_blob_f32_le FROM {table} LIMIT 1"
+            ),
+            &[(94, "back_blob_f32_le", "NULL")],
+        ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
@@ -2227,7 +2326,9 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
     let mut s = T::new_with_config(config);
     let (front, back) = s.grids_mut();
     front.data = unpack_f32_blob(&raw.2, w * h)?;
-    back.data = unpack_f32_blob(&raw.3, w * h)?;
+    if let Some(saved_back) = raw.3 {
+        back.data = unpack_f32_blob(&saved_back, w * h)?;
+    }
     Ok(s)
 }
 

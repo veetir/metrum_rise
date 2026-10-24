@@ -419,3 +419,27 @@ fn a_read_front_defers_rows_changed_in_place_until_a_restart() {
     inputs.consume();
     assert!(!inputs.is_read() && !inputs.pending);
 }
+
+#[test]
+fn historical_census_building_rows_preserve_front_back_and_deadlines() {
+    let (mut allocator, households) = city();
+    for (dense, building) in allocator.buildings.iter_mut().enumerate() {
+        building.applicant_seed = dense as u64;
+        building.shipment_cooldown_until_slot = 7 * SLOTS_PER_HOUR;
+    }
+    let mut inputs = CensusInputs::default();
+    advance(&mut inputs, &mut allocator, &households, 0..SLOTS_PER_HOUR);
+    advance(&mut inputs, &mut allocator, &households, 0..250);
+    let saved = inputs.save(&allocator.census_copy_changes, |edge| edge as u64);
+    assert!(saved.front.is_some() && saved.back.is_some());
+    for version in [97, 99, 101] {
+        let mut historical = saved.clone();
+        CensusInputs::migrate_saved_rows(&mut historical, 108, version, 3, 5 * SLOTS_PER_HOUR)
+            .unwrap();
+        assert_ne!(historical, saved);
+        CensusInputs::migrate_saved_rows(&mut historical, version, 108, 3, 5 * SLOTS_PER_HOUR)
+            .unwrap();
+        assert_eq!(historical, saved, "census v{version} loses a copied row");
+        CensusInputs::restore(&historical).unwrap();
+    }
+}

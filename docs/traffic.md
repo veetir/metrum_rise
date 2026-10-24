@@ -73,7 +73,8 @@ evidence that the dense-city regression is repaired.
 Separately, the production bridge loads untouched populated upstream v107 saves at 10k and
 30k with exactly 7,396/11,042 and 20,359/31,597 buildings/agents. Both advance at least a full
 hour without a bridge error. This verifies upstream runtime loading, not dense-city throughput
-acceptance. The road-chain v88–v95 migration remains blocked as recorded in the
+acceptance. The road-chain v88–v95 copied-save and fingerprint probes now pass; the remaining migration
+coverage and university bridge validation are recorded in the
 [road integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24).
 
 ### Automatic vehicle junction priority — TRAFFIC-08 stage 1a

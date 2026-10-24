@@ -3,6 +3,7 @@
 //! Simulation snapshot persistence regressions.
 
 mod cell_zoning;
+mod legacy;
 mod road_junction_geometry;
 
 use super::*;
@@ -383,11 +384,29 @@ fn pending_household_composition_survives_save() {
     let tx = conn.transaction().unwrap();
     agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
     tx.commit().unwrap();
-    let restored = agents::load_agents(&conn, 0.0).unwrap();
+    let restored = agents::load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     assert_eq!(restored.pending_household_composition(carrier), approved);
     conn.execute("UPDATE agents SET pending_household_adults = 7", [])
         .unwrap();
-    assert!(agents::load_agents(&conn, 0.0).is_err());
+    assert!(
+        agents::load_agents(
+            &conn,
+            0.0,
+            crate::simulation::save::format::SaveFormat {
+                version: SAVE_VERSION,
+                road: false
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -968,6 +987,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 demand: &demand,
                 pending_demand_spawns: &pending_demand_spawns,
                 scheduler: crate::simulation::save::SavedScheduler {
+                    next_slot: time.absolute_slot() + 1,
                     environment,
                     demand_snapshot: demand_snapshot.clone(),
                     logistics_next_shipment_id: logistics.next_shipment_id,
@@ -1177,6 +1197,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             .local_kwh,
         7.0
     );
+    legacy::check_histories(&path, &allocator.registry);
     let conn = Connection::open(&path).unwrap();
     let mut accepted_corruptions = Vec::new();
     for (column, invalid_values) in [
@@ -1233,7 +1254,16 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         [],
     )
     .unwrap();
-    if agents::load_agents(&conn, 0.0).is_ok() {
+    if agents::load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: SAVE_VERSION,
+            road: false,
+        },
+    )
+    .is_ok()
+    {
         accepted_corruptions.push("agent path sequence gap".to_owned());
     }
     conn.execute(

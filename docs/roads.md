@@ -49,7 +49,7 @@ The combined schema writes version 108 and reads upstream version 107 directly. 
 follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
 the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
 retired congestion column/value; authored geometry, profiles and clip values are preserved.
-Legacy road-chain migration and final capture comparison remain blocked. The full economy
+Legacy road-chain migration is under validation below; final capture comparison remains pending. The full economy
 and frame-budget checks have now run and fail; this checkpoint is not integration acceptance.
 
 Pocket frontage commits now apply their remaps through the allocator's existing row-change
@@ -75,7 +75,7 @@ the identical executable. All four growth integration cases pass; the manual sca
 is ignored and there are no doc tests. The 65-script native inventory has 58 passes, six
 failures and one blocked case. Every runnable road bridge passes, including the four ramp
 directions, roundabout, zebra preview/commit, bus lane, cross-section, pocket, layered-road
-and grade-separation suites. The university-underpass case needs legacy loading.
+and grade-separation suites. The university-underpass case was blocked at that checkpoint; it now passes with migration.
 
 The six native failures are pre-existing on this Mac: asset-selection Ctrl+click, plus five
 rendering suites. Controls using the preserved pre-merge library and unchanged test/material
@@ -84,21 +84,83 @@ canopy and 29/29 vegetation-level assertion failures (before/after). The vegetat
 contract passes with its required headless/dummy backend; running that CPU-bounds contract
 with a real renderer is not a valid check.
 
-The read-only production bridge probe loads the plain-upstream v107 fixture. All five user
-saves load with the preserved `0cc4a2ab` runtime, but are rejected by the merged runtime:
+The migration reads databases with `SQLITE_OPEN_READ_ONLY`. Task-prefixed copies of all five
+user saves now pass production load → v108 save → load → resave. The untouched upstream v107
+fixture passes the same probe. `tools/road_save_fingerprint.py` compares every road field,
+control and physical vertex, lane connection, pocket, crossing level, roundabout flag, bus mask,
+zebra override and saved directed lane identity. Only retired congestion and live frontage
+prices are excluded. Every user-save fingerprint matches the preserved pre-merge `0cc4a2ab`
+load/save output exactly, and each v108 resave matches its first v108 save. Original hashes
+remain unchanged. `godot/tests/road_legacy_save_probe.gd` reproduces this using copies only.
 
-| Save | Version | Pre-merge load | Merged load |
-| --- | ---: | --- | --- |
-| kuopio-sw-pockets | 90 | pass | version mismatch |
-| kys-pond | 90 | pass | version mismatch |
-| bioteknia | 90 | pass | version mismatch |
-| prisma | 90 | pass | version mismatch |
-| uni-underpass | 88 | pass | version mismatch |
+| Save | Source version | Production load | Pre-merge road/topology match | v108 round trip |
+| --- | ---: | --- | --- | --- |
+| kuopio-sw-pockets | 90 | pass | exact | exact |
+| kys-pond | 90 | pass | exact | exact |
+| bioteknia | 90 | pass | exact | exact |
+| prisma | 90 | pass | exact | exact |
+| uni-underpass | 88 | pass | exact | exact |
 
-All five source SHA-256 hashes remain unchanged after the final probes. Automatic approval review rejected the
-legacy migration prototypes because their scheduler/runtime restoration was incomplete;
-no prototype or relaxed version guard is committed. Compatibility with road-chain v88–v95
-and matching merged-build Kuopio captures remain blocked on a complete, approved migration.
+#### Save histories and initialization
+
+The histories are distinguished by the v87 upstream handle-table cutover, rather than treating
+road v88–95 as scheduler saves with the same numbers. `save_history_schemas.json` records 27
+committed historical SQL checkpoints with their source commit hashes; the populated
+serialization regression loads every one and preserves buildings, households, agents, jobs,
+lane identities, road geometry and existing electricity/input accounts. It currently covers
+the shared v86 boundary, road v88–95 and upstream v87–107; pre-v86 compatibility remains a
+separate unfinished part of the requested older-upstream coverage.
+
+| Road history | Persisted additions (economy remains v86) |
+| --- | --- |
+| v88 | Weather and both sky layers; no scheduler or generational handles |
+| v89 | Median styles, widths and end setbacks |
+| v90 | Lane tapers and turn-pocket metadata |
+| v91 | Crossing levels; priority policy is derived from road authority |
+| v92 | Roundabout owner flags |
+| v93 | Ramps use the existing structural/road metadata |
+| v94 | Forward/backward bus-lane masks |
+| v95 | Explicit per-arm zebra overrides |
+
+| Upstream history | Persisted scheduler/runtime additions |
+| --- | --- |
+| v86 | Complete WRC1 commute quotes, live frontage prices and dense agent references |
+| v87 | Generational building, household and agent handles |
+| v88 | Timing wheel, event/spawn counters and queued spawn IDs |
+| v89 / v90 | Passive freight/job deadlines, then construction completion slots |
+| v91 | Trip events and loaded-cargo state |
+| v92 | Per-entity hourly state; retired agent money |
+| v93 | Daily windows/totals, WRC2 quote stamps, road-length roll and exit eligibility |
+| v94 | Environment sweep, grid backs and saved cell-lot work queue |
+| v95 | Demand snapshot sweep, vacancy order, city-hour totals and supplier buffers |
+| v97 | Census input front/back, deferred changes and rolling census publication |
+| v99 | Applicant seeds, construction permits/counting and supplier validity |
+| v101 | Demand hour plan and published census copy |
+| v102 | Request queues, minute-level departure counters and absolute freight event/leg clocks |
+| v103 | Admission, building-removal and level-change queues |
+| v104 | Admission/removal diagnostics |
+| v105 | Retired per-edge congestion |
+| v106 | Planning setup between setup and planning slots |
+| v107 | Weather and both sky layers |
+| v108 | Combined road/scheduler authority; writer version is unchanged by this reader repair |
+
+Absent queues, rolls and scratch begin with the same owning constructors/defaults as upstream;
+the existing production load path then rebuilds indices, census/planning storage, cells, paths
+and tick scratch. Legacy dense shoppers retain their old schedule-seed guard when converted to
+handles. Remaining construction/job/freight durations become deadlines; active trips become
+the corresponding upstream events, including returning carriers and unstarted freight. A
+pre-permit construction request waits for proof at the next planning slot. Complete legacy
+electricity records are decoded and pending demolition/input/coal accounting is retained.
+WRC1 quotes are transcoded to WRC2, and the v97/v99 census building rows are transcoded to the
+v102 binary layout instead of discarding the saved front/back. The census round-trip regression
+checks copied rows and deadlines exactly. Work is load-only O(entities + copied rows + lanes),
+with O(events log events) ordering and O(log shipments) event binding; no new frame/agent work.
+
+Fresh release save coverage passes 63 active cases (four manual benchmarks ignored), including
+the 27-schema populated matrix, and the historical census codec regression passes separately.
+All-target Clippy is clean. The university reconstruction bridge passes from the task-prefixed
+v88 copy; the final library and six-world v108 round-trip probe pass. Pre-v86 upstream
+coverage remains unfinished, so the complete requested migration is not yet accepted.
 
 Fresh matched road measurements compare pre-merge `0cc4a2ab` and merged Rust `88133881`,
 serially after all correctness runs and fixture preparation, unprofiled release, Rust 1.98.1,

@@ -265,7 +265,15 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);
@@ -369,7 +377,15 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     conn.execute("UPDATE agents SET transit_mode = 0", [])
         .unwrap();
-    let mut loaded = load_agents(&conn, 0.0).unwrap();
+    let mut loaded = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     // Snapshot edges are compacted; restore against the corresponding compacted graph.
     let tx = conn.transaction().unwrap();
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
@@ -455,7 +471,15 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     )
     .unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -485,7 +509,15 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -698,7 +730,15 @@ fn older_open_node_connectors_retire_without_refusing_the_save() {
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut rebuilt = TransitNetwork::new();
     rebuilt.lane_system.rebuild(&mut new_graph);
@@ -708,6 +748,14 @@ fn older_open_node_connectors_retire_without_refusing_the_save() {
     assert!(restored.current_path[0].is_empty());
     // The same missing identity under an authored whitelist remains an invalid save.
     new_graph.add_lane_connection(center, 0, 0, 1, -1);
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     assert!(restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt,).is_err());
 }

@@ -81,10 +81,17 @@ pub(super) fn save(
     Ok(())
 }
 
-pub(super) fn load(conn: &Connection) -> SaveLoadResult<(CensusInputs, RollingCensus)> {
-    let (saved, census) = conn.query_row(
-        "SELECT front, back, changes, deferred, census_publish_slot, census_current, \
+pub(super) fn load(
+    conn: &Connection,
+    format: super::format::SaveFormat,
+    scheduler: &super::SavedScheduler,
+) -> SaveLoadResult<(CensusInputs, RollingCensus)> {
+    let (mut saved, census) = conn.query_row(
+        &format.query(
+            "SELECT front, back, changes, deferred, census_publish_slot, census_current, \
          published FROM census_inputs WHERE singleton = 1",
+            &[(101, "published", "NULL")],
+        ),
         [],
         |row| {
             Ok((
@@ -115,6 +122,16 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<(CensusInputs, RollingCe
             ));
         }
     };
+    if !format.since(102) {
+        CensusInputs::migrate_saved_rows(
+            &mut saved,
+            format.version,
+            108,
+            scheduler.logistics_hour_ticks,
+            scheduler.next_slot - 1,
+        )
+        .map_err(SaveLoadError::custom)?;
+    }
     let inputs = CensusInputs::restore(&saved).map_err(SaveLoadError::custom)?;
     Ok((inputs, RollingCensus::restore(census)))
 }

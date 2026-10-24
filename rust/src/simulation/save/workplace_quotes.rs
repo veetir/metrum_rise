@@ -68,6 +68,7 @@ pub(super) fn load(
     allocator: &BuildingAllocator,
     network: &TransitNetwork,
     preserve: bool,
+    format: super::format::SaveFormat,
 ) -> SaveLoadResult<()> {
     if !preserve {
         return Ok(());
@@ -88,7 +89,11 @@ pub(super) fn load(
     if row.1 != current_entrance_keys {
         return Ok(());
     }
-    let (entries, pass) = decode(&row.0, allocator.buildings.len())?;
+    let (entries, pass) = if format.since(93) {
+        decode(&row.0, allocator.buildings.len())?
+    } else {
+        decode_legacy(&row.0, allocator.buildings.len())?
+    };
     households.restore_workplace_route_cache(
         allocator.building_ref_revision(),
         allocator.entrance_ref_revision(),
@@ -237,6 +242,32 @@ fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<(Vec<QuoteEntry>
     Ok((entries, pass))
 }
 
+// WRC1 (upstream v86–92 and road v88–95) used a 12-byte header and 20-byte entries.
+fn decode_legacy(blob: &[u8], building_count: usize) -> SaveLoadResult<(Vec<QuoteEntry>, u32)> {
+    if blob.len() < 12 || &blob[..4] != b"WRC1" {
+        return Err(super::SaveLoadError::custom(
+            "invalid legacy workplace quote header",
+        ));
+    }
+    let count = u64::from_le_bytes(blob[4..12].try_into().unwrap());
+    let count = usize::try_from(count)
+        .map_err(|_| super::SaveLoadError::custom("legacy quote count overflow"))?;
+    if count.checked_mul(20).and_then(|n| n.checked_add(12)) != Some(blob.len()) {
+        return Err(super::SaveLoadError::custom(
+            "invalid legacy workplace quote length",
+        ));
+    }
+    let mut current = Vec::with_capacity(16 + count * 24);
+    current.extend_from_slice(&MAGIC);
+    current.extend_from_slice(&(count as u64).to_le_bytes());
+    current.extend_from_slice(&0u32.to_le_bytes());
+    for entry in blob[12..].as_chunks::<20>().0 {
+        current.extend_from_slice(entry);
+        current.extend_from_slice(&0u32.to_le_bytes());
+    }
+    decode(&current, building_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +360,10 @@ mod tests {
             &restored_allocator,
             &restored_network,
             true,
+            super::super::format::SaveFormat {
+                version: super::super::SAVE_VERSION,
+                road: false,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -385,6 +420,10 @@ mod tests {
             &unrelated_change,
             &unrelated_network,
             true,
+            super::super::format::SaveFormat {
+                version: super::super::SAVE_VERSION,
+                road: false,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -404,6 +443,10 @@ mod tests {
             &changed_entrance,
             &changed_network,
             true,
+            super::super::format::SaveFormat {
+                version: super::super::SAVE_VERSION,
+                road: false,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -457,7 +500,20 @@ mod tests {
         let mut households = HouseholdSystem::new();
         let allocator = BuildingAllocator::new();
         let network = TransitNetwork::new();
-        assert!(load(&conn, &mut households, &allocator, &network, true,).is_err());
+        assert!(
+            load(
+                &conn,
+                &mut households,
+                &allocator,
+                &network,
+                true,
+                super::super::format::SaveFormat {
+                    version: super::super::SAVE_VERSION,
+                    road: false
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

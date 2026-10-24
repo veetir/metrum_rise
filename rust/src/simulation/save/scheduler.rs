@@ -109,10 +109,31 @@ pub(super) fn save(
 // front_m, back_mm, frozen edges (-1 before a sweep), next edge, measured.
 type SavedRoadLengthRow = (f64, i64, i64, i64, i64);
 
-pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
+pub(super) fn load_compatible(
+    conn: &Connection,
+    format: super::format::SaveFormat,
+    time: &crate::simulation::core::time::TimeSystem,
+) -> SaveLoadResult<SavedScheduler> {
+    if !format.since(88) {
+        let age: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(queued_hours), 0) FROM shipments",
+            [],
+            |r| r.get(0),
+        )?;
+        return Ok(SavedScheduler {
+            next_slot: time.absolute_slot() + 1,
+            logistics_hour_ticks: i64_to_u32(age)?,
+            ..Default::default()
+        });
+    }
     // Clock and event counters, then the road-length sweep columns.
     let row: (i64, i64, i64, i64, i64, SavedRoadLengthRow, i64) = conn.query_row(
-        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1",
+        &format.query("SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1", &[
+            (89, "logistics_hour_ticks", "0"), (89, "agent_settlement_days", "0"),
+            (93, "road_length_front_m", "0"), (93, "road_length_back_mm", "0"),
+            (93, "road_length_edges", "-1"), (93, "road_length_next_edge", "0"), (93, "road_length_measured", "0"),
+            (102, "logistics_next_shipment_id", "0"),
+        ]),
         [],
         |row| {
             Ok((
@@ -150,9 +171,21 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
             i64_to_u64(row.5.3)?,
             row.5.4 != 0,
         ),
-        freight_departures: load_freight_departures(conn)?,
-        environment: load_environment(conn)?,
-        demand_snapshot: load_demand_snapshot(conn)?,
+        freight_departures: if format.since(102) {
+            load_freight_departures(conn)?
+        } else {
+            Default::default()
+        },
+        environment: if format.since(94) {
+            load_environment(conn)?
+        } else {
+            Default::default()
+        },
+        demand_snapshot: if format.since(95) {
+            load_demand_snapshot(conn)?
+        } else {
+            Default::default()
+        },
         events: Vec::new(),
     };
     let mut stmt =
@@ -174,6 +207,14 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         return Err(SaveLoadError::custom(
             "timed event outside the saved scheduler window",
         ));
+    }
+    if !format.since(89) {
+        let age: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(queued_hours), 0) FROM shipments",
+            [],
+            |r| r.get(0),
+        )?;
+        scheduler.logistics_hour_ticks = i64_to_u32(age)?;
     }
     Ok(scheduler)
 }
