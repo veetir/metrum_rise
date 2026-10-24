@@ -23,6 +23,41 @@ Implementation lives mainly in:
 
 ## Current Scope
 
+### Upstream integration acceptance — TRAFFIC-09
+
+The road/scheduler merge is not accepted for dense-city behavior. Fresh, serial, unprofiled
+release runs on Apple M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`, use upstream
+`b75e03c9` and merged Rust source `88133881`. Both full `./run.sh --perf-contract` checks
+fail work-scaling limits: five on plain upstream, three on the merged build. All measured
+hour/day means remain inside the absolute time limits, but the cities' work is different.
+
+| Full-day hour mean, ms | Plain upstream | Merged |
+| --- | ---: | ---: |
+| Baseline 10k | 1.058 | 2.541 |
+| Baseline 30k | 4.040 | 6.708 |
+| Fiscal stress 10k | 7.040 | 9.541 |
+| Fiscal stress 30k | 29.366 | 26.189 |
+
+The prepared day-12 10k saves already diverge before loading: upstream has 7,186 employed
+agents and 2,481 network occupants; merged has 716 employed and 9,092 network occupants.
+Car speed on network lanes averages 4.954 versus 0.052 m/s. This establishes a dense-traffic
+flow/behavior regression during fixture warm-up, not a save-loader loss. It does not identify
+the responsible rule. Junction priority, lane topology/capacity and the pre-existing
+`TRAFFIC-07` border-entry overfill need a controlled comparison from the same initial world;
+do not disable road rules or loosen collision/entry checks to make the benchmark pass.
+
+Upstream work-limit failures are baseline buyer sites 10 → 369, staffing trials 49,289 →
+231,170 and job-search keys 64 → 15,448; fiscal buyer sites 716 → 2,764 and combined CCH
+searches 6,771 → 26,851. Their 10k→30k bound is 3.4283×. Merged failures are baseline supplier
+routes 144,303 → 530,202 and combined CCH searches 9,465 → 33,953; fiscal job-search keys
+7 → 59, against 3.5112×. These failures remain visible; none of the limits were weakened.
+
+Separately, the production bridge loads untouched populated upstream v107 saves at 10k and
+30k with exactly 7,396/11,042 and 20,359/31,597 buildings/agents. Both advance at least a full
+hour without a bridge error. This verifies upstream runtime loading, not dense-city throughput
+acceptance. The road-chain v88–v95 migration remains blocked as recorded in the
+[road integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24).
+
 ### Automatic vehicle junction priority — TRAFFIC-08 stage 1a
 
 The road-chain implementation was tracked as `TRAFFIC-06` before upstream integration.
