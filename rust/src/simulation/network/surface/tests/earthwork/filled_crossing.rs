@@ -186,7 +186,7 @@ fn automatic_over_under_profiles_preserve_knots_and_pass_exact_clearance() {
             ];
             let lanes = if !over && foot { (0, 0) } else { (1, 1) };
             let profile = surface
-                .prepare_crossing_profile(&graph, &raw, lanes, None, over)
+                .prepare_crossing_profile(&graph, &raw, lanes, None, over, None)
                 .unwrap();
             assert_eq!(profile.points.first(), raw.first());
             assert_eq!(profile.points.last(), raw.last());
@@ -281,6 +281,46 @@ fn filled_grass_stops_at_the_span_owned_mouths() {
 }
 
 #[test]
+fn source_level_crossing_keeps_ordinary_junctions_out_of_the_clearance_envelope() {
+    let (mut graph, _, surface) = fixture(false, false);
+    graph.edge_mut(1).deleted = true;
+    graph.edge_mut(0).crossing_level = 1;
+    let a = graph.add_node(Vector3::new(-80.0, 0.0, -60.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(80.0, 0.0, -60.0), NodeType::Junction);
+    graph.add_edge(build_surface_edge(
+        a,
+        b,
+        vec![graph.node(a).pos, graph.node(b).pos],
+        1,
+        1,
+        EdgeClass::Standard,
+    ));
+    let raw = [
+        Vector3::new(0.0, 0.0, -140.0),
+        Vector3::new(0.0, 0.0, 140.0),
+    ];
+    let fixed = surface
+        .prepare_crossing_profile(&graph, &raw, (1, 1), None, false, Some(0))
+        .unwrap();
+    assert_eq!(fixed.level, 0);
+    assert_eq!(
+        fixed.edges,
+        [0],
+        "only the explicitly higher road owns an opening"
+    );
+    assert_eq!(fixed.points.first(), raw.first());
+    assert_eq!(fixed.points.last(), raw.last());
+    let free = surface
+        .prepare_crossing_profile(&graph, &raw, (1, 1), None, false, None)
+        .unwrap();
+    assert!(
+        free.edges.contains(&2),
+        "the player's unconstrained Under selection retains its semantics"
+    );
+    assert_eq!(free.level, -1);
+}
+
+#[test]
 fn under_an_upper_level_can_create_a_level_zero_open_cut() {
     let (mut graph, terrain, surface) = fixture(false, false);
     graph.edge_mut(1).deleted = true;
@@ -290,7 +330,7 @@ fn under_an_upper_level_can_create_a_level_zero_open_cut() {
         Vector3::new(0.0, 0.0, 140.0),
     ];
     let profile = surface
-        .prepare_crossing_profile(&graph, &raw, (1, 1), None, false)
+        .prepare_crossing_profile(&graph, &raw, (1, 1), None, false, None)
         .unwrap();
     assert_eq!(profile.level, 0);
     let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
@@ -318,7 +358,7 @@ fn crossing_envelope_bounds_steep_raw_approaches_without_moving_joints() {
             Vector3::new(0.0, 0.0, 200.0),
         ];
         let profile = surface
-            .prepare_crossing_profile(&graph, &raw, (1, 1), None, over)
+            .prepare_crossing_profile(&graph, &raw, (1, 1), None, over, None)
             .unwrap();
         assert_eq!(profile.points.first(), raw.first());
         assert_eq!(profile.points.last(), raw.last());

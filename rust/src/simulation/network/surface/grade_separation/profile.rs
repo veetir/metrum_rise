@@ -35,6 +35,7 @@ impl RoadSurfaceSystem {
     /// O(P log E + K log K + P sum(Q B) + C log C + S C), with
     /// O(S + C + K + (P + max(Q)) B) scratch and no per-agent work or persistent index.
     /// K counts the local R-tree query hits before deduplication.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_crossing_profile(
         &self,
         source: &RegionGraph,
@@ -42,6 +43,7 @@ impl RoadSurfaceSystem {
         lanes: (u8, u8),
         median: Option<RoadMedian>,
         over: bool,
+        source_level: Option<i16>,
     ) -> Result<CrossingProfile, &'static str> {
         if raw.len() < 2 || raw.iter().any(|p| !p.is_finite()) {
             return Err("too_short");
@@ -81,6 +83,17 @@ impl RoadSurfaceSystem {
         for id in neighbors {
             let edge = source.edge(id);
             if !Self::is_surface_edge(edge) {
+                continue;
+            }
+            // Imported levels already declare topology. Same-level crossings are
+            // ordinary junctions, never constraints that manufacture another tunnel.
+            if source_level.is_some_and(|level| {
+                if over {
+                    edge.crossing_level >= level
+                } else {
+                    edge.crossing_level <= level
+                }
+            }) {
                 continue;
             }
             let lower_is_vehicle = if over {
@@ -247,12 +260,15 @@ impl RoadSurfaceSystem {
             }
         }
         let level = level.ok_or("crossing_not_found")?;
-        let level = if over {
-            level.checked_add(1)
-        } else {
-            level.checked_sub(1)
-        }
-        .ok_or("crossing_level_out_of_range")?;
+        let level = source_level
+            .or_else(|| {
+                if over {
+                    level.checked_add(1)
+                } else {
+                    level.checked_sub(1)
+                }
+            })
+            .ok_or("crossing_level_out_of_range")?;
         let mut cumulative = vec![0.0];
         for pair in raw.windows(2) {
             let delta = RoadVec2::new(
@@ -407,7 +423,7 @@ mod tests {
         ));
         let surface = RoadSurfaceSystem::new(128.0);
         let profile = surface
-            .prepare_crossing_profile(&graph, &raw, (1, 1), None, true)
+            .prepare_crossing_profile(&graph, &raw, (1, 1), None, true, None)
             .unwrap();
         assert_eq!(profile.points.first(), Some(&raw[0]));
         assert_eq!(profile.points.last(), Some(&raw[1]));
@@ -467,7 +483,7 @@ mod tests {
             }
             // All construction/index publication is outside repeated profile planning.
             let profile = surface
-                .prepare_crossing_profile(&graph, &raw, (1, 1), None, true)
+                .prepare_crossing_profile(&graph, &raw, (1, 1), None, true, None)
                 .unwrap();
             let product = (profile.points, profile.level, profile.edges);
             if let Some(expected) = &expected {
@@ -479,14 +495,14 @@ mod tests {
             for _ in 0..10 {
                 black_box(
                     surface
-                        .prepare_crossing_profile(&graph, &raw, (1, 1), None, true)
+                        .prepare_crossing_profile(&graph, &raw, (1, 1), None, true, None)
                         .unwrap(),
                 );
             }
             for _ in 0..200 {
                 let started = Instant::now();
                 let profile = surface
-                    .prepare_crossing_profile(black_box(&graph), &raw, (1, 1), None, true)
+                    .prepare_crossing_profile(black_box(&graph), &raw, (1, 1), None, true, None)
                     .unwrap();
                 samples.push(started.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!(

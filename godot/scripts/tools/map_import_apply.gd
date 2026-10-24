@@ -441,8 +441,8 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	var level_reason: String = simulation.set_road_tool_crossing_level(level)
 	if not level_reason.is_empty():
 		return {"by": "importer", "reason": level_reason}
-	if attempt.get("tunnel", false):
-		var profile: Dictionary = simulation.prepare_road_crossing(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), false)
+	for over in [true, false]:
+		var profile: Dictionary = simulation.prepare_layered_road_crossing(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), over)
 		if profile.get("is_valid", false):
 			points = profile.points
 			simulation.set_road_tool_crossing_level(profile.crossing_level)

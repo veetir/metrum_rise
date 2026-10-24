@@ -166,7 +166,7 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         for f, m in roads[:2]:
             self.assertEqual((m['action'], m['fwd_lanes'], m['bkw_lanes']), ('road', 1, 1))
             self.assertEqual(f['properties']['road_class'], 'unclassified')
-            self.assertTrue(f['properties']['tunnel'])
+            self.assertEqual((f['properties']['tunnel'], f['properties']['layer']), (False, 0))
         self.assertEqual(roads[2][1]['action'], 'footpath')
         self.assertTrue(roads[2][0]['properties']['survey_underpass'])
 
@@ -190,6 +190,15 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(audit[0]['source_lanes'], 2)
         self.assertEqual(audit[0]['imported_lanes'], 1)
         self.assertIn('spiral_exits', audit[0]['remaining'])
+
+    def test_roundabout_staging_discards_only_the_replaced_inside_footprint(self):
+        circle = feature('circle', [(10, 0), (0, 10), (-10, 0), (0, -10), (10, 0)],
+                         ['a', 'b', 'c', 'd', 'a'], roundabout=True)
+        arm = feature('arm', [(10, 0), (11, 0), (30, 0), (60, 0)], ['a', 'near', 'out', 'far'])
+        roads = [road(arm)]
+        collapse_roundabouts([circle], roads, {})
+        self.assertEqual(arm['points'], [(0, 0), (30, 0), (60, 0)])
+        self.assertEqual(arm['node_ids'][1:], ['out', 'far'])
 
     def test_open_and_cycle_rings_do_not_move_car_approaches(self):
         open_ring = feature('open', [(0, 0), (20, 0), (20, 20)], ['a', 'b', 'c'], roundabout=True)

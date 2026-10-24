@@ -61,7 +61,7 @@ def collapse_roundabouts(features, roads, decisions):
         node = 'roundabout/'+min(f['id'] for f in fs)
         for f in fs:
             for n in f['node_ids']:
-                remap[n] = node, centre
+                remap[n] = node, centre, diameter / 2
             decisions[f['id'], 'road'] = {'action': 'skip', 'reason': 'roundabout_player_replacement', 'priority': 0}
         audit.append({'source_ids': [f['id'] for f in fs], 'centre_xz': centre,
                       'diameter_m': round(diameter, 3), 'status': 'planned',
@@ -69,10 +69,24 @@ def collapse_roundabouts(features, roads, decisions):
                       'imported_lanes': 1,
                       'remaining': 'two_lane_entry_selection_and_spiral_exits' if any(
                           (f['properties'].get('lanes') or 1) > 1 for f in fs) else ''})
-    for f, _ in roads:
-        for i, n in enumerate(f['node_ids']):
-            if n in remap:
-                f['node_ids'][i], f['points'][i] = remap[n]
+    for f, m in roads:
+        if m['action'] != 'road':
+            continue
+        for reverse in (False, True):
+            points, ids = f['points'], f['node_ids']
+            if reverse:
+                points, ids = points[::-1], ids[::-1]
+            if ids[0] not in remap:
+                continue
+            node, centre, radius = remap[ids[0]]
+            # This footprint will be replaced atomically by the ring. Keeping its
+            # old circulating approach vertices after moving the endpoint to the
+            # centre creates a backwards hook in the provisional ordinary junction.
+            first = 1
+            while first < len(points)-1 and distance(points[first], centre) < radius:
+                first += 1
+            points, ids = [centre]+points[first:], [node]+ids[first:]
+            f['points'], f['node_ids'] = (points[::-1], ids[::-1]) if reverse else (points, ids)
     return audit
 
 

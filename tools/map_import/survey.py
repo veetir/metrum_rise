@@ -164,16 +164,22 @@ def apply_road_surveys(roads, include_park_paths=True):
                                        '1119987974', '1119987975', '1119987976')}
     audit = []
     for f, m in roads:
+        if f['id'] == 'osm/way/1119706187':
+            # The unnamed return carriageway meets Sarastuskaari at the Prisma
+            # fork and the surveyed Luola ring. Keep it in that paired corridor.
+            f['properties']['name'] = 'Sarastuskaari'
+            audit.append({'source_id': f['id'], 'reason': 'luola_return_carriageway_identity',
+                          'authority': 'user_2026_10_24_and_source_node_continuity'})
         if f['id'] in ('osm/way/1119987950', 'osm/way/1119987951'):
             # Both the OSM unclassified ways and the photographed zebra carry cars.
             # Under solves vehicle clearance below the short level-one main-road span.
-            f['properties'].update(survey_underpass=True, tunnel=True)
+            f['properties'].update(survey_underpass=True, tunnel=False, layer=0)
             m.update(action='road', fwd_lanes=1, bkw_lanes=1, priority=4)
             audit.append({'source_id': f['id'], 'reason': 'surveyed_motor_road_underpass',
                           'reference': 'user-2026-10-21/university-underpass-1.png'})
         if include_park_paths and f['id'] == 'osm/way/987262495':
             # Piipolku uses the adjacent opening; it must survive parallel-path filtering.
-            f['properties'].update(survey_underpass=True, tunnel=True)
+            f['properties'].update(survey_underpass=True, tunnel=False, layer=0)
         if f['id'] not in university:
             continue
         f['properties'].update(lanes=3, through_lanes=3, survey_cross_section='university_2026_10_22')

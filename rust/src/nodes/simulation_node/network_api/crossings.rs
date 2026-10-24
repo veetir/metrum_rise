@@ -17,6 +17,36 @@ impl SimulationNode {
         backward: i32,
         over: bool,
     ) -> VarDictionary {
+        self.crossing_profile(points, forward, backward, over, None)
+    }
+
+    /// Solves clearance only against roads beyond the tool's explicitly selected level.
+    /// Same-level intersections retain ordinary junction topology and the selected level.
+    #[func]
+    pub fn prepare_layered_road_crossing(
+        &self,
+        points: PackedVector3Array,
+        forward: i32,
+        backward: i32,
+        over: bool,
+    ) -> VarDictionary {
+        self.crossing_profile(
+            points,
+            forward,
+            backward,
+            over,
+            Some(self.road_tool_crossing_level as i16),
+        )
+    }
+
+    fn crossing_profile(
+        &self,
+        points: PackedVector3Array,
+        forward: i32,
+        backward: i32,
+        over: bool,
+        source_level: Option<i16>,
+    ) -> VarDictionary {
         if !(0..=4).contains(&forward) || !(0..=4).contains(&backward) {
             return vdict! { "is_valid": false, "invalid_reason": "invalid_cross_section" };
         }
@@ -27,6 +57,7 @@ impl SimulationNode {
             (forward as u8, backward as u8),
             self.road_tool_median,
             over,
+            source_level,
         ) {
             Ok(profile) => vdict! {
                 "is_valid": true,
