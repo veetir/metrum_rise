@@ -49,7 +49,7 @@ The combined schema writes version 108 and reads upstream version 107 directly. 
 follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
 the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
 retired congestion column/value; authored geometry, profiles and clip values are preserved.
-Legacy road-chain migration is under validation below; final capture comparison remains pending. The full economy
+Legacy road-chain migration and matched captures now pass the loading checks below. The full economy
 and frame-budget checks have now run and fail; this checkpoint is not integration acceptance.
 
 Pocket frontage commits now apply their remaps through the allocator's existing row-change
@@ -174,7 +174,7 @@ codec regression passes separately and all-target Clippy is clean. The universit
 bridge passes from the task-prefixed v88 copy. The production probe loads and round-trips all
 five user copies and untouched upstream v59/v107 fixtures; all five road/topology fingerprints
 still match `0cc4a2ab` exactly and source hashes are unchanged. This completes the legacy-load
-blocker; TRAFFIC-09 and the matching frame captures remain separate acceptance work.
+blocker; TRAFFIC-09 remains separate acceptance work.
 
 Reproduce the save checks with `cargo test --release --lib simulation::save -- --test-threads=8`
 and `cargo clippy --all-targets` from `rust`, and
@@ -244,7 +244,27 @@ perl -e 'alarm 900; exec @ARGV' godot --headless --path "$GODOT_PROJECT" --scrip
 The baseline Prisma/KYS overhead and street views were inspected against
 `user-2026-10-21/prisma-1.png` and `user-2026-10-21/kys-1.png`. They do not reconstruct the
 reference signals/gantries, signs, mature trees and outstanding imported-layout detail.
-No merged-build visual or fps improvement is claimed while the same source saves cannot load.
+The final migration library (`cfcb2bd3`) now captures the same task-owned copy of
+`kuopio-sw-pockets` with the same harness and settings, without concurrent builds/tests.
+All eight PNGs were reviewed, including overhead, street views and four sweep positions;
+road layout, markings, medians and the visible zoning grid are retained. The two named street
+references were reopened for comparison: missing gantries/signals, mature trees and the
+KYS bridge/layout import detail remain. No new visual repair is claimed.
+
+| Capture, visible zoning | Pre-merge fps | Merged fps | Change |
+| --- | ---: | ---: | ---: |
+| Prisma paused | 81.73 | 81.48 | −0.3% |
+| Prisma 1× | 81.97 | 81.20 | −0.9% |
+| KYS 1× | 39.86 | 37.90 | −4.9% |
+| City sweep 1× | 33.22 | 32.08 | −3.4% |
+
+These are one matched unprofiled capture per build, not repeated statistical speed claims.
+Neither reproduces 7–12 fps. The candidate has zero engine errors; its isolated empty mods
+folder produces the expected asset-pack warning, and these worlds contain no buildings.
+The sweep includes four PNG readbacks in its frame samples on both builds. Reproduce with
+`METRUM_JUNCTION_SAVE` pointing at the copied source and `METRUM_SYNC_CAPTURE_OUTPUT` at a
+fresh output folder, then run `godot --path "$ISOLATED_PROJECT" --script
+res://tests/road_upstream_sync_capture.gd`. Never point its output at a player save.
 A canonical 70-road fixture capture attempt was rejected on visual inspection: its road
 network does not cover the requested Prisma/KYS layout at these camera positions, and the
 relocated old-source run emits renderer assertions. Its fps observations are excluded.

@@ -16,7 +16,8 @@ plus the tracked v59 wage backport; real upstream v59/v107 copies also round-tri
 checks fail, with 100k 1× raw p99.9 increasing 12.66 → 20.75 ms
 ([TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09),
 [full matrix](simulation.md#road-chain-integration-check-on-macos--2026-10-24)). Legacy loading is repaired;
-matching user-save captures remain pending; this integration is not accepted. Pocket edits now
+matched visible-zoning captures are complete (Prisma 81.97 → 81.20 fps, KYS 39.86 → 37.90,
+sweep 33.22 → 32.08); this integration is not accepted. Pocket edits now
 journal frontage changes for the rolling census, with a forward/undo regression. The
 road edit and preview entry points now use upstream's owned Rayon pool, with a regression
 that disables the global pool. The
