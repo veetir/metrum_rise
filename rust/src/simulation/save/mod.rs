@@ -541,8 +541,8 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    // `SIM-02` cut over the save format: only the current version loads.
-    if version != SAVE_VERSION {
+    // Version 107 is upstream's scheduler schema; road additions are optional on read.
+    if !(107..=SAVE_VERSION).contains(&version) {
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let camera = camera::load_camera_state(&conn)?;

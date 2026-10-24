@@ -42,8 +42,11 @@ without writing it. With zoning visible: Prisma paused 81.73 fps, Prisma 1× 81.
 ignored local captures. Pre-merge road-chunk, six populated locality fixtures and PERF-06 ran
 successfully with eight workers. These are baseline results, not merged-build acceptance.
 
-The combined schema writes version 108. Legacy road-chain migration, plain-upstream save
-loading, the full merged correctness/bridge suite, matched performance contracts and final
+The combined schema writes version 108 and reads upstream version 107 directly. Fresh
+follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
+the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
+retired congestion column/value; authored geometry, profiles and clip values are preserved.
+Legacy road-chain migration, the full merged correctness/bridge suite, matched performance contracts and final
 capture comparison remain integration gates; this checkpoint does not claim them complete.
 
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
