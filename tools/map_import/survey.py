@@ -164,13 +164,16 @@ def apply_road_surveys(roads, include_park_paths=True):
                                        '1119987974', '1119987975', '1119987976')}
     audit = []
     for f, m in roads:
-        if include_park_paths and f['id'] in ('osm/way/1119987950', 'osm/way/1119987951'):
-            # Current photos show a light-traffic opening; the cached OSM extract
-            # still describes the older restricted-height motor access.
-            f['properties'].update(road_class='footway', survey_underpass=True, tunnel=True)
-            m.update(action='footpath', fwd_lanes=0, bkw_lanes=0, priority=6)
-            audit.append({'source_id': f['id'], 'reason': 'surveyed_light_traffic_underpass',
+        if f['id'] in ('osm/way/1119987950', 'osm/way/1119987951'):
+            # Both the OSM unclassified ways and the photographed zebra carry cars.
+            # Under solves vehicle clearance below the short level-one main-road span.
+            f['properties'].update(survey_underpass=True, tunnel=True)
+            m.update(action='road', fwd_lanes=1, bkw_lanes=1, priority=4)
+            audit.append({'source_id': f['id'], 'reason': 'surveyed_motor_road_underpass',
                           'reference': 'user-2026-10-21/university-underpass-1.png'})
+        if include_park_paths and f['id'] == 'osm/way/987262495':
+            # Piipolku uses the adjacent opening; it must survive parallel-path filtering.
+            f['properties'].update(survey_underpass=True, tunnel=True)
         if f['id'] not in university:
             continue
         f['properties'].update(lanes=3, through_lanes=3, survey_cross_section='university_2026_10_22')
@@ -180,6 +183,22 @@ def apply_road_surveys(roads, include_park_paths=True):
                       'bus_lane_rank': 2, 'reference': 'user-2026-10-21/university-1.png',
                       'authority': 'user_cross_section_2026_10_22'})
     return audit
+
+
+def apply_roundabout_surveys(features):
+    """Tag the user-identified Luola ring in the working copy, retaining neutral OSM.
+
+    This is an explicit source-ID survey correction, not geometric cycle guessing.
+    The ordinary ring assembler still requires a closed source-node cycle.
+    """
+    ids = {'osm/way/'+s for s in ('1119695044', '1366321598', '1366321599', '1366371228')}
+    selected = [f for f in features if f['id'] in ids]
+    if len(selected) != len(ids):
+        return [{'source_ids': sorted(ids), 'reason': 'surveyed_luola_ring_source_missing'}]
+    for f in selected:
+        f['properties']['roundabout'] = True
+    return [{'source_ids': sorted(ids), 'reason': 'user_identified_untagged_luola_ring',
+             'reference': 'broken-roundabout-area.sqlite', 'authority': 'user_2026_10_24'}]
 
 
 

@@ -29,7 +29,7 @@ import subprocess
 from .mapping import POLICY, map_role, table
 from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
 from .curves import prepare_curves
-from .survey import apply_road_surveys, inspect, university_access
+from .survey import apply_road_surveys, apply_roundabout_surveys, inspect, university_access
 from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
@@ -99,14 +99,15 @@ def prepare(args):
     if box[0] < -(transform.max_e-transform.min_e)/2 or box[2] > (transform.max_e-transform.min_e)/2 or box[1] < -(transform.max_n-transform.min_n)/2 or box[3] > (transform.max_n-transform.min_n)/2:
         raise ValueError('Target box lies outside the authored world')
     features = normalise(OsmAdapter().read(args.source), transform)
-    decisions = {(f['id'], role): map_role(f, role, args.include_park_paths) for f in features for role in f['roles']}
-    roads = [(f, decisions[(f['id'], 'road')]) for f in features if 'road' in f['roles']
-             and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
     # Keep neutral source geometry immutable; conflation owns its working copy.
     from copy import deepcopy
-    roads = deepcopy(roads)
-    road_surveys = apply_road_surveys(roads, args.include_park_paths)
-    roundabouts = collapse_roundabouts(features, roads, decisions)
+    working = deepcopy(features)
+    ring_surveys = apply_roundabout_surveys(working)
+    decisions = {(f['id'], role): map_role(f, role, args.include_park_paths) for f in working for role in f['roles']}
+    roads = [(f, decisions[(f['id'], 'road')]) for f in working if 'road' in f['roles']
+             and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
+    road_surveys = apply_road_surveys(roads, args.include_park_paths) + ring_surveys
+    roundabouts = collapse_roundabouts(working, roads, decisions)
     roads, conflation = conflate(roads, decisions)
     from .medians import simplify_prisma
     prisma = tuple(round(v, 3) for v in transform.world(*tm35fin(62.887133, 27.629350)))

@@ -7,8 +7,8 @@ motor access are excluded explicitly. Footpaths and grade1 tracks are disabled
 by default. Grade separation is retained for the player elevation path.
 
 Current road tool supports lane counts and central medians, not named road types or source speed
-limits. Minor streets default to 1+1, including untagged service; only a surveyed
-one-way overrides this policy. Divided named arterials and motorways become one
+limits. Minor streets default to 1+1, including untagged service; explicit OSM
+one-way tags retain their direction. Divided named roads and motorways become one
 centreline in conflate.py, retaining the surveyed counts of both carriageways.
 Other major ways retain explicit direction and lane counts.
 POLICY owns the spatial and minimum-length rules for standalone paths.
@@ -97,7 +97,7 @@ def map_role(feature, role, include_park_paths=False):
             if total is not None and (total < 1 or total > 8 or total != int(total)):
                 return {**result, 'action': 'skip', 'reason': 'invalid_or_excessive_lane_count'}
             minor = p['road_class'] in ('service', 'residential', 'unclassified', 'living_street', 'tertiary', 'road')
-            oneway = bool(p['oneway']) and (not minor or p.get('oneway_confirmed', False))
+            oneway = bool(p['oneway'])
             result['oneway'] = p['oneway'] if oneway else 0
             if minor and not oneway:
                 fwd, bkw = POLICY['minor_default_lanes']

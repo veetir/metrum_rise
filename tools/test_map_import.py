@@ -157,6 +157,32 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual((m['fwd_lanes'], m['bkw_lanes']), (3, 3))
         self.assertEqual((m['median_style'], m['median_width_m'], m['bus_masks']), (3, 2.0, [4, 4]))
 
+    def test_university_underpass_keeps_motor_road_and_separate_path(self):
+        from tools.map_import.survey import apply_road_surveys
+        roads = [road(feature('osm/way/'+i, [(0, 0), (100, 0)], road_class=kind))
+                 for i, kind in [('1119987950', 'unclassified'), ('1119987951', 'unclassified'),
+                                 ('987262495', 'cycleway')]]
+        apply_road_surveys(roads)
+        for f, m in roads[:2]:
+            self.assertEqual((m['action'], m['fwd_lanes'], m['bkw_lanes']), ('road', 1, 1))
+            self.assertEqual(f['properties']['road_class'], 'unclassified')
+            self.assertTrue(f['properties']['tunnel'])
+        self.assertEqual(roads[2][1]['action'], 'footpath')
+        self.assertTrue(roads[2][0]['properties']['survey_underpass'])
+
+    def test_luola_survey_tags_only_the_identified_closed_source_ring(self):
+        from tools.map_import.survey import apply_roundabout_surveys
+        ids = ['1119695044', '1366321598', '1366321599', '1366371228']
+        points = [(0, 0), (20, 0), (20, 20), (0, 20)]
+        neutral = [feature('osm/way/'+value, [points[i], points[(i+1)%4]],
+                           [str(i), str((i+1)%4)], road_class='tertiary', oneway=1, lanes=1)
+                   for i, value in enumerate(ids)]
+        working = copy.deepcopy(neutral)
+        self.assertEqual(apply_roundabout_surveys(working)[0]['reason'], 'user_identified_untagged_luola_ring')
+        self.assertTrue(all(f['properties']['roundabout'] for f in working))
+        self.assertFalse(any(f['properties'].get('roundabout') for f in neutral))
+        self.assertEqual(collapse_roundabouts(working, [], {})[0]['status'], 'planned')
+
     def test_two_lane_ring_explicitly_records_single_lane_limit(self):
         f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)
         audit = collapse_roundabouts([f], [], {})
@@ -364,12 +390,12 @@ class MappingTest(unittest.TestCase):
         for lanes in (-1, 0, 2.5, 9):
             self.assertEqual(map_role(feature('r', [(0, 0), (10, 0)], lanes=lanes), 'road')['action'], 'skip')
 
-    def test_minor_roads_prefer_default_unless_oneway_confirmed(self):
+    def test_minor_roads_preserve_explicit_oneway_and_default_untagged_roads(self):
         for kind in ('service', 'residential', 'unclassified', 'living_street', 'tertiary'):
             f = feature('r', [(0, 0), (50, 0)], road_class=kind, oneway=-1, lanes=3)
+            self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (3, 0))
+            f['properties']['oneway'] = 0
             self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (1, 1))
-            f['properties']['oneway_confirmed'] = True
-            self.assertEqual(map_role(f, 'road')['bkw_lanes'], 0)
 
 
 class WaterBedTest(unittest.TestCase):
