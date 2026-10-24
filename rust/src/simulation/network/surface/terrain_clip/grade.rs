@@ -60,11 +60,7 @@ impl RoadSurfaceSystem {
             }) {
                 continue;
             }
-            let root = field
-                .cohort_nodes()
-                .and_then(|nodes| nodes.first())
-                .copied()
-                .unwrap_or(node);
+            let root = field.canonical_grade_owner_node(node, None)?;
             let candidate = (root, level);
             if selected.is_some_and(|previous| previous != candidate) {
                 return None;

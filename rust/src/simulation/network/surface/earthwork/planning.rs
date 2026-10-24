@@ -336,7 +336,8 @@ impl PlannedRoadSurfaceQuery {
                                 let mut local_edge=*edge;
                                 local_edge.source=source;
                                 surface.terrain_clip_source_grade(graph,&local_edge)
-                                    .map(|(root,level)|(node_ids[root as usize],level))
+                                    .and_then(|(root,level)| surface.node_material_grade_fields.get(&root)?
+                                        .canonical_grade_owner_node(root,Some(node_ids)).map(|root|(root,level)))
                             } else { existing.terrain_clip_source_grade(existing_graph,edge) }
                         }).collect()).collect::<Vec<_>>();
                         RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old,&grades)

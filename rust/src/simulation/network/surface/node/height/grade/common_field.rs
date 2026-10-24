@@ -335,6 +335,31 @@ impl NodeMaterialGradeField {
         self.cohort_nodes.as_deref()
     }
 
+    /// Names the shared solve in live identity order, including a remapped preview.
+    pub(in crate::simulation::network::surface) fn canonical_grade_owner_node(
+        &self,
+        fallback_node: u32,
+        live_node_ids: Option<&[u32]>,
+    ) -> Option<u32> {
+        let Some(live) = live_node_ids else {
+            return Some(
+                self.cohort_nodes()
+                    .and_then(|nodes| nodes.first())
+                    .copied()
+                    .unwrap_or(fallback_node),
+            );
+        };
+        let Some(nodes) = self.cohort_nodes() else {
+            return live.get(fallback_node as usize).copied();
+        };
+        let mut root = None;
+        for &node in nodes {
+            let node = *live.get(node as usize)?;
+            root = Some(root.map_or(node, |previous: u32| previous.min(node)));
+        }
+        root
+    }
+
     /// Rebinds preview-local node identities without copying the grade triangulation.
     pub(in crate::simulation::network::surface) fn with_remapped_cohort_nodes(
         &self,
@@ -548,6 +573,47 @@ mod guide_grade_tests {
     use crate::simulation::network::surface::{
         IncidentEdgeSide, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, RoadVec3,
     };
+
+    #[test]
+    fn shared_grade_owner_identity_survives_preview_node_permutation() {
+        let supports = [
+            (RoadVec2::ZERO, 10.0),
+            (RoadVec2::X, 10.1),
+            (RoadVec2::Y, 10.2),
+        ]
+        .into_iter()
+        .map(|(p, h)| (SurfaceXzKey::from_road_xz(p), h))
+        .collect();
+        let field = NodeMaterialGradeField::with_supports(
+            supports,
+            (RoadVec2::ZERO, 10.0),
+            RoadVec2::new(0.1, 0.2),
+            Some(vec![10, 20, 30].into()),
+        )
+        .unwrap();
+        let remapped = field
+            .with_remapped_cohort_nodes(
+                &[(10, 2), (20, 0), (30, 1)].into_iter().collect(),
+                &std::collections::HashMap::new(),
+            )
+            .unwrap();
+        let live_ids = [20, 30, 10];
+        assert_ne!(
+            live_ids[remapped.cohort_nodes().unwrap()[0] as usize],
+            10,
+            "the smallest preview slot deliberately names another live owner"
+        );
+        assert_eq!(
+            remapped.canonical_grade_owner_node(0, Some(&live_ids)),
+            field.canonical_grade_owner_node(10, None)
+        );
+        assert!(
+            remapped
+                .canonical_grade_owner_node(0, Some(&live_ids[..2]))
+                .is_none(),
+            "an incomplete cohort cannot certify a live grade identity"
+        );
+    }
 
     #[test]
     fn cdt_interior_guides_sample_the_resolved_non_affine_grade() {
