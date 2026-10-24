@@ -33,6 +33,9 @@ Road-chain ID collisions are renamed: validation `ROAD-54` → `ROAD-76`, footpa
 `ROAD-55` → `ROAD-77`, Finnish surfaces `ROAD-56` → `ROAD-78`, cycling `ROAD-57` → `ROAD-79`,
 medians `ROAD-66` → `ROAD-80`, and junction-priority implementation `TRAFFIC-06` → `TRAFFIC-08`.
 Upstream's fix IDs and its `SIM-02`, `PERF-07`, `PERF-08`, `TRAFFIC-07` rows are preserved.
+Upstream itself contains older road-feature rows duplicating its newer `ROAD-54`–`ROAD-57`
+fix IDs; the reconciliation preserves those fix rows and renumbers the road-feature rows.
+The merged tracker has no duplicate IDs.
 
 Fresh pre-merge measurements on Apple M2 Pro, Godot 4.7.2 Metal Forward+, eight Rayon workers,
 `METRUM_DEBUG=0`, 1600×1000, uncapped frames and disabled VSync, read `kuopio-sw-pockets`
@@ -46,8 +49,8 @@ The combined schema writes version 108 and reads upstream version 107 directly. 
 follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
 the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
 retired congestion column/value; authored geometry, profiles and clip values are preserved.
-Legacy road-chain migration, matched performance contracts and final capture comparison remain
-integration gates; this checkpoint does not claim them complete.
+Legacy road-chain migration and final capture comparison remain blocked. The full economy
+and frame-budget checks have now run and fail; this checkpoint is not integration acceptance.
 
 Pocket frontage commits now apply their remaps through the allocator's existing row-change
 hook, as split/undo already do, so the rolling census and indexed readers see both forward
@@ -81,9 +84,18 @@ canopy and 29/29 vegetation-level assertion failures (before/after). The vegetat
 contract passes with its required headless/dummy backend; running that CPU-bounds contract
 with a real renderer is not a valid check.
 
-The read-only production bridge probe loads the plain-upstream v107 fixture. It rejects
-`kuopio-sw-pockets`, `kys-pond`, `bioteknia` and `prisma` (v90), and `uni-underpass` (v88).
-All five source SHA-256 hashes remain unchanged. Automatic approval review rejected the
+The read-only production bridge probe loads the plain-upstream v107 fixture. All five user
+saves load with the preserved `0cc4a2ab` runtime, but are rejected by the merged runtime:
+
+| Save | Version | Pre-merge load | Merged load |
+| --- | ---: | --- | --- |
+| kuopio-sw-pockets | 90 | pass | version mismatch |
+| kys-pond | 90 | pass | version mismatch |
+| bioteknia | 90 | pass | version mismatch |
+| prisma | 90 | pass | version mismatch |
+| uni-underpass | 88 | pass | version mismatch |
+
+All five source SHA-256 hashes remain unchanged after the final probes. Automatic approval review rejected the
 legacy migration prototypes because their scheduler/runtime restoration was incomplete;
 no prototype or relaxed version guard is committed. Compatibility with road-chain v88–v95
 and matching merged-build Kuopio captures remain blocked on a complete, approved migration.
@@ -146,6 +158,28 @@ The baseline Prisma/KYS overhead and street views were inspected against
 `user-2026-10-21/prisma-1.png` and `user-2026-10-21/kys-1.png`. They do not reconstruct the
 reference signals/gantries, signs, mature trees and outstanding imported-layout detail.
 No merged-build visual or fps improvement is claimed while the same source saves cannot load.
+A canonical 70-road fixture capture attempt was rejected on visual inspection: its road
+network does not cover the requested Prisma/KYS layout at these camera positions, and the
+relocated old-source run emits renderer assertions. Its fps observations are excluded.
+
+Fresh correctness commands (the full library run was interrupted only at its last case,
+then that case completed on the identical `$TEST_BINARY`):
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --release
+"$TEST_BINARY" nodes::sim::core::scenario::balance_cases::many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital --exact --nocapture
+cargo test --manifest-path rust/Cargo.toml --release --test growth_scenario --test populated_city_scaling
+cargo test --manifest-path rust/Cargo.toml --release --doc
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+godot --headless --path "$GODOT_PROJECT" --script "res://tests/$TEST.gd"
+# GPU probes use the real renderer instead:
+godot --path "$GODOT_PROJECT" --script "res://tests/$TEST.gd"
+```
+
+The native inventory and per-script outcomes are retained locally in `$ARTIFACTS`; each
+script uses an isolated profile. Asset/pack suites use `-- --asset-editor`, as in `run.sh`.
+Two unchanged NumPy-dependent vegetation tooling modules could not import on this host;
+the native vegetation bridge suites ran. No engine patches or dependencies were added.
 
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.

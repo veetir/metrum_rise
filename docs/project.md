@@ -9,9 +9,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
 from `b75e03c9` is combined with the road chain. Fresh coverage passes all 2,846 library cases,
 four growth integrations and 58 native suites; six pre-existing Mac bridge failures reproduce
-and one legacy-save bridge is blocked. Legacy migration, the dense-grid traffic/economy
-regression ([TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09)) and matched
-frame/capture acceptance remain pending. Pocket edits now
+and one legacy-save bridge is blocked. All five user saves load before the merge and reject
+with version mismatch afterward; their hashes are unchanged. Full economy and frame-budget
+checks fail, with 100k 1× raw p99.9 increasing 12.66 → 20.75 ms
+([TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09),
+[full matrix](simulation.md#road-chain-integration-check-on-macos--2026-10-24)). Legacy migration
+and matching user-save captures remain blocked; this integration is not accepted. Pocket edits now
 journal frontage changes for the rolling census, with a forward/undo regression. The
 road edit and preview entry points now use upstream's owned Rayon pool, with a regression
 that disables the global pool. The

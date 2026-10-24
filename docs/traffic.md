@@ -134,9 +134,10 @@ crossing portion, retain the existing turn shape, support degree-two direct cont
 and preserve full/incremental rebuild equivalence and agent/save references. Composed walk
 routes must obey the same crossing authority. Do not patch this with a late connector gate.
 
-Save format remains 91: all policy and scratch are derived. Loading an old save deliberately
-changes junction behavior but leaves road/lane geometry and legal routes unchanged. No player
-save is rewritten; captures use fresh blank worlds.
+The priority feature first shipped with road-chain format 91; its policy and scratch remain
+derived. The combined writer is format 108 and currently reads 107/108. Legacy road-chain
+loading is blocked as recorded above. Compatible loads apply the derived priority policy
+without rewriting their source file; the feature's original captures used fresh blank worlds.
 
 ### Roundabout entry priority — ROAD-62
 
