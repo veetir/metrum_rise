@@ -55,10 +55,11 @@ impl RoadSurfaceSystem {
                 TerrainClipSegmentPointRecovery::Covered(points) => points,
                 TerrainClipSegmentPointRecovery::Partial => {
                     direct_coverage = false;
-                    match Self::terrain_clip_source_chain_points_from_source_edges(
-                        start,
-                        end,
+                    match Self::terrain_clip_partial_segment_points(
+                        &contour,
+                        index,
                         source_edges,
+                        source_edge_index,
                     ) {
                         TerrainClipSourceChainRecovery::Covered(points) => points,
                         TerrainClipSourceChainRecovery::Missing => {
@@ -93,7 +94,7 @@ impl RoadSurfaceSystem {
                         TerrainClipSourceChainRecovery::Ambiguous(context) => {
                             crate::debug_log!(
                                 "road",
-                                "terrain_clip_ambiguous_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) partial_coverage {}",
+                                "terrain_clip_ambiguous_boundary_owner shape={} contour={} start=({:.6},{:.6}) end=({:.6},{:.6}) partial_coverage {}",
                                 topology.shape_index,
                                 topology.contour_index,
                                 start[0],
@@ -360,5 +361,126 @@ impl RoadSurfaceSystem {
                 Self::point_segment_distance_squared_xz(RoadVec2::new(p[0], p[1]), a.start, a.end)
                     <= width * width
             })
+    }
+}
+
+impl RoadSurfaceSystem {
+    fn terrain_clip_partial_segment_points(
+        contour: &NodeOverlayContour,
+        index: usize,
+        source_edges: &[TerrainClipSourceEdge],
+        source_edge_index: &TerrainClipSourceEdgeIndex,
+    ) -> TerrainClipSourceChainRecovery {
+        let recovery = Self::terrain_clip_source_chain_points_from_source_edges(
+            contour[index],
+            contour[(index + 1) % contour.len()],
+            source_edges,
+        );
+        if matches!(&recovery, TerrainClipSourceChainRecovery::Covered(_)) {
+            return recovery;
+        }
+        // Partial incidence is not a complete carrier. A bounded overlay corner
+        // still belongs to its solved exterior neighbours, exactly as when no
+        // source covers it. Never choose one of several competing source detours.
+        if let TerrainClipDustConnectorRecovery::Covered(points) =
+            Self::terrain_clip_dust_connector_points_from_source_edges(
+                contour,
+                index,
+                source_edges,
+                source_edge_index,
+            )
+        {
+            return TerrainClipSourceChainRecovery::Covered(points);
+        }
+        recovery
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceTerrainClipEdgeKind,
+        RoadSurfaceVisualNodePieceKind, RoadVec3,
+    };
+
+    #[test]
+    fn partially_covered_numeric_corner_uses_its_exterior_anchors() {
+        let p = |x, y, z| RoadVec3::new(x, y, z);
+        let contour = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0002, 0.0002],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [0.0, 1.0],
+        ];
+        let mut sources = Vec::new();
+        for (source_index, midpoint) in [p(1.0002, 9.06, 0.0), p(1.0, 9.08, 0.0002)]
+            .into_iter()
+            .enumerate()
+        {
+            let points = [
+                p(0.0, 9.0, 0.0),
+                p(1.0, 9.0, 0.0),
+                p(1.000048, 9.03, 0.000048),
+                midpoint,
+                p(1.0002, 9.12, 0.0002),
+                p(2.0, 9.12, 0.0),
+                p(2.0, 9.0, 1.0),
+                p(0.0, 9.0, 1.0),
+            ];
+            for (edge_index, (&start, &end)) in
+                points.iter().zip(points.iter().cycle().skip(1)).enumerate()
+            {
+                sources.push(TerrainClipSourceEdge {
+                    start,
+                    end,
+                    source_index,
+                    edge_index,
+                    grade_authority: None,
+                    kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+                    source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                        node_id: 7,
+                        kind: RoadSurfaceVisualNodePieceKind::Bend,
+                        owner_kind: RoadSurfaceBandKind::Sidewalk,
+                        owner_index: 0,
+                        boundary_source: None,
+                    },
+                });
+            }
+        }
+        // One collinear interval covers only the first quarter of the corner.
+        // Neither source detour owns the overlay's complete output interval.
+        let recovery = RoadSurfaceSystem::terrain_clip_segment_points_from_source_edges(
+            contour[1], contour[2], &sources,
+        );
+        assert!(
+            matches!(recovery, TerrainClipSegmentPointRecovery::Partial),
+            "{recovery:?}"
+        );
+        assert!(matches!(
+            RoadSurfaceSystem::terrain_clip_source_chain_points_from_source_edges(
+                contour[1], contour[2], &sources
+            ),
+            TerrainClipSourceChainRecovery::Ambiguous(_)
+        ));
+        let topology = RoadSurfaceTerrainClipLoopTopology {
+            shape_index: 0,
+            contour_index: 0,
+            role: RoadSurfaceTerrainClipContourRole::Outer,
+        };
+        let result =
+            RoadSurfaceSystem::terrain_clip_boundary_loop_from_overlay_contour_with_source_edges(
+                &contour,
+                topology,
+                &sources,
+                &TerrainClipSourceEdgeIndex::new(&sources),
+            )
+            .expect("a numeric corner uses solved exterior anchors, not an arbitrary source detour")
+            .unwrap();
+        assert_eq!(result.points_world.len(), result.source_edges.len());
+        assert!(result.points_world.iter().any(|p| p.y == 9.0));
+        assert!(result.points_world.iter().any(|p| p.y == 9.12));
     }
 }
