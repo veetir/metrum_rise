@@ -137,6 +137,25 @@ fn finalize_network_render_products(
     })
 }
 
+// Keep the mutex guard on the simulation thread, lending only its Send core to the owned
+// pool. New road commands share the same edit/rejection/snapshot publication boundary.
+fn apply_road_edit_command(
+    core: &Mutex<SimCore>,
+    edit: impl FnOnce(&mut SimCore) -> bool + Send,
+) -> (
+    bool,
+    super::RoadRejection,
+    Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)>,
+) {
+    let mut guard = core.lock().expect("simulation core lock poisoned");
+    let core = &mut *guard;
+    crate::thread_pools::install(|| {
+        let committed = edit(core);
+        let rejection = core.last_road_rejection.take().unwrap_or_default();
+        (committed, rejection, road_tool_snapshots_from_core(core))
+    })
+}
+
 fn publish_road_tool_snapshots(
     road_preview_context: &RwLock<RoadPreviewWorkerContext>,
     road_query_snapshot: &RwLock<RoadToolQuerySnapshot>,
@@ -378,13 +397,9 @@ pub(crate) fn run_sim_thread(
                     completion,
                 }) => {
                     commands_processed += 1;
-                    let (committed, rejection, snapshots) = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
-                        let committed = c.change_road_cross_section(edge, lanes.0, lanes.1, median);
-                        let rejection = c.last_road_rejection.take().unwrap_or_default();
-                        let snapshots = road_tool_snapshots_from_core(&c);
-                        (committed, rejection, snapshots)
-                    };
+                    let (committed, rejection, snapshots) = apply_road_edit_command(&core, |c| {
+                        c.change_road_cross_section(edge, lanes.0, lanes.1, median)
+                    });
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -405,13 +420,8 @@ pub(crate) fn run_sim_thread(
                     completion,
                 }) => {
                     commands_processed += 1;
-                    let (committed, rejection, snapshots) = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
-                        let committed = c.change_road_bus_lanes(edge, masks);
-                        let rejection = c.last_road_rejection.take().unwrap_or_default();
-                        let snapshots = road_tool_snapshots_from_core(&c);
-                        (committed, rejection, snapshots)
-                    };
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.change_road_bus_lanes(edge, masks));
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -436,13 +446,9 @@ pub(crate) fn run_sim_thread(
                     completion,
                 }) => {
                     commands_processed += 1;
-                    let (committed, rejection, snapshots) = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
-                        let committed =
-                            c.change_road_pocket(edge, at_start, left, right, pocket_m, taper_m);
-                        let rejection = c.last_road_rejection.take().unwrap_or_default();
-                        (committed, rejection, road_tool_snapshots_from_core(&c))
-                    };
+                    let (committed, rejection, snapshots) = apply_road_edit_command(&core, |c| {
+                        c.change_road_pocket(edge, at_start, left, right, pocket_m, taper_m)
+                    });
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -462,12 +468,8 @@ pub(crate) fn run_sim_thread(
                     completion,
                 }) => {
                     commands_processed += 1;
-                    let (committed, rejection, snapshots) = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
-                        let committed = c.place_ramp(request);
-                        let rejection = c.last_road_rejection.take().unwrap_or_default();
-                        (committed, rejection, road_tool_snapshots_from_core(&c))
-                    };
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.place_ramp(request));
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -487,12 +489,8 @@ pub(crate) fn run_sim_thread(
                     completion,
                 }) => {
                     commands_processed += 1;
-                    let (committed, rejection, snapshots) = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
-                        let committed = c.place_roundabout(request);
-                        let rejection = c.last_road_rejection.take().unwrap_or_default();
-                        (committed, rejection, road_tool_snapshots_from_core(&c))
-                    };
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.place_roundabout(request));
                     if let Some((preview, query)) = snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -688,6 +686,21 @@ fn begin_due_sim_tick(next_tick: &mut Instant, now: Instant, interval: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn road_edit_commands_run_in_the_owned_pool_and_publish_their_rejection() {
+        let core = Mutex::new(SimCore::new(
+            crate::simulation::core::config::WorldConfig::new(128.0, 128.0, 16.0, 8.0),
+        ));
+        let (committed, rejection, _) = apply_road_edit_command(&core, |core| {
+            assert!(rayon::current_thread_index().is_some());
+            core.last_road_rejection = Some(super::super::RoadRejection::new("test", "owned pool"));
+            false
+        });
+        assert!(!committed);
+        assert_eq!(rejection.reason, "test");
+        assert!(core.lock().unwrap().last_road_rejection.is_none());
+    }
 
     #[test]
     fn command_wakes_neither_advance_nor_postpone_sim_ticks() {

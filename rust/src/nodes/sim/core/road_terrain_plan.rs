@@ -482,18 +482,20 @@ impl SimCore {
         &self,
         roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
     ) -> Option<RoadTerrainPlan> {
-        let earthworks = Arc::new(roads.compile_earthworks(
-            &self.transit_network.road_surface,
-            &self.region_graph,
-            &self.heightmap,
-        )?);
-        let sites = RoadTerrainSiteInputs::capture(self, &earthworks)?;
-        Some(RoadTerrainPlan::compile(
-            &self.heightmap,
-            &earthworks,
-            &self.region_graph,
-            &self.transit_network.road_surface,
-            Some(sites),
-        ))
+        crate::thread_pools::install(|| {
+            let earthworks = Arc::new(roads.compile_earthworks(
+                &self.transit_network.road_surface,
+                &self.region_graph,
+                &self.heightmap,
+            )?);
+            let sites = RoadTerrainSiteInputs::capture(self, &earthworks)?;
+            Some(RoadTerrainPlan::compile(
+                &self.heightmap,
+                &earthworks,
+                &self.region_graph,
+                &self.transit_network.road_surface,
+                Some(sites),
+            ))
+        })
     }
 }

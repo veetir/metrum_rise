@@ -107,6 +107,24 @@ impl RoadSurfaceSystem {
         &self,
         source: &RegionGraph,
         terrain: &TerrainSystem,
+        original_ids: Vec<usize>,
+        apply: impl FnOnce(
+            &mut RegionGraph,
+            &HashMap<u32, u32>,
+            &HashMap<usize, usize>,
+        ) -> Result<Vec<usize>, &'static str>
+        + Send,
+    ) -> Result<(RoadJunctionPreview, Arc<PlannedRoadSurfaceQuery>), &'static str> {
+        // Tool previews can enter from Godot's main thread, outside every Rayon pool.
+        crate::thread_pools::install(|| {
+            self.compile_local_layout_preview_in_pool(source, terrain, original_ids, apply)
+        })
+    }
+
+    fn compile_local_layout_preview_in_pool(
+        &self,
+        source: &RegionGraph,
+        terrain: &TerrainSystem,
         mut original_ids: Vec<usize>,
         apply: impl FnOnce(
             &mut RegionGraph,

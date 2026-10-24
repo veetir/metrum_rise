@@ -34,6 +34,11 @@ pub(crate) struct RampLayout {
 impl RampLayout {
     /// O(P + K log K + local segment pairs), using the existing edge R-tree for clearance.
     pub(crate) fn prepare(graph: &RegionGraph, request: RampRequest) -> Result<Self, &'static str> {
+        // The local fork-mouth prediction rebuilds clips through Rayon, including on hover.
+        crate::thread_pools::install(|| Self::prepare_in_pool(graph, request))
+    }
+
+    fn prepare_in_pool(graph: &RegionGraph, request: RampRequest) -> Result<Self, &'static str> {
         let RampRequest {
             edge: id,
             station,

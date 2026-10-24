@@ -10,6 +10,8 @@ Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/perf
 from `b75e03c9` is combined with the road chain; all targets pass `cargo check`. Save migration,
 full runtime verification and matched merged-build acceptance remain pending. Pocket edits now
 journal frontage changes for the rolling census, with a forward/undo regression. The
+road edit and preview entry points now use upstream's owned Rayon pool, with a regression
+that disables the global pool. The
 [integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records decisions,
 baseline measurements and the road-ID renumbering. Earlier acceptance counts below describe
 their original road-chain builds.

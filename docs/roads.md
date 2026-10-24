@@ -57,6 +57,16 @@ the journal is O(affected rows), with no new per-tick/per-agent work. Fresh topo
 12 passed; all-target Clippy has no warnings. Before this fix, the full release suite passed
 2,844 library tests and four growth integration tests on the v107/fixture follow-up.
 
+Godot disables Rayon's global pool. The road-chain queued edits, local-layout/terrain
+previews, ramp preparation, authored-zebra publication and retained-mesh clipping now enter
+the existing owned pool before parallel work. Godot objects and the simulation mutex guard
+stay on their calling threads; only Rust data crosses the pool boundary. This adds O(1)
+dispatch at edit/preview entry points, with no new tick/agent work or change to local query
+bounds. A fresh child-process regression disables the global pool and exercises roundabout
+preview, ramp fork prediction, zebra publication and retained meshes; it passes, as does
+the queued-command publication regression and all-target Clippy. Native bridges are being
+rerun against this runtime.
+
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
 Road/yard shader bodies and material setup are shared; the old inline stripe code is removed

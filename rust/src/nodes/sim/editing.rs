@@ -2154,6 +2154,12 @@ impl SimCore {
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        crate::thread_pools::install(|| {
+            self.set_crosswalk_override_in_pool(node_id, edge_id, enabled);
+        });
+    }
+
+    fn set_crosswalk_override_in_pool(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
         if edge_id < 0
             || !self
                 .region_graph
