@@ -301,6 +301,7 @@ impl LaneSystem {
             if node_id < graph.node_count() {
                 // Tombstone old connection lanes at this node so the renderer skips them, and
                 // free their buffers: ids are never reused, so tombstones stay in `lanes`.
+                self.node_conflict_zones.remove(&node_id);
                 if let Some(old_ids) = self.node_lanes.remove(&node_id) {
                     for lid in old_ids {
                         if let Some(lane) = self.lanes.get_mut(lid) {

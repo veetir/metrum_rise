@@ -127,6 +127,8 @@ pub struct LaneSystem {
     // Rebuild-derived: only approaches with different permitted movements need lane choice.
     turn_preparation: Vec<bool>,
     controlled: Vec<Option<control::ControlledMovement>>,
+    node_conflict_zones: HashMap<usize, Vec<control::ConflictZone>>,
+    conflict_zone_count: usize,
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
@@ -151,6 +153,8 @@ impl LaneSystem {
             crosswalks: HashMap::new(),
             turn_preparation: Vec::new(),
             controlled: Vec::new(),
+            node_conflict_zones: HashMap::new(),
+            conflict_zone_count: 0,
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
@@ -177,6 +181,8 @@ impl LaneSystem {
         self.crosswalks.clear();
         self.turn_preparation.clear();
         self.controlled.clear();
+        self.node_conflict_zones.clear();
+        self.conflict_zone_count = 0;
         self.surface_synced_len = 0;
     }
 
@@ -211,6 +217,10 @@ impl LaneSystem {
         for lane in &mut self.lanes {
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
         }
+        let nodes: Vec<_> = self.node_lanes.keys().copied().collect();
+        for node in nodes {
+            self.refresh_zone_stations(node);
+        }
         self.surface_synced_len = self.lanes.len();
     }
 
@@ -233,6 +243,13 @@ impl LaneSystem {
         let start = self.surface_synced_len.min(self.lanes.len());
         for lane in &mut self.lanes[start..] {
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+        let nodes: BTreeSet<_> = self.lanes[start..]
+            .iter()
+            .filter_map(|lane| (lane.node_id != usize::MAX).then_some(lane.node_id))
+            .collect();
+        for node in nodes {
+            self.refresh_zone_stations(node);
         }
         self.surface_synced_len = self.lanes.len();
     }
@@ -289,6 +306,9 @@ impl LaneSystem {
                 continue;
             };
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+        for &node in node_ids {
+            self.refresh_zone_stations(node as usize);
         }
         if road_debug {
             crate::debug_log!(

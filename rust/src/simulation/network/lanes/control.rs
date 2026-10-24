@@ -2,6 +2,9 @@
 
 //! Rebuild-time, local junction conflict and automatic right-of-way products.
 
+mod zones;
+pub(crate) use zones::{ConflictZone, MovementZone};
+
 use super::{Lane, LaneSystem, LaneType};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::NodeType;
@@ -24,6 +27,8 @@ pub(crate) enum ApproachControl {
 pub(crate) struct ControlledMovement {
     /// Physical approach lane supplying this connector.
     pub(crate) incoming: usize,
+    /// Paired overlap resources ordered along this connector.
+    pub(crate) zones: Vec<MovementZone>,
     /// Swept trajectories that cannot be occupied concurrently.
     pub(crate) conflicts: Vec<usize>,
     /// Conflicting movements with statutory precedence over this movement.
@@ -154,6 +159,7 @@ impl LaneSystem {
             };
             let mut data = ControlledMovement {
                 incoming: source,
+                zones: Vec::new(),
                 conflicts: Vec::new(),
                 yields_to: Vec::new(),
                 stop: approach_control(graph, node as u32, self.lanes[source].edge_id)
@@ -215,6 +221,7 @@ impl LaneSystem {
             }
             self.controlled[id] = Some(data);
         }
+        self.rebuild_node_zones(node);
     }
 
     /// Static control for a connector, absent for sidewalk corners and direct continuations.
