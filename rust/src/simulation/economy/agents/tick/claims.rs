@@ -10,7 +10,7 @@ use super::access::planned_detach_is_legal;
 use super::lane_nav::{junction_approach_lane, junction_approach_node};
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
-    lane_change_finished, planned_lane_change_target,
+    lane_change_finished, lane_entry_slot_clear, planned_lane_change_target,
 };
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -197,6 +197,38 @@ fn classify_agent_claims(
     }
 }
 
+// The same local first-edge candidates as lane_entry: a full entry needs no serial
+// handoff or route retry. Empty/invalid routes still use ordinary deterministic repair.
+fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) -> bool {
+    if agents.transit_mode[i] != MODE_CAR {
+        return false;
+    }
+    let path = &agents.current_path[i];
+    let Some(&next) = path.get(agents.current_path_index[i]) else {
+        return false;
+    };
+    let Some(edge_id) = p.graph.get_edge_between_nodes(agents.current_node[i], next) else {
+        return false;
+    };
+    let forward = p.graph.edge(edge_id).start_node == agents.current_node[i];
+    let Some(ids) = p.network.lane_system.edge_lanes.get(&edge_id) else {
+        return false;
+    };
+    let mut any = false;
+    for &id in ids {
+        let lane = &p.network.lane_system.lanes[id];
+        if lane.is_fwd == forward
+            && lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+        {
+            any = true;
+            if lane_entry_slot_clear(id, p.lane_buckets) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 #[inline(always)]
 fn classify_network_claims(
     agents: &AgentVec,
@@ -206,7 +238,11 @@ fn classify_network_claims(
     let network = preparation.network;
     let lane_id = agents.current_lane_id[i];
     if lane_id == usize::MAX || lane_id >= network.lane_system.lanes.len() {
-        return MovementClaimMode::Dynamic;
+        return if lane_id == usize::MAX && first_entry_is_held(agents, i, preparation) {
+            MovementClaimMode::HeldEntry
+        } else {
+            MovementClaimMode::Dynamic
+        };
     }
     let remaining = agent_network_claim_distance(agents, i, network) * preparation.delta;
     if remaining <= 0.0 {
