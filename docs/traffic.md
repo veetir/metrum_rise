@@ -25,6 +25,97 @@ Implementation lives mainly in:
 
 ### Upstream integration acceptance — TRAFFIC-09
 
+#### Controlled diagnosis after legacy migration
+
+The jam already exists on pre-merge `0cc4a2ab`. Its unchanged 10k fixture, admitted through
+`PopulatedCity::admit_households` and advanced through the usual 48 warm-up hours, ends with
+8,225 network occupants and mean network-car speed 0.097857 m/s. This run happens before
+any reload, so the earlier vacancy-reserve continuation failure cannot explain the jam.
+
+A task-owned v95 snapshot immediately after that original admission is the common initial
+world for the following runs. All start with 7,396 buildings, 12,242 agents, 10,000 residents,
+6,690 employed agents, 2,263 network occupants and seven intersection occupants. Hashes of
+nodes, control/physical geometry and directed saved-lane topology match across old, merged,
+all mechanism controls and plain upstream. All 446 edges have 1+1 lanes: there are no pockets
+and zero lanes requiring turn preparation. ROAD-67 lane choice/pocket-capacity branches
+therefore do no work in this fixture; this is not an acceptance claim for a multilane city.
+
+Eight-worker, serial, unprofiled release results after the same 48 hours, Apple M2 Pro,
+`METRUM_DEBUG=0`, maximum fixture speed:
+
+| Build / isolated mechanism | Employed | Network occupants | Car speed, m/s | Non-midnight hour mean, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Original road chain, straight through | 6,937 | 8,225 | 0.097857 | 10.592841 |
+| Plain upstream, common initial world | 7,210 | 944 | 9.112031 | 0.245382 |
+| Merged, all road rules | 6,957 | 7,216 | 0.192786 | 0.459187 |
+| Diagnostic: precedence removed, crossing reservations retained | 6,899 | 7,290 | 0.178700 | 0.413355 |
+| Diagnostic: snapshot conflict-occupancy gate bypassed | 7,181 | 2,115 | 3.302306 | 0.440684 |
+| Diagnostic: downstream admission gate bypassed | 6,825 | 6,440 | 1.075079 | 0.443910 |
+| Diagnostic: connector controls removed | 7,210 | 1,000 | 9.124341 | 0.466623 |
+
+The mechanism variants exist only in the task-owned experimental source archive/test builds;
+none is a production fix. Precedence removal clears statutory yield/stop decisions while
+retaining crossing occupancy, downstream admission and same-tick conflict claims. Snapshot
+bypass leaves precedence, downstream admission and same-tick conflict claims in place. Exit
+bypass leaves precedence and crossing checks in place. Ordinary road entry/exit gap and lane
+claims remain in every variant. Complete control removal is an intentionally unsafe causal
+control, not a permitted repair. These are matched *initial* workloads; their eventual trip
+and employment counts differ. The fixture retains the old chain's 1e15 funded treasury;
+whole-contract runs below retain upstream's corrected 1e10 fixture. Do not mix their means.
+
+Plain upstream cannot read road v95. For this no-feature grid only, the merged build loads
+that snapshot and writes v108; a new task-owned copy advertises v107 for the upstream reader.
+The shared SQL/runtime schema is upstream v107, the added road tables are empty/default,
+and the initial topology/agent-count hashes above verify this control. Neither the canonical
+initial snapshot nor any player save is edited. A preliminary reload-driver attempt remained
+paused because production load pauses the clock; it produced no timing observation. The
+corrected driver explicitly restores the existing fixture's maximum speed after load.
+
+The responsible mechanism is the road chain's coarse connector conflict reservation, rather
+than the new scheduler or the statutory right-hand/major-road ordering alone.
+`JunctionAdmission::prepare` marks a movement clear only when **every conflicting connector
+bucket is empty**; `LaneClaimContext::connector_allowed` also reserves the entire conflicting
+movement during a handoff. Conflict lists are derived once from any overlap of the complete
+swept connector trajectories. Thus the intersection reserves whole traversals, rather than
+releasing individual conflict zones when a vehicle's tail clears them. Turning/braking and
+exit-storage holds extend those reservations; removing precedence alone cannot restore flow.
+The two narrower controls show both the occupancy gate's dominant effect and the additional
+cost of downstream holding. Disabling the checks would trade the jam for vehicle conflicts.
+
+`TRAFFIC-07` is independently present: before warm-up, 2,182 cars occupy distance zero of
+border-entry lane 2040. At hour 48, the merged city still stacks 1,839 there; plain upstream
+from the same initial world clears the stack completely. `prepare_lane_entry` still bypasses
+the ordinary attach-gap/claim path for first network entry. Overfill supplies unrealistic
+pressure, but the unchanged initial stack drains under upstream/control-removal behavior;
+it does not by itself account for the road-rule throughput collapse. No entry check was
+loosened, no fixture changed and no cars/jobs deleted to obtain these results.
+
+**Design decision required; no traffic repair is claimed.** A safe repair is a reservation-model
+change, not a one-line removal of a gate. It needs precompiled per-conflict-zone entry/exit
+intervals, vehicle-body/tail clearance, deterministic same-tick reservations and downstream
+storage coordinated through connector exit and frontage insertion. Border-origin cars must
+join the existing ordered admission/claim path and wait outside occupied lanes, preserving
+freight/arrival events and scheduler ownership. Reuse lane buckets, lane claims and retained
+scratch; aim for O(local conflict degree × log local occupants), with no per-agent allocation
+or whole-city scan. Validate crossing/tail/merge safety, priority and full stops, cyclic yields,
+roundabouts and multilane turns, then the unchanged dense fixture and PERF-06/PERF-07. The
+user requested stopping at this boundary if the fix requires a larger redesign. Accordingly,
+TRAFFIC-09 stays open and a repaired-flow regression remains future implementation work.
+
+The committed ignored driver `nodes::sim::core::populated_city::traffic09::dense_city_warmup`
+records six-hour checkpoints, initial/final SQL snapshots and lane/control geometry without
+altering production rules. With `METRUM_TRAFFIC09_INPUT` omitted it constructs the normal
+fixture; with it set it loads the common initial snapshot read-only:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 METRUM_TRAFFIC09_INPUT="$ARTIFACTS/initial.sqlite" \
+  METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/fresh-run" "$TEST_BINARY" \
+  nodes::sim::core::populated_city::traffic09::dense_city_warmup \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+#### Earlier whole-contract acceptance evidence
+
 The road/scheduler merge is not accepted for dense-city behavior. Fresh, serial, unprofiled
 release runs on Apple M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`, use upstream
 `b75e03c9` and merged Rust source `88133881`. Both full `./run.sh --perf-contract` checks
@@ -46,10 +137,9 @@ compares plain upstream with merged, not the older road binary with merged.
 The prepared day-12 10k saves already diverge before loading: upstream has 7,186 employed
 agents and 2,481 network occupants; merged has 716 employed and 9,092 network occupants.
 Car speed on network lanes averages 4.954 versus 0.052 m/s. This establishes a dense-traffic
-flow/behavior regression during fixture warm-up, not a save-loader loss. It does not identify
-the responsible rule. Junction priority, lane topology/capacity and the pre-existing
-`TRAFFIC-07` border-entry overfill need a controlled comparison from the same initial world;
-do not disable road rules or loosen collision/entry checks to make the benchmark pass.
+flow/behavior regression during fixture warm-up, not a save-loader loss. The controlled follow-up above identifies the connector-reservation bottleneck. These
+earlier day-12 figures remain observations of their original builds, not matched initial
+workloads or proof of a repaired city.
 
 Upstream work-limit failures are baseline buyer sites 10 → 369, staffing trials 49,289 →
 231,170 and job-search keys 64 → 15,448; fiscal buyer sites 716 → 2,764 and combined CCH

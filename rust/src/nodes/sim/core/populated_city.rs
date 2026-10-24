@@ -22,6 +22,8 @@ mod frame_budget;
 mod routing_benchmark;
 #[cfg(test)]
 mod snapshot;
+#[cfg(test)]
+mod traffic09;
 
 use std::time::{Duration, Instant};
 
