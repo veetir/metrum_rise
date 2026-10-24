@@ -42,7 +42,7 @@ struct RoadConstraintVertex {
 #[derive(Clone, Copy, Default)]
 struct RoadBoundaryMaterials {
     node: Option<(u32, TerrainCdtNodePieceKind)>,
-    owners: [Option<u32>; 4],
+    owners: [bool; 4],
     span: Option<u64>,
     span_owners: [bool; 4],
     span_handoff: bool,
@@ -52,16 +52,16 @@ struct RoadBoundaryMaterials {
 impl RoadBoundaryMaterials {
     fn add_source(&mut self, source: TerrainCdtRoadBoundarySource) {
         let mut other = Self::default();
-        let (kind, owner, span_owner) = match source {
+        let (kind, span_owner) = match source {
             TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
                 node_id,
                 node_kind,
                 owner_kind,
-                owner_index,
                 boundary_source: Some(_),
+                ..
             } => {
                 other.node = Some((node_id, node_kind));
-                (owner_kind, owner_index, false)
+                (owner_kind, false)
             }
             TerrainCdtRoadBoundarySource::SpanSupportBoundary {
                 edge_idx,
@@ -77,7 +77,7 @@ impl RoadBoundaryMaterials {
                 other.span = Some(edge_idx);
                 other.span_handoff =
                     start_section_index == end_section_index && start_s_m == end_s_m;
-                (band_kind, 0, true)
+                (band_kind, true)
             }
             _ => {
                 self.incompatible = true;
@@ -97,7 +97,7 @@ impl RoadBoundaryMaterials {
         if span_owner {
             other.span_owners[slot] = true;
         } else {
-            other.owners[slot] = Some(owner);
+            other.owners[slot] = true;
         }
         self.merge(other);
     }
@@ -117,11 +117,11 @@ impl RoadBoundaryMaterials {
         for (owner, incoming) in self.span_owners.iter_mut().zip(other.span_owners) {
             *owner |= incoming;
         }
+        // A junction's material boundary changes band owner at each approach and
+        // corner. All incident rails still certify the same node's kerb return;
+        // an owner index is not a distinct terrain grade or a foreign junction.
         for (owner, incoming) in self.owners.iter_mut().zip(other.owners) {
-            if let Some(incoming) = incoming {
-                self.incompatible |= owner.is_some_and(|current| current != incoming);
-                *owner = Some(incoming);
-            }
+            *owner |= incoming;
         }
     }
 }
@@ -283,7 +283,7 @@ fn source_owned_kerb_return(
     if materials.incompatible
         || materials.node.is_none()
         || materials.span.is_some() && !materials.span_handoff
-        || (materials.owners[1..].iter().all(Option::is_none)
+        || (materials.owners[1..].iter().all(|&present| !present)
             && materials.span_owners[1..].iter().all(|&present| !present))
     {
         return false;
@@ -787,7 +787,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kerb_returns_require_one_source_owner_and_the_declared_step() {
+    fn kerb_returns_require_one_source_node_and_the_declared_step() {
         let points = [
             TerrainCdtVertex::new(0.0, 20.0, 0.0),
             TerrainCdtVertex::new(0.0004, 20.12, 0.0),
@@ -854,6 +854,44 @@ mod tests {
             elevated,
             &materials(&[source, span(929, 2, true), span(930, 2, true)])
         ));
+        let mut adjacent_owner = source;
+        if let TerrainCdtRoadBoundarySource::NodeFootprintBoundary { owner_index, .. } =
+            &mut adjacent_owner
+        {
+            *owner_index += 1;
+        }
+        assert!(source_owned_kerb_return(
+            points,
+            &materials(&[source, adjacent_owner]),
+        ));
+        // Exact source corners from the four imported-map tiles that exposed this.
+        for points in [
+            [
+                TerrainCdtVertex::new(-1044.675267, 99.575, 2134.690785),
+                TerrainCdtVertex::new(-1044.675360, 99.455, 2134.690743),
+                TerrainCdtVertex::new(-1044.674984, 99.575, 2134.690173),
+            ],
+            [
+                TerrainCdtVertex::new(-836.277558, 95.774, 2734.670418),
+                TerrainCdtVertex::new(-836.277557, 95.654, 2734.670417),
+                TerrainCdtVertex::new(-836.253684, 95.774, 2734.694337),
+            ],
+            [
+                TerrainCdtVertex::new(898.785735, 105.121, 1286.329947),
+                TerrainCdtVertex::new(898.791567, 105.241, 1286.374503),
+                TerrainCdtVertex::new(898.785734, 105.241, 1286.329946),
+            ],
+            [
+                TerrainCdtVertex::new(-71.956634, 94.768, 1137.966879),
+                TerrainCdtVertex::new(-71.945855, 94.768, 1137.978493),
+                TerrainCdtVertex::new(-71.956635, 94.648, 1137.966880),
+            ],
+        ] {
+            assert!(source_owned_kerb_return(
+                points,
+                &materials(&[source, adjacent_owner]),
+            ));
+        }
         let mut cliff = points;
         cliff[1].height_m += 0.5;
         assert!(!source_owned_kerb_return(cliff, &materials(&[source])));
