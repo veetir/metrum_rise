@@ -176,6 +176,23 @@ five user copies and untouched upstream v59/v107 fixtures; all five road/topolog
 still match `0cc4a2ab` exactly and source hashes are unchanged. This completes the legacy-load
 blocker; TRAFFIC-09 remains separate acceptance work.
 
+The final migration executable's full library run passes **2,848 cases, zero failures,
+165 ignored** (449.88 s); all-target Clippy is clean. The fresh complete 65-script Godot
+inventory has **59 passes and the same six pre-existing Mac failures** listed above; every
+road suite, including university reconstruction, passes. An additional read-only copy of the
+user's v95 university-underpass revision has one persisted crossing level, five bus-lane rows
+and 1,516 zebra overrides: its old-runtime/new-runtime/108-resave fingerprints match exactly,
+and its original hash is unchanged. This supplements the five requested save proofs.
+The earlier four growth integrations and road/locality benchmarks remain evidence of their
+original 88133881 build; they were not repeated for this load-only migration.
+
+The controlled [TRAFFIC-09 diagnosis](traffic.md#upstream-integration-acceptance--traffic-09)
+reproduces the jam on the original road chain and isolates whole-connector conflict
+reservations as the bottleneck. A safe conflict-zone/storage redesign is required; no
+production traffic rule, collision check, fixture or gate was weakened. The requested
+large-redesign stop applies, so dense-city integration remains unaccepted despite the repaired
+legacy loading and completed matching captures.
+
 Reproduce the save checks with `cargo test --release --lib simulation::save -- --test-threads=8`
 and `cargo clippy --all-targets` from `rust`, and
 `python3 -m unittest discover -s tools -p test_road_save_fingerprint.py` from the project root.

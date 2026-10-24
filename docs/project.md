@@ -7,9 +7,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Snapshot
 
 Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
-from `b75e03c9` is combined with the road chain. Fresh coverage passes all 2,846 library cases,
-four growth integrations and 58 native suites; six pre-existing Mac bridge failures reproduce
-and the university legacy bridge now passes from its migrated copy. All five user-save copies now load and
+from `b75e03c9` is combined with the road chain. Fresh migration coverage passes all 2,848 library cases
+and 59 of 65 native suites; the same six pre-existing Mac bridge failures reproduce. The
+university legacy bridge passes from its migrated copy; the four earlier growth integrations
+remain evidence of their original build. All five user-save copies now load and
 round-trip in v108, with exact pre-merge road/topology fingerprints and unchanged original hashes.
 The populated compatibility matrix covers 53 schema checkpoints from the old v57 minimum,
 plus the tracked v59 wage backport; real upstream v59/v107 copies also round-trip. Full economy and frame-budget
@@ -17,7 +18,11 @@ checks fail, with 100k 1× raw p99.9 increasing 12.66 → 20.75 ms
 ([TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09),
 [full matrix](simulation.md#road-chain-integration-check-on-macos--2026-10-24)). Legacy loading is repaired;
 matched visible-zoning captures are complete (Prisma 81.97 → 81.20 fps, KYS 39.86 → 37.90,
-sweep 33.22 → 32.08); this integration is not accepted. Pocket edits now
+sweep 33.22 → 32.08). TRAFFIC-09 also reproduces on pre-merge `0cc4a2ab`; matched-world
+controls isolate the whole-connector conflict reservation, rather than the scheduler or lane
+choice. A safe conflict-zone/storage redesign needs a separate decision, so work stops at the
+requested redesign boundary and this integration remains unaccepted. Both complete economy
+contracts still fail their original work-scaling gates. Pocket edits now
 journal frontage changes for the rolling census, with a forward/undo regression. The
 road edit and preview entry points now use upstream's owned Rayon pool, with a regression
 that disables the global pool. The

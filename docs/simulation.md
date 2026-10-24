@@ -944,7 +944,16 @@ determinism checks and `./run.sh --test` are not timing runs and may share the m
 
 ### Road-chain integration check on macOS — 2026-10-24
 
-Fresh full-day, unprofiled release runs compare plain upstream `b75e03c9` with merged Rust
+The later `cfcb2bd3` migration restores both save histories, with 2,848 passing library
+cases and 59/65 native suites (six existing Mac failures). Its matched-initial-world traffic
+experiment reproduces the jam on `0cc4a2ab` and identifies coarse connector conflict
+reservations as the throughput bottleneck; see [TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09)
+for controls, default full-contract reruns and the requested redesign stop. No scheduler,
+production movement rule or budget threshold was weakened. The six-tier frame-budget matrix
+below remains evidence of its original build; it was not repeated for the reader-only repair.
+The actual migrated-city frame captures are recorded in [roads.md](roads.md#upstream-integration-checkpoint--2026-10-24).
+
+The earlier full-day, unprofiled release runs compare plain upstream `b75e03c9` with merged Rust
 source `88133881`, on Apple M2 Pro, Rust 1.98.1 / macOS SDK 26.5, eight Rayon workers and
 `METRUM_DEBUG=0`. Builds, correctness tests and Godot captures finish outside these timing
 runs. No CPU affinity or Linux scheduler counters are available on this host.

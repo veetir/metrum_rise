@@ -105,7 +105,9 @@ TRAFFIC-09 stays open and a repaired-flow regression remains future implementati
 The committed ignored driver `nodes::sim::core::populated_city::traffic09::dense_city_warmup`
 records six-hour checkpoints, initial/final SQL snapshots and lane/control geometry without
 altering production rules. With `METRUM_TRAFFIC09_INPUT` omitted it constructs the normal
-fixture; with it set it loads the common initial snapshot read-only:
+fixture; with it set it loads the common initial snapshot read-only. A fresh replay of the
+committed driver reproduces all nine authority checkpoints exactly; its all-target Clippy
+check is clean. The timings in the table remain those of the original matched sequence:
 
 ```sh
 METRUM_DEBUG=0 RAYON_NUM_THREADS=8 METRUM_TRAFFIC09_INPUT="$ARTIFACTS/initial.sqlite" \
@@ -114,20 +116,23 @@ METRUM_DEBUG=0 RAYON_NUM_THREADS=8 METRUM_TRAFFIC09_INPUT="$ARTIFACTS/initial.sq
   --exact --ignored --nocapture --test-threads=1
 ```
 
-#### Earlier whole-contract acceptance evidence
+#### Whole-contract rerun after migration
 
-The road/scheduler merge is not accepted for dense-city behavior. Fresh, serial, unprofiled
-release runs on Apple M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`, use upstream
-`b75e03c9` and merged Rust source `88133881`. Both full `./run.sh --perf-contract` checks
-fail work-scaling limits: five on plain upstream, three on the merged build. All measured
-hour/day means remain inside the absolute time limits, but the cities' work is different.
+The road/scheduler merge is not accepted for dense-city behavior. Fresh serial, unprofiled
+release reruns after the migration use upstream `b75e03c9` and merged Rust `cfcb2bd3`, Apple
+M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`, with no concurrent builds/tests/Godot.
+Both full `./run.sh --perf-contract` checks still fail work-scaling limits: five on upstream
+in 76.44 s, three on merged in 85.94 s. All absolute hour/day limits pass. Revision-checked
+copies of the original complete contract caches are retained; no fixture or threshold was
+changed. These default day-12/day-16 cities have diverged during their own warm-ups, unlike
+the common initial world in the causal experiment above.
 
 | Full-day hour mean, ms | Plain upstream | Merged |
 | --- | ---: | ---: |
-| Baseline 10k | 1.058 | 2.541 |
-| Baseline 30k | 4.040 | 6.708 |
-| Fiscal stress 10k | 7.040 | 9.541 |
-| Fiscal stress 30k | 29.366 | 26.189 |
+| Baseline 10k | 0.999110 | 2.500121 |
+| Baseline 30k | 4.143611 | 6.753725 |
+| Fiscal stress 10k | 6.961491 | 9.433688 |
+| Fiscal stress 30k | 29.796770 | 26.580440 |
 
 The pre-merge road binary `0cc4a2ab` fails its 10k snapshot's exact save/reload preparation
 check: `vacancy_reserve` changes from 531 to 511 on reload, while the other recorded fields
@@ -137,8 +142,8 @@ compares plain upstream with merged, not the older road binary with merged.
 The prepared day-12 10k saves already diverge before loading: upstream has 7,186 employed
 agents and 2,481 network occupants; merged has 716 employed and 9,092 network occupants.
 Car speed on network lanes averages 4.954 versus 0.052 m/s. This establishes a dense-traffic
-flow/behavior regression during fixture warm-up, not a save-loader loss. The controlled follow-up above identifies the connector-reservation bottleneck. These
-earlier day-12 figures remain observations of their original builds, not matched initial
+flow/behavior regression during fixture warm-up, not a save-loader loss. The controlled
+follow-up above identifies the connector-reservation bottleneck. These day-12 figures remain observations of their original builds, not matched initial
 workloads or proof of a repaired city.
 
 Upstream work-limit failures are baseline buyer sites 10 → 369, staffing trials 49,289 →
@@ -147,9 +152,21 @@ searches 6,771 → 26,851. Their 10k→30k bound is 3.4283×. Merged failures ar
 routes 144,303 → 530,202 and combined CCH searches 9,465 → 33,953; fiscal job-search keys
 7 → 59, against 3.5112×. These failures remain visible; none of the limits were weakened.
 
+At the prepared default baseline boundary, upstream/merged 10k employment is 7,186/716,
+network occupancy 2,481/9,092 and car speed 4.953905/0.051891 m/s. At 30k it is
+16,729/1,932 employed, 7,951/26,131 network occupants and 3.277907/0.076792 m/s. These
+nominal tiers are not matched work, and their hour means cannot certify equal-work performance.
+The earlier 88133881 means (1.058/2.541 ms at 10k and 4.040/6.708 at 30k) remain historical
+observations; the new measurements above do not establish an improvement in the traffic model.
+
+Reproduce both full runs with `./run.sh --perf-contract --binary "$TEST_BINARY" --artifacts
+"$ARTIFACTS/fresh-contract"`, without `--phase`, `--agents` or shortened periods. Retained
+binary SHA-256 prefixes are upstream `c406e5be621f4bea` and merged `998cd542b60b40b9`;
+report `git_head` denotes the orchestration checkout, not an archived binary's source.
+
 The short `PERF-06` agent contract passes on all three binaries. Upstream and merged have
 identical work dictionaries in all six 10k/30k modes; the older road binary also counted the
-congestion pass that upstream deliberately removed. Fresh 30k per-tick observations, ms:
+congestion pass that upstream deliberately removed. Earlier 30k per-tick observations, ms:
 
 | Mode | Road `0cc4a2ab` | Upstream `b75e03c9` | Merged `88133881` |
 | --- | ---: | ---: | ---: |
