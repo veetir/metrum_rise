@@ -7916,8 +7916,14 @@ and [controlled performance acceptance](#controlled-performance-acceptance) for 
 The historical milestone results below are retained for comparison, not as pending work or current
 failure counts. The capture is a regression fixture, not proof for all possible road geometry.
 
-`benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` is the immutable, version-59
-user capture with 70 saved road edges (about 27 MB). `placements.json` reconstructs 37 logged
+`benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` originated as the version-59
+user capture with 70 saved road edges. Upstream regenerated it as a version-107 scheduler
+save (about 30 MB). The integration audit verifies identical world configuration, 80 nodes,
+all shared columns of the 70 edges, 4,068 control/physical geometry rows and 1,416 lane
+connections against the original. Its manifest pins the fetched payload's actual SHA-256
+`5ac4cb0f250f9a6e5a8ef34f82521cc37e254f4c1e8031c7d0bf71f953a9363d`; upstream's stale
+`6bda…` manifest hash did not describe the fetched database. Neither database was edited.
+`placements.json` reconstructs 37 logged
 two-point placement attempts as 12 connected-site sequences plus a separate rejected-attempt
 case. The importer verifies the final accepted physical polylines against the save and every
 source-terrain sample against `godot/bootstrap/worlds/kuopio_324km2_10m.sqlite`. The processed
