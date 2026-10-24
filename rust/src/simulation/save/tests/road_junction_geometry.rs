@@ -904,3 +904,34 @@ fn restored_junction_footprints_keep_connected_grades_coherent() {
             .is_empty()
     );
 }
+
+#[test]
+fn retained_shared_grade_plans_require_valid_source_ownership() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_grade_source_plans.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(6000.0, 6000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    let nodes = [2, 12, 20, 16, 18];
+    let edges = nodes
+        .iter()
+        .flat_map(|&n| graph.node_adjacency(n))
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    surface.compile_owners_for_geometry_audit(&graph, &terrain, &edges, &nodes, false);
+    for node in nodes {
+        assert!(surface.compiled_visual_node_pieces().contains_key(&node));
+    }
+    assert!(
+        surface
+            .junction_grade_conflicts_for_geometry_audit(&graph)
+            .is_empty()
+    );
+}

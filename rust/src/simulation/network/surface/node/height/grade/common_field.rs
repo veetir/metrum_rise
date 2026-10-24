@@ -290,16 +290,34 @@ impl NodeMaterialGradeField {
         nodes.dedup();
         let mut field = Self::with_supports(supports, origin, gradient, Some(nodes.into()))?
             .with_coverage_bounds(coverage_bounds)?;
-        field.source_plans = Some(std::sync::Arc::new(
-            inputs
-                .iter()
-                .map(|(node, input)| {
-                    let mut input = input.clone();
-                    input.coalesce_grade_subdivisions();
-                    (*node, input)
-                })
-                .collect(),
-        ));
+        // Coalescing a pre-conformance snapshot can leave a real material residual
+        // or an unowned contact. Retain geometry only when the same ownership
+        // checks as the publishing compiler certify that source plan.
+        let plan_grade = std::sync::Arc::new(Self {
+            geometry: std::sync::Arc::clone(&field.geometry),
+            cohort_nodes: field.cohort_nodes.clone(),
+            source_plans: None,
+        });
+        let plans = RoadSurfaceSystem::collect_compile_work(
+            inputs,
+            crate::simulation::network::surface::PARALLEL_NODE_COMPILE_MIN_ITEMS,
+            |(node, mut input)| {
+                input.coalesce_grade_subdivisions();
+                let (mut rails, _) =
+                    RoadSurfaceSystem::build_node_rail_contours_from_input_with_profile(
+                        &input, false,
+                    )
+                    .ok()?;
+                rails.material_grade = Some(std::sync::Arc::clone(&plan_grade));
+                let ownership =
+                    RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails).ok()?;
+                if crate::simulation::network::surface::node::validation::NodeValidationReport::from_owned_region_arrangement_diagnostics(&ownership.owned_region_arrangement).is_some() {
+                    return None;
+                }
+                Some((node, input))
+            },
+        );
+        field.source_plans = Some(std::sync::Arc::new(plans.into_iter().flatten().collect()));
         Some(field)
     }
 
