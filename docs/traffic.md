@@ -217,15 +217,21 @@ future lane graph. No agent layout, movement loop or tick allocation changes.
 Saved masks and transactional edit behavior are owned by
 [the road contract](roads.md#bus-only-lane-authoring--road-72-lane-use-slice).
 
-### Imported road compiler checkpoint — ROAD-73
+### Imported road compiler completion — ROAD-73
 
 The ROAD-73 span-frame repair keeps successful existing section geometry and all lane
 identities unchanged. Rejected spans may receive a validated nonuniform knot frame; surface
-queries and node mouths share its exact retained sections. No agent layout, movement loop,
-reservation policy, NET-07 behavior or tick-time allocation changes. The unresolved imported
-short-link height discontinuities require a joint node/material/terrain fix; an isolated
-longitudinal reprofile is not accepted. Fault counts, legacy checks and performance evidence
-are owned by [the ROAD-73 road contract](roads.md#imported-junction-geometry--road-73-partial).
+queries and node mouths share its exact retained sections. Overlapping connected junctions
+now use one source-constrained grade, with conforming internal span mouths and material
+boundaries. Nonroad composition gives connected carriageways consistent visible precedence.
+The full-width university rebuild retains 3+3 lanes and both bus lanes, passes exact
+preview/commit, drives traffic and survives save/reload. Bus lanes use ordinary Finnish
+asphalt with white BUS lettering; the inherited red fill is removed.
+
+No agent layout, movement loop, reservation policy, NET-07 behavior or tick-time allocation
+changes. Compiler and renderer measurements are not agent-tick performance claims. Source
+exceptions, legacy grade comparisons and fresh acceptance evidence are owned by
+[the ROAD-73 road contract](roads.md#imported-junction-geometry--road-73).
 
 ### ROAD-72 release traffic verification — 2026-10-21
 

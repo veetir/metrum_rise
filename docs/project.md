@@ -6,14 +6,15 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-ROAD-73 remains open. The compiler repairs are now split into locally tested commits covering
-junction material/mouth grades, short links, exact terrain seams and cross-owner nonroad
-composition. The native university rebuild passes at full 3+3 width with both bus lanes and a
-paved median. A prior continuation sweep reached zero for the four original signatures and
-passed all 3,502 terrain CDT windows; those are historical measurements until final acceptance
-is rerun. Connected junctions 227/419/420 still need coherent overlapping asphalt grades.
-KYS road 138's unwelded terminal is tracked separately as an importer input fault
-([diagnosis and acceptance](roads.md#imported-junction-geometry--road-73-partial)).
+ROAD-73's compiler repairs are complete: full KYS/Bioteknia views settle, all four original
+pockets fault signatures are zero, and 3,496 production terrain windows pass. The university
+rebuild retains 3+3 lanes, bus lanes and a paved median. Shared source-constrained grades also
+resolve junctions 227/419/420 and the refined boundaries at 1150/1628. Fresh release validation
+passes 2,706 library tests and 23 native bridges. Matched locality products remain identical;
+full mesh emission at 1,024 chunks costs 42.0 ms versus 32.9 ms before. KYS road 138's unwelded
+terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the supplied KYS
+layout still needs that importer repair
+([design and acceptance](roads.md#imported-junction-geometry--road-73)).
 
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
 hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
@@ -38,8 +39,8 @@ bridge abutment cutouts retain ground beneath airborne sections
 ([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)). Both broken saves and the full
 medians save have been checked numerically and in street-level/overhead captures.
 
-ROAD-72 has a bus-only lane-use slice: per-lane Road Properties controls, red/BUS markings,
-car lane/frontage/routing exclusion, undo and version-94 persistence. Bus vehicles are not yet
+ROAD-72 has a bus-only lane-use slice: per-lane Road Properties controls, white BUS markings
+on ordinary asphalt, car lane/frontage/routing exclusion, undo and version-94 persistence. Bus vehicles are not yet
 simulated. Longitudinal right-turn sharing, stops/bays/shelters, median/verge planting, OSM tag
 mapping and complete Prisma bus-stop reconstruction remain pending
 ([bus lane scope](roads.md#bus-only-lane-authoring--road-72-lane-use-slice)).
@@ -82,9 +83,9 @@ Fresh 2,644-test release and native/legacy checks pass; nine production captures
 against the Finnish photos ([design and acceptance](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)).
 The historical short PERF-06 timing uncertainty is explained separately from current sustained
 measurements: the completion adds a measured 1.1% at 1M agents and 4.4% in full network mesh
-emission, while local planning remains bounded with identical products. ROAD-73 tracks a refused
-sloping plain-to-median terrain boundary; the accepted
-continuous parking refuge does not resolve that distinct transition defect.
+emission, while local planning remains bounded with identical products. ROAD-73 subsequently
+repairs the refused sloping plain-to-median terrain boundary and validates the university
+rebuild at full 3+3 bus-lane width.
 The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
 strip without changing physical geometry. ROAD-61 blank-world probes reproduce erased buried
 profiles and quick/exact tunnel-validation disagreement; its structural fix remains planned

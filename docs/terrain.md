@@ -3812,6 +3812,12 @@ Current deterministic rules:
   `ImageTexture` upload from GDScript
 - terrain and water patch snapshots expose texture-ready `PackedByteArray` height/depth payloads
   so Godot image uploads do not convert `PackedFloat32Array` data on the render path
+- refined CDT positions subtract the patch centre in source `f64` before conversion to uploaded
+  patch-local `f32`; normals and slope rejection use those same uploaded positions. World-space
+  narrowing can collapse distinct rails several kilometres from the origin and invent vertical
+  terrain. UVs likewise subtract their origin before narrowing. The existing area floor is tested
+  against source geometry, so float rounding cannot change culling with world location; every
+  retained uploaded face still receives the full pathological-output checks (ROAD-73).
 - the terrain shader keeps separate terrain-height and water-depth UV layouts because terrain and
   water patch textures may use different border widths
 - the water shader reads the terrain patch's height texture through that texture's own layout
