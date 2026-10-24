@@ -72,14 +72,13 @@ impl RoundaboutLayout {
                 if edge.roundabout
                     || edge.class != EdgeClass::Standard
                     || edge.primary_type != TransitType::Road
-                    || edge.fwd_lanes != 1
-                    || edge.bkw_lanes != 1
-                    || edge.median.is_some()
+                    || !(1..=2).contains(&edge.fwd_lanes)
+                    || !(1..=2).contains(&edge.bkw_lanes)
                     || edge.lane_tapers.is_some()
                     || edge.start_node == edge.end_node
                     || edge.crossing_level != 0
                 {
-                    return Err("roundabout_requires_simple_surface_arms");
+                    return Err("roundabout_requires_ordinary_surface_arms");
                 }
                 let at_start = edge.start_node == node;
                 let mut points = RegionGraph::physical_profile_on_control_alignment(edge);

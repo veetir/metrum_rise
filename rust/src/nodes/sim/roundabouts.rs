@@ -223,6 +223,101 @@ mod tests {
     }
 
     #[test]
+    fn roundabout_replacement_preserves_divided_arms_at_source_diameter() {
+        use crate::simulation::network::graph::{Edge, RoadMedian};
+        use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+        let mut core = core();
+        let center = core
+            .region_graph
+            .add_node(Vector3::ZERO, NodeType::Junction);
+        for (angle, lanes, median) in [
+            (0.0_f32, 2, RoadMedian::from_tool(3, 2.0).unwrap()),
+            (
+                std::f32::consts::PI,
+                2,
+                RoadMedian::from_tool(2, 2.0).unwrap(),
+            ),
+            (1.3, 1, None),
+        ] {
+            let point = Vector3::new(angle.cos(), 0.0, angle.sin()) * 100.0;
+            let end = core.region_graph.add_node(point, NodeType::Junction);
+            core.region_graph.add_edge(Edge {
+                start_node: center,
+                end_node: end,
+                geometry: vec![Vector3::ZERO, point],
+                physical_geometry: vec![Vector3::ZERO, point],
+                physical_length: 100.0,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                width: f32::from(lanes) * 7.0 + median.map_or(0.0, |m| m.width_m),
+                median,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                ..Default::default()
+            });
+        }
+        core.region_graph.rebuild_intersection_clips();
+        core.transit_network
+            .lane_system
+            .rebuild(&mut core.region_graph);
+        core.precompute_road_mesh_data();
+        let sections = core
+            .region_graph
+            .edges()
+            .iter()
+            .map(|e| {
+                (
+                    e.fwd_lanes,
+                    e.bkw_lanes,
+                    e.width,
+                    e.median,
+                    *e.geometry.last().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let request = RoundaboutRequest {
+            center: Vector3::ZERO,
+            diameter: 28.675,
+            angles: vec![],
+            replace: Some(center),
+        };
+        assert!(
+            core.place_roundabout(request),
+            "{:?}",
+            core.last_road_rejection
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .published_generation_matches_source()
+        );
+        for (id, section) in sections.iter().enumerate() {
+            let e = core.region_graph.edge(id);
+            assert_eq!(
+                &(
+                    e.fwd_lanes,
+                    e.bkw_lanes,
+                    e.width,
+                    e.median,
+                    *e.geometry.last().unwrap()
+                ),
+                section
+            );
+        }
+        assert_eq!(
+            core.region_graph
+                .edges()
+                .iter()
+                .filter(|e| e.roundabout)
+                .count(),
+            3
+        );
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge_count(), 3);
+        assert_eq!(core.region_graph.live_node_connection_count(center), 3);
+    }
+
+    #[test]
     fn roundabout_replacement_retains_uneven_arms_and_original_edge_ids() {
         use crate::simulation::network::graph::Edge;
         use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
