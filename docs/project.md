@@ -8,7 +8,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
 from `b75e03c9` is combined with the road chain; all targets pass `cargo check`. Save migration,
-full runtime verification and matched merged-build acceptance remain pending. The
+full runtime verification and matched merged-build acceptance remain pending. Pocket edits now
+journal frontage changes for the rolling census, with a forward/undo regression. The
 [integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records decisions,
 baseline measurements and the road-ID renumbering. Earlier acceptance counts below describe
 their original road-chain builds.

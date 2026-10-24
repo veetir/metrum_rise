@@ -50,7 +50,7 @@ impl TransitNetwork {
         self.profile_authored_edges.clear();
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
-                allocator.restore_split_frontages(&undo.buildings);
+                allocator.apply_frontage_remaps(&undo.buildings);
                 allocator.edge_occupancy.remove(&undo.new_edge_id);
                 if let Some(occupancy) = undo.occupancy {
                     allocator.edge_occupancy.insert(undo.edge_id, occupancy);
@@ -110,7 +110,8 @@ impl TransitNetwork {
                 );
             }
         }
-        for (index, building) in allocator.buildings.iter_mut().enumerate() {
+        let mut frontage_remaps = Vec::new();
+        for (index, building) in allocator.buildings.iter().enumerate() {
             let Some((slot, (_, old))) = before
                 .iter()
                 .enumerate()
@@ -151,23 +152,24 @@ impl TransitNetwork {
                 }
             }
             if let Some((_, id, station)) = best {
-                building.edge_idx = id;
-                building.frontage_t = station / graph.edge(id).physical_length.max(0.001);
-                building.cell_x = (station / cell - f32::from(building.width_cells) * 0.5)
+                let frontage_t = station / graph.edge(id).physical_length.max(0.001);
+                let cell_x = (station / cell - f32::from(building.width_cells) * 0.5)
                     .max(0.0)
                     .floor() as usize;
+                frontage_remaps.push((index, id, cell_x, frontage_t));
                 if let Some(occupancy) = allocator.edge_occupancy.get_mut(&id) {
-                    let end = (building.cell_x + usize::from(building.width_cells))
-                        .min(occupancy.cells_long);
+                    let end =
+                        (cell_x + usize::from(building.width_cells)).min(occupancy.cells_long);
                     let side = if building.side > 0 {
                         &mut occupancy.left
                     } else {
                         &mut occupancy.right
                     };
-                    side[building.cell_x.min(end)..end].fill(true);
+                    side[cell_x.min(end)..end].fill(true);
                 }
             }
         }
+        allocator.apply_frontage_remaps(&frontage_remaps);
         if let Some(journal) = &mut self.road_edit_split_undo {
             journal.extend(journals);
         }
@@ -1767,6 +1769,72 @@ mod tests {
 
     // A split records the building rows it moves, and their undo records them again, so the
     // row-indexed tables and the census input copy (`SIM-02-I`) take them.
+    #[test]
+    fn pocket_frontage_remaps_and_undo_publish_changed_rows_to_the_census() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        use crate::simulation::zoning::ZoneType;
+        let mut net = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let middle = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::LaneTransition);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let original = Edge {
+            start_node: start,
+            end_node: end,
+            physical_geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
+            physical_length: 100.0,
+            ..Default::default()
+        };
+        let mut first = original.clone();
+        first.end_node = middle;
+        first.physical_geometry[1].x = 50.0;
+        first.physical_length = 50.0;
+        let first_id = graph.add_edge(first);
+        let mut second = original.clone();
+        second.start_node = middle;
+        second.physical_geometry[0].x = 50.0;
+        second.physical_length = 50.0;
+        let second_id = graph.add_edge(second);
+        for (edge, frontage_t) in [(first_id, 0.2), (usize::MAX, 0.0), (first_id, 0.8)] {
+            let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+            building.edge_idx = edge;
+            building.frontage_t = frontage_t;
+            allocator.buildings.push(building);
+        }
+        let original_rows = allocator
+            .buildings
+            .iter()
+            .map(|b| (b.edge_idx, b.cell_x, b.frontage_t.to_bits()))
+            .collect::<Vec<_>>();
+        let revision = allocator.building_ref_revision();
+        net.begin_road_edit();
+        net.remap_pocket_frontages(
+            &[(first_id, original)],
+            &[first_id, second_id],
+            &graph,
+            &zoning,
+            &mut allocator,
+        );
+        assert_eq!(allocator.buildings[2].edge_idx, second_id);
+        let mut changed = Vec::new();
+        assert!(allocator.building_changes_since(revision, &mut changed));
+        assert_eq!(changed, [0, 2]);
+        assert_eq!(allocator.census_copy_changes.rows, [0, 2]);
+        let revision = allocator.building_ref_revision();
+        net.rollback_road_edit_dependents(&mut allocator);
+        let restored = allocator
+            .buildings
+            .iter()
+            .map(|b| (b.edge_idx, b.cell_x, b.frontage_t.to_bits()))
+            .collect::<Vec<_>>();
+        assert_eq!(restored, original_rows);
+        changed.clear();
+        assert!(allocator.building_changes_since(revision, &mut changed));
+        assert_eq!(changed, [0, 2]);
+    }
+
     #[test]
     fn split_records_the_moved_building_rows_and_their_undo() {
         use crate::simulation::buildings::allocator::indexed_test_building;

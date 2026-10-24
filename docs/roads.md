@@ -49,6 +49,14 @@ retired congestion column/value; authored geometry, profiles and clip values are
 Legacy road-chain migration, the full merged correctness/bridge suite, matched performance contracts and final
 capture comparison remain integration gates; this checkpoint does not claim them complete.
 
+Pocket frontage commits now apply their remaps through the allocator's existing row-change
+hook, as split/undo already do, so the rolling census and indexed readers see both forward
+and rollback changes. A minimal three-building regression checks exactly the two affected rows
+and exact undo restoration. The existing edit-time O(buildings) discovery remains; applying
+the journal is O(affected rows), with no new per-tick/per-agent work. Fresh topology checks:
+12 passed; all-target Clippy has no warnings. Before this fix, the full release suite passed
+2,844 library tests and four growth integration tests on the v107/fixture follow-up.
+
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
 Road/yard shader bodies and material setup are shared; the old inline stripe code is removed
