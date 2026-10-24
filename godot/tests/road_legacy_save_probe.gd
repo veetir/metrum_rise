@@ -18,6 +18,8 @@ func run() -> void:
 	var names := ["kuopio-sw-pockets", "kys-pond", "bioteknia", "prisma", "uni-underpass"]
 	if OS.get_environment("METRUM_MIGRATION_UPSTREAM") == "1":
 		names.append("upstream")
+	if OS.get_environment("METRUM_MIGRATION_EARLY") == "1":
+		names.append("upstream-v59")
 	for name in names:
 		var source := folder.path_join("copies/roads-sync-" + name + ".sqlite")
 		var row := {"name": name, "load": simulation.load_game(source)}

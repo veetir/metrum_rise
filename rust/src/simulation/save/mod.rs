@@ -202,14 +202,17 @@ fn save_budget_history(
     Ok(())
 }
 
-fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
+fn load_budget_history(
+    conn: &Connection,
+    format: format::SaveFormat,
+) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
     let mut history = VecDeque::new();
     if !sqlite_table_exists(conn, "city_budget_history")? {
         return Ok(history);
     }
 
     let mut stmt = conn.prepare(
-        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence",
+        &format.query("SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence", &[(73, "electricity_consumption_cost", "power_consumed * 3.0 + power_unmet * 3.75")]),
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -307,9 +310,9 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             fuel_input_purchases,
             imports_owa,
             construction_service_costs,
-            power_produced,
-            power_consumed,
-            power_unmet,
+            power_produced: power_produced * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
+            power_consumed: power_consumed * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
+            power_unmet: power_unmet * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
             power_coverage,
             coal_inventory,
             coal_consumed,
@@ -541,7 +544,11 @@ pub(crate) fn load_from_sqlite(
 ) -> SaveLoadResult<LoadedSimulation> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let format = format::SaveFormat::read(&conn)?;
-    let camera = camera::load_camera_state(&conn)?;
+    let camera = if format.since(59) {
+        camera::load_camera_state(&conn)?
+    } else {
+        None
+    };
     let config = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
@@ -554,7 +561,7 @@ pub(crate) fn load_from_sqlite(
         },
     )?;
     config.validate()?;
-    let vegetation = {
+    let vegetation = if format.since(62) {
         let row: (i64, i64, f32, f32) = conn.query_row(
             "SELECT enabled, seed, coverage, canopy_stems_per_ha FROM vegetation_config LIMIT 1",
             [],
@@ -566,8 +573,10 @@ pub(crate) fn load_from_sqlite(
             coverage: row.2,
             canopy_stems_per_ha: row.3,
         }
+    } else {
+        VegetationConfig::default()
     };
-    let vegetation_edits = vegetation::load(&conn)?;
+    let vegetation_edits = vegetation::load_compatible(&conn, format)?;
     let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {
         time_elapsed: time_r.0,
@@ -674,9 +683,9 @@ pub(crate) fn load_from_sqlite(
     }
     logistics.next_shipment_id = scheduler.logistics_next_shipment_id;
     let mut resource_extraction =
-        world::load_resource_extraction(&conn, allocator.buildings.len())?;
+        world::load_resource_extraction(&conn, allocator.buildings.len(), format)?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
-    if !format.since(93) {
+    if format.since(73) && !format.since(93) {
         legacy::restore_accounting(&conn, &mut households, &mut allocator)?;
     }
     let mut agents = agents::load_agents(&conn, time_r.5, format)?;
@@ -829,7 +838,11 @@ pub(crate) fn load_from_sqlite(
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
-    agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
+    if format.version == 57 {
+        agents::restore_v57_lane_references(&mut agents, &graph, &transit_network, &allocator)?;
+    } else {
+        agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
+    }
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     cell_zoning::validate_reservations(
         &zoning,
@@ -887,7 +900,7 @@ pub(crate) fn load_from_sqlite(
         CityServicePolicy::default()
     };
     let fiscal_policy = load_fiscal_policy(&conn)?;
-    let budget_history = load_budget_history(&conn)?;
+    let budget_history = load_budget_history(&conn, format)?;
     // Household member lists are derived, in canonical member order (`SIM-02-I`).
     agents.rebuild_household_members();
     households.rebuild_household_shopping_access(&agents);

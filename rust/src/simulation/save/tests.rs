@@ -443,7 +443,14 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
             params![total, extracted],
         )
         .unwrap();
-        let result = world::load_resource_extraction(&conn, 1);
+        let result = world::load_resource_extraction(
+            &conn,
+            1,
+            super::format::SaveFormat {
+                version: SAVE_VERSION,
+                road: false,
+            },
+        );
         assert_eq!(
             result.is_ok(),
             valid,

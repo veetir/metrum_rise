@@ -104,12 +104,13 @@ remain unchanged. `godot/tests/road_legacy_save_probe.gd` reproduces this using 
 #### Save histories and initialization
 
 The histories are distinguished by the v87 upstream handle-table cutover, rather than treating
-road v88–95 as scheduler saves with the same numbers. `save_history_schemas.json` records 27
+road v88–95 as scheduler saves with the same numbers. `save_history_schemas.json` records 53
 committed historical SQL checkpoints with their source commit hashes; the populated
 serialization regression loads every one and preserves buildings, households, agents, jobs,
-lane identities, road geometry and existing electricity/input accounts. It currently covers
-the shared v86 boundary, road v88–95 and upstream v87–107; pre-v86 compatibility remains a
-separate unfinished part of the requested older-upstream coverage.
+lane identities, road geometry and existing electricity/input accounts. Coverage restores the
+old reader's v57 minimum through upstream v107, alongside road v88–95 and current v108.
+A separate populated v59 backport check preserves the wage-column pair carried by the
+tracked Kuopio fixture; a partially present pair is rejected.
 
 | Road history | Persisted additions (economy remains v86) |
 | --- | --- |
@@ -124,6 +125,17 @@ separate unfinished part of the requested older-upstream coverage.
 
 | Upstream history | Persisted scheduler/runtime additions |
 | --- | --- |
+| v57 | Earliest previously supported format; signed lane slots are reconstructed from local lanes, entrances and saved poses |
+| v58 / v59 | Saved directed lane identities, then camera state |
+| v61 | Household utility payments; retired pedestrian-side field |
+| v62 / v63 | Vegetation parameters/deltas, then pinned mesh variants |
+| v64 | Parcel/building redevelopment generation |
+| v65 / v66 / v67 | Cell authority, curve sources, then independent road alignments |
+| v68 / v69 | Yard hedge modules, then yard planting records |
+| v70 / v71 / v72 | SI resource quantities, freight fees/retired export quotas, then arrival age composition |
+| v73 | kWh meters and accounts; earlier power totals use the original 1/3.6 conversion |
+| v75 | Agent continuation and frontage-price state; earlier agents use the original loader's mode defaults |
+| v83 / v84 / v85 | Stored wage forecasts, mixed replenishment offsets, then separate live frontage prices |
 | v86 | Complete WRC1 commute quotes, live frontage prices and dense agent references |
 | v87 | Generational building, household and agent handles |
 | v88 | Timing wheel, event/spawn counters and queued spawn IDs |
@@ -157,10 +169,23 @@ checks copied rows and deadlines exactly. Work is load-only O(entities + copied 
 with O(events log events) ordering and O(log shipments) event binding; no new frame/agent work.
 
 Fresh release save coverage passes 63 active cases (four manual benchmarks ignored), including
-the 27-schema populated matrix, and the historical census codec regression passes separately.
-All-target Clippy is clean. The university reconstruction bridge passes from the task-prefixed
-v88 copy; the final library and six-world v108 round-trip probe pass. Pre-v86 upstream
-coverage remains unfinished, so the complete requested migration is not yet accepted.
+the 53-schema populated matrix plus the populated v59 wage backport. The historical census
+codec regression passes separately and all-target Clippy is clean. The university reconstruction
+bridge passes from the task-prefixed v88 copy. The production probe loads and round-trips all
+five user copies and untouched upstream v59/v107 fixtures; all five road/topology fingerprints
+still match `0cc4a2ab` exactly and source hashes are unchanged. This completes the legacy-load
+blocker; TRAFFIC-09 and the matching frame captures remain separate acceptance work.
+
+Reproduce the save checks with `cargo test --release --lib simulation::save -- --test-threads=8`
+and `cargo clippy --all-targets` from `rust`, and
+`python3 -m unittest discover -s tools -p test_road_save_fingerprint.py` from the project root.
+For production probes, set `METRUM_MIGRATION_ARTIFACTS` to the task-owned copy root and
+`METRUM_MIGRATION_OUTPUT` to a fresh output folder, then run
+`godot --headless --path "$ISOLATED_PROJECT" --script res://tests/road_legacy_save_probe.gd`.
+`METRUM_MIGRATION_UPSTREAM=1` and `METRUM_MIGRATION_EARLY=1` include the v107/v59 copies.
+Compare each preserved old-runtime output against its v108 output with
+`python3 tools/road_save_fingerprint.py "$ARTIFACTS/before/roads-sync-prisma.sqlite" "$ARTIFACTS/after/roads-sync-prisma.sqlite"`.
+The isolated profile and task-prefixed source/output paths keep player saves out of the write path.
 
 Fresh matched road measurements compare pre-merge `0cc4a2ab` and merged Rust `88133881`,
 serially after all correctness runs and fixture preparation, unprofiled release, Rust 1.98.1,

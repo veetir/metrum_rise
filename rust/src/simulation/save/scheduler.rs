@@ -109,6 +109,7 @@ pub(super) fn save(
 // front_m, back_mm, frozen edges (-1 before a sweep), next edge, measured.
 type SavedRoadLengthRow = (f64, i64, i64, i64, i64);
 
+/// Restores recorded counters/sweeps and initializes only state absent from this history.
 pub(super) fn load_compatible(
     conn: &Connection,
     format: super::format::SaveFormat,

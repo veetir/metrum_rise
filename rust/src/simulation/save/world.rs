@@ -1400,13 +1400,22 @@ pub(super) fn load_zoning(
     format: SaveFormat,
 ) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
-    let mut cell_lots = super::cell_zoning::load(conn, &mut zoning, graph)?;
+    let mut cell_lots = if format.since(65) {
+        super::cell_zoning::load_compatible(conn, &mut zoning, graph, format)?
+    } else {
+        Default::default()
+    };
+    if !format.since(67) {
+        zoning
+            .cells
+            .refresh_road_alignments(graph, config, 0..graph.edge_count());
+    }
     let mut quarantined_parcels = Vec::new();
     let mut road_overlap_count = 0usize;
     let mut existing_overlap_count = 0usize;
     let mut frontage_out_of_bounds_count = 0usize;
     let mut stmt = conn.prepare(
-        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation FROM zoning_parcels ORDER BY parcel_id",
+        &format.query("SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation FROM zoning_parcels ORDER BY parcel_id", &[(64, "build_generation", "0")]),
     )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -1530,6 +1539,7 @@ pub(super) fn load_buildings(
         (95, "service_sales_profile_runtime_id", "0"),
         (95, "funded_activity", "0"),
         (99, "applicant_seed", "building_id"),
+        (64, "build_generation", "0"), (73, "electricity_usage", "NULL"),
     ]);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
@@ -1550,8 +1560,12 @@ pub(super) fn load_buildings(
             crate::simulation::economy::electricity::BuildingElectricityUsage,
             crate::simulation::economy::electricity::BuildingElectricityUsage,
             f32,
-        ) = serde_json::from_str(&row.get::<_, String>(35)?)
-            .map_err(|err| SaveLoadError::custom(err.to_string()))?;
+        ) = match row.get::<_, Option<String>>(35)? {
+            Some(json) => {
+                serde_json::from_str(&json).map_err(|err| SaveLoadError::custom(err.to_string()))?
+            }
+            None => Default::default(),
+        };
         if !electricity_usage.2.is_finite() {
             return Err(SaveLoadError::custom("invalid city input cost"));
         }
@@ -1638,15 +1652,19 @@ pub(super) fn load_buildings(
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: electricity_usage.2,
             daily_household_sales_value: row.get(27)?,
-            daily_power_service_units: row.get::<_, f32>(28)?,
+            daily_power_service_units: row.get::<_, f32>(28)?
+                * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
             daily_electricity: electricity_usage.0,
             recent_electricity: electricity_usage.1,
             // Production sets it and electricity resets it in the same building phase
             // (`SIM-02-I`), so a save between phases holds zero.
             hourly_economy_activity: row.get(36)?,
-            daily_power_served_units: row.get::<_, f32>(29)?,
-            recent_power_service_units: row.get::<_, f32>(30)?,
-            recent_power_served_units: row.get::<_, f32>(31)?,
+            daily_power_served_units: row.get::<_, f32>(29)?
+                * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
+            recent_power_service_units: row.get::<_, f32>(30)?
+                * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
+            recent_power_served_units: row.get::<_, f32>(31)?
+                * if format.since(73) { 1.0 } else { 1.0 / 3.6 },
             recent_household_sales_value: row.get(32)?,
             // Set at each building's phase and read until its next one.
             commercial_activity_floor_scale: row.get(37)?,
@@ -1676,7 +1694,10 @@ pub(super) fn load_buildings(
                 "building inventory references missing building",
             ));
         };
-        building.set_inventory_units(resource_runtime_id, amount);
+        building.set_inventory_units(
+            resource_runtime_id,
+            amount * quantity_scale_from_save(format, resource_runtime_id),
+        );
     }
     if !format.since(99) {
         allocator.next_applicant_seed = allocator.buildings.len() as u64;
@@ -1695,9 +1716,10 @@ pub(super) fn load_buildings(
 pub(super) fn load_resource_extraction(
     conn: &Connection,
     building_count: usize,
+    format: SaveFormat,
 ) -> SaveLoadResult<ResourceExtractionSystem> {
     let mut stmt = conn.prepare(
-        "SELECT site_id, building_id, resource_id, total_reserve_units, extracted_units, reserve_density_kg_per_m2 FROM resource_extractor_sites ORDER BY site_id",
+        &format.query("SELECT site_id, building_id, resource_id, total_reserve_units, extracted_units, reserve_density_kg_per_m2 FROM resource_extractor_sites ORDER BY site_id", &[(73, "reserve_density_kg_per_m2", "6.0")]),
     )?;
     let mut rows = stmt.query([])?;
     let mut sites = Vec::new();
@@ -1954,7 +1976,7 @@ pub(super) fn load_households(
                 "invalid removed-building electricity account",
             ));
         }
-    } else {
+    } else if format.since(73) {
         let removed: String = conn.query_row(
             "SELECT removed_buildings FROM electricity_day_state WHERE singleton = 1",
             [],
@@ -1966,10 +1988,28 @@ pub(super) fn load_households(
     if format.since(95) {
         load_city_hour(conn, &mut households)?;
     }
+    // The tracked v59 Kuopio fixture backported this pair without changing its header.
+    // Preserve that explicit schema too; a partial pair is not a known historical layout.
+    let wage_since = if format.since(83) {
+        83
+    } else {
+        let columns: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('households') WHERE name IN ('gross_daily_wages', 'employed_adults')", [], |r| r.get(0))?;
+        match columns {
+            0 => 83,
+            2 => 0,
+            _ => {
+                return Err(SaveLoadError::custom(
+                    "incomplete legacy household wage columns",
+                ));
+            }
+        }
+    };
     let sql = format.query("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id", &[
         (87, "shopping_agent_slot", "shopping_agent_id"),
         (87, "shopping_agent_generation", "0"),
         (93, "paid_workers_in_window", "0"),
+        (61, "power_consumption_cost", "0"), (61, "water_consumption_cost", "0"), (61, "sewage_consumption_cost", "0"),
+        (73, "electricity_account", "NULL"), (wage_since, "gross_daily_wages", "0"), (wage_since, "employed_adults", "0"),
     ]);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
@@ -2017,7 +2057,14 @@ pub(super) fn load_households(
             replenishment_search_cursor: i64_to_u32(row.get(19)?)?,
             stay_failure_days: i64_to_u32(row.get(20)?)?,
             unhoused_days_elapsed: i64_to_u32(row.get(21)?)?,
-            replenishment_offset_hours: i64_to_u16(row.get(22)?)?,
+            replenishment_offset_hours: if format.since(84) {
+                i64_to_u16(row.get(22)?)?
+            } else {
+                crate::simulation::economy::households::stable_replenishment_offset_hours(
+                    home_building_id,
+                    hid as u32,
+                )
+            },
             unemployment_days_elapsed: i64_to_u32(row.get(23)?)?,
         });
         if !households.households[hid].gross_daily_wages.is_finite()
@@ -2034,8 +2081,7 @@ pub(super) fn load_households(
         }
         households.restore_utility_payments(hid, paid);
         households.restore_paid_workers(hid, i64_to_u16(row.get(30)?)?);
-        {
-            let json: String = row.get(27)?;
+        if let Some(json) = row.get::<_, Option<String>>(27)? {
             let (usage, arrears, unpaid, local): (
                 crate::simulation::economy::electricity::ElectricityUsage,
                 crate::simulation::economy::electricity::ElectricityBill,
@@ -2105,12 +2151,13 @@ pub(super) fn load_shipments(
     let leg_start = format!("MAX(0, {hour_ticks} - queued_hours)");
     let mut stmt = conn.prepare(&format.query("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot FROM shipments ORDER BY shipment_id", &[
         (87, "carrier_slot", "carrier_agent_id"), (87, "carrier_generation", "0"),
+        (71, "freight_cost", "0"),
         (91, "cargo_loaded", "0"), (102, "trip_event_slot", "0"), (102, "leg_started_hour", &leg_start),
     ]))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let resource = i64_to_u16(row.get(1)?)?;
-        let amount: f32 = row.get(2)?;
+        let amount: f32 = row.get::<_, f32>(2)? * quantity_scale_from_save(format, resource);
         if !amount.is_finite()
             || amount <= 0.0
             || amount > payload
@@ -2141,12 +2188,20 @@ pub(super) fn load_shipments(
             source: shipment_endpoint_from_db(row.get(3)?, row.get(4)?, row.get(5)?)?,
             destination: shipment_endpoint_from_db(row.get(6)?, row.get(7)?, row.get(8)?)?,
             carrier_class: carrier_class_from_db(row.get(9)?)?,
-            status: shipment_status_from_db(row.get(10)?)?,
+            status: if !format.since(91) && row.get::<_, i64>(10)? == 0 {
+                ShipmentStatus::InTransit
+            } else {
+                shipment_status_from_db(row.get(10)?)?
+            },
             carrier: handle_from_db(row.get(11)?, row.get(16)?)?,
             total_cost,
             freight_cost,
             eta_hours: i64_to_u16(row.get(13)?)?,
-            leg_started_hour: i64_to_u32(row.get(14)?)?,
+            leg_started_hour: if !format.since(91) && row.get::<_, i64>(10)? == 0 {
+                hour_ticks
+            } else {
+                i64_to_u32(row.get(14)?)?
+            },
             cargo_loaded: row.get::<_, i64>(17)? != 0,
             trip_event_slot: i64_to_u64(row.get(18)?)?,
         });
@@ -2360,4 +2415,16 @@ fn to_json<T: serde::Serialize>(value: &T) -> SaveLoadResult<String> {
 
 fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> SaveLoadResult<T> {
     serde_json::from_str(json).map_err(|err| SaveLoadError::custom(err.to_string()))
+}
+
+// Persisted physical resource IDs before the v70 SI cutover (same conversion as the old loader).
+fn quantity_scale_from_save(format: SaveFormat, resource: u16) -> f32 {
+    if format.since(70) {
+        return 1.0;
+    }
+    match resource {
+        2 | 3 => 1.25,
+        8 | 9 => 2.5,
+        _ => 1.0,
+    }
 }

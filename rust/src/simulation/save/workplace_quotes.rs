@@ -70,7 +70,7 @@ pub(super) fn load(
     preserve: bool,
     format: super::format::SaveFormat,
 ) -> SaveLoadResult<()> {
-    if !preserve {
+    if !preserve || !format.since(86) {
         return Ok(());
     }
     let row = conn.query_row(

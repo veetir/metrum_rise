@@ -3,7 +3,7 @@
 //! Agent SoA and path serialization.
 
 mod lanes;
-pub(super) use lanes::restore_lane_references;
+pub(super) use lanes::{restore_lane_references, restore_v57_lane_references};
 
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -224,7 +224,14 @@ pub(super) fn load_agents(
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare(&format.query("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id", &[(89, "job_lock_until_day", "job_lock_days")]))?;
+        let mut stmt = conn.prepare(&format.query("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id", &[(89, "job_lock_until_day", "job_lock_days"),
+        (72, "pending_household_adults", "0"), (72, "pending_household_elders", "0"),
+        (75, "speed", "NULL"), (75, "planned_target_building", "NULL"), (75, "planned_activity", "NULL"),
+        (75, "network_replan_failures", "NULL"), (75, "lane_change_from_lane_id", "NULL"),
+        (75, "lane_change_start_d", "NULL"), (75, "lane_change_length_m", "NULL"),
+        (75, "overtake_blocked_time_s", "NULL"), (75, "overtake_cooldown_s", "NULL"),
+        (75, "job_lock_days", "NULL"), (75, "consecutive_unpaid_days", "NULL"),
+        ]))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -232,8 +239,18 @@ pub(super) fn load_agents(
                 return Err(SaveLoadError::custom("non-contiguous agent ids"));
             }
             let pending_size = i64_to_u16(row.get(4)?)?;
-            let (pending_adults, pending_elders) =
-                (i64_to_u16(row.get(42)?)?, i64_to_u16(row.get(43)?)?);
+            let (pending_adults, pending_elders) = if format.since(72) {
+                (i64_to_u16(row.get(42)?)?, i64_to_u16(row.get(43)?)?)
+            } else if pending_size > 0 {
+                let composition = crate::simulation::economy::agents::household_age_composition(
+                    db_to_optional_usize(row.get(1)?)?,
+                    aid,
+                    pending_size,
+                );
+                (composition.adult_count, composition.elder_count)
+            } else {
+                (0, 0)
+            };
             if pending_size > 0
                 && (u32::from(pending_adults) + u32::from(pending_elders) > u32::from(pending_size)
                     || pending_adults + pending_elders == 0
@@ -297,26 +314,28 @@ pub(super) fn load_agents(
                     walk_phase: 0.0,
                 },
             );
-            agents.speed[aid] = row.get(44)?;
-            agents.planned_target_building[aid] = db_to_optional_usize(row.get(45)?)?;
-            agents.planned_activity[aid] = i64_to_u8(row.get(46)?)?;
-            agents.network_replan_failures[aid] = i64_to_u8(row.get(47)?)?;
-            agents.lane_change_from_lane_id[aid] = i64_to_u32(row.get(48)?)?;
-            agents.lane_change_start_d[aid] = row.get(49)?;
-            agents.lane_change_length_m[aid] = row.get(50)?;
-            agents.overtake_blocked_time_s[aid] = row.get(51)?;
-            agents.overtake_cooldown_s[aid] = row.get(52)?;
-            agents.job_lock_until_day[aid] = i64_to_u32(row.get(53)?)?;
-            agents.consecutive_unpaid_days[aid] = i64_to_u8(row.get(54)?)?;
-            for value in [
-                agents.speed[aid],
-                agents.lane_change_start_d[aid],
-                agents.lane_change_length_m[aid],
-                agents.overtake_blocked_time_s[aid],
-                agents.overtake_cooldown_s[aid],
-            ] {
-                if !value.is_finite() || value < 0.0 {
-                    return Err(SaveLoadError::custom("invalid agent continuation state"));
+            if format.since(75) {
+                agents.speed[aid] = row.get(44)?;
+                agents.planned_target_building[aid] = db_to_optional_usize(row.get(45)?)?;
+                agents.planned_activity[aid] = i64_to_u8(row.get(46)?)?;
+                agents.network_replan_failures[aid] = i64_to_u8(row.get(47)?)?;
+                agents.lane_change_from_lane_id[aid] = i64_to_u32(row.get(48)?)?;
+                agents.lane_change_start_d[aid] = row.get(49)?;
+                agents.lane_change_length_m[aid] = row.get(50)?;
+                agents.overtake_blocked_time_s[aid] = row.get(51)?;
+                agents.overtake_cooldown_s[aid] = row.get(52)?;
+                agents.job_lock_until_day[aid] = i64_to_u32(row.get(53)?)?;
+                agents.consecutive_unpaid_days[aid] = i64_to_u8(row.get(54)?)?;
+                for value in [
+                    agents.speed[aid],
+                    agents.lane_change_start_d[aid],
+                    agents.lane_change_length_m[aid],
+                    agents.overtake_blocked_time_s[aid],
+                    agents.overtake_cooldown_s[aid],
+                ] {
+                    if !value.is_finite() || value < 0.0 {
+                        return Err(SaveLoadError::custom("invalid agent continuation state"));
+                    }
                 }
             }
         }

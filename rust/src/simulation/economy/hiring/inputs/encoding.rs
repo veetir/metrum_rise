@@ -173,6 +173,7 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
     put_building_version(out, building, edge, 108, 0, 0);
 }
 
+/// Writes the selected historical building row, converting relative freight deadlines.
 pub(super) fn put_building_version(
     out: &mut Writer,
     building: &Building,
@@ -341,6 +342,7 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
     read_building_version(reader, 108, 0, 0, 0)
 }
 
+/// Reads a historical row with its seed/deadline cutovers and saved clock origin.
 pub(super) fn read_building_version(
     reader: &mut Reader<'_>,
     version: i64,

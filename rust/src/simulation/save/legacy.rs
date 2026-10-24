@@ -5,8 +5,8 @@
 use super::{SaveLoadError, SaveLoadResult};
 use rusqlite::Connection;
 
-// Dense ids become generation-zero handles in the same appended order as SIM-02-B.
-// The old shopper seed guard prevents a reused dense slot from binding the wrong agent.
+/// Dense ids become generation-zero handles in the same appended order as SIM-02-B.
+/// The old shopper seed guard prevents a reused dense slot from binding the wrong agent.
 pub(super) fn restore_dense_agent_references(
     conn: &Connection,
     households: &mut crate::simulation::economy::households::HouseholdSystem,
@@ -53,8 +53,8 @@ fn event(scheduler: &mut super::SavedScheduler, slot: u64, kind: u16, a: u64) {
     scheduler.next_event_seq += 1;
 }
 
-// SIM-02-C's construction queue pacing and SIM-02-D's generation-keyed completions.
-// This is load-only O(queued spawns + buildings), not work in the frame loop.
+/// SIM-02-C's construction queue pacing and SIM-02-D's generation-keyed completions.
+/// This is load-only O(queued spawns + buildings), not work in the frame loop.
 pub(super) fn restore_construction_events(
     scheduler: &mut super::SavedScheduler,
     pending: &mut std::collections::VecDeque<crate::nodes::sim::core::PendingDemandSpawnAction>,
@@ -71,6 +71,7 @@ pub(super) fn restore_construction_events(
     restore_completion_events(scheduler, allocator);
 }
 
+/// Schedules generation-keyed completions for the loaded construction sites.
 pub(super) fn restore_completion_events(
     scheduler: &mut super::SavedScheduler,
     allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
@@ -87,8 +88,8 @@ pub(super) fn restore_completion_events(
     }
 }
 
-// Before SIM-02-E, the operational hour polled these trips. Continue each live trip at
-// the next slot, using exactly the event kinds SIM-02-E introduced, rather than dropping it.
+/// Before SIM-02-E, the operational hour polled these trips. Continue each live trip at
+/// the next slot, using exactly the event kinds SIM-02-E introduced, rather than dropping it.
 pub(super) fn restore_trip_events(
     scheduler: &mut super::SavedScheduler,
     households: &mut crate::simulation::economy::households::HouseholdSystem,
@@ -142,19 +143,21 @@ pub(super) fn restore_trip_events(
     Ok(())
 }
 
-// v73–92 and road v88–95 retained already collected demolition bills and input purchases
-// in one record. SIM-02-G moved input purchases into the city-day journal. Decode the full
-// original record (including its validation), not a permissive subset of its JSON.
+/// v73–92 and road v88–95 retained already collected demolition bills and input purchases
+/// in one record. SIM-02-G moved input purchases into the city-day journal. Decode the full
+/// original record (including its validation), not a permissive subset of its JSON.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct LegacyRemovedElectricity {
     settled: bool,
+    /// Collected demolition receipts retained for the unfinished calendar day.
     pub(super) settlement: crate::simulation::economy::households::DailyPowerSettlementSummary,
     city_input_cost: f64,
     power_input_cost: f64,
     coal_consumed_kg: f64,
 }
 
+/// Decodes every field of the old demolition/input account and validates its amounts.
 pub(super) fn load_removed_electricity(json: &str) -> SaveLoadResult<LegacyRemovedElectricity> {
     let record: LegacyRemovedElectricity =
         serde_json::from_str(json).map_err(|e| SaveLoadError::custom(e.to_string()))?;
@@ -170,6 +173,7 @@ pub(super) fn load_removed_electricity(json: &str) -> SaveLoadResult<LegacyRemov
     Ok(record)
 }
 
+/// Folds legacy input purchases and coal accounts into the current day journals.
 pub(super) fn restore_accounting(
     conn: &Connection,
     households: &mut crate::simulation::economy::households::HouseholdSystem,
@@ -226,8 +230,8 @@ pub(super) fn restore_accounting(
     Ok(())
 }
 
-// The pre-event hourly pass also dispatched jobs with no carrier yet. Reuse the same
-// authoritative cargo loader as new request queues; do not fabricate cargo or leave jobs idle.
+/// The pre-event hourly pass also dispatched jobs with no carrier yet. Reuse the same
+/// authoritative cargo loader as new request queues; do not fabricate cargo or leave jobs idle.
 pub(super) fn restore_unstarted_freight(
     scheduler: &mut super::SavedScheduler,
     logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
