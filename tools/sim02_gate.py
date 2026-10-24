@@ -332,7 +332,7 @@ def identity(binary, command):
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "diff_sha256": hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=ROOT)).hexdigest(),
         "workers": os.environ.get("RAYON_NUM_THREADS", "8"),
-        "cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "command": command,
     }
 
