@@ -9,7 +9,11 @@
 //! read of local surface indices; a busy core falls back to supported snapshot poses.
 
 mod budget;
+mod demand_requests;
+mod entity_days;
+mod entity_phases;
 mod frame;
+mod household_requests;
 mod populated_city;
 mod road_commit;
 mod road_edit_plan;
@@ -17,10 +21,12 @@ mod road_preview;
 mod road_rejection;
 mod road_terrain_plan;
 mod scenario;
+mod schedule;
 mod snapshot;
 mod state;
 mod terrain_payloads;
 mod thread;
+mod trips;
 mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
@@ -33,18 +39,19 @@ pub(crate) use road_terrain_plan::RoadTerrainPlan;
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };
+pub(crate) use schedule::SimEvent;
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 
 pub(crate) use budget::{
-    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, SERVICE_BUILD_COST_PER_LOT_CELL,
-    SERVICE_POLICY_ELECTRICITY,
+    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RoadLengthRoll,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext,
-    RoadToolQuerySnapshot, road_preview_channel, road_tool_snapshots_from_core,
-    run_road_preview_worker,
+    PublishedRoadPreviewChecks, RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSender,
+    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_preview_channel,
+    road_tool_snapshots_from_core, run_road_preview_worker,
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
@@ -63,6 +70,8 @@ pub(crate) use water_preview::{
     WorldWaterFillKind,
 };
 
+#[cfg(test)]
+pub(crate) use road_commit::RoadCommitRequest;
 #[cfg(test)]
 use snapshot::pedestrian_lane_surface_height;
 #[cfg(test)]

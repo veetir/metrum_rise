@@ -4,14 +4,14 @@
 
 use super::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use super::fiscal::CityFiscalPolicy;
-use super::households::{Household, consumer_basket_cost, visit_consumer_budgets};
+use super::households::{Household, consumer_basket_cost, visit_consumer_budgets_in};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use rayon::prelude::*;
 
 pub(crate) mod business;
 mod revalidation;
 mod routing;
-pub(crate) use routing::{ConsumerMarket, DirectConsumerQuoteKey};
+pub(crate) use routing::{ConsumerMarket, DirectConsumerQuoteKey, RefreshInputs, RefreshState};
 
 #[derive(Clone, Copy, Debug)]
 struct Category {
@@ -31,6 +31,15 @@ struct Claim {
     slot: usize,
     previous: Funds,
     acquired: Funds,
+}
+
+/// A consumer budget walk between census slices (`SIM-02-K`): whether every row so far matched
+/// the previous book, the next household not yet written and the walk's running treasury.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BudgetWalk {
+    unchanged: bool,
+    next_household: usize,
+    treasury: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +104,7 @@ impl ConsumerBudgets {
 
     // Refresh immutable account inputs before deciding whether an accepted book can survive.
     // The existing ordered benefit traversal compares each row, including skipped families.
+    #[cfg(test)]
     fn prepare_budgets(
         &mut self,
         households: &[Household],
@@ -104,6 +114,28 @@ impl ConsumerBudgets {
         policy: &CityFiscalPolicy,
         treasury: f64,
     ) -> bool {
+        let mut walk = self.begin_budgets(households.len(), catalog, treasury);
+        self.walk_budgets(
+            &mut walk,
+            households,
+            0..households.len(),
+            allocator,
+            catalog,
+            tuning,
+            policy,
+        );
+        self.finish_budgets(&walk)
+    }
+
+    // The walk's start: the basket's categories and their comparison with the previous book.
+    // O(profile ports). Walking every household range in order, then finishing, prepares the
+    // budgets as one walk does (`SIM-02-K`).
+    fn begin_budgets(
+        &mut self,
+        households: usize,
+        catalog: &RuntimeEconomyCatalog,
+        treasury: f64,
+    ) -> BudgetWalk {
         debug_assert!(!self.revalidation.is_active());
         self.previous_categories.clone_from(&self.categories);
         self.categories.clear();
@@ -144,7 +176,7 @@ impl ConsumerBudgets {
                 0.0
             };
         }
-        let mut unchanged = self.households.len() == households.len()
+        let unchanged = self.households.len() == households
             && self.categories.len() == self.previous_categories.len()
             && self
                 .categories
@@ -155,26 +187,51 @@ impl ConsumerBudgets {
                         && a.units_per_resident.to_bits() == b.units_per_resident.to_bits()
                         && a.budget_share.to_bits() == b.budget_share.to_bits()
                 });
-        self.households.resize(households.len(), (0, 0.0));
-        let mut next_household = 0;
+        self.households.resize(households, (0, 0.0));
         self.affordable_residents = 0.0;
+        BudgetWalk {
+            unchanged,
+            next_household: 0,
+            treasury: treasury.max(0.0),
+        }
+    }
+
+    // Writes the budgets of `range`, the walk's next households, comparing each row with the
+    // previous book. O(range + profile ports), allocation-free.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_budgets(
+        &mut self,
+        walk: &mut BudgetWalk,
+        households: &[Household],
+        range: std::ops::Range<usize>,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        policy: &CityFiscalPolicy,
+    ) {
         let gross_basket = consumer_basket_cost(catalog, policy.household_vat_rate);
-        visit_consumer_budgets(
+        let BudgetWalk {
+            unchanged,
+            next_household,
+            treasury,
+        } = walk;
+        visit_consumer_budgets_in(
             households,
+            range,
             allocator,
             catalog,
             tuning,
             policy,
             treasury,
             |index, members, spending| {
-                for previous in &mut self.households[next_household..index] {
-                    unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
+                for previous in &mut self.households[*next_household..index] {
+                    *unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
                     *previous = (0, 0.0);
                 }
                 let previous = self.households[index];
-                unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
+                *unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
                 self.households[index] = (members, spending);
-                next_household = index + 1;
+                *next_household = index + 1;
                 self.affordable_residents += if gross_basket > 0.0 {
                     (spending / gross_basket).min(f64::from(members))
                 } else {
@@ -182,22 +239,55 @@ impl ConsumerBudgets {
                 };
             },
         );
-        for previous in &mut self.households[next_household..] {
+    }
+
+    // Clears the rows after the last housed family and returns whether every row matched.
+    fn finish_budgets(&mut self, walk: &BudgetWalk) -> bool {
+        let mut unchanged = walk.unchanged;
+        for previous in &mut self.households[walk.next_household..] {
             unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
             *previous = (0, 0.0);
         }
         unchanged
     }
 
+    #[cfg(test)]
     fn reset_claims(&mut self) {
+        self.begin_reset_claims();
+        self.reset_claim_funds(0..self.households.len());
+    }
+
+    /// Gives this copy of `live` the capacity of the claim staging a census refills
+    /// (`SIM-02-K`, [`crate::utils::storage::reserve_capacity`]). O(1) without growth.
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        crate::utils::storage::reserve_capacity(&mut self.staged, live.staged.capacity());
+    }
+
+    // The claims' reset without the accounts (`SIM-02-K`): the account rows' length and the
+    // receipt books. Then `reset_claim_funds` over every household range. O(owners).
+    fn begin_reset_claims(&mut self) {
         debug_assert!(!self.revalidation.is_active());
         let count = self.categories.len();
         self.funds
             .resize(self.households.len() * count, Funds::default());
+        self.staged.clear();
+        self.staged.reserve(self.funds.len());
+        self.staged_slots.resize(self.funds.len(), usize::MAX);
+        self.staged_slots.fill(usize::MAX);
+        self.committed.clear();
+        self.owners.fill(usize::MAX);
+        self.free_receipt = usize::MAX;
+        self.releasing_owner = None;
+    }
+
+    // Returns the accounts of households `range` to their prepared budgets. O(range × K) in
+    // parallel.
+    fn reset_claim_funds(&mut self, range: std::ops::Range<usize>) {
+        let count = self.categories.len();
         if count > 0 {
-            self.funds
+            self.funds[range.start * count..range.end * count]
                 .par_chunks_mut(count)
-                .zip(&self.households)
+                .zip(&self.households[range])
                 .for_each(|(accounts, &(members, spending))| {
                     let mut remainder = spending;
                     for (index, (account, category)) in
@@ -221,18 +311,11 @@ impl ConsumerBudgets {
                     }
                 });
         }
-        self.staged.clear();
-        self.staged.reserve(self.funds.len());
-        self.staged_slots.resize(self.funds.len(), usize::MAX);
-        self.staged_slots.fill(usize::MAX);
-        self.committed.clear();
-        self.owners.fill(usize::MAX);
-        self.free_receipt = usize::MAX;
-        self.releasing_owner = None;
     }
 
     fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
-        self.owners.resize(owners, usize::MAX);
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut self.owners, owners, usize::MAX);
         // Warm-start estimate only. Every commit preflights reusable cells: census commits
         // grow exactly, and enclosing proofs grow between attempts and replay.
         #[cfg(test)]
@@ -241,10 +324,16 @@ impl ConsumerBudgets {
             self.committed.shrink_to_fit();
             return;
         }
-        self.committed
-            .reserve(2 * (self.funds.len() + output_ports));
+        // With spare capacity, which also sizes the receipt journals (`SIM-02-K`).
+        let additional = crate::utils::storage::spare_capacity(
+            self.committed.len() + 2 * (self.funds.len() + output_ports),
+            self.committed.capacity(),
+        ) - self.committed.len();
+        crate::utils::storage::reserve_cleared(&mut self.committed, additional);
     }
 
+    // Test forks of the live book; planning lends it instead.
+    #[cfg(test)]
     fn copy_reservations_from(&mut self, source: &Self) {
         debug_assert!(source.staged.is_empty());
         debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());

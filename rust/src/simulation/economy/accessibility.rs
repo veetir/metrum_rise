@@ -12,8 +12,11 @@ use crate::simulation::network::types::TransitFlags;
 /// Sentinel component id for nodes or buildings with no usable access.
 pub(crate) const NO_COMPONENT: u32 = u32::MAX;
 
-/// Connected-component labels for one transit mode.
-#[derive(Clone, Debug)]
+// Entries from which a bucket index sorts them on the pool (`SIM-02-K`).
+const PARALLEL_SORT_ENTRIES: usize = 4096;
+
+/// Connected-component labels for one transit mode; the default labels no node.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ModeComponentIndex {
     component_by_node: Vec<u32>,
 }
@@ -322,6 +325,14 @@ impl BuildingModeComponents {
         (self.components, self.count as usize)
     }
 
+    /// Inverse of [`Self::raw_parts`], for saved components; `None` for a count over two.
+    pub(crate) fn from_raw_parts(components: [u32; 2], count: usize) -> Option<Self> {
+        (count <= components.len()).then_some(Self {
+            components,
+            count: count as u8,
+        })
+    }
+
     /// Appends this building's reachable components to an existing candidate-index buffer.
     pub(crate) fn append_bucket_entries(
         self,
@@ -355,20 +366,40 @@ impl ReachableBucketEntry {
             item_idx,
         }
     }
+
+    /// Component, routing chunk and caller-owned item index.
+    pub(crate) fn parts(self) -> (u32, (i32, i32), usize) {
+        (self.component, self.chunk, self.item_idx)
+    }
 }
 
 impl ReachableBucketIndex {
     /// Builds deterministic component/chunk buckets from caller-owned candidate entries.
     pub(crate) fn from_entries(mut entries: Vec<ReachableBucketEntry>) -> Self {
         entries.retain(|entry| entry.component != NO_COMPONENT);
-        entries.sort_unstable();
+        // Equal entries are identical, so the parallel sort orders them as the serial one.
+        if entries.len() >= PARALLEL_SORT_ENTRIES {
+            entries.par_sort_unstable();
+        } else {
+            entries.sort_unstable();
+        }
         entries.dedup();
         let available = entries.len();
 
         let mut by_component = BTreeMap::new();
-        let mut components = Vec::new();
+        let mut components: Vec<ComponentBuckets> = Vec::new();
         let mut buckets: Vec<BucketItems> = Vec::new();
+        // Sorted entries arrive bucket by bucket: only a bucket's first entry needs the maps.
+        let mut last = None::<(u32, (i32, i32), usize)>;
         for entry in entries {
+            if let Some((component, chunk, bucket)) = last
+                && component == entry.component
+                && chunk == entry.chunk
+            {
+                components[buckets[bucket].component].available += 1;
+                buckets[bucket].items.push(entry.item_idx);
+                continue;
+            }
             let component = *by_component.entry(entry.component).or_insert_with(|| {
                 let index = components.len();
                 components.push(ComponentBuckets {
@@ -399,6 +430,7 @@ impl ReachableBucketIndex {
                 index
             });
             buckets[bucket].items.push(entry.item_idx);
+            last = Some((entry.component, entry.chunk, bucket));
         }
 
         Self {
@@ -406,6 +438,17 @@ impl ReachableBucketIndex {
             components,
             buckets,
             available,
+        }
+    }
+
+    /// Visits every prepared entry in component, chunk and item order, in O(entries).
+    pub(crate) fn visit_entries(&self, mut visit: impl FnMut(ReachableBucketEntry)) {
+        for (&component, &group) in &self.by_component {
+            for (&chunk, &bucket) in &self.components[group].by_chunk {
+                for &item in &self.buckets[bucket].items {
+                    visit(ReachableBucketEntry::new(component, chunk, item));
+                }
+            }
         }
     }
 

@@ -110,6 +110,7 @@ fn write_snapshot(
             noise: &NoiseSystem::new(config),
             demand: &DemandSystem::new(),
             pending_demand_spawns: &VecDeque::new(),
+            scheduler: crate::simulation::save::SavedScheduler::default(),
             households: &HouseholdSystem::new(),
             logistics: &ShipmentSystem::new(),
             resource_extraction: &ResourceExtractionSystem::new(),
@@ -177,30 +178,6 @@ fn mixed_workflows_round_trip_canonical_cells_lots_buildings_and_rezone_grace() 
 }
 
 #[test]
-fn old_parcel_save_loads_without_cell_tables_or_conversion() {
-    let (graph, _, allocator) = fixture(0.0, false);
-    let mut zoning = ZoningSystem::new(&WorldConfig::new(400.0, 400.0, 10.0, 10.0));
-    let id = zoning
-        .place_or_rezone_parcel_at(0.0, -20.0, 1, 30.0, 30.0, &graph)
-        .unwrap();
-    let path = temp_path("pre_cell_zoning");
-    write_snapshot(&path, &graph, &zoning, &BuildingAllocator::new());
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "UPDATE save_meta SET version = 64;
-        DROP TABLE zoning_cell_frames; DROP TABLE zoning_cells; DROP TABLE zoning_cell_lots;",
-    )
-    .unwrap();
-    drop(conn);
-    let loaded = load_from_sqlite(&path, &allocator.registry).unwrap();
-    fs::remove_file(path).unwrap();
-    assert_eq!(loaded.zoning.parcels().len(), 1);
-    assert!(loaded.zoning.parcels()[0].cell_lot().is_none());
-    assert_eq!(loaded.zoning.parcels()[0].id(), id);
-    assert!(loaded.zoning.cells.saved_frames().next().is_none());
-}
-
-#[test]
 fn corrupted_cell_authority_is_rejected_before_publishing_the_loaded_world() {
     let (graph, zoning, allocator) = fixture(0.35, true);
     let path = temp_path("invalid_cell_zoning");
@@ -228,7 +205,53 @@ fn corrupted_cell_authority_is_rejected_before_publishing_the_loaded_world() {
 }
 
 #[test]
-fn saved_road_frames_validate_sources_and_legacy_saves_initialize_them() {
+fn pending_cell_lot_regions_round_trip_in_service_order() {
+    let (graph, mut zoning, allocator) = fixture(0.35, false);
+    let chunk = |x: f64, y: f64| CellBounds {
+        min: DVec2::new(x * 512.0 + 1.0, y * 512.0 + 1.0),
+        max: DVec2::new(x * 512.0 + 2.0, y * 512.0 + 2.0),
+    };
+    // The fixture's paint plus one more chunk form the first batch; one service queues it.
+    zoning.mark_cell_lots_dirty(chunk(3.0, 2.0));
+    assert!(zoning.pop_dirty_cell_lot_region().is_some());
+    // Marked after that service, so still unqueued and served after the queued chunks.
+    zoning.mark_cell_lots_dirty(chunk(1.0, -3.0));
+    zoning.mark_cell_lots_dirty(chunk(-3.0, 0.0));
+    let saved = zoning.saved_cell_lot_queue();
+    assert!(saved.iter().any(|&(_, queued)| queued));
+    assert_eq!(
+        &saved[saved.len() - 2..],
+        &[((-3, 0), false), ((1, -3), false)]
+    );
+
+    let path = temp_path("cell_lot_queue");
+    write_snapshot(&path, &graph, &zoning, &allocator);
+    let mut loaded = load_from_sqlite(&path, &allocator.registry).unwrap().zoning;
+    assert_eq!(loaded.saved_cell_lot_queue(), saved);
+    let order = |zoning: &mut ZoningSystem| {
+        std::iter::from_fn(|| zoning.pop_dirty_cell_lot_region()).collect::<Vec<_>>()
+    };
+    assert_eq!(order(&mut loaded), order(&mut zoning));
+
+    let valid = fs::read(&path).unwrap();
+    for sql in [
+        "UPDATE zoning_cell_lot_queue SET queued = 2",
+        "INSERT INTO zoning_cell_lot_queue SELECT position + 1000, chunk_x, chunk_y, queued FROM zoning_cell_lot_queue",
+    ] {
+        fs::write(&path, &valid).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(sql).unwrap();
+        drop(conn);
+        assert!(
+            load_from_sqlite(&path, &allocator.registry).is_err(),
+            "accepted {sql}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn saved_road_frames_validate_sources() {
     let (graph, mut zoning, allocator) = fixture(0.35, false);
     zoning
         .cells
@@ -256,19 +279,6 @@ fn saved_road_frames_validate_sources_and_legacy_saves_initialize_them() {
             "accepted {sql}"
         );
     }
-    fs::write(&path, &valid).unwrap();
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "UPDATE save_meta SET version = 66; DROP TABLE zoning_cell_road_alignments;",
-    )
-    .unwrap();
-    drop(conn);
-    let restored = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(
-        restored.zoning.cells.saved_cells(),
-        zoning.cells.saved_cells()
-    );
-    assert_eq!(restored.zoning.cells.saved_road_alignments().len(), 1);
     fs::remove_file(path).unwrap();
 }
 
@@ -379,6 +389,7 @@ fn load_checks_explicit_sites_and_compiled_roads_against_cell_reservations() {
         ),
         (
             "DELETE FROM building_inventories; DELETE FROM buildings;
+             DELETE FROM entity_handle_slots WHERE kind = 0;
              DELETE FROM zoning_cell_lots; DELETE FROM zoning_parcels;
              UPDATE network_edges SET width = width + 10",
             "saved road overlaps reserved zoning cells",

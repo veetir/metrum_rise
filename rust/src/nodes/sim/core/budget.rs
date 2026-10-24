@@ -13,9 +13,9 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::{
-    active_worker_capacity_for_profile_with_floor_scale,
+    active_worker_capacity_for_profile_with_floor_scale, effective_service_funding,
     scaled_output_buffer_capacity_units_for_building, scaled_output_units_per_day_for_building,
-    service_funded_worker_capacity,
+    service_funded_worker_capacity, write_electricity_funding_by_building,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
@@ -33,16 +33,101 @@ pub(crate) const SERVICE_POLICY_ELECTRICITY: &str = "electricity";
 /// Number of completed daily budget entries kept for UI trend graphs.
 pub(crate) const ECONOMY_HISTORY_DAYS: usize = 180;
 
-fn is_electricity_service(service_id: &str) -> bool {
-    matches!(service_id, SERVICE_POLICY_ELECTRICITY | "power")
+/// Total road length as a rolling sum over each day (`SIM-02-G`, `docs/simulation.md#snapshots`):
+/// each slot folds the next 1/23,040 of the edges counted at the day's start, and the finished
+/// sum replaces the last at the day's final slot. Daily road upkeep reads the last finished
+/// sum, so no midnight pass scans the network. O(edges / slots per day) per slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RoadLengthRoll {
+    /// Length of the last finished sweep, in metres.
+    pub(crate) front_m: f64,
+    /// Length folded so far by the current sweep, in whole millimetres: an integer sum does not
+    /// depend on how a save regroups the remaining edges into slots.
+    pub(crate) back_mm: i64,
+    /// Edge count frozen at the current sweep's start; `None` until a sweep starts at a day's
+    /// first slot.
+    pub(crate) sweep_edges: Option<u64>,
+    /// First edge the current sweep has not visited.
+    pub(crate) next_edge: u64,
+    /// Whether `front_m` holds a measurement. A world gets its first one at its first close.
+    pub(crate) measured: bool,
 }
 
-fn effective_service_funding(building_override: f32, city_funding: f32) -> f32 {
-    if building_override >= 0.0 {
-        building_override.clamp(0.0, 1.0)
-    } else {
-        city_funding
+impl RoadLengthRoll {
+    /// Folds slot `slot`'s share of the edges. O(edges / slots per day).
+    pub(crate) fn advance(
+        &mut self,
+        slot: u64,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) {
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+        let chunk = slot % SLOTS_PER_DAY;
+        if chunk == 0 {
+            self.sweep_edges = Some(graph.edge_count() as u64);
+            self.back_mm = 0;
+            self.next_edge = 0;
+        }
+        let Some(swept) = self.sweep_edges else {
+            return;
+        };
+        let edges = graph.edges();
+        let end = ((chunk + 1) * swept / SLOTS_PER_DAY).min(edges.len() as u64);
+        if end > self.next_edge {
+            self.back_mm += edges[self.next_edge as usize..end as usize]
+                .iter()
+                .filter(|edge| !edge.deleted)
+                .map(|edge| length_mm(edge.physical_length))
+                .sum::<i64>();
+            self.next_edge = end;
+        }
+        if chunk == SLOTS_PER_DAY - 1 {
+            self.front_m = self.back_mm as f64 / 1000.0;
+            self.measured = true;
+        }
     }
+
+    /// The frozen edge count and the next edge as a save stores them: saving drops deleted
+    /// edges and keeps the rest in order, so each position loses the deleted edges below it
+    /// and the sweep resumes on the same live edges. O(edges), at save.
+    pub(crate) fn saved_positions(
+        &self,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> (Option<u64>, u64) {
+        let edges = graph.edges();
+        let compact = |position: u64| {
+            let below = &edges[..(position as usize).min(edges.len())];
+            position - below.iter().filter(|edge| edge.deleted).count() as u64
+        };
+        (self.sweep_edges.map(compact), compact(self.next_edge))
+    }
+
+    /// The last finished length; a world without one measures its network once. O(1), or
+    /// O(edges) at a world's first close.
+    pub(crate) fn length_m(
+        &mut self,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> f64 {
+        if !self.measured {
+            let mm: i64 = graph
+                .edges()
+                .iter()
+                .filter(|edge| !edge.deleted)
+                .map(|edge| length_mm(edge.physical_length))
+                .sum();
+            self.front_m = mm as f64 / 1000.0;
+            self.measured = true;
+        }
+        self.front_m
+    }
+}
+
+// An edge's length in whole millimetres, for order-independent sums.
+fn length_mm(metres: f32) -> i64 {
+    (f64::from(metres) * 1000.0).round() as i64
+}
+
+fn is_electricity_service(service_id: &str) -> bool {
+    matches!(service_id, SERVICE_POLICY_ELECTRICITY | "power")
 }
 
 fn percent_for_log(rate: f32) -> f32 {
@@ -214,18 +299,21 @@ impl CityTreasury {
     /// Deducts an infrastructure build cost from the treasury. Balance may go negative.
     pub(crate) fn deduct_build_cost(&mut self, amount: f64) {
         self.balance -= amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::Construction, -amount);
         self.lifetime_build_cost += amount;
     }
 
     /// Reverses an infrastructure build cost for a placement cancelled before final commitment.
     pub(crate) fn refund_build_cost(&mut self, amount: f64) {
         self.balance += amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::Construction, amount);
         self.lifetime_build_cost = (self.lifetime_build_cost - amount).max(0.0);
     }
 
     /// Settles one day's infrastructure upkeep cost. Balance may go negative.
     pub(crate) fn settle_daily_upkeep(&mut self, amount: f64) {
         self.balance -= amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::RoadUpkeep, -amount);
         self.last_daily_upkeep = amount;
     }
 
@@ -400,6 +488,7 @@ impl SimCore {
         let funding = funding.clamp(0.0, 1.0);
         self.service_policy.electricity_funding = funding;
         self.apply_service_funding_staffing_policy();
+        self.follow_census_policy();
         debug_log!(
             "economy",
             "service policy change: id={} requested={:.3} old={:.3} new={:.3} day={} minute={} treasury={:.1}",
@@ -427,8 +516,7 @@ impl SimCore {
             .fiscal_policy
             .control(policy_id)
             .unwrap_or(previous_control);
-        let service_funding_by_building = self.electricity_funding_by_building();
-        self.refresh_job_funding(&service_funding_by_building);
+        self.follow_census_policy();
         self.demand.refresh_household_diagnostics(
             &self.allocator,
             &self.households,
@@ -457,8 +545,10 @@ impl SimCore {
         if !self.building_provides_service(building_idx, "power") {
             return false;
         }
-        self.allocator.buildings[building_idx].service_funding_override = funding.clamp(0.0, 1.0);
+        self.allocator
+            .set_service_funding_override(building_idx, funding.clamp(0.0, 1.0));
         self.apply_service_funding_staffing_policy();
+        self.follow_census_policy();
         true
     }
 
@@ -477,21 +567,17 @@ impl SimCore {
         let Ok(catalog) = load_runtime_economy_catalog() else {
             return funding;
         };
-        let buildings = &self.allocator.buildings;
-        let city_funding = self.service_policy.electricity_funding;
-        funding.par_iter_mut().enumerate().for_each(|(idx, value)| {
-            let building = &buildings[idx];
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                return;
-            };
-            if profile.utility_service.as_deref() == Some("power") {
-                *value = effective_service_funding(building.service_funding_override, city_funding);
-            }
-        });
+        write_electricity_funding_by_building(
+            &self.allocator.buildings,
+            &catalog,
+            self.service_policy.electricity_funding,
+            &mut funding,
+        );
         funding
     }
 
+    /// Releases the service workers the live funding no longer pays for, at once. The funded
+    /// jobs follow at the next census publication ([`Self::follow_census_policy`]).
     pub(crate) fn apply_service_funding_staffing_policy(&mut self) {
         let funding = self.electricity_funding_by_building();
         self.households.enforce_service_funding_staffing(
@@ -499,7 +585,14 @@ impl SimCore {
             &mut self.allocator,
             &funding,
         );
-        self.refresh_job_funding(&funding);
+    }
+
+    // A fiscal or service funding change reaches the census through its copy (`SIM-02-I`):
+    // the census in progress restarts on the new values and the next hour's first slot
+    // publishes it, with the construction permits proved on it.
+    fn follow_census_policy(&mut self) {
+        self.households
+            .follow_census_policy(self.fiscal_policy, self.service_policy.electricity_funding);
     }
 
     /// Restores one placed service's fiscal input ceiling without rebuilding citywide jobs.
@@ -518,13 +611,28 @@ impl SimCore {
                 profile,
                 funding,
             );
-            self.demand.invalidate_construction_execution();
         }
     }
 
-    // Loading and immediate policy changes also refresh the derived jobs shown by demand.
-    fn refresh_job_funding(&mut self, funding: &[f32]) {
-        self.demand.invalidate_construction_execution();
+    /// The census the loaded game's readers see until the next hour's first slot publishes one
+    /// (`SIM-02-I`). A save before the hour's actions slot kept the census that hour's first
+    /// slot published, which the hour's planning slots, permit epoch, workforce reset and
+    /// project reservations read: it is recomputed from its saved copy, or, with books that
+    /// were not valid at the save, stays not valid so those readers skip as the saved game's
+    /// did. Later in the hour only the derived jobs shown read it until the next publication,
+    /// and it is a census of the loaded city.
+    pub(crate) fn refresh_loaded_job_funding(&mut self) {
+        let published = self.households.census_inputs.take_loaded_published();
+        if let Some(Some(adopted)) = &published {
+            self.households.restore_published_census(
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+                adopted,
+            );
+            return;
+        }
+        let funding = self.electricity_funding_by_building();
         self.households.job_funding.refresh(
             &self.allocator,
             &self.households.households,
@@ -534,10 +642,17 @@ impl SimCore {
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
             &self.fiscal_policy,
-            funding,
+            &funding,
             self.treasury.balance,
             self.time.minute_of_day,
         );
+        // A census of the live city; the hour's census still publishes at the next hour's
+        // first slot (`SIM-02-I`).
+        let published = match published {
+            Some(None) => None,
+            _ => Some(self.households.census_key(&self.transit_network)),
+        };
+        self.households.job_funding.set_published(published);
     }
 
     fn log_fiscal_policy_change(
@@ -628,30 +743,12 @@ impl SimCore {
             + self.treasury.last_daily_household_vat
             + self.treasury.last_daily_business_profit_tax
             + self.treasury.last_daily_property_tax;
-        let benefits = self
-            .households
-            .daily_ledgers()
-            .iter()
-            .map(|ledger| f64::from(ledger.transfer_income().max(0.0)))
-            .sum::<f64>();
-        let unemployment_benefits = self
-            .households
-            .daily_ledgers()
-            .iter()
-            .map(|ledger| f64::from(ledger.unemployment_benefit_income.max(0.0)))
-            .sum::<f64>();
-        let pensions = self
-            .households
-            .daily_ledgers()
-            .iter()
-            .map(|ledger| f64::from(ledger.pension_income.max(0.0)))
-            .sum::<f64>();
-        let child_support = self
-            .households
-            .daily_ledgers()
-            .iter()
-            .map(|ledger| f64::from(ledger.child_support_income.max(0.0)))
-            .sum::<f64>();
+        // Transfers post into the day's totals as each household settles (`SIM-02-G`).
+        let last_day = &self.households.last_day_totals;
+        let benefits = last_day.transfers();
+        let unemployment_benefits = last_day.unemployment_benefits;
+        let pensions = last_day.pensions;
+        let child_support = last_day.child_support;
         let wages = self.households.last_city_service_wages();
         let city_wages = f64::from(wages.total);
         let power = self.households.last_power_settlement();
@@ -727,50 +824,15 @@ impl SimCore {
         }
     }
 
+    // Coal stock at the latest dispatch, coal burned, power-plant and all city-service input
+    // purchases of the last closed day; each posts as it happens (`SIM-02-G`). O(1).
     fn city_service_daily_input_summary(&self) -> (f64, f64, f64, f64) {
-        let Ok(catalog) = load_runtime_economy_catalog() else {
-            return (0.0, 0.0, 0.0, 0.0);
-        };
-        let coal_runtime_id = catalog.resource_runtime_id_for_id("coal");
-        let mut coal_inventory = 0.0f64;
-        let removed = self.households.removed_electricity;
-        let mut coal_consumed = removed.coal_consumed_kg;
-        let mut power_input_cost = removed.power_input_cost;
-        let mut total_input_cost = removed.city_input_cost;
-
-        // Fiscal reports keep index-order floating-point accumulation deterministic.
-        for building in &self.allocator.buildings {
-            let input_cost = f64::from(building.daily_city_funded_input_cost);
-            total_input_cost += input_cost;
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                continue;
-            };
-            if profile.utility_service.as_deref() != Some("power") {
-                continue;
-            }
-            power_input_cost += input_cost;
-            if let Some(coal_runtime_id) = coal_runtime_id {
-                coal_inventory += f64::from(building.inventory_units(coal_runtime_id).max(0.0));
-            }
-            for input_port in &profile.inputs {
-                if Some(input_port.resource_runtime_id) != coal_runtime_id {
-                    continue;
-                }
-                if profile.base_rate_units_per_day <= f32::EPSILON {
-                    continue;
-                }
-                let produced_ratio =
-                    building.daily_power_service_units.max(0.0) / profile.base_rate_units_per_day;
-                coal_consumed += f64::from(input_port.units_per_day.max(0.0) * produced_ratio);
-            }
-        }
-
+        let inputs = self.allocator.last_city_input_day;
         (
-            coal_inventory,
-            coal_consumed,
-            power_input_cost,
-            total_input_cost,
+            self.households.coal_inventory_kg,
+            self.households.last_day_totals.coal_consumed_kg,
+            inputs.power,
+            inputs.total,
         )
     }
 
@@ -1494,13 +1556,97 @@ mod tests {
     use crate::nodes::sim::core::tests::fields::{add_farm_household, farm_fixture};
 
     #[test]
-    fn daily_tick_closes_household_payments_without_a_logging_call() {
+    fn rolling_road_length_sums_the_network_over_one_day() {
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+        let (core, _, _) = farm_fixture();
+        let graph = &core.region_graph;
+        let total: f64 = graph
+            .edges()
+            .iter()
+            .filter(|edge| !edge.deleted)
+            .map(|edge| f64::from(edge.physical_length))
+            .sum();
+        assert!(total > 0.0);
+        let mut unmeasured = super::RoadLengthRoll::default();
+        assert!((unmeasured.length_m(graph) - total).abs() < 1e-6 * total);
+        let mut roll = super::RoadLengthRoll::default();
+        // A sweep started mid-day finishes nothing; the next full day does.
+        for slot in SLOTS_PER_DAY / 2..2 * SLOTS_PER_DAY {
+            roll.advance(slot, graph);
+            assert_eq!(roll.measured, slot >= 2 * SLOTS_PER_DAY - 1, "slot {slot}");
+        }
+        assert!((roll.front_m - total).abs() < 1e-6 * total);
+    }
+
+    #[test]
+    fn a_road_length_sweep_resumes_identically_on_the_edges_a_save_keeps() {
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+        use crate::simulation::network::graph::{Edge, RegionGraph};
+        use crate::simulation::network::types::NodeType;
+        use godot::prelude::Vector3;
+        // Saving drops deleted edges and renumbers the rest in order.
+        let graph = |lengths: &[(f32, bool)]| {
+            let mut graph = RegionGraph::new();
+            let a = graph.add_node(Vector3::ZERO, NodeType::Junction);
+            let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+            for &(length, deleted) in lengths {
+                let id = graph.add_edge(Edge {
+                    start_node: a,
+                    end_node: b,
+                    physical_length: length,
+                    ..Edge::default()
+                });
+                graph.edge_mut(id).deleted = deleted;
+            }
+            graph
+        };
+        let lengths: Vec<(f32, bool)> = (0..9)
+            .map(|i| (10.0 + i as f32 * 1.375, i == 1 || i == 7))
+            .collect();
+        let live = graph(&lengths);
+        let saved = graph(
+            &lengths
+                .iter()
+                .filter(|(_, deleted)| !deleted)
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        let mut straight = super::RoadLengthRoll::default();
+        let half = SLOTS_PER_DAY / 2;
+        for slot in 0..half {
+            straight.advance(slot, &live);
+        }
+        let (sweep_edges, next_edge) = straight.saved_positions(&live);
+        let mut resumed = super::RoadLengthRoll {
+            sweep_edges,
+            next_edge,
+            ..straight
+        };
+        for slot in half..SLOTS_PER_DAY {
+            straight.advance(slot, &live);
+            resumed.advance(slot, &saved);
+        }
+        assert!(straight.measured && resumed.measured);
+        assert_eq!(straight.front_m.to_bits(), resumed.front_m.to_bits());
+    }
+
+    #[test]
+    fn the_daily_phase_closes_household_payments_without_a_logging_call() {
+        use crate::simulation::core::phases::daily_phase;
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
         let (mut core, farm, polygon) = farm_fixture();
         core.commit_field_polygon_internal(farm, polygon).unwrap();
         let household = add_farm_household(&mut core, farm);
         core.households
             .restore_utility_payments(household, [3.0, 2.0, 1.0]);
-        core.simulate_tick_internal(1);
+        // The slots up to the one of the household's daily phase, where it settles its day.
+        let handles = &mut core.households.handles;
+        handles.register_appended(core.households.households.len());
+        let phase = u64::from(daily_phase(handles.handle(household)));
+        let next = core.time.absolute_slot() + 1;
+        core.run_slots_through_for_test(
+            next + (phase + SLOTS_PER_DAY - next % SLOTS_PER_DAY) % SLOTS_PER_DAY,
+        );
         let ledger = &core.households.daily_ledgers()[household];
         assert_eq!(ledger.power_consumption_cost, 0.0);
         assert_eq!(ledger.water_consumption_cost, 0.0);
@@ -1534,9 +1680,9 @@ mod tests {
         let (mut core, farm, _) = farm_fixture();
         let catalog =
             crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
-        let coal = catalog.resource_runtime_id_for_id("coal").unwrap();
         let template = core.allocator.buildings[farm].clone();
         let before = core.build_budget_ledger_entry(1, 0.0);
+        let mut providers = Vec::new();
         for (id, cost) in [
             ("power_plant_basic", 70.0),
             ("water_plant_basic", 35.0),
@@ -1544,26 +1690,28 @@ mod tests {
         ] {
             let mut provider = template.clone();
             provider.economy_profile_runtime_id = catalog.profile_for_id(id).unwrap().runtime_id;
-            provider.daily_city_funded_input_cost = cost;
-            if id == "power_plant_basic" {
-                provider.set_inventory_units(coal, 10.0);
-                provider.daily_power_service_units = 1200.0;
-            }
             core.allocator.buildings.push(provider);
+            let provider = core.allocator.buildings.len() - 1;
+            core.allocator.record_city_input_purchase(provider, cost);
+            providers.push(provider);
         }
+        // Coal is what the hourly dispatches burned and the stock they left, not machinery.
+        core.households.coal_inventory_kg = 10.0;
+        core.households.day_totals.coal_consumed_kg = 540.0;
+        core.households.close_calendar_day();
+        core.allocator.close_city_input_day();
         let ledger = core.build_budget_ledger_entry(1, 0.0);
         assert_eq!(ledger.fuel_input_purchases, 122.5);
         assert_eq!(ledger.electricity_fuel_cost, 70.0);
         assert_eq!(ledger.coal_inventory, 10.0);
-        // 1,200 of 24,000 daily kWh (1,000 kW) burns that share of 10,800 kg coal.
         assert_eq!(ledger.coal_consumed, 540.0);
         assert_eq!(ledger.expenses - before.expenses, 122.5);
         assert_eq!(ledger.net - before.net, -122.5);
-        core.allocator
-            .buildings
-            .last_mut()
-            .unwrap()
-            .daily_city_funded_input_cost = -35.0;
+        // A refund nets against the purchases of the day it is paid back.
+        for (provider, cost) in providers.into_iter().zip([70.0, 35.0, -35.0]) {
+            core.allocator.record_city_input_purchase(provider, cost);
+        }
+        core.allocator.close_city_input_day();
         let refunded = core.build_budget_ledger_entry(1, 0.0);
         assert_eq!(refunded.fuel_input_purchases, 70.0);
         assert_eq!(refunded.expenses - ledger.expenses, -52.5);

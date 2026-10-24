@@ -7,6 +7,45 @@ use super::*;
 use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING};
 
 #[test]
+fn each_household_runs_one_hour_per_hour_at_its_own_phase() {
+    use crate::simulation::core::phases::PHASES_PER_HOUR;
+
+    let mut households = HouseholdSystem::new();
+    let mut agents = AgentSystem::new();
+    for household_id in 0..64 {
+        households
+            .households
+            .push(make_household(usize::MAX, 2, 5.0, 3.0));
+        // The phase recounts the members before they consume.
+        for _ in 0..2 {
+            let member = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+            agents.assign_household_id(member, household_id);
+        }
+    }
+    households
+        .handles
+        .register_appended(households.households.len());
+    let mut allocator = BuildingAllocator::new();
+    let mut runs = vec![0_u32; households.households.len()];
+    let mut phase = Vec::new();
+    for slot in 0..PHASES_PER_HOUR {
+        households.handles.phases().hourly(slot, &mut phase);
+        let before: Vec<f32> = households.households.iter().map(|h| h.stock).collect();
+        households.run_household_phase(&phase, &mut agents, &mut allocator);
+        for (hid, household) in households.households.iter().enumerate() {
+            let in_phase = phase.contains(&households.handles.handle(hid));
+            assert_eq!(
+                household.stock != before[hid],
+                in_phase,
+                "household {hid} slot {slot}"
+            );
+            runs[hid] += u32::from(in_phase);
+        }
+    }
+    assert!(runs.iter().all(|&count| count == 1), "{runs:?}");
+}
+
+#[test]
 fn household_replenishment_uses_one_visible_shopper_trip() {
     let household = Household {
         home_building_id: 0,
@@ -28,8 +67,7 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -45,7 +83,9 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
         households.households[0].replenishment_state,
         REPLENISHMENT_SHOPPING_TO_STORE
     );
-    let shopper = households.households[0].shopping_agent_id;
+    let shopper = agents
+        .resolve_agent(households.households[0].shopping_agent)
+        .unwrap_or(usize::MAX);
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -106,8 +146,7 @@ fn household_replenishment_reservation_uses_live_policy_vat() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -164,8 +203,7 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -178,7 +216,7 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
     let child = 0;
     agents.age_group[child] = AGE_CHILD;
     let adult = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[adult] = 0;
+    agents.assign_household_id(adult, 0);
     agents.current_building[adult] = 1;
     agents.transit[adult] = TRANSIT_IN_BUILDING;
     agents.activity[adult] = 2;
@@ -189,7 +227,10 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
         households.households[0].replenishment_state,
         REPLENISHMENT_WAITING_FOR_SHOPPER
     );
-    assert_eq!(households.households[0].shopping_agent_id, usize::MAX);
+    assert_eq!(
+        households.households[0].shopping_agent,
+        crate::simulation::economy::agents::AgentHandle::NONE
+    );
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -222,8 +263,7 @@ fn elder_can_carry_household_shopping_trip() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -241,7 +281,10 @@ fn elder_can_carry_household_shopping_trip() {
         households.households[0].replenishment_state,
         REPLENISHMENT_SHOPPING_TO_STORE
     );
-    assert_eq!(households.households[0].shopping_agent_id, 0);
+    assert_eq!(
+        agents.resolve_agent(households.households[0].shopping_agent),
+        Some(0)
+    );
 }
 
 #[test]
@@ -266,8 +309,7 @@ fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -313,8 +355,7 @@ fn household_can_restock_from_far_store() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -357,8 +398,7 @@ fn replenishment_search_cursor_reaches_next_store_window() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 24,
         stay_failure_days: 0,
@@ -399,7 +439,7 @@ fn replenishment_search_cursor_reaches_next_store_window() {
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;
@@ -436,8 +476,7 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 390,
         stay_failure_days: 0,
@@ -479,7 +518,7 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;
@@ -515,8 +554,7 @@ fn unreachable_store_does_not_reserve_household_supplies() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -591,8 +629,7 @@ fn deserted_store_cannot_sell_household_supplies() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -651,8 +688,7 @@ fn repeated_replenishment_failures_become_terminal_shortage() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -694,8 +730,7 @@ fn household_waits_without_reservation_when_no_member_is_home() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -754,8 +789,7 @@ fn canceled_shopping_to_store_restores_reserved_store_inventory() {
         reserved_store_building_id: 1,
         reserved_amount: 5.0,
         reserved_total_cost: 10.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 8,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -765,7 +799,7 @@ fn canceled_shopping_to_store_restores_reserved_store_inventory() {
     };
     let (mut households, mut allocator, mut agents, network, graph) =
         setup_replenishment_world(household.clone(), "cancel_res", "cancel_store", 0.0, 20.0);
-    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    household.shopping_agent = agents.agent_handle(0);
     households.households[0] = household;
     allocator.buildings[1].is_deserted = true;
     allocator.rebuild_zone_index();
@@ -857,8 +891,7 @@ fn shopping_timeout_restores_pre_pickup_reservation() {
         reserved_store_building_id: 1,
         reserved_amount: 5.0,
         reserved_total_cost: 10.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 1,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -868,7 +901,7 @@ fn shopping_timeout_restores_pre_pickup_reservation() {
     };
     let (mut households, mut allocator, mut agents, network, graph) =
         setup_replenishment_world(household.clone(), "timeout_res", "timeout_store", 0.0, 20.0);
-    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    household.shopping_agent = agents.agent_handle(0);
     households.households[0] = household;
 
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -912,8 +945,7 @@ fn invalidating_home_restores_pre_pickup_store_reservation() {
         reserved_store_building_id: 1,
         reserved_amount: 5.0,
         reserved_total_cost: 10.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 8,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -921,14 +953,14 @@ fn invalidating_home_restores_pre_pickup_store_reservation() {
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
     };
-    let (mut households, mut allocator, agents, _network, _graph) = setup_replenishment_world(
+    let (mut households, mut allocator, mut agents, _network, _graph) = setup_replenishment_world(
         household.clone(),
         "home_removed_res",
         "home_removed_store",
         0.0,
         20.0,
     );
-    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    household.shopping_agent = agents.agent_handle(0);
     households.households[0] = household;
 
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -976,8 +1008,7 @@ fn terminal_replenishment_shortage_retries_on_normal_cadence() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -1023,8 +1054,7 @@ fn store_losing_household_supply_profile_before_pickup_restores_reservation() {
         reserved_store_building_id: 1,
         reserved_amount: 5.0,
         reserved_total_cost: 10.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 8,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -1039,7 +1069,7 @@ fn store_losing_household_supply_profile_before_pickup_restores_reservation() {
         0.0,
         20.0,
     );
-    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    household.shopping_agent = agents.agent_handle(0);
     households.households[0] = household;
     allocator.buildings[1].economy_profile_runtime_id = 0;
 
@@ -1091,8 +1121,7 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -1117,7 +1146,9 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
     assert!((households.households[0].reserved_amount - partial_units).abs() < f32::EPSILON);
     assert_eq!(households.households[0].budget, 0.0);
 
-    let shopper = households.households[0].shopping_agent_id;
+    let shopper = agents
+        .resolve_agent(households.households[0].shopping_agent)
+        .unwrap_or(usize::MAX);
     arrive_agent_at_building(&mut agents, shopper, 1, 2);
     households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
     arrive_agent_at_building(&mut agents, shopper, 0, 0);
@@ -1457,7 +1488,10 @@ fn routine_stock_checks_spread_evenly_over_the_check_slots() {
         let mut slots = [0u32; 6];
         let mut hours = [false; 24];
         for hid in 0..6_000u32 {
-            let offset = stable_replenishment_offset_hours(hid as usize + home_shift, hid);
+            let offset = super::super::replenishment::stable_replenishment_offset_hours(
+                hid as usize + home_shift,
+                hid,
+            );
             slots[usize::from(offset % 6)] += 1;
             hours[usize::from(offset)] = true;
         }
@@ -1472,4 +1506,87 @@ fn routine_stock_checks_spread_evenly_over_the_check_slots() {
             );
         }
     }
+}
+
+// A household whose shopper is reserved and held for its departure, as the restock queue
+// leaves it before the departure event.
+fn household_with_held_shopper() -> (
+    HouseholdSystem,
+    BuildingAllocator,
+    AgentSystem,
+    TransitNetwork,
+    RegionGraph,
+) {
+    let mut household = make_household(0, 1, 30.0, 0.0);
+    household.replenishment_state = REPLENISHMENT_NEEDS;
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "held_res", "held_store", 50.0, 20.0);
+    households.run_household_operational_hour(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+        0.2,
+    );
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert!(
+        agents.departure_held(0),
+        "the shopper waits for its departure"
+    );
+    (households, allocator, agents, network, graph)
+}
+
+#[test]
+fn an_eviction_before_the_departure_releases_the_shopper_and_refunds_the_purchase() {
+    let (mut households, mut allocator, mut agents, _, _) = household_with_held_shopper();
+    let supplies = household_supply_resource_runtime_id(&load_runtime_economy_catalog().unwrap());
+    let reserved = households.households[0].reserved_total_cost;
+    let budget = households.households[0].budget;
+    let store_stock = allocator.buildings[1].inventory_units(supplies);
+    // A household without an independent member is evicted at its review.
+    households.households[0].adult_count = 0;
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    let household = &households.households[0];
+    assert_eq!(household.home_building_id, usize::MAX);
+    assert_ne!(
+        household.replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(household.budget, budget + reserved);
+    assert!(allocator.buildings[1].inventory_units(supplies) > store_stock);
+    assert!(!agents.departure_held(0), "the shopper is free again");
+}
+
+#[test]
+fn a_move_before_the_departure_cancels_the_unstarted_trip_and_refunds_it() {
+    let (mut households, mut allocator, mut agents, network, graph) = household_with_held_shopper();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "held_new_home",
+        ZoneClass::Residential,
+    );
+    allocator
+        .buildings
+        .push(make_building(-40.0, ZoneType::Residential, &asset, 0.0));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let reserved = households.households[0].reserved_total_cost;
+    let budget = households.households[0].budget;
+    // The home breaks, and the household's review moves it to the new home.
+    allocator.buildings[0].broken = true;
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    let household = &households.households[0];
+    assert_eq!(household.home_building_id, 2);
+    assert_ne!(
+        household.replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(household.budget, budget + reserved);
+    assert_eq!(agents.home_building[0], 2);
+    assert!(!agents.departure_held(0), "the shopper is free again");
 }

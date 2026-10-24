@@ -12,7 +12,8 @@ use super::frame::{
 use super::road_commit::RoadCommitRequest;
 use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
+    PublishedRoadPreviewChecks, RoadPreviewSnapshot, RoadPreviewWorkerContext,
+    RoadToolQuerySnapshot, road_tool_snapshots_from_core,
 };
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
@@ -119,15 +120,21 @@ pub(crate) enum SimCommand {
         /// Immutable target token captured while the cursor still referenced the object.
         target: BulldozeTarget,
     },
+    /// End the thread after the commands queued before this one; the node joins it next.
+    Stop,
 }
 
+// Parallel rebuilds: they run in the shared pool, as every phase under the core lock does
+// (CODE-17). The lock stays on this thread; a pool worker never waits for it (`SIM-01`).
 fn finalize_network_render_products(
     core: &mut SimCore,
 ) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
-    core.rebuild_network_surface_terrain_internal();
-    core.precompute_road_mesh_data();
-    core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-    road_tool_snapshots_from_core(core)
+    crate::thread_pools::install(|| {
+        core.rebuild_network_surface_terrain_internal();
+        core.precompute_road_mesh_data();
+        core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        road_tool_snapshots_from_core(core)
+    })
 }
 
 fn publish_road_tool_snapshots(
@@ -155,12 +162,15 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 /// Movement runs at ~60 Hz; queued edits wake the thread independently of that cadence.
 /// Movement ticks and structural edits own the core mutex while they execute. Render-facing APIs consume
 /// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
-/// after releasing the core mutex.
+/// after releasing the core mutex. Each frame also publishes the current road preview's live
+/// checks under the core mutex, for preview polls that find it held.
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
     road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     road_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
+    road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
+    road_preview_checks: Arc<PublishedRoadPreviewChecks>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
     let target = Duration::from_micros(16_667); // ~60 Hz
@@ -302,6 +312,7 @@ pub(crate) fn run_sim_thread(
                             queue_wait_ms: enqueued_at.elapsed().as_secs_f64() * 1000.0,
                             ..Default::default()
                         };
+                    let crash_geometry = crate::debug::CrashRoadGeometry::from_points(&points);
                     let lock_wait_start = Instant::now();
                     let road_lock_wait_ms;
                     let outcome = {
@@ -315,6 +326,7 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
+                                geometry: crash_geometry,
                             },
                         );
                         c.commit_road(
@@ -495,7 +507,7 @@ pub(crate) fn run_sim_thread(
                         detail: rejection.detail,
                     });
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;
                     break;
                 }
@@ -589,6 +601,11 @@ pub(crate) fn run_sim_thread(
                 core.build_snapshot_reusing(available_snapshot)
             });
             snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+            // Same state as the snapshot: a preview poll that finds the lock held reads these.
+            record_crash_phase_for_core(&core, "road preview checks");
+            run_sim_phase("road preview checks", || {
+                road_preview_checks.publish_frame(&core, &road_preview_result)
+            });
             lock_held_ms = lock_held_start.elapsed().as_secs_f64() * 1000.0;
             agent_count = snapshot.agent_count;
             pathfind_count = snapshot.pathfind_count;

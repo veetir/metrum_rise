@@ -5,8 +5,8 @@
 use super::data::AgentSystem;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, MODE_CAR, MODE_WALK, TRANSIT_ACCESS_INGRESS,
-    TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_CAR, MODE_WALK,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
@@ -16,9 +16,66 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 impl AgentSystem {
+    // Agents any of whose building references name `building_id`, ascending: the only agents
+    // a removal's eviction and evacuation change, found on the pool. O(A/p) (`SIM-02-K`).
+    fn agents_referencing_building(&self, building_id: usize) -> Vec<usize> {
+        self.agents_referencing_buildings(building_id, building_id)
+    }
+
+    /// Agents any of whose building references name `first` or `second`, ascending, in one
+    /// scan on the pool (`SIM-02-K`): a removal of `first` that moves building `second` into its
+    /// index finds here every agent its evacuation, eviction and remap change, and passes them
+    /// to [`Self::evacuate_building_among`], [`Self::evict_building_among`] and
+    /// [`Self::remap_building_among`]. O(A/p).
+    pub(crate) fn agents_referencing_buildings(&self, first: usize, second: usize) -> Vec<usize> {
+        let agents = &self.agents;
+        crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    self.building_columns()
+                        .iter()
+                        .any(|column| column[i] == first || column[i] == second)
+                })
+                .collect()
+        })
+    }
+
+    // The agent columns that hold building indices, as `remap_building_indices` remaps them.
+    pub(super) fn building_columns(&self) -> [&Vec<usize>; 8] {
+        let agents = &self.agents;
+        [
+            &agents.home_building,
+            &agents.work_building,
+            &agents.current_building,
+            &agents.target_building,
+            &agents.planned_target_building,
+            &agents.next_departure_origin_building,
+            &agents.next_departure_target_building,
+            &agents.cached_schedule_work_building,
+        ]
+    }
+
+    // Whether agent `i` names `building_id` in any building column. O(1).
+    fn references_building(&self, i: usize, building_id: usize) -> bool {
+        self.building_columns()
+            .iter()
+            .any(|column| column[i] == building_id)
+    }
+
+    // `candidates` (ascending) that name `building_id` now, ascending. O(candidates).
+    fn referencing_among(&self, building_id: usize, candidates: &[usize]) -> Vec<usize> {
+        candidates
+            .iter()
+            .copied()
+            .filter(|&i| self.references_building(i, building_id))
+            .collect()
+    }
+
     /// Clears schedule-derived building cache fields for one agent.
     pub(crate) fn clear_schedule_building_cache(&mut self, agent_idx: usize) {
         self.agents.cached_commute_minutes[agent_idx] = 0;
@@ -32,10 +89,11 @@ impl AgentSystem {
         self.agents.cached_work_profile_index[agent_idx] = u16::MAX;
     }
 
-    /// Assigns an agent to a household without touching movement state.
+    /// Assigns an agent to a household (`usize::MAX` for none) without touching movement state,
+    /// keeping the household member lists sorted. O(household sizes).
     pub(crate) fn assign_household_id(&mut self, agent_idx: usize, household_id: usize) {
         if agent_idx < self.agents.len() {
-            self.agents.household_id[agent_idx] = household_id;
+            self.set_household_membership(agent_idx, household_id);
         }
     }
 
@@ -50,7 +108,8 @@ impl AgentSystem {
         if agent_idx >= self.agents.len() {
             return;
         }
-        self.agents.household_id[agent_idx] = household_id;
+        self.leave_lane_buckets(agent_idx);
+        self.set_household_membership(agent_idx, household_id);
         self.agents.age_group[agent_idx] = age_group;
         self.agents.pending_household_size[agent_idx] = 0;
         self.agents.pending_household_adults[agent_idx] = 0;
@@ -69,7 +128,6 @@ impl AgentSystem {
             self.agents.pos_y[agent_idx] = door.y;
         }
         self.clear_schedule_building_cache(agent_idx);
-        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Updates a household member after their household relocates to a new home.
@@ -90,13 +148,13 @@ impl AgentSystem {
         }
 
         if old_home_live && self.agents.current_building[agent_idx] == old_home {
+            self.leave_lane_buckets(agent_idx);
             self.agents.current_building[agent_idx] = new_home;
             self.agents.target_building[agent_idx] = usize::MAX;
             self.agents.planned_target_building[agent_idx] = usize::MAX;
             self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
             self.agents.activity[agent_idx] = 0;
             self.clear_route_and_lane_state(agent_idx);
-            self.invalidate_lane_bucket_snapshot();
         } else {
             let mut needs_replan = false;
             if old_home_live && self.agents.target_building[agent_idx] == old_home {
@@ -107,10 +165,13 @@ impl AgentSystem {
                 self.agents.planned_target_building[agent_idx] = new_home;
                 needs_replan = true;
             }
-            if !old_home_live
-                && self.agents.current_building[agent_idx] == usize::MAX
-                && self.agents.target_building[agent_idx] == usize::MAX
-            {
+            let current = self.agents.current_building[agent_idx];
+            let target = self.agents.target_building[agent_idx];
+            let work = self.agents.work_building[agent_idx];
+            let bound_home_or_work = current == new_home
+                || target == new_home
+                || (work != usize::MAX && (current == work || target == work));
+            if !old_home_live && current == usize::MAX && target == usize::MAX {
                 self.agents.target_building[agent_idx] = new_home;
                 self.agents.planned_target_building[agent_idx] = new_home;
                 self.agents.activity[agent_idx] = 0;
@@ -120,6 +181,16 @@ impl AgentSystem {
                     self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
                 }
                 needs_replan = true;
+            } else if !old_home_live
+                && !bound_home_or_work
+                && self.agents.planned_target_building[agent_idx] == usize::MAX
+                && self.agents.activity[agent_idx] != ACTIVITY_SHOPPING
+            {
+                // A member evicted while away (a shopper released at or on the way to the
+                // store) goes to the new home after its current trip: the schedule only moves
+                // agents at home or at work.
+                self.agents.planned_target_building[agent_idx] = new_home;
+                self.agents.planned_activity[agent_idx] = ACTIVITY_HOME;
             }
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
@@ -142,12 +213,12 @@ impl AgentSystem {
         }
 
         if self.agents.current_building[agent_idx] == old_home {
+            self.leave_lane_buckets(agent_idx);
             self.agents.current_building[agent_idx] = usize::MAX;
             self.agents.target_building[agent_idx] = usize::MAX;
             self.agents.planned_target_building[agent_idx] = usize::MAX;
             self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
             self.clear_route_and_lane_state(agent_idx);
-            self.invalidate_lane_bucket_snapshot();
         } else {
             let mut needs_replan = false;
             if self.agents.target_building[agent_idx] == old_home {
@@ -156,6 +227,11 @@ impl AgentSystem {
             }
             if self.agents.planned_target_building[agent_idx] == old_home {
                 self.agents.planned_target_building[agent_idx] = usize::MAX;
+                // The eviction cancelled this shopper's trip and its return home; the schedule
+                // skips an agent shopping still owns, so hand it back explicitly.
+                if self.agents.activity[agent_idx] == ACTIVITY_SHOPPING {
+                    self.agents.activity[agent_idx] = ACTIVITY_HOME;
+                }
                 needs_replan = true;
             }
             if needs_replan {
@@ -216,13 +292,29 @@ impl AgentSystem {
                 }
             }
         }
-        self.agents.job_lock_days[agent_idx] = job_lock_days;
+        self.agents.job_lock_until_day[agent_idx] = self.settlement_days + u32::from(job_lock_days);
         self.agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 
-    /// Forcefully removes all agents from a building that has been deleted.
+    /// Forcefully removes all agents from a building that has been deleted. O(A/p) to find
+    /// them, then O(1) each.
     pub fn evict_building(&mut self, building_id: usize) {
-        for i in 0..self.agents.len() {
+        let referencing = self.agents_referencing_building(building_id);
+        self.evict_referencing(building_id, referencing);
+    }
+
+    /// [`Self::evict_building`] for a removal that found its agents with
+    /// [`Self::agents_referencing_buildings`]: only the ascending `candidates` that still name
+    /// `building_id` are evicted, which is every agent that does, since the removal changes no
+    /// other agent's references before. O(candidates) (`SIM-02-K`).
+    pub(crate) fn evict_building_among(&mut self, building_id: usize, candidates: &[usize]) {
+        let referencing = self.referencing_among(building_id, candidates);
+        self.evict_referencing(building_id, referencing);
+    }
+
+    // Evicts the ascending `referencing` agents, every agent that names `building_id`.
+    fn evict_referencing(&mut self, building_id: usize, referencing: Vec<usize>) {
+        for i in referencing {
             let cache_touches_building = self.agents.next_departure_origin_building[i]
                 == building_id
                 || self.agents.next_departure_target_building[i] == building_id
@@ -281,9 +373,57 @@ impl AgentSystem {
         if building_id >= allocator.buildings.len() {
             return;
         }
+        let referencing = self.agents_referencing_building(building_id);
+        self.evacuate_referencing(
+            building_id,
+            referencing,
+            households,
+            allocator,
+            transit_network,
+            graph,
+        );
+    }
 
+    /// [`Self::evacuate_building_for_removal`] for a removal that found its agents with
+    /// [`Self::agents_referencing_buildings`]: the ascending `candidates` that name
+    /// `building_id` are exactly the agents that the full scan would find (`SIM-02-K`).
+    /// O(candidates) plus their trips.
+    pub(crate) fn evacuate_building_among(
+        &mut self,
+        building_id: usize,
+        candidates: &[usize],
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        if building_id >= allocator.buildings.len() {
+            return;
+        }
+        let referencing = self.referencing_among(building_id, candidates);
+        self.evacuate_referencing(
+            building_id,
+            referencing,
+            households,
+            allocator,
+            transit_network,
+            graph,
+        );
+    }
+
+    // Evacuates the ascending `referencing` agents, every agent that names `building_id`.
+    fn evacuate_referencing(
+        &mut self,
+        building_id: usize,
+        referencing: Vec<usize>,
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        // Agents that reference no removed building are left as they are, in both passes.
         let mut household_targets: HashMap<usize, Option<usize>> = HashMap::new();
-        for agent_idx in 0..self.agents.len() {
+        for &agent_idx in &referencing {
             if self.agents.home_building[agent_idx] != building_id {
                 continue;
             }
@@ -308,7 +448,7 @@ impl AgentSystem {
         // Most business removals only need trips home. Resolve a border exit once,
         // and only if a physically displaced occupant has no surviving home.
         let mut border_plan = None;
-        for agent_idx in 0..self.agents.len() {
+        for &agent_idx in &referencing {
             let household_id = self.agents.household_id[agent_idx];
             let mut home_after_removal = self.agents.home_building[agent_idx];
             if home_after_removal == building_id {
@@ -323,7 +463,7 @@ impl AgentSystem {
 
             if self.agents.work_building[agent_idx] == building_id {
                 self.agents.work_building[agent_idx] = usize::MAX;
-                self.agents.job_lock_days[agent_idx] = 0;
+                self.agents.job_lock_until_day[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
             }
 
@@ -613,6 +753,10 @@ impl AgentSystem {
         excluded_building: usize,
     ) -> Option<usize> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
+        // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
+        if allocator.dirty_index {
+            allocator.rebuild_zone_index();
+        }
         let building_idx = allocator.vacancy_index[residential_slot]
             .iter()
             .copied()
@@ -735,7 +879,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -763,6 +906,7 @@ mod tests {
             depth_cells: 1,
             zone_profile_runtime_id: 0,
             parcel_id: 0,
+            applicant_seed: 0,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, -1.0),
             frontage_t,
@@ -780,7 +924,7 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             construction_total_hours: 0,
-            construction_remaining_hours: 0,
+            construction_complete_slot: 0,
             broken: false,
             economy_profile_runtime_id: 0,
             economy_broken: false,
@@ -789,7 +933,7 @@ mod tests {
             operating_budget: 500.0,
             profit_tax_budget_baseline: 500.0,
             last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
+            shipment_cooldown_until_slot: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: 0.0,
@@ -801,12 +945,38 @@ mod tests {
             daily_power_served_units: 0.0,
             recent_power_service_units: 0.0,
             recent_power_served_units: 0.0,
+            paid_workers_in_window: 0,
+            funded_job_capacity: 0,
+            unpaid_cash_wages_in_window: 0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            service_sales_capacity: 0.0,
+            service_sales_profile_runtime_id: 0,
+            funded_activity: 0.0,
             work_area_scale: 1.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
+    }
+
+    #[test]
+    fn forced_rehoming_rebuilds_a_stale_vacancy_index_first() {
+        let mut allocator = BuildingAllocator::new();
+        let asset_id = register_residential_test_asset(&mut allocator, "stale_home");
+        for (x, t) in [(25.0, 0.25), (75.0, 0.75)] {
+            allocator
+                .buildings
+                .push(create_test_building(0, &asset_id, x, t, 0));
+        }
+        allocator.rebuild_zone_index();
+        // A stale list that misses the first home: a reader must not trust it (`SIM-02`).
+        allocator.vacancy_index[0] = vec![1];
+        allocator.dirty_index = true;
+        assert_eq!(
+            AgentSystem::claim_available_home_except(&mut allocator, usize::MAX),
+            Some(0)
+        );
+        assert!(!allocator.dirty_index);
     }
 
     #[test]
@@ -915,6 +1085,37 @@ mod tests {
     }
 
     #[test]
+    fn a_removal_over_its_scanned_agents_equals_the_full_scans() {
+        // Agents naming the removed building 2 or the moved last building 5 in different
+        // columns, and agents naming neither.
+        let build = || {
+            let mut sys = AgentSystem::new();
+            for (home, work, target) in [
+                (1, 2, 2),
+                (5, 3, 5),
+                (2, 5, 0),
+                (4, 3, 1),
+                (5, 2, 4),
+                (0, 1, 3),
+            ] {
+                let i = sys.spawn_housed_agent(home, 0.0, 0.0);
+                sys.agents.work_building[i] = work;
+                sys.agents.target_building[i] = target;
+                sys.agents.next_departure_target_building[i] = target;
+            }
+            sys
+        };
+        let (mut full, mut among) = (build(), build());
+        let candidates = among.agents_referencing_buildings(2, 5);
+        assert_eq!(candidates, [0, 1, 2, 4]);
+        full.evict_building(2);
+        full.remap_building_indices(&HashMap::from([(5, 2)]));
+        among.evict_building_among(2, &candidates);
+        among.remap_building_among(5, 2, &candidates);
+        assert_eq!(format!("{:?}", among.agents), format!("{:?}", full.agents));
+    }
+
+    #[test]
     fn assigning_work_clears_schedule_cache_and_stale_work_trip() {
         let mut sys = AgentSystem::new();
         let agent_idx = sys.spawn_housed_agent(1, 0.0, 0.0);
@@ -931,7 +1132,7 @@ mod tests {
         sys.assign_work_building(agent_idx, 3, 7);
 
         assert_eq!(sys.agents.work_building[agent_idx], 3);
-        assert_eq!(sys.agents.job_lock_days[agent_idx], 7);
+        assert_eq!(sys.agents.job_lock_until_day[agent_idx], 7);
         assert_eq!(sys.agents.target_building[agent_idx], usize::MAX);
         assert_eq!(sys.agents.planned_target_building[agent_idx], usize::MAX);
         assert_eq!(sys.agents.access_flags[agent_idx], 0);

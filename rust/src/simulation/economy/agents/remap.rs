@@ -22,7 +22,8 @@ const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 pub(crate) struct AgentLaneIdentities(HashMap<usize, LaneIdentity>);
 
 impl AgentSystem {
-    /// Remaps household indices after a `swap_remove` in `HouseholdSystem`. O(A).
+    /// Remaps household indices after a `swap_remove` in `HouseholdSystem`, and moves the
+    /// renumbered households' member lists with them. O(A + mapping).
     pub fn remap_household_indices(&mut self, mapping: &HashMap<usize, usize>) {
         if mapping.is_empty() {
             return;
@@ -35,6 +36,7 @@ impl AgentSystem {
                     *household_id = new_id;
                 }
             });
+        self.remap_household_members(mapping);
     }
 
     /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).
@@ -67,6 +69,38 @@ impl AgentSystem {
                     .par_iter_mut()
                     .for_each(|value| remap_usize(value, mapping));
             }
+        }
+    }
+
+    /// [`Self::remap_building_indices`] for one swap-remove moving building `old` to `new`, over
+    /// the ascending `candidates` alone: every agent that names `old` must be among them, as
+    /// [`Self::agents_referencing_buildings`] found them before a removal that has removed no
+    /// agent since (`SIM-02-K`). O(candidates).
+    pub(crate) fn remap_building_among(&mut self, old: usize, new: usize, candidates: &[usize]) {
+        let agents = &mut self.agents;
+        for column in [
+            &mut agents.home_building,
+            &mut agents.work_building,
+            &mut agents.current_building,
+            &mut agents.target_building,
+            &mut agents.planned_target_building,
+            &mut agents.next_departure_origin_building,
+            &mut agents.next_departure_target_building,
+            &mut agents.cached_schedule_work_building,
+        ] {
+            for &i in candidates {
+                if column[i] == old {
+                    column[i] = new;
+                }
+            }
+        }
+        // Test builds: no agent outside the candidates named `old`.
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            assert!(
+                self.agents_referencing_buildings(old, old).is_empty(),
+                "an agent outside the removal's candidates named the moved building"
+            );
         }
     }
 
@@ -847,7 +881,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -866,7 +899,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
@@ -1023,7 +1055,6 @@ mod tests {
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: start.distance_to(end),
-                current_congestion: 0.0,
                 start_clip: 0.0,
                 end_clip: 0.0,
                 geometry: vec![start, end],

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Cell gestures, local paint inverses and event-driven lot preparation for private demand.
+//! Cell gestures, local paint inverses and event-driven lot preparation for private demand:
+//! a full drain for editing paths and the per-slot `cell lots` queue (`SIM-02-H`).
 
 use super::core::SimCore;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
 use crate::simulation::zoning::cells::{
-    CellSelection, CellSelectionShape, CellStore, road_contact_interior,
+    CellBounds, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
-use crate::simulation::zoning::{CellLotGeneration, CellZoningEdit, MAX_PARCEL_FRONTAGE_M};
+use crate::simulation::zoning::{
+    CellLotGeneration, CellZoningEdit, MAX_PARCEL_FRONTAGE_M, ZoningSystem,
+};
 use glam::DVec2;
 
 /// One immutable selection plus all authoring dependencies observed by its preview.
@@ -62,18 +65,42 @@ impl SimCore {
         if !self.cell_chunk_in_world(chunk) {
             return false;
         }
-        self.prepare_cell_site_queries();
-        if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
-            let allocator = &self.allocator;
-            let roads = &self.transit_network.road_surface;
-            let cell_m = self.config.zone_cell_m;
-            self.zoning
-                .generate_cells(&self.region_graph, bounds, |corners| {
-                    cell_site_blocked(allocator, roads, cell_m, corners)
-                });
-            self.zoning.cells.complete_generated_chunk(chunk, bounds);
-        }
+        // Site-index repair and cell generation are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.prepare_cell_site_queries();
+            if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
+                let allocator = &self.allocator;
+                let roads = &self.transit_network.road_surface;
+                let cell_m = self.config.zone_cell_m;
+                self.zoning
+                    .generate_cells(&self.region_graph, bounds, |corners| {
+                        cell_site_blocked(allocator, roads, cell_m, corners)
+                    });
+                self.zoning.cells.complete_generated_chunk(chunk, bounds);
+            }
+        });
         true
+    }
+
+    /// Generates the cells a loaded save left out, near every road, so the first lot regions
+    /// served after loading find them warm (`SIM-02-K`). Call once the loaded allocator, road
+    /// surface and parcels are in place.
+    pub(crate) fn warm_loaded_cells(&mut self) {
+        self.prepare_cell_site_queries();
+        let allocator = &self.allocator;
+        let roads = &self.transit_network.road_surface;
+        let cell_m = self.config.zone_cell_m;
+        let (warmed, cold) = self
+            .zoning
+            .warm_generated_cells(&self.region_graph, |corners| {
+                cell_site_blocked(allocator, roads, cell_m, corners)
+            });
+        crate::debug_log!(
+            "save",
+            "load generated cells in {} chunks; {} left cold for frames not yet registered",
+            warmed,
+            cold
+        );
     }
 
     /// Prepares shared local queries without modifying paint, terrain or building ownership.
@@ -186,18 +213,43 @@ impl SimCore {
         true
     }
 
-    /// Rebuilds only queued painted neighborhoods and installs asset-sized lots for demand.
-    /// With no authoring/catalog changes this is an allocation-free constant-time check.
+    /// Rebuilds every queued painted neighborhood at once and installs asset-sized lots for
+    /// demand, for editing paths that must publish their lots before returning. With no
+    /// authoring/catalog changes this is an allocation-free constant-time check.
     pub(crate) fn prepare_cell_lots_internal(&mut self) -> CellLotGeneration {
         if self.transit_network.road_edit_is_staged() || !self.zoning.has_dirty_cell_lots() {
             return CellLotGeneration::default();
         }
-        #[cfg(test)]
-        let _contract_phase = crate::debug::work::phases::enter("lots");
-        let regions = self.zoning.take_dirty_cell_lot_regions();
-        if regions.is_empty() {
+        let mut regions = self.zoning.take_dirty_cell_lot_regions().into_iter();
+        self.regenerate_cell_lot_regions(|_| regions.next())
+    }
+
+    /// One slot of the `cell lots` queue (`SIM-02-H`): rebuilds up to `quota` pending regions,
+    /// oldest first, and none while a road edit is staged. O(1) and allocation-free with
+    /// nothing queued; otherwise O(region) per region served, plus repairing site indices an
+    /// earlier system in the slot left stale.
+    pub(crate) fn serve_cell_lot_queue(&mut self, quota: usize) -> CellLotGeneration {
+        if self.transit_network.road_edit_is_staged() || !self.zoning.has_dirty_cell_lots() {
             return CellLotGeneration::default();
         }
+        let mut left = quota;
+        self.regenerate_cell_lot_regions(|zoning| {
+            left = left.checked_sub(1)?;
+            zoning.pop_dirty_cell_lot_region()
+        })
+    }
+
+    // Rebuilds the regions `next` takes from the zoning authority with one query preparation
+    // and the cached asset sizes, then publishes reattached occupants once.
+    fn regenerate_cell_lot_regions(
+        &mut self,
+        mut next: impl FnMut(&mut ZoningSystem) -> Option<CellBounds>,
+    ) -> CellLotGeneration {
+        let Some(first) = next(&mut self.zoning) else {
+            return CellLotGeneration::default();
+        };
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("lots");
         self.prepare_cell_site_queries();
         // Ownership of this event cache is moved out while the zoning authority is mutated;
         // neither the asset catalog nor its shape list is cloned for each dirty region.
@@ -210,7 +262,8 @@ impl SimCore {
         let roads = &self.transit_network.road_surface;
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
-        for bounds in regions {
+        let mut region = Some(first);
+        while let Some(bounds) = region {
             let phase = crate::debug::Channel::EconomyPhases
                 .enabled()
                 .then(std::time::Instant::now);
@@ -242,6 +295,7 @@ impl SimCore {
             result.created.extend(report.created);
             result.retired.extend(report.retired);
             result.reattached.extend(report.reattached);
+            region = next(&mut self.zoning);
         }
         self.zoning.cell_lot_sizes = Some(sizes);
         self.allocator.sync_cell_lot_attachments(

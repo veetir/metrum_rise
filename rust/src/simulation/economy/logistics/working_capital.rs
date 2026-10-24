@@ -53,6 +53,12 @@ impl ShipmentSystem {
         self.freight_route_cache.building_cache_counts
     }
 
+    /// Freight route searches made on cache misses so far, for the funding census's work units
+    /// (`SIM-02-K`). A monotonic counter; O(1).
+    pub(crate) fn route_searches(&self) -> u64 {
+        self.freight_route_cache.searches()
+    }
+
     /// Prices a live or proposed seller's directed delivery to a business customer.
     /// Call `prepare_site_carrier_quotes` once before a batch. Each query reuses bounded
     /// network search storage and applies live frontage delays, without temporary IDs.
@@ -217,6 +223,11 @@ impl ShipmentSystem {
     /// border sweeps. Their exact minima cost O(N*K) once per routing/border revision for N
     /// road nodes and K borders. Warm work is O(B), parallel across buildings.
     /// The caller reuses quote storage. No per-building path search or allocation is added.
+    /// The census runs the same phases in slices (`SIM-02-K`): [`Self::begin_border_carrier_quotes`],
+    /// [`Self::sweep_carrier_borders`] over every range of the borders in order,
+    /// [`Self::prepare_border_carrier_access`] over every building range and
+    /// [`Self::write_border_carrier_quotes_in`] over every building range.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_border_carrier_quotes(
         &mut self,
@@ -228,24 +239,96 @@ impl ShipmentSystem {
         tuning: &RuntimeEconomyTuning,
         quotes: &mut [Option<f32>],
     ) {
+        let buildings = allocator.buildings.len();
+        self.begin_border_carrier_quotes(allocator, network, graph);
+        self.sweep_carrier_borders(network, graph, borders, 0..borders.len());
+        self.prepare_border_carrier_access(allocator, network, graph, catalog, 0..buildings);
+        self.write_border_carrier_quotes_in(
+            allocator,
+            network,
+            graph,
+            catalog,
+            tuning,
+            0..quotes.len(),
+            quotes,
+        );
+    }
+
+    /// Border quotes' first phase (`SIM-02-K`): the route cache's revisions, its building
+    /// slots, query scratch and quote storage. O(new building slots) warm, plus O(cache
+    /// storage) after a routing change.
+    pub(crate) fn begin_border_carrier_quotes(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
         self.refresh_freight_route_cache(allocator, network);
         self.freight_route_cache
             .prepare_buildings(allocator.buildings.len());
-        self.freight_route_cache.prepare_border_costs(
-            borders,
-            allocator.buildings.len(),
-            network,
-            graph,
-        );
         self.freight_route_cache
-            .prepare_access_for(allocator, network, graph, |index| {
+            .prepare_border_storage(allocator.buildings.len(), network, graph);
+    }
+
+    /// Sweeps `borders[range]` not swept since the last routing change; the range ending at
+    /// the last border then takes every border's minimum (`SIM-02-K`). One CCH sweep a border
+    /// swept, plus O(N × K) in parallel for N road nodes and K borders at the end after a
+    /// routing or border change. Returns the borders swept.
+    pub(crate) fn sweep_carrier_borders(
+        &mut self,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        borders: &[u32],
+        range: std::ops::Range<usize>,
+    ) -> usize {
+        let last = range.end == borders.len();
+        let swept = self
+            .freight_route_cache
+            .sweep_borders(&borders[range], network, graph);
+        if last {
+            self.freight_route_cache
+                .prepare_border_minimum(borders, graph);
+        }
+        swept
+    }
+
+    /// Projects the doors of the quoted buildings in `range` once per entrance revision
+    /// (`SIM-02-K`). O(range) tag checks in parallel; only changed doors project.
+    pub(crate) fn prepare_border_carrier_access(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        range: std::ops::Range<usize>,
+    ) {
+        self.freight_route_cache
+            .prepare_access_in(range, allocator, network, graph, |index| {
                 catalog
                     .profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
                     .is_some_and(|profile| profile.worker_capacity > 0)
             });
+    }
+
+    /// Writes the border quotes of buildings `range` into `quotes`, the quote rows of that
+    /// range, after both earlier phases (`SIM-02-K`). O(range) in parallel.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_border_carrier_quotes_in(
+        &self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        range: std::ops::Range<usize>,
+        quotes: &mut [Option<f32>],
+    ) {
+        debug_assert_eq!(quotes.len(), range.len());
+        let first = range.start;
         quotes
             .par_iter_mut()
             .enumerate()
+            .map(|(offset, quote)| (first + offset, quote))
             .for_each(|(index, quote)| {
                 *quote = None;
                 let building = &allocator.buildings[index];
@@ -287,7 +370,7 @@ impl ShipmentSystem {
                 *value += goods_value;
             }
             if shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && shipment.cargo_loaded
                 && let ShipmentEndpoint::Building(source) = shipment.source
                 && let Some(value) = capital.get_mut(source)
             {
@@ -311,11 +394,13 @@ mod tests {
             destination,
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
-            carrier_agent_id: usize::MAX,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
             total_cost: 108.0,
             freight_cost: 8.0,
             eta_hours: 1,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
+            cargo_loaded: false,
         }
     }
 
@@ -331,9 +416,11 @@ mod tests {
         assert_eq!(
             capital,
             [0.0, 100.0],
-            "source stock still exists before carrier dispatch"
+            "source stock still exists before its cargo is loaded"
         );
-        logistics.shipments[0].carrier_agent_id = 7;
+        logistics.shipments[0].cargo_loaded = true;
+        logistics.shipments[0].carrier =
+            crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.write_freight_working_capital(&mut capital);
         assert_eq!(
             capital,
@@ -364,7 +451,8 @@ mod tests {
             ShipmentEndpoint::OwaBorder(1),
         );
         export.status = ShipmentStatus::InTransit;
-        export.carrier_agent_id = 7;
+        export.cargo_loaded = true;
+        export.carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.shipments.push(export);
         let mut capital = [0.0];
         logistics.write_freight_working_capital(&mut capital);

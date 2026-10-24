@@ -1,35 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Operational-hour and daily household economy orchestration.
+//! Operational-hour household economy orchestration. Daily settlement runs per entity at
+//! each one's daily phase (`households/settlement.rs`). Each household recounts its members at
+//! its hourly phase (`households/membership.rs`); the activity floor, service sales and
+//! electricity also run at each entity's hourly phase, folded at the hour's last slot
+//! (`SIM-02-I`).
 
 use super::HouseholdSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::fiscal::{CityFiscalPolicy, FiscalRevenue};
+use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
 use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
-use rayon::prelude::*;
 use std::time::Instant;
 
 impl HouseholdSystem {
-    /// Runs one operational-hour household pass for membership, production, logistics, and labor.
-    #[allow(clippy::too_many_arguments)]
+    /// Runs what is left of the operational-hour household pass: pending arrivals, member
+    /// checks, the logistics clock and the commute-quote expiry. Freight, housing, restock,
+    /// visits and job search are served by their request queues (`SIM-02-J`).
     pub(crate) fn operational_hour_tick(
         &mut self,
         agents: &mut AgentSystem,
-        allocator: &mut BuildingAllocator,
+        allocator: &BuildingAllocator,
         logistics: &mut ShipmentSystem,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
         absolute_hour: u32,
         minute_of_day: u16,
-        treasury_balance: &mut f64,
-        service_funding_by_building: &[f32],
-        fiscal_policy: &CityFiscalPolicy,
-        on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
-    ) -> FiscalRevenue {
+    ) {
         let timing_category = if debug::Channel::EconomyPhases.enabled() {
             debug::Channel::EconomyPhases
         } else {
@@ -38,219 +34,56 @@ impl HouseholdSystem {
         let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
-        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
-        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        // Carriers become households when they arrive (`SIM-02-E`); count those still coming.
+        self.recount_pending_arrivals(agents);
+        let pending_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
+        // Agents a loader or tool appended directly join their lists before housing walks them.
+        agents.register_appended_household_members();
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            agents.assert_household_members_match_rebuild();
+        }
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.rebuild_household_and_worker_counts(agents, allocator);
-        self.rehouse_unhoused_before_growth(agents, allocator);
-        let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.run_building_economy(allocator);
-        self.run_electricity_hour(allocator);
-        let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        logistics.hourly_tick(
-            allocator,
-            agents,
-            self,
-            transit_network,
-            graph,
-            minute_of_day,
-            treasury_balance,
-            on_delivery,
-        );
+        // Freight, housing, restock, visits and job search are served by their request queues
+        // (`SIM-02-J`); the hour only starts the logistics clock.
+        logistics.hourly_tick();
         let logistics_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let household_vat = self.run_household_operational_hour(
-            agents,
-            allocator,
-            transit_network,
-            graph,
-            absolute_hour,
-            fiscal_policy.household_vat_rate,
-        );
-        let household_hour_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.assign_agent_workplaces_with_service_funding(
-            agents,
-            allocator,
-            transit_network,
-            graph,
-            service_funding_by_building,
-            logistics,
-            fiscal_policy,
-            *treasury_balance,
-            minute_of_day,
-        );
+        // Commute quotes expire a day of hours after they were added (`SIM-02-G`).
+        self.expire_workplace_route_cache();
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.sync_agent_money_from_households(agents);
-        let money_sync_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "operational_hour_detail absolute_hour={} minute={} materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
+                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} logistics_ms={:.3} workplace_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
-                materialized.households,
-                materialized.residents,
+                self.pending_arrivals.households,
+                self.pending_arrivals.adults,
                 agents.len(),
                 allocator.buildings.len(),
                 self.households.len(),
-                materialize_ms,
+                pending_ms,
                 validate_ms,
-                counts_ms,
-                building_economy_ms,
                 logistics_ms,
-                household_hour_ms,
                 workplace_ms,
-                money_sync_ms,
                 total_start.elapsed().as_secs_f64() * 1000.0,
             );
-        }
-        FiscalRevenue {
-            household_vat,
-            ..FiscalRevenue::default()
         }
     }
 
-    /// Runs one daily settlement pass after the final operational-hour step of the day.
-    ///
-    /// Implements the four-step bankruptcy spec from `economy.md § Building Bankruptcy`:
-    /// Step 1 — bankruptcy check, Step 2 — wages, Step 3 — utility cost, Step 4 — distress.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn daily_settlement_tick(
-        &mut self,
-        agents: &mut AgentSystem,
-        allocator: &mut BuildingAllocator,
-        logistics: &mut ShipmentSystem,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        treasury_balance: &mut f64,
-        service_funding_by_building: &[f32],
-        fiscal_policy: &CityFiscalPolicy,
-        on_wages_paid: impl FnOnce(&AgentSystem, &BuildingAllocator),
-    ) -> FiscalRevenue {
-        let timing_category = if debug::Channel::EconomyPhases.enabled() {
-            debug::Channel::EconomyPhases
-        } else {
-            debug::Channel::Economy
-        };
-        let timing_enabled = timing_category.enabled();
-        let total_start = Instant::now();
-        let mut phase_start = total_start;
-        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
-        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.debug_validate_agent_household_refs(agents);
-        let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.rebuild_household_and_worker_counts(agents, allocator);
-        let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.begin_daily_ledger_settlement();
-        // Advance per-agent job-lock countdown once per day.
-        agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
-            *lock_days = lock_days.saturating_sub(1);
-        });
-        let ledger_and_locks_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Step 1: bankruptcy check — mark buildings that were in distress yesterday and are
-        // still negative. Must run before wages so workers are ejected on the same day.
-        self.run_bankruptcy_check(allocator);
-        let bankruptcy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Step 2: pay wages (budget does not go negative from this step).
-        let income_tax = self.pay_funded_daily_wages(
-            agents,
-            allocator,
-            fiscal_policy.income_tax_rate,
-            treasury_balance,
-            logistics,
-        );
-        let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        // Observe paid assignments before the later job search can replace them.
-        // The live caller supplies an empty callback, removed by monomorphization.
-        on_wages_paid(agents, allocator);
-        phase_start = Instant::now();
-        // Step 3: pay city transfer benefits from the city treasury.
-        self.pay_household_transfers(agents, allocator, treasury_balance, fiscal_policy);
-        let benefits_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Step 4: collect modeled daily property tax from household and building budgets.
-        let property_tax_revenue = self.settle_daily_property_tax(allocator, fiscal_policy);
-        let property_tax_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Steps 5 + 6: charge utility, then liquidate if still negative.
-        self.settle_daily_utilities(allocator, logistics, treasury_balance);
-        let utilities_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Step 7: collect tax on positive daily business operating-budget growth.
-        let business_profit_tax =
-            self.settle_business_profit_tax(allocator, fiscal_policy.business_profit_tax_rate);
-        let profit_tax_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.resolve_household_housing(agents, allocator);
-        let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        // Job searches repeat for a worker only after a multi-day lock, so a commute estimated
-        // yesterday is rarely asked again. Clearing the cache daily bounds it to one day's
-        // searches; it grew with every pair ever scanned (7.4M entries at 30k by day 15).
-        // Complete quotes keep that pricing cadence. Network-only legs are now bounded by
-        // lane storage and stay exact across midnight; their own network revision invalidates them.
-        // Retain its allocation for the next day's requests, while expiring every price.
-        self.workplace_route_cache.clear();
-        self.assign_agent_workplaces_with_service_funding(
-            agents,
-            allocator,
-            transit_network,
-            graph,
-            service_funding_by_building,
-            logistics,
-            fiscal_policy,
-            *treasury_balance,
-            0,
-        );
-        let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.sync_agent_money_from_households(agents);
-        self.finish_daily_ledger_settlement();
-        let sync_and_finish_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        if timing_enabled {
-            debug_log!(
-                timing_category,
-                "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} property_tax_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
-                materialized.households,
-                materialized.residents,
-                agents.len(),
-                allocator.buildings.len(),
-                self.households.len(),
-                materialize_ms,
-                validate_ms,
-                counts_ms,
-                ledger_and_locks_ms,
-                bankruptcy_ms,
-                wages_ms,
-                benefits_ms,
-                property_tax_ms,
-                utilities_ms,
-                profit_tax_ms,
-                housing_ms,
-                workplace_ms,
-                sync_and_finish_ms,
-                total_start.elapsed().as_secs_f64() * 1000.0,
-            );
-        }
-        FiscalRevenue {
-            income_tax,
-            business_profit_tax,
-            residential_property_tax: property_tax_revenue.residential_property_tax,
-            commercial_property_tax: property_tax_revenue.commercial_property_tax,
-            industrial_property_tax: property_tax_revenue.industrial_property_tax,
-            ..FiscalRevenue::default()
-        }
+    /// Ends the hour's city totals at its last slot, after every phase of the hour
+    /// (`SIM-02-I`): the service-sales prices and pool, then electricity dispatch and coverage,
+    /// for the next hour, and logs the hour's housing requests. O(profiles² + resources).
+    pub(crate) fn close_city_hour(&mut self, catalog: &RuntimeEconomyCatalog) {
+        self.service_sales.close_hour(catalog);
+        self.close_electricity_hour();
+        self.close_housing_hour();
+        self.close_shopping_hour();
+        self.close_job_hour();
+        self.close_departure_and_admission_hour();
     }
 }

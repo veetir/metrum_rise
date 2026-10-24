@@ -221,8 +221,9 @@ installs the site, bumps the building revision, invalidates derived indices/entr
 terrain bounds in the allocator's shared pending-site outbox. Demand accounting no longer carries
 a separate terrain-dirtiness result. Placement, level changes and removal own their invalidation;
 the simulation consumes it through `publish_pending_building_site_changes()`.
-Explicit sites additionally publish separate local cell-exclusion bounds. The terrain union is
-not a zoning invalidation envelope: ordinary parcel buildings cannot change cell exclusions,
+Explicit sites additionally publish separate local cell-exclusion bounds. The terrain outbox keeps
+one box per site change, never merged, and the publication refreshes the union of the terrain
+patches the boxes touch (`SIM-02-K`); the boxes are not a zoning invalidation envelope: ordinary parcel buildings cannot change cell exclusions,
 and clearing their occupancy already queues the parcel's local frontage checks. Field removal
 continues to invalidate its saved polygon before swap-remapping. Both site outboxes are derived,
 cleared with the allocator, and consumed by the same publication boundary.
@@ -350,6 +351,20 @@ Important invariant:
 - `vacancy_index`
 - `vacancy_pos`
 - `building_chunks`
+
+A building removal's swap-remove keeps a current index in step (`keep_index_across_swap_remove`,
+`SIM-02-K`): the removed building leaves its zone and chunk lists, the last building takes its
+place there, the vacancy lists drop the removed building and rename the last one, and the
+explicit-site count and the counts of buildings at the support and lot-radius maxima follow. The
+removal queue's repair (`rebuild_zone_index_after_removals`) then returns the vacancy lists to
+building order and recomputes the admission order, which is what a rebuild gives (`ALLOC-03`), and
+recomputes the maxima or chunk bounds only when a removal may have lowered them. Any other stale
+mark drops the kept state and every other caller rebuilds in full; test builds compare the kept
+index with a rebuild. A clearance from the removal queue finds the agents and households naming
+the removed or the moved building in one scan each and repairs only those (`SIM-02-K`); the
+agent remap scans every agent when a removed carrier renumbered agents meanwhile. The slot's
+production-site terrain boxes are render state: they refresh one a light slot later while the
+zone index and site clients are current, and a load recomputes them whole.
 
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.
@@ -709,8 +724,9 @@ Done 2026-10-03. `AdmissionOrder` (`allocator/admission_order.rs`) groups reside
 positions by the household size admission offers there, each group a `BTreeSet` ordered by
 position. One helper, `admission_size`, defines the offered size for both the index and the old
 scan. The index changes with every residential vacancy push, swap-remove and occupancy change
-(O(log V) each), is rebuilt with `rebuild_zone_index` and after an asset-registry reload
-(O(V log V)), and is cleared with the allocator. While `dirty_index` is set, the vacancy list may
+(O(log V) each), is rebuilt with `rebuild_zone_index`, by the removal queue's kept-index repair
+and after an asset-registry reload (O(V log V)), and is cleared with the allocator. While
+`dirty_index` is set, the vacancy list may
 name moved buildings, so the pick falls back to the scan. Admission runs after the spawn batch and
 `maintain` have rebuilt the index, so the hourly path does not hit the fallback.
 

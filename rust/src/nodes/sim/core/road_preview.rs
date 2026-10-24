@@ -2,10 +2,14 @@
 
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
+mod live_checks;
 mod reclaim;
 mod requests;
 mod terrain_revisions;
 mod timing;
+#[cfg(test)]
+pub(crate) use live_checks::RoadPreviewLiveChecks;
+pub(crate) use live_checks::{PublishedRoadPreviewChecks, RoadCorridorClearance};
 pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
 pub(super) use terrain_revisions::RoadPreviewTerrainRevisions;
 pub(crate) use timing::RoadPreviewTiming;
@@ -29,6 +33,7 @@ use crate::simulation::network::surface::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::thread_pools::JoinedPool;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
@@ -58,8 +63,13 @@ pub(crate) struct RoadPreviewSnapshot {
 impl RoadPreviewSnapshot {
     /// Shares a successful plan without consuming its products before the exact click check.
     pub(crate) fn edit_plan(&self) -> Option<Arc<RoadEditPlan>> {
+        self.live_edit_plan().cloned()
+    }
+
+    // The plan of a valid result compiled against a published road surface.
+    fn live_edit_plan(&self) -> Option<&Arc<RoadEditPlan>> {
         (self.is_valid && self.surface_generation > 0)
-            .then(|| self.edit_plan.clone())
+            .then_some(self.edit_plan.as_ref())
             .flatten()
     }
 }
@@ -179,11 +189,12 @@ pub(crate) fn run_road_preview_worker(
 ) {
     // One pool for the worker's lifetime, sized like Rayon's global default: one thread per
     // logical CPU (or RAYON_NUM_THREADS). Node compiles are indivisible 15–45 ms tasks; in the
-    // shared global pool they stall every main-thread caller that joins it.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .thread_name(|index| format!("road-preview-{index}"))
-        .build()
-        .expect("road preview thread pool must start");
+    // extension's shared pool they stall every main-thread caller that joins it. Returning
+    // drops the reclaimer and then the pool, joining their threads (CODE-17).
+    let pool = JoinedPool::build(
+        rayon::ThreadPoolBuilder::new().thread_name(|index| format!("road-preview-{index}")),
+    )
+    .expect("road preview thread pool must start");
     // Superseded snapshots own a planned surface and its topology caches; free them elsewhere.
     let reclaimer = reclaim::Reclaimer::spawn("road-preview-reclaim");
     let mut ready_request = None;

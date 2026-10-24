@@ -3,12 +3,43 @@
 //! Rigid vehicle support over road, apron and pad boundaries.
 
 use crate::nodes::sim::core::SimCore;
+use crate::simulation::buildings::allocator::NearbySites;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 
 impl SimCore {
     /// Shared off-lane support solve for simulation snapshots and interpolated render poses.
     pub(crate) fn vehicle_ground_pose(
+        &self,
+        vehicle: u8,
+        position: Vector2,
+        heading: Vector3,
+    ) -> (f32, [Vector3; 3]) {
+        let support = self
+            .vehicle_ground_support
+            .get(vehicle as usize)
+            .unwrap_or(&self.vehicle_ground_support[0]);
+        // Every contact lies within the support's reach of `position`: one site gather serves
+        // them all, with the per-point query's results (`SIM-02-K`).
+        let mut nearby = NearbySites::new();
+        if self
+            .allocator
+            .gather_nearby_sites(position, support.reach_m, &mut nearby)
+        {
+            vehicle_support_pose(support, position, heading, |point| {
+                self.get_world_surface_height_near(point, &nearby)
+            })
+        } else {
+            vehicle_support_pose(support, position, heading, |point| {
+                self.get_world_surface_height_internal(point)
+            })
+        }
+    }
+
+    /// [`Self::vehicle_ground_pose`] with a per-point surface query at every contact, the
+    /// reference the gathered query must reproduce.
+    #[cfg(test)]
+    pub(crate) fn vehicle_ground_pose_per_point(
         &self,
         vehicle: u8,
         position: Vector2,
@@ -48,28 +79,31 @@ impl SimCore {
         transforms: &mut [f32],
         flags: &[u8],
     ) {
-        transforms
-            .par_chunks_exact_mut(12)
-            .zip(flags.par_iter())
-            .with_min_len(32)
-            .for_each(|(transform, &flag)| {
-                if flag == 0 {
-                    return;
-                }
-                let point = Vector2::new(transform[3], transform[11]);
-                let heading = Vector3::new(transform[2], 0.0, transform[10]);
-                let (height, [x, y, z]) = self.vehicle_ground_pose(vehicle, point, heading);
-                transform[0] = x.x;
-                transform[1] = y.x;
-                transform[2] = z.x;
-                transform[4] = x.y;
-                transform[5] = y.y;
-                transform[6] = z.y;
-                transform[8] = x.z;
-                transform[9] = y.z;
-                transform[10] = z.z;
-                transform[7] = height;
-            });
+        // Godot's main thread grounds cars every frame: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            transforms
+                .par_chunks_exact_mut(12)
+                .zip(flags.par_iter())
+                .with_min_len(32)
+                .for_each(|(transform, &flag)| {
+                    if flag == 0 {
+                        return;
+                    }
+                    let point = Vector2::new(transform[3], transform[11]);
+                    let heading = Vector3::new(transform[2], 0.0, transform[10]);
+                    let (height, [x, y, z]) = self.vehicle_ground_pose(vehicle, point, heading);
+                    transform[0] = x.x;
+                    transform[1] = y.x;
+                    transform[2] = z.x;
+                    transform[4] = x.y;
+                    transform[5] = y.y;
+                    transform[6] = z.y;
+                    transform[8] = x.z;
+                    transform[9] = y.z;
+                    transform[10] = z.z;
+                    transform[7] = height;
+                });
+        });
     }
 }
 
@@ -78,6 +112,9 @@ impl SimCore {
 pub(crate) struct VehicleGroundSupport {
     bounds: [f32; 4],
     contacts: Vec<Vector3>,
+    // Largest contact distance from the model origin: every height sample of a pose lies
+    // within it of the pose's position, since the pose basis is orthonormal.
+    reach_m: f32,
 }
 
 impl Default for VehicleGroundSupport {
@@ -126,7 +163,16 @@ impl VehicleGroundSupport {
                 contacts.push(point);
             }
         }
-        Self { bounds, contacts }
+        // The nine grid contacts include the four bound corners the plane fit samples.
+        let reach_m = contacts
+            .iter()
+            .map(|point| point.length())
+            .fold(0.0, f32::max);
+        Self {
+            bounds,
+            contacts,
+            reach_m,
+        }
     }
 }
 

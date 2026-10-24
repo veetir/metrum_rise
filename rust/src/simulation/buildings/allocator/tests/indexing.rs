@@ -17,7 +17,7 @@ fn explicit_cell_site_summary_tracks_append_rebuild_and_clear() {
     allocator.rebuild_zone_index();
     assert!(!allocator.has_explicit_cell_sites());
     let mut explicit = indexed_test_building(String::new(), ZoneType::None, 0);
-    explicit.construction_remaining_hours = 8;
+    explicit.set_construction_hours_left(8);
     allocator.buildings.push(explicit);
     allocator.rebuild_building_site_clients(10.0);
     assert!(allocator.index_appended_building(1));
@@ -51,7 +51,7 @@ fn nearest_building_pick_preserves_radius_ties_and_index_refresh() {
         }
         // The lower ID lies in the later-visited chunk; broken/unfinished buildings are pickable.
         allocator.buildings[0].broken = true;
-        allocator.buildings[0].construction_remaining_hours = 1;
+        allocator.buildings[0].set_construction_hours_left(1);
         assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
         assert_eq!(
             allocator.nearest_building_idx_at(boundary + 31.0, 0.0),
@@ -322,7 +322,7 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
 
     let mut building = indexed_test_building(residential_asset, ZoneType::Residential, 0);
     building.construction_total_hours = 2;
-    building.construction_remaining_hours = 2;
+    building.set_construction_hours_left(2);
     allocator.buildings.push(building);
     allocator.rebuild_zone_index();
 
@@ -336,11 +336,23 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         0
     );
 
-    allocator.advance_construction_hour();
-    assert_eq!(allocator.buildings[0].construction_remaining_hours, 1);
+    assert_eq!(allocator.buildings[0].construction_hours_left(0), 2);
+    assert_eq!(
+        allocator.buildings[0].construction_hours_left(SLOTS_PER_HOUR + 1),
+        1
+    );
     assert_eq!(allocator.household_capacity(0), 0);
 
-    allocator.advance_construction_hour();
+    allocator.complete_construction(0);
+    assert!(
+        !allocator.dirty_index,
+        "completion updates a clean index in place"
+    );
+    let mut expected = allocator.clone();
+    expected.rebuild_zone_index();
+    assert_eq!(allocator.zone_index, expected.zone_index);
+    assert_eq!(allocator.vacancy_index, expected.vacancy_index);
+    assert_eq!(allocator.vacancy_pos, expected.vacancy_pos);
     assert!(!allocator.buildings[0].is_under_construction());
     assert_eq!(allocator.buildings[0].construction_total_hours, 0);
     assert_eq!(allocator.household_capacity(0), 6);
@@ -442,4 +454,136 @@ fn test_admission_order_matches_vacancy_scan() {
             }
         }
     }
+}
+
+// The chunk lists hold each chunk's buildings in building order, whether a rebuild fills them
+// over the dense grid of the chunk bounds or, for chunks spread far apart, the map directly
+// (`SIM-02-K`).
+#[test]
+fn rebuilt_chunk_lists_hold_each_chunks_buildings_in_building_order() {
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.chunk_lists",
+        ZoneClass::Residential,
+    );
+    let centers = [
+        (3000.0, 0.0),
+        (10.0, -900.0),
+        (3000.0, 0.0),
+        (-700.0, 40.0),
+        (10.0, 5.0),
+    ];
+    for (idx, (x, z)) in centers.into_iter().enumerate() {
+        let mut building = indexed_test_building(asset.clone(), ZoneType::Residential, idx as i32);
+        building.center_x = x;
+        building.center_y = z;
+        allocator.buildings.push(building);
+    }
+    let direct = |allocator: &BuildingAllocator| {
+        let mut chunks = std::collections::HashMap::<(i32, i32), Vec<usize>>::new();
+        for (idx, b) in allocator.buildings.iter().enumerate() {
+            let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+            chunks.entry(chunk).or_default().push(idx);
+        }
+        chunks
+    };
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    assert_eq!(allocator.building_chunks.len(), 4);
+    // Far apart, the grid would hold more than four cells a building; then back again.
+    allocator.buildings[4].center_x = 4.0e6;
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    allocator.buildings[4].center_x = 3000.0;
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    assert_eq!(allocator.building_chunks.len(), 3);
+}
+
+// `SIM-02-K`: a zone index kept across the swap-removes of building removals equals a rebuild:
+// the zone, chunk and vacancy lists, the building order a rebuild gives the vacancy lists
+// (`ALLOC-03`) after claims took homes out of it, the support maximum and chunk bounds a removed
+// building held, and the admission order.
+#[test]
+fn a_zone_index_kept_across_removals_equals_a_rebuild() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::zoning::ZoningSystem;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.kept_index",
+        ZoneClass::Residential,
+    );
+    let commercial = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.com.kept_index",
+        ZoneClass::Commercial,
+    );
+    for i in 0..24 {
+        let (asset, zone) = if i % 3 == 0 {
+            (&commercial, ZoneType::Commercial)
+        } else {
+            (&residential, ZoneType::Residential)
+        };
+        let mut building = indexed_test_building(asset.clone(), zone, i);
+        // Six chunks along x; the last building alone in a far chunk, with the highest support.
+        building.center_x = (i % 6) as f32 * 600.0 + 10.0;
+        building.center_y = if i == 23 { 3_000.0 } else { 10.0 };
+        building.support_height_m = if i == 23 { 9.0 } else { (i % 4) as f32 };
+        building.parcel_id = 0;
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_building_site_clients(10.0);
+    allocator.rebuild_zone_index();
+    // Filling homes 4 and 1 and freeing 1 again takes them out of building order.
+    for building_idx in [4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 7] {
+        allocator.claim_vacancy(building_idx);
+    }
+    allocator.release_vacancy(1);
+    let slot = zone_bucket(ZoneType::Residential);
+    assert!(!allocator.vacancy_index[slot].is_sorted());
+
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    // The last building, then buildings the last one replaces: a home, a store, a full home.
+    for removed in [23, 5, 0, 4] {
+        assert!(allocator.remove_building_for_bulldoze(
+            removed,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut 0.0
+        ));
+        assert!(allocator.zone_index_kept_for_test());
+    }
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    allocator.rebuild_zone_index_after_removals();
+
+    assert!(!allocator.dirty_index);
+    assert_eq!(allocator.zone_index, rebuilt.zone_index);
+    assert_eq!(allocator.vacancy_index, rebuilt.vacancy_index);
+    assert_eq!(allocator.vacancy_pos, rebuilt.vacancy_pos);
+    assert_eq!(allocator.building_chunks, rebuilt.building_chunks);
+    assert_eq!(
+        allocator.building_chunk_bounds,
+        rebuilt.building_chunk_bounds
+    );
+    assert_eq!(
+        allocator.max_building_support_m.to_bits(),
+        rebuilt.max_building_support_m.to_bits()
+    );
+    assert_eq!(allocator.max_building_support_m, 3.0);
+    assert!(allocator.admission_order.same_as(&rebuilt.admission_order));
 }

@@ -13,6 +13,7 @@ use crate::simulation::network::surface::{
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 
+mod bounds;
 pub(crate) mod control;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
@@ -26,6 +27,7 @@ mod successors;
 /// High-level logic for vehicle connections at junctions.
 pub mod vehicle_junctions;
 
+pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
 pub use successors::LaneSuccessors;
 
@@ -126,6 +128,8 @@ pub struct LaneSystem {
     turn_preparation: Vec<bool>,
     controlled: Vec<Option<control::ControlledMovement>>,
     revision: u64,
+    // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
+    planar_bounds: bounds::LanePlanarBounds,
     // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
     // (old ids become tombstones), so every lane at or above it still has flat build heights.
     surface_synced_len: usize,
@@ -148,6 +152,7 @@ impl LaneSystem {
             turn_preparation: Vec::new(),
             controlled: Vec::new(),
             revision: 0,
+            planar_bounds: Default::default(),
             surface_synced_len: 0,
         }
     }

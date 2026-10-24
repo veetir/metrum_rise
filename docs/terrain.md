@@ -4404,7 +4404,7 @@ Weather, clouds and the night sky (`RENDER-16`, `RENDER-17`, `RENDER-20`, `RENDE
   deck thins. Same A/B against `ba66d238`, kuopio-city town: fair `21.86` to `21.89 ms`, storm
   `22.78` to `22.77 ms` (within noise). Not yet: falling rain itself, surfaces that stay wet after the rain,
   rain shafts under distant cells, and wet roads: the Finnish asphalt and footpath shaders
-  (`ROAD-56`) have a `wetness` input the weather does not drive yet.
+  (`ROAD-78`) have a `wetness` input the weather does not drive yet.
 - **Shadows.** `weather_cloud_sun()` attenuates only the directional light, by
   `exp(-3 x density x optical depth / max(sun.y, 0.08))`, so a dense core takes the sun away as
   fully as a tree's cast shadow while ambient light remains. The shadow fades in between 0.3 and
@@ -4934,6 +4934,11 @@ Deterministic terrain-render rules:
   building-part yaw, invalidating earlier oversized/misrotated pads and one-sided apron products;
   Rust and Godot enforce the same revision. Invalid geometry still blocks publication, and both
   `terrain` and `road` debugging expose the renderer's rejection reason.
+- CDT export retains world XZ in `f64` while calculating face normals, slope/pathology metrics,
+  patch-local positions, and UV deltas; it converts only the resulting local values to Godot's
+  `f32` buffers. Converting kilometre-scale world coordinates first can collapse a valid
+  sub-millimetre road/site separation, inflate its measured slope, and falsely suppress the whole
+  atomic patch. The saved benchmark-city regression covers that case at patch `(27, 0)`.
 - successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
   normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
   window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles

@@ -13,8 +13,8 @@ mod geometry;
 mod index;
 mod lifecycle;
 mod placement;
-mod site;
 mod production_changes;
+mod site;
 pub(crate) mod yard;
 
 #[cfg(test)]
@@ -22,12 +22,17 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::support::indexed_test_building;
 
+pub(crate) use admission_order::ChunkBounds;
 pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
 };
+pub(crate) use index::SavedVacancyOrder;
+#[cfg(test)]
 pub(crate) use lifecycle::DemandBuildingActionExecution;
+pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
 pub(crate) use site::BuildingSiteGradingRequest;
 pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
@@ -35,6 +40,8 @@ pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::agriculture::FieldClearanceIndex;
+use crate::simulation::core::handles::{Handle, HandleTable};
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
@@ -123,8 +130,11 @@ pub(crate) enum ExplicitServicePlacementRejection {
     FieldOverlap,
 }
 
+/// The applicant seeds of buildings placed outside the demand queue (`SIM-02-I`): this bit
+/// and the city counter. Queued spawn ids, the seeds of demand-placed buildings, stay below it.
+pub(crate) const CITY_APPLICANT_SEEDS: u64 = 1 << 62;
+
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
-#[derive(Clone)]
 pub struct Building {
     /// World-space X centre of the building footprint (metres, ground-plane X axis).
     pub center_x: f32,
@@ -142,6 +152,12 @@ pub struct Building {
     pub zone_profile_runtime_id: u16,
     /// Stable authored parcel id claimed by this private zoned building; `0` means no parcel.
     pub parcel_id: u64,
+    /// Seed of the applicant stream offered this building's household places (`SIM-02-I`):
+    /// the id of the queued spawn that placed it, or the city counter's next value
+    /// ([`CITY_APPLICANT_SEEDS`]) for a building placed outside the demand queue. A stable
+    /// identity, so planning, admission and arrivals draw the same applicants across remaps,
+    /// removals and loads. Saved.
+    pub applicant_seed: u64,
     /// Redevelopment counter of the claimed parcel when this building was placed.
     ///
     /// Captured rather than read live so the render path needs no zoning lookup, and so the
@@ -198,8 +214,9 @@ pub struct Building {
     ///
     /// `0` means this building was placed complete or has already finished construction.
     pub construction_total_hours: u16,
-    /// Remaining operational hours before this building becomes live economy capacity.
-    pub construction_remaining_hours: u16,
+    /// Absolute slot at which construction completes and the building becomes live economy
+    /// capacity (`SIM-02-D`); `0` once complete.
+    pub construction_complete_slot: u64,
     /// If true, the asset was missing from the registry during load.
     pub broken: bool,
     /// Compact runtime economy-profile id resolved from the asset's authored profile reference.
@@ -220,8 +237,9 @@ pub struct Building {
     pub profit_tax_budget_baseline: f32,
     /// Completed previous-day operating-budget delta captured before the daily baseline reset.
     pub last_day_profit: f32,
-    /// Remaining hourly cooldown steps before this building may open another freight request.
-    pub shipment_cooldown_hours: u16,
+    /// First absolute slot at which this building's hourly phase may request freight again; a
+    /// passive deadline compared at the phase, never decremented (`SIM-02-J`).
+    pub shipment_cooldown_until_slot: u64,
     /// Currency value of input shipments received from OWA during the current day.
     ///
     /// Reset once per day after the demand snapshot is taken. Read by the demand system to
@@ -272,12 +290,32 @@ pub struct Building {
     /// Commercial staffing and input targets use this as a cheap demand signal instead of
     /// assuming every shop should immediately operate at full authored capacity.
     pub recent_household_sales_value: f32,
+    /// Workers paid since the building's last daily phase; at most its funded jobs are paid in
+    /// one 24-hour window (`SIM-02-G`).
+    pub paid_workers_in_window: u32,
+    /// Funded live jobs from the latest hourly census, which wages at each worker's daily phase
+    /// read. Copied and saved so a reload does not depend on a rebuilt census (`SIM-02-G`).
+    pub funded_job_capacity: u32,
+    /// Wages left unpaid since the building's last daily phase because it had no cash even
+    /// after selling output: a private business that cannot meet its payroll is insolvent, as
+    /// it was when the midnight payroll ran before the bills (`SIM-02-G`).
+    pub unpaid_cash_wages_in_window: u32,
     /// Runtime-only activity cap of a store, service store or explicit work area: its funded
     /// share of full output from the latest job-funding census (`DEM-02`).
     ///
-    /// This is rebuilt by the household economy before production, hiring, and demand accounting;
-    /// it is not persisted because the census is rebuilt from live city state.
+    /// The building's hourly phase sets it from [`Self::funded_activity`] before production,
+    /// and it holds until the next phase, so it is saved (`SIM-02-F`, `SIM-02-I`).
     pub commercial_activity_floor_scale: f32,
+    /// Funded share of full output in the latest hourly census, copied like
+    /// [`Self::funded_job_capacity`] and saved, so the activity floor set at each hourly phase
+    /// never reads a census rebuilt on load (`SIM-02-I`).
+    pub funded_activity: f32,
+    /// Throughput a service store recorded at its last hourly phase; zero for any other
+    /// building. At its next phase the store draws its share of the service-sales pool by the
+    /// capacity this gives under [`Self::service_sales_profile_runtime_id`] (`SIM-02-I`).
+    pub service_sales_capacity: f32,
+    /// Economy profile [`Self::service_sales_capacity`] was recorded under.
+    pub service_sales_profile_runtime_id: u16,
     /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
     ///
     /// `1.0` means one hectare of output and profile-defined worker density. Explicit farms and
@@ -289,6 +327,32 @@ pub struct Building {
     pub pending_redevelopment: bool,
     /// Remaining deterministic daily grace before incompatible rezoning forces removal.
     pub rezone_grace_days_remaining: u8,
+}
+
+// Every field but the asset id and the inventory is `Copy`, so a new field is copied without
+// listing it here; a new owned field fails to compile until it is cloned too.
+impl Clone for Building {
+    fn clone(&self) -> Self {
+        Self {
+            asset_id: self.asset_id.clone(),
+            resource_inventory: self.resource_inventory.clone(),
+            ..*self
+        }
+    }
+
+    // Reuses this building's string and inventory storage, so copies into retained rows (the
+    // census input copy, `SIM-02-I`) allocate nothing once grown.
+    fn clone_from(&mut self, source: &Self) {
+        let mut asset_id = std::mem::take(&mut self.asset_id);
+        let mut resource_inventory = std::mem::take(&mut self.resource_inventory);
+        asset_id.clone_from(&source.asset_id);
+        resource_inventory.clone_from(&source.resource_inventory);
+        *self = Self {
+            asset_id,
+            resource_inventory,
+            ..*source
+        };
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -324,11 +388,54 @@ impl Default for BuildingEntrance {
     }
 }
 
+/// Building rows a copy of the store must refresh: the rows named by building revision steps,
+/// or every row after a step that could not name them. Unlike the bounded revision log, it is
+/// kept until its one consumer drains it, so draining never depends on how much history a log
+/// retained. Bounded by the store: more rows than buildings collapse into `all`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RowChanges {
+    /// Rows changed since the last drain, in recording order, possibly repeated.
+    pub(crate) rows: Vec<usize>,
+    /// Whether some change could not name its rows.
+    pub(crate) all: bool,
+}
+
+impl RowChanges {
+    // Adds `rows` of a store of `buildings` rows. O(rows), amortized allocation-free.
+    fn record(&mut self, rows: impl IntoIterator<Item = usize>, buildings: usize) {
+        if self.all {
+            return;
+        }
+        self.rows.extend(rows);
+        if self.rows.len() > buildings.saturating_add(2) {
+            self.mark_all();
+        }
+    }
+
+    fn mark_all(&mut self) {
+        self.all = true;
+        self.rows.clear();
+    }
+}
+
+/// Treasury purchases of city-service inputs over one calendar day, posted when a purchase is
+/// paid or refunded (`SIM-02-G`). O(1) per posting.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CityInputDay {
+    /// Net purchases by every city service.
+    pub(crate) total: f64,
+    /// The power plants' share.
+    pub(crate) power: f64,
+}
+
 /// Manages the full lifecycle of [`Building`]s.
 #[derive(Clone)]
 pub struct BuildingAllocator {
     /// All currently placed buildings.
     pub buildings: Vec<Building>,
+    /// Stable handles of the dense buildings; saved with the store.
+    pub(crate) building_handles: HandleTable<Building>,
     /// Set to `true` when the building list changes, signalling renderers to refresh.
     pub dirty: bool,
     /// Per-edge frontage occupancy tracker.
@@ -347,16 +454,39 @@ pub struct BuildingAllocator {
     pub(crate) building_chunk_bounds: Option<[i32; 4]>,
     /// Highest indexed support plane, for conservative directional-shadow caster queries.
     pub(crate) max_building_support_m: f32,
+    /// Indexed buildings whose support equals [`Self::max_building_support_m`], so a kept
+    /// index's removal lowers it only when it takes the last (`SIM-02-K`).
+    pub(crate) max_building_support_count: usize,
     /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo.
     pub(crate) field_clearance: FieldClearanceIndex,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
+    /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
+    /// from it.
+    pub(crate) now_slot: u64,
+    /// Next value of the city applicant-seed counter, without [`CITY_APPLICANT_SEEDS`]. Saved.
+    pub(crate) next_applicant_seed: u64,
+    /// Construction deadlines set since SimCore last scheduled their completion events, in
+    /// placement order.
+    pub(crate) pending_construction: Vec<(Handle<Building>, u64)>,
+    /// Removals queued by the hour's actions slot (planned clearance) and by the buildings'
+    /// daily phases (expired compatibility), oldest first, until the `building removals` queue
+    /// serves them in the hour's removal window (`SIM-02-J`). Saved.
+    pub(crate) removal_requests: std::collections::VecDeque<BuildingRemovalRequest>,
+    /// The `building removals` queue's service this hour, logged at its last slot.
+    pub(crate) removal_stats: crate::simulation::core::request_queue::QueueStats,
+    /// Treasury purchases of city-service inputs during the calendar day so far (`SIM-02-G`).
+    pub(crate) city_input_day: CityInputDay,
+    /// Purchases of the last closed calendar day, read by its budget report.
+    pub(crate) last_city_input_day: CityInputDay,
     /// Yard hedges to lay and remove, in the order the buildings were placed and removed.
     pub(crate) pending_yards: Vec<yard::YardEvent>,
     /// Recent in-place level changes, read by the renderer to animate the replacement.
     pub(crate) level_changes: LevelChangeLog,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
+    /// Indexed buildings whose lot radius equals [`Self::max_lot_radius_cells`] (`SIM-02-K`).
+    pub(crate) max_lot_radius_count: usize,
     /// Explicit non-parcel sites in the existing building index; invalid when `dirty_index`.
     pub(crate) explicit_cell_site_count: usize,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
@@ -373,6 +503,9 @@ pub struct BuildingAllocator {
     pub(crate) building_ref_revision: u64,
     // Building indices changed at each `building_ref_revision` step, for incremental tables.
     building_changes: crate::simulation::core::change_log::IndexChangeLog,
+    /// The same steps for the census input copy (`SIM-02-I`), kept until the copy drains them;
+    /// saved with the copy, unlike the bounded log above.
+    pub(crate) census_copy_changes: RowChanges,
     production_revision: u64,
     production_changes: crate::simulation::core::change_log::IndexChangeLog,
     /// Appearance-only revision; does not invalidate routing or entrance references.
@@ -383,18 +516,26 @@ pub struct BuildingAllocator {
     pub(crate) entrances: Vec<BuildingEntrance>,
     /// Derived flat building-site clients keyed by building index.
     pub(crate) building_sites: Vec<BuildingSiteClient>,
-    /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode.
-    pub(crate) building_site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode:
+    /// one box per site change, never merged, so changes far apart refresh only the terrain
+    /// patches each touches (`SIM-02-K`).
+    pub(crate) building_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
     // Geometry-only feasibility, independent of demand and dropped on allocator snapshots.
     site_feasibility: placement::SiteFeasibilityCache,
+    // Admission's border arrival sweeps, kept per routing revision; derived, never saved.
+    border_arrival: lifecycle::BorderArrivalCosts,
+    // The zone-index rebuild's reused storage.
+    index_scratch: index::IndexScratch,
+    // What a zone index kept across the removal queue's swap-removes still owes (`SIM-02-K`).
+    kept_index: index::KeptIndex,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
 
-pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
+pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, NearbySites};
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]
@@ -483,7 +624,7 @@ impl Building {
 
     /// Returns true while the building exists only as a construction site.
     pub(crate) fn is_under_construction(&self) -> bool {
-        self.construction_remaining_hours > 0
+        self.construction_complete_slot != 0
     }
 
     /// Returns true when the building can participate in household, labor, and economy flows.
@@ -496,15 +637,28 @@ impl Building {
         self.work_area_scale = crate::simulation::work_area::sanitize_work_area_scale(scale);
     }
 
-    /// Returns deterministic `0.0..=1.0` construction progress for rendering and diagnostics.
-    pub(crate) fn construction_progress(&self) -> f32 {
-        if self.construction_total_hours == 0 {
+    /// Returns `0.0..=1.0` construction progress at the continuous slot clock `now_slot`.
+    pub(crate) fn construction_progress(&self, now_slot: f64) -> f32 {
+        if !self.is_under_construction() || self.construction_total_hours == 0 {
             return 1.0;
         }
-        let remaining = self
-            .construction_remaining_hours
-            .min(self.construction_total_hours);
-        1.0 - remaining as f32 / self.construction_total_hours as f32
+        let duration = f64::from(self.construction_total_hours) * SLOTS_PER_HOUR as f64;
+        let start = self.construction_complete_slot as f64 - duration;
+        ((now_slot - start) / duration).clamp(0.0, 1.0) as f32
+    }
+
+    /// Puts the building under construction with `hours` left at slot 0; `0` completes it.
+    #[cfg(test)]
+    pub(crate) fn set_construction_hours_left(&mut self, hours: u16) {
+        self.construction_complete_slot = u64::from(hours) * SLOTS_PER_HOUR;
+    }
+
+    /// Hour boundaries from the hour holding `now_slot` to the first one at or after
+    /// completion: the hour by which the building is ready, as the workforce calendar counts
+    /// it. At an hour boundary this is the time left rounded up; `0` once complete.
+    pub(crate) fn construction_hours_left(&self, now_slot: u64) -> u16 {
+        let ready_hour = self.construction_complete_slot.div_ceil(SLOTS_PER_HOUR);
+        u16::try_from(ready_hour.saturating_sub(now_slot / SLOTS_PER_HOUR)).unwrap_or(u16::MAX)
     }
 
     /// Returns the current inventory amount for one runtime resource.
@@ -689,10 +843,19 @@ impl BuildingAllocator {
         }
     }
 
+    /// Creates an empty allocator whose clock is at `now_slot`.
+    pub(crate) fn new_at_slot(now_slot: u64) -> Self {
+        Self {
+            now_slot,
+            ..Self::new()
+        }
+    }
+
     /// Creates an empty allocator.
     pub fn new() -> Self {
         Self {
             buildings: Vec::new(),
+            building_handles: HandleTable::default(),
             dirty: false,
             edge_occupancy: HashMap::new(),
             zone_index: [const { Vec::new() }; 3],
@@ -702,11 +865,20 @@ impl BuildingAllocator {
             building_chunks: HashMap::new(),
             building_chunk_bounds: None,
             max_building_support_m: f32::NEG_INFINITY,
+            max_building_support_count: 0,
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
+            now_slot: 0,
+            next_applicant_seed: 0,
+            pending_construction: Vec::new(),
+            removal_requests: std::collections::VecDeque::new(),
+            removal_stats: Default::default(),
+            city_input_day: CityInputDay::default(),
+            last_city_input_day: CityInputDay::default(),
             pending_yards: Vec::new(),
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
+            max_lot_radius_count: 0,
             explicit_cell_site_count: 0,
             max_site_radius_m: 0.0,
             max_site_radius_count: 0,
@@ -715,15 +887,19 @@ impl BuildingAllocator {
             entrances_dirty: false,
             building_ref_revision: 0,
             building_changes: Default::default(),
+            census_copy_changes: RowChanges::default(),
             production_revision: 0,
             production_changes: Default::default(),
             building_visual_revision: 0,
             entrance_ref_revision: 0,
             entrances: Vec::new(),
             building_sites: Vec::new(),
-            building_site_dirty_bounds: None,
+            building_site_dirty_bounds: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
+            border_arrival: Default::default(),
+            index_scratch: Default::default(),
+            kept_index: Default::default(),
             registry: AssetRegistry::new(),
         }
     }
@@ -756,6 +932,30 @@ impl BuildingAllocator {
             &network.lane_system,
         );
 
+        self.repair_derived_caches(zoning, network, graph);
+        self.dirty = false;
+    }
+
+    /// Repairs derived state after daily phases removed buildings (`SIM-02-G`): the building
+    /// revision, then the caches [`Self::maintain`] repairs. O(buildings), only in a slot that
+    /// removed one.
+    pub(crate) fn finish_phase_removals(
+        &mut self,
+        zoning: &ZoningSystem,
+        network: &mut crate::simulation::network::TransitNetwork,
+        graph: &mut RegionGraph,
+    ) {
+        self.bump_building_ref_revision();
+        self.entrances_dirty = true;
+        self.repair_derived_caches(zoning, network, graph);
+    }
+
+    fn repair_derived_caches(
+        &mut self,
+        zoning: &ZoningSystem,
+        network: &mut crate::simulation::network::TransitNetwork,
+        graph: &mut RegionGraph,
+    ) {
         network.rebuild_pathing_if_dirty(graph);
 
         if self.entrances_dirty || self.entrances.len() != self.buildings.len() {
@@ -768,8 +968,6 @@ impl BuildingAllocator {
         if self.dirty_index {
             self.rebuild_zone_index();
         }
-
-        self.dirty = false;
     }
 
     #[cfg(test)]
@@ -807,51 +1005,113 @@ impl BuildingAllocator {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
             next_household_id,
-            agents,
             transit_network,
             graph,
             claim_income,
+            |home, size, composition, border_node| {
+                let border_pos = graph.node(border_node).pos;
+                agents.spawn_household_arrival_carrier(
+                    home,
+                    size,
+                    composition,
+                    border_node,
+                    border_pos.x,
+                    border_pos.z,
+                );
+            },
         ) as u32
     }
 
-    /// Advances private construction sites by one operational hour.
-    pub(crate) fn advance_construction_hour(&mut self) {
-        let mut completed_any = false;
-        let mut progressed = false;
-        let mut completed_zone_dirty = [false; BASELINE_PRIVATE_ZONES.len()];
+    /// Decides a bounded applicant batch as [`Self::execute_demand_household_admission_with_income`]
+    /// does, claiming each accepted family's home, without launching carriers: each decision
+    /// joins `admitted` as `(home, size, composition, border)` for the admission queue, which
+    /// creates the carriers over the hour (`SIM-02-J`). Returns how many were admitted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decide_demand_household_admission(
+        &mut self,
+        households_to_admit_today: u32,
+        next_household_id: usize,
+        transit_network: &crate::simulation::network::TransitNetwork,
+        graph: &RegionGraph,
+        claim_income: impl FnMut(
+            crate::simulation::economy::agents::HouseholdAgeComposition,
+            u16,
+            u8,
+        ) -> bool,
+        admitted: &mut Vec<(
+            usize,
+            u16,
+            crate::simulation::economy::agents::HouseholdAgeComposition,
+            u32,
+        )>,
+    ) -> u32 {
+        self.admit_households_from_demand(
+            households_to_admit_today as usize,
+            next_household_id,
+            transit_network,
+            graph,
+            claim_income,
+            |home, size, composition, border_node| {
+                admitted.push((home, size, composition, border_node));
+            },
+        ) as u32
+    }
+
+    /// Slot at which construction of `hours` operational hours started now completes; `0`
+    /// (complete) for none.
+    pub(crate) fn construction_complete_slot_after(&self, hours: u16) -> u64 {
+        if hours == 0 {
+            0
+        } else {
+            self.now_slot + u64::from(hours) * SLOTS_PER_HOUR
+        }
+    }
+
+    /// Finishes construction at its deadline (`SIM-02-D`): the building becomes live economy
+    /// capacity and joins clean indices in place. O(log B) plus one sorted insert; a stale
+    /// index is left for its next reader to rebuild.
+    pub(crate) fn complete_construction(&mut self, building_idx: usize) {
+        let building = &mut self.buildings[building_idx];
+        if !building.is_under_construction() {
+            return;
+        }
+        building.construction_complete_slot = 0;
+        building.construction_total_hours = 0;
+        debug_log!(
+            "economy",
+            "building construction complete: asset={} zone={:?} level={}",
+            building.asset_id,
+            building.zone_type,
+            building.level
+        );
+        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
+        self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
+        self.record_production_change(building_idx);
+        self.dirty = true;
+        if !self.index_completed_building(building_idx) {
+            self.mark_index_stale();
+        }
+    }
+
+    /// Completes every construction site at once and rebuilds the indices, for fixtures that
+    /// need a finished city. O(B).
+    pub(crate) fn complete_all_construction(&mut self) {
         for building in &mut self.buildings {
-            if building.construction_remaining_hours == 0 {
-                continue;
-            }
-            building.construction_remaining_hours -= 1;
-            progressed = true;
-            if building.construction_remaining_hours == 0 {
-                completed_any = true;
+            if building.is_under_construction() {
+                building.construction_complete_slot = 0;
                 building.construction_total_hours = 0;
                 if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
-                    completed_zone_dirty[zone_idx] = true;
+                    self.dirty_zones[zone_idx] = true;
                 }
-                debug_log!(
-                    "economy",
-                    "building construction complete: asset={} zone={:?} level={}",
-                    building.asset_id,
-                    building.zone_type,
-                    building.level
-                );
             }
         }
-        if progressed {
-            self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
-        }
-        if completed_any {
-            self.invalidate_production_changes();
-            self.dirty = true;
-            self.dirty_index = true;
-            for (zone_idx, dirty) in completed_zone_dirty.into_iter().enumerate() {
-                self.dirty_zones[zone_idx] |= dirty;
-            }
-            self.rebuild_zone_index();
-        }
+        self.pending_construction.clear();
+        self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
+        self.invalidate_production_changes();
+        self.dirty = true;
+        self.rebuild_zone_index();
     }
 
     /// Removes all buildings and resets the dirty flag.
@@ -861,8 +1121,11 @@ impl BuildingAllocator {
         let had_sites = !self.building_sites.is_empty();
         self.site_feasibility = placement::SiteFeasibilityCache::default();
         self.buildings.clear();
+        self.building_handles.clear();
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
+        self.pending_construction.clear();
+        self.removal_requests.clear();
         self.pending_yards.clear();
         self.level_changes.clear();
         self.building_sites.clear();
@@ -878,14 +1141,17 @@ impl BuildingAllocator {
         self.building_chunks.clear();
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
+        self.max_building_support_count = 0;
         self.max_lot_radius_cells = 0.0;
+        self.max_lot_radius_count = 0;
         self.explicit_cell_site_count = 0;
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
-        self.building_site_dirty_bounds = None;
+        self.building_site_dirty_bounds.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;
+        self.kept_index = Default::default();
         self.entrances.clear();
         self.entrances_dirty = false;
         if had_buildings || had_sites {
@@ -912,14 +1178,17 @@ impl BuildingAllocator {
         self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes.clear(self.building_ref_revision);
+        self.census_copy_changes.mark_all();
     }
 
     // Revision step whose only changed building rows are `indices`, including removed rows.
-    fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize>) {
+    fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize> + Clone) {
         self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes
-            .record(self.building_ref_revision, indices);
+            .record(self.building_ref_revision, indices.clone());
+        self.census_copy_changes
+            .record(indices, self.buildings.len());
     }
 
     /// Writes the building rows changed since `since` into `out`, sorted and deduplicated.
@@ -962,23 +1231,52 @@ impl BuildingAllocator {
         self.registry.household_capacity(&b.asset_id)
     }
 
-    /// Resets daily economy accumulators on every building.
-    ///
-    /// Called once per day after the demand snapshot has been taken, so the next day's
-    /// logistics and household sales ticks accumulate against a clean baseline.
+    /// Rolls building `building_idx`'s daily accumulators at its daily phase (`SIM-02-G`): the
+    /// finished 24-hour window becomes its `recent_*` values and the next window starts empty.
+    /// O(1).
+    pub(crate) fn roll_daily_accumulators(&mut self, building_idx: usize) {
+        let building = &mut self.buildings[building_idx];
+        building.daily_owa_input_value = 0.0;
+        building.daily_local_input_value = 0.0;
+        building.daily_city_funded_input_cost = 0.0;
+        building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
+        building.daily_household_sales_value = 0.0;
+        building.recent_power_service_units = building.daily_power_service_units.max(0.0);
+        building.daily_power_service_units = 0.0;
+        building.recent_electricity = std::mem::take(&mut building.daily_electricity);
+        building.recent_power_served_units = building.daily_power_served_units.max(0.0);
+        building.daily_power_served_units = 0.0;
+        building.paid_workers_in_window = 0;
+        building.unpaid_cash_wages_in_window = 0;
+    }
+
+    /// Rolls every building's daily accumulators at once, as their daily phases would.
+    #[cfg(test)]
     pub(crate) fn reset_daily_input_accumulators(&mut self) {
-        for building in &mut self.buildings {
-            building.daily_owa_input_value = 0.0;
-            building.daily_local_input_value = 0.0;
-            building.daily_city_funded_input_cost = 0.0;
-            building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
-            building.daily_household_sales_value = 0.0;
-            building.recent_power_service_units = building.daily_power_service_units.max(0.0);
-            building.daily_power_service_units = 0.0;
-            building.recent_electricity = std::mem::take(&mut building.daily_electricity);
-            building.recent_power_served_units = building.daily_power_served_units.max(0.0);
-            building.daily_power_served_units = 0.0;
+        for building_idx in 0..self.buildings.len() {
+            self.roll_daily_accumulators(building_idx);
         }
+    }
+
+    /// Posts a city service's input purchase (negative for a refund) into the calendar day's
+    /// totals, independent of the building's own window (`SIM-02-G`). O(1).
+    pub(crate) fn record_city_input_purchase(&mut self, building_idx: usize, amount: f64) {
+        let power = self.buildings.get(building_idx).is_some_and(|building| {
+            load_runtime_economy_catalog().is_ok_and(|catalog| {
+                catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .is_some_and(|profile| profile.utility_service.as_deref() == Some("power"))
+            })
+        });
+        self.city_input_day.total += amount;
+        if power {
+            self.city_input_day.power += amount;
+        }
+    }
+
+    /// Ends the calendar day's city input purchases for its budget report. O(1).
+    pub(crate) fn close_city_input_day(&mut self) {
+        self.last_city_input_day = std::mem::take(&mut self.city_input_day);
     }
 
     /// Returns the target floor area per household for a building.
@@ -987,6 +1285,28 @@ impl BuildingAllocator {
             return 0.0;
         };
         self.registry.flat_size_m2(&b.asset_id)
+    }
+
+    /// The applicant-stream seed of building `building_idx` ([`Building::applicant_seed`]),
+    /// as the household applicant functions take it. O(1).
+    pub(crate) fn applicant_seed(&self, building_idx: usize) -> usize {
+        self.buildings[building_idx].applicant_seed as usize
+    }
+
+    /// Test fixtures that push buildings directly: seeds each building's applicants by its
+    /// index, as distinct placements would give each home a stream of its own.
+    #[cfg(test)]
+    pub(crate) fn seed_applicants_by_index_for_test(&mut self) {
+        for (index, building) in self.buildings.iter_mut().enumerate() {
+            building.applicant_seed = index as u64;
+        }
+    }
+
+    // The city counter's next applicant seed, for a building placed outside the demand queue.
+    pub(super) fn next_city_applicant_seed(&mut self) -> u64 {
+        let seed = CITY_APPLICANT_SEEDS | self.next_applicant_seed;
+        self.next_applicant_seed += 1;
+        seed
     }
 
     /// Returns the economy-profile worker capacity for an asset, failing safe on unresolved profiles.

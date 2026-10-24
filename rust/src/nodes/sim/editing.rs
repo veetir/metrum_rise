@@ -231,6 +231,11 @@ impl SimCore {
     }
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
+        // Godot's main thread finishes terrain edits; the rebuilds are parallel (CODE-17).
+        crate::thread_pools::install(|| self.finish_terrain_authoring_edit_in_pool());
+    }
+
+    fn finish_terrain_authoring_edit_in_pool(&mut self) {
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
 
@@ -300,34 +305,36 @@ impl SimCore {
     }
 
     pub(crate) fn rebuild_building_entrances_internal(&mut self) {
-        // Refresh queued frontage links before copying parcel attachments into live buildings.
-        // The cell refresh defers all publication while a road transaction is still staged.
-        self.prepare_cell_lots_internal();
-        self.allocator
-            .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
-        self.allocator
-            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        // Godot's main thread runs this after its network edits; the lot refresh, attachment
+        // repair and entrance rebuild are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            // Refresh queued frontage links before copying parcel attachments into live
+            // buildings. The cell refresh defers all publication while a road transaction is
+            // still staged.
+            self.prepare_cell_lots_internal();
+            self.allocator
+                .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
+            self.allocator
+                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        });
     }
 
     fn run_building_allocator_maintenance_internal(&mut self) {
-        self.allocator.maintain(
-            0,
-            &mut self.zoning,
-            &mut self.agents,
-            &mut self.households,
-            &mut self.logistics,
-            &mut self.treasury.balance,
-            &mut self.transit_network,
-            &mut self.region_graph,
-        );
-        self.publish_pending_production_site_removals();
-        use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
-        for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
-            if self.allocator.dirty_zones[zone_idx] {
-                self.allocator.dirty_zones[zone_idx] = false;
-                self.transit_network.flow_fields.mark_zone_dirty(*zone);
-            }
-        }
+        // Main-thread edits run maintenance, whose removals reach parallel rebuilds (CODE-17).
+        crate::thread_pools::install(|| {
+            self.allocator.maintain(
+                0,
+                &mut self.zoning,
+                &mut self.agents,
+                &mut self.households,
+                &mut self.logistics,
+                &mut self.treasury.balance,
+                &mut self.transit_network,
+                &mut self.region_graph,
+            );
+            self.publish_pending_production_site_removals();
+            self.mark_changed_zone_flow_fields();
+        });
     }
 
     /// Returns the deterministic building, road or vegetation target for the bulldoze cursor.
@@ -361,17 +368,20 @@ impl SimCore {
         &mut self,
         target: BulldozeTarget,
     ) -> Option<bool> {
-        self.prepare_bulldoze_target_indices();
-        let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
-        if current.kind != target.kind
-            || current.id != target.id
-            || current.vegetation != target.vegetation
-        {
-            return None;
-        }
-        let road_deleted = current.kind == BulldozeTargetKind::Road;
-        self.delete_bulldoze_target(&current)
-            .then_some(road_deleted)
+        // Index repair and the deletion's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.prepare_bulldoze_target_indices();
+            let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
+            if current.kind != target.kind
+                || current.id != target.id
+                || current.vegetation != target.vegetation
+            {
+                return None;
+            }
+            let road_deleted = current.kind == BulldozeTargetKind::Road;
+            self.delete_bulldoze_target(&current)
+                .then_some(road_deleted)
+        })
     }
 
     fn delete_bulldoze_target(&mut self, target: &BulldozeTarget) -> bool {
@@ -581,6 +591,12 @@ impl SimCore {
         if building_idx >= self.allocator.buildings.len() {
             return false;
         }
+        // The undo capture and the removal's remaps are parallel; Godot's main thread cancels
+        // pending industry outside any pool (CODE-17).
+        crate::thread_pools::install(|| self.remove_building_in_pool(building_idx, record_undo))
+    }
+
+    fn remove_building_in_pool(&mut self, building_idx: usize, record_undo: bool) -> bool {
         let dirty_bounds = self.allocator.site_dirty_bounds(building_idx);
         // Read while the farm still owns its field: removing it gives the ground back, and the
         // plants the field was hiding have to return with it.
@@ -631,6 +647,12 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
         true
+    }
+
+    /// Test driver: bulldozes road edge `edge_idx` as the bulldoze tool does.
+    #[cfg(test)]
+    pub(crate) fn bulldoze_road_edge_for_test(&mut self, edge_idx: usize) -> bool {
+        self.bulldoze_road_edge(edge_idx)
     }
 
     fn bulldoze_road_edge(&mut self, edge_idx: usize) -> bool {
@@ -2369,7 +2391,6 @@ impl SimCore {
             node_id as u32,
             crate::simulation::network::types::NodeType::Border,
         );
-        self.demand.invalidate_construction_execution();
         debug_log!(
             "economy",
             "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",
@@ -2534,7 +2555,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: start.distance_to(end),
             physical_length: start.distance_to(end),
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![start, end],
@@ -2586,7 +2606,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 10.0,
             physical_length: 10.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
@@ -2761,7 +2780,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 120.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
@@ -2833,6 +2851,7 @@ mod tests {
         let mut core = test_core();
         core.pending_demand_spawns
             .push_back(PendingDemandSpawnAction {
+                id: 0,
                 due_minute: 42,
                 zone_type: ZoneType::Residential,
                 action: DemandSpawnAction {
@@ -2841,6 +2860,8 @@ mod tests {
                 },
                 planned_day_index: 2,
                 planned_minute_of_day: 60,
+                permit: Default::default(),
+                counted: false,
             });
 
         core.push_undo_state_with_runtime(false, false, false, true);
@@ -3068,6 +3089,14 @@ mod tests {
             .rebuild_building_site_clients(core.zoning.config.zone_cell_m);
         core.allocator.rebuild_zone_index();
         let original_sites = core.allocator.building_sites.clone();
+        // The removed building is still a construction site.
+        let complete_slot =
+            core.allocator.now_slot + 4 * crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+        core.allocator.buildings[0].construction_total_hours = 4;
+        core.allocator.buildings[0].construction_complete_slot = complete_slot;
+        core.allocator.building_handles.register_appended(2);
+        let removed = core.allocator.building_handles.handle(0);
+        let moved = core.allocator.building_handles.handle(1);
 
         assert!(core.bulldoze_building(0));
         assert_eq!(core.allocator.buildings.len(), 1);
@@ -3091,6 +3120,16 @@ mod tests {
         assert_eq!(core.allocator.buildings.len(), 2);
         assert_eq!(core.allocator.buildings[0].asset_id, "building.removed");
         assert_eq!(core.allocator.buildings[1].asset_id, "building.moved");
+        // The moved building keeps its handle; the restored one takes a new handle and lists
+        // its construction deadline again.
+        let handles = &core.allocator.building_handles;
+        assert_eq!(handles.resolve(moved), Some(1));
+        assert_eq!(handles.resolve(removed), None);
+        assert_eq!(handles.resolve(handles.handle(0)), Some(0));
+        assert_eq!(
+            core.allocator.pending_construction,
+            [(handles.handle(0), complete_slot)]
+        );
         for (idx, id) in parcel_ids.into_iter().enumerate() {
             assert_eq!(
                 core.zoning
@@ -3153,11 +3192,13 @@ mod tests {
                 destination: ShipmentEndpoint::Building(1),
                 carrier_class: CarrierClass::Truck,
                 status: ShipmentStatus::InTransit,
-                carrier_agent_id: usize::MAX,
+                carrier: crate::simulation::economy::agents::AgentHandle::NONE,
                 total_cost: 800.0,
                 freight_cost: 0.0,
                 eta_hours: 1,
-                queued_hours: 0,
+                leg_started_hour: 0,
+                trip_event_slot: 0,
+                cargo_loaded: false,
             });
 
             assert!(core.bulldoze_building(removed));
@@ -3178,6 +3219,71 @@ mod tests {
                 ShipmentEndpoint::Building(1)
             );
         }
+    }
+
+    #[test]
+    fn building_bulldoze_undo_rebinds_the_restored_carrier_handle() {
+        use crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
+        use crate::simulation::economy::logistics::{
+            CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+        };
+
+        let mut core = test_core();
+        core.allocator.buildings = vec![
+            test_building("supplier", -20.0, 3.0),
+            test_building("buyer", 20.0, 7.0),
+        ];
+        core.allocator
+            .rebuild_building_site_clients(core.config.zone_cell_m);
+        core.allocator.rebuild_zone_index();
+        let carrier = core.agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        core.agents.vehicle_type[carrier] = VEHICLE_FREIGHT_DELIVERY;
+        core.agents.freight_shipment_id[carrier] = 0;
+        // Removing the carrier moves this agent into its slot; undo moves it to the end.
+        let other = core.agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        let other_handle = core.agents.agent_handle(other);
+        let other_seed = core.agents.schedule_seed[other];
+        let carrier_handle = core.agents.agent_handle(carrier);
+        core.logistics.shipments.push(Shipment {
+            id: 0,
+            resource_runtime_id: 1,
+            amount: 40.0,
+            source: ShipmentEndpoint::Building(0),
+            destination: ShipmentEndpoint::Building(1),
+            carrier_class: CarrierClass::Truck,
+            status: ShipmentStatus::InTransit,
+            carrier: carrier_handle,
+            total_cost: 0.0,
+            freight_cost: 0.0,
+            eta_hours: 1,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
+            cargo_loaded: true,
+        });
+
+        assert!(core.bulldoze_building(1));
+        assert_eq!(core.agents.len(), 1);
+        assert!(core.undo_action_internal());
+        // The removed shipment's checks found nothing; undo checks the carrier again at the
+        // next slot (`SIM-02-J`). A freight check saves as kind 3 with the shipment id.
+        let next_slot = core.time.absolute_slot() + 1;
+        assert!(
+            core.events
+                .pending()
+                .iter()
+                .any(|timed| timed.slot == next_slot && timed.event.to_saved() == (3, 0))
+        );
+        assert!(core.logistics.trip_event_due(0, next_slot));
+
+        let restored = core
+            .agents
+            .resolve_agent(core.logistics.shipments[0].carrier)
+            .expect("undo rebinds the shipment to its restored carrier");
+        assert_eq!(restored, carrier);
+        assert_eq!(core.agents.freight_shipment_id[restored], 0);
+        assert_eq!(core.agents.resolve_agent(carrier_handle), None);
+        let moved = core.agents.resolve_agent(other_handle).unwrap();
+        assert_eq!(core.agents.schedule_seed[moved], other_seed);
     }
 
     #[test]
@@ -3380,7 +3486,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 20.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
@@ -3439,7 +3544,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 20.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
@@ -4232,7 +4336,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 10.0,
             physical_length: 8.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(8.0, 0.0, 0.0)],

@@ -456,7 +456,7 @@ Then:
 The entrance cache uses `Edge::effective_vehicle_frontage_access`: a raised central median
 forces `SameSideOnly`, while a painted median keeps the edge's authored policy. Removing the
 raised median restores that policy. This changes the derived lane options and routing quotes,
-not a per-tick crossover heuristic; the `NET-07` U-turn rule remains unchanged (`ROAD-66`).
+not a per-tick crossover heuristic; the `NET-07` U-turn rule remains unchanged (`ROAD-80`).
 
 - if `vehicle_frontage_access == BothSides` and the chosen car lane id equals `same_side_car_lane_id`, car local access is same-side
 - if `vehicle_frontage_access == BothSides` and the chosen car lane id equals `opposite_side_car_lane_id`, car local access is an opposite-side crossover
@@ -778,6 +778,10 @@ store. Each vehicle solve performs four fit queries plus at most 73 contact quer
 of city population. Rayon fills existing transform buffers in parallel without changing instance
 order or allocating per vehicle; the snapshot iterator borrows buckets without a staging vector.
 Existing camera culling happens before those queries; lane-bound agents avoid footprint probes.
+Since `SIM-02-K` part 2 the snapshot culls before posing, on each lane agent's lane bounds; each
+site query skips a site whose lot centre lies beyond the largest site radius plus 0.5 m, and a
+vehicle's contact samples share one gathered set of nearby sites, with unchanged answers (see
+the [step results](simulation.md#step-results)).
 
 If a later feature needs temporary render suppression unrelated to transit state, add a narrowly scoped visual/debug flag then. Do not keep `is_visible` as a general-purpose state bucket just because the old system used it.
 

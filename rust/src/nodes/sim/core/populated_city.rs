@@ -11,7 +11,13 @@
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 
 #[cfg(test)]
+pub(super) mod census_churn;
+#[cfg(test)]
 mod contract;
+#[cfg(test)]
+mod envelope;
+#[cfg(test)]
+mod frame_budget;
 #[cfg(test)]
 mod routing_benchmark;
 #[cfg(test)]
@@ -57,21 +63,29 @@ const DISTRICTS: [ZoneType; 8] = [
     ZoneType::Residential,
 ];
 // Construction is free and the treasury never runs out, so city services stay funded in every
-// tier; solvency is the growth scenario's measure, not this one.
-const FUNDED_TREASURY: f64 = 1.0e15;
+// tier; solvency is the growth scenario's measure, not this one. A 100k city spends about 1e6 a
+// day, and at 1e10 an f64 still resolves 2e-6: at 1e15 every posting rounded to 0.125, which
+// broke money conservation once settlement posted per entity (`SIM-02-G`).
+const FUNDED_TREASURY: f64 = 1.0e10;
 const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
 const RESIDENTS_PER_BORDER: f32 = 10_000.0;
 
-/// Wall-clock cost of the economy ticks run by one [`PopulatedCity::advance_hour`] call.
+/// Wall-clock cost of the fixed-slot systems at the start of one hour, as
+/// [`PopulatedCity::advance_hour`] and [`PopulatedCity::advance_hour_through_actions`] step it.
+/// Entity phases, queues and rolling chunks run in every slot and are not included.
 #[derive(Clone, Copy, Debug)]
 pub struct EconomyHourTimes {
-    /// Operational-hour tick; includes the hourly demand pass when `demand_pass` is set.
+    /// The census publication, what is left of the operational hour and the planning slots that
+    /// ran in the stepped frames (`SIM-02-K`).
     pub hourly: Duration,
-    /// Daily settlement tick; present only when the hour was midnight.
+    /// The calendar close; present only when the hour started a day. Daily settlement runs at
+    /// each entity's own daily phase in every slot (`SIM-02-G`).
     pub daily: Option<Duration>,
-    /// Whether the hour ran the hourly demand pass, as every hour but midnight does.
+    /// Whether the hour does not start a day. Every hour runs its four planning slots; the
+    /// economy benchmark and `PERF-01` time the 23 hours without the calendar close, as they
+    /// did before `SIM-02-K`, so their means stay comparable.
     pub demand_pass: bool,
 }
 
@@ -159,8 +173,9 @@ impl PopulatedCity {
     }
 
     /// Steps frames until the clock crosses the next whole hour and returns the cost of the
-    /// economy ticks run there: the operational hour, then daily settlement at midnight. Agent
-    /// movement and the other frame phases run but are not timed.
+    /// fixed-slot systems that frame ran: the census publication, what is left of the
+    /// operational hour, the planning slots it reached and, when a day starts, the calendar
+    /// close. Agent movement and the other frame phases run but are not timed.
     pub fn advance_hour(&mut self) -> EconomyHourTimes {
         loop {
             // One maximum-speed frame spans about half an authored minute, so it never crosses
@@ -178,6 +193,24 @@ impl PopulatedCity {
                 };
             }
         }
+    }
+
+    /// [`Self::advance_hour`], then the frames up to and including the hour's actions slot,
+    /// following the hour's slot layout. The hour's demand planning runs at the first slots of
+    /// its minutes 0–3 and its building actions (permits) at minute 3's (`SIM-02-I`,
+    /// `PlanningSlot`), each in a frame of its own at maximum speed (about 8.5 slots a frame).
+    /// A window ending here holds the whole hour's planning and actions; the planning slots of
+    /// the frames after the first are added to `hourly`.
+    pub fn advance_hour_through_actions(&mut self) -> EconomyHourTimes {
+        use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+        use crate::simulation::economy::demand::PlanningSlot;
+        let mut times = self.advance_hour();
+        // The clock's slot in progress has run (`TimeSystem::absolute_slot`).
+        while self.core.time.absolute_slot() % SLOTS_PER_HOUR < PlanningSlot::Actions as u64 {
+            let frame = self.core.step_frame(FRAME_DT_S);
+            times.hourly += Duration::from_secs_f64(frame.hourly_ms / 1000.0);
+        }
+        times
     }
 
     fn admit_households(&mut self, residents: u32) {
@@ -201,13 +234,18 @@ impl PopulatedCity {
                     // This fixture explicitly prepopulates a city outside demand admission.
                     |_, _, _| true,
                 );
-            // Carriers arrive at once instead of driving in from the border; the next hour
-            // materializes them as households.
-            let agents = &mut core.agents.agents;
-            for i in 0..agents.len() {
-                if agents.pending_household_size[i] > 0 {
-                    agents.transit[i] = TRANSIT_IN_BUILDING;
-                    agents.current_building[i] = agents.home_building[i];
+            // Carriers arrive at once instead of driving in from the border, and move in.
+            core.agents.held_arrivals.clear();
+            for i in 0..core.agents.len() {
+                if core.agents.pending_household_size[i] > 0 {
+                    core.agents.transit[i] = TRANSIT_IN_BUILDING;
+                    core.agents.current_building[i] = core.agents.home_building[i];
+                    core.agents.release_departure(i);
+                    core.households.materialize_arrival_carrier(
+                        i,
+                        &mut core.agents,
+                        &core.allocator,
+                    );
                 }
             }
             self.advance_hour();
@@ -315,19 +353,7 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
-    // Bulk benchmark setup skips render preparation, which normally fits connector heights
-    // to the road surface. Finalize the same movement geometry before any agents run; otherwise
-    // loading the ordinary save changes connector lengths and therefore arrival times.
-    core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
-    core.transit_network
-        .lane_system
-        .sync_heights_to_visible_surface(
-            &core.region_graph,
-            &core.heightmap,
-            &core.transit_network.road_surface,
-        );
+    core.fit_lanes_to_road_surface();
     (core, row_z, half_x)
 }
 
@@ -395,12 +421,5 @@ fn fill_lots(core: &mut SimCore) {
             break;
         }
     }
-    while core
-        .allocator
-        .buildings
-        .iter()
-        .any(|building| building.construction_remaining_hours > 0)
-    {
-        core.allocator.advance_construction_hour();
-    }
+    core.allocator.complete_all_construction();
 }

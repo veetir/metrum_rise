@@ -28,4 +28,3 @@ vec3 terrain_grain_field_color(vec2 world_xz) {
 	grain *= mix(1.0 - terrain_grain_macro_strength, 1.0 + terrain_grain_macro_strength, macro);
 	return grain * terrain_grain_tint * terrain_grain_brightness;
 }
-

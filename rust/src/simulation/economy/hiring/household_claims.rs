@@ -3,9 +3,9 @@
 //! Exact household-quote prefixes across matching live funding inputs and closure attempts.
 
 use super::super::customers::{ConsumerMarket, DirectConsumerQuoteKey};
-use std::collections::HashMap;
 use super::*;
 use crate::simulation::buildings::allocator::BuildingEntranceKey;
+use std::collections::HashMap;
 
 /// Inputs remain immutable for all closure attempts in one census. Cross-census reuse first
 /// compares household accounts/access, then every seller's entrance, price and output request.
@@ -80,7 +80,7 @@ struct OutputRequest {
 /// prefix reads cached quantities without resetting budgets, searching routes or mutating
 /// receipt trees. The first changed request or decision reconstructs its accepted prefix
 /// through ordinary quotation, then records the rest normally. No hashes or tolerances.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct HouseholdQuotes {
     quotes: Vec<Quote>,
     units: Vec<f64>,
@@ -156,6 +156,16 @@ impl HouseholdQuotes {
             self.rebuilt = 0;
             self.census_reused = 0;
         }
+    }
+
+    /// Drops the recorded quote sequence after the customer book was reset, so no later
+    /// preparation replays it against a book that no longer holds its claims (`SIM-02-K`: a
+    /// census restarted between the consumer-market refresh and setup). O(1), keeps storage.
+    pub(super) fn forget(&mut self) {
+        debug_assert!(!self.pending);
+        self.quotes.clear();
+        self.units.clear();
+        self.requests.clear();
     }
 
     /// Starts an exact retry in O(1), retaining the preceding accepted household book.
@@ -240,14 +250,16 @@ impl HouseholdQuotes {
             if reuse_enabled && profile.outputs.len() == 1 {
                 let output = &profile.outputs[0];
                 self.pending_key = census.allocator.entrances.get(owner).and_then(|entrance| {
-                    customers.direct_quote_key(
-                        entrance,
-                        output.resource_runtime_id,
-                        f64::from(profile.net_output_units_per_day(output) * area),
-                        f32::from_bits(gross_price),
-                        census.network,
-                        census.graph,
-                    ).map(|key| (key, customers.quote_revision()))
+                    customers
+                        .direct_quote_key(
+                            entrance,
+                            output.resource_runtime_id,
+                            f64::from(profile.net_output_units_per_day(output) * area),
+                            f32::from_bits(gross_price),
+                            census.network,
+                            census.graph,
+                        )
+                        .map(|key| (key, customers.quote_revision()))
                 });
             }
             if let Some((key, revision)) = self.pending_key
@@ -257,10 +269,13 @@ impl HouseholdQuotes {
                 units[0] = value;
                 self.pending_rejected_replay = true;
                 #[cfg(test)]
-                { self.rejected_reused += 1; }
+                {
+                    self.rejected_reused += 1;
+                }
             } else {
                 census.quote(owner, customers, units);
-                self.pending_direct = self.pending_key.is_some() && customers.last_claim_was_direct();
+                self.pending_direct =
+                    self.pending_key.is_some() && customers.last_claim_was_direct();
             }
             assert!(
                 self.quotes.len() < self.quotes.capacity()
@@ -314,7 +329,9 @@ impl HouseholdQuotes {
                         &self.units[quote.first..quote.first + quote.ports]
                     );
                     #[cfg(test)]
-                    { self.rejected_accepted += 1; }
+                    {
+                        self.rejected_accepted += 1;
+                    }
                 }
                 customers.accept_growing_for(quote.owner);
             } else if !self.pending_rejected_replay {
@@ -323,9 +340,13 @@ impl HouseholdQuotes {
                     && let Some((key, revision)) = self.pending_key
                     && revision == customers.quote_revision()
                 {
-                    assert!(self.rejected.len() < self.rejected.capacity() || self.rejected.contains_key(&key),
-                        "rejected household quotes require census preparation");
-                    self.rejected.insert(key, (revision, self.units[quote.first]));
+                    assert!(
+                        self.rejected.len() < self.rejected.capacity()
+                            || self.rejected.contains_key(&key),
+                        "rejected household quotes require census preparation"
+                    );
+                    self.rejected
+                        .insert(key, (revision, self.units[quote.first]));
                 }
             }
             self.quotes[self.cursor].accepted = accepted;

@@ -54,9 +54,14 @@ pub(crate) struct BusinessMarket {
     pass_ports: PassPorts,
     port_available: Vec<usize>,
     indices: PortIndices,
+    // Each resource's bucket entries between an index rebuild's collection and its build.
+    index_entries: Vec<Vec<ReachableBucketEntry>>,
     revision: Option<(u64, u64, u32)>,
     visited: Vec<u64>,
     visit: u64,
+    // Scan events the claims visited and carrier quotes they priced so far, which the funding
+    // census counts as work (`SIM-02-K`); monotonic, never read by any result.
+    claim_work: [u64; 2],
     #[cfg(test)]
     index_builds: u64,
     #[cfg(test)]
@@ -68,11 +73,56 @@ pub(crate) struct BusinessMarket {
     port_masks: Vec<u64>,
     dirty_buyers: Vec<usize>,
     buyer_dirty: Vec<bool>,
+    // The census's own layout while a planning pass covers buildings appended since.
+    census_buyers: Option<CensusBuyers>,
     #[cfg(test)]
     disable_finance_masks: bool,
 }
 
+/// A business layout after seeding between census slices (`SIM-02-K`): the revision it lays
+/// out for, whether the buyers' access changed, whether the ports and indices are rebuilt and
+/// the resource count. [`BusinessMarket::begin_layout`] starts one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SeedingLayout {
+    revision: (u64, u64, u32),
+    changed: bool,
+    rebuilds: bool,
+    resources: usize,
+}
+
+impl SeedingLayout {
+    /// Whether the buyers' door chunks and components are recomputed.
+    pub(crate) fn changes_access(&self) -> bool {
+        self.changed
+    }
+
+    /// Whether the recipe ports and live indices are rebuilt.
+    pub(crate) fn rebuilds(&self) -> bool {
+        self.rebuilds
+    }
+
+    /// Resources whose live index a rebuild builds.
+    pub(crate) fn resources(&self) -> usize {
+        self.resources
+    }
+}
+
+/// The census's buyer count, live port count and live index, kept aside while a lent book
+/// lays out the buildings appended since its census.
+#[derive(Clone, Debug, Default)]
+struct CensusBuyers {
+    buyers: usize,
+    live_ports: usize,
+    live: Vec<ReachableBucketIndex>,
+}
+
 impl BusinessMarket {
+    /// Scan events visited and carrier quotes priced by claims so far, for the funding census's
+    /// work units (`SIM-02-K`). Monotonic counters; O(1).
+    pub(crate) fn claim_work(&self) -> [u64; 2] {
+        self.claim_work
+    }
+
     /// Lifetime affordability prechecks, rejected routes, and rejects that free freight
     /// would not prove. Diagnostics only; production does not repeat the free-price check.
     #[cfg(test)]
@@ -87,14 +137,21 @@ impl BusinessMarket {
         self.rejection_causes
     }
 
+    /// Buyers whose finance masks wait for the next refresh, for tests.
+    #[cfg(test)]
+    pub(crate) fn changed_finance_buyers_for_test(&self) -> usize {
+        self.dirty_buyers.len()
+    }
+
     /// Uses the original complete candidate scan as an independent transactional oracle.
     #[cfg(test)]
     pub(crate) fn disable_finance_masks_for_test(&mut self) {
         self.disable_finance_masks = true;
     }
 
-    /// Forks the jointly financed live book once per project pass. Warm cost follows account
-    /// tranches and receipts; the existing resource buckets retain their prepared storage.
+    /// Forks the jointly financed live book, for tests: planning lends it instead. Warm cost
+    /// follows account tranches and receipts; the resource buckets retain their storage.
+    #[cfg(test)]
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
         if self.revision != source.revision
             || self.access != source.access
@@ -128,21 +185,27 @@ impl BusinessMarket {
         self.reset_accounts();
     }
 
+    /// Gives this copy of `live` the capacity of the arenas a census refills (`SIM-02-K`).
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        self.budgets.reserve_like(&live.budgets);
+    }
+
     /// Prepares live and temporary project owner slots outside the proposal loop.
     pub(crate) fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
-        if self.budgets.owners.len() < owners {
-            self.budgets.owners.resize(owners, usize::MAX);
-        }
-        if self.budgets.finance.len() < owners {
-            self.budgets.finance.resize(owners, [0.0; 2]);
-            self.budgets.buyer_accounts.resize(owners, usize::MAX);
-            self.budgets.buyer_tails.resize(owners, usize::MAX);
-            self.budgets.finance_staged.resize(owners, false);
-            self.budgets
-                .staged_finance
-                .reserve(owners.saturating_sub(self.budgets.staged_finance.len()));
-        }
-        let receipts = 2 * (self.budgets.accounts.len() + output_ports);
+        // Owner rows follow the city; spare rows keep an appended building from reallocating
+        // them all in one planning slot (`SIM-02-K`).
+        use crate::utils::storage::{grow_rows, reserve_rows};
+        let budgets = &mut self.budgets;
+        grow_rows(&mut budgets.owners, owners, usize::MAX);
+        grow_rows(&mut budgets.finance, owners, [0.0; 2]);
+        grow_rows(&mut budgets.buyer_accounts, owners, usize::MAX);
+        grow_rows(&mut budgets.buyer_tails, owners, usize::MAX);
+        grow_rows(&mut budgets.finance_staged, owners, false);
+        reserve_rows(&mut budgets.staged_finance, owners);
+        let receipts = crate::utils::storage::spare_capacity(
+            2 * (self.budgets.accounts.len() + output_ports),
+            self.budgets.committed.capacity(),
+        );
         self.budgets
             .committed
             .reserve(receipts.saturating_sub(self.budgets.committed.len()));
@@ -166,9 +229,20 @@ impl BusinessMarket {
 
     /// Prepares the pass's bounded new-buyer tranches and their source-owned receipts.
     /// Existing replacement buyers still use the exact reseeding preflight.
+    /// Both arenas keep spare capacity past the request (`SIM-02-K`).
     pub(crate) fn prepare_project_inputs(&mut self, additional_tranches: usize) {
-        self.reserve_receipts(self.budgets.committed.len() + additional_tranches);
-        self.reserve_accounts(self.budgets.accounts.len() + additional_tranches);
+        use crate::utils::storage::spare_capacity;
+        let budgets = &self.budgets;
+        let receipts = spare_capacity(
+            budgets.committed.len() + additional_tranches,
+            budgets.committed.capacity(),
+        );
+        let accounts = spare_capacity(
+            budgets.accounts.len() + additional_tranches,
+            budgets.accounts.capacity(),
+        );
+        self.reserve_receipts(receipts);
+        self.reserve_accounts(accounts);
     }
 
     /// Starts an enclosing replacement proof over preallocated account/receipt snapshots.
@@ -364,13 +438,63 @@ impl BusinessMarket {
         output_ports: usize,
         seed: impl FnOnce(&mut BusinessBudgets),
     ) {
-        self.budgets.reset(
-            allocator.buildings.len(),
-            input_tranches,
-            allocator.buildings.len(),
-            output_ports,
-        );
+        self.begin_seeding(allocator.buildings.len(), input_tranches, output_ports);
         seed(&mut self.budgets);
+        self.finish_seeding(allocator, network, graph, components, catalog);
+    }
+
+    /// Seeding's first phase (`SIM-02-K`): the sparse accounts' reset for `buildings` buyers
+    /// and sellers. Then the caller seeds buyers through [`Self::seeding_book`] in buyer
+    /// order, in any number of calls, and [`Self::finish_seeding`] prepares the layout and the
+    /// availability; [`Self::reset`] runs the three at once. O(B) fills.
+    pub(crate) fn begin_seeding(
+        &mut self,
+        buildings: usize,
+        input_tranches: usize,
+        output_ports: usize,
+    ) {
+        self.budgets
+            .reset(buildings, input_tranches, buildings, output_ports);
+    }
+
+    /// The accounts being seeded between [`Self::begin_seeding`] and [`Self::finish_seeding`].
+    pub(crate) fn seeding_book(&mut self) -> &mut BusinessBudgets {
+        &mut self.budgets
+    }
+
+    /// Seeding's last phases at once (`SIM-02-K`): price classes, the buyer and recipe-port
+    /// layout and spatial buckets after a geometry or profile change, and every account's
+    /// availability; see [`Self::begin_layout`]. O(B + accounts), plus O(ports log ports)
+    /// after a layout change.
+    pub(crate) fn finish_seeding(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        let buyers = allocator.buildings.len();
+        let layout = self.begin_layout(allocator, network, catalog);
+        self.layout_access(&layout, allocator, graph, components, 0..buyers);
+        self.layout_ports(&layout, allocator, catalog, 0..buyers);
+        self.collect_layout_entries(&layout);
+        self.build_layout_indices(&layout, 0..layout.resources);
+        self.finish_layout(&layout, allocator);
+    }
+
+    /// The layout's first phase after seeding (`SIM-02-K`): price classes and whether the
+    /// buyer and recipe-port layout changed. Then [`Self::layout_access`] and
+    /// [`Self::layout_ports`] over every buyer range in order, [`Self::collect_layout_entries`],
+    /// [`Self::build_layout_indices`] over every resource range and [`Self::finish_layout`]; any
+    /// slicing gives one call's layout. A rebuild names no layout until it finishes, so one
+    /// left part way is rebuilt by the next seeding. O(B).
+    pub(crate) fn begin_layout(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> SeedingLayout {
         self.prepare_price_classes(catalog);
         debug_assert!(self.budgets.staged.is_empty());
         let revision = (
@@ -386,61 +510,137 @@ impl BusinessMarket {
         let resources = catalog.resource_count() + 1;
         self.access
             .resize(allocator.buildings.len(), Access::default());
-        if changed {
-            self.access
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(buyer, access)| {
-                    *access = Access {
-                        chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
-                            chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
-                        }),
-                        components: components.building_components(
-                            allocator,
-                            graph,
-                            buyer,
-                            TransitFlags::CAR,
-                        ),
-                    };
-                });
-        }
-        if changed || self.indices.live.len() != resources {
+        let rebuilds = changed || self.indices.live.len() != resources;
+        if rebuilds {
+            self.revision = None;
             self.profiles.clear();
+            self.identities.clear();
+            self.port_access.clear();
+            self.port_sites.clear();
+            self.sites.invalidate_layout();
+            self.buyer_ports.resize(allocator.buildings.len(), 0..0);
+        }
+        SeedingLayout {
+            revision,
+            changed,
+            rebuilds,
+            resources,
+        }
+    }
+
+    /// Each buyer's door chunk and freight components for buyers `range` after a layout
+    /// change (`SIM-02-K`). O(range) in parallel.
+    pub(crate) fn layout_access(
+        &mut self,
+        layout: &SeedingLayout,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        range: std::ops::Range<usize>,
+    ) {
+        if !layout.changed {
+            return;
+        }
+        let first = range.start;
+        self.access[range]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, access)| {
+                let buyer = first + offset;
+                *access = Access {
+                    chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
+                        chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
+                    }),
+                    components: components.building_components(
+                        allocator,
+                        graph,
+                        buyer,
+                        TransitFlags::CAR,
+                    ),
+                };
+            });
+    }
+
+    /// The recipe ports of buyers `range`, the next ones, in buyer order, after a layout
+    /// change (`SIM-02-K`); the last range finishes the port tables. O(range + their ports),
+    /// serial.
+    pub(crate) fn layout_ports(
+        &mut self,
+        layout: &SeedingLayout,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        range: std::ops::Range<usize>,
+    ) {
+        if !layout.rebuilds {
+            return;
+        }
+        let last = range.end == allocator.buildings.len();
+        let ports = self.identities.len();
+        // Prefix ranges depend on the previous buyer; catalogue input order is stable.
+        for (buyer, building) in allocator.buildings[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (range.start + offset, building))
+        {
+            let first = self.identities.len();
+            if let Some(profile) =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                self.identities.extend(
+                    profile
+                        .inputs
+                        .iter()
+                        .map(|input| (buyer, input.resource_runtime_id)),
+                );
+            }
+            self.buyer_ports[buyer] = first..self.identities.len();
+        }
+        self.port_access.extend(
+            self.identities[ports..]
+                .iter()
+                .map(|&(buyer, _)| self.access[buyer]),
+        );
+        if last {
+            self.port_sites.resize(self.identities.len(), None);
+            self.indices.live_ports = self.identities.len();
+            self.indices.sites.clear();
+        }
+    }
+
+    /// Every resource's bucket entries of the live ports after a layout change (`SIM-02-K`).
+    /// O(ports), serial.
+    pub(crate) fn collect_layout_entries(&mut self, layout: &SeedingLayout) {
+        if layout.rebuilds {
+            self.collect_index_entries(layout.resources, false);
+        }
+    }
+
+    /// Builds the live indices of resources `range` after a layout change (`SIM-02-K`).
+    /// O(entries log entries) for those resources, in parallel.
+    pub(crate) fn build_layout_indices(
+        &mut self,
+        layout: &SeedingLayout,
+        range: std::ops::Range<usize>,
+    ) {
+        if layout.rebuilds {
+            self.build_index_resources(range, false);
+        }
+    }
+
+    /// The layout's end (`SIM-02-K`): the buyers' profiles after a rebuild, every account's
+    /// availability and finance masks, and the layout's revision. O(B + accounts + ports).
+    pub(crate) fn finish_layout(&mut self, layout: &SeedingLayout, allocator: &BuildingAllocator) {
+        if layout.rebuilds {
+            // `begin_layout` cleared them; written last, they name the finished layout.
             self.profiles.extend(
                 allocator
                     .buildings
                     .iter()
                     .map(|building| building.economy_profile_runtime_id),
             );
-            self.identities.clear();
-            self.port_access.clear();
-            self.port_sites.clear();
-            self.sites.invalidate_layout();
-            self.buyer_ports.resize(allocator.buildings.len(), 0..0);
-            // Prefix ranges depend on the previous buyer; catalogue input order is stable.
-            for (buyer, building) in allocator.buildings.iter().enumerate() {
-                let first = self.identities.len();
-                if let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                {
-                    self.identities.extend(
-                        profile
-                            .inputs
-                            .iter()
-                            .map(|input| (buyer, input.resource_runtime_id)),
-                    );
-                }
-                self.buyer_ports[buyer] = first..self.identities.len();
-            }
-            self.port_access
-                .extend(self.identities.iter().map(|&(buyer, _)| self.access[buyer]));
-            self.port_sites.resize(self.identities.len(), None);
-            self.indices.live_ports = self.identities.len();
-            self.indices.sites.clear();
-            self.rebuild_indices(resources, false);
         }
         self.reset_accounts();
-        self.revision = Some(revision);
+        self.revision = Some(layout.revision);
     }
 
     /// Fixed recipe-port count and spatial rebuild count for allocation/invalidation checks.
@@ -704,6 +904,7 @@ impl BusinessMarket {
             entrance.door_pos.y,
             mask,
             |event| {
+                self.claim_work[0] += 1;
                 let ReachableBucketScanEvent::Item { item_idx: port } = event else {
                     return true;
                 };
@@ -784,6 +985,7 @@ impl BusinessMarket {
                     }
                     return true;
                 }
+                self.claim_work[1] += 1;
                 if let Some(carrier) = logistics.customer_carrier_quote(
                     entrance,
                     destination,
@@ -1100,6 +1302,102 @@ impl BusinessMarket {
             "account_available" => market.account_available, "port_available" => market.port_available[..live],
             "port_masks" => market.port_masks[..live], "indices" => market.indices.live,
             "revision" => market.revision)
+    }
+
+    /// Lays out buyer ports for the buildings appended since this book's census, for a
+    /// planning pass on the lent book (`SIM-02-I`). Their ports follow the census's live
+    /// ports, as a census of the whole city would number them, and hold no accounts; the live
+    /// index is rebuilt with them, keeping the census's availability and finance classes, and
+    /// the proposed sites are laid out again after them. The census's index waits aside until
+    /// [`Self::restore_census_buyers`]. O(live ports log live ports + appended buyers) when
+    /// buildings were appended, O(1) otherwise.
+    pub(crate) fn append_live_buyers(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        let buyers = self.buyer_ports.len();
+        if allocator.buildings.len() <= buyers || self.revision.is_none() {
+            return;
+        }
+        debug_assert!(self.census_buyers.is_none());
+        let live_ports = self.indices.live_ports;
+        // Proposed sites are numbered after the live ports.
+        self.identities.truncate(live_ports);
+        self.port_access.truncate(live_ports);
+        self.port_sites.truncate(live_ports);
+        self.port_available.truncate(live_ports);
+        self.port_masks.truncate(live_ports);
+        self.sites.invalidate_layout();
+        self.indices.sites.clear();
+        for (buyer, building) in allocator.buildings.iter().enumerate().skip(buyers) {
+            let access = Access {
+                chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
+                    chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
+                }),
+                components: components.building_components(
+                    allocator,
+                    graph,
+                    buyer,
+                    TransitFlags::CAR,
+                ),
+            };
+            self.access.push(access);
+            self.profiles.push(building.economy_profile_runtime_id);
+            let first = self.identities.len();
+            if let Some(profile) =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                for input in &profile.inputs {
+                    self.identities.push((buyer, input.resource_runtime_id));
+                    self.port_access.push(access);
+                }
+            }
+            self.buyer_ports.push(first..self.identities.len());
+        }
+        let ports = self.identities.len();
+        self.port_sites.resize(ports, None);
+        self.port_available.resize(ports, 0);
+        self.port_masks.resize(ports, 0);
+        self.visited.resize(ports, 0);
+        self.indices.live_ports = ports;
+        let census = std::mem::take(&mut self.indices.live);
+        self.rebuild_indices(catalog.resource_count() + 1, false);
+        let (available, masks) = (&self.port_available, &self.port_masks);
+        self.indices.live.par_iter_mut().for_each(|index| {
+            index.reset_available(|port| available[port] > 0);
+            index.reset_query_masks(|port| masks[port]);
+        });
+        self.census_buyers = Some(CensusBuyers {
+            buyers,
+            live_ports,
+            live: census,
+        });
+    }
+
+    /// Returns the census's layout after a pass that covered appended buildings: the
+    /// appended buyers and their ports leave, the census's live index returns, and the
+    /// proposed sites are laid out again at the next pass. Call after [`Self::end_pass`].
+    /// O(appended buyers + site ports).
+    pub(crate) fn restore_census_buyers(&mut self) {
+        let Some(census) = self.census_buyers.take() else {
+            return;
+        };
+        self.identities.truncate(census.live_ports);
+        self.port_access.truncate(census.live_ports);
+        self.port_sites.truncate(census.live_ports);
+        self.port_available.truncate(census.live_ports);
+        self.port_masks.truncate(census.live_ports);
+        self.visited.truncate(census.live_ports);
+        self.access.truncate(census.buyers);
+        self.profiles.truncate(census.buyers);
+        self.buyer_ports.truncate(census.buyers);
+        self.sites.invalidate_layout();
+        self.indices.sites.clear();
+        self.indices.live = census.live;
+        self.indices.live_ports = census.live_ports;
     }
 
     /// Opens a planning pass directly on this live market. Proposals nest ordinary proofs

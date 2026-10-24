@@ -69,9 +69,9 @@ fn hourly_rehousing_claims_affordable_homes_without_advancing_daily_failures() {
         household.stay_failure_days = 1;
         households.households.push(household);
         let agent = agents.spawn_housed_agent(home, 0.0, 0.0);
-        agents.household_id[agent] = hid;
+        agents.assign_household_id(agent, hid);
     }
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     households.rehouse_unhoused_before_growth(&mut agents, &mut allocator);
     assert_eq!(households.households[0].home_building_id, 1);
     assert_eq!(agents.home_building[0], 1);
@@ -96,8 +96,8 @@ fn hourly_rehousing_claims_affordable_homes_without_advancing_daily_failures() {
     let rich = make_household(usize::MAX, 1, 20.0, 1.0);
     households.households.push(rich);
     let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-    agents.household_id[agent] = 3;
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    agents.assign_household_id(agent, 3);
+    households.recount_every_household(&agents, &allocator);
     households.rehouse_unhoused_before_growth(&mut agents, &mut allocator);
     assert_eq!(households.households[3].home_building_id, 0);
     assert_eq!(allocator.first_rehousing_vacancy(|_| true), None);
@@ -129,7 +129,7 @@ fn benchmark_hourly_rehousing_priority() {
                 .households
                 .push(make_household(usize::MAX, 1, 1.0, 1.0));
             let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-            agents.household_id[agent] = hid;
+            agents.assign_household_id(agent, hid);
         }
         let mut census_samples = Vec::new();
         let mut housing_samples = Vec::new();
@@ -143,7 +143,7 @@ fn benchmark_hourly_rehousing_priority() {
                 }
             }
             let start = Instant::now();
-            households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+            households.recount_every_household(&agents, &allocator);
             let census_ms = start.elapsed().as_secs_f64() * 1_000.0;
             let start = Instant::now();
             households.rehouse_unhoused_before_growth(&mut agents, &mut allocator);
@@ -190,9 +190,9 @@ fn rehousing_from_a_broken_home_releases_its_occupied_place() {
         households.households.push(make_household(0, 1, 2.0, 1.0));
         let mut agents = AgentSystem::new();
         let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         if hourly {
-            households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+            households.recount_every_household(&agents, &allocator);
             households.rehouse_unhoused_before_growth(&mut agents, &mut allocator);
         } else {
             households.resolve_household_housing(&mut agents, &mut allocator);
@@ -217,12 +217,11 @@ fn removing_an_agent_preserves_a_moved_shoppers_active_trip() {
         let mut agents = AgentSystem::new();
         let removed = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
         let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[shopper] = 0;
+        agents.assign_household_id(shopper, 0);
         let mut households = HouseholdSystem::new();
         let mut household = make_household(0, 1, 100.0, 0.0);
         household.replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
-        household.shopping_agent_id = shopper;
-        household.shopping_agent_schedule_seed = agents.schedule_seed[shopper];
+        household.shopping_agent = agents.agent_handle(shopper);
         household.reserved_amount = 10.0;
         household.shopping_timeout_hours_remaining = 24;
         households.households.push(household);
@@ -230,12 +229,15 @@ fn removing_an_agent_preserves_a_moved_shoppers_active_trip() {
         if remove_freight {
             agents.freight_shipment_id[removed] = 1;
             agents.vehicle_type[removed] = VEHICLE_FREIGHT_DELIVERY;
-            agents.remove_freight_carrier(removed, 1, &mut households);
+            agents.remove_freight_carrier(removed, 1);
         } else {
-            agents.kill_agent(removed, &mut allocator, &mut households);
+            agents.kill_agent(removed, &mut allocator);
         }
 
-        assert_eq!(households.households[0].shopping_agent_id, 0);
+        assert_eq!(
+            agents.resolve_agent(households.households[0].shopping_agent),
+            Some(0)
+        );
         households.run_household_replenishment(
             &mut agents,
             &mut allocator,
@@ -262,13 +264,12 @@ fn benchmark_household_removal() {
             let mut households = HouseholdSystem::new();
             let mut agents = AgentSystem::new();
             let mut allocator = BuildingAllocator::new();
-            let mut logistics = ShipmentSystem::new();
             for idx in 0..count {
                 households
                     .households
                     .push(make_household(usize::MAX, 1, idx as f32, 0.0));
                 let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-                agents.household_id[agent] = idx;
+                agents.assign_household_id(agent, idx);
             }
             for household in &mut households.households {
                 household.unhoused_days_elapsed = policy.max_unhoused_days;
@@ -279,7 +280,6 @@ fn benchmark_household_removal() {
                 policy,
                 &mut agents,
                 &mut allocator,
-                &mut logistics,
             ));
             samples.push(start.elapsed().as_secs_f64() * 1_000.0);
             assert_eq!(removed, 256);
@@ -299,7 +299,6 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
-    let mut logistics = ShipmentSystem::new();
     let removed = [1, 3, 8, 9];
     let mut original_household_by_seed = std::collections::HashMap::new();
     for idx in 0..12 {
@@ -314,7 +313,7 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
         households.households.push(household);
         for _ in 0..2 {
             let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-            agents.household_id[agent] = idx;
+            agents.assign_household_id(agent, idx);
             original_household_by_seed.insert(agents.schedule_seed[agent], idx);
         }
     }
@@ -323,13 +322,7 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
         ledger.wage_income = idx as f32;
     }
     assert_eq!(
-        households.execute_demand_household_removal(
-            4,
-            exit_policy(),
-            &mut agents,
-            &mut allocator,
-            &mut logistics
-        ),
+        households.execute_demand_household_removal(4, exit_policy(), &mut agents, &mut allocator,),
         4
     );
     assert_eq!(households.households.len(), 8);
@@ -372,7 +365,7 @@ fn child_only_household_cannot_keep_housing() {
 
     let mut agents = AgentSystem::new();
     let child = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[child] = 0;
+    agents.assign_household_id(child, 0);
     agents.age_group[child] = AGE_CHILD;
     agents.transit[child] = TRANSIT_IN_BUILDING;
     agents.current_building[child] = 0;
@@ -399,7 +392,7 @@ fn under_construction_home_does_not_count_as_housed() {
     );
     let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
     home.construction_total_hours = 6;
-    home.construction_remaining_hours = 6;
+    home.set_construction_hours_left(6);
     allocator.buildings.push(home);
 
     assert!(!household_is_housed(&household, &allocator));
@@ -439,23 +432,16 @@ fn demand_household_removal_prioritizes_unhoused_households() {
     let housed_a = agents.spawn_housed_agent(0, 0.0, 0.0);
     let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
     let housed_b = agents.spawn_housed_agent(1, 0.0, 0.0);
-    agents.household_id[housed_a] = 0;
-    agents.household_id[unhoused] = 1;
+    agents.assign_household_id(housed_a, 0);
+    agents.assign_household_id(unhoused, 1);
     agents.home_building[unhoused] = usize::MAX;
     agents.target_building[unhoused] = usize::MAX;
-    agents.household_id[housed_b] = 2;
+    agents.assign_household_id(housed_b, 2);
     allocator.claim_vacancy(0);
     allocator.claim_vacancy(1);
 
     households.households[1].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    let mut logistics = ShipmentSystem::new();
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 2);
     assert_eq!(agents.len(), 2);
@@ -473,7 +459,6 @@ fn departure_execution_protects_recently_displaced_and_recovered_households() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
-    let mut logistics = ShipmentSystem::new();
     // The poorest household has just lost its home. The next has recovered its resources
     // during the rehousing period. Only the destitute/expired households may leave.
     for (days, reserve_days, stock_days) in [
@@ -487,17 +472,11 @@ fn departure_execution_protects_recently_displaced_and_recovered_households() {
         household.unhoused_days_elapsed = days;
         households.households.push(household);
         let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-        agents.household_id[agent] = id;
+        agents.assign_household_id(agent, id);
     }
     let recovered_budget = households.households[1].budget;
     assert_eq!(
-        households.execute_demand_household_removal(
-            4,
-            exit_policy(),
-            &mut agents,
-            &mut allocator,
-            &mut logistics,
-        ),
+        households.execute_demand_household_removal(4, exit_policy(), &mut agents, &mut allocator,),
         2
     );
     assert_eq!(households.households.len(), 2);
@@ -529,16 +508,15 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
 
     let mut agents = AgentSystem::new();
     let resident = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[resident] = 0;
+    agents.assign_household_id(resident, 0);
     let freight = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[freight] = usize::MAX;
+    agents.assign_household_id(freight, usize::MAX);
     agents.home_building[freight] = usize::MAX;
     agents.current_building[freight] = usize::MAX;
     agents.target_building[freight] = usize::MAX;
     agents.freight_shipment_id[freight] = 77;
     agents.vehicle_type[freight] = VEHICLE_FREIGHT_DELIVERY;
     allocator.claim_vacancy(0);
-
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
         id: 77,
@@ -548,27 +526,26 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         destination: ShipmentEndpoint::OwaBorder(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: freight,
+        carrier: agents.agent_handle(freight),
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
+        cargo_loaded: true,
     });
 
     // The home has failed before departure; retain the agent and shipment remapping fixture.
     allocator.buildings[0].is_deserted = true;
     households.households[0].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(agents.len(), 1);
     assert_eq!(agents.freight_shipment_id[0], 77);
-    assert_eq!(logistics.shipments[0].carrier_agent_id, 0);
+    assert_eq!(
+        agents.resolve_agent(logistics.shipments[0].carrier),
+        Some(0)
+    );
 }
 
 #[test]
@@ -605,23 +582,16 @@ fn demand_household_removal_never_fills_unused_slots_with_housed_households() {
     let weak_housed = agents.spawn_housed_agent(0, 0.0, 0.0);
     let strong_housed = agents.spawn_housed_agent(1, 0.0, 0.0);
     let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[weak_housed] = 0;
-    agents.household_id[strong_housed] = 1;
-    agents.household_id[unhoused] = 2;
+    agents.assign_household_id(weak_housed, 0);
+    agents.assign_household_id(strong_housed, 1);
+    agents.assign_household_id(unhoused, 2);
     agents.home_building[unhoused] = usize::MAX;
     agents.target_building[unhoused] = usize::MAX;
     allocator.claim_vacancy(0);
     allocator.claim_vacancy(1);
 
     households.households[2].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    let mut logistics = ShipmentSystem::new();
-    households.execute_demand_household_removal(
-        2,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-    );
+    households.execute_demand_household_removal(2, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 2);
     assert_eq!(agents.len(), 2);
@@ -659,7 +629,7 @@ fn unhoused_household_rehouses_into_affordable_vacant_home() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for a in [a0, a1] {
-        agents.household_id[a] = 0;
+        agents.assign_household_id(a, 0);
         agents.home_building[a] = usize::MAX;
         agents.current_building[a] = usize::MAX;
         agents.target_building[a] = usize::MAX;
@@ -712,9 +682,9 @@ fn upgrade_search_does_not_consume_same_or_lower_level_vacancy() {
 
     let mut agents = AgentSystem::new();
     let housed_agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[housed_agent] = 0;
+    agents.assign_household_id(housed_agent, 0);
     let unhoused_agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[unhoused_agent] = 1;
+    agents.assign_household_id(unhoused_agent, 1);
     agents.home_building[unhoused_agent] = usize::MAX;
     agents.current_building[unhoused_agent] = usize::MAX;
     agents.target_building[unhoused_agent] = usize::MAX;
@@ -755,9 +725,9 @@ fn same_day_relocation_frees_home_for_later_household() {
 
     let mut agents = AgentSystem::new();
     let upgrading_agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[upgrading_agent] = 0;
+    agents.assign_household_id(upgrading_agent, 0);
     let unhoused_agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[unhoused_agent] = 1;
+    agents.assign_household_id(unhoused_agent, 1);
     agents.home_building[unhoused_agent] = usize::MAX;
     agents.current_building[unhoused_agent] = usize::MAX;
     agents.target_building[unhoused_agent] = usize::MAX;
@@ -810,7 +780,7 @@ fn failed_stay_rule_evicts_household_when_no_affordable_home_exists() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for a in [a0, a1] {
-        agents.household_id[a] = 0;
+        agents.assign_household_id(a, 0);
         agents.home_building[a] = 0;
         agents.current_building[a] = 0;
         agents.target_building[a] = usize::MAX;
@@ -830,6 +800,71 @@ fn failed_stay_rule_evicts_household_when_no_affordable_home_exists() {
     assert_eq!(agents.current_building[a1], usize::MAX);
     assert_eq!(agents.transit[a0], TRANSIT_ACCESS_INGRESS);
     assert_eq!(agents.transit[a1], TRANSIT_ACCESS_INGRESS);
+}
+
+#[test]
+fn evicting_a_household_hands_its_shopper_at_a_store_back_to_the_schedule() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 1, 0.5, 1.0);
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "evict_shop_res",
+        ZoneClass::Residential,
+    );
+    let store_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "evict_shop_store",
+        ZoneClass::Commercial,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 2;
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator
+        .buildings
+        .push(make_building(50.0, ZoneType::Commercial, &store_asset, 0.0));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.assign_household_id(shopper, 0);
+    agents.current_building[shopper] = 1;
+    agents.transit[shopper] = TRANSIT_IN_BUILDING;
+    agents.activity[shopper] = crate::simulation::economy::agents::ACTIVITY_SHOPPING;
+    let household = &mut households.households[0];
+    household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
+    household.shopping_agent = agents.agent_handle(shopper);
+    household.reserved_store_building_id = 1;
+    household.reserved_amount = 2.0;
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(allocator.buildings[1].inventory_units(supplies), 2.0);
+    // Shopping released the agent: it used to stay in the store with the shopping activity and
+    // no trip, and its household never shopped again.
+    assert_eq!(agents.current_building[shopper], 1);
+    assert_ne!(
+        agents.activity[shopper],
+        crate::simulation::economy::agents::ACTIVITY_SHOPPING
+    );
+    // The schedule moves only agents at home or at work, so rehousing sends it home.
+    agents.relocate_household_member_home(shopper, usize::MAX, 0, false);
+    assert_eq!(agents.planned_target_building[shopper], 0);
+    assert_eq!(
+        agents.planned_activity[shopper],
+        crate::simulation::economy::agents::ACTIVITY_HOME
+    );
 }
 
 #[test]
@@ -856,7 +891,7 @@ fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for a in [a0, a1] {
-        agents.household_id[a] = 0;
+        agents.assign_household_id(a, 0);
         agents.home_building[a] = 0;
         agents.current_building[a] = 0;
         agents.target_building[a] = usize::MAX;
@@ -865,23 +900,15 @@ fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     }
 
     households.resolve_household_housing(&mut agents, &mut allocator);
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
 
     assert_eq!(households.households.len(), 1);
     assert_eq!(households.households[0].home_building_id, usize::MAX);
     assert_eq!(households.households[0].member_count, 2);
     assert_eq!(agents.household_id[a0], 0);
     assert_eq!(agents.household_id[a1], 0);
-
-    let mut logistics = ShipmentSystem::new();
     households.households[0].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 0);
     assert_eq!(agents.len(), 0);
@@ -926,7 +953,10 @@ fn eviction_settles_active_shopping_reservations_once() {
 
         assert_eq!(households.households[0].home_building_id, usize::MAX);
         assert_eq!(households.households[0].reserved_amount, 0.0);
-        assert_eq!(households.households[0].shopping_agent_id, usize::MAX);
+        assert_eq!(
+            households.households[0].shopping_agent,
+            crate::simulation::economy::agents::AgentHandle::NONE
+        );
         assert_eq!(
             households.households[0].budget,
             if picked_up { 0.0 } else { reserved_cost }
@@ -979,7 +1009,7 @@ fn housing_distance_ties_use_building_order_across_chunk_boundaries() {
         .push(make_household(2, 1, 100.0, 30.0));
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(2, 256.0, 256.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
 
     households.resolve_household_housing(&mut agents, &mut allocator);
 
@@ -1016,7 +1046,7 @@ fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for a in [a0, a1] {
-        agents.household_id[a] = 0;
+        agents.assign_household_id(a, 0);
         agents.home_building[a] = 0;
         agents.current_building[a] = 0;
         agents.target_building[a] = usize::MAX;
@@ -1031,4 +1061,41 @@ fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
     assert_eq!(allocator.buildings[1].occupancy, 0);
     assert_eq!(agents.home_building[a0], usize::MAX);
     assert_eq!(agents.home_building[a1], usize::MAX);
+}
+
+#[test]
+fn housing_requests_leave_oldest_first_across_rehousings_and_reviews() {
+    let mut allocator = BuildingAllocator::new();
+    let asset =
+        register_test_residential_asset_with_capacity(&mut allocator, "test", "oldest_first", 2);
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &asset, 0.0));
+    allocator.rebuild_zone_index();
+    let mut households = HouseholdSystem::new();
+    let mut agents = AgentSystem::new();
+    for hid in 0..2 {
+        households.households.push(make_household(0, 1, 5.0, 5.0));
+        let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.assign_household_id(agent, hid);
+    }
+    households.handles.register_appended(2);
+    let (first, second) = (households.handles.handle(0), households.handles.handle(1));
+    households.rehousing.push(9, second);
+    households.housing_reviews.push(8, first);
+    assert_eq!(
+        households.serve_housing_requests(1, &mut agents, &mut allocator),
+        1
+    );
+    assert!(
+        households.housing_reviews.is_empty(),
+        "the older review first"
+    );
+    assert_eq!(households.rehousing.len(), 1);
+    households.housing_reviews.push(9, second);
+    households.serve_housing_requests(1, &mut agents, &mut allocator);
+    assert!(
+        households.rehousing.is_empty() && households.housing_reviews.len() == 1,
+        "a household's rehousing goes before its review of the same slot"
+    );
 }

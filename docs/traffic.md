@@ -23,7 +23,10 @@ Implementation lives mainly in:
 
 ## Current Scope
 
-### Automatic vehicle junction priority — TRAFFIC-06 stage 1a
+### Automatic vehicle junction priority — TRAFFIC-08 stage 1a
+
+The road-chain implementation was tracked as `TRAFFIC-06` before upstream integration.
+It now uses `TRAFFIC-08`; upstream's `TRAFFIC-06` planning row remains preserved.
 
 Stage 1a adds automatic vehicle right of way to the existing connector reservations. It is a staged
 implementation: zebra priority, fixed-time signals, authored control/major-road selection, all-way stop,
@@ -348,8 +351,12 @@ differently after save and reload. Pedestrian lanes remain active
 through load, including final frontage legs with an exhausted graph-node path.
 An empty network path can also be a pending immediate replan after demolition. With valid
 node, edge and destination references, loading preserves its planned target and path cursor
-even when retry time and failure count are zero. Delayed retries retain their backoff;
-agents without a usable destination or pending retry still receive orphan repair.
+even when retry time and failure count are zero. An agent in network transit at a valid node
+stays there and replans from the node whatever its mode, as the running game does: a road edit
+that rebuilds the junction lane a walker is crossing leaves it at the node with no edge (found in
+`SIM-02-I` part 3, when loading sent such walkers straight into their destination). Delayed
+retries retain their backoff; agents without a usable destination or pending retry still
+receive orphan repair.
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).
@@ -395,26 +402,36 @@ identities. New benchmark agents may still start with inactive defaults.
 
 ## Lane Buckets
 
-Each tick builds per-lane buckets containing `(lane_distance, agent_index)` sorted by distance.
-These buckets are the hot-path structure for:
+The buckets hold `(lane_distance, agent_index)` per lane, sorted by distance with an index
+tiebreak. The tick keeps them across ticks: the end of each tick fills them from every live lane
+agent on the shared pool (agents grouped by lane range in one pass over 4,096-agent chunks, then
+each lane range fills, sorts and overlap-corrects its own lanes in agent order), appended agents
+join at the next tick start, and swap-removes patch them in place (`SIM-02-K` part 4,
+[simulation.md](simulation.md#sim-02-k-part-4--agent-tick-2026-10-20-first-commit)). A bucket is
+sorted again after an overlap clamp, so the snapshot is always the function of the agents' state
+that a rebuild gives. These buckets are the hot-path structure for:
 
 - nearest-car-ahead gap lookup
 - connector entry slot checks
 - lane-change target gap checks
 - post-movement overlap correction
 
-The bucket fill is incremental over dirty lanes and reuses scratch buffers. This is required for
-the 1M-agent scale target; traffic logic must not allocate per agent in the tick hot path.
+The bucket fill reuses retained scratch buffers and allocates nothing per agent once they have
+grown. This is required for the 1M-agent scale target; traffic logic must not allocate per agent
+in the tick hot path.
 
 Active lane-changing cars are inserted into their target lane bucket and, before movement, also
 into their source lane bucket while the S-curve is still active. This lets cars in both lanes react
 to the crossing car during the IDM speed pass. Post-movement overlap correction clamps the current
 authoritative lane.
 
-Removing the last agent also retires dirty lane occupancy and road-edge congestion before the
-empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane/edge lists and
+Removing the last agent also retires dirty lane occupancy before the
+empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane list and
 buffers. Once these are empty, later empty ticks skip the occupancy rebuild. The separate
-low-frequency frontage-delay cache continues its existing decay from live agent speeds.
+low-frequency frontage-delay cache continues its existing decay from live agent speeds. Its
+once-a-simulated-second update notes each agent's lane in parallel, then sums each lane range's
+cars in agent order on the pool, so the delays are bit-identical for any worker count
+(`SIM-02-K` part 5).
 Save format 75 preserves that smoothed delay and its fractional update clock, restoring lane
 values through saved lane identities; see [frontage delay persistence](entrance_and_exit.md#exact-frontage-congestion-penalty-cache).
 
@@ -434,7 +451,8 @@ therefore have priority over connector/frontage arrivals for that tick. Reusing 
 reservation is allowed, including entry followed by a frontage detach.
 
 Each lane stores one owner index (`usize::MAX` when free), replacing the former boolean. On a
-64-bit target this adds seven bytes per retained lane; reset remains O(L) in retained lanes.
+64-bit target this adds seven bytes per retained lane; reset remains O(L) in retained lanes, in
+parallel 4,096-lane chunks from 65,536 lanes.
 Connector choices retain their existing `stable_index` algorithm and seeds.
 
 ## Car Following
@@ -1035,7 +1053,7 @@ Coincident straight mouths use stationary connectors, and rebuild-only shortest-
 never reparent settled mouths through zero-length cycles. LaneCrosswalk carries crossing identity
 without requiring paint. Ramp and transition continuity, continuous median barriers and NET-07
 vehicle U-turn rules are unchanged. Zebra/turning-vehicle priority and signals remain the pending
-TRAFFIC-06 stages; this slice changes route construction, not agent admission. See
+TRAFFIC-08 stages; this slice changes route construction, not agent admission. See
 [road marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75).
 
 ### Short agent-tick contract (`PERF-06`)
@@ -1044,7 +1062,7 @@ Routine traffic changes use the ignored release test
 `simulation::economy::agents::tick::contract::benchmark_agent_tick_contract`. It warms each isolated
 lane fixture once, then records one setup-free timed tick for the 10k and 30k agent tiers. The
 test emits one `PERF_AGENT` JSON line per mode and tier with deterministic row counts for lane
-bucket preparation, speed updates, lane claims, movement, congestion rebuild and frontage-delay
+bucket preparation, speed updates, lane claims, movement, the end-of-tick lane fill and frontage-delay
 aggregation. The fixture uses one long straight lane, fixed 16 m spacing and no route-planning
 work; construction and buffer allocation stay outside the timed tick.
 
@@ -1078,7 +1096,10 @@ predecessor comparison cannot retrospectively resolve it. Commands, exact binary
 fixture-setup failures and completed cohorts are recorded in
 [ROAD-68 performance acceptance](roads.md#completion-performance-and-perf-06-interpretation--2026-10-22).
 
-Movement now owns route-query scratch by fixed contiguous agent ranges, retaining the existing
+Earlier road-chain measurements below used fixed contiguous agent ranges. With the upstream
+integration, the dispatch keeps the same ownership guarantees while distributing those ranges:
+Movement now owns route-query scratch by shards that each take every shards-th chunk of 256
+agents (`SIM-02-K` part 4), retaining the existing
 small-city serial threshold and separate ordered dynamic movement. Scoped TLS access restores
 the previous scratch on return or unwind; this preserves planner entry points while making
 memoization independent of which Rayon worker executes a range. Storage is prepared outside
@@ -1248,9 +1269,11 @@ The measured ignored tests are
 - normal road bends do not yet use curvature speed limits
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
-- automatic vehicle priority/yield/stop control is implemented in TRAFFIC-06 stage 1a; zebra priority, fixed-time lights,
+- automatic vehicle priority/yield/stop control is implemented in TRAFFIC-08 stage 1a; zebra priority, fixed-time lights,
   authored controls and importer hooks remain pending; explicit single-lane roundabout entry priority is implemented by ROAD-62
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
+- network entry at a node does not claim the entry slot (`TRAFFIC-07`)
+- walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction

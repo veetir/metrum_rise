@@ -66,7 +66,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, median_start_setback, median_end_setback) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, median_start_setback, median_end_setback) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -94,7 +94,6 @@ pub(super) fn save_network(
                 edge.speed_limit,
                 edge.base_cost,
                 edge.physical_length,
-                edge.current_congestion,
                 edge.start_clip,
                 edge.end_clip,
                 i64::from(edge.no_building_spawn),
@@ -272,7 +271,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             "0, 0.0, 0.0, 0.0"
         };
         let sql = format!(
-            "SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, {median_columns} FROM network_edges ORDER BY edge_id"
+            "SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, {median_columns} FROM network_edges ORDER BY edge_id"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query([])?;
@@ -287,7 +286,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             }
             let speed_limit = row.get(9)?;
             let no_building_spawn =
-                row.get::<_, i64>(15)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+                row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
@@ -295,10 +294,10 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
             }
             let mut median =
-                RoadMedian::from_tool(row.get(17)?, row.get(18)?).map_err(SaveLoadError::custom)?;
+                RoadMedian::from_tool(row.get(16)?, row.get(17)?).map_err(SaveLoadError::custom)?;
             if let Some(median) = &mut median {
-                median.start_setback_m = row.get(19)?;
-                median.end_setback_m = row.get(20)?;
+                median.start_setback_m = row.get(18)?;
+                median.end_setback_m = row.get(19)?;
                 median.validate().map_err(SaveLoadError::custom)?;
             }
             let edge = Edge {
@@ -318,14 +317,13 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 speed_limit,
                 base_cost: row.get(10)?,
                 physical_length: row.get(11)?,
-                current_congestion: row.get(12)?,
-                start_clip: row.get(13)?,
-                end_clip: row.get(14)?,
+                start_clip: row.get(12)?,
+                end_clip: row.get(13)?,
                 geometry: geometry.remove(&eid).unwrap_or_default(),
                 physical_geometry: physical_geometry.remove(&eid).unwrap_or_default(),
                 deleted: false,
                 no_building_spawn,
-                vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(16)?)?,
+                vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
             };
             edge.validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, median)
                 .map_err(SaveLoadError::custom)?;

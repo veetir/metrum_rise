@@ -55,6 +55,8 @@ struct PassCheckpoint {
     free_receipt: usize,
     slots: usize,
     owners: usize,
+    // A lent book covers the buildings appended since its census for the pass only.
+    source_base: usize,
 }
 
 impl Revalidation {
@@ -66,13 +68,12 @@ impl Revalidation {
     /// Prepares at most one undo entry per original source, owner and receipt arena slot.
     pub(super) fn prepare(&mut self, sources: usize, owners: usize, receipts: usize) {
         debug_assert!(self.checkpoint.is_none());
-        self.source_seen.resize(sources, 0);
-        self.owner_seen.resize(owners, 0);
+        // Rows that follow the book's row counts keep spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut self.source_seen, sources, 0);
+        crate::utils::storage::resize_rows(&mut self.owner_seen, owners, 0);
         self.receipt_seen.resize(receipts, 0);
-        self.sources
-            .reserve(sources.saturating_sub(self.sources.len()));
-        self.owners
-            .reserve(owners.saturating_sub(self.owners.len()));
+        crate::utils::storage::reserve_rows(&mut self.sources, sources);
+        crate::utils::storage::reserve_rows(&mut self.owners, owners);
         self.receipts
             .reserve(receipts.saturating_sub(self.receipts.len()));
     }
@@ -95,16 +96,6 @@ impl Revalidation {
 }
 
 impl RecurringSupply {
-    /// Drops an unpublished project proof immediately before rebuilding the entire live book.
-    /// Layout invalidation may already have removed its old source indices, so no rollback
-    /// may dereference the new allocator through the old geometry. No quote may intervene.
-    pub(crate) fn discard_project_proof_for_reset(&mut self) {
-        self.staged.clear();
-        self.released.clear();
-        self.releasing_owner = None;
-        self.revalidation.finish();
-    }
-
     /// Starts one outer replacement/revalidation transaction in O(1). Accepted inner owner
     /// quotes remain provisional until `accept_revalidation`; one rejection restores them all.
     /// Call `prepare_owners` before the project pass to provide bounded journal storage.
@@ -259,7 +250,7 @@ impl RecurringSupply {
             "owner_receipts" => self.owner_receipts, "owner_tails" => self.owner_tails,
             "source_receipts" => self.source_receipts, "free_receipt" => self.free_receipt,
             "nearest_incumbents" => self.nearest_incumbents, "doors" => self.doors, "index" => self.index,
-            "max_speed" => self.max_speed.to_bits())
+            "max_speed" => self.max_speed.to_bits(), "source_base" => self.source_base)
     }
 
     /// Opens a planning pass over the live book in O(resources) amortized: snapshot storage
@@ -278,15 +269,17 @@ impl RecurringSupply {
             pass.receipt_seen.fill(0);
             pass.generation = 1;
         }
-        pass.source_seen.resize(self.remaining.len(), 0);
-        pass.owner_seen.resize(self.owner_receipts.len(), 0);
-        pass.receipt_seen.resize(self.committed.len(), 0);
+        // Journals follow the book's row counts, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut pass.source_seen, self.remaining.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.owner_seen, self.owner_receipts.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.receipt_seen, self.committed.len(), 0);
         pass.nearest_incumbents.clone_from(&self.nearest_incumbents);
         pass.checkpoint = Some(PassCheckpoint {
             receipts: self.committed.len(),
             free_receipt: self.free_receipt,
             slots: self.remaining.len(),
             owners: self.owner_receipts.len(),
+            source_base: self.source_base,
         });
     }
 
@@ -331,6 +324,7 @@ impl RecurringSupply {
         self.active.truncate(checkpoint.slots);
         self.owner_receipts.truncate(checkpoint.owners);
         self.owner_tails.truncate(checkpoint.owners);
+        self.source_base = checkpoint.source_base;
         self.clear_projected_sources();
         self.prices.clear();
     }

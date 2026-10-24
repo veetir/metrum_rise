@@ -5,85 +5,10 @@
 use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
-/// Current save format version.
-pub const SAVE_VERSION: i64 = 95;
+/// Current save format combining the scheduler and road-chain schemas.
+pub const SAVE_VERSION: i64 = 108;
 
-/// First version storing the weather: scenario, transition, cloud drift, wind clock and schedule.
-///
-/// A save below this one has no weather row and loads into settled fair weather with the
-/// default seed, which is the sky every city had before weather was saved.
-pub const WEATHER_SAVE_VERSION: i64 = 87;
-
-/// First version storing where the weather turned the wind and the high cloud layer: the
-/// transition's target wind and high cover, and the high layer's drift.
-///
-/// A save below this one, from version 87, moved to its target scenario's authored wind and high
-/// cover, and its high layer starts undrifted.
-pub const WEATHER_SKY_SAVE_VERSION: i64 = 88;
-
-/// First version retaining complete workplace commute quotes for exact continuation.
-pub const WORKPLACE_ROUTE_CACHE_SAVE_VERSION: i64 = 86;
-
-/// Lanes persist the live frontage delay apart from the hourly published economy price
-/// (`ECON-13-D`). Older continuation saves load both from the single saved delay.
-pub const LIVE_FRONTAGE_DELAY_SAVE_VERSION: i64 = 85;
-
-/// Household stock-check offsets are well mixed; older saves recompute theirs on load (`ECON-19`).
-pub const REPLENISHMENT_OFFSET_SAVE_VERSION: i64 = 84;
-
-/// Traffic smoothing and live agent decisions survive save/load.
-pub const CONTINUATION_SAVE_VERSION: i64 = 75;
-
-/// Electricity uses kWh and persists physical meters plus unpaid consumer bills.
-pub const ELECTRICITY_KWH_SAVE_VERSION: i64 = 73;
-
-/// Arrival carriers persist their approved adult/elder composition.
-pub const HOUSEHOLD_ARRIVAL_SAVE_VERSION: i64 = 72;
-
-/// Freight contract fees are persisted; obsolete outside buyer quotas are removed.
-pub const FREIGHT_COST_SAVE_VERSION: i64 = 71;
-
-/// First version using kg for all physical economy inventories, recipes and freight cargo.
-pub const ECONOMY_SI_SAVE_VERSION: i64 = 70;
-
-/// First version recording the plants each building's yard planting areas planted.
-///
-/// A save below this one has no planting records; no asset could author planting areas then.
-pub const YARD_PLANTING_SAVE_VERSION: i64 = 69;
-
-/// First version recording the hedge modules each building's yard laid.
-///
-/// A save below this one has no yard records, so its hedges, if any, are all player-drawn and
-/// stay when a building is removed.
-pub const YARD_HEDGE_SAVE_VERSION: i64 = 68;
-
-/// First version retaining straight road grid choices independently of visible cell caches.
-pub const CELL_ROAD_ALIGNMENT_SAVE_VERSION: i64 = 67;
-
-/// First version retaining the original centreline guides of painted curved cell groups.
-pub const CELL_CURVE_SOURCE_SAVE_VERSION: i64 = 66;
-
-/// First version containing persistent cell frames, paint and derived parcel coverage.
-pub const CELL_ZONING_SAVE_VERSION: i64 = 65;
-
-/// First version whose parcels and buildings carry the redevelopment generation.
-///
-/// A save below this one reads back at generation `0`, which reproduces the asset and
-/// colour choices it was written under instead of shuffling an existing city on load.
-pub const REDEVELOPMENT_SAVE_VERSION: i64 = 64;
-
-/// First version whose schema carries the vegetation generator parameters and authored edits.
-///
-/// The fork and upstream both reached 61 with unrelated schemas, so the vegetation tables sit
-/// above that collision rather than at the number they were first written under. A save below
-/// this version has no vegetation tables and restores the shipped generator defaults.
-pub const VEGETATION_SAVE_VERSION: i64 = 62;
-/// First version whose authored plants carry a pinned renderer mesh variant.
-///
-/// A save below this one has no `variant` column, and every authored plant in it reads back
-/// unpinned, which is the behaviour it was written under.
-pub const VEGETATION_VARIANT_SAVE_VERSION: i64 = 63;
-/// Sentinel for missing integer references in SQLite.
+/// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
 
 /// The SQL schema string.
@@ -214,7 +139,13 @@ CREATE TABLE demand_state(
     despawn_action_credit_residential REAL NOT NULL,
     despawn_action_credit_commercial REAL NOT NULL,
     despawn_action_credit_industrial REAL NOT NULL,
-    cheat_max_demands_enabled INTEGER NOT NULL
+    cheat_max_demands_enabled INTEGER NOT NULL,
+    exit_eligible_today INTEGER NOT NULL
+);
+CREATE TABLE demand_diagnostics(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    admission BLOB NOT NULL,
+    removal BLOB NOT NULL
 );
 CREATE TABLE pending_demand_spawns(
     sequence INTEGER PRIMARY KEY,
@@ -223,17 +154,70 @@ CREATE TABLE pending_demand_spawns(
     parcel_id INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
     planned_day_index INTEGER NOT NULL,
-    planned_minute_of_day INTEGER NOT NULL
+    planned_minute_of_day INTEGER NOT NULL,
+    spawn_id INTEGER NOT NULL,
+    permit BLOB,
+    counted INTEGER NOT NULL
+);
+CREATE TABLE demand_planning_setup(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    setup BLOB NOT NULL
+);
+CREATE TABLE demand_hour_plan(
+    sequence INTEGER PRIMARY KEY,
+    kind INTEGER NOT NULL,
+    zone_type INTEGER NOT NULL,
+    parcel_id INTEGER NOT NULL,
+    edge_id INTEGER NOT NULL,
+    side INTEGER NOT NULL,
+    cell_x INTEGER NOT NULL,
+    width INTEGER NOT NULL,
+    depth INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    asset_id TEXT NOT NULL,
+    target_asset_id TEXT NOT NULL
+);
+CREATE TABLE scheduler_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    next_slot INTEGER NOT NULL,
+    next_event_seq INTEGER NOT NULL,
+    next_spawn_id INTEGER NOT NULL,
+    logistics_hour_ticks INTEGER NOT NULL,
+    agent_settlement_days INTEGER NOT NULL,
+    road_length_front_m REAL NOT NULL,
+    road_length_back_mm INTEGER NOT NULL,
+    road_length_edges INTEGER NOT NULL,
+    road_length_next_edge INTEGER NOT NULL,
+    road_length_measured INTEGER NOT NULL,
+    environment_building_handles INTEGER NOT NULL,
+    environment_edges INTEGER NOT NULL,
+    environment_next_edge INTEGER NOT NULL,
+    environment_next_chunk INTEGER NOT NULL,
+    demand_snapshot_front BLOB,
+    demand_snapshot_next_chunk INTEGER NOT NULL,
+    demand_snapshot_back BLOB,
+    logistics_next_shipment_id INTEGER NOT NULL,
+    freight_departure_first_minute INTEGER NOT NULL,
+    freight_departure_counts BLOB NOT NULL
+);
+CREATE TABLE timed_events(
+    slot INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    a INTEGER NOT NULL,
+    PRIMARY KEY(slot, seq)
 );
 CREATE TABLE pollution_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
-    grid_blob_f32_le BLOB NOT NULL
+    grid_blob_f32_le BLOB NOT NULL,
+    back_blob_f32_le BLOB NOT NULL
 );
 CREATE TABLE noise_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
-    grid_blob_f32_le BLOB NOT NULL
+    grid_blob_f32_le BLOB NOT NULL,
+    back_blob_f32_le BLOB NOT NULL
 );
 CREATE TABLE network_nodes(
     node_id INTEGER PRIMARY KEY,
@@ -258,7 +242,6 @@ CREATE TABLE network_edges(
     speed_limit REAL NOT NULL,
     base_cost REAL NOT NULL,
     physical_length REAL NOT NULL,
-    current_congestion REAL NOT NULL,
     start_clip REAL NOT NULL,
     end_clip REAL NOT NULL,
     no_building_spawn INTEGER NOT NULL DEFAULT 0,
@@ -319,6 +302,16 @@ CREATE TABLE zoning_cell_road_alignments(
     edge_id INTEGER PRIMARY KEY,
     alignment_json TEXT NOT NULL
 );
+CREATE TABLE zoning_cell_lot_queue(
+    position INTEGER PRIMARY KEY,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    queued INTEGER NOT NULL
+);
+CREATE TABLE zoning_cell_lot_catalog(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    sizes_json TEXT NOT NULL
+);
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,
     parcel_id INTEGER NOT NULL,
@@ -335,13 +328,13 @@ CREATE TABLE buildings(
     operating_budget REAL NOT NULL,
     profit_tax_budget_baseline REAL NOT NULL,
     last_day_profit REAL NOT NULL,
-    shipment_cooldown_hours INTEGER NOT NULL,
+    shipment_cooldown_until_slot INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
     level INTEGER NOT NULL,
     construction_total_hours INTEGER NOT NULL,
-    construction_remaining_hours INTEGER NOT NULL,
+    construction_complete_slot INTEGER NOT NULL,
     broken INTEGER NOT NULL DEFAULT 0,
     pending_redevelopment INTEGER NOT NULL DEFAULT 0,
     rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0,
@@ -355,7 +348,30 @@ CREATE TABLE buildings(
     recent_household_sales_value REAL NOT NULL,
     support_height_m REAL NOT NULL,
     build_generation INTEGER NOT NULL DEFAULT 0,
-    electricity_usage TEXT NOT NULL
+    electricity_usage TEXT NOT NULL,
+    hourly_economy_activity REAL NOT NULL,
+    commercial_activity_floor_scale REAL NOT NULL,
+    paid_workers_in_window INTEGER NOT NULL,
+    funded_job_capacity INTEGER NOT NULL,
+    unpaid_cash_wages_in_window INTEGER NOT NULL,
+    service_sales_capacity REAL NOT NULL,
+    service_sales_profile_runtime_id INTEGER NOT NULL,
+    funded_activity REAL NOT NULL,
+    applicant_seed INTEGER NOT NULL
+);
+CREATE TABLE building_seed_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    next_applicant_seed INTEGER NOT NULL
+);
+CREATE TABLE building_vacancy_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    stale INTEGER NOT NULL
+);
+CREATE TABLE building_vacancies(
+    zone_slot INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_id INTEGER NOT NULL,
+    PRIMARY KEY(zone_slot, position)
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -393,7 +409,112 @@ CREATE TABLE agriculture_field_site_points(
 );
 CREATE TABLE electricity_day_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    removed_buildings TEXT NOT NULL
+    removed_buildings TEXT NOT NULL,
+    day_totals TEXT NOT NULL,
+    last_day_totals TEXT NOT NULL,
+    coal_inventory_kg REAL NOT NULL,
+    city_input_day TEXT NOT NULL
+);
+CREATE TABLE city_hour_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    electricity_dispatch REAL NOT NULL,
+    electricity_coverage REAL NOT NULL,
+    electricity_demand_kwh REAL NOT NULL,
+    electricity_capacity_kwh REAL NOT NULL,
+    electricity_coal_burned_kg REAL NOT NULL,
+    electricity_coal_stock_kg REAL NOT NULL,
+    service_residents INTEGER NOT NULL,
+    service_gross_revenue REAL NOT NULL,
+    service_hour_residents INTEGER NOT NULL,
+    service_hour_collected REAL NOT NULL
+);
+CREATE TABLE service_sales_resources(
+    resource_slot INTEGER PRIMARY KEY,
+    gross REAL NOT NULL,
+    capacity REAL NOT NULL,
+    drawable REAL NOT NULL,
+    undrawn REAL NOT NULL,
+    hour_capacity REAL NOT NULL
+);
+CREATE TABLE household_requests(
+    kind INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    slot INTEGER,
+    household_slot INTEGER NOT NULL,
+    household_generation INTEGER NOT NULL,
+    PRIMARY KEY(kind, sequence)
+);
+CREATE TABLE household_queue_state(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    visit_credit INTEGER NOT NULL,
+    shopper_departure_first_minute INTEGER NOT NULL,
+    shopper_departure_counts BLOB NOT NULL,
+    destination_front_hour INTEGER NOT NULL,
+    destination_sweep_building_handles INTEGER NOT NULL,
+    destination_sweep_hour INTEGER NOT NULL,
+    destination_sweep_next_chunk INTEGER NOT NULL,
+    destination_front_current INTEGER NOT NULL,
+    destination_sweep_current INTEGER NOT NULL,
+    job_board_hour INTEGER NOT NULL,
+    job_sweep_building_handles INTEGER NOT NULL,
+    job_sweep_hour INTEGER NOT NULL,
+    job_sweep_next_chunk INTEGER NOT NULL,
+    admission_credit INTEGER NOT NULL,
+    admission_rate INTEGER NOT NULL
+);
+CREATE TABLE admission_requests(
+    sequence INTEGER PRIMARY KEY,
+    home_slot INTEGER NOT NULL,
+    home_generation INTEGER NOT NULL,
+    household_size INTEGER NOT NULL,
+    child_count INTEGER NOT NULL,
+    adult_count INTEGER NOT NULL,
+    elder_count INTEGER NOT NULL,
+    border_node INTEGER NOT NULL
+);
+CREATE TABLE building_removal_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    kind INTEGER NOT NULL
+);
+CREATE TABLE level_change_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    target_asset_id TEXT NOT NULL,
+    permit INTEGER NOT NULL
+);
+CREATE TABLE job_board_members(
+    buffer INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    PRIMARY KEY(buffer, position)
+);
+CREATE TABLE job_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    agent_slot INTEGER NOT NULL,
+    agent_generation INTEGER NOT NULL
+);
+CREATE TABLE household_destinations(
+    buffer INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    foot_count INTEGER NOT NULL,
+    foot_a INTEGER NOT NULL,
+    foot_b INTEGER NOT NULL,
+    car_count INTEGER NOT NULL,
+    car_a INTEGER NOT NULL,
+    car_b INTEGER NOT NULL,
+    PRIMARY KEY(buffer, kind, position)
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,
@@ -412,8 +533,8 @@ CREATE TABLE households(
     reserved_store_building_id INTEGER NOT NULL,
     reserved_amount REAL NOT NULL,
     reserved_total_cost REAL NOT NULL,
-    shopping_agent_id INTEGER NOT NULL,
-    shopping_agent_schedule_seed INTEGER NOT NULL,
+    shopping_agent_slot INTEGER NOT NULL,
+    shopping_agent_generation INTEGER NOT NULL,
     shopping_timeout_hours_remaining INTEGER NOT NULL,
     replenishment_search_cursor INTEGER NOT NULL,
     stay_failure_days INTEGER NOT NULL,
@@ -425,7 +546,8 @@ CREATE TABLE households(
     sewage_consumption_cost REAL NOT NULL,
     electricity_account TEXT NOT NULL,
     gross_daily_wages REAL NOT NULL,
-    employed_adults INTEGER NOT NULL
+    employed_adults INTEGER NOT NULL,
+    paid_workers_in_window INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,
@@ -511,11 +633,27 @@ CREATE TABLE shipments(
     destination_border_node INTEGER NOT NULL,
     carrier_class INTEGER NOT NULL,
     status INTEGER NOT NULL,
-    carrier_agent_id INTEGER NOT NULL,
+    carrier_slot INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
-    queued_hours INTEGER NOT NULL,
-    freight_cost REAL NOT NULL
+    leg_started_hour INTEGER NOT NULL,
+    freight_cost REAL NOT NULL,
+    carrier_generation INTEGER NOT NULL,
+    cargo_loaded INTEGER NOT NULL,
+    trip_event_slot INTEGER NOT NULL
+);
+CREATE TABLE entity_handle_slots(
+    kind INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    dense INTEGER NOT NULL,
+    PRIMARY KEY(kind, slot)
+);
+CREATE TABLE entity_handle_free(
+    kind INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    PRIMARY KEY(kind, position)
 );
 CREATE TABLE freight_request_failures(
     destination_building_id INTEGER NOT NULL,
@@ -523,6 +661,43 @@ CREATE TABLE freight_request_failures(
     failures INTEGER NOT NULL,
     terminal INTEGER NOT NULL,
     PRIMARY KEY(destination_building_id, resource_runtime_id)
+);
+CREATE TABLE freight_requests(
+    position INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL
+);
+CREATE TABLE freight_supplier_sweep(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    front_hour INTEGER NOT NULL,
+    sweep_building_handles INTEGER NOT NULL,
+    sweep_hour INTEGER NOT NULL,
+    sweep_next_chunk INTEGER NOT NULL,
+    front_current INTEGER NOT NULL,
+    sweep_current INTEGER NOT NULL
+);
+CREATE TABLE census_inputs(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    front BLOB,
+    back BLOB,
+    changes BLOB NOT NULL,
+    deferred BLOB NOT NULL,
+    census_publish_slot INTEGER,
+    census_current INTEGER,
+    published BLOB
+);
+CREATE TABLE freight_supplier_entries(
+    buffer INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    resource_runtime_id INTEGER NOT NULL,
+    component INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    PRIMARY KEY(buffer, position)
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,
@@ -555,7 +730,6 @@ CREATE TABLE agents(
     transit INTEGER NOT NULL,
     transit_mode INTEGER NOT NULL,
     happiness REAL NOT NULL,
-    money REAL NOT NULL,
     journey_start_time REAL NOT NULL,
     schedule_seed INTEGER NOT NULL,
     cached_commute_minutes INTEGER NOT NULL,
@@ -579,7 +753,7 @@ CREATE TABLE agents(
     lane_change_length_m REAL NOT NULL,
     overtake_blocked_time_s REAL NOT NULL,
     overtake_cooldown_s REAL NOT NULL,
-    job_lock_days INTEGER NOT NULL,
+    job_lock_until_day INTEGER NOT NULL,
     consecutive_unpaid_days INTEGER NOT NULL
 );
 CREATE TABLE agent_path_nodes(

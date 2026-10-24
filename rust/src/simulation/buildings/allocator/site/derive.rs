@@ -84,11 +84,19 @@ impl BuildingAllocator {
     }
 
     pub(crate) fn rebuild_building_site_clients(&mut self, zone_cell_m: f32) {
-        self.building_sites = self
-            .buildings
-            .par_iter()
-            .map(|building| self.derive_building_site_client(building, zone_cell_m))
-            .collect();
+        // Filled in place with spare rows, so the first building appended after a load, whose
+        // rebuild sized the clients exactly, does not copy them (`SIM-02-K`).
+        let mut sites = std::mem::take(&mut self.building_sites);
+        sites.clear();
+        crate::utils::storage::reserve_rows(&mut sites, self.buildings.len());
+        // Main-thread index repair and asset reloads reach here outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.buildings
+                .par_iter()
+                .map(|building| self.derive_building_site_client(building, zone_cell_m))
+                .collect_into_vec(&mut sites)
+        });
+        self.building_sites = sites;
         self.recompute_max_site_radius_m();
     }
 
@@ -150,23 +158,25 @@ impl BuildingAllocator {
     }
 
     pub(crate) fn recompute_max_site_radius_m(&mut self) {
-        (self.max_site_radius_m, self.max_site_radius_count) = self
-            .building_sites
-            .par_iter()
-            .with_min_len(4_096)
-            .map(|site| (site_radius_m(site), 1))
-            .reduce(
-                || (0.0, 0),
-                |a, b| {
-                    if a.0 == b.0 {
-                        (a.0, a.1 + b.1)
-                    } else if a.0 > b.0 {
-                        a
-                    } else {
-                        b
-                    }
-                },
-            );
+        // Main-thread site edits reach here outside any pool (CODE-17).
+        (self.max_site_radius_m, self.max_site_radius_count) = crate::thread_pools::install(|| {
+            self.building_sites
+                .par_iter()
+                .with_min_len(4_096)
+                .map(|site| (site_radius_m(site), 1))
+                .reduce(
+                    || (0.0, 0),
+                    |a, b| {
+                        if a.0 == b.0 {
+                            (a.0, a.1 + b.1)
+                        } else if a.0 > b.0 {
+                            a
+                        } else {
+                            b
+                        }
+                    },
+                )
+        });
     }
 
     pub(super) fn derive_building_site_client(

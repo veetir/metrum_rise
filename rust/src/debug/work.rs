@@ -19,10 +19,21 @@ pub(crate) enum Work {
     PlanningPasses,
     /// Live hourly funding censuses run by employment.
     LiveCensuses,
-    /// Funding censuses rebuilt by a planning pass that could not reuse the live one.
-    PlannerCensuses,
-    /// Funding censuses run by queued-construction execution.
-    ExecutionCensuses,
+    /// Residential planning slots skipped because the published census's books were not valid
+    /// for the live city (`SIM-02-I`); the zone waits for the next hour.
+    ResidentialPlanningSkips,
+    /// Commercial planning slots skipped on books not valid for the live city (`SIM-02-I`).
+    CommercialPlanningSkips,
+    /// Industrial planning slots skipped on books not valid for the live city (`SIM-02-I`).
+    IndustrialPlanningSkips,
+    /// Action slots whose downgrade and admission planning was skipped on books not valid for
+    /// the live city (`SIM-02-I`).
+    ActionsPlanningSkips,
+    /// Construction epochs opened at planning slots (`SIM-02-I`).
+    ConstructionEpochs,
+    /// Construction epochs skipped because the published census's books were not valid for
+    /// the live city (`SIM-02-I`); the queue's business permits wait for the next slot.
+    ConstructionEpochSkips,
     /// Building rows visited across all censuses.
     CensusBuildings,
     /// Live business/customer reservation rows copied into a planning fork.
@@ -55,20 +66,88 @@ pub(crate) enum Work {
     StaffingOperations,
     /// Worker counts tried by those searches.
     StaffingTrials,
+    /// Freight carriers dispatched onto the road (`SIM-02` burst envelope).
+    FreightDispatches,
+    /// Household arrival carriers launched from the border.
+    ArrivalLaunches,
+    /// Household shoppers sent to a store with a reserved purchase.
+    ShopperDispatches,
+    /// Buildings passed through daily settlement.
+    BuildingSettlements,
+    /// Households passed through daily settlement.
+    HouseholdSettlements,
+    /// Buildings newly marked deserted.
+    Desertions,
+    /// Freight loads delivered to a building or the border.
+    FreightDeliveries,
+    /// Trip failures recorded by the movement pass.
+    TripFailures,
+    /// Households removed from the dense store.
+    HouseholdsRemoved,
+    /// Building or household index shifts and reuses: swap-removes, remaps, clears and undo
+    /// restores (`SIM-02-I`).
+    StructuralChanges,
+    /// Funding censuses restarted by a network or structural change during their window.
+    CensusRestarts,
+    /// Zones whose flow fields a frame's pathing rebuild found marked (`SIM-02-I`).
+    FlowFieldZonesDrained,
+    /// Flow fields built by a frame's pathing rebuild, car and foot counted apart.
+    FlowFieldsBuilt,
+    /// Flow fields of a marked zone left as they were: the same sources on the same graph.
+    FlowFieldsSkipped,
+    /// Business spawns and upgrades an earlier planning slot of the hour planned that a later
+    /// slot's proof rejected, dropped from the hour's plan (`SIM-02-I`).
+    ReproofDrops,
+    /// Building phases whose freight check a freight cooldown turned away (`SIM-02-J`).
+    FreightCooldownRejections,
+    /// Queued level changes rejected because their building no longer matched their permit
+    /// (`SIM-02-J`).
+    LevelChangePermitRejections,
+    /// Queued admissions dropped because their home left or their border took no arrivals
+    /// (`SIM-02-J`).
+    AdmissionsDropped,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::StaffingTrials as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::AdmissionsDropped as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
     [const { std::sync::atomic::AtomicU64::new(0) }; WORK_COUNT];
+// The same counters, added only while the clock processes an hour's second half: the funding
+// census's window (`SIM-02-I`).
+#[cfg(test)]
+static WINDOW_COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; WORK_COUNT];
+
+// Departures of the burst kinds by the absolute minute the clock was processing, so the burst
+// envelope counts each in its own minute rather than the frame that ran it (`SIM-02-E`).
+#[cfg(test)]
+static CLOCK_MINUTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static LOG_DEPARTURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static DEPARTURES: std::sync::Mutex<Vec<(Work, u64)>> = std::sync::Mutex::new(Vec::new());
 
 /// Adds `amount` to one counter. Test builds only; otherwise compiled out.
 #[cfg(test)]
 pub(crate) fn add(work: Work, amount: u64) {
     COUNTS[work as usize].fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
+    if CLOCK_MINUTE.load(std::sync::atomic::Ordering::Relaxed) % 60 >= 30 {
+        WINDOW_COUNTS[work as usize].fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
+    }
+    if matches!(
+        work,
+        Work::FreightDispatches | Work::ArrivalLaunches | Work::ShopperDispatches
+    ) && LOG_DEPARTURES.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let minute = CLOCK_MINUTE.load(std::sync::atomic::Ordering::Relaxed);
+        DEPARTURES
+            .lock()
+            .unwrap()
+            .extend(std::iter::repeat_n((work, minute), amount as usize));
+    }
 }
 
 /// Adds `amount` to one counter. Test builds only; otherwise compiled out.
@@ -76,10 +155,59 @@ pub(crate) fn add(work: Work, amount: u64) {
 #[inline(always)]
 pub(crate) fn add(_work: Work, _amount: u64) {}
 
+/// Records the absolute minute the simulation clock is processing. Test builds only.
+#[cfg(test)]
+pub(crate) fn set_clock_minute(minute: u64) {
+    CLOCK_MINUTE.store(minute, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Records the absolute minute the simulation clock is processing. Test builds only.
+#[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn set_clock_minute(_minute: u64) {}
+
+// Whether test builds run the operational hour's whole-city consistency checks (`SIM-02-K`).
+#[cfg(test)]
+static CITY_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Switches the operational hour's test-build consistency checks: the freight reservations
+/// against a fresh build, the household member lists against a rebuild and the published
+/// census's input supply. Ordinary tests keep them; the serialized timing runners
+/// (`PERF-01`, `PERF-07`) switch them off, so test-only work stays out of the timed frames.
+#[cfg(test)]
+pub(crate) fn set_city_checks(enabled: bool) {
+    CITY_CHECKS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the operational hour's test-build consistency checks run ([`set_city_checks`]).
+#[cfg(test)]
+pub(crate) fn city_checks() -> bool {
+    CITY_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Starts or stops logging departures with their minute, for one burst-envelope run.
+#[cfg(test)]
+pub(crate) fn log_departures(enabled: bool) {
+    LOG_DEPARTURES.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    DEPARTURES.lock().unwrap().clear();
+}
+
+/// Departures logged since the last call, each with the minute it left in.
+#[cfg(test)]
+pub(crate) fn take_departures() -> Vec<(Work, u64)> {
+    std::mem::take(&mut DEPARTURES.lock().unwrap())
+}
+
 /// Cumulative counter values, for subtraction across a measured interval.
 #[cfg(test)]
 pub(crate) fn snapshot() -> [u64; WORK_COUNT] {
     std::array::from_fn(|index| COUNTS[index].load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Cumulative counter values added during hours' second halves.
+#[cfg(test)]
+pub(crate) fn window_snapshot() -> [u64; WORK_COUNT] {
+    std::array::from_fn(|index| WINDOW_COUNTS[index].load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Stable report names, in counter order.
@@ -89,8 +217,12 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "buildings_removed",
     "planning_passes",
     "live_censuses",
-    "planner_censuses",
-    "execution_censuses",
+    "residential_planning_skips",
+    "commercial_planning_skips",
+    "industrial_planning_skips",
+    "actions_planning_skips",
+    "construction_epochs",
+    "construction_epoch_skips",
     "census_buildings",
     "reservation_rows_copied",
     "owner_slots_prepared",
@@ -107,6 +239,24 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "cch_bucket_sources",
     "staffing_operations",
     "staffing_trials",
+    "freight_dispatches",
+    "arrival_launches",
+    "shopper_dispatches",
+    "building_settlements",
+    "household_settlements",
+    "desertions",
+    "freight_deliveries",
+    "trip_failures",
+    "households_removed",
+    "structural_changes",
+    "census_restarts",
+    "flow_field_zones_drained",
+    "flow_fields_built",
+    "flow_fields_skipped",
+    "reproof_drops",
+    "freight_cooldown_rejections",
+    "level_change_permit_rejections",
+    "admissions_dropped",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

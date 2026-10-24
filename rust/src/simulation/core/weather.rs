@@ -277,16 +277,6 @@ pub(crate) struct WeatherRecord {
     pub until_event_h: f64,
 }
 
-impl WeatherRecord {
-    /// The target wind and high cover a save from before they were stored held: the target
-    /// scenario's authored ones, which every transition then moved to. `None` for an unknown
-    /// scenario.
-    pub(crate) fn authored_target(target: u8) -> Option<([f64; 2], f64)> {
-        let authored = profile(WeatherScenario::from_index(target)?);
-        Some(([authored[0], authored[1]], authored[4]))
-    }
-}
-
 impl Default for WeatherState {
     fn default() -> Self {
         Self::new(0)

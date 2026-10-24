@@ -6,6 +6,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
+from `b75e03c9` is combined with the road chain; all targets pass `cargo check`. Save migration,
+full runtime verification and matched merged-build acceptance remain pending. The
+[integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records decisions,
+baseline measurements and the road-ID renumbering. Earlier acceptance counts below describe
+their original road-chain builds.
+
 ROAD-73's compiler repairs are complete: full KYS/Bioteknia views settle, all four original
 pockets fault signatures are zero, and 3,496 production terrain windows pass. The university
 rebuild retains 3+3 lanes, bus lanes and a paved median. Shared source-constrained grades also
@@ -24,7 +31,7 @@ OSM crossing mapping remains the importer integration task
 ([marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75)).
 
 Road cross-sections support painted, grass and paved medians plus in-place lane/median editing
-([ROAD-66](roads.md#central-medians-and-in-place-cross-section-changes--road-66)).
+([ROAD-80](roads.md#central-medians-and-in-place-cross-section-changes--road-80)).
 Slice B is complete: default junction lane use and advance lane choice, median/kerb turn pockets,
 mid-road count tapers, white lane arrows and solid approach lines, with H/J/K and U/I endpoint
 controls and paired road/terrain/prop previews. Version-90 split transitions preserve node-to-node
@@ -49,11 +56,11 @@ three inspected windowed captures pass. Local products remain bounded as backgro
 grow; controlled production tick medians change −0.1% at 100k and −3.8% at 1M, with timing
 variation recorded in the owning acceptance notes.
 
-TRAFFIC-06 stage 1a adds automatic major/minor priority, equal-road right-hand yielding,
+TRAFFIC-08 stage 1a adds automatic major/minor priority, equal-road right-hand yielding,
 full stops on low-speed approaches to faster roads and B1/B5/B6 poles.
 Local conflict admission uses existing lane reservations and resolves circular right-hand
 waits deterministically. Zebra priority, signals, authored controls/undo, importer hooks and the signalised
-Prisma reconstruction remain pending ([junction control](traffic.md#automatic-vehicle-junction-priority--traffic-06-stage-1a)).
+Prisma reconstruction remain pending ([junction control](traffic.md#automatic-vehicle-junction-priority--traffic-08-stage-1a)).
 Fresh 2,611-test library, all-target Clippy and ten individual road/traffic bridges pass.
 Matched PERF-06 runs detect no regression beyond noise; lane rebuild and populated pocket
 planning remain local.
@@ -105,6 +112,12 @@ Lane acquisition now shares one mode/ownership contract across movement, road ed
 spawning; save/load use the same checks ([TRAFFIC-02](traffic.md#shared-lane-occupancy-contract-traffic-02)).
 The saved-city pedestrian/vehicle-lane mismatch remains under investigation; the original
 transition has not been reproduced.
+
+Roads can again be attached beside an existing sloped three-way junction after loading a save.
+Splitting an incident edge now retains its independently solved physical support knots, and the
+topology-only junction finalizer adjusts those stations without rebuilding them from sparse control
+geometry. All 11 refused strokes in the reported dump build independently against its original
+network and installed asset packs (`ROAD-57`; see [`roads.md`](roads.md)).
 
 Building assets can now line their yards with clipped hedges that a spawned house lays itself: rows cut at driveways and the entrance, corners closed and adjoining yards sharing one hedge, editable with the brushes and removed with the house unless the player changed them ([VEG-15](asset_editor.md#yard-hedges)). On sloping streets, hedges and yard plants now stand on the yard's graded lawn instead of sinking into it ([VEG-21](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)), and front hedges meet a neighbour's corner straight and without a gap ([VEG-22](asset_editor.md#yard-hedges)). Assets can also mark lawn planting areas that each spawned house fills with its own trees, shrubs or flowers, where players can plant trees too ([VEG-17](asset_editor.md#yard-planting)); six Finnish yard flowers can also be planted with the brush ([VEG-20](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)), and grow a back yard without moving the street side ([TOOLS-12](asset_editor.md#back-yards)). Hedge rows drawn with the brush now join at corners and snap to hedges already standing ([VEG-13](roadmap.md)), and hedges stay drawn out to the trees' far range as one box per straight run ([VEG-14](terrain.md)).
 
@@ -363,6 +376,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   closing the reproduced narrow commercial-yard gap without changing assets or flattening the
   graded apron. Contract revision 14 also fixes the `farms.sqlite` rejection: site and road guides
   share source heights, and building aprons grade both sides of tile boundaries.
+  CDT export now also measures geometry in retained `f64` world coordinates before converting
+  patch-local values to Godot buffers. This fixes the benchmark-city patch `(27, 0)`, where early
+  `f32` conversion collapsed a valid sub-millimetre site edge and falsely rejected the patch as
+  pathologically steep.
   See [`terrain.md`](terrain.md).
 - **Level building yards (`EARTH-02`)**: buildings and usable yard interiors share a level pad; 2 m lot-edge strips provide graded road/neighbor/terrain tie-ins. Zoned, service and explicit industry placement now share support preparation, installation and site-terrain invalidation. Mixed 2D/3D frontage projection and the explicit-mode raw-height fallback are removed. Paired zoned/service tests compare final site and terrain geometry; `farms.sqlite` now reproduces and verifies the corrected terrain-rejection path; the original unsaved view remains unavailable. See [`earthworks.md`](earthworks.md).
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
@@ -399,6 +416,121 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   and interaction are restored after capture. See [`asset_editor.md`](asset_editor.md).
 
 ## Current Priorities
+
+- **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
+  calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
+  Old saves break; continuous income and per-entity settlement windows are accepted gameplay
+  changes; GPU compute is deferred. See the [engine contract and migration](simulation.md#sim-02-scheduler-refactor)
+  and the [`PERF-07` frame budget](simulation.md#frame-budget-perf-07). `SIM-02-A` (2026-10-15) added
+  the guards every step must pass (`tools/sim02_gate.py`: behaviour envelope, burst shares,
+  money conservation, reference invariants, determinism, worst sim frame) and recorded the
+  pre-refactor baseline: the worst frame is 637 ms at 30k and 2.5 s at 100k. `SIM-02-B`
+  (2026-10-16) moved saves to format 87: **saves from earlier builds no longer load.** Each
+  step since bumps the format again (90 after `SIM-02-D`). `SIM-02-D` (2026-10-16): a
+  construction site now completes exactly its authored duration after it starts, at its own
+  slot, instead of on the next hour (up to an hour later than before). `SIM-02-E`
+  (2026-10-16): trucks, shoppers, service visitors and arriving families no longer all leave on
+  the hour. Each kind leaves at slots spread over the hour, and deliveries, store pickups, returns
+  home and move-ins settle when the agent arrives instead of at the next hour (save format 91).
+  `SIM-02-F` (2026-10-16): each building produces, each household eats and uses its utilities,
+  and each resident feels hunger at its own minute of the hour, not all at :00. City-wide
+  store sales and electricity dispatch still settle on the hour, and electricity bills the
+  activity of the hour before (save format 92). `SIM-02-G` (2026-10-16): midnight no longer
+  settles the city. Each building, household and worker settles its own 24-hour window at its
+  own minute of the day (wages, taxes, transfers, bills, bankruptcy, rezoning grace), the
+  budget report sums payments as they happen, and 00:00 keeps only the calendar close and,
+  until `SIM-02-H`, the pollution, noise and desirability update (save format 93). A business
+  that cannot pay its workers two days running goes bankrupt, and an adult not paid a wage that
+  day draws unemployment benefit. `SIM-02-H` (2026-10-17): pollution, noise and desirability are rebuilt by a
+  sweep that runs through each day and publishes at its end, instead of at midnight, and dirty
+  building lots regenerate one map region per slot instead of all at once in the hourly demand
+  pass. Loading a game no longer re-derives every lot when the asset catalog is unchanged, which
+  was most of the stall in the first hour after a load (save format 94). `SIM-02-I` part 1 (2026-10-17):
+  each household recounts its members at its own minute of the hour, and electricity, service
+  shopping and the shops' activity floor run per building and household, reading the city's
+  power coverage and shop prices of the hour before, so power and shop takings lag by an hour.
+  Freight finds suppliers listed an hour earlier, and demand plans on a snapshot swept over the
+  previous hour. A game saved mid-hour now continues exactly as one that was not saved (save
+  format 95). `SIM-02-I` part 2 (2026-10-18): the hourly jobs-funding census no longer runs in one
+  frame at the top of the hour. It copies the city over the first half of each hour, works
+  through the copy over the second half and takes effect at the next hour, so funded jobs reflect
+  the city 31–60 minutes earlier. Tax and service-funding changes reach funded jobs at the next
+  hour instead of at once, though workers a funding cut no longer pays still leave at once, and
+  demand planning counts unemployed adults and open jobs on the live
+  city, which stops the growing starter town admitting more adults than it has jobs (save
+  format 97). `SIM-02-I` part 3 (2026-10-18): new shops and factories are checked once an hour,
+  when demand is planned, instead of each running its own jobs census as construction starts;
+  each keeps a permit until it starts, and one whose door moved in the meantime is rejected. A
+  permit voided by a home that failed to place waits for the next hour instead of cancelling the
+  building. Every home now draws its new residents from a seed of its own, so households
+  differ from earlier versions, and a game saved mid-hour, even right after a road edit,
+  continues exactly as before (save format 99). `SIM-02-I` part 4 (2026-10-19): demand
+  planning no longer runs in one frame at the top of the hour; homes, shops and industry are
+  planned in the hour's first three slots and the hour's buildings are queued, permitted and
+  cleared in the fourth, in the same order as before. Newly admitted households set off three
+  slots later, and route guidance now follows new and removed buildings at once instead of up to
+  a day later (save format 101). `SIM-02-J` parts 1 and 2 (2026-10-19): freight orders, housing
+  moves, shopping, service visits and job searches now happen a few at a time through every
+  minute instead of all at the top of the hour: each building, household and resident asks at
+  its own minute. A family that loses its home looks for a new one at its own minute, so the
+  hour's newcomers may take the vacancy first, and a worker whose better job filled before it
+  applied waits for its next job review instead of trying again each hour. Shops run out less
+  often in larger cities (save format 102). `SIM-02-J` part 3 (2026-10-19): old or failing
+  buildings are cleared, families leave and newcomers arrive a few at a time through the hour
+  instead of all at its start, and building upgrades and downgrades take effect a slot after
+  they are decided (save format 103). The legacy hour and day code is gone: no game code runs because
+  the clock crossed an hour or a day. The render snapshot skips agents outside the camera before
+  posing them, with identical instances, which halves the 100k mean frame at 1× (`SIM-02-K` part 2).
+  Loading now generates the zoning cells near every road and prepares the first frame's routing,
+  so the first lot regions and frames after a load no longer stall for 50–130 ms; a 100k load
+  takes about 1.6 s longer (`SIM-02-K` part 3). The funding census now runs in bounded slices
+  through the hour's second half, so no census slot holds the core for more than about 4 ms at
+  100k (`SIM-02-K` part 3). The agent tick no longer rebuilds its lane occupancy from every
+  agent when agents spawn or leave, and moves agents in balanced shards: the 100k mean frame
+  falls by about 1.5 ms at 1× and 2.6 ms at 32× (`SIM-02-K` part 4). The first hours after
+  loading no longer stall in demand planning: loading prepares what the first planning slot used
+  to build, and the census storage gets a prepared copy of the live books at load, with spare row
+  capacity so appended buildings no longer reallocate it in a planning slot (`SIM-02-K` part 5). Loading also prepares the route scratch the first trips and job
+  searches after it used to build, so the first minutes after a load no longer stall for 8–15 ms
+  frames at 100k (`SIM-02-K` part 5). The hour's planning now runs a game minute apart,
+  residential, commercial, industrial, then admissions and actions (minutes 0 to 3), and
+  removals, departures and level changes start at minute 4, so at 32× no frame carries two of
+  them (`SIM-02-K` part 5, save format 104). A building leaving a lot it keeps no longer
+  regenerates the lot's cells, so the 30k 32× minute-4 frames fall to at most 5.7 ms; the 1×
+  render-snapshot spikes are scheduler preemption, not snapshot work. Each census's planning books are now prepared at minute 59 of the hour
+  before they serve, so the hour's residential planning slot no longer rebuilds their site rows:
+  about 4 ms less at 100k and 1.2 ms less at 30k (`SIM-02-K` part 5). The seventh commit keeps each
+  book's pass rows and admission's border sweeps by what changed, splits the minute-59 preparation
+  and moves the removal slot's scans onto the pool: the 100k actions slot falls from 6.5 to 4.2 ms
+  and the removal slot from 4.6 to 3.5 ms (`SIM-02-K` part 5). The eighth commit refreshes each
+  census book's business finance masks at minute 59 instead of in the residential slot's first
+  claim and fills the zone index's chunk lists without a sort: the 100k residential slot falls from
+  4.2 to 3.4 ms and the zone-index rebuild from 2.1 to 1.5 ms (`SIM-02-K` part 5). The request
+  queues pause in the hour's planning, preparation and removal slots and catch up in the next slot,
+  and trips due then leave one slot later (`SIM-02-K` part 5). Each hour's planning now counts and
+  scans half a game minute before it decides, and the actions run at minute 3's second half
+  (`SIM-02-K` part 5, save format 106). Commute departures now leave over
+  their minute's slots instead of all at its first, so the 100k departure waves no longer stall
+  the agent tick, and the unused per-edge congestion value is gone (`SIM-02-K` part 4, save
+  format 105). The 100k city's busy streets are not jammed: shoppers walk several kilometres
+  because only the oldest stores get customers (`ECON-22`; `SIM-02-K` part 6).
+  The census's business claims now count their scan work, so no census slot holds more than about
+  2.2 ms at 100k, and the removal slot keeps the zone index across its swap-removes (slot 64 3.5
+  to 2.6 ms at 100k) (`SIM-02-K` part 5). Each removal now scans the agents and households once and
+  defers its terrain boxes, and the census book's preparation runs in four parts, so the removal
+  slot and the minute-59 preparation no longer set 100k 1× frames over 8 ms; 9 such frames remain
+  in `PERF-07` (31 before), mostly preemption (`SIM-02-K` part 5). The planning setups now scan
+  beside their workforce count and a workforce reset passes over the buildings once, so no planning
+  setup sets a 100k 1× work frame over 8 ms; the actions slot (2.8 / 3.4 ms) is the largest steady
+  slot left (`SIM-02-K` part 5). The frontage delay update, which every minute-first frame
+  carried, now runs by lane range on the pool, and the planning slots scan the free places beside
+  their site preparation; the actions slot (2.7 / 2.9 ms) and slot 65 (2.6 / 3.2 ms) are the
+  largest steady slots left (`SIM-02-K` part 5).
+  `SIM-02-K` part 7 (acceptance, 2026-10-22) closes the refactor: `PERF-07` accepts on the frames
+  no other task preempted, with the raw p99.9 and the preempted frames less their wait as guards,
+  and 30k at both speeds and 100k at 1× meet 8 ms. 100k at 32× (13.6 ms mean, 22–24 ms worst) is
+  deferred until players' cities approach 100k agents, tracked as `PERF-08`
+  ([open questions 6 and 7](simulation.md#open-questions)).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.
@@ -1035,6 +1167,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 | Debug channels / log / in-game debug console / `run.sh` debug flags | [`debug.md`](debug.md) |
+| Simulation clock / scheduler / sim-frame budget | [`simulation.md`](simulation.md) |
 
 ## Recent Structural Changes
 
@@ -1053,14 +1186,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 - `TRAFFIC-03`: cars no longer turn around where a footpath joins a road; footpaths no longer count as junction arms for cars' connectors. A road ending in a footpath is still not a dead end, so cars do not turn around there (upstream's `NET-07` U-turn rule). See [`traffic.md`](traffic.md#junction-connectors).
 - `TRAFFIC-04`: walkers no longer cut across the lawn where curved roads meet; bends and Y junctions get sensible clips. Saved bends keep their old clips until redrawn. See [`roads.md`](roads.md#pedestrian-junction-crossings).
 - `ZONE-07`: on curved streets, driveways reach the road and neighbouring yards share one hedge across the wedge between their lots. See [`earthworks.md`](earthworks.md) and [`asset_editor.md`](asset_editor.md#yard-hedges).
-- `ROAD-54`: road placement now refuses hairpins tighter than the road, junction arms closer than 25° and junctions with more than six arms, and says why. Steep grades wait for the hill policy. See [`roads.md`](roads.md#road-geometry-validation-road-54).
+- `ROAD-76`: road placement now refuses hairpins tighter than the road, junction arms closer than 25° and junctions with more than six arms, and says why. Steep grades wait for the hill policy. See [`roads.md`](roads.md#road-geometry-validation-road-76).
 - `ROAD-60`: Finnish crossing signs stand at every zebra, at the near edge of the stripes, speed-limit signs where the limit changes or after the junction of a long street, and warning signs (steep hill with its percentage, bends, uneven road) on the awkward roads placement still accepts. Cosmetic for now. See [`roads.md`](roads.md#road-signs-road-60).
 - `TRAFFIC-05`: walking is priced at walking pace instead of the road's speed limit, so trips longer than about 280 m now drive. See [`entrance_and_exit.md`](entrance_and_exit.md#mode-policy). Lane heights now follow the road surface in the simulation itself, not only where a chunk is drawn, so a session continues identically after save and reload; see [`traffic.md`](traffic.md#current-scope).
 - `RENDER-26`: cars keep the Kenney models (generic Finnish models were withdrawn); at night their lamps glow and the nearest cars' headlights light the street. See [`traffic.md`](traffic.md#vehicle-models-and-lamps-render-26).
 - `ROAD-59`: street lights along every road and footpath, Finnish models placed in Rust along whole streets, poles of meeting streets kept 12 m apart; at night lit roads and lamps read from across the map, lamps past the 32 real lights are lit inside the materials with the real light's maths, so far streets keep their contrast and walls light up at any distance; past 500-700 m a coarse lamp light map keeps streets lit over 8 km around the view. See [`roads.md`](roads.md#street-lights-road-59).
-- `ROAD-56`: roads look Finnish: worn grey stone-mastic asphalt that fades light with age, long trench patches, manholes and drain grates, ruts only on busy roads, granite kerbs, sealed cracks and patches, and white lane lines with Traficom dash lengths (1 m / 3 m up to 50 km/h, 3 m / 9 m above) instead of the yellow centre line; two-lane residential streets are unmarked. See [`roads.md`](roads.md#finnish-road-surface-and-markings-road-56).
+- `ROAD-78`: roads look Finnish: worn grey stone-mastic asphalt that fades light with age, long trench patches, manholes and drain grates, ruts only on busy roads, granite kerbs, sealed cracks and patches, and white lane lines with Traficom dash lengths (1 m / 3 m up to 50 km/h, 3 m / 9 m above) instead of the yellow centre line; two-lane residential streets are unmarked. See [`roads.md`](roads.md#finnish-road-surface-and-markings-road-78).
 
-- `ROAD-55`: footpaths now connect to sidewalks and to each other at junctions, so walkers can route along them. Before, the junction builder skipped them and no walker could ever reach one. See [`roads.md`](roads.md#pedestrian-junction-crossings).
+- `ROAD-77`: footpaths now connect to sidewalks and to each other at junctions, so walkers can route along them. Before, the junction builder skipped them and no walker could ever reach one. See [`roads.md`](roads.md#pedestrian-junction-crossings).
 
 - `ROAD-65`: saves no longer break after a terrain-brush stroke or an undo while agents cross junctions. Both rebuild every lane, and agents now keep their lanes by identity instead of by the old lane number. See [`roads.md`](roads.md).
 - Trip failure log (2026-10-13, `DEBUG-06`): every trip failure in the movement tick logs a
@@ -1671,7 +1804,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
   sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook plus hang watchdog, and the sim
   thread records a fixed-size flight recorder of command, phase, and frame summaries that dumps to
   `logs/` on panic or watchdog-detected progress stalls. `METRUM_HANG_WATCHDOG_MS=0` disables only
-  hang detection, and `METRUM_HANG_ABORT=1` aborts after the first hang dump.
+  hang detection. Interactive developer release runs default `METRUM_HANG_ABORT=1`, producing an
+  all-thread core after the first hang report; automation, headless runs and explicit
+  `METRUM_HANG_ABORT=0` remain dump-only. Road commands retain allocation-free endpoints and a
+  stable all-point hash, and pre-transaction markers distinguish shared-pool wait, preview-plan
+  validation, cold road compilation, terrain completion and transaction opening (`DEBUG-09`). The
+  watchdog, the threads `SimulationNode` starts and the extension's shared Rayon pool, which
+  replaces Rayon's global pool, are joined before Godot unloads the library
+  ([`CODE-17`](debug.md#shutdown)).
   Foreground debug modes such as `--debug road`, `--debug perf`, and `--debug traffic` remain
   opt-in. See [`reference.md`](reference.md).
 - The Rust runtime bridge now keeps `simulation_node.rs` as the `SimulationNode` lifecycle and
@@ -1801,6 +1941,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
   discard margin-only road loops whose patch-clamped bounds collapse to a line, preventing a bridge
   landing from invalidating and hiding an adjacent terrain patch. Road geometry dumps now include
   compact cut/fill summaries. See [`roads.md`](roads.md).
+- Road-preview cell-reservation validation now queries each affected compiled span/junction owner
+  once through the existing cell and surface-triangle indices, then caches the exact verdict by
+  cell revision. This removes the simulation-lock freeze when a dense four-way preview contained
+  thousands of valid surface polygons, without weakening commit validation or making the work
+  depend on remote zoning (`ROAD-66`). See [`roads.md`](roads.md).
 - Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
   and capped car movement through junction connector lanes at `6 m/s`. See
   [`reference.md`](reference.md).

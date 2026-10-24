@@ -672,20 +672,9 @@ fn test_immigration_claims_vacant_home() {
     agents.target_building[0] = usize::MAX;
     agents.pos_x[0] = expected_door.x;
     agents.pos_y[0] = expected_door.y;
-    let mut treasury_balance = 0.0;
-    households.operational_hour_tick(
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-        &network,
-        &graph,
-        0,
-        0,
-        &mut treasury_balance,
-        &[],
-        &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
-        |_, _| {},
-    );
+    // The carrier moves in when it arrives (`SIM-02-E`); the hour then counts its members.
+    households.materialize_arrived_household_carriers(&mut agents, &allocator);
+    households.operational_hour_tick(&mut agents, &allocator, &mut logistics, 0, 0);
     assert_eq!(agents.len(), expected_household_size as usize);
     assert_eq!(households.households.len(), 1);
     assert_eq!(
@@ -785,7 +774,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     );
     for _ in 0..2 {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[idx] = household_id;
+        agents.assign_household_id(idx, household_id);
     }
     households.households[household_id].budget = 1_000.0;
     households.households[household_id].stock = 6.0;

@@ -5,7 +5,6 @@
 use super::super::super::*;
 use super::types::*;
 use crate::simulation::core::round_f64_to_i64;
-use crate::simulation::network::surface::RoadVec3;
 
 mod paving;
 mod regular;
@@ -728,43 +727,28 @@ impl SimulationNode {
         let mut longest_triangle_edge_m = 0.0_f32;
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
-            // Keep the existing area floor, evaluated on source geometry so its
-            // acceptance cannot change with world position or float conversion.
-            let source_points = triangle.map(|index| {
-                let point = vertices_source[index];
-                RoadVec3::new(point.x, f64::from(point.height_m), point.z)
-            });
-            let source_normal =
-                (source_points[1] - source_points[0]).cross(source_points[2] - source_points[0]);
-            if source_normal.length_squared() <= 0.000_001 {
-                continue;
-            }
             let mut source_indices = *triangle;
-            let mut points = triangle.map(|index| local_point(vertices_source[index]));
-            let mut raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-            if raw_normal.length_squared() == 0.0 {
+            let source_points = triangle.map(|index| vertices_source[index]);
+            let Some((mut normal, face_y_delta_m, face_slope_ratio, face_longest_edge_m)) =
+                Self::terrain_cdt_triangle_geometry(source_points)
+            else {
                 continue;
-            }
-            if raw_normal.y < 0.0 {
+            };
+            if normal.y < 0.0 {
                 source_indices.swap(1, 2);
-                points.swap(1, 2);
-                raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+                normal = -normal;
             }
-            let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
-                Self::terrain_buffer_triangle_metrics(points);
             if omit_pathological_terrain_faces
                 && Self::terrain_cdt_output_is_pathological(face_slope_ratio, face_longest_edge_m)
             {
                 debug_log!(
                     "road",
-                    "terrain_cdt_rejected_face patch_center=({center_x},{center_z}) points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} source_points={:?} boundary_sources={:?}",
-                    triangle.map(|index| vertices_source[index]),
-                    triangle_sources[triangle_index],
+                    "terrain_cdt_rejected_face patch_center=({center_x},{center_z}) points={source_points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} sources={:?}",
+                    triangle_sources.get(triangle_index),
                 );
                 omitted_pathological_faces += 1;
                 continue;
             }
-            let normal = raw_normal.normalized();
             max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
             max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
             longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
@@ -822,6 +806,63 @@ impl SimulationNode {
             max_face_slope_ratio,
             longest_triangle_edge_m,
         }
+    }
+
+    fn terrain_cdt_triangle_geometry(
+        points: [TerrainCdtVertex; 3],
+    ) -> Option<(Vector3, f32, f32, f32)> {
+        // Safety metrics and normals belong to the authoritative f64 CDT. Measuring after a
+        // world-space f32 conversion can turn a valid thin tie-in into a false vertical face.
+        let ax = points[1].x - points[0].x;
+        let ay = f64::from(points[1].height_m - points[0].height_m);
+        let az = points[1].z - points[0].z;
+        let bx = points[2].x - points[0].x;
+        let by = f64::from(points[2].height_m - points[0].height_m);
+        let bz = points[2].z - points[0].z;
+        let normal_x = ay * bz - az * by;
+        let normal_y = az * bx - ax * bz;
+        let normal_z = ax * by - ay * bx;
+        let normal_length_squared = normal_x * normal_x + normal_y * normal_y + normal_z * normal_z;
+        if normal_length_squared <= 0.000_001 {
+            return None;
+        }
+        let normal_length = normal_length_squared.sqrt();
+        let normal = Vector3::new(
+            (normal_x / normal_length) as f32,
+            (normal_y / normal_length) as f32,
+            (normal_z / normal_length) as f32,
+        );
+        let min_height_m = points
+            .iter()
+            .map(|point| point.height_m)
+            .fold(f32::INFINITY, f32::min);
+        let max_height_m = points
+            .iter()
+            .map(|point| point.height_m)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let edge_length_squared = |a: TerrainCdtVertex, b: TerrainCdtVertex| {
+            let dx = b.x - a.x;
+            let dz = b.z - a.z;
+            dx * dx + dz * dz
+        };
+        let longest_edge_m = edge_length_squared(points[0], points[1])
+            .max(edge_length_squared(points[1], points[2]))
+            .max(edge_length_squared(points[2], points[0]))
+            .sqrt() as f32;
+        let horizontal_normal = (normal_x * normal_x + normal_z * normal_z).sqrt();
+        let slope_ratio = if horizontal_normal <= 0.000_001 {
+            0.0
+        } else if normal_y.abs() <= 0.000_001 {
+            1_000_000.0
+        } else {
+            (horizontal_normal / normal_y.abs()) as f32
+        };
+        Some((
+            normal,
+            max_height_m - min_height_m,
+            slope_ratio,
+            longest_edge_m,
+        ))
     }
 
     pub(in crate::nodes::simulation_node) fn append_triangle_buffer_export(

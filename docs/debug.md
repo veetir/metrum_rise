@@ -1,10 +1,10 @@
 # Metrum Rise — Debug System
 
-This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-06`): the debug channels,
+This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-09`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
 reports and their replay, the agent inspector, trip failure lines, the log format, the shared log, the always-on `events` channel, the Godot
-bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
-flight recorder) are separate; this document lists only their launch flag.
+bridge, the in-game console, crash and hang diagnostics, how the extension's threads stop before
+Godot unloads it, and the `run.sh` launch flags.
 
 ## Overview
 
@@ -572,6 +572,95 @@ that runs once at load, such as the lighting summary, does not repeat after a sw
 `PerfDebug` keeps its 0.5 s summaries, logs them on `perf` and exposes the latest one as
 `PerfDebug.last_summary`.
 
+## Crash and Hang Diagnostics
+
+`METRUM_CRASH_DIAGNOSTICS=1` installs the panic hook, the ten-second hang watchdog and a
+fixed-capacity flight recorder. An interactive `./run.sh --release` launch enables diagnostics
+and `METRUM_HANG_ABORT=1` by default (`DEBUG-09`). After the first hang report is flushed, the
+watchdog raises `SIGABRT` so an enabled operating-system core-dump service can retain every
+thread's stack. `METRUM_HANG_ABORT=0` explicitly keeps that launch dump-only. Headless runs,
+tests, benchmarks, profilers and replay automation never receive the abort default; a packaged
+game or a debugger launch outside `run.sh` also keeps its own environment policy.
+
+An `add_road` command record carries its point count, start and end XYZ, lane counts, snapping
+mode and a 16-digit `points_hash`. The hash is allocation-free FNV-1a over the point count and
+the exact little-endian `f32` bits of every XYZ component. It distinguishes strokes with equal
+endpoints but different interior points without retaining a variable-size payload.
+
+Road commit markers bracket every operation before authoritative topology mutation:
+
+| Last marker | The stalled operation |
+|-------------|-----------------------|
+| `add road shared pool wait` | Dispatch into the joined shared Rayon pool. |
+| `add road shared pool entered` or `add road preview plan validation` | Preview-plan identity and live-state validation. |
+| `add road cold plan compile` | Cold road geometry/topology compilation after no reusable preview plan was available. |
+| `add road terrain plan completion` | Road earthworks, local terrain dependencies and refined terrain products. |
+| `add road transaction start` | Opening the road-edit transaction. |
+
+Each stage has a corresponding `entered`, `validated`, `compiled`, `completed` or `started`
+marker. Therefore the last unmatched start marker names the stalled stage; a later marker proves
+the preceding stage returned. `add road transaction started` is emitted before the existing
+`add road internal` mutation marker.
+
+## Shutdown
+
+Godot unloads `libmetrum_rise.so` soon after it deletes the scene tree. A thread still running
+extension code at that point executes unmapped memory and the process dies with `SIGSEGV`
+(`CODE-17`). In the 2026-10-19 core dumps the thread was the road-preview worker: it was detached
+when `SimulationNode` was created, and after the node was freed it returned and dropped the last
+`SimCore` reference while the library unloaded. The `__backtrace` frames in those dumps belong to
+Godot's own crash handler, which faulted again while unwinding through the unmapped code. The
+extension installs no signal handlers; its only hooks are Rust panic hooks, which only the
+library's own code calls.
+
+Every thread the extension starts now ends before the library unloads:
+
+| Thread | Stopped by | Joined by |
+|--------|------------|-----------|
+| Simulation thread | `SimCommand::Stop`, sent when the node is freed; it runs the commands queued before it | `SimulationNode`'s drop |
+| Road-preview worker | Its request channel disconnecting when the node is freed; it finishes the running request | `SimulationNode`'s drop |
+| Preview Rayon pool (`road-preview-N`) and reclaim thread (`road-preview-reclaim`) | The worker returning; the reclaim thread frees what is queued first | The worker, before it returns |
+| Terrain and water payload jobs and water-mesh jobs | They run to completion | `SimulationNode`'s drop waits for them |
+| Shared Rayon pool (`metrum-N`) | The Scene-level deinit hook (`thread_pools::stop`), once its running and spawned work is done | The same hook |
+| Hang watchdog (`metrum-hang-watchdog`) | The Scene-level deinit hook (`debug::shutdown`) | The same hook |
+
+After that wait the node holds the only `SimCore` reference, so the core is freed on Godot's main
+thread, while the node is freed and before Godot deinitializes the extension.
+
+Rayon's global pool cannot be stopped or joined: after one full `run.sh --test` with the joins
+above, `growth_meter_test` still crashed on a global-pool worker caught in Rayon's idle spin
+(`yield_now`, round 13 of 32) when the library unmapped. The extension therefore never uses it.
+All of its Rayon work runs in one shared pool
+([`thread_pools.rs`](../rust/src/thread_pools.rs)), sized like the global pool
+(`RAYON_NUM_THREADS`, else one thread per logical CPU) and built on first use, in the game and in
+test binaries alike:
+
+- A thread outside every Rayon pool (Godot's main thread and `WorkerThreadPool`, the simulation
+  thread, a test thread) enters it through `thread_pools::install`, which blocks the caller as a
+  global-pool call does, or queues a job with `thread_pools::spawn`. Code already on a worker of
+  any pool runs inline, so nested entries cost nothing.
+- The functions that do the parallel work enter the pool themselves, not the `#[func]` bodies:
+  the frame step, the render snapshot, cell-chunk preparation, the road commit, undo and
+  bulldoze, loads and world resets, the routing rebuild, and leaf rebuilds such as the entrance
+  cache, site index, admission order, compile work, overlay images and car smoothing. Every caller,
+  tests and benchmarks included, takes the same path. The simulation thread keeps the core lock
+  while the work runs on a worker; a pool worker never waits for the core (`SIM-01`).
+- The road-preview worker keeps its own joined pool (`ROAD-38`).
+- When the library loads (the Core init stage), `thread_pools::disable_global_pool` spends
+  Rayon's one-time global initialization on a pool that cannot start. Any Rayon call outside the
+  shared pool then panics at its call site with "The global thread pool has not been
+  initialized" instead of starting threads that outlive the library.
+- At Scene deinit, after Godot has deleted the scene tree and every node has joined its own
+  threads, `thread_pools::stop` waits for entries in flight and spawned jobs, then joins the
+  workers. A later install runs on the caller.
+
+Two checks find a call that bypasses the pool. A panicked `#[func]` returns a default value and
+GDScript errors exit 0, so grep the Godot test logs for `global thread pool has not been
+initialized`. `bridge_entry_points_never_use_the_global_pool` re-runs the library test binary as a
+child process that disables its global pool and then drives a town's tools, a day of growth,
+saves and loads, world resets, a bulk-loaded city, the simulation thread, the preview worker and
+spawned jobs.
+
 ## Console
 
 `DebugConsole` is an autoload
@@ -873,7 +962,7 @@ set only the starting value; the console switches them later.
 
 | Flag | Main environment | Output / effect |
 |------|------------------|-----------------|
-| `--release` | `METRUM_CRASH_DIAGNOSTICS=1`, `METRUM_CRASH_LOG_DIR=<repo>/logs` unless already set | Enables the release-safe panic hook, hang watchdog, and fixed-size flight recorder. Panic and hang dumps are written under `logs/`. Set `METRUM_CRASH_DIAGNOSTICS=0` to disable diagnostics, `METRUM_HANG_WATCHDOG_MS=0` to disable only the hang watchdog, or `METRUM_HANG_ABORT=1` to abort after the first hang dump. |
+| `--release` | `METRUM_CRASH_DIAGNOSTICS=1`, `METRUM_CRASH_LOG_DIR=<repo>/logs` unless already set; interactive game launches also default `METRUM_HANG_ABORT=1` | Enables the release-safe panic hook, hang watchdog, and fixed-size flight recorder. Panic and hang dumps are written under `logs/`; an interactive developer game aborts after its first hang dump so the OS can retain an all-thread core. Tests, headless runs, benchmarks, profilers and replays remain dump-only. Explicit environment values win: `METRUM_CRASH_DIAGNOSTICS=0` disables diagnostics, `METRUM_HANG_WATCHDOG_MS=0` disables only the watchdog, and `METRUM_HANG_ABORT=0` keeps an interactive run dump-only. |
 | `--debug` | `METRUM_DEBUG=1` | Every general channel (stdout). The opt-in channels `traffic`, `sim`, `perf`, `terrain`, `buildings` and `lighting` stay off. |
 | `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Only the named channels, comma-separated. Channel names are listed under [Channels](#channels); the terrain and building-site aliases are listed under [Startup state](#startup-state). |
 | `METRUM_DEBUG_FILTER=<category> ./run.sh ...` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Environment shorthand for `--debug <category>`. |
@@ -952,4 +1041,3 @@ console, or `--debug building-sites-visual <mode>` at launch.
 | Mode | Aliases | Meaning |
 |------|---------|---------|
 | `material` | `materials`, `source`, `sources` | Tints site ground, asphalt, and concrete by material source. |
-

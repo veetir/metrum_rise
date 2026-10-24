@@ -62,6 +62,9 @@ Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 
 ## Time and cadence
 
+This section describes the current cadence. Its replacement is planned in
+[`simulation.md`](simulation.md#sim-02-scheduler-refactor) (`SIM-02`).
+
 ### Clocks and day length
 
 - **Operational clock:** travel, work, deliveries, consumption, wages and production. At 1×
@@ -78,31 +81,82 @@ Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 `SimCore::step_frame` advances agents by one frame, then runs every authored minute the clock
 crossed:
 
-1. Each minute: the next queued private construction start, at most one per minute.
-2. Each whole hour: the **operational hour**: construction progress, farm and mine production,
-   then the household hour (below).
-3. At minutes other than 0, the **hourly demand pass**: project planning, household admission and
-   immediate building actions ([`demand.md`](demand.md#cadence-and-handoff)).
-4. At minute 0, after the operational hour: the **daily tick**: allocator maintenance, the daily
-   settlement (below), road upkeep, the daily demand pass, household removals, then the minute-0
-   hourly demand pass. Daily tax buckets roll into the report only after all of these.
+1. Each minute: the next queued private construction start, at most one per minute, and any
+   construction site whose deadline falls in that slot completes
+   ([`simulation.md`](simulation.md#deadlines-and-timed-events)).
+2. Each whole hour: the **operational hour**: the pooled household hour (below), then the **hourly
+   demand pass**: project planning, the household admission decision and the building actions'
+   proofs ([`demand.md`](demand.md#cadence-and-handoff)). The households whose exit was claimed at
+   their daily phase leave through the `departures` queue in slots 65–479, the admitted households
+   are created over the hour by the `admissions` queue, and level changes and clearances are applied
+   by their queues from slot 64 for clearances and slot 65 for level changes (`SIM-02-J`). 00:00 is an ordinary hour (`SIM-02-G`).
+3. At 00:00, after the hour, the **calendar close**: the day's running totals become the
+   budget report, the tax window rolls, road upkeep is charged from the rolling road length and
+   the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
+   day.
+4. Each slot, after everything above: the **hourly phases** of the buildings, households and
+   agents whose phase falls in it (`SIM-02-F`), then their **daily phases** (`SIM-02-G`), then
+   at most one dirty cell-lot region (`SIM-02-H`) and the freight, housing, restock, visit and
+   job request queues (`SIM-02-J`), then one chunk of the rolling road-length
+   sum and one of the day's pollution, noise and desirability sweep
+   ([`simulation.md`](simulation.md#snapshots)). Each entity has one hourly phase per hour,
+   about 1/960 of the city per slot, and one daily phase per day, about 1/23,040. Readers see
+   the environment grids the previous day's sweep finished at its last slot.
 
-Household hour (`households/tick.rs`): materialize arrived households; rebuild membership and
-worker counts; rehouse unhoused households; building production and electricity dispatch;
-logistics; household consumption, replenishment and service sales; the workplace pass (funding
-census plus job search); agent money synchronization.
+Household hour (`households/tick.rs`): count the households still arriving; logistics clock;
+the commute-quote expiry. Freight, housing, restock, visits and job search are request queues
+served each slot, except in the hour's seven queue-free slots, whose share the next slot serves
+(`SIM-02-J`, `SIM-02-K`, [`simulation.md`](simulation.md#request-queues)).
+The funding census is no longer part of the hour (`SIM-02-I`,
+[`simulation.md`](simulation.md#pure-jobs)): its inputs are copied over each hour's first half,
+it runs in steps over the second half, and it publishes at the next hour's first slot, just
+before this pass, copying funded jobs and activity onto the buildings. Every reader that hour
+sees that census; its copy is 31–60 minutes old when it publishes. Membership is a maintained
+list of each household's members (`SIM-02-I`): each household recounts its members, car access, stock days, employed adults and expected wages at its own
+hourly phase, a job change also updates the household's employed adults at once, and
+buildings' worker counts follow every job change.
 
-Daily settlement, in fixed order:
+Hourly phases (`nodes/sim/core/entity_phases.rs`): a building sets its activity floor from the
+hour's census, produces and consumes its recipe inputs, and a farm or mine adds its output; a
+service store then draws its sales and the building meters its electricity, a power plant
+generating at the last hour's dispatch. A household recounts its members, buys services, meters
+its electricity, consumes supplies, pays utilities and times out a stalled shopping leg; an
+agent whose household pantry is empty loses happiness. Phases read the city totals of the last
+finished hour: power dispatch and coverage, and the residents, store capacity and prices of
+service sales. The hour's last slot folds the hour's own totals for the next hour (`city
+hour`, `SIM-02-I`).
 
-1. Bankruptcy check (buildings that ended yesterday in distress and are still negative).
-2. Wages, within the funded census capacity.
-3. Household transfers.
-4. Property tax.
-5. Utility bills, then distress liquidation of negative private budgets.
-6. Business profit tax.
-7. Housing affordability, relocation and eviction.
-8. Daily workplace pass (complete commute quotes are dropped first; bounded network-only legs
-   remain valid until their CCH or lane revision changes).
+Trips do not leave when they are decided (`SIM-02-E`,
+[`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers and shoppers leave
+near a target slot in the hour ahead, in the least busy minute within 15 minutes of it, and a
+visible service visitor leaves at the next slot (`SIM-02-J`). Household arrival carriers leave paced
+from their household's creation: the actions slot (minute 3, slot 56) decides the admissions and
+the `admissions` queue creates the households evenly over the hour that follows (`SIM-02-I` part 4,
+`SIM-02-J` part 3). Each trip is then checked as it travels (every one to eight minutes, growing
+with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's
+return or a household moving in no longer waits for the next hour. Leg timeouts still count
+operational hours.
+
+Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-hour window:
+
+1. **Building:** the zoning compatibility check and its rezoning grace; then the bankruptcy check
+   (a building that ended its last window in distress and is still negative), property tax,
+   water, sewage and electricity bills, distress liquidation of a negative private budget, and
+   business profit tax. Its daily accumulators then roll into the `recent_*` values.
+2. **Household:** transfers, residential property tax, water, sewage and electricity bills; the
+   ledger window closes and the next opens. The household then queues a housing review
+   (affordability, relocation, eviction) and, if it may leave, claims its share of the day's
+   exit budget.
+3. **Agent:** the wage, paid while the workplace has paid fewer than its funded jobs in its own
+   window, and the daily happiness update.
+
+The `housing requests` queue serves the housing reviews a few per slot, and the `departures` queue
+removes the claimed exits, one a slot in slots 65–479, each walking the household's member list
+(`SIM-02-J`). Wages read
+the funded jobs the last hourly census copied onto each building; water and sewage coverage is
+whether a provider settled operational in the last closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
+network-only legs remain valid until their CCH or lane revision changes. Every payment also
+posts into the calendar day's totals, which the close reports in O(1).
 
 Demand never reads half-updated economy state. Buildings or households changed by a demand pass
 take effect in the next operational hour.
@@ -122,8 +176,10 @@ Work and freight timing are authored as minute windows in
 
 Workers hold stable offsets inside their windows. Departure is
 `target_arrival − estimated_travel − reliability_buffer`; the estimate is cached and refreshed
-every `travel_estimate_refresh_minutes` (360), never re-queried per frame. Rush hour emerges from
-overlapping windows.
+every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A cached departure leaves
+at its seed's slot of its minute, `floor(frac(seed/φ) × 16)` of the minute's 16 slots, so the
+agents due in one minute plan over the minute instead of all in its first frame; the day's last
+minute keeps slot 0. Rush hour emerges from overlapping windows.
 
 ## Authored data
 
@@ -269,7 +325,7 @@ the live policy.
 | --- | ---: | --- |
 | Income tax | 12% | Withheld from gross wages. An employer that cannot pay the gross wage pays neither wage nor tax. |
 | Household VAT | 8% | Added to store purchases, reserved with the shopping payment and collected at pickup. Seller revenue excludes it. Business purchases pay none. |
-| Business profit tax | 10% | Daily, on `max(0, operating_budget − baseline)` after the day's flows; the baseline then resets. No loss carryforward; startup equity is never taxed. |
+| Business profit tax | 10% | At the building's daily phase, on `max(0, operating_budget − baseline)` after its window's flows; the baseline then resets. No loss carryforward; startup equity is never taxed. |
 | Property tax | 2 / 25 / 35 per day | Per occupied home / active commercial / active industrial building, × 1.75 per level above 1. City-owned and unzoned buildings pay none. |
 | Unemployment benefit | 30/day | Per unemployed adult, for at most `unemployment_max_days` (30) |
 | Pension | 30/day | Per elder |
@@ -280,8 +336,11 @@ Pending transaction taxes roll into the report at the daily close.
 
 ### Household transfer payments
 
-Transfers are paid daily, after wages and before housing checks, in stable household order
-(`households/benefits.rs`).
+Transfers are paid at each household's daily phase, before its property tax and bills and
+before its housing review (`households/benefits.rs`, `SIM-02-G`). Unemployed adults are the
+household's adults minus the members paid a wage in its 24-hour window, so a worker whose
+insolvent employer could not pay draws the benefit at once. When the treasury runs short, slot
+order decides who is paid.
 
 - Unemployment benefit stops once every adult is employed (resetting the counter) or after the
   maximum duration. Exhausting it does not by itself cause departure.
@@ -343,8 +402,8 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 ### Representation and composition
 
 - Households are explicit runtime records anchored to a residential home or a farm's single home
-  slot. Linked resident agents are the authoritative membership; cached counts are rebuilt from
-  agents.
+  slot. Linked resident agents are the authoritative membership; each household's cached
+  counts are recounted from its member list at its hourly phase.
 - Age groups: a **child** consumes and cannot work or shop; an **adult** works and shops; an
   **elder** shops and does not work.
 - Composition is deterministic at admission:
@@ -372,10 +431,14 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
   shopper's real trip planner. Walking proofs answer most candidates from cached pedestrian
   components with identical results. Store discovery continues past depleted nearest stores
   through a deterministic cursor that wraps.
+- A household shops at the nearest stocked store whatever the census claimed for it, so a
+  household the census assigned to a distant store walks there when its own neighbourhood's
+  stores are unfunded (`ECON-22`).
 - An unaffordable full refill becomes the largest affordable partial basket.
 - The reservation moves stock and money; supplies rise only when the shopper returns home.
   Shopping owns both legs and the wait for pickup and delivery acknowledgement; the work
-  scheduler skips it.
+  scheduler skips it. The shopper waits at home for its departure slot, picks up as soon as
+  it reaches the store (VAT is collected then) and delivers as soon as it is home (`SIM-02-E`).
 - Each leg's deadline is its travel estimate plus the authored allowance. A timeout before pickup
   refunds; one after pickup records a failure. After 3 failures the household enters
   `failed_terminal` and retries only on its normal cadence.
@@ -386,6 +449,12 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 
 Service stores sell aggregate capacity each hour. Resident demand is capped by staffed capacity,
 households are debited proportionally, and revenue goes to service stores by capacity share.
+Since `SIM-02-I` this runs through a money pool (`households/service_sales.rs`): each housed
+household pays at its hourly phase its members' share of the gross revenue the last finished
+hour's residents and store capacity allowed, up to its budget; each store at its phase draws its
+share of the pool the last hour collected, by the capacity it recorded in that hour, which sets
+its activity for its electricity meter. Money a removed store did not draw carries into the next
+pool. The pool is saved and counted with city cash by the money-conservation checks.
 
 A service store's active worker slots follow its own funded census activity: the share of output
 its reachable, affordable households reserved. There is no inventory, freight, VAT or
@@ -409,9 +478,13 @@ household_reserve_days = household_budget / max(household_daily_essential_cost, 
   distance, then lower building ID, and found by chunk-ring search. A household that still
   passes may move only to a strictly higher level.
 - With no affordable vacancy the household is evicted and becomes unhoused. Eviction cancels an
-  active shopping trip through the normal refund rules.
-- Unhoused households try to rehouse after each hourly membership census, claiming real
-  vacancies before arrivals can. This costs O(1) when everyone is housed.
+  active shopping trip through the normal refund rules and releases the shopper; once the
+  household is rehoused, a member away from home and work goes to the new home after its
+  current trip.
+- An unhoused household with an independent member queues its rehousing at its hourly phase;
+  the `housing requests` queue serves rehousings and the daily phases' housing reviews oldest
+  first, a few per slot. Rehousing claims the highest affordable vacancy by level and lowest
+  building ID, which the next hour's admission may already have taken (`SIM-02-J`).
 - `unhoused_days_elapsed` counts consecutive settled days without a home. Demand's exit policy
   interprets it ([`demand.md`](demand.md#household-removal)).
 
@@ -425,7 +498,7 @@ lifecycle.
 
 ## Funding census (`ECON-17`)
 
-`JobFunding` (`hiring.rs`) is rebuilt in every hourly and daily workplace pass. It is the single
+`JobFunding` (`hiring.rs`) is rebuilt in every hourly workplace pass. It is the single
 answer to "how much of this operation can run":
 
 - **Capacities:** the largest workforce whose forecast recurring sales cover operating costs, and
@@ -433,9 +506,12 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
-- **Customers:** households claim finite quantities from reachable stores with exact directed
-  shopping access (`customers/routing.rs`), from recurring after-tax wages and funded permanent
-  transfers after housing and utility costs. Savings and temporary benefits are excluded.
+- **Customers:** each store, in stable building order, claims its output from the nearest
+  reachable households with exact directed shopping access (`reserve_consumer_outputs` →
+  `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
+  recurring after-tax wages and funded permanent transfers after housing and utility costs.
+  Savings and temporary benefits are excluded. With spare store capacity the first-built stores
+  claim every household in the city (`ECON-22`).
 - **Business buyers:** business buyers claim inputs from local suppliers in recipe order, with
   jointly checked financing (`customers/business.rs`). Suppliers of buyers that cannot pay are
   withdrawn; cyclic groups resolve in stable building order (`hiring/closure.rs`).
@@ -452,9 +528,11 @@ answer to "how much of this operation can run":
   private employers advertise no live jobs.
 
 Hiring, daily payroll, worker shedding, store output, construction viability and household
-admission all read this census. Daily payroll pays at most the census capacity, bounded by the
-physical workplace. Service stores and explicit work areas release workers above it; other unpaid
-workers quit after 2 unpaid days.
+admission all read this census. Each census copies every building's funded jobs onto it
+(`funded_job_capacity`, saved). A worker is paid at its own daily phase while its workplace has
+paid fewer than those jobs, bounded by the physical workplace, in the workplace's own window
+(`SIM-02-G`). Service stores and explicit work areas release the workers whose phases come after
+their funded jobs were paid; other unpaid workers quit after 2 unpaid days.
 
 Costs: market aggregation is O(B·ports + households·categories) in fixed parallel chunks.
 Household and supplier claims commit serially through the existing component and chunk indices.
@@ -505,16 +583,21 @@ reused between hours.
 Two caches serve the search:
 
 - **Route cache:** commute seconds by `(home, work, car)`, cleared on any building, entrance or
-  CCH change and dropped daily.
+  CCH change. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
 - **Network legs** (`SharedNetworkQuotes`): the road-network part of each commute, shared by
   every worker thread across hours. A car leg uses the cost-only CCH query; a walking leg keeps
-  the path for the pedestrian connector check. It is emptied on a CCH or lane change and dropped
-  daily.
+  the path for the pedestrian connector check. It is emptied on a CCH or lane change. Loading
+  sizes it and prepares the search's per-worker route scratch, so the first search after a load
+  prepares nothing (`SIM-02-K` part 5).
 
 Neither cache changes a result.
 
-Resident workers whose best job is at home are assigned first; all others apply in agent order
-against live slot counts.
+Searches run from the `job requests` queue, queued at each agent's hourly phase and served a
+slot's searches together against the hourly job board (`SIM-02-J`,
+[`simulation.md`](simulation.md#request-queues)). Within a slot, resident workers whose best
+job is at home are assigned first; all others apply in agent order against live slot counts. A
+worker who keeps its job, including one whose better options filled before it applied, is
+locked again.
 
 ## Production
 
@@ -583,9 +666,12 @@ freight.
 
 - **Power** is dispatched hourly against metered kWh demand. Connected plants generate the least
   of demand, staffed capacity (50 kW per worker) and available coal (0.45 kg/kWh). Unmet demand
-  is imported.
-- **Water and sewage** are local when a staffed connected provider operates; otherwise they fall
-  back to the `OWA`.
+  is imported. Each phase meters with the last finished hour's coverage and each plant generates
+  that hour's dispatch of its current capacity (`SIM-02-I`), so a change in demand or capacity
+  reaches both one hour later. A home's standby load splits equally among its household places.
+- **Water and sewage** are local when a staffed connected provider settled operational in the
+  last closed calendar day; otherwise they fall back to the `OWA`. Providers share that day's
+  local receipts (`SIM-02-G`).
 - **Bills:** `local share × local price + missing share × local price × 1.25`. Local prices are
   0.20/kWh, 2.0/m³ water and 1.5/m³ sewage.
 - **Rates:** electricity per profile (`electricity = {idle, operating, per_resident}`):
@@ -611,16 +697,22 @@ freight.
   review is not hourly trucks.
 - **Reservations:**
   - creating a shipment reserves source stock and buyer demand;
-  - dispatch moves stock into the shipment, and the seller is paid only on delivery;
+  - the planning slot loads the stock into the shipment at its end; the carrier leaves near a
+    target slot in the hour ahead, levelled per minute (`SIM-02-J`), and the seller is paid only
+    on delivery;
   - failure, expiry, cancellation or building removal releases both sides deterministically,
     refunding buyers (or the treasury for city services);
   - a delivered shipment stays settled when an endpoint is removed.
 - **Carriers:** one truck agent per shipment. It goes source → destination, then returns empty
-  to its origin; the return leg holds no reservation. Travelling legs time out after
+  to its origin; the return leg holds no reservation. Delivery and return are settled when the
+  truck arrives. Travelling legs time out after
   `max(6, 4 × eta_hours + 2)` operational hours.
 - **Supplier search:** `SupplierCandidateIndex` lists a supplier under a resource only while its
   unreserved stock fills one batch. Searches scan chunk rings outward from the buyer and stop at
-  the nearest qualifying supplier, so an empty search ends at once (`ECON-15`).
+  the nearest qualifying supplier, so an empty search ends at once (`ECON-15`). The index is a
+  rolling snapshot (`SIM-02-I`): freight requests read the listing the previous hour's
+  sweep built, each supplier as it stood at its slot of that hour, and the choice still checks
+  the supplier's live stock.
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
   direct same-lane frontage travel when the exact points are in forward order.
 - **Border quote preparation:** retain the existing per-border network tables for dispatch,
@@ -629,8 +721,9 @@ freight.
   subsequent building quote refreshes cost O(buildings), evaluating live frontage delay once
   per arrival end. The minimum uses the original table's f32 values and the original order of
   frontage/local additions, so fees remain bit-identical. It does not select a dispatch border.
-- **Retries:** failures enter a cooldown (1 hour) and escalate to a visible terminal state after
-  3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
+- **Retries:** failures enter a cooldown that ends at the building's next hourly phase (one
+  hour for a failure the building's own plan made) and escalate to a visible terminal state
+  after 3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
   changes.
 
 ## Private construction
@@ -640,26 +733,32 @@ once, so the parcel is claimed and the site renders, but it supplies no homes, j
 shopping or utilities until completion.
 
 - **Durations** (`runtime_tuning.construction`): 6/12/18 hours for residential, 8/16/24 for
-  commercial, 12/24/36 for industrial, by level. Progress is checked hourly.
+  commercial, 12/24/36 for industrial, by level. A site completes exactly its duration after it
+  starts, at its own slot (`SIM-02-D`), not on the hour.
 - **Committed capacity:** demand counts constructing and queued projects as committed, so no
   duplicate is started.
 - **Instant changes:** upgrades and downgrades are instant replacements; only fresh spawns build.
 - **Visuals:** MultiMesh site pad, foundation and scaffold, with the full-scale final asset rising
-  through the hour. It never scales, flattens or recolors.
+  continuously with construction progress. It never scales, flattens or recolors.
 
 ## Building Bankruptcy
 
 This applies to private commercial, industrial, field, extractor and privately operated utility
-businesses; city-owned facilities are excluded. Daily, in settlement order:
+businesses; city-owned facilities are excluded. At the building's daily phase, in settlement
+order (`SIM-02-G`):
 
-1. **Check:** if yesterday ended in `budget_distress` and the budget is still negative, mark
-   `is_deserted`. A building always gets one full distress day first.
-2. **Wages:** pay each worker from the budget. When cash is short, first sell enough unreserved
-   output at distress price (`catalog × owa_distress_liquidation_multiplier` = 0.25) to cover the
-   wage. Otherwise the worker goes unpaid, and wages never push the budget negative.
-3. **Utilities:** charged even into a negative budget.
-4. **Distress:** if the budget is negative, liquidate all unreserved output at distress price and
-   set `budget_distress`; otherwise clear it.
+1. **Check:** if its last window ended in `budget_distress` and this one is insolvent too, mark
+   `is_deserted`. A building always gets one full distress window first. A window is insolvent
+   when the budget is negative or a wage went unpaid for lack of cash after selling output.
+2. **Utilities:** charged even into a negative budget.
+3. **Distress:** if the budget is negative, liquidate all output on hand at distress price
+   (`catalog × owa_distress_liquidation_multiplier` = 0.25) and set `budget_distress`; a window
+   that left a wage unpaid for lack of cash sets it too; otherwise clear it. Cargo a shipment has
+   loaded has already left the stock.
+
+**Wages** are paid at each worker's own daily phase from the budget. When cash is short, the
+employer first sells enough output at distress price to cover the wage. Otherwise the worker
+goes unpaid, and wages never push the budget negative.
 
 Desertion is permanent. A deserted building leaves supplier search, hiring, production and demand
 capacity; its workers are ejected at the start of the next workplace pass. Clearing empty deserted
@@ -1107,8 +1206,7 @@ are baseline **16.85/6.74 ms**, **52.16/35.22 ms**, fiscal **27.85/26.96 ms**,
 five growth reports have not been rerun for this intermediate integration stage.
 
 The journal now covers **production inputs**, not only worker counts: allocator-owned
-work-area updates and abandonment record affected owners; construction completion invalidates
-history conservatively. Positive construction-hour decrements do not change eligibility.
+work-area updates, abandonment and construction completion record affected owners.
 Agriculture and extraction use the allocator setter, retaining sanitized scales, startup
 capital and missing-owner behavior. Road/entrance and catalog revisions remain separate
 required cache guards. The module is `allocator/production_changes.rs`; the mutation path
@@ -1418,8 +1516,8 @@ changing counter attribution would have concealed the problem.
 **Deterministic routing work (2026-10-14).** Workplace searches now assign sorted key slices to
 retained query buffers rather than Rayon threads. Each parallel phase reads a frozen shared
 network-leg cache; ordered publication visits only changed local slots after the phase.
-Agent movement also assigns query scratch to fixed contiguous agent ranges, with separate
-storage for serial movement. Scoped TLS swaps preserve existing planner entry points and
+Agent movement also assigns query scratch to interleaved agent shards, one scratch each, with
+separate storage for serial movement. Scoped TLS swaps preserve existing planner entry points and
 restore the caller's scratch on return or unwind. Household reset discards workplace scratch
 and shared quotes. Scratch ownership and deferred publication add no per-query allocations;
 preparation and retained storage are bounded
@@ -1468,7 +1566,8 @@ their funding books solely on those keys would be incorrect.
 Inspection of the owned-routing build's cached 30k day trace narrows that reuse target:
 all 15 execution censuses occur in distinct hours, one minute after the live census.
 Splitting queue-replay invalidation alone therefore removes none of this workload's censuses.
-An opt-in test-only input trace now compares selected building/household scalar bits, exact
+An opt-in test-only input trace (deleted in `SIM-02-I` part 3, with the execution censuses)
+compared selected building/household scalar bits, exact
 ordered consumer budgets, freight capital and structural/routing revisions between the live
 census and execution. It allocates diagnostic rows and is excluded from gameplay; matching
 rows locate reuse candidates but are not a complete production validity proof.
@@ -1661,7 +1760,8 @@ deferred.
   - one `OWA` trunk per 10,000 residents and an effectively unlimited treasury;
   - two warm-up days. It then runs frame by frame, so trips complete.
 - **Benchmark:** `rust/benches/economy_tick_benchmark.rs`. Each `operational_hour` sample is one
-  of 23 demand hours; each `daily_settlement` sample is one of ten days. Since 2026-10-15 only
+  of 23 demand hours, timed through the hour's fixed slots to its actions slot; each
+  `daily_settlement` sample is one of ten days, timed through the calendar close. Since 2026-10-15 only
   the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,100k,1m` requests the larger ones.
 - **Recipe:** run `cargo bench --bench economy_tick_benchmark -- /10k` with
   `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`. Alternate builds over four runs each,

@@ -353,9 +353,11 @@ mod tests {
         assert!(densities[0] < densities[1]);
         const { assert!(VegetationConfig::DEFAULT_COVERAGE < VegetationConfig::MORE_COVERAGE) };
         for (density, spacing) in densities.into_iter().zip([11.0, 8.0]) {
-            assert!((VegetationConfig::MIN_CANOPY_STEMS_PER_HA
-                ..=VegetationConfig::MAX_CANOPY_STEMS_PER_HA)
-                .contains(&density));
+            assert!(
+                (VegetationConfig::MIN_CANOPY_STEMS_PER_HA
+                    ..=VegetationConfig::MAX_CANOPY_STEMS_PER_HA)
+                    .contains(&density)
+            );
             assert_eq!(canopy_cell_m_for_density(density), spacing);
         }
     }

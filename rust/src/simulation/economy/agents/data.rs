@@ -7,11 +7,16 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
+use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::{TripFailureLog, TripQueryScratch};
+use super::tick::{LaneBucketScratch, TripFailureLog, TripQueryScratch};
+use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
+
+/// Stable reference to one agent (`docs/simulation.md#entity-handles`).
+pub(crate) type AgentHandle = Handle<Agent>;
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -48,8 +53,6 @@ pub struct Agent {
     pub transit: u8,
     /// Agent wellbeing in `[0, 100]`.
     pub happiness: f32,
-    /// Per-agent view of household money. Synced from the shared household budget.
-    pub money: f32,
     /// Internal clock for journey duration calculation.
     pub journey_start_time: f32,
     /// Stable authored schedule seed used for repeatable departure offsets.
@@ -134,8 +137,9 @@ pub struct Agent {
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
     /// Remaining days the agent is locked to their current job after a voluntary switch.
-    /// Zero means the agent may freely seek a better position.
-    pub job_lock_days: u8,
+    /// Settlement day from which the agent may look for a new job
+    /// ([`AgentSystem::settlement_days`]); a passive deadline, never decremented.
+    pub job_lock_until_day: u32,
     /// Consecutive days the agent has gone without receiving wages from their employer.
     /// Resets to zero when wages are paid. Rises above `JOB_UNPAID_ABANDON_DAYS` to
     /// allow breaking the lock early at a failing employer.
@@ -167,6 +171,18 @@ pub(crate) enum MovementClaimMode {
 pub struct AgentSystem {
     /// The backing SoA storage.
     pub agents: AgentVec,
+    /// Stable [`AgentHandle`]s of the dense agents; saved with the store.
+    pub(crate) handles: HandleTable<Agent>,
+    /// Daily settlements run so far: the clock of job locks (`job_lock_until_day`). Saved.
+    pub(crate) settlement_days: u32,
+    /// Each household's members in ascending agent index (`SIM-02-I`), kept by the lifecycle
+    /// and membership mutators. Derived: rebuilt on load.
+    pub(super) household_members: HouseholdMembers,
+    /// Household arrival carriers that may still be on their way in (`SIM-02-E`); pending
+    /// arrivals are recounted from it. Derived: rebuilt from the carriers on load.
+    pub(crate) arrival_carriers: Vec<AgentHandle>,
+    /// Arrival carriers spawned since SimCore last paced their departures, in spawn order.
+    pub(crate) held_arrivals: Vec<AgentHandle>,
     /// Global simulation time for this system.
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
@@ -187,12 +203,19 @@ pub struct AgentSystem {
     pub lane_bucket_live_agent_count: usize,
     /// Lane count represented by the retained occupancy snapshot.
     pub lane_bucket_snapshot_lane_count: usize,
-    /// Agent count represented by the retained occupancy snapshot.
+    /// Agents `0..count` the retained occupancy snapshot represents; agents appended after it
+    /// join at the next tick, and swap-removes patch it in place.
     pub lane_bucket_snapshot_agent_count: usize,
     /// True once `lane_buckets` matches the current authoritative lane state.
     pub lane_bucket_snapshot_valid: bool,
     /// Scratch list of agents whose active lane change also occupies their source lane.
     pub lane_change_ghost_agents: Vec<usize>,
+    /// Retained scratch of the parallel lane-bucket fill; derived state, never saved.
+    pub(crate) lane_bucket_scratch: LaneBucketScratch,
+    /// Test builds: the snapshot was patched since its last fill, so the next tick compares it
+    /// with a rebuild.
+    #[cfg(test)]
+    pub(crate) lane_bucket_patched: bool,
     /// Per-tick reservation owner by lane ID; `usize::MAX` means unclaimed.
     /// Fixed lateral moves choose the lowest agent index in parallel before dynamic handoffs.
     pub lane_claim_owner: Vec<AtomicUsize>,
@@ -200,20 +223,13 @@ pub struct AgentSystem {
     pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
     // Immutable snapshot grants shared by speed and connector entry.
     pub(crate) junction_admission: super::tick::junction_control::JunctionAdmission,
-    /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
-    pub edge_speed_sum: Vec<f32>,
-    /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
-    pub edge_agent_cnt: Vec<u32>,
-    /// Dedup flag for edges touched by live traffic in the latest congestion pass.
-    pub edge_is_dirty: Vec<bool>,
-    /// Compact list of edge IDs touched by live traffic in the latest congestion pass.
-    pub dirty_edges: Vec<usize>,
-    /// Scratch list of previously dirty edges used to reset congestion when traffic leaves.
-    pub stale_dirty_edges: Vec<usize>,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
     pub lane_vehicle_cnt: Vec<u32>,
+    /// Scratch buffer: each agent's lane for the frontage delay sums, `u32::MAX` for agents
+    /// that are not cars on a lane (`SIM-02-K`).
+    pub(crate) frontage_lanes: Vec<u32>,
     /// Monotonic source for transient render IDs assigned to newly spawned agents.
     pub(crate) next_render_id: u64,
     /// Last allocator building-reference revision that was scrubbed against this agent store.
@@ -269,6 +285,11 @@ impl AgentSystem {
     pub fn new() -> Self {
         Self {
             agents: AgentVec::new(),
+            handles: HandleTable::default(),
+            settlement_days: 0,
+            household_members: HouseholdMembers::default(),
+            arrival_carriers: Vec::new(),
+            held_arrivals: Vec::new(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
             lane_buckets: Vec::new(),
@@ -279,16 +300,15 @@ impl AgentSystem {
             lane_bucket_snapshot_agent_count: 0,
             lane_bucket_snapshot_valid: false,
             lane_change_ghost_agents: Vec::new(),
+            lane_bucket_scratch: LaneBucketScratch::default(),
+            #[cfg(test)]
+            lane_bucket_patched: false,
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
             junction_admission: Default::default(),
-            edge_speed_sum: Vec::new(),
-            edge_agent_cnt: Vec::new(),
-            edge_is_dirty: Vec::new(),
-            dirty_edges: Vec::new(),
-            stale_dirty_edges: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
+            frontage_lanes: Vec::new(),
             next_render_id: 0,
             last_building_ref_scrub_revision: u64::MAX,
             traffic_debug_last_pos_x: Vec::new(),
@@ -302,6 +322,19 @@ impl AgentSystem {
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
         }
+    }
+
+    /// Stable handle of agent `index`; agents appended to the store directly get theirs first.
+    pub(crate) fn agent_handle(&mut self, index: usize) -> AgentHandle {
+        self.handles.register_appended(self.agents.len());
+        self.handles.handle(index)
+    }
+
+    /// Current dense index of `handle`'s agent, or `None` once it has left the city.
+    pub(crate) fn resolve_agent(&self, handle: AgentHandle) -> Option<usize> {
+        self.handles
+            .resolve(handle)
+            .filter(|&index| index < self.agents.len())
     }
 
     /// Allocates a runtime-stable render ID for one newly inserted agent.

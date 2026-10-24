@@ -2,15 +2,19 @@
 
 //! Core shipment storage and typed logistics state.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::{AgentSystem, VEHICLE_FREIGHT_DELIVERY};
+use crate::simulation::core::scheduler::MinuteLeveler;
+use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
-use crate::simulation::economy::households::HouseholdSystem;
 
+use super::planning::FreightTopology;
+use super::requests::{FreightRequest, FreightRequestStats, event_cooldown_until};
+use super::reservations::ReservationViews;
 use super::resource::refund_input_payment;
 use super::route_cache::FreightRouteCache;
+use super::supplier_index::SupplierRoll;
 
 /// A physical freight endpoint inside the city or at an outside-world border terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,8 +131,9 @@ pub struct Shipment {
     pub carrier_class: CarrierClass,
     /// Current shipment state.
     pub status: ShipmentStatus,
-    /// Agent index for the active physical carrier; `usize::MAX` means not dispatched yet.
-    pub carrier_agent_id: usize,
+    /// Physical carrier agent; [`AgentHandle::NONE`] until dispatched. It stays set after the
+    /// carrier leaves, so "dispatched" never depends on the agent store.
+    pub(crate) carrier: AgentHandle,
     /// Input buyer's reserved goods-plus-freight payment, or gross OWA export sale value.
     pub total_cost: f32,
     /// Fixed carrier quote. Settled once on delivery; included in input reservations,
@@ -136,8 +141,17 @@ pub struct Shipment {
     pub freight_cost: f32,
     /// Estimated trip duration used for capacity and timeout bounds; arrival is physical.
     pub eta_hours: u16,
-    /// Operational hours spent in the current active logistics state.
-    pub queued_hours: u16,
+    /// Logistics hour (`ShipmentSystem::hour_ticks`) in which the current leg's carrier set out:
+    /// the leg times out `max(6, 4 × eta_hours + 2)` hours later, at the first check after
+    /// that hour starts (`SIM-02-J`). Zero until dispatch.
+    pub leg_started_hour: u32,
+    /// Slot of the shipment's one live trip event, its departure or its next carrier check; an
+    /// event of this shipment due at another slot is a leftover and does nothing (`SIM-02-J`).
+    /// Zero before the first is scheduled.
+    pub(crate) trip_event_slot: u64,
+    /// Whether the cargo has left the source building's stock: loaded at the end of the slot that
+    /// planned it, carried from the carrier's departure on (`SIM-02-E`, `SIM-02-J`).
+    pub(crate) cargo_loaded: bool,
 }
 
 /// Stable key for unresolved input-freight request failure tracking.
@@ -158,14 +172,33 @@ pub struct FreightRequestFailure {
     pub terminal: bool,
 }
 
+/// Shipments created between two drops of the closed ones: closed jobs leave the list whenever
+/// a new shipment id is a multiple of this, so the list grows by at most this many jobs between
+/// drops and a drop costs O(list) once per this many shipments (`SIM-02-J`).
+const SHIPMENT_DROP_INTERVAL: u64 = 256;
+
 /// Runtime collection of active freight jobs.
 #[derive(Clone, Debug)]
 pub struct ShipmentSystem {
     /// Active and recently closed jobs in ascending stable shipment-ID order.
     /// Append allocates increasing IDs; retention, loading and undo preserve this order.
     pub shipments: Vec<Shipment>,
-    /// Next stable shipment id to assign.
+    /// Next stable shipment id to assign. Saved, so ids are never reused across a load.
     pub next_shipment_id: u64,
+    /// Logistics hours started so far; the clock of carrier leg timeouts. Saved.
+    pub(crate) hour_ticks: u32,
+    /// Shipments loaded since SimCore last scheduled their carriers' departures, in id order.
+    pub(crate) held_dispatches: Vec<u64>,
+    /// Freight departures already placed in each upcoming minute (`SIM-02-J`). Saved.
+    pub(crate) departure_minutes: MinuteLeveler,
+    /// Freight requests the building phases queued and the `freight requests` queue has not
+    /// served yet, oldest first (`SIM-02-J`). Saved in order.
+    pub(crate) freight_requests: VecDeque<FreightRequest>,
+    /// Per building handle slot, the generation and the kinds it has queued (`requests.rs`).
+    /// Derived from the queue: rebuilt on load, not saved.
+    pub(super) request_pending: Vec<(u32, u8)>,
+    /// The queue's counts this logistics hour, for its debug line. Not saved.
+    pub(super) request_stats: FreightRequestStats,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
     /// Freight ETA cache reused while topology revisions remain unchanged.
@@ -178,6 +211,14 @@ pub struct ShipmentSystem {
     pub(super) freight_route_cache_cch_generation: u32,
     /// Customized network metric captured by the cached free-flow costs.
     pub(super) freight_route_cache_metric_revision: u64,
+    /// Reservation views kept in step with every shipment change (`SIM-02-I`); `None` until
+    /// first use and after a change they cannot follow. Derived, not saved.
+    pub(super) reservations: Option<ReservationViews>,
+    /// Border nodes, freight components and top freight speed, rebuilt only when the road
+    /// graph changes. Derived, not saved.
+    pub(super) freight_topology: FreightTopology,
+    /// Hour-long rolling build of the dispatch supplier index (`SIM-02-I`); saved.
+    pub(crate) supplier_roll: SupplierRoll,
 }
 
 /// Freight records removed when one building is bulldozed.
@@ -194,17 +235,30 @@ impl ShipmentSystem {
         Self {
             shipments: Vec::new(),
             next_shipment_id: 0,
+            hour_ticks: 0,
+            held_dispatches: Vec::new(),
+            departure_minutes: MinuteLeveler::default(),
+            freight_requests: VecDeque::new(),
+            request_pending: Vec::new(),
+            request_stats: FreightRequestStats::default(),
             request_failures: BTreeMap::new(),
             freight_route_cache: FreightRouteCache::default(),
             freight_route_cache_building_revision: u64::MAX,
             freight_route_cache_entrance_revision: u64::MAX,
             freight_route_cache_cch_generation: u32::MAX,
             freight_route_cache_metric_revision: u64::MAX,
+            reservations: None,
+            freight_topology: FreightTopology::default(),
+            supplier_roll: SupplierRoll::default(),
         }
     }
 
     /// Captures only freight state that building invalidation removes or refunds.
-    pub(crate) fn capture_building_undo(&self, removed_building: usize) -> ShipmentBuildingUndo {
+    pub(crate) fn capture_building_undo(
+        &self,
+        removed_building: usize,
+        agents: &AgentSystem,
+    ) -> ShipmentBuildingUndo {
         let mut shipments = Vec::new();
         let mut carrier_agent_ids = Vec::new();
         let mut mutated_building_ids = Vec::new();
@@ -215,8 +269,8 @@ impl ShipmentSystem {
                 continue;
             }
             shipments.push(shipment.clone());
-            if shipment.carrier_agent_id != usize::MAX {
-                carrier_agent_ids.push(shipment.carrier_agent_id);
+            if let Some(carrier) = agents.resolve_agent(shipment.carrier) {
+                carrier_agent_ids.push(carrier);
             }
             if shipment.status.reserves_cargo()
                 && shipment.source.touches_building(removed_building)
@@ -227,7 +281,7 @@ impl ShipmentSystem {
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && shipment.cargo_loaded
                 && let Some(source_id) = shipment.source.building_id()
                 && source_id != removed_building
             {
@@ -252,9 +306,14 @@ impl ShipmentSystem {
         }
     }
 
-    /// Reinserts freight state removed by building invalidation.
-    pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) {
+    /// Reinserts freight state removed by building invalidation and returns the restored
+    /// shipments' ids, whose trips the caller resumes.
+    pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) -> Vec<u64> {
+        let restored = undo.shipments.iter().map(|shipment| shipment.id).collect();
         for shipment in undo.shipments {
+            if let Some(views) = &mut self.reservations {
+                views.add_shipment(&shipment);
+            }
             let shipment_idx = self.shipments.partition_point(|job| job.id < shipment.id);
             self.shipments.insert(shipment_idx, shipment);
         }
@@ -262,10 +321,31 @@ impl ShipmentSystem {
             self.request_failures.insert(key, failure);
         }
         self.invalidate_route_cache();
+        restored
     }
 
-    /// Clears route-derived state after an undo remaps building or carrier indices.
+    /// Drops the building-indexed freight quotes after a removal, remap or undo moved dense
+    /// building indices, keeping the network sweeps and node costs, which no building index
+    /// reaches; the next use revalidates the rest (`FreightRouteCache::clear_buildings`). O(1).
+    /// A full clear here rebuilt every border sweep after each building removal, which the
+    /// hourly pass did once an hour but the per-slot freight queue would do in the slot after
+    /// every removal (`SIM-02-J`).
     pub(crate) fn invalidate_route_cache(&mut self) {
+        self.freight_route_cache.clear_buildings();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+    }
+
+    /// Clears all active shipments, queued freight requests and request diagnostics.
+    pub fn clear(&mut self) {
+        self.shipments.clear();
+        self.next_shipment_id = 0;
+        self.departure_minutes = MinuteLeveler::default();
+        self.freight_requests.clear();
+        self.request_pending.clear();
+        self.request_failures.clear();
+        self.reservations = None;
+        self.supplier_roll = SupplierRoll::default();
         self.freight_route_cache.clear();
         self.freight_route_cache_building_revision = u64::MAX;
         self.freight_route_cache_entrance_revision = u64::MAX;
@@ -273,66 +353,77 @@ impl ShipmentSystem {
         self.freight_route_cache_metric_revision = u64::MAX;
     }
 
-    /// Clears all active shipments and freight request diagnostics.
-    pub fn clear(&mut self) {
-        self.shipments.clear();
-        self.next_shipment_id = 0;
-        self.request_failures.clear();
-        self.invalidate_route_cache();
-    }
-
+    /// The next shipment id. Every [`SHIPMENT_DROP_INTERVAL`]-th id first drops the closed
+    /// shipments, which hold no reservation; the rule follows the saved id counter alone, so a
+    /// loaded game drops them at the same shipment. O(1), or O(shipments) at a drop.
     pub(super) fn allocate_shipment_id(&mut self) -> u64 {
         let id = self.next_shipment_id;
+        if id.is_multiple_of(SHIPMENT_DROP_INTERVAL) {
+            self.shipments.retain(|shipment| shipment.status.is_open());
+        }
         self.next_shipment_id = self.next_shipment_id.saturating_add(1);
         id
     }
 
-    /// Rebuilds the next stable shipment id after loading persisted shipment rows.
-    pub(crate) fn rebuild_next_shipment_id(&mut self) {
-        self.next_shipment_id = self
-            .shipments
+    /// The lowest id a new shipment may take after loading `next_shipment_id`: past every
+    /// saved shipment.
+    pub(crate) fn first_free_shipment_id(&self) -> u64 {
+        self.shipments
             .iter()
             .map(|shipment| shipment.id)
             .max()
-            .map_or(0, |max_id| max_id.saturating_add(1));
+            .map_or(0, |max_id| max_id.saturating_add(1))
     }
 
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &HashMap<usize, usize>) {
+        self.remap_reservations(mapping);
         for shipment in &mut self.shipments {
             shipment.source.remap_building(mapping);
             shipment.destination.remap_building(mapping);
         }
 
-        let mut remapped_failures = BTreeMap::new();
-        for (mut key, failure) in std::mem::take(&mut self.request_failures) {
-            if let Some(&new_id) = mapping.get(&key.destination_building_id) {
-                key.destination_building_id = new_id;
+        // Rebuilt only when a key moves: otherwise the rebuild is the same map (`SIM-02-K`).
+        // O(F), else O(F log F).
+        if self
+            .request_failures
+            .keys()
+            .any(|key| mapping.contains_key(&key.destination_building_id))
+        {
+            let mut remapped_failures = BTreeMap::new();
+            for (mut key, failure) in std::mem::take(&mut self.request_failures) {
+                if let Some(&new_id) = mapping.get(&key.destination_building_id) {
+                    key.destination_building_id = new_id;
+                }
+                remapped_failures.insert(key, failure);
             }
-            remapped_failures.insert(key, failure);
+            self.request_failures = remapped_failures;
         }
-        self.request_failures = remapped_failures;
         self.invalidate_route_cache();
     }
 
-    /// Repairs the moved agent's shipment in O(log S), or O(1) for a non-freight agent.
-    /// The caller must first move the agent record to `new_idx`.
-    pub(crate) fn remap_carrier_agent_index(
-        &mut self,
-        old_idx: usize,
-        new_idx: usize,
-        agents: &AgentSystem,
-    ) {
-        if agents.vehicle_type[new_idx] != VEHICLE_FREIGHT_DELIVERY {
-            return;
+    /// Records `slot` as shipment `id`'s one live trip event, so any other event of it is a
+    /// leftover. O(log S).
+    pub(crate) fn set_trip_event_slot(&mut self, id: u64, slot: u64) {
+        if let Ok(idx) = self.shipments.binary_search_by_key(&id, |job| job.id) {
+            self.shipments[idx].trip_event_slot = slot;
         }
-        let shipment_id = agents.freight_shipment_id[new_idx];
+    }
+
+    /// Whether shipment `id` is listed with a live trip event due at `slot`. O(log S).
+    pub(crate) fn trip_event_due(&self, id: u64, slot: u64) -> bool {
+        self.shipments
+            .binary_search_by_key(&id, |job| job.id)
+            .is_ok_and(|idx| self.shipments[idx].trip_event_slot == slot)
+    }
+
+    /// Points shipment `shipment_id` at its carrier restored with a new handle by undo. O(log S).
+    pub(crate) fn rebind_carrier(&mut self, shipment_id: u64, carrier: AgentHandle) {
         if let Ok(idx) = self
             .shipments
             .binary_search_by_key(&shipment_id, |job| job.id)
-            && self.shipments[idx].carrier_agent_id == old_idx
         {
-            self.shipments[idx].carrier_agent_id = new_idx;
+            self.shipments[idx].carrier = carrier;
         }
     }
 
@@ -342,7 +433,6 @@ impl ShipmentSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         treasury_balance: &mut f64,
     ) {
         let mut carriers_to_remove = Vec::new();
@@ -350,6 +440,8 @@ impl ShipmentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
             .operational_clock
             .shipment_retry_cooldown_hours;
+        // Endpoints retry from their first phase after this slot's (`event_cooldown_until`).
+        let retry_from = allocator.now_slot + 1;
         self.shipments.retain(|shipment| {
             let touches_removed = shipment.source.touches_building(removed_building)
                 || shipment.destination.touches_building(removed_building);
@@ -357,6 +449,7 @@ impl ShipmentSystem {
             if !touches_removed {
                 return true;
             }
+            Self::forget_shipment_reservations(&mut self.reservations, shipment);
 
             if shipment.status.reserves_cargo()
                 && let Some(destination_id) = shipment.destination.building_id()
@@ -368,34 +461,51 @@ impl ShipmentSystem {
                     destination_id,
                     shipment.total_cost,
                 );
-                allocator.buildings[destination_id].shipment_cooldown_hours = retry_cooldown_hours;
+                allocator.buildings[destination_id].shipment_cooldown_until_slot =
+                    event_cooldown_until(
+                        allocator,
+                        destination_id,
+                        retry_from,
+                        retry_cooldown_hours,
+                    );
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && shipment.cargo_loaded
                 && let ShipmentEndpoint::Building(source_id) = shipment.source
                 && source_id < allocator.buildings.len()
                 && source_id != removed_building
             {
                 allocator.buildings[source_id]
                     .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-                allocator.buildings[source_id].shipment_cooldown_hours = retry_cooldown_hours;
+                allocator.buildings[source_id].shipment_cooldown_until_slot =
+                    event_cooldown_until(allocator, source_id, retry_from, retry_cooldown_hours);
             }
 
-            if agents.freight_carrier_matches(shipment.carrier_agent_id, shipment.id) {
-                carriers_to_remove.push((shipment.carrier_agent_id, shipment.id));
+            if let Some(carrier) = agents.resolve_agent(shipment.carrier)
+                && agents.freight_carrier_matches(carrier, shipment.id)
+            {
+                carriers_to_remove.push((carrier, shipment.id));
             }
             false
         });
         carriers_to_remove.sort_unstable();
         carriers_to_remove.dedup();
-        for (carrier_agent_id, shipment_id) in carriers_to_remove.into_iter().rev() {
-            self.remove_carrier_agent(agents, households, carrier_agent_id, shipment_id);
+        // Descending dense order keeps the indices still to remove valid.
+        for (carrier, shipment_id) in carriers_to_remove.into_iter().rev() {
+            agents.remove_freight_carrier(carrier, shipment_id);
         }
 
         self.request_failures
             .retain(|key, _| key.destination_building_id != removed_building);
         self.invalidate_route_cache();
+    }
+
+    // The slot that starts the current logistics hour, for test drivers that step logistics
+    // hours without the slot clock.
+    #[cfg(test)]
+    pub(super) fn hour_start_slot_for_test(&self) -> u64 {
+        u64::from(self.hour_ticks) * crate::simulation::core::scheduler::SLOTS_PER_HOUR
     }
 
     pub(super) fn request_key(

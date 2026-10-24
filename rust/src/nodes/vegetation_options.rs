@@ -7,7 +7,7 @@
 //! ceiling are. This class carries those numbers across the boundary so GDScript does not keep
 //! a second copy of them that drifts when `RENDER-04` raises the ceiling.
 
-use crate::simulation::vegetation::{canopy_cell_m_for_density, VegetationConfig};
+use crate::simulation::vegetation::{VegetationConfig, canopy_cell_m_for_density};
 use godot::prelude::*;
 
 /// Read-only source of authored vegetation defaults and bounds for menu code.

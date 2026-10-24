@@ -16,6 +16,8 @@ use std::time::Instant;
 
 #[cfg(test)]
 mod balance_cases;
+#[cfg(test)]
+mod census_cases;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 
@@ -115,6 +117,7 @@ impl GrowthScenario {
         let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, 0.0));
         assert!(border >= 0, "the trunk must end at the world edge");
         core.set_border_connection_internal(border as i32);
+        core.fit_lanes_to_road_surface();
 
         let [residential_west, residential_center, industrial_east] =
             CROSS_STREET_X_M.map(f64::from);
@@ -170,7 +173,7 @@ impl GrowthScenario {
         self.core.time.day_index
     }
 
-    /// Runs `days` daily settlements frame by frame and records the city after each one.
+    /// Runs `days` game days frame by frame and records the city after each calendar close.
     pub fn run_days(&mut self, days: u32) -> Vec<GrowthDayRecord> {
         let mut records = Vec::with_capacity(days as usize);
         while records.len() < days as usize {

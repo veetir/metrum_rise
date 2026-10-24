@@ -8,7 +8,8 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use rayon::prelude::*;
 
 impl AgentSystem {
-    /// Update per-day agent state: home/work bonuses and pollution penalties.
+    /// Update per-day agent state of every agent at once: home/work bonuses and pollution
+    /// penalties, as their daily phases would.
     pub fn daily_update(
         &mut self,
         pollution: &PollutionSystem,
@@ -17,7 +18,6 @@ impl AgentSystem {
         let agents = &mut self.agents;
         (
             &mut agents.happiness,
-            &mut agents.money,
             &agents.pos_x,
             &agents.pos_y,
             &agents.transit,
@@ -26,25 +26,55 @@ impl AgentSystem {
             .into_par_iter()
             // Daily work per agent is small; keep contiguous runs large enough to amortize dispatch.
             .with_min_len(8_192)
-            .for_each(|(happiness, money, &x, &z, &transit, &activity)| {
-                if transit == TRANSIT_IN_BUILDING && activity == 0 {
-                    *happiness += 1.0;
-                }
-
-                let (gx_raw, gy_raw) = config.world_to_env_grid(x, z);
-                let gx = gx_raw.round() as i32;
-                let gy = gy_raw.round() as i32;
-                if gx >= 0
-                    && gy >= 0
-                    && let Some(p) = pollution.grid.get(gx as usize, gy as usize)
-                {
-                    *happiness -= p * 0.1;
-                }
-
-                *happiness = happiness.clamp(0.0, 100.0);
-                *money = money.max(0.0);
+            .for_each(|(happiness, &x, &z, &transit, &activity)| {
+                *happiness =
+                    daily_happiness(*happiness, x, z, transit, activity, pollution, config);
             });
     }
+
+    /// Agent `agent_idx`'s daily state at its daily phase (`SIM-02-G`): a bonus for being home
+    /// and the pollution where it stands. O(1).
+    pub(crate) fn daily_update_agent(
+        &mut self,
+        agent_idx: usize,
+        pollution: &PollutionSystem,
+        config: &crate::simulation::core::config::WorldConfig,
+    ) {
+        let agents = &mut self.agents;
+        agents.happiness[agent_idx] = daily_happiness(
+            agents.happiness[agent_idx],
+            agents.pos_x[agent_idx],
+            agents.pos_y[agent_idx],
+            agents.transit[agent_idx],
+            agents.activity[agent_idx],
+            pollution,
+            config,
+        );
+    }
+}
+
+fn daily_happiness(
+    mut happiness: f32,
+    x: f32,
+    z: f32,
+    transit: u8,
+    activity: u8,
+    pollution: &PollutionSystem,
+    config: &crate::simulation::core::config::WorldConfig,
+) -> f32 {
+    if transit == TRANSIT_IN_BUILDING && activity == 0 {
+        happiness += 1.0;
+    }
+    let (gx_raw, gy_raw) = config.world_to_env_grid(x, z);
+    let gx = gx_raw.round() as i32;
+    let gy = gy_raw.round() as i32;
+    if gx >= 0
+        && gy >= 0
+        && let Some(p) = pollution.grid.get(gx as usize, gy as usize)
+    {
+        happiness -= p * 0.1;
+    }
+    happiness.clamp(0.0, 100.0)
 }
 
 #[cfg(test)]
@@ -67,30 +97,28 @@ mod tests {
             .data
             .copy_from_slice(&[10.0, 20.0, 30.0, 40.0]);
         let cases = [
-            (-20.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 5.0, 50.0, 5.0),
-            (20.0, -20.0, TRANSIT_IN_BUILDING, 1, 50.0, 5.0, 48.0, 5.0),
-            (-20.0, 20.0, TRANSIT_NETWORK, 0, 50.0, 5.0, 47.0, 5.0),
-            (20.0, 20.0, TRANSIT_IN_BUILDING, 0, 1.0, -4.0, 0.0, 0.0),
-            (-60.0, -20.0, TRANSIT_IN_BUILDING, 0, 100.0, 5.0, 100.0, 5.0),
-            (40.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 5.0, 51.0, 5.0),
-            (-40.0, -20.0, TRANSIT_IN_BUILDING, 1, 10.0, 5.0, 10.0, 5.0),
-            (20.0, 60.0, TRANSIT_IN_BUILDING, 0, -5.0, -4.0, 0.0, 0.0),
+            (-20.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 50.0),
+            (20.0, -20.0, TRANSIT_IN_BUILDING, 1, 50.0, 48.0),
+            (-20.0, 20.0, TRANSIT_NETWORK, 0, 50.0, 47.0),
+            (20.0, 20.0, TRANSIT_IN_BUILDING, 0, 1.0, 0.0),
+            (-60.0, -20.0, TRANSIT_IN_BUILDING, 0, 100.0, 100.0),
+            (40.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 51.0),
+            (-40.0, -20.0, TRANSIT_IN_BUILDING, 1, 10.0, 10.0),
+            (20.0, 60.0, TRANSIT_IN_BUILDING, 0, -5.0, 0.0),
         ];
         for count in [cases.len(), 32_768] {
             let mut agents = AgentSystem::new();
             for i in 0..count {
-                let (x, z, transit, activity, happiness, money, _, _) = cases[i % cases.len()];
+                let (x, z, transit, activity, happiness, _) = cases[i % cases.len()];
                 let id = agents.spawn_housed_agent(0, x, z);
                 agents.transit[id] = transit;
                 agents.activity[id] = activity;
                 agents.happiness[id] = happiness;
-                agents.money[id] = money;
             }
             agents.daily_update(&pollution, &config);
             for i in 0..count {
-                let (_, _, _, _, _, _, happiness, money) = cases[i % cases.len()];
+                let (_, _, _, _, _, happiness) = cases[i % cases.len()];
                 assert_eq!(agents.happiness[i], happiness, "agent {i}");
-                assert_eq!(agents.money[i], money, "agent {i}");
             }
         }
     }

@@ -5,8 +5,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, Once, OnceLock, TryLockError};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Mutex, Once, OnceLock, PoisonError, TryLockError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use godot::prelude::Vector3;
 
 const CRASH_RECORDER_CAPACITY: usize = 4096;
 const DEFAULT_HANG_WATCHDOG_TIMEOUT_MS: u64 = 10_000;
@@ -19,7 +23,8 @@ static CRASH_RECORDER: OnceLock<Mutex<CrashRecorder>> = OnceLock::new();
 static CRASH_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CRASH_START: OnceLock<Instant> = OnceLock::new();
 static PANIC_HOOK: Once = Once::new();
-static HANG_WATCHDOG: Once = Once::new();
+// The running watchdog: dropping the sender stops it, then the handle joins it.
+static HANG_WATCHDOG: Mutex<Option<(mpsc::Sender<()>, JoinHandle<()>)>> = Mutex::new(None);
 static CRASH_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
 static HANG_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
 static WATCHDOG_MONITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -159,11 +164,50 @@ pub(crate) enum CrashCommand {
         bkw_lanes: i32,
         /// Whether endpoints may snap to existing roads.
         snap_to_existing_roads: bool,
+        /// Fixed-size geometry identity for reproducing the submitted stroke.
+        geometry: CrashRoadGeometry,
     },
     /// Undo command from Godot.
     Undo,
     /// Bulldoze command from Godot.
     Bulldoze,
+}
+
+/// Allocation-free geometry identity retained with an `AddRoad` flight-recorder event.
+#[derive(Clone, Copy)]
+pub(crate) struct CrashRoadGeometry {
+    start: [f32; 3],
+    end: [f32; 3],
+    points_hash: u64,
+}
+
+impl CrashRoadGeometry {
+    /// Captures both endpoints and an exact stable fingerprint of every submitted float bit.
+    pub(crate) fn from_points(points: &[Vector3]) -> Self {
+        let components = |point: Vector3| [point.x, point.y, point.z];
+        let start = points.first().copied().map_or([0.0; 3], components);
+        let end = points.last().copied().map_or([0.0; 3], components);
+
+        // FNV-1a over an explicit little-endian stream is stable across processes and targets.
+        // Length is included so an empty stroke cannot alias a one-point all-zero stroke.
+        let mut points_hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in (points.len() as u64).to_le_bytes() {
+            points_hash = (points_hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for point in points {
+            for component in components(*point) {
+                for byte in component.to_bits().to_le_bytes() {
+                    points_hash =
+                        (points_hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        Self {
+            start,
+            end,
+            points_hash,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -286,6 +330,19 @@ pub(crate) fn suspend_hang_watchdog() {
     WATCHDOG_MONITOR_ACTIVE.store(false, Ordering::Release);
 }
 
+/// Stops the hang watchdog and joins its thread, so it cannot run once the library unloads.
+/// A later [`init`] may start it again.
+pub(crate) fn shutdown() {
+    let watchdog = HANG_WATCHDOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some((stop, thread)) = watchdog {
+        drop(stop);
+        let _ = thread.join();
+    }
+}
+
 fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let previous_hook = std::panic::take_hook();
@@ -339,26 +396,33 @@ fn hang_watchdog_timeout_ms() -> Option<u64> {
 }
 
 fn start_hang_watchdog(timeout_ms: u64) {
-    HANG_WATCHDOG.call_once(|| {
-        WATCHDOG_ABORT_AFTER_DUMP.store(
-            std::env::var("METRUM_HANG_ABORT")
-                .map(|value| !value.is_empty() && value != "0")
-                .unwrap_or(false),
-            Ordering::Relaxed,
-        );
-        let spawn_result = std::thread::Builder::new()
-            .name("metrum-hang-watchdog".to_string())
-            .spawn(move || run_hang_watchdog(timeout_ms));
-        if let Err(err) = spawn_result {
-            eprintln!("[CRASH_DIAGNOSTICS] could not start hang watchdog: {err}");
-        }
-    });
+    let mut watchdog = HANG_WATCHDOG.lock().unwrap_or_else(PoisonError::into_inner);
+    if watchdog.is_some() {
+        return;
+    }
+    WATCHDOG_ABORT_AFTER_DUMP.store(
+        std::env::var("METRUM_HANG_ABORT")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false),
+        Ordering::Relaxed,
+    );
+    let (stop, stopped) = mpsc::channel();
+    let spawn_result = std::thread::Builder::new()
+        .name("metrum-hang-watchdog".to_string())
+        .spawn(move || run_hang_watchdog(timeout_ms, stopped));
+    match spawn_result {
+        Ok(thread) => *watchdog = Some((stop, thread)),
+        Err(err) => eprintln!("[CRASH_DIAGNOSTICS] could not start hang watchdog: {err}"),
+    }
 }
 
-fn run_hang_watchdog(timeout_ms: u64) {
+fn run_hang_watchdog(timeout_ms: u64, stopped: mpsc::Receiver<()>) {
     let poll = Duration::from_millis(HANG_WATCHDOG_POLL_MS);
     loop {
-        std::thread::sleep(poll);
+        // Polls every interval until `shutdown` drops the sender.
+        if stopped.recv_timeout(poll) != Err(RecvTimeoutError::Timeout) {
+            return;
+        }
         if !is_crash_diagnostics_enabled() {
             continue;
         }
@@ -598,9 +662,17 @@ fn write_crash_command(out: &mut impl Write, command: CrashCommand) -> std::io::
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
+            geometry,
         } => write!(
             out,
-            "add_road points={point_count} fwd_lanes={fwd_lanes} bkw_lanes={bkw_lanes} snap={snap_to_existing_roads}"
+            "add_road points={point_count} start=({:.3},{:.3},{:.3}) end=({:.3},{:.3},{:.3}) points_hash={:016x} fwd_lanes={fwd_lanes} bkw_lanes={bkw_lanes} snap={snap_to_existing_roads}",
+            geometry.start[0],
+            geometry.start[1],
+            geometry.start[2],
+            geometry.end[0],
+            geometry.end[1],
+            geometry.end[2],
+            geometry.points_hash,
         ),
         CrashCommand::Undo => write!(out, "undo"),
         CrashCommand::Bulldoze => write!(out, "bulldoze"),
@@ -635,11 +707,77 @@ fn write_crash_summary(out: &mut impl Write, summary: CrashSimSnapshot) -> std::
 mod tests {
     use super::*;
 
+    // The extension calls `shutdown` before Godot unloads it: the watchdog thread must have
+    // exited when it returns, and a later load must be able to start it again.
+    #[test]
+    fn watchdog_shutdown_joins_its_thread_and_allows_a_restart() {
+        for _ in 0..2 {
+            start_hang_watchdog(60_000);
+            assert!(HANG_WATCHDOG.lock().unwrap().is_some());
+            shutdown();
+            assert!(HANG_WATCHDOG.lock().unwrap().is_none());
+        }
+    }
+
     #[test]
     fn flight_recorder_initialization_has_bounded_stack_storage() {
         assert!(std::mem::size_of::<CrashRecorder>() <= 64);
         let recorder = CrashRecorder::new();
         assert_eq!(recorder.events.len(), CRASH_RECORDER_CAPACITY);
         assert!(recorder.events.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn road_command_geometry_is_fixed_size_stable_and_printed() {
+        let points = [
+            Vector3::new(1.25, -2.5, 3.75),
+            Vector3::new(4.5, 5.25, -6.0),
+            Vector3::new(7.0, 8.5, 9.25),
+        ];
+        let geometry = CrashRoadGeometry::from_points(&points);
+        assert_eq!(geometry.start, [1.25, -2.5, 3.75]);
+        assert_eq!(geometry.end, [7.0, 8.5, 9.25]);
+        assert_eq!(geometry.points_hash, 0x7d9d_4eb7_7a4c_2803);
+        assert!(std::mem::size_of::<CrashRoadGeometry>() <= 32);
+
+        let mut rendered = Vec::new();
+        write_crash_command(
+            &mut rendered,
+            CrashCommand::AddRoad {
+                point_count: points.len(),
+                fwd_lanes: 2,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                geometry,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(rendered).unwrap(),
+            "add_road points=3 start=(1.250,-2.500,3.750) end=(7.000,8.500,9.250) points_hash=7d9d4eb77a4c2803 fwd_lanes=2 bkw_lanes=1 snap=true"
+        );
+    }
+
+    #[test]
+    fn road_command_hash_covers_interior_points_and_length() {
+        let endpoints = [Vector3::ZERO, Vector3::new(8.0, 0.0, 0.0)];
+        let with_midpoint = [
+            Vector3::ZERO,
+            Vector3::new(4.0, 0.0, 0.0),
+            Vector3::new(8.0, 0.0, 0.0),
+        ];
+        let moved_midpoint = [
+            Vector3::ZERO,
+            Vector3::new(4.0, 0.0, 1.0),
+            Vector3::new(8.0, 0.0, 0.0),
+        ];
+        assert_ne!(
+            CrashRoadGeometry::from_points(&endpoints).points_hash,
+            CrashRoadGeometry::from_points(&with_midpoint).points_hash
+        );
+        assert_ne!(
+            CrashRoadGeometry::from_points(&with_midpoint).points_hash,
+            CrashRoadGeometry::from_points(&moved_midpoint).points_hash
+        );
     }
 }

@@ -47,6 +47,7 @@ pub(super) fn make_building(
         depth_cells: 2,
         zone_profile_runtime_id: 0,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -64,7 +65,7 @@ pub(super) fn make_building(
         asset_id: asset_id.to_owned(),
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: runtime_id,
         economy_broken: false,
@@ -73,7 +74,7 @@ pub(super) fn make_building(
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
         last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -85,8 +86,14 @@ pub(super) fn make_building(
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -111,7 +118,6 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         speed_limit: 5.0,
         base_cost: 10.0,
         physical_length: 100.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -142,7 +148,6 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         speed_limit: 50.0,
         base_cost: length.max(1.0),
         physical_length: length.max(1.0),
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![
@@ -341,7 +346,7 @@ pub(super) fn setup_replenishment_world(
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;
@@ -404,8 +409,7 @@ pub(super) fn make_household(
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,

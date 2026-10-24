@@ -3,6 +3,7 @@
 //! Demand tests.
 
 mod alternatives;
+mod rolling_snapshot;
 
 use super::spawn_need::{
     OutputAbsorptionContext, commercial_market_covers_operation,
@@ -303,6 +304,7 @@ fn building(
         depth_cells: 2,
         zone_profile_runtime_id: 0,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -320,7 +322,7 @@ fn building(
         asset_id,
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: runtime_id,
         economy_broken: false,
@@ -329,7 +331,7 @@ fn building(
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
         last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -341,8 +343,14 @@ fn building(
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -375,8 +383,7 @@ fn housed_household(
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        shopping_agent_id: usize::MAX,
-        shopping_agent_schedule_seed: 0,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::NONE,
         shopping_timeout_hours_remaining: 0,
         replenishment_search_cursor: 0,
         stay_failure_days: 0,
@@ -411,7 +418,6 @@ fn graph_with_connected_border() -> RegionGraph {
         speed_limit: 50.0,
         base_cost: 50.0,
         physical_length: 50.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 0.0)],
@@ -421,6 +427,40 @@ fn graph_with_connected_border() -> RegionGraph {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
     });
     graph
+}
+
+// Runs the employment census on `graph` and copies its funded jobs and activity onto the
+// buildings, as the hour's publication does before planning reads them (`SIM-02-I`).
+fn publish_census(
+    allocator: &mut BuildingAllocator,
+    households: &mut HouseholdSystem,
+    graph: &RegionGraph,
+    treasury_balance: f64,
+) {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let mut routing_graph = graph.clone();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.lane_system.rebuild(&mut routing_graph);
+    network.rebuild_cch_and_check(&routing_graph);
+    households.job_funding.refresh(
+        allocator,
+        &households.households,
+        &mut crate::simulation::economy::logistics::ShipmentSystem::new(),
+        &network,
+        &routing_graph,
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::from_runtime_tuning(tuning.as_ref()),
+        &[],
+        treasury_balance,
+        420,
+    );
+    let funding = &households.job_funding;
+    for (index, building) in allocator.buildings.iter_mut().enumerate() {
+        building.funded_job_capacity = funding.capacities.get(index).copied().unwrap_or(0);
+        building.funded_activity = funding.activities().get(index).copied().unwrap_or(0.0);
+    }
 }
 
 fn empty_zoning() -> ZoningSystem {
@@ -544,7 +584,7 @@ fn completing_or_unstaffed_shop_keeps_its_customer_reservation() {
     let graph = graph_with_connected_border();
     let config = load_builtin_demand_config().unwrap();
     for (remaining_hours, workers) in [(8, 0), (0, 0), (0, 1), (0, 6)] {
-        allocator.buildings[1].construction_remaining_hours = remaining_hours;
+        allocator.buildings[1].set_construction_hours_left(remaining_hours);
         allocator.buildings[1].worker_count = workers;
         let snapshot =
             DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
@@ -597,7 +637,7 @@ fn self_supplied_maintenance_does_not_consume_saleable_capacity_twice() {
     let graph = RegionGraph::new();
     let config = load_builtin_demand_config().unwrap();
     for remaining in [8, 0] {
-        allocator.buildings[0].construction_remaining_hours = remaining;
+        allocator.buildings[0].set_construction_hours_left(remaining);
         let mut snapshot =
             DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
         snapshot
@@ -905,7 +945,7 @@ fn pending_commercial_construction_is_committed_but_not_live_capacity() {
     ));
     let mut pending_store = building(ZoneType::Commercial, 0.0, 0, 0, commercial_asset.clone());
     pending_store.construction_total_hours = 6;
-    pending_store.construction_remaining_hours = 6;
+    pending_store.set_construction_hours_left(6);
     allocator.buildings.push(pending_store);
 
     let mut households = HouseholdSystem::new();
@@ -1016,7 +1056,7 @@ fn pending_industrial_construction_is_committed_but_not_live_capacity() {
     let mut pending_industrial =
         building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset.clone());
     pending_industrial.construction_total_hours = 6;
-    pending_industrial.construction_remaining_hours = 6;
+    pending_industrial.set_construction_hours_left(6);
     allocator.buildings.push(pending_industrial);
 
     let households = HouseholdSystem::new();
@@ -1139,7 +1179,7 @@ fn industrial_opening_requires_enough_homes_ready_by_completion() {
 
     let mut second_home = building(ZoneType::Residential, 0.0, 0, 0, home);
     second_home.construction_total_hours = 18;
-    second_home.construction_remaining_hours = 18;
+    second_home.set_construction_hours_left(18);
     allocator.buildings.push(second_home);
     allocator.rebuild_zone_index();
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
@@ -1148,7 +1188,7 @@ fn industrial_opening_requires_enough_homes_ready_by_completion() {
         "homes completing after the factory cannot supply its workers"
     );
 
-    allocator.buildings[1].construction_remaining_hours = 12;
+    allocator.buildings[1].set_construction_hours_left(12);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
     assert_eq!(demand.building_actions.industrial.spawns.len(), 1);
 }
@@ -1166,7 +1206,7 @@ fn constructing_workplace_plans_homes_without_admission_income() {
         .unwrap()
         .zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier);
     factory.construction_total_hours = 12;
-    factory.construction_remaining_hours = 12;
+    factory.set_construction_hours_left(12);
     allocator.buildings.push(factory);
     allocator.rebuild_zone_index();
     let mut households = HouseholdSystem::new();
@@ -1237,8 +1277,8 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         &zoning,
         0,
         [
-            (61, ZoneType::Industrial, &action),
-            (62, ZoneType::Industrial, &action),
+            (0, 61, ZoneType::Industrial, &action),
+            (1, 62, ZoneType::Industrial, &action),
         ],
         |action| {
             allocator.demand_site_entrance(
@@ -1255,7 +1295,8 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         1,
         "a historical duplicate cannot promise two factories"
     );
-    assert_eq!(demand.queued_construction[0].completion_hour, 13);
+    // Started at 01:01, twelve hours of construction complete at 13:01: ready by 14:00.
+    assert_eq!(demand.queued_construction[0].completion_hour, 14);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
     let slots: u32 = demand
         .building_actions
@@ -1278,12 +1319,16 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         &allocator,
         &zoning,
         0,
-        [(61, ZoneType::Industrial, &action)].into_iter().chain(
-            homes
-                .iter()
-                .enumerate()
-                .map(|(index, home)| (62 + index as u64, ZoneType::Residential, home)),
-        ),
+        [(0, 61, ZoneType::Industrial, &action)]
+            .into_iter()
+            .chain(homes.iter().enumerate().map(|(index, home)| {
+                (
+                    1 + index as u64,
+                    62 + index as u64,
+                    ZoneType::Residential,
+                    home,
+                )
+            })),
         |action| {
             allocator.demand_site_entrance(
                 action.parcel_id,
@@ -1309,8 +1354,9 @@ fn pension_arrivals_preserve_homes_for_constructing_workplaces() {
             .push(building(ZoneType::Residential, 0.0, 0, 0, home.clone()));
     }
     let mut workplace = building(ZoneType::Industrial, 1_000_000.0, 0, 0, factory);
-    workplace.construction_remaining_hours = 12;
+    workplace.set_construction_hours_left(12);
     allocator.buildings.push(workplace);
+    allocator.seed_applicants_by_index_for_test();
     allocator.rebuild_zone_index();
     let mut households = HouseholdSystem::new();
     let mut graph = graph_with_connected_border();
@@ -1394,6 +1440,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &demand.queued_construction,
         demand.next_construction_start_hour,
         None,
+        |_| true,
     );
     workforce.reserve_existing();
     assert!(
@@ -1429,6 +1476,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &demand.queued_construction,
         demand.next_construction_start_hour,
         None,
+        |_| true,
     );
     assert!(!workforce.claim(12, 1));
     assert!(workforce.claim(24, workers));
@@ -1613,6 +1661,7 @@ fn rejected_applicant_does_not_block_later_affordable_households() {
     let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
     let policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
+    publish_census(&mut allocator, &mut households, &graph, 100_000.0);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
     assert!(demand.households_to_admit_today > 0);
     assert!(!demand.claim_household_admission(
@@ -1814,6 +1863,7 @@ fn job_driven_admission_prefers_worker_candidate_over_workerless_front_candidate
     let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset);
     factory.operating_budget = 100_000.0;
     allocator.buildings.push(factory);
+    allocator.seed_applicants_by_index_for_test();
     allocator.rebuild_zone_index();
 
     let normal_candidate = allocator
@@ -1849,6 +1899,7 @@ fn job_driven_admission_prefers_worker_candidate_over_workerless_front_candidate
     let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
+    publish_census(&mut allocator, &mut households, &graph, -20_000.0);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, -20_000.0);
 
     let diagnostics = demand.last_admission_diagnostics;
@@ -2206,6 +2257,31 @@ fn newly_displaced_households_do_not_leave_even_when_most_of_the_city_is_unhouse
     demand.record_household_removal_execution(2);
 
     assert_eq!(demand.last_removal_diagnostics.removed_households, 2);
+}
+
+#[test]
+fn exits_claimed_at_daily_phases_keep_the_daily_fraction_and_limit() {
+    let mut demand = DemandSystem::new();
+    let fraction = demand
+        .config
+        .household_action
+        .persistent_exit_daily_fraction;
+    let limit = demand.config.action_budget.max_household_removals_per_day;
+    // Eight eligible phases release eight times the daily fraction, as one daily pass would.
+    let released = (0..8).filter(|_| demand.claim_household_exit()).count() as f32;
+    assert_eq!(released, (8.0 * fraction).floor());
+    demand.close_exit_day();
+    assert_eq!(demand.households_to_remove_today, 0);
+    // The daily limit holds however many households are eligible; credit carries over.
+    let released = (0..10_000)
+        .filter(|_| demand.claim_household_exit())
+        .count() as u32;
+    assert_eq!(released, limit);
+    assert!(demand.persistent_exit_action_credit >= 1.0);
+    demand.close_exit_day();
+    // A day without an eligible household lets the credit lapse.
+    demand.close_exit_day();
+    assert_eq!(demand.persistent_exit_action_credit, 0.0);
 }
 
 #[test]
@@ -2649,7 +2725,7 @@ fn deserted_residential_buildings_do_not_count_as_capacity_or_housed_households(
     assert_eq!(snapshot.vacant_household_slots, 0);
     assert_eq!(snapshot.housed_household_count, 0);
     assert_eq!(snapshot.unhoused_household_count, 1);
-    assert_eq!(occupants.household_count_by_building[0], 0);
+    assert_eq!(occupants.household_count(&allocator, 0), 0);
 }
 
 #[test]
@@ -3053,7 +3129,7 @@ fn export_opportunity_does_not_depend_on_other_factories_recovering_startup_cash
         let incumbent = &mut allocator.buildings[0];
         incumbent.operating_budget = cash;
         incumbent.worker_count = workers;
-        incumbent.construction_remaining_hours = remaining;
+        incumbent.set_construction_hours_left(remaining);
         incumbent.is_deserted = deserted;
         let snapshot =
             DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
@@ -3366,7 +3442,7 @@ fn machinery_demand_comes_from_operating_customers_and_reserves_new_factories() 
 
     let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, factory_asset.clone());
     factory.economy_profile_runtime_id = factory_profile.runtime_id;
-    factory.construction_remaining_hours = 12;
+    factory.set_construction_hours_left(12);
     allocator.buildings.push(factory);
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
@@ -3377,7 +3453,7 @@ fn machinery_demand_comes_from_operating_customers_and_reserves_new_factories() 
         &snapshot.output_absorption,
         &factory_asset,
     ));
-    allocator.buildings[1].construction_remaining_hours = 0;
+    allocator.buildings[1].construction_complete_slot = 0;
     allocator.buildings[1].worker_count = 4;
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);

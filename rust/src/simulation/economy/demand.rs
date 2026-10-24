@@ -11,6 +11,7 @@ mod diagnostics;
 mod display;
 mod execution;
 mod queued;
+mod setup;
 mod snapshot;
 mod spawn_need;
 mod supply;
@@ -25,13 +26,23 @@ mod workforce;
 pub(crate) use actions::demand_building_action_key;
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandSpawnCandidate, DemandSpawnCandidatesByUse, SpawnSiteAvailability, private_zone_index,
+    DemandSpawnCandidate, DemandSpawnCandidatesByUse, DemandUseActionPlan, PlanningSlot,
+    SpawnSiteAvailability, private_zone_index,
 };
 pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
-pub(crate) use execution::DemandLevelChangeGuard;
+pub(crate) use execution::{
+    ConstructionPermit, DemandLevelChangeGuard, LevelChangeRefusal, QueuedLevelChange, SpawnPermit,
+    StartRefusal,
+};
+#[cfg(test)]
+pub(crate) use execution::{door_digest, level_change_permit};
+pub(crate) use snapshot::SavedDemandSnapshot;
+#[cfg(test)]
+pub(crate) use supply::ProjectProof;
 pub use system::DemandSystem;
+pub(crate) use system::PlanningPreparation;
 #[cfg(test)]
 pub(crate) use system::VERIFY_LIVE_PASSES;
 pub(crate) use types::UseTuningF32;

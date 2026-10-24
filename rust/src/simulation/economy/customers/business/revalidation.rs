@@ -20,9 +20,10 @@ impl<T> Default for Rows<T> {
 }
 
 impl<T: Copy> Rows<T> {
+    // Rows follow the book's row counts, with spare capacity (`SIM-02-K`).
     fn prepare(&mut self, size: usize) {
-        self.seen.resize(size, 0);
-        self.saved.reserve(size.saturating_sub(self.saved.len()));
+        crate::utils::storage::resize_rows(&mut self.seen, size, 0);
+        crate::utils::storage::reserve_rows(&mut self.saved, size);
     }
 
     fn record(&mut self, index: usize, value: T, generation: u64) {
@@ -560,7 +561,9 @@ mod tests {
         for pass_count in &mut passes {
             loop {
                 *pass_count += 1;
-                book.reset(16, 16, 32, 32);
+                // The reset's receipt estimate, with its spare rows, stays short of the 112
+                // receipts, so the first pass replays.
+                book.reset(16, 16, 32, 24);
                 for buyer in 0..16 {
                     book.set_finance(buyer, [100.0, 1_000_000.0]);
                     book.push_input(

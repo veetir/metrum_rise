@@ -58,6 +58,26 @@ impl BuildingAllocator {
         self.production_changes
             .changes_since(since, self.production_revision, out)
     }
+
+    /// Gives a copy of a store (the census input copy, `SIM-02-I`) one production step from
+    /// `since` to `revision`: `owners` changed, or `None` when they are unknown, so a consumer at
+    /// `since` updates those owners and any other consumer rebuilds. O(owners).
+    pub(crate) fn set_copied_production_step(
+        &mut self,
+        since: u64,
+        revision: u64,
+        owners: Option<&[usize]>,
+    ) {
+        self.production_revision = revision;
+        match owners {
+            Some(owners) => {
+                self.production_changes.clear(since);
+                self.production_changes
+                    .record(revision, owners.iter().copied());
+            }
+            None => self.production_changes.clear(revision),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,10 +138,9 @@ mod tests {
         allocator.mark_building_deserted(0);
         assert_eq!(allocator.production_revision(), revision);
 
-        allocator.buildings[0].construction_remaining_hours = 2;
-        allocator.advance_construction_hour();
-        assert_eq!(allocator.production_revision(), revision);
-        allocator.advance_construction_hour();
-        assert!(!allocator.production_changes_since(revision, &mut changed));
+        allocator.buildings[0].set_construction_hours_left(2);
+        allocator.complete_construction(0);
+        assert!(allocator.production_changes_since(revision, &mut changed));
+        assert_eq!(changed, [0]);
     }
 }

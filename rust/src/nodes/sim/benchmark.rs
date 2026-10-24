@@ -30,6 +30,11 @@ pub(crate) fn rss_mb() -> u64 {
 impl SimCore {
     /// Sets up a large-scale benchmark city with a grid of roads and agents.
     pub fn setup_benchmark_city_internal(&mut self, grid_size: i32, agent_count: i32) {
+        // Bulk loading and routing are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.setup_benchmark_city_in_pool(grid_size, agent_count));
+    }
+
+    fn setup_benchmark_city_in_pool(&mut self, grid_size: i32, agent_count: i32) {
         godot_print!(
             "SimulationNode: Setting up benchmark city (Grid: {}x{}, Agents: {})...",
             grid_size,
@@ -176,7 +181,6 @@ impl SimCore {
                 activity: 0,
                 transit: TRANSIT_NETWORK,
                 happiness: 50.0,
-                money: 100.0,
                 journey_start_time: 0.0,
                 current_building: usize::MAX,
                 target_building: usize::MAX,
@@ -219,7 +223,7 @@ impl SimCore {
                 next_departure_activity: 0,
                 cached_schedule_work_building: usize::MAX,
                 cached_work_profile_index: u16::MAX,
-                job_lock_days: 0,
+                job_lock_until_day: 0,
                 consecutive_unpaid_days: 0,
             });
         }

@@ -249,7 +249,9 @@ impl SimCore {
         }
 
         let households = self.households.capture_building_undo(building_idx);
-        let logistics = self.logistics.capture_building_undo(building_idx);
+        let logistics = self
+            .logistics
+            .capture_building_undo(building_idx, &self.agents);
         let rehoused_household_count = households
             .records
             .iter()
@@ -257,6 +259,11 @@ impl SimCore {
             .count();
 
         let mut building_ids = BTreeSet::from([building_idx, last_idx]);
+        // The preview reads the vacancy list the removal's rehousing will claim from, which
+        // rebuilds a stale index first (`SIM-02`).
+        if self.allocator.dirty_index {
+            self.allocator.rebuild_zone_index();
+        }
         building_ids.extend(
             self.allocator
                 .preview_vacancy_claims_except(building_idx, rehoused_household_count),
@@ -293,14 +300,17 @@ impl SimCore {
             .copied()
             .collect::<HashSet<_>>();
         let agent_store = &self.agents.agents;
-        let agents = (0..agent_store.len())
-            .into_par_iter()
-            .filter(|&idx| {
-                !carrier_ids.contains(&idx)
-                    && Self::agent_record_touches_building(agent_store, idx, building_idx)
-            })
-            .map(|idx| (idx, agent_store.get(idx).expect("agent index").to_owned()))
-            .collect();
+        // Main-thread building edits reach here outside any pool (CODE-17).
+        let agents = crate::thread_pools::install(|| {
+            (0..agent_store.len())
+                .into_par_iter()
+                .filter(|&idx| {
+                    !carrier_ids.contains(&idx)
+                        && Self::agent_record_touches_building(agent_store, idx, building_idx)
+                })
+                .map(|idx| (idx, agent_store.get(idx).expect("agent index").to_owned()))
+                .collect()
+        });
         let removed_carriers = logistics
             .carrier_agent_ids
             .iter()
@@ -334,8 +344,6 @@ impl SimCore {
             original_site_count: self.allocator.building_sites.len(),
             original_agent_count: self.agents.agents.len(),
             original_household_count: self.households.households.len(),
-            original_shipment_count: self.logistics.shipments.len(),
-            original_request_failure_count: self.logistics.request_failures.len(),
             buildings,
             sites,
             agents,
@@ -382,6 +390,11 @@ impl SimCore {
     /// Pops the last state snapshot from the undo stack and restores simulation state.
     /// Returns true if an action was undone.
     pub fn undo_action_internal(&mut self) -> bool {
+        // The restore's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.undo_action_in_pool())
+    }
+
+    fn undo_action_in_pool(&mut self) -> bool {
         if let Some(state) = self.undo_stack.pop_back() {
             if let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &state.runtime {
                 if !self.restore_cell_gesture_internal(edit) {
@@ -508,6 +521,7 @@ impl SimCore {
                     }
                     SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
                         self.pending_demand_spawns = pending;
+                        self.reschedule_construction_events();
                     }
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
                         self.restore_building_removal_undo(*removal);
@@ -634,18 +648,13 @@ impl SimCore {
                 .saturating_add(undo.removed_carriers.len())
                 != undo.original_agent_count
             || self.households.households.len() != undo.original_household_count
-            || self
+            // Freight keeps moving while the bulldoze waits (`SIM-02-J`): the shipments the
+            // undo restores must still be gone, and request failures restore by key.
+            || undo
                 .logistics
                 .shipments
-                .len()
-                .saturating_add(undo.logistics.shipments.len())
-                != undo.original_shipment_count
-            || self
-                .logistics
-                .request_failures
-                .len()
-                .saturating_add(undo.logistics.request_failures.len())
-                != undo.original_request_failure_count
+                .iter()
+                .any(|shipment| self.logistics.shipment_index(shipment.id).is_some())
         {
             return false;
         }
@@ -768,6 +777,18 @@ impl SimCore {
             .remove(&building_idx)
             .expect("building undo journal was prevalidated");
         let removed_parcel_id = removed_building.parcel_id;
+        // The building returns to its old dense slot with a new handle; the building it
+        // displaces keeps its handle at the end of the store. A site still under construction
+        // completes at its saved deadline, or at the next slot once that has passed.
+        let handle = self
+            .allocator
+            .building_handles
+            .insert_displacing(building_idx, self.allocator.buildings.len());
+        if removed_building.is_under_construction() {
+            self.allocator
+                .pending_construction
+                .push((handle, removed_building.construction_complete_slot));
+        }
         if building_idx < last_idx {
             let moved_building = buildings
                 .remove(&last_idx)
@@ -845,8 +866,16 @@ impl SimCore {
             self.invalidate_vegetation_over(bounds);
         }
 
+        // Each carrier returns to its old dense slot with a new handle; the agent it displaces
+        // keeps its handle at the end of the store.
+        let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();
+            let handle = self
+                .agents
+                .handles
+                .insert_displacing(carrier_idx, current_len);
+            restored_carriers.push((carrier.freight_shipment_id, handle));
             if carrier_idx == current_len {
                 self.agents.agents.push(carrier);
                 continue;
@@ -858,17 +887,22 @@ impl SimCore {
                 .expect("restored carrier slot")
                 .to_owned();
             self.agents.agents.push(moved);
-            self.logistics
-                .remap_carrier_agent_index(carrier_idx, current_len, &self.agents);
             self.agents.agents.replace(carrier_idx, carrier);
         }
         for (agent_idx, agent) in undo.agents {
             self.agents.agents.replace(agent_idx, agent);
         }
+        // Restored records and the agents they displaced changed slots directly.
+        self.agents.rebuild_household_members();
         self.agents.invalidate_lane_bucket_snapshot();
 
         self.households.restore_building_undo(undo.households);
-        self.logistics.restore_building_undo(undo.logistics);
+        let restored_shipments = self.logistics.restore_building_undo(undo.logistics);
+        for (shipment_id, handle) in restored_carriers {
+            self.logistics.rebind_carrier(shipment_id, handle);
+        }
+        // Their trip events may have fired while they were removed (`SIM-02-J`).
+        self.resume_restored_freight(&restored_shipments);
         self.register_service_input_capacity(building_idx);
         if let Some(lot) = undo.cell_lot {
             self.zoning.restore_cell_lot_removal_undo(lot);

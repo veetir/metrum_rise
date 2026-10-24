@@ -49,6 +49,7 @@ pub(crate) use planning::{
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
+pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;
@@ -66,24 +67,14 @@ impl AgentSystem {
         self.sim_time += delta;
         let n = self.agents.len();
         if n == 0 {
-            if !self.dirty_lanes.is_empty() || !self.dirty_edges.is_empty() {
-                self.rebuild_lanes_and_congestion(
-                    graph,
-                    transit_network.lane_system.lanes.len(),
-                    0,
-                );
+            if !self.dirty_lanes.is_empty() {
+                self.rebuild_lanes(transit_network.lane_system.lanes.len(), 0);
             }
             self.update_frontage_delay_cache(transit_network, graph, delta);
             return;
         }
 
-        let building_ref_revision = allocator.building_ref_revision();
-        if self.last_building_ref_scrub_revision != building_ref_revision {
-            self.scrub_invalid_building_refs(allocator.buildings.len(), n);
-            self.last_building_ref_scrub_revision = building_ref_revision;
-            self.invalidate_lane_bucket_snapshot();
-        }
-
+        self.scrub_building_refs_if_revised(allocator, n);
         let (lane_count, live_lane_agent_count) =
             self.prepare_lane_buckets_for_tick(transit_network, n);
         self.prepare_junction_admission(transit_network, graph, delta);
@@ -93,8 +84,36 @@ impl AgentSystem {
         self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);
 
-        self.rebuild_lanes_and_congestion(graph, lane_count, n);
+        self.rebuild_lanes(lane_count, n);
         self.update_frontage_delay_cache(transit_network, graph, delta);
+    }
+
+    /// Builds at load what the first tick would otherwise build (`SIM-02-K` part 4): the
+    /// building-reference scrub against the loaded buildings and the lane-bucket snapshot of
+    /// the loaded agents. Both are functions of the loaded state, which the tick would read
+    /// unchanged, so its results are the same and the first tick finds both current.
+    /// O(agents + lanes).
+    pub(crate) fn prepare_loaded_tick(
+        &mut self,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+    ) {
+        let n = self.agents.len();
+        if n == 0 {
+            return;
+        }
+        self.scrub_building_refs_if_revised(allocator, n);
+        self.prepare_lane_buckets_for_tick(transit_network, n);
+    }
+
+    // A building-reference revision may leave agents holding indices of removed buildings.
+    fn scrub_building_refs_if_revised(&mut self, allocator: &BuildingAllocator, n: usize) {
+        let building_ref_revision = allocator.building_ref_revision();
+        if self.last_building_ref_scrub_revision != building_ref_revision {
+            self.scrub_invalid_building_refs(allocator.buildings.len(), n);
+            self.last_building_ref_scrub_revision = building_ref_revision;
+            self.invalidate_lane_bucket_snapshot();
+        }
     }
 
     fn log_stationary_visible_pedestrians(&mut self, delta: f32, n: usize) {

@@ -43,6 +43,9 @@ pub(super) struct FreightRouteCache {
     #[cfg(test)]
     pub(super) building_cache_counts: [u64; 4],
     query: CchQueryScratch,
+    // Network searches made on cache misses so far, which the funding census counts as work
+    // (`SIM-02-K`); monotonic, never read by any result.
+    searches: u64,
     cost_bounds: CchCarCostBounds,
     // Complete quotes also compare their own lane prices after a global traffic revision.
     building_to_building: Vec<[Option<BuildingCost>; 2]>,
@@ -153,6 +156,15 @@ fn frontage_prices(
     )
 }
 
+// `Vec::resize`, with new rows written in parallel so a first fill's page faults spread over
+// the workers (`SIM-02-K`). O(new rows / workers).
+fn resize_in_parallel<T: Clone + Send>(rows: &mut Vec<T>, len: usize, value: T) {
+    match len.checked_sub(rows.len()) {
+        Some(new) => rows.par_extend(rayon::iter::repeat_n(value, new)),
+        None => rows.truncate(len),
+    }
+}
+
 fn retained_quote<T: Copy>(entries: &mut [Option<T>; 2], matches: impl Fn(T) -> bool) -> Option<T> {
     for slot in 0..2 {
         if let Some(entry) = entries[slot]
@@ -168,12 +180,21 @@ fn retained_quote<T: Copy>(entries: &mut [Option<T>; 2], matches: impl Fn(T) -> 
 impl FreightRouteCache {
     /// Reserves indexed geometry slots without visiting any unchanged building.
     /// Queries fill requested slots lazily; preparation is O(new building slots), warm O(1).
+    // Network searches made on cache misses so far; O(1).
+    pub(super) fn searches(&self) -> u64 {
+        self.searches
+    }
+
     pub(super) fn prepare_buildings(&mut self, buildings: usize) {
-        self.access.resize(buildings, None);
+        // Spare rows, so the first building appended after a load, which sized the table
+        // exactly, does not copy it (`SIM-02-K`).
+        crate::utils::storage::reserve_rows(&mut self.access, buildings);
+        resize_in_parallel(&mut self.access, buildings, None);
     }
 
     /// Fills requested geometry in the existing cache before a parallel quote batch.
     /// O(buildings) tag checks; only changed requested entrances project their lane geometry.
+    #[cfg(test)]
     pub(super) fn prepare_access_for(
         &mut self,
         allocator: &BuildingAllocator,
@@ -181,10 +202,27 @@ impl FreightRouteCache {
         graph: &RegionGraph,
         wanted: impl Fn(usize) -> bool + Sync,
     ) {
+        let buildings = self.access.len();
+        self.prepare_access_in(0..buildings, allocator, network, graph, wanted);
+    }
+
+    /// [`Self::prepare_access_for`] over buildings `range` only (`SIM-02-K`): each slot depends
+    /// on its own entrance alone, so ranges in any order give the whole call's cache.
+    /// O(range) tag checks in parallel.
+    pub(super) fn prepare_access_in(
+        &mut self,
+        range: std::ops::Range<usize>,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        wanted: impl Fn(usize) -> bool + Sync,
+    ) {
         let generation = self.building_generation;
-        self.access
+        let first = range.start;
+        self.access[range]
             .par_iter_mut()
             .enumerate()
+            .map(|(offset, slot)| (first + offset, slot))
             .for_each(|(index, slot)| {
                 if slot
                     .as_ref()
@@ -301,6 +339,20 @@ impl FreightRouteCache {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
+        self.prepare_border_storage(buildings, transit_network, graph);
+        self.sweep_borders(borders, transit_network, graph);
+        self.prepare_border_minimum(borders, graph);
+    }
+
+    /// [`Self::prepare_border_costs`]'s first phase (`SIM-02-K`): the query scratch, the cost
+    /// bounds and the bounded quote storage. O(N + E) after a metric change, O(1) warm; the
+    /// storage grows only with the road graph and the buildings.
+    pub(super) fn prepare_border_storage(
+        &mut self,
+        buildings: usize,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
         self.query.prepare(&transit_network.cch_graph, graph);
         self.cost_bounds.prepare(&transit_network.cch_graph, graph);
         // Bound retained pair costs by road graph storage rather than all possible N²
@@ -309,24 +361,42 @@ impl FreightRouteCache {
         let entries = 2 * graph.edge_count() + graph.node_count();
         let buckets = entries.div_ceil(2).max(1).next_power_of_two();
         if self.node_to_node.len() < buckets {
-            self.node_to_node.resize(buckets, [None; 2]);
-            self.node_to_node.fill([None; 2]);
+            self.node_to_node.clear();
+            resize_in_parallel(&mut self.node_to_node, buckets, [None; 2]);
         }
         let complete = entries + buildings;
         let buckets = complete.div_ceil(2).max(1).next_power_of_two();
         if self.building_to_building.len() < buckets {
-            self.building_to_building.resize(buckets, [None; 2]);
-            self.building_to_building.fill([None; 2]);
+            self.building_to_building.clear();
+            resize_in_parallel(&mut self.building_to_building, buckets, [None; 2]);
         }
         if self.border_to_building.capacity() < complete {
             self.border_to_building
                 .reserve(complete.saturating_sub(self.border_to_building.len()));
         }
+    }
+
+    /// Sweeps the car costs from each of `borders` not swept since the last routing change
+    /// (`SIM-02-K`): one CCH sweep each, O(N + shortcuts). Returns the borders swept.
+    pub(super) fn sweep_borders(
+        &mut self,
+        borders: &[u32],
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> usize {
+        let mut swept = 0;
         for &border in borders {
-            self.border_costs
-                .entry(border)
-                .or_insert_with(|| sweep_border(border, transit_network, graph));
+            self.border_costs.entry(border).or_insert_with(|| {
+                swept += 1;
+                sweep_border(border, transit_network, graph)
+            });
         }
+        swept
+    }
+
+    /// The exact minimum over every border's sweep at each node, after [`Self::sweep_borders`]
+    /// covered `borders` (`SIM-02-K`). O(N × K) in parallel after a routing or border change.
+    pub(super) fn prepare_border_minimum(&mut self, borders: &[u32], graph: &RegionGraph) {
         if self.minimum_borders != borders || self.minimum_border_costs.len() != graph.node_count()
         {
             self.minimum_borders.clear();
@@ -401,12 +471,17 @@ impl FreightRouteCache {
     }
 
     pub(super) fn clear(&mut self) {
-        self.node_to_node.fill([None; 2]);
+        // The tables hold megabytes at city scale; fill them in parallel (`SIM-02-K`).
+        self.node_to_node
+            .par_iter_mut()
+            .for_each(|entries| *entries = [None; 2]);
         self.clear_buildings();
         // Network/customization changes can alter projected access and every route even
         // when door inputs match. Only building-only invalidation may retain these proofs.
-        self.access.fill(None);
-        self.building_to_building.fill([None; 2]);
+        self.access.par_iter_mut().for_each(|access| *access = None);
+        self.building_to_building
+            .par_iter_mut()
+            .for_each(|entries| *entries = [None; 2]);
         self.border_costs.clear();
         self.minimum_borders.clear();
         self.minimum_border_costs.clear();
@@ -564,6 +639,7 @@ impl FreightRouteCache {
                 return entry.cost;
             }
         }
+        self.searches += 1;
         let cost = network.cch_graph.find_cost(
             from,
             to,
@@ -709,6 +785,21 @@ impl FreightRouteCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Loading sizes the table at once; the first building appended after it must not copy it
+    // (`SIM-02-K`).
+    #[test]
+    fn building_access_rows_keep_spare_capacity_for_the_next_building() {
+        let mut cache = FreightRouteCache::default();
+        cache.prepare_buildings(1_000);
+        let rows = cache.access.as_ptr();
+        assert!(cache.access.capacity() > 1_000);
+        cache.prepare_buildings(1_001);
+        assert_eq!(cache.access.len(), 1_001);
+        assert_eq!(cache.access.as_ptr(), rows);
+        cache.prepare_buildings(999);
+        assert_eq!(cache.access.len(), 999);
+    }
 
     #[test]
     fn colliding_node_quotes_keep_exact_bits_and_replace_old_demand_without_growth() {

@@ -287,7 +287,7 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
                 &allocator,
                 &zoning,
                 0,
-                [(1, ZoneType::Industrial, &actions[0])],
+                [(0, 1, ZoneType::Industrial, &actions[0])],
                 |action| {
                     allocator.demand_site_entrance(
                         action.parcel_id,
@@ -302,7 +302,17 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
         let terrain = TerrainSystem::new(4, 4);
         let mut surface = RoadSurfaceSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
-        demand.run_hourly_pass_with_policy(
+        demand.publish_census_if_stale_for_test(
+            &allocator,
+            &mut households,
+            &network,
+            &graph,
+            &mut logistics,
+            &policy,
+            100_000.0,
+            420,
+        );
+        demand.run_planning_hour_for_test(
             &allocator,
             &mut households,
             &graph,
@@ -317,6 +327,31 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             },
             420,
         );
+        // The planning slot's permits for a queue, proved on the census the town publishes
+        // (`SIM-02-I`); the epoch stays open so its books can be read, then closes.
+        let permits = |demand: &mut DemandSystem,
+                       queue: &[&DemandSpawnAction],
+                       allocator: &BuildingAllocator,
+                       zoning: &ZoningSystem,
+                       households: &mut HouseholdSystem,
+                       logistics: &mut ShipmentSystem,
+                       now: u64| {
+            let queue: Vec<_> = queue
+                .iter()
+                .map(|&action| (ZoneType::Industrial, action))
+                .collect();
+            let permits = demand.open_permits_for_test(
+                &queue, allocator, households, zoning, &graph, &network, logistics, &policy,
+                100_000.0, now,
+            );
+            let purchases = demand.construction_execution.reservations.business.sales(
+                0,
+                farm_profile.outputs[0].resource_runtime_id,
+                f64::INFINITY,
+            );
+            demand.close_construction_epoch(households, allocator, &graph);
+            (permits, purchases)
+        };
         if commitment != "new" {
             assert!(
                 demand.building_actions.industrial.spawns.is_empty(),
@@ -324,30 +359,18 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             );
             if commitment == "queued" {
                 for _ in 0..3 {
-                    assert!(
-                        demand
-                            .prepare_queued_spawn(
-                                &actions[0],
-                                ZoneType::Industrial,
-                                &allocator,
-                                &households,
-                                &graph,
-                                1,
-                                &network,
-                                &mut logistics,
-                                &zoning,
-                                100_000.0,
-                                &policy
-                            )
-                            .is_ok(),
-                        "a queued operation retains its financed claims without reserving twice"
+                    let (proved, purchases) = permits(
+                        &mut demand,
+                        &[&actions[0], &actions[1]],
+                        &allocator,
+                        &zoning,
+                        &mut households,
+                        &mut logistics,
+                        1,
                     );
-                    // The planning pass returns the live books; the execution epoch replays
-                    // the same queue into its own books.
-                    let purchases = demand.construction_execution.reservations.business.sales(
-                        0,
-                        farm_profile.outputs[0].resource_runtime_id,
-                        f64::INFINITY,
+                    assert!(
+                        proved[0].is_some(),
+                        "a queued operation retains its financed claims without reserving twice"
                     );
                     assert_eq!(purchases.units, 200.0);
                     assert_eq!(
@@ -356,42 +379,22 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
                         "queued input demand retains the actual local seller price, not the import tariff"
                     );
                     assert!(
-                        demand
-                            .prepare_queued_spawn(
-                                &actions[1],
-                                ZoneType::Industrial,
-                                &allocator,
-                                &households,
-                                &graph,
-                                1,
-                                &network,
-                                &mut logistics,
-                                &zoning,
-                                100_000.0,
-                                &policy
-                            )
-                            .is_err(),
+                        proved[1].is_none(),
                         "another project cannot consume the queued buyer's material reservation"
                     );
                 }
-                demand.reject_queued_spawn(&actions[0], &allocator, &graph);
+                let (proved, _) = permits(
+                    &mut demand,
+                    &[&actions[1]],
+                    &allocator,
+                    &zoning,
+                    &mut households,
+                    &mut logistics,
+                    1,
+                );
                 assert!(
-                    demand
-                        .prepare_queued_spawn(
-                            &actions[1],
-                            ZoneType::Industrial,
-                            &allocator,
-                            &households,
-                            &graph,
-                            1,
-                            &network,
-                            &mut logistics,
-                            &zoning,
-                            100_000.0,
-                            &policy
-                        )
-                        .is_ok(),
-                    "failed placement returns the original queue customer's material and labour"
+                    proved[0].is_some(),
+                    "a queue without the first customer returns its material and labour"
                 );
             }
             continue;
@@ -402,26 +405,32 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             .iter()
             .find(|action| action.parcel_id != chosen.parcel_id)
             .unwrap();
-        // Dropped permits model a failed physical placement. Neither probe may keep inputs.
-        for action in [&chosen, other, &chosen] {
-            assert!(
-                demand
-                    .prepare_queued_spawn(
-                        action,
-                        ZoneType::Industrial,
-                        &allocator,
-                        &households,
-                        &graph,
-                        1,
-                        &network,
-                        &mut logistics,
-                        &zoning,
-                        100_000.0,
-                        &policy
-                    )
-                    .is_ok()
+        // Each slot proves its own queue: neither project keeps inputs into the next.
+        for queue in [[&chosen], [other], [&chosen]] {
+            let (proved, _) = permits(
+                &mut demand,
+                &queue,
+                &allocator,
+                &zoning,
+                &mut households,
+                &mut logistics,
+                1,
             );
+            assert!(proved[0].is_some());
         }
+        let (proved, _) = permits(
+            &mut demand,
+            &[&chosen, other],
+            &allocator,
+            &zoning,
+            &mut households,
+            &mut logistics,
+            1,
+        );
+        assert!(
+            proved[0].is_some() && proved[1].is_none(),
+            "the second project cannot take the first one's grain"
+        );
         if commitment == "new" {
             let window = Arc::make_mut(&mut demand.runtime_tuning)
                 .operational_clock
@@ -434,23 +443,19 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             window.preferred_windows[0].end_minute = 480;
             window.outside_window_cost_multiplier = 10.0;
             for (minute, accepted) in [(479, true), (480, false), (479, true)] {
-                let result = demand.prepare_queued_spawn(
-                    &chosen,
-                    ZoneType::Industrial,
+                let (proved, _) = permits(
+                    &mut demand,
+                    &[&chosen],
                     &allocator,
-                    &households,
-                    &graph,
-                    minute,
-                    &network,
-                    &mut logistics,
                     &zoning,
-                    100_000.0,
-                    &policy,
+                    &mut households,
+                    &mut logistics,
+                    minute,
                 );
                 assert_eq!(
-                    result.is_ok(),
+                    proved[0].is_some(),
                     accepted,
-                    "queued execution must reprice at a window boundary within the same execution hour"
+                    "each planning slot prices its own freight window"
                 );
             }
             *Arc::make_mut(&mut demand.runtime_tuning)
@@ -459,26 +464,21 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
                 .iter_mut()
                 .find(|profile| profile.id == "always_open")
                 .unwrap() = original;
-            demand.invalidate_construction_execution();
         }
-        let permit = demand
-            .prepare_queued_spawn(
-                &chosen,
-                ZoneType::Industrial,
-                &allocator,
-                &households,
-                &graph,
-                1,
-                &network,
-                &mut logistics,
-                &zoning,
-                100_000.0,
-                &policy,
-            )
-            .unwrap();
+        let (proved, _) = permits(
+            &mut demand,
+            &[&chosen],
+            &allocator,
+            &zoning,
+            &mut households,
+            &mut logistics,
+            1,
+        );
+        assert!(proved[0].is_some());
         let placed = allocator.execute_single_demand_spawn_action(
             ZoneType::Industrial,
             &chosen,
+            None,
             &mut zoning,
             &graph,
             &network.lane_system,
@@ -491,40 +491,24 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             placed.industrial.spawn_executed, 1,
             "the viable project must physically place"
         );
-        demand.record_queued_spawn_placement(permit, &chosen, &allocator);
+        demand.finish_queued_spawn(0, &chosen);
         let funded = allocator.buildings.last().unwrap().operating_budget;
         assert!(funded > 0.0);
         assert!(allocator.buildings.last().unwrap().is_under_construction());
         for now in [2, 61] {
-            assert_eq!(
-                demand
-                    .prepare_queued_spawn(
-                        other,
-                        ZoneType::Industrial,
-                        &allocator,
-                        &households,
-                        &graph,
-                        now,
-                        &network,
-                        &mut logistics,
-                        &zoning,
-                        100_000.0,
-                        &policy
-                    )
-                    .err(),
-                Some("market-cannot-fund-operation"),
-                "placed input claims survive execution epoch changes"
+            let (proved, _) = permits(
+                &mut demand,
+                &[other],
+                &allocator,
+                &zoning,
+                &mut households,
+                &mut logistics,
+                now,
             );
-            if now == 2 {
-                assert!(
-                    demand
-                        .construction_execution
-                        .reservations
-                        .project_operation(chosen.parcel_id, &zoning)
-                        .is_some(),
-                    "placement must retain the proved project's owner until an external edit or hour change"
-                );
-            }
+            assert!(
+                proved[0].is_none(),
+                "the placed site's input claims are replayed as construction"
+            );
         }
         assert_eq!(allocator.buildings.len(), 3);
         assert_eq!(
@@ -675,6 +659,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         let placed = allocator.execute_single_demand_spawn_action(
             ZoneType::Industrial,
             &action,
+            None,
             &mut zoning,
             &graph,
             &network.lane_system,
@@ -684,7 +669,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             &tuning,
         );
         assert_eq!(placed.industrial.spawn_executed, 1);
-        allocator.buildings[0].construction_remaining_hours = 0;
+        allocator.buildings[0].construction_complete_slot = 0;
         allocator.buildings[0].worker_count = 10;
         allocator.buildings[0].operating_budget = 100_000.0;
         let shop_asset = register_family_asset_with_economy_profile(
@@ -713,7 +698,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                     catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
                 if constructing {
                     site.worker_count = 0;
-                    site.construction_remaining_hours = 12;
+                    site.set_construction_hours_left(12);
                     site.construction_total_hours = 12;
                 }
             }
@@ -823,7 +808,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 &allocator,
                 &zoning,
                 420,
-                [(421, ZoneType::Commercial, &queued_action)],
+                [(0, 421, ZoneType::Commercial, &queued_action)],
                 |action| {
                     allocator.demand_site_entrance(
                         action.parcel_id,
@@ -867,6 +852,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 &policy,
                 &funding.service_capacities,
                 &funding.freight_capital,
+                |_| true,
             );
             if queued {
                 assert_eq!(reservations.queued_workers, [(queued_action.parcel_id, 15)]);
@@ -1112,10 +1098,13 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             }
         }
 
-        // The gameplay executor must run the same proof and publish only a placed change.
+        // The gameplay executor runs the same proof in the planning slot's construction epoch
+        // on the census the town publishes, and keeps only a placed change; the epoch returns
+        // the census's books exactly after a rejection (`SIM-02-I`), which test builds assert.
         // A terrain failure comes after financing and must preserve every buyer commitment.
         let mut households = HouseholdSystem::new();
         households.households.push(family);
+        households.job_funding = funding;
         let mut agents = crate::simulation::economy::agents::AgentSystem::new();
         let mut plan = crate::simulation::economy::demand::DemandBuildingActionPlan::default();
         plan.industrial.upgrades.push(
@@ -1143,7 +1132,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 lane.frontage_delay_penalty_s = delay;
             }
             network.frontage_delay_revision += 1;
-            demand.execute_building_actions(
+            demand.execute_building_actions_for_test(
                 &plan,
                 &mut allocator,
                 &mut zoning,
@@ -1169,26 +1158,9 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                     .collect::<Vec<_>>(),
                 budgets
             );
-            if delay == 0.0 {
-                let execution = &demand.construction_execution;
-                assert_rollback(&execution.reservations, &execution.funding.input_supply);
-                assert_eq!(
-                    execution
-                        .reservations
-                        .business
-                        .financing(buyer)
-                        .map(f64::to_bits),
-                    before.map(f64::to_bits)
-                );
-                assert_eq!(
-                    original_sources(&execution.funding.input_supply),
-                    inputs,
-                    "restored prices must rebuild the same dependent commitments before placement"
-                );
-            }
         }
         for _ in 0..3 {
-            demand.execute_building_actions(
+            demand.execute_building_actions_for_test(
                 &plan,
                 &mut allocator,
                 &mut zoning,
@@ -1203,19 +1175,8 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 &policy,
             );
             assert_eq!(allocator.buildings[0].asset_id, action.asset_id);
-            let execution = &demand.construction_execution;
-            assert_rollback(&execution.reservations, &execution.funding.input_supply);
-            assert_eq!(
-                execution
-                    .reservations
-                    .business
-                    .financing(buyer)
-                    .map(f64::to_bits),
-                before.map(f64::to_bits)
-            );
-            assert_eq!(original_sources(&execution.funding.input_supply), inputs);
         }
-        demand.execute_building_actions(
+        demand.execute_building_actions_for_test(
             &plan,
             &mut allocator,
             &mut zoning,
@@ -1233,48 +1194,49 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             allocator.buildings[0].asset_id,
             if accepted { target } else { action.asset_id }
         );
-        assert_eq!(
-            demand
-                .construction_execution
-                .reservations
-                .business
-                .sales(0, food, 200.0)
-                .revenue,
-            if accepted {
-                if changed_recipe {
-                    0.0
-                } else {
-                    200.0 * f64::from(price)
-                }
-            } else {
-                original.revenue
-            }
-        );
         if queued {
             assert_eq!(
                 demand.construction_execution.reservations.queued_workers,
                 [(queued_action.parcel_id, 15)],
                 "replacement must retain the supported queue workforce"
             );
-            let permit = demand
-                .prepare_queued_spawn(
-                    &queued_action,
-                    ZoneType::Commercial,
-                    &allocator,
-                    &households,
-                    &graph,
-                    421,
-                    &network,
-                    &mut logistics,
-                    &zoning,
-                    0.0,
-                    &policy,
-                )
-                .expect("the preserved downstream commitment must remain executable");
+            // The next planning slot proves the queued buyer on the census of the replaced city.
+            let members = std::mem::take(&mut households.households);
+            households.job_funding.refresh(
+                &allocator,
+                &members,
+                &mut logistics,
+                &network,
+                &graph,
+                &catalog,
+                &tuning,
+                &policy,
+                &[],
+                0.0,
+                421,
+            );
+            households.households = members;
+            let permit = demand.permits_for_test(
+                &[(ZoneType::Commercial, &queued_action)],
+                &allocator,
+                &mut households,
+                &zoning,
+                &graph,
+                &network,
+                &mut logistics,
+                &policy,
+                0.0,
+                421,
+            )[0];
+            assert!(
+                permit.is_some(),
+                "the preserved downstream commitment must remain executable"
+            );
             let count = allocator.buildings.len();
             let placed = allocator.execute_single_demand_spawn_action(
                 ZoneType::Commercial,
                 &queued_action,
+                None,
                 &mut zoning,
                 &graph,
                 &network.lane_system,
@@ -1284,7 +1246,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 &demand.runtime_tuning,
             );
             assert_eq!(placed.commercial.spawn_executed, 1);
-            demand.record_queued_spawn_placement(permit, &queued_action, &allocator);
+            demand.finish_queued_spawn(0, &queued_action);
             assert_eq!(allocator.buildings.len(), count + 1);
             assert_eq!(allocator.buildings[count].worker_count, 0);
             assert!(allocator.buildings[count].is_under_construction());
@@ -1399,6 +1361,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                 let execution = allocator.execute_single_demand_spawn_action(
                     ZoneType::Industrial,
                     action,
+                    None,
                     &mut zoning,
                     &graph,
                     &network.lane_system,
@@ -1409,7 +1372,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                 );
                 assert_eq!(execution.industrial.spawn_executed, 1);
                 let building = allocator.buildings.last_mut().unwrap();
-                building.construction_remaining_hours = 0;
+                building.construction_complete_slot = 0;
                 building.worker_count = 1;
                 building.operating_budget = 1_000_000.0;
             }
@@ -1595,6 +1558,8 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             let mut demand = DemandSystem::new();
             demand.runtime_catalog = std::sync::Arc::new(catalog);
             demand.runtime_tuning = std::sync::Arc::new(tuning);
+            let demand_catalog = demand.runtime_catalog.clone();
+            let demand_tuning = demand.runtime_tuning.clone();
             let mut plan = DemandBuildingActionPlan::default();
             plan.industrial.upgrades.push(DemandLevelChangeAction {
                 building: demand_building_action_key(&allocator.buildings[owner]),
@@ -1612,11 +1577,52 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                 .map(|building| building.operating_budget.to_bits())
                 .collect();
             let mut agents = crate::simulation::economy::agents::AgentSystem::new();
-            let mut households = HouseholdSystem::new();
+            // The gameplay executor proves the replacement in a construction epoch on the census
+            // the town publishes; the next census sees what it placed (`SIM-02-I`).
+            let census = |allocator: &BuildingAllocator, logistics: &mut ShipmentSystem| {
+                let mut households = HouseholdSystem::new();
+                households.job_funding.refresh(
+                    allocator,
+                    &[],
+                    logistics,
+                    &network,
+                    &graph,
+                    &demand_catalog,
+                    &demand_tuning,
+                    &policy,
+                    &[],
+                    0.0,
+                    420,
+                );
+                households
+            };
+            let books = |households: &HouseholdSystem, allocator: &BuildingAllocator| {
+                let funding = &households.job_funding;
+                (
+                    allocator
+                        .buildings
+                        .iter()
+                        .map(|building| {
+                            (
+                                building.asset_id.clone(),
+                                building.operating_budget.to_bits(),
+                                building.construction_complete_slot,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    [0, 1].map(|index| funding.business.financing(index).map(f64::to_bits)),
+                    [
+                        funding.business.sales(owner, grain, 200.0),
+                        funding.business.sales(1 - owner, food, 200.0),
+                    ]
+                    .map(|sales| (sales.units.to_bits(), sales.revenue.to_bits())),
+                )
+            };
             // Persisted inputs as a save would hold them before either execution attempt.
             let mut cold = (allocator.clone(), zoning.clone(), logistics.clone());
             for ground in [&blocked, &terrain] {
-                demand.execute_building_actions(
+                let mut households = census(&allocator, &mut logistics);
+                demand.execute_building_actions_for_test(
                     &plan,
                     &mut allocator,
                     &mut zoning,
@@ -1643,19 +1649,13 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                         .collect::<Vec<_>>(),
                     cash
                 );
+                let next = census(&allocator, &mut logistics);
                 assert_eq!(
-                    demand
-                        .construction_execution
-                        .reservations
-                        .business
-                        .sales(owner, grain, 200.0)
-                        .revenue,
+                    next.job_funding.business.sales(owner, grain, 200.0).revenue,
                     if placed { 200.0 * price } else { 2_400.0 }
                 );
                 assert_eq!(
-                    demand
-                        .construction_execution
-                        .reservations
+                    next.job_funding
                         .business
                         .sales(1 - owner, food, 200.0)
                         .revenue,
@@ -1667,12 +1667,13 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             let mut reloaded = DemandSystem::new();
             reloaded.runtime_catalog = demand.runtime_catalog.clone();
             reloaded.runtime_tuning = demand.runtime_tuning.clone();
-            reloaded.execute_building_actions(
+            let mut cold_households = census(&cold.0, &mut cold.2);
+            reloaded.execute_building_actions_for_test(
                 &plan,
                 &mut cold.0,
                 &mut cold.1,
                 &mut crate::simulation::economy::agents::AgentSystem::new(),
-                &mut HouseholdSystem::new(),
+                &mut cold_households,
                 &mut cold.2,
                 &mut 0.0,
                 &graph,
@@ -1681,45 +1682,9 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                 420,
                 &policy,
             );
-            let books = |demand: &DemandSystem, allocator: &BuildingAllocator| {
-                (
-                    allocator
-                        .buildings
-                        .iter()
-                        .map(|building| {
-                            (
-                                building.asset_id.clone(),
-                                building.operating_budget.to_bits(),
-                                building.construction_remaining_hours,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                    [0, 1].map(|index| {
-                        demand
-                            .construction_execution
-                            .reservations
-                            .business
-                            .financing(index)
-                            .map(f64::to_bits)
-                    }),
-                    [
-                        demand
-                            .construction_execution
-                            .reservations
-                            .business
-                            .sales(owner, grain, 200.0),
-                        demand.construction_execution.reservations.business.sales(
-                            1 - owner,
-                            food,
-                            200.0,
-                        ),
-                    ]
-                    .map(|sales| (sales.units.to_bits(), sales.revenue.to_bits())),
-                )
-            };
             assert_eq!(
-                books(&reloaded, &cold.0),
-                books(&demand, &allocator),
+                books(&census(&cold.0, &mut cold.2), &cold.0),
+                books(&census(&allocator, &mut logistics), &allocator),
                 "cold cyclic replacement must match warm execution, price={price}, reverse={reverse}"
             );
         }
@@ -1794,6 +1759,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         let placed = allocator.execute_single_demand_spawn_action(
             ZoneType::Industrial,
             action,
+            None,
             &mut zoning,
             &graph,
             &network.lane_system,
@@ -1804,7 +1770,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         );
         assert_eq!(placed.industrial.spawn_executed, 1);
         let factory = allocator.buildings.last_mut().unwrap();
-        factory.construction_remaining_hours = 0;
+        factory.construction_complete_slot = 0;
         factory.worker_count = 10;
         factory.operating_budget = 100_000.0;
         for input in &catalog
@@ -1879,7 +1845,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         }
         let mut demand = DemandSystem::new();
         demand.upgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &zoning,
@@ -1966,8 +1932,8 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
         site.center_y = if index == 0 { 20.0 } else { -20.0 };
         site.frontage_t = site.center_x / 50.0;
         site.parcel_id = 10_000 + index as u64;
-        site.construction_remaining_hours = if index == 0 { 0 } else { 10 };
-        site.construction_total_hours = site.construction_remaining_hours;
+        site.construction_total_hours = if index == 0 { 0 } else { 10 };
+        site.set_construction_hours_left(site.construction_total_hours);
         allocator.buildings.push(site);
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -2063,6 +2029,7 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
             &policy,
             &funding.service_capacities,
             &[0.0, paid_cargo, paid_cargo, 0.0],
+            |_| true,
         );
         // Ten hectares need 1 machinery/day; the one-hectare mine needs 4. The public
         // water plant needs 0.5 independently of private capital, if its door is reachable.
@@ -2144,8 +2111,8 @@ fn constructing_shops_replay_inputs_in_admission_order() {
         site.center_y = if constructing { -20.0 } else { 20.0 };
         site.frontage_t = site.center_x / 50.0;
         site.parcel_id = 10_000 + index as u64;
-        site.construction_remaining_hours = if constructing { 10 } else { 0 };
-        site.construction_total_hours = site.construction_remaining_hours;
+        site.construction_total_hours = if constructing { 10 } else { 0 };
+        site.set_construction_hours_left(site.construction_total_hours);
         site.operating_budget = 100_000.0;
         allocator.buildings.push(site);
     }
@@ -2230,6 +2197,7 @@ fn constructing_shops_replay_inputs_in_admission_order() {
         &policy,
         &[],
         &[],
+        |_| true,
     );
     assert_eq!(&reservations.building_workers[2..4], &[15, 8]);
     let purchased: f64 = (0..2)
@@ -2600,7 +2568,7 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
     constructing.center_y = 20.0;
     constructing.frontage_t = 0.9;
     constructing.operating_budget = 100_000.0;
-    constructing.construction_remaining_hours = 12;
+    constructing.set_construction_hours_left(12);
     constructing.construction_total_hours = 12;
     allocator.buildings.push(constructing);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -2609,7 +2577,7 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
         &allocator,
         &zoning,
         0,
-        [(1, ZoneType::Industrial, &action)],
+        [(0, 1, ZoneType::Industrial, &action)],
         |action| {
             allocator.demand_site_entrance(
                 action.parcel_id,
@@ -2663,6 +2631,7 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
             &policy,
             &[],
             &[],
+            |_| true,
         );
         assert_eq!(
             supply.reservations().unwrap().building_workers[2],
@@ -2682,6 +2651,102 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
         );
         supply.reject();
     }
+}
+
+#[test]
+fn kept_pass_rows_equal_a_full_recomputation_across_lendings() {
+    use super::super::supply::ProjectReservations;
+    use crate::simulation::economy::hiring::JobFunding;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::network::TransitNetwork;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let mut graph = graph_with_connected_border();
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.rebuild_cch_and_check(&graph);
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(&mut allocator, "kept_rows_home", ZoneType::Residential);
+    let shop_asset = register_test_asset(&mut allocator, "kept_rows_shop", ZoneType::Commercial);
+    for (index, (zone, asset, workers)) in [
+        (ZoneType::Residential, home_asset, 0),
+        (ZoneType::Commercial, shop_asset.clone(), 15),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut site = building(zone, 0.0, 0, workers, asset);
+        site.center_x = 10.0 + index as f32 * 20.0;
+        site.center_y = 20.0;
+        site.frontage_t = site.center_x / 50.0;
+        site.operating_budget = 100_000.0;
+        allocator.buildings.push(site);
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut family = housed_household(0, 200, 0.0, 0.0);
+    family.employed_adults = 200;
+    family.gross_daily_wages = 100_000.0;
+    let mut funding = JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    funding.refresh(
+        &allocator,
+        std::slice::from_ref(&family),
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        0.0,
+        420,
+    );
+    assert!(
+        funding.capacities[1] > 0,
+        "the shop must hold a funded operation row"
+    );
+    // Test builds compare the rows of every pass start with a full recomputation.
+    let mut reservations = ProjectReservations::default();
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
+    assert_eq!(
+        reservations.kept_row_starts, 0,
+        "a first lending derives every row"
+    );
+    // The same book, phase and policy, with a recorded edit and an appended building.
+    allocator.set_service_funding_override(1, 0.5);
+    let mut appended = building(ZoneType::Commercial, 0.0, 0, 15, shop_asset);
+    appended.center_x = 50.0;
+    appended.center_y = 20.0;
+    allocator.buildings.push(appended);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 421);
+    assert_eq!(
+        reservations.kept_row_starts, 1,
+        "a later lending keeps the unchanged rows"
+    );
+    // Another price phase, policy or book derives every row again.
+    let mut taxed = policy;
+    taxed.income_tax_rate += 0.01;
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 421);
+    assert_eq!(reservations.kept_row_starts, 1);
+    funding.refresh(
+        &allocator,
+        std::slice::from_ref(&family),
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &taxed,
+        &[],
+        0.0,
+        421,
+    );
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 421);
+    assert_eq!(reservations.kept_row_starts, 1);
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 422);
+    assert_eq!(reservations.kept_row_starts, 2);
 }
 
 #[test]
@@ -2739,7 +2804,7 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
             site.economy_profile_runtime_id = profile.runtime_id;
         }
         if index == 2 {
-            site.construction_remaining_hours = 12;
+            site.set_construction_hours_left(12);
             site.construction_total_hours = 12;
         }
         allocator.buildings.push(site);
@@ -2776,7 +2841,7 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
         &allocator,
         &zoning,
         0,
-        [(1, ZoneType::Commercial, &action)],
+        [(0, 1, ZoneType::Commercial, &action)],
         |action| {
             allocator.demand_site_entrance(
                 action.parcel_id,
@@ -2813,6 +2878,7 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
         &policy,
         &[],
         &[],
+        |_| true,
     );
     assert_eq!(supply.reservations().unwrap().building_workers[2], 1);
     assert_eq!(
@@ -2866,6 +2932,7 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
         &demand.queued_construction,
         0,
         supply.reservations(),
+        |_| true,
     );
     calendar.reserve_existing();
     assert!(calendar.claim(12, 1));
@@ -3153,6 +3220,35 @@ fn plan_with_supply(
 ) -> DemandSystem {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
+    let snapshot = planning_snapshot(workers, sales);
+    let terrain = TerrainSystem::new(4, 4);
+    let mut surface = RoadSurfaceSystem::new(512.0);
+    surface.compile_dirty(graph, &terrain);
+    let mut demand = DemandSystem::new();
+    demand.plan_hour_for_test(
+        allocator,
+        graph,
+        zoning,
+        &snapshot,
+        &Default::default(),
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::default(),
+        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
+        1.0 / 24.0,
+        BuildingSiteEnvironment {
+            road_surface: &surface,
+            terrain: &terrain,
+        },
+        supply,
+    );
+    demand
+}
+
+// A planning snapshot with `workers` unemployed members, `sales` of unmet consumer demand and
+// export expansion open.
+fn planning_snapshot(workers: u32, sales: &[(&str, f32)]) -> DailyDemandSnapshot {
+    let catalog = load_runtime_economy_catalog().unwrap();
     let demand_by_resource: Vec<_> = sales
         .iter()
         .map(|(resource, units)| {
@@ -3176,28 +3272,7 @@ fn plan_with_supply(
         .output_absorption
         .set_export_expansion_available(true);
     snapshot.committed_unmet_commercial_consumer_demand_by_resource = demand_by_resource;
-    let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
-    surface.compile_dirty(graph, &terrain);
-    let mut demand = DemandSystem::new();
-    demand.plan_private_building_actions(
-        allocator,
-        graph,
-        zoning,
-        &snapshot,
-        &Default::default(),
-        &catalog,
-        &tuning,
-        &CityFiscalPolicy::default(),
-        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
-        1.0 / 24.0,
-        BuildingSiteEnvironment {
-            road_surface: &surface,
-            terrain: &terrain,
-        },
-        supply,
-    );
-    demand
+    snapshot
 }
 
 #[test]
@@ -3291,7 +3366,9 @@ fn alternative_reservations_commit_the_winner_after_later_rejected_probes() {
         demand.building_actions.industrial.spawns[0].asset_id,
         viable
     );
-    assert_eq!(committed.borrow().as_slice(), &[viable]);
+    // The industrial slot commits the winner; the actions slot proves the hour's spawn again
+    // on the driver's one supply (`SIM-02-I`). No rejected probe commits.
+    assert_eq!(committed.borrow().as_slice(), &[viable.clone(), viable]);
 }
 
 #[test]
@@ -3588,7 +3665,7 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
         if future_home {
             let home = register_test_asset(&mut allocator, "future_home", ZoneType::Residential);
             let mut home = building(ZoneType::Residential, 0.0, 0, 0, home);
-            home.construction_remaining_hours = 1;
+            home.set_construction_hours_left(1);
             home.construction_total_hours = 1;
             allocator.buildings.push(home);
         }
@@ -3615,10 +3692,11 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
         surface.compile_dirty(&graph, &terrain);
         let mut funding = crate::simulation::economy::hiring::JobFunding::default();
         funding.capacities = vec![funded, funded];
+        funding.see_operating_for_test(&allocator.buildings);
         let mut demand = DemandSystem::new();
 
         demand.upgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &empty_zoning(),
@@ -3949,7 +4027,7 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
         if future_home {
             let asset = register_test_asset(&mut allocator, "future_home", ZoneType::Residential);
             let mut home = building(ZoneType::Residential, 0.0, 0, 0, asset);
-            home.construction_remaining_hours = 1;
+            home.set_construction_hours_left(1);
             home.construction_total_hours = 1;
             allocator.buildings.push(home);
         }
@@ -3984,15 +4062,17 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
         let terrain = TerrainSystem::new(4, 4);
         let mut surface = RoadSurfaceSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
+        let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+        funding.see_operating_for_test(&allocator.buildings);
         let mut demand = DemandSystem::new();
 
         demand.downgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &empty_zoning(),
             &snapshot,
-            &Default::default(),
+            &funding,
             &catalog,
             &tuning,
             &policy,
@@ -4073,11 +4153,12 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
                 plant.economy_profile_runtime_id = factory_profile.runtime_id;
                 plant.parcel_id = 2000 + index;
                 plant.cell_x = 120 + index as usize * 2;
-                plant.construction_remaining_hours = 5;
+                plant.set_construction_hours_left(5);
                 plant.construction_total_hours = 5;
                 allocator.buildings.push(plant);
             }
         }
+        allocator.seed_applicants_by_index_for_test();
         let graph = graph_with_connected_border();
         let zoning = if matches!(kind, "queued" | "new") {
             two_lots(&graph, ZoneType::Industrial)
@@ -4119,7 +4200,7 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
             assert_eq!(demand.queued_construction.len(), 2);
             snapshot.reserve_queued_construction(&catalog, &demand.queued_construction);
         }
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &zoning,
@@ -4202,7 +4283,7 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
     let mut demand = DemandSystem::new();
     demand.upgrade_action_credit.industrial = 1.0;
     demand.downgrade_action_credit.industrial = 1.0;
-    demand.plan_private_building_actions(
+    demand.plan_hour_for_test(
         &allocator,
         &graph,
         &empty_zoning(),
@@ -4229,7 +4310,7 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
     // Cash cannot subsidize a replacement whose proposed route has no recurring margin.
     demand.building_actions = Default::default();
     demand.upgrade_action_credit.industrial = 1.0;
-    demand.plan_private_building_actions(
+    demand.plan_hour_for_test(
         &allocator,
         &graph,
         &empty_zoning(),
@@ -4397,7 +4478,7 @@ fn benchmark_active_level_change_planning() {
             demand.building_actions = Default::default();
             demand.downgrade_action_credit.residential = pairs as f32;
             demand.downgrade_action_credit.industrial = pairs as f32;
-            demand.plan_private_building_actions(
+            demand.plan_hour_for_test(
                 black_box(&allocator),
                 &graph,
                 &zoning,
@@ -4746,6 +4827,7 @@ fn benchmark_active_construction_queue() {
                 &demand.queued_construction,
                 demand.next_construction_start_hour,
                 None,
+                |_| true,
             );
             demand.workforce_reservations.reserve_existing();
             let reservations_ms = start.elapsed().as_secs_f64() * 1_000.0;
@@ -4802,4 +4884,135 @@ fn benchmark_active_construction_queue() {
             median(2)
         );
     }
+}
+
+// Runs planning slot `slot` of `demand` on a snapshot with `workers` unemployed members and
+// `sales` of unmet consumer demand, as the hour's slots run it on the published census.
+fn plan_slot(
+    demand: &mut DemandSystem,
+    slot: crate::simulation::economy::demand::PlanningSlot,
+    world: (&BuildingAllocator, &RegionGraph, &ZoningSystem),
+    workers: u32,
+    sales: &[(&str, f32)],
+) {
+    let (allocator, graph, zoning) = world;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let terrain = TerrainSystem::new(4, 4);
+    let mut surface = RoadSurfaceSystem::new(512.0);
+    surface.compile_dirty(graph, &terrain);
+    let fee = tuning.logistics.dispatch_fee_currency;
+    demand.plan_private_building_actions(
+        slot,
+        allocator,
+        graph,
+        zoning,
+        &planning_snapshot(workers, sales),
+        &Default::default(),
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::default(),
+        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
+        1.0 / 24.0,
+        BuildingSiteEnvironment {
+            road_surface: &surface,
+            terrain: &terrain,
+        },
+        &mut |_: u64, _: &str| Some(fee),
+        None,
+        None,
+    );
+}
+
+// A later slot proves the earlier slots' business spawns and upgrades again (`SIM-02-I`). The
+// commercial slot plans a barber on the free lot and the upgrade of the staffed one, with the
+// town's eight workers; when the market they were proved on is gone by the industrial slot,
+// both fail its re-proof: they leave the hour's plan, the upgrade's pacing credit is refunded,
+// and the workers they held go to the industrial slot's factories, which the held claims left
+// no room for while the market stood.
+#[test]
+fn failed_reproofs_leave_the_plan_and_free_their_workers_for_later_slots() {
+    use crate::simulation::economy::demand::PlanningSlot;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let barber = |allocator: &mut BuildingAllocator, name: &str, level| {
+        register_family_asset_with_economy_profile(
+            allocator,
+            name,
+            ZoneType::Commercial,
+            Some("barber"),
+            level,
+            Some("personal_service_small"),
+        )
+    };
+    let level_one = barber(&mut allocator, "barber_l1", 1);
+    let level_two = barber(&mut allocator, "barber_l2", 2);
+    register_family_asset_with_economy_profile(
+        &mut allocator,
+        "machinery",
+        ZoneType::Industrial,
+        None,
+        1,
+        Some("machinery_factory_basic"),
+    );
+    let graph = graph_with_connected_border();
+    let mut zoning = two_lots(&graph, ZoneType::Commercial);
+    let industrial = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Industrial)
+        .unwrap();
+    zoning
+        .place_parcel_run_at(10.0, 20.0, 40.0, 20.0, industrial, 20.0, 30.0, 0.0, &graph)
+        .unwrap();
+    // A fully staffed level-one barber with service stock on the first commercial lot.
+    let lot = zoning.parcels()[0].id().raw();
+    let mut shop = building(ZoneType::Commercial, 0.0, 0, 4, level_one);
+    shop.parcel_id = lot;
+    shop.operating_budget = 100_000.0;
+    shop.economy_profile_runtime_id = catalog
+        .profile_for_id("personal_service_small")
+        .unwrap()
+        .runtime_id;
+    let services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .unwrap();
+    shop.resource_inventory[services as usize - 1] = 10.0;
+    allocator.buildings.push(shop);
+    assert!(zoning.occupy_parcel(lot, 0));
+    let sales = [("personal_services", 600.0)];
+    let world = (&allocator, &graph, &zoning);
+    let planned = || {
+        let mut demand = DemandSystem::new();
+        demand.upgrade_action_credit.commercial = 1.0;
+        for slot in [PlanningSlot::Residential, PlanningSlot::Commercial] {
+            plan_slot(&mut demand, slot, world, 8, &sales);
+        }
+        let plan = &demand.building_actions.commercial;
+        assert_eq!(plan.spawns.len(), 1, "the commercial slot plans a barber");
+        assert_ne!(plan.spawns[0].parcel_id, lot);
+        assert_eq!(plan.upgrades.len(), 1, "and the staffed barber's upgrade");
+        assert_eq!(plan.upgrades[0].target_asset_id, level_two);
+        let credit = demand.upgrade_action_credit.commercial;
+        assert!(credit < 1.0, "the upgrade spent its pacing credit");
+        (demand, credit)
+    };
+    // While the market stands, both are proved again and keep their claims.
+    let (mut kept, credit) = planned();
+    plan_slot(&mut kept, PlanningSlot::Industrial, world, 8, &sales);
+    assert_eq!(kept.reproof_drops, 0);
+    assert_eq!(kept.building_actions.commercial.spawns.len(), 1);
+    assert_eq!(kept.building_actions.commercial.upgrades.len(), 1);
+    assert_eq!(kept.upgrade_action_credit.commercial, credit);
+    assert!(
+        kept.building_actions.industrial.spawns.is_empty(),
+        "the commercial projects hold every worker"
+    );
+    // Without it, both leave the plan and the factories take the freed workers.
+    let (mut dropped, credit) = planned();
+    plan_slot(&mut dropped, PlanningSlot::Industrial, world, 8, &[]);
+    assert_eq!(dropped.reproof_drops, 2);
+    assert!(dropped.building_actions.commercial.spawns.is_empty());
+    assert!(dropped.building_actions.commercial.upgrades.is_empty());
+    assert_eq!(dropped.upgrade_action_credit.commercial, credit + 1.0);
+    assert_eq!(dropped.building_actions.industrial.spawns.len(), 2);
 }

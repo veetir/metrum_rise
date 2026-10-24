@@ -45,13 +45,15 @@ impl ReplacementProof {
     /// Sizes owner-indexed marks once per pass, never inside a candidate quote.
     pub(super) fn prepare(&mut self, owners: usize) {
         self.clear();
-        self.marked.resize(owners, false);
-        self.before.resize(owners, ([0.0; 2], [0.0; 2]));
-        self.buyer_marked.resize(owners, false);
-        self.repair_marked.resize(owners, false);
-        self.affected.reserve(owners);
-        self.buyers.reserve(owners);
-        self.repairs.reserve(owners);
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        use crate::utils::storage::{reserve_rows, resize_rows};
+        resize_rows(&mut self.marked, owners, false);
+        resize_rows(&mut self.before, owners, ([0.0; 2], [0.0; 2]));
+        resize_rows(&mut self.buyer_marked, owners, false);
+        resize_rows(&mut self.repair_marked, owners, false);
+        reserve_rows(&mut self.affected, owners);
+        reserve_rows(&mut self.buyers, owners);
+        reserve_rows(&mut self.repairs, owners);
     }
 
     /// Resets only the owners touched by the preceding proposal.
@@ -102,29 +104,48 @@ impl ProjectReservations {
             .par_iter_mut()
             .enumerate()
             .for_each(|(owner, site)| {
-                let building = &allocator.buildings[owner];
-                *site = catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map(|profile| OperationSite {
-                        entrance: allocator.entrances.get(owner).cloned(),
-                        buyer: Some(owner),
-                        buyer_site: None,
-                        source: Some(owner),
-                        goods_multiplier: freight_goods_multiplier(
-                            profile,
-                            building.zone_type,
-                            tuning,
-                            minute,
-                        ),
-                        exports: if building_outputs_can_export_to_owa(building, profile) {
-                            tuning.owa_export_price_multiplier
-                        } else {
-                            0.0
-                        },
-                        future: false,
-                        public: allocator.is_city_service_building(building),
-                    });
+                *site = Self::site_row(allocator, catalog, tuning, minute, owner);
             });
+        self.prepare_site_scratch(funding);
+    }
+
+    /// Live building `owner`'s door and cargo metadata at `minute`'s price phase. O(1).
+    pub(super) fn site_row(
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        minute: u16,
+        owner: usize,
+    ) -> Option<OperationSite> {
+        let building = &allocator.buildings[owner];
+        catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .map(|profile| OperationSite {
+                entrance: allocator.entrances.get(owner).cloned(),
+                buyer: Some(owner),
+                buyer_site: None,
+                source: Some(owner),
+                goods_multiplier: freight_goods_multiplier(
+                    profile,
+                    building.zone_type,
+                    tuning,
+                    minute,
+                ),
+                exports: if building_outputs_can_export_to_owa(building, profile) {
+                    tuning.owa_export_price_multiplier
+                } else {
+                    0.0
+                },
+                future: false,
+                public: allocator.is_city_service_building(building),
+            })
+    }
+
+    /// The pass's freight capital and empty site staging. O(B) copy.
+    pub(super) fn prepare_site_scratch(
+        &mut self,
+        funding: &crate::simulation::economy::hiring::JobFunding,
+    ) {
         self.freight_capital.clone_from(&funding.freight_capital);
         self.staged_site = None;
         self.replacement_proof.clear();
@@ -135,6 +156,8 @@ impl ProjectReservations {
         for &owner in &self.replacement_proof.affected {
             if let Some(operation) = &mut self.operations[owner] {
                 operation.headroom = self.business.financing(owner);
+                // The next pass's start derives this row again (`SIM-02-K`).
+                self.touched_live.push(owner);
             }
         }
         self.replacement_proof.clear();

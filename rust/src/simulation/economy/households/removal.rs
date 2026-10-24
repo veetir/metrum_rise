@@ -16,7 +16,7 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
-use crate::simulation::economy::logistics::ShipmentSystem;
+#[cfg(test)]
 use rayon::prelude::*;
 
 /// Household-specific conditions for leaving after an unsuccessful rehousing period.
@@ -49,13 +49,92 @@ impl HouseholdExitPolicy {
 }
 
 impl HouseholdSystem {
+    /// Whether household `household_id` may leave under `exit_policy` now, checked at its daily
+    /// phase (`SIM-02-G`). O(1).
+    pub(crate) fn exit_eligible(
+        &self,
+        household_id: usize,
+        exit_policy: HouseholdExitPolicy,
+        allocator: &BuildingAllocator,
+    ) -> bool {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        exit_policy.is_eligible(&self.households[household_id], allocator, &catalog, &tuning)
+    }
+
+    /// One slot of the `departures` queue (`SIM-02-J`): takes up to `quota` of the households
+    /// whose daily phase claimed a departure, oldest first, and removes those still eligible;
+    /// a household that recovered meanwhile stays. The claims are paced by the daily exit
+    /// credit; the caller serves only in the hour's removal window. Returns how many left.
+    /// O(1) with nothing queued, else O(quota + members) plus the removal's parallel remaps.
+    pub(crate) fn serve_departures(
+        &mut self,
+        quota: usize,
+        exit_policy: HouseholdExitPolicy,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> u32 {
+        if self.exits.is_empty() {
+            return 0;
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let mut ids = Vec::new();
+        let mut taken = 0;
+        while taken < quota
+            && let Some(handle) = self.exits.pop_front()
+        {
+            taken += 1;
+            if let Some(household_id) = self.handles.resolve(handle)
+                && exit_policy.is_eligible(
+                    &self.households[household_id],
+                    allocator,
+                    &catalog,
+                    &tuning,
+                )
+            {
+                ids.push(household_id);
+            }
+        }
+        self.departure_stats.record_slot(taken, self.exits.len());
+        if ids.is_empty() {
+            return 0;
+        }
+        self.remove_households(&mut ids, agents, allocator)
+    }
+
+    /// Logs and resets the hour's departure and admission queue service, at the hour's last
+    /// slot (`SIM-02-J`).
+    pub(crate) fn close_departure_and_admission_hour(&mut self) {
+        for (name, stats) in [
+            (
+                "departure_requests_hour",
+                std::mem::take(&mut self.departure_stats),
+            ),
+            (
+                "admission_requests_hour",
+                std::mem::take(&mut self.admission_stats),
+            ),
+        ] {
+            if stats.taken > 0 {
+                debug_log!(crate::debug::Channel::EconomyPhases, "{} {}", name, stats);
+            }
+        }
+    }
+
+    /// Removes up to `households_to_remove_today` eligible households at once, those with the
+    /// fewest reserve days first.
+    #[cfg(test)]
     pub(crate) fn execute_demand_household_removal(
         &mut self,
         households_to_remove_today: u32,
         exit_policy: HouseholdExitPolicy,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        logistics: &mut ShipmentSystem,
     ) -> u32 {
         if households_to_remove_today == 0 || self.households.is_empty() {
             return 0;
@@ -65,7 +144,6 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
         // Independent eligibility checks use the same policy as the demand snapshot. Only
         // eligible candidates are ranked; housed and recently displaced households never fill
         // an unused departure slot. Reuse the candidate buffer across daily passes.
@@ -107,34 +185,47 @@ impl HouseholdSystem {
             candidates.len()
         );
 
-        let removed_count = candidates.len() as u32;
-        let mut selected_flags = std::mem::take(&mut self.removal_selected_flags_scratch);
-        selected_flags.clear();
-        selected_flags.resize(self.households.len(), false);
-        for &(household_id, _, _) in &candidates {
-            selected_flags[household_id] = true;
-        }
+        let mut ids: Vec<usize> = candidates.iter().map(|candidate| candidate.0).collect();
+        self.removal_candidates_scratch = candidates;
+        self.remove_households(&mut ids, agents, allocator)
+    }
 
+    /// Removes households `ids` with their members and releases their homes; returns how many
+    /// left. The ids are sorted descending first, so swap-removal cannot move one still to
+    /// remove. O(members log members + removed households) plus the parallel O(agents)
+    /// household remap.
+    pub(crate) fn remove_households(
+        &mut self,
+        ids: &mut Vec<usize>,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> u32 {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        ids.dedup();
+        ids.retain(|&id| id < self.households.len());
+        let removed_count = ids.len() as u32;
+
+        // The members of every selected household, from their maintained lists, removed in
+        // descending agent index so a swap-remove never moves one still to remove.
+        // O(members log members) instead of a scan of every agent (`SIM-02-J`).
+        agents.register_appended_household_members();
         let mut agent_indices = std::mem::take(&mut self.removal_agent_indices_scratch);
         agent_indices.clear();
-        for agent_idx in 0..agents.len() {
-            let household_id = agents.household_id[agent_idx];
-            if household_id < selected_flags.len() && selected_flags[household_id] {
-                agent_indices.push(agent_idx);
-            }
+        for &household_id in ids.iter() {
+            agent_indices.extend(agents.household_members(household_id));
         }
-        // The collection pass already visits agent indices in ascending order.
-        agent_indices.reverse();
+        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
         for agent_idx in agent_indices.iter().copied() {
-            if let Some((old_idx, new_idx)) = agents.kill_agent(agent_idx, allocator, self) {
-                logistics.remap_carrier_agent_index(old_idx, new_idx, agents);
-            }
+            agents.kill_agent(agent_idx, allocator);
         }
 
         // Track current slot -> original household while descending removals can move the
         // same survivor more than once. Repair surviving agents once after the whole batch.
-        let mut moved_households = HashMap::with_capacity(candidates.len());
-        for &(household_id, _, _) in &candidates {
+        let mut moved_households = HashMap::with_capacity(ids.len());
+        for &household_id in ids.iter() {
             if let Some(last_household_id) = self.remove_household_record_at_index(
                 household_id,
                 allocator,
@@ -151,8 +242,6 @@ impl HouseholdSystem {
             .map(|(current, original)| (original, current))
             .collect();
         agents.remap_household_indices(&mapping);
-        self.removal_candidates_scratch = candidates;
-        self.removal_selected_flags_scratch = selected_flags;
         self.removal_agent_indices_scratch = agent_indices;
         removed_count
     }
@@ -196,6 +285,26 @@ impl HouseholdSystem {
         }
 
         let last_household_id = self.households.len() - 1;
+        #[cfg(test)]
+        {
+            let departing = &self.households[household_id];
+            let escrow = if departing.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE {
+                departing.reserved_total_cost
+            } else {
+                0.0
+            };
+            let leaving = f64::from(departing.budget) + f64::from(escrow);
+            crate::debug::money::record(
+                crate::debug::money::MoneyFlow::DepartedHouseholdCash,
+                -leaving,
+            );
+        }
+        self.census_inputs
+            .remove_household(household_id, &self.households);
+        self.note_household_structure_change();
+        crate::debug::work::add(crate::debug::work::Work::HouseholdsRemoved, 1);
+        self.handles
+            .swap_remove(household_id, self.households.len());
         self.households.swap_remove(household_id);
         if household_id < self.daily_ledgers.len() {
             self.daily_ledgers.swap_remove(household_id);

@@ -51,6 +51,26 @@ impl SimCore {
         terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
+        // The reset's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.create_blank_world_in_pool(
+                width_m,
+                height_m,
+                terrain_cell_m,
+                terrain_chunk_m,
+                base_elevation_m,
+            )
+        })
+    }
+
+    fn create_blank_world_in_pool(
+        &mut self,
+        width_m: f32,
+        height_m: f32,
+        terrain_cell_m: f32,
+        terrain_chunk_m: f32,
+        base_elevation_m: f32,
+    ) -> Result<(), String> {
         let config = WorldConfig::new(
             width_m,
             height_m,
@@ -488,10 +508,13 @@ impl SimCore {
         vegetation: VegetationConfig,
     ) -> Result<(), String> {
         debug_log!("world-editor", "load_world_definition path={}", path);
-        let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))
-            .map_err(|err| err.to_string())?;
-        self.apply_loaded_world_definition(loaded, vegetation);
-        Ok(())
+        // Decoding and the reset's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))
+                .map_err(|err| err.to_string())?;
+            self.apply_loaded_world_definition(loaded, vegetation);
+            Ok(())
+        })
     }
 
     fn apply_loaded_world_definition(
@@ -550,8 +573,11 @@ impl SimCore {
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
         self.desirability = DesirabilitySystem::new(&self.config);
+        self.environment_sweep = Default::default();
         self.demand = DemandSystem::new();
         self.pending_demand_spawns.clear();
+        self.next_spawn_id = 0;
+        self.events.reset(self.time.absolute_slot() + 1);
         self.agents = AgentSystem::new();
         self.households = HouseholdSystem::new();
         self.logistics = ShipmentSystem::new();
@@ -559,6 +585,7 @@ impl SimCore {
         let mut allocator = BuildingAllocator::new();
         std::mem::swap(&mut allocator.registry, &mut self.allocator.registry);
         self.allocator = allocator;
+        self.allocator.now_slot = self.time.absolute_slot();
 
         self.treasury = CityTreasury::default();
         self.service_policy = Default::default();

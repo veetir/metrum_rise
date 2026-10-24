@@ -4,6 +4,28 @@
 
 use super::*;
 
+pub(super) fn first_water_surfaces_for_rays(
+    core: &SimCore,
+    origin: Vector3,
+    directions: &[Vector3],
+    max_distance_m: f32,
+) -> Vec<f32> {
+    crate::thread_pools::install(|| {
+        directions
+            .par_iter()
+            .map(|&direction| {
+                crate::nodes::sim::render::water_reflection::first_water_surface(
+                    &core.watermap,
+                    &core.heightmap,
+                    origin,
+                    direction,
+                    max_distance_m,
+                )
+            })
+            .collect()
+    })
+}
+
 #[godot_api(secondary)]
 impl SimulationNode {
     /// Returns whether the water mesh needs rebuilding.
@@ -146,7 +168,7 @@ impl SimulationNode {
         if !build_requests.is_empty() {
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.water_patch_payload_jobs);
-            rayon::spawn(move || {
+            self.async_jobs.spawn(move || {
                 let (built, failed) =
                     SimulationNode::try_prepare_water_patch_payloads(&core, build_requests);
                 let mut job_state = jobs
@@ -386,7 +408,7 @@ impl SimulationNode {
 
         if !build_inputs.is_empty() {
             let jobs = Arc::clone(&self.water_patch_mesh_jobs);
-            rayon::spawn(move || {
+            self.async_jobs.spawn(move || {
                 let entries = SimCore::build_water_patch_mesh_cache_entries(build_inputs);
                 let mut job_state = jobs
                     .lock()
@@ -608,19 +630,8 @@ impl SimulationNode {
         let Some(core) = self.try_lock_core() else {
             return PackedFloat32Array::new();
         };
-        let levels: Vec<f32> = directions
-            .as_slice()
-            .par_iter()
-            .map(|&direction| {
-                crate::nodes::sim::render::water_reflection::first_water_surface(
-                    &core.watermap,
-                    &core.heightmap,
-                    origin,
-                    direction,
-                    max_distance_m,
-                )
-            })
-            .collect();
+        let levels =
+            first_water_surfaces_for_rays(&core, origin, directions.as_slice(), max_distance_m);
         PackedFloat32Array::from(levels.as_slice())
     }
 

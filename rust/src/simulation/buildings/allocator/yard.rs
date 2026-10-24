@@ -94,24 +94,26 @@ pub(crate) fn shared_lot_sides(zoning: &ZoningSystem, parcel_id: u64) -> Vec<Sha
         };
         let outward = (front - lot.center()).dot(dir.orthogonal()).signum() * dir.orthogonal();
         let mut best: Option<(f32, u64, Vector2, Vector2)> = None;
-        zoning.parcels.visit_in_bounds(front - pad, front + pad, |other| {
-            if other.id().raw() == parcel_id || (other.center() - front).dot(outward) <= 0.0 {
-                return;
-            }
-            for (other_front, other_rear) in sides(other.corners()) {
-                let gap = other_front.distance_to(front);
-                let Some(other_dir) = (other_rear - other_front).try_normalized() else {
-                    continue;
-                };
-                let key = (gap, other.id().raw());
-                if gap <= SHARED_SIDE_FRONT_GAP_M
-                    && dir.dot(other_dir) >= SHARED_SIDE_MAX_TURN_COS
-                    && best.is_none_or(|(g, id, _, _)| key < (g, id))
-                {
-                    best = Some((gap, other.id().raw(), other_front, other_dir));
+        zoning
+            .parcels
+            .visit_in_bounds(front - pad, front + pad, |other| {
+                if other.id().raw() == parcel_id || (other.center() - front).dot(outward) <= 0.0 {
+                    return;
                 }
-            }
-        });
+                for (other_front, other_rear) in sides(other.corners()) {
+                    let gap = other_front.distance_to(front);
+                    let Some(other_dir) = (other_rear - other_front).try_normalized() else {
+                        continue;
+                    };
+                    let key = (gap, other.id().raw());
+                    if gap <= SHARED_SIDE_FRONT_GAP_M
+                        && dir.dot(other_dir) >= SHARED_SIDE_MAX_TURN_COS
+                        && best.is_none_or(|(g, id, _, _)| key < (g, id))
+                    {
+                        best = Some((gap, other.id().raw(), other_front, other_dir));
+                    }
+                }
+            });
         let Some((_, _, other_front, other_dir)) = best else {
             continue;
         };
@@ -141,7 +143,8 @@ pub(crate) fn fit_rows_to_shared_sides(rows: &mut [YardHedgeRowWorld], sides: &[
         for row in rows.iter_mut() {
             let (from_on, to_on) = (on_side(row.from), on_side(row.to));
             if from_on && to_on {
-                let shared = |p: Vector2| side.shared_front + side.shared_dir * (p - side.front).dot(dir);
+                let shared =
+                    |p: Vector2| side.shared_front + side.shared_dir * (p - side.front).dot(dir);
                 row.from = shared(row.from);
                 row.to = shared(row.to);
                 continue;

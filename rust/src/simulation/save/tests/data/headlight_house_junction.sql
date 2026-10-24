@@ -3,7 +3,7 @@ INSERT INTO network_nodes VALUES (0,-79.01451873779297,0.0,171.27989196777344,0)
 INSERT INTO network_nodes VALUES (1,150.7296905517578,0.0,166.11476135253906,0);
 INSERT INTO network_nodes VALUES (2,149.2962646484375,0.0,102.3564224243164,0);
 INSERT INTO network_nodes VALUES (3,259.9974670410156,0.0,163.65818786621094,5);
-INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,current_congestion,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (0,0,1,0,3,0,14.0,2,2,13.88888931274414,16.545761108398438,229.80224609375,0.24134594202041626,9.350000381469727,0.0,0,1);
+INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (0,0,1,0,3,0,14.0,2,2,13.88888931274414,16.545761108398438,229.80224609375,9.350000381469727,0.0,0,1);
 INSERT INTO network_edge_geometry VALUES (0,0,-79.01451873779297,0.0,171.27989196777344,0);
 INSERT INTO network_edge_geometry VALUES (0,1,-73.03244018554688,0.0,171.14540100097656,0);
 INSERT INTO network_edge_geometry VALUES (0,2,-71.03853607177734,0.0,171.10057067871094,0);
@@ -118,7 +118,7 @@ INSERT INTO network_edge_geometry VALUES (0,53,136.34042358398438,0.0,166.438262
 INSERT INTO network_edge_geometry VALUES (0,54,142.32254028320312,0.0,166.30377197265625,1);
 INSERT INTO network_edge_geometry VALUES (0,55,148.30459594726562,0.0,166.16928100585938,1);
 INSERT INTO network_edge_geometry VALUES (0,56,150.7296905517578,0.0,166.11476135253906,1);
-INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,current_congestion,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (1,1,2,4,1,0,2.0,0,0,13.88888931274414,4.591760635375977,63.774452209472656,1.0,0.0,0.0,0,0);
+INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (1,1,2,4,1,0,2.0,0,0,13.88888931274414,4.591760635375977,63.774452209472656,0.0,0.0,0,0);
 INSERT INTO network_edge_geometry VALUES (1,0,150.7296905517578,0.0,166.11476135253906,0);
 INSERT INTO network_edge_geometry VALUES (1,1,150.59938049316406,0.0,160.31854248046875,0);
 INSERT INTO network_edge_geometry VALUES (1,2,150.4690704345703,0.0,154.5223388671875,0);
@@ -143,7 +143,7 @@ INSERT INTO network_edge_geometry VALUES (1,8,149.68719482421875,0.0,119.7450561
 INSERT INTO network_edge_geometry VALUES (1,9,149.556884765625,0.0,113.9488525390625,1);
 INSERT INTO network_edge_geometry VALUES (1,10,149.42657470703125,0.0,108.15263366699219,1);
 INSERT INTO network_edge_geometry VALUES (1,11,149.2962646484375,0.0,102.3564224243164,1);
-INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,current_congestion,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (2,1,3,0,3,0,14.0,2,2,13.88888931274414,7.869266986846924,109.29537963867188,0.0,0.0,0.0,0,1);
+INSERT INTO network_edges (edge_id,start_node,end_node,primary_type,allowed_types,class,width,fwd_lanes,bkw_lanes,speed_limit,base_cost,physical_length,start_clip,end_clip,no_building_spawn,vehicle_frontage_access) VALUES (2,1,3,0,3,0,14.0,2,2,13.88888931274414,7.869266986846924,109.29537963867188,0.0,0.0,0,1);
 INSERT INTO network_edge_geometry VALUES (2,0,150.7296905517578,0.0,166.11476135253906,0);
 INSERT INTO network_edge_geometry VALUES (2,1,154.28668212890625,0.0,166.0347900390625,0);
 INSERT INTO network_edge_geometry VALUES (2,2,160.26876831054688,0.0,165.90029907226562,0);

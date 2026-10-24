@@ -50,12 +50,7 @@ impl TransitNetwork {
         self.profile_authored_edges.clear();
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
-                for (index, edge_idx, cell_x, frontage_t) in undo.buildings {
-                    let building = &mut allocator.buildings[index];
-                    building.edge_idx = edge_idx;
-                    building.cell_x = cell_x;
-                    building.frontage_t = frontage_t;
-                }
+                allocator.restore_split_frontages(&undo.buildings);
                 allocator.edge_occupancy.remove(&undo.new_edge_id);
                 if let Some(occupancy) = undo.occupancy {
                     allocator.edge_occupancy.insert(undo.edge_id, occupancy);
@@ -778,7 +773,6 @@ pub(super) fn migrate_split_dependents(
         buildings: Vec::new(),
         occupancy: allocator.edge_occupancy.get(&edge_id).cloned(),
     });
-    let cell_size = zoning.config.zone_cell_m;
     let traffic_debug = crate::debug::Channel::Traffic.enabled();
     let old_occ_cells = allocator
         .edge_occupancy
@@ -787,55 +781,13 @@ pub(super) fn migrate_split_dependents(
         .unwrap_or(0);
     let occ_part1_len = split_x.min(old_occ_cells);
     let occ_part2_len = old_occ_cells.saturating_sub(split_x);
-    let mut buildings_part1 = 0usize;
-    let mut buildings_part2 = 0usize;
-
-    // Migrate buildings
-    for (building_idx, b) in allocator.buildings.iter_mut().enumerate() {
-        if b.edge_idx == edge_id {
-            if let Some(undo) = &mut undo {
-                undo.buildings
-                    .push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
-            }
-            let old_cell_x = b.cell_x;
-            let old_frontage_t = b.frontage_t;
-            if b.cell_x >= split_x {
-                b.edge_idx = new_edge_id;
-                b.cell_x = b.cell_x.saturating_sub(split_x);
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t =
-                    (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
-                buildings_part2 += 1;
-                if traffic_debug {
-                    crate::traffic_log!(
-                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=move-to-new-edge old_edge={} new_edge={} old_cell_x={} new_cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
-                        building_idx,
-                        edge_id,
-                        new_edge_id,
-                        old_cell_x,
-                        b.cell_x,
-                        old_frontage_t,
-                        b.frontage_t,
-                    );
-                }
-            } else {
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t =
-                    (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
-                buildings_part1 += 1;
-                if traffic_debug {
-                    crate::traffic_log!(
-                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=stay-on-old-edge edge={} cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
-                        building_idx,
-                        edge_id,
-                        b.cell_x,
-                        old_frontage_t,
-                        b.frontage_t,
-                    );
-                }
-            }
-        }
-    }
+    let [buildings_part1, buildings_part2] = allocator.migrate_split_frontages(
+        [edge_id, new_edge_id],
+        split_x,
+        [new_len_first, new_len_second],
+        zoning.config.zone_cell_m,
+        undo.as_mut().map(|undo| &mut undo.buildings),
+    );
 
     // Migrate edge occupancy
     if let Some(old_occ) = allocator.edge_occupancy.remove(&edge_id) {
@@ -1075,20 +1027,17 @@ pub fn split_edge(
     part2_geo.extend_from_slice(&old_edge.geometry[tail_start..]);
 
     let mut part1_geo = old_edge.geometry[..=segment_idx].to_vec();
-    // Splitting changes topology, not the solved profile of the retained road. Its control
-    // supports may be hard-pinned to a junction plane while the physical surface is eased.
-    let physical = RegionGraph::physical_profile_on_control_alignment(old_edge);
-    let mut part1_physical = physical[..=segment_idx].to_vec();
-    let mut part2_physical = vec![split_pos];
-    part2_physical.extend_from_slice(&physical[tail_start..]);
+    // Splitting changes topology, not the solved profile of the retained road. Partition the
+    // original physical polyline by horizontal station so its independently materialized
+    // junction supports survive even when they do not coincide with control knots.
+    let (part1_physical, part2_physical) =
+        split_physical_geometry(old_edge, segment_idx, split_pos);
     if part1_geo.last().unwrap().distance_to(split_pos) > SPLIT_KNOT_MERGE_M {
         part1_geo.push(split_pos);
-        part1_physical.push(split_pos);
     } else {
-        // An existing control knot can already equal the junction while its independently
-        // eased physical height differs. Both split halves must meet the authoritative node.
+        // An existing control knot can already equal the junction. Both split halves must meet
+        // the authoritative node even when the physical profile has an independent height.
         *part1_geo.last_mut().unwrap() = split_pos;
-        *part1_physical.last_mut().unwrap() = split_pos;
     }
 
     let primary_type = old_edge.primary_type;
@@ -1099,7 +1048,6 @@ pub fn split_edge(
     let bus_lanes = old_edge.bus_lanes;
     let median = old_edge.median;
     let speed_limit = old_edge.speed_limit;
-    let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
     let crossing_level = old_edge.crossing_level;
     let no_building_spawn = old_edge.no_building_spawn;
@@ -1145,7 +1093,6 @@ pub fn split_edge(
         speed_limit,
         base_cost: 0.0,
         physical_length: 0.0,
-        current_congestion,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: part2_geo,
@@ -1226,6 +1173,65 @@ pub fn split_edge(
         network.bulk_dirty_edges.insert(edge_id);
         network.bulk_dirty_edges.insert(new_edge_id);
     }
+}
+
+fn split_physical_geometry(
+    edge: &Edge,
+    control_segment_idx: usize,
+    split_pos: Vector3,
+) -> (Vec<Vector3>, Vec<Vector3>) {
+    let physical = if edge.physical_geometry.len() >= 2 {
+        &edge.physical_geometry
+    } else {
+        &edge.geometry
+    };
+
+    let mut split_station_m = edge.geometry[..=control_segment_idx]
+        .windows(2)
+        .map(|pair| RegionGraph::edge_profile_point_distance_m(pair[0], pair[1]))
+        .sum::<f32>();
+    split_station_m +=
+        RegionGraph::edge_profile_point_distance_m(edge.geometry[control_segment_idx], split_pos);
+
+    let mut station_m = 0.0;
+    let mut physical_segment_idx = physical.len() - 2;
+    let mut distance_from_segment_start_m = RegionGraph::edge_profile_point_distance_m(
+        physical[physical_segment_idx],
+        physical[physical_segment_idx + 1],
+    );
+    for (index, pair) in physical.windows(2).enumerate() {
+        let run_m = RegionGraph::edge_profile_point_distance_m(pair[0], pair[1]);
+        if station_m + run_m >= split_station_m {
+            physical_segment_idx = index;
+            distance_from_segment_start_m = split_station_m - station_m;
+            break;
+        }
+        station_m += run_m;
+    }
+
+    let segment_length_m = RegionGraph::edge_profile_point_distance_m(
+        physical[physical_segment_idx],
+        physical[physical_segment_idx + 1],
+    );
+    let distance_to_segment_end_m = segment_length_m - distance_from_segment_start_m;
+    let first_end = if distance_from_segment_start_m <= SPLIT_KNOT_MERGE_M {
+        physical_segment_idx
+    } else {
+        physical_segment_idx + 1
+    };
+    let second_start = if distance_to_segment_end_m <= SPLIT_KNOT_MERGE_M {
+        physical_segment_idx + 2
+    } else {
+        physical_segment_idx + 1
+    };
+
+    let mut first = Vec::with_capacity(first_end + 1);
+    first.extend_from_slice(&physical[..first_end]);
+    first.push(split_pos);
+    let mut second = Vec::with_capacity(physical.len() - second_start + 1);
+    second.push(split_pos);
+    second.extend_from_slice(&physical[second_start..]);
+    (first, second)
 }
 
 #[cfg(test)]
@@ -1320,7 +1326,13 @@ mod tests {
                 EdgeClass::Standard,
             );
             // Physical stations differ from the materialized control support stations.
-            edge.physical_geometry = vec![Vector3::ZERO, Vector3::new(9.0, 1.8, 0.0), end_pos];
+            edge.physical_geometry = vec![
+                Vector3::ZERO,
+                Vector3::new(9.0, 1.8, 0.0),
+                Vector3::new(15.0, 3.0, 0.0),
+                Vector3::new(27.0, 5.4, 0.0),
+                end_pos,
+            ];
             let edge_id = graph.add_edge(edge);
             let split_pos = Vector3::new(split_x, 4.0, 0.0);
             let junction = graph.add_node(split_pos, NodeType::Junction);
@@ -1336,10 +1348,27 @@ mod tests {
             );
             let first = &graph.edge(edge_id).physical_geometry;
             let second = &graph.edge(edge_id + 1).physical_geometry;
-            assert!(
-                (first[1].y - 1.2).abs() < 1e-5,
-                "control pin leaked into split"
+            assert_eq!(
+                first[1],
+                Vector3::new(9.0, 1.8, 0.0),
+                "the split must retain the independently materialized physical support"
             );
+            let retained_after_split = if split_x == 12.0 {
+                &second[1..]
+            } else {
+                assert_eq!(first[2], Vector3::new(15.0, 3.0, 0.0));
+                &second[1..]
+            };
+            let expected_after_split: &[_] = if split_x == 12.0 {
+                &[
+                    Vector3::new(15.0, 3.0, 0.0),
+                    Vector3::new(27.0, 5.4, 0.0),
+                    end_pos,
+                ]
+            } else {
+                &[Vector3::new(27.0, 5.4, 0.0), end_pos]
+            };
+            assert_eq!(retained_after_split, expected_after_split);
             assert_eq!(first.last(), Some(&split_pos));
             assert_eq!(second.first(), Some(&split_pos));
             assert_eq!(second.last(), Some(&end_pos));
@@ -1654,6 +1683,7 @@ mod tests {
                 depth_cells: 3,
                 zone_profile_runtime_id: 0,
                 parcel_id: 0,
+                applicant_seed: 0,
                 zone_type: crate::simulation::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
@@ -1671,7 +1701,7 @@ mod tests {
                 asset_id: residential_asset,
                 level: 1,
                 construction_total_hours: 0,
-                construction_remaining_hours: 0,
+                construction_complete_slot: 0,
                 broken: false,
                 economy_profile_runtime_id: 0,
                 economy_broken: false,
@@ -1680,7 +1710,7 @@ mod tests {
                 operating_budget: 500.0,
                 profit_tax_budget_baseline: 500.0,
                 last_day_profit: 0.0,
-                shipment_cooldown_hours: 0,
+                shipment_cooldown_until_slot: 0,
                 daily_owa_input_value: 0.0,
                 daily_local_input_value: 0.0,
                 daily_city_funded_input_cost: 0.0,
@@ -1692,8 +1722,14 @@ mod tests {
                 daily_power_served_units: 0.0,
                 recent_power_service_units: 0.0,
                 recent_power_served_units: 0.0,
+                paid_workers_in_window: 0,
+                funded_job_capacity: 0,
+                unpaid_cash_wages_in_window: 0,
                 recent_household_sales_value: 0.0,
                 commercial_activity_floor_scale: 0.0,
+                service_sales_capacity: 0.0,
+                service_sales_profile_runtime_id: 0,
+                funded_activity: 0.0,
                 work_area_scale: 1.0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
@@ -1727,5 +1763,69 @@ mod tests {
             "Expected 0.90, got {}",
             b.frontage_t
         );
+    }
+
+    // A split records the building rows it moves, and their undo records them again, so the
+    // row-indexed tables and the census input copy (`SIM-02-I`) take them.
+    #[test]
+    fn split_records_the_moved_building_rows_and_their_undo() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        let mut net = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        net.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            1,
+            1,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        let edge_id = graph.edges.len() - 1;
+        for (cell_x, edge_idx) in [(2, edge_id), (0, usize::MAX), (8, edge_id)] {
+            let mut building = indexed_test_building(
+                String::new(),
+                crate::simulation::zoning::ZoneType::Residential,
+                0,
+            );
+            building.edge_idx = edge_idx;
+            building.cell_x = cell_x;
+            allocator.buildings.push(building);
+        }
+        let rows = |allocator: &BuildingAllocator| {
+            allocator
+                .buildings
+                .iter()
+                .map(|b| (b.edge_idx, b.cell_x, b.frontage_t.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        let changed = |allocator: &BuildingAllocator, since| {
+            let mut changed = Vec::new();
+            assert!(allocator.building_changes_since(since, &mut changed));
+            changed
+        };
+        let before = rows(&allocator);
+        let revision = allocator.building_ref_revision();
+        net.begin_road_edit();
+        let junction_id = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        split_edge(
+            &mut net,
+            &mut graph,
+            edge_id,
+            0,
+            0.5,
+            junction_id,
+            &mut zoning,
+            &mut allocator,
+        );
+        assert_ne!(rows(&allocator), before);
+        assert_eq!(changed(&allocator, revision), [0, 2]);
+        assert_eq!(allocator.census_copy_changes.rows, [0, 2]);
+        let revision = allocator.building_ref_revision();
+        net.rollback_road_edit_dependents(&mut allocator);
+        assert_eq!(rows(&allocator), before);
+        assert_eq!(changed(&allocator, revision), [0, 2]);
     }
 }

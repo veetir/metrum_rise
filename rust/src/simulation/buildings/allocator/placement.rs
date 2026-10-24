@@ -97,10 +97,12 @@ impl BuildingAllocator {
             commercial_spawn_resource_priorities,
             environment,
             &asset_candidates_by_profile,
+            None,
         )
     }
 
     /// Reuses prepared profile assets for initial selection and later viable alternatives.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_demand_spawn_candidates_from_assets(
         &self,
         zoning: &ZoningSystem,
@@ -109,6 +111,7 @@ impl BuildingAllocator {
         commercial_spawn_resource_priorities: &[(ResourceRuntimeId, f32)],
         environment: BuildingSiteEnvironment<'_>,
         asset_candidates_by_profile: &BTreeMap<u16, SpawnProfileAssetCandidates>,
+        only: Option<ZoneType>,
     ) -> DemandSpawnCandidatesByUse {
         crate::debug::work::add(
             crate::debug::work::Work::SpawnParcelsScanned,
@@ -130,6 +133,10 @@ impl BuildingAllocator {
                         return candidates;
                     };
                     let zone_type = profile.zone_type;
+                    // A zone's planning slot resolves only its own zone's lots (`SIM-02-I`).
+                    if only.is_some_and(|only| only != zone_type) {
+                        return candidates;
+                    }
                     let Some(index) = private_zone_index(zone_type) else {
                         return candidates;
                     };
@@ -544,12 +551,13 @@ impl BuildingAllocator {
     fn commit_resolved_slot(
         &mut self,
         placement: ResolvedPlacement,
+        applicant_seed: Option<u64>,
         zoning: &mut ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> usize {
         let parcel_id = placement.parcel_id;
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx = self.place_building_instance(placement, applicant_seed, catalog, tuning);
         zoning.occupy_parcel(parcel_id, building_idx);
         debug_log!(
             "economy",
@@ -579,6 +587,32 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, DemandSpawnPlacementRejection> {
+        self.execute_seeded_demand_spawn_action(
+            action,
+            None,
+            zoning,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            tuning,
+        )
+    }
+
+    /// [`Self::execute_demand_spawn_action`] seeding the building's applicant stream with
+    /// `applicant_seed` (a queued spawn's id), or the city counter's next value without one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_seeded_demand_spawn_action(
+        &mut self,
+        action: &DemandSpawnAction,
+        applicant_seed: Option<u64>,
+        zoning: &mut ZoningSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Result<usize, DemandSpawnPlacementRejection> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
             return Err(DemandSpawnPlacementRejection::AssetUnavailable);
         };
@@ -591,7 +625,7 @@ impl BuildingAllocator {
             return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
         self.prepare_site_support(&mut resolved, graph, road_surface, terrain)?;
-        Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
+        Ok(self.commit_resolved_slot(resolved, applicant_seed, zoning, catalog, tuning))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -759,7 +793,7 @@ impl BuildingAllocator {
         self.prepare_site_support(&mut placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx = self.place_building_instance(placement, None, catalog, tuning);
         debug_log!(
             "economy",
             "explicit site placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
@@ -1737,9 +1771,11 @@ impl BuildingAllocator {
     fn place_building_instance(
         &mut self,
         placement: ResolvedPlacement,
+        applicant_seed: Option<u64>,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> usize {
+        let applicant_seed = applicant_seed.unwrap_or_else(|| self.next_city_applicant_seed());
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
             catalog,
@@ -1817,12 +1853,20 @@ impl BuildingAllocator {
 
         let construction_duration_hours =
             construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
+        let construction_complete_slot =
+            self.construction_complete_slot_after(construction_duration_hours);
         let zone_cell_m = placement.zone_cell_m;
 
         crate::debug::work::add(crate::debug::work::Work::BuildingsPlaced, 1);
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::OwnerCapital,
+            0.0,
+            startup_budget,
+        );
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,
+            applicant_seed,
             build_generation: placement.build_generation,
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,
@@ -1844,7 +1888,7 @@ impl BuildingAllocator {
             asset_id: placement.asset_id,
             level: placement.initial_level,
             construction_total_hours: construction_duration_hours,
-            construction_remaining_hours: construction_duration_hours,
+            construction_complete_slot,
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
@@ -1853,7 +1897,7 @@ impl BuildingAllocator {
             operating_budget: startup_budget,
             profit_tax_budget_baseline: startup_budget,
             last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
+            shipment_cooldown_until_slot: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: 0.0,
@@ -1865,24 +1909,43 @@ impl BuildingAllocator {
             daily_power_served_units: 0.0,
             recent_power_service_units: 0.0,
             recent_power_served_units: 0.0,
+            paid_workers_in_window: 0,
+            funded_job_capacity: 0,
+            unpaid_cash_wages_in_window: 0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            service_sales_capacity: 0.0,
+            service_sales_profile_runtime_id: 0,
+            funded_activity: 0.0,
             work_area_scale,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
             is_deserted: false,
             budget_distress: false,
         });
+        self.building_handles
+            .register_appended(self.buildings.len());
         let building_idx = self.buildings.len() - 1;
+        if construction_complete_slot != 0 {
+            self.pending_construction.push((
+                self.building_handles.handle(building_idx),
+                construction_complete_slot,
+            ));
+        }
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
         self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
-        self.dirty_index = true;
+        self.mark_index_stale();
         self.entrances_dirty = true;
-        if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[building_idx].zone_type) {
+        // A site under construction is no flow-field source (`SIM-02-I`): its zone's fields
+        // change when it completes. One placed complete is a source at once.
+        let building = &self.buildings[building_idx];
+        if !building.is_under_construction()
+            && let Some(zone_idx) = baseline_private_zone_slot(building.zone_type)
+        {
             self.dirty_zones[zone_idx] = true;
         }
         building_idx

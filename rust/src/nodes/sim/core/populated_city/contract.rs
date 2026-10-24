@@ -4,16 +4,17 @@
 
 use super::snapshot;
 use crate::debug::work::{WORK_COUNT, WORK_NAMES, phases, snapshot as work_snapshot};
+use crate::simulation::core::scheduler::{SLOTS_PER_DAY, SLOTS_PER_HOUR};
 use std::path::PathBuf;
 use std::time::Instant;
 
-fn cache_dir() -> PathBuf {
+pub(super) fn cache_dir() -> PathBuf {
     std::env::var_os("METRUM_PERF_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/perf-contract"))
 }
 
-fn residents() -> u32 {
+pub(super) fn residents() -> u32 {
     std::env::var("METRUM_PERF_RESIDENTS")
         .unwrap_or_else(|_| "10000".into())
         .parse()
@@ -32,7 +33,7 @@ fn counts_since(before: [u64; WORK_COUNT]) -> serde_json::Value {
 
 // Runtime guard: the ignored check must still compile in a debug test build.
 #[allow(clippy::assertions_on_constants)]
-fn timing_mode() {
+pub(super) fn timing_mode() {
     assert!(
         !cfg!(debug_assertions),
         "performance contracts require --release"
@@ -44,6 +45,8 @@ fn timing_mode() {
     // tests retain them; this serialized manual runner disables only that extra test work.
     crate::simulation::economy::demand::VERIFY_LIVE_PASSES
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    // So are the operational hour's whole-city consistency checks (`SIM-02-K`).
+    crate::debug::work::set_city_checks(false);
 }
 
 #[test]
@@ -131,7 +134,8 @@ fn run_day(fiscal_stress: bool) {
     let mut building_churn = [[0_u64; 2]; 24];
     for churn in &mut building_churn {
         let before_hour = work_snapshot();
-        let hour = city.advance_hour();
+        // Each window holds one hour's planning slots and building actions (`SIM-02-I`).
+        let hour = city.advance_hour_through_actions();
         let after_hour = work_snapshot();
         for (slot, counter) in churn.iter_mut().zip([
             crate::debug::work::Work::BuildingsPlaced,
@@ -219,7 +223,7 @@ fn scan_churn(mut city: super::PopulatedCity, days: u32) {
         let mut building_churn = [[0_u64; 2]; 24];
         for churn in &mut building_churn {
             let before = work_snapshot();
-            city.advance_hour();
+            city.advance_hour_through_actions();
             let after = work_snapshot();
             for (slot, counter) in churn.iter_mut().zip([
                 crate::debug::work::Work::BuildingsPlaced,
@@ -265,30 +269,36 @@ fn perf_contract_phase() {
     }
     let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
     let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
-    let service = core.electricity_funding_by_building();
     let mut route_scratch = crate::simulation::pathing::cch::CchQueryScratch::default();
     if name == "routing" {
         route_scratch.prepare(&core.transit_network.cch_graph, &core.region_graph);
+    }
+    if name == "execution" {
+        // The epoch reads the workforce its slot's planning pass counted.
+        core.demand.count_workforce_for_test(
+            &core.allocator,
+            &core.households,
+            &core.fiscal_policy,
+        );
     }
     let setup_s = setup.elapsed().as_secs_f64();
     phases::begin();
     let before = work_snapshot();
     let started = Instant::now();
     match name.as_str() {
-        "census" => core.households.job_funding.refresh(
-            &core.allocator,
-            &core.households.households,
-            &mut core.logistics,
-            &core.transit_network,
-            &core.region_graph,
-            &catalog,
-            &tuning,
-            &core.fiscal_policy,
-            &service,
-            core.treasury.balance,
-            60,
-        ),
-        "planning" => core.demand.run_hourly_pass_with_policy(
+        // One hour's census as the slots run it: the input copy over the hour's first half,
+        // the census's steps over its second half and the next hour's publication.
+        "census" => {
+            let hour = core.time.absolute_slot() / SLOTS_PER_HOUR * SLOTS_PER_HOUR;
+            for slot in core.time.absolute_slot() + 1..hour + SLOTS_PER_HOUR {
+                core.allocator.now_slot = slot;
+                core.advance_census_inputs(slot);
+                core.advance_census(slot);
+            }
+            core.allocator.now_slot = hour + SLOTS_PER_HOUR;
+            core.publish_census(hour + SLOTS_PER_HOUR);
+        }
+        "planning" => core.demand.run_planning_hour_for_test(
             &core.allocator,
             &mut core.households,
             &core.region_graph,
@@ -304,34 +314,74 @@ fn perf_contract_phase() {
             60,
         ),
         "execution" => {
-            // Exercise the same epoch preparation used by queued placement without requiring
-            // a queue entry. A frozen day can legitimately have no commercial action due.
-            core.demand.prepare_execution_epoch_for_test(
+            // The planning slot's construction epoch over the whole queue and back, as the
+            // hour's first slot opens it after planning (`SIM-02-I`).
+            assert!(
+                core.demand.open_construction_epoch(
+                    &core.allocator,
+                    &mut core.households,
+                    &core.zoning,
+                    &core.region_graph,
+                    &core.transit_network,
+                    &mut core.logistics,
+                    &core.fiscal_policy,
+                    core.treasury.balance,
+                    crate::nodes::sim::core::state::absolute_operational_minute(day, 60),
+                ),
+                "the snapshot's published census is current for the epoch"
+            );
+            core.demand.close_construction_epoch(
+                &mut core.households,
                 &core.allocator,
-                &core.households,
                 &core.region_graph,
-                crate::nodes::sim::core::state::absolute_operational_minute(day, 60),
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy,
             );
         }
-        "logistics" => core.logistics.hourly_tick(
-            &mut core.allocator,
-            &mut core.agents,
-            &mut core.households,
-            &core.transit_network,
-            &core.region_graph,
-            60,
-            &mut core.treasury.balance,
-            |_, _| {},
-        ),
+        // One hour of freight requests as the slots run them: the freight checks of each
+        // slot's hourly building phase, then the queue's quota.
+        "logistics" => {
+            let start = core.time.absolute_slot() + 1;
+            let mut phase = Vec::new();
+            for slot in start..start + SLOTS_PER_HOUR {
+                core.allocator.now_slot = slot;
+                let handles = &mut core.allocator.building_handles;
+                handles.register_appended(core.allocator.buildings.len());
+                handles
+                    .phases()
+                    .hourly((slot % SLOTS_PER_HOUR) as u32, &mut phase);
+                for &handle in &phase {
+                    if let Some(building) = core.allocator.building_handles.resolve(handle) {
+                        core.logistics.request_freight_at_phase(
+                            slot,
+                            building,
+                            &core.allocator,
+                            &catalog,
+                            &tuning,
+                        );
+                    }
+                }
+                core.serve_freight_request_queue(
+                    slot,
+                    crate::nodes::sim::core::schedule::FREIGHT_REQUEST_QUOTA as usize,
+                );
+            }
+        }
         "lots" => {
             std::hint::black_box(core.prepare_cell_lots_internal());
         }
-        "settlement" => core.simulate_tick_internal(day + 1),
+        // One day of settlement as the slots run it: each slot's daily building, household and
+        // agent phases and environment sweep chunk, then the next day's calendar close.
+        "settlement" => {
+            let first = u64::from(day - 1) * SLOTS_PER_DAY;
+            for slot in first..first + SLOTS_PER_DAY {
+                core.allocator.now_slot = slot;
+                core.run_building_days(slot, &mut ());
+                core.run_household_days(slot, &mut ());
+                core.run_agent_days(slot, &mut ());
+                core.advance_environment_sweep(slot);
+            }
+            core.allocator.now_slot = first + SLOTS_PER_DAY;
+            core.close_calendar_day(day + 1, &mut ());
+        }
         "routing" => {
             let nodes = core.region_graph.node_count() as u32;
             assert!(nodes > 1);

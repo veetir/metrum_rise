@@ -869,7 +869,6 @@ mod tests {
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: (end_x - start_x).abs(),
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![
@@ -921,13 +920,14 @@ mod tests {
             })
             .expect("foot lane starting at n2");
 
-        network.flow_fields.rebuild_dirty(&graph, |zone, _| {
-            if zone == ZoneType::Commercial {
-                vec![(n2, 7)]
-            } else {
-                Vec::new()
-            }
-        });
+        let revision = network.flow_graph_revision();
+        network
+            .flow_fields
+            .rebuild_dirty(&graph, revision, |zone, _, sources| {
+                if zone == ZoneType::Commercial {
+                    sources.push((n2, 7));
+                }
+            });
         let mut candidate = PlannedTripCandidate {
             total_cost_s: 0.0,
             mode_choice_cost_s: 0.0,

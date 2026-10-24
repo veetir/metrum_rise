@@ -4,6 +4,7 @@
 
 use super::types::DemandUse;
 use crate::simulation::buildings::allocator::Building;
+use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
 use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +51,74 @@ pub(crate) struct DemandUseActionPlan {
     pub(crate) downgrades: Vec<DemandLevelChangeAction>,
     pub(crate) upgrades: Vec<DemandLevelChangeAction>,
     pub(crate) spawns: Vec<DemandSpawnAction>,
+}
+
+/// Slots between a planning slot's setup and its plan (`SIM-02-K`): the setup counts the live
+/// workforce and scans the lots and existing buildings at the first slot of the slot's minute,
+/// the plan runs this many slots later in the same minute, so each half holds about half the
+/// pass and at 32× (about 8.5 slots a frame) the two halves mostly fall in frames of their own.
+pub(crate) const PLANNING_SETUP_LEAD: u64 = SLOTS_PER_MINUTE / 2;
+
+/// The hour's demand planning slots, in order (`SIM-02-I`), one a game minute (`SIM-02-K`):
+/// residential, commercial and industrial plan their zone in the hour's minutes 0, 1 and 2;
+/// minute 3 plans the downgrades and the hour's admission, then the hour's plan is executed.
+/// The discriminant is the slot of the hour the plan runs in, [`PLANNING_SETUP_LEAD`] slots
+/// after the minute's first slot, which holds its setup ([`Self::setup_slot`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub(crate) enum PlanningSlot {
+    /// Minute 0, after the operational hour and the census published at the hour's first slot:
+    /// homes.
+    Residential = PLANNING_SETUP_LEAD,
+    /// Minute 1: shops and services.
+    Commercial = SLOTS_PER_MINUTE + PLANNING_SETUP_LEAD,
+    /// Minute 2: industry.
+    Industrial = 2 * SLOTS_PER_MINUTE + PLANNING_SETUP_LEAD,
+    /// Minute 3: downgrades, admission and the hour's actions.
+    Actions = 3 * SLOTS_PER_MINUTE + PLANNING_SETUP_LEAD,
+}
+
+impl PlanningSlot {
+    /// The slot of the hour of this planning slot's setup: its minute's first slot
+    /// (`SIM-02-K`).
+    pub(crate) const fn setup_slot(self) -> u64 {
+        self as u64 - PLANNING_SETUP_LEAD
+    }
+
+    /// Every planning slot, in order (test drivers of the four slots).
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Residential,
+        Self::Commercial,
+        Self::Industrial,
+        Self::Actions,
+    ];
+
+    /// The zone a zone slot plans; none for the actions slot.
+    pub(super) fn zone(self) -> Option<DemandUse> {
+        match self {
+            Self::Residential => Some(DemandUse::Residential),
+            Self::Commercial => Some(DemandUse::Commercial),
+            Self::Industrial => Some(DemandUse::Industrial),
+            Self::Actions => None,
+        }
+    }
+
+    /// The zone type a zone slot plans and queues.
+    pub(crate) fn zone_type(self) -> Option<ZoneType> {
+        self.zone().map(DemandUse::zone_type)
+    }
+
+    /// The test-only work counter of this slot's skips.
+    pub(super) fn skip_work(self) -> crate::debug::work::Work {
+        use crate::debug::work::Work;
+        match self {
+            Self::Residential => Work::ResidentialPlanningSkips,
+            Self::Commercial => Work::CommercialPlanningSkips,
+            Self::Industrial => Work::IndustrialPlanningSkips,
+            Self::Actions => Work::ActionsPlanningSkips,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]

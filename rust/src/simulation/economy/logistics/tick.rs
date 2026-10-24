@@ -1,118 +1,30 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Hourly logistics orchestration.
+//! The logistics hour and the freight route cache's revision check.
+//!
+//! Freight planning runs in the `freight requests` queue at each building's phase, cargo
+//! loads when a slot's plans are made, carriers leave at their own slots and every leg times
+//! out at one of its checks (`SIM-02-J`). The hour only advances the clock that leg timeouts
+//! count; freight cooldowns are slot deadlines (`requests.rs`).
 
+use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::RegionGraph;
-use crate::{debug, debug_log};
-use rayon::prelude::*;
-use std::time::Instant;
 
 use super::data::ShipmentSystem;
-use super::planning::FreightPlanningContext;
 
 impl ShipmentSystem {
-    /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
-    #[allow(clippy::too_many_arguments)]
-    pub fn hourly_tick(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        minute_of_day: u16,
-        treasury_balance: &mut f64,
-        on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
-    ) {
+    /// Starts the next logistics hour, the clock of carrier leg timeouts
+    /// (`Shipment::leg_started_hour`), after logging the finished hour's request queue counts.
+    /// O(1); test builds also compare the maintained reservations with a fresh build, once an
+    /// hour as before, except in timing runs ([`crate::debug::work::city_checks`]).
+    pub fn hourly_tick(&mut self) {
         #[cfg(test)]
-        let _contract_phase = crate::debug::work::phases::enter("logistics");
-        let timing_category = if debug::Channel::EconomyPhases.enabled() {
-            debug::Channel::EconomyPhases
-        } else {
-            debug::Channel::Economy
-        };
-        let timing_enabled = timing_category.enabled();
-        let total_start = Instant::now();
-        let mut phase_start = total_start;
-        let shipments_before = self.shipments.len();
-        let agents_before = agents.len();
-        self.refresh_freight_route_cache(allocator, transit_network);
-        let route_cache_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.decrement_building_cooldowns(allocator);
-        let cooldowns_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        let mut planning = FreightPlanningContext::build(self, allocator, transit_network, graph);
-        let planning_context_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.create_profile_input_shipments(
-            allocator,
-            transit_network,
-            graph,
-            minute_of_day,
-            &mut planning,
-            treasury_balance,
-        );
-        let input_shipments_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.create_profile_output_exports(
-            allocator,
-            transit_network,
-            graph,
-            minute_of_day,
-            &mut planning,
-        );
-        let output_exports_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        planning.finish(self);
-        let finish_planning_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.progress_shipments(
-            allocator,
-            agents,
-            households,
-            transit_network,
-            graph,
-            treasury_balance,
-            on_delivery,
-        );
-        let progress_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.shipments.retain(|shipment| shipment.status.is_open());
-        let retain_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        if timing_enabled {
-            debug_log!(
-                timing_category,
-                "logistics_hour_detail minute={} buildings={} agents_before={} agents_after={} shipments_before={} shipments_after={} route_cache_ms={:.3} cooldowns_ms={:.3} planning_context_ms={:.3} input_shipments_ms={:.3} output_exports_ms={:.3} finish_planning_ms={:.3} progress_ms={:.3} retain_ms={:.3} total_ms={:.3}",
-                minute_of_day,
-                allocator.buildings.len(),
-                agents_before,
-                agents.len(),
-                shipments_before,
-                self.shipments.len(),
-                route_cache_ms,
-                cooldowns_ms,
-                planning_context_ms,
-                input_shipments_ms,
-                output_exports_ms,
-                finish_planning_ms,
-                progress_ms,
-                retain_ms,
-                total_start.elapsed().as_secs_f64() * 1000.0,
-            );
+        if crate::debug::work::city_checks() {
+            self.assert_reservations_current();
         }
-    }
-
-    pub(super) fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {
-        allocator.buildings.par_iter_mut().for_each(|building| {
-            if building.shipment_cooldown_hours > 0 {
-                building.shipment_cooldown_hours -= 1;
-            }
-        });
+        self.close_request_stats_hour();
+        self.hour_ticks += 1;
     }
 
     /// Invalidates dispatch and forecast route tables together after topology changes.

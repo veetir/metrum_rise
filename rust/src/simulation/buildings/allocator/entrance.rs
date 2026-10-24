@@ -227,12 +227,21 @@ impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
-        self.buildings
-            .par_iter()
-            .map(|building| Self::derive_building_entrance(building, graph, lanes, &self.registry))
-            .collect_into_vec(&mut self.entrances);
+        reserve_entrance_rows(&mut self.entrances, self.buildings.len());
+        // Main-thread network and asset edits reach here outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.buildings
+                .par_iter()
+                .map(|building| {
+                    Self::derive_building_entrance(building, graph, lanes, &self.registry)
+                })
+                .collect_into_vec(&mut self.entrances)
+        });
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
+        // Entrances choose the flow fields' source nodes (`SIM-02-I`): each zone's sources
+        // are compared again at the next frame and its fields rebuilt only if they changed.
+        self.dirty_zones = [true; 3];
         if let Some(old_entrances) = old_entrances.as_deref() {
             log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
         }
@@ -245,12 +254,29 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         registry: &crate::assets::AssetRegistry,
     ) {
+        reserve_entrance_rows(&mut self.entrances, self.buildings.len());
         self.buildings
             .par_iter()
             .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
             .collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
+    }
+
+    /// Derives the entrances of `buildings` into `out` as [`Self::rebuild_entrance_cache`]
+    /// does for the live store: for a copy of the store (the census input copy, `SIM-02-I`).
+    /// O(buildings), parallel.
+    pub(crate) fn derive_entrances_of(
+        buildings: &[Building],
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        registry: &crate::assets::AssetRegistry,
+        out: &mut Vec<BuildingEntrance>,
+    ) {
+        buildings
+            .par_iter()
+            .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
+            .collect_into_vec(out);
     }
 
     /// Appends the derived entrance for a newly appended building to a clean cache.
@@ -276,6 +302,18 @@ impl BuildingAllocator {
         self.entrances_dirty = self.entrances.len() != self.buildings.len();
         self.bump_entrance_ref_revision();
         true
+    }
+
+    /// The entrance building `building_idx` derives now, as a cache rebuild would derive it,
+    /// whether or not the cache is current: for digests that a loaded game, whose cache is
+    /// rebuilt at load, must reproduce (`SIM-02-J`). O(door derivation).
+    pub(crate) fn derived_entrance(
+        &self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> BuildingEntrance {
+        Self::derive_building_entrance(&self.buildings[building_idx], graph, lanes, &self.registry)
     }
 
     fn derive_building_entrance(
@@ -519,6 +557,15 @@ impl BuildingAllocator {
 
         best.map(|candidate| candidate.total_time_s)
     }
+}
+
+// Empties the entrance cache with room for `buildings` rows and the spare rows of
+// `reserve_rows`, so the next rebuild fills it in place and the first building appended after
+// a load, whose rebuild sized it exactly, does not copy it (`SIM-02-K`). Capacity never changes
+// a result. O(1) unless it grows.
+fn reserve_entrance_rows(entrances: &mut Vec<BuildingEntrance>, buildings: usize) {
+    entrances.clear();
+    crate::utils::storage::reserve_rows(entrances, buildings);
 }
 
 fn log_entrance_cache_rebuild(

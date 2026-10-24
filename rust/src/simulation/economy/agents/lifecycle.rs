@@ -14,10 +14,12 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::tick::{
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
+
+/// Replan time of an agent held for a paced departure; no simulation time reaches it.
+const DEPARTURE_HOLD: f32 = f32::MAX;
 
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
@@ -73,22 +75,57 @@ impl AgentSystem {
         idx
     }
 
-    /// Spawns a household carrier, preserving the composition selected with `household_seed`.
-    pub fn spawn_household_arrival_carrier(
+    /// Spawns a household carrier with the applicant's `composition` as admission drew it.
+    pub(crate) fn spawn_household_arrival_carrier(
         &mut self,
         home: usize,
         household_size: u16,
-        household_seed: usize,
+        composition: super::HouseholdAgeComposition,
         border_node: u32,
         init_x: f32,
         init_y: f32,
     ) -> usize {
         let agent_idx = self.spawn_border_arrival_agent(home, border_node, init_x, init_y);
         self.agents.pending_household_size[agent_idx] = household_size.max(1);
-        let composition = super::household_age_composition(home, household_seed, household_size);
         self.agents.pending_household_adults[agent_idx] = composition.adult_count;
         self.agents.pending_household_elders[agent_idx] = composition.elder_count;
+        // The carrier waits at the border for its paced departure (`SIM-02-E`).
+        self.hold_departure(agent_idx);
+        let handle = self.agent_handle(agent_idx);
+        self.arrival_carriers.push(handle);
+        self.held_arrivals.push(handle);
         agent_idx
+    }
+
+    /// Keeps an agent where it is until [`Self::release_departure`]: its next trip waits for a
+    /// paced departure slot (`SIM-02-E`). Uses the replan gate every departure already obeys.
+    pub(crate) fn hold_departure(&mut self, agent_idx: usize) {
+        self.agents.next_replan_time[agent_idx] = DEPARTURE_HOLD;
+    }
+
+    /// Whether the agent waits for a paced departure.
+    pub(crate) fn departure_held(&self, agent_idx: usize) -> bool {
+        self.agents.next_replan_time[agent_idx] == DEPARTURE_HOLD
+    }
+
+    /// Lets a held agent start its trip on the next frame; false when it was not held.
+    pub(crate) fn release_departure(&mut self, agent_idx: usize) -> bool {
+        let held = self.departure_held(agent_idx);
+        if held {
+            self.agents.next_replan_time[agent_idx] = 0.0;
+        }
+        held
+    }
+
+    /// Rebuilds [`Self::arrival_carriers`] from the carriers' pending households, in dense
+    /// order, after a load replaced the store. O(agents).
+    pub(crate) fn rebuild_arrival_carriers(&mut self) {
+        self.handles.register_appended(self.agents.len());
+        self.arrival_carriers = (0..self.agents.len())
+            .filter(|&agent_idx| self.agents.pending_household_size[agent_idx] > 0)
+            .map(|agent_idx| self.handles.handle(agent_idx))
+            .collect();
+        self.held_arrivals.clear();
     }
 
     /// Reads an arrival carrier's approved composition without depending on remapped home ids.
@@ -293,23 +330,20 @@ impl AgentSystem {
         &mut self,
         index: usize,
         shipment_id: u64,
-        households: &mut HouseholdSystem,
     ) -> Option<(usize, usize)> {
         if !self.freight_carrier_matches(index, shipment_id) {
             return None;
         }
-        self.remove_agent_record(index, households, "finished its freight trip")
+        self.remove_agent_record(index, "finished its freight trip")
     }
 
     /// Permanently removes an agent from the simulation using O(1) swap-remove.
     ///
-    /// Repairs an active shopper reference immediately. Returns `(old_idx, new_idx)` when another
-    /// agent moved and freight index owners must remap.
+    /// Returns `(old_idx, new_idx)` when another agent moved; handles follow it automatically.
     pub fn kill_agent(
         &mut self,
         index: usize,
         allocator: &mut BuildingAllocator,
-        households: &mut HouseholdSystem,
     ) -> Option<(usize, usize)> {
         if index >= self.agents.len() {
             return None;
@@ -322,25 +356,29 @@ impl AgentSystem {
             && work != usize::MAX
             && work < allocator.buildings.len()
         {
-            allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
+            allocator.set_worker_count(
+                work,
+                allocator.buildings[work].worker_count.saturating_sub(1),
+            );
         }
 
-        self.remove_agent_record(index, households, "left the city with its household")
+        self.remove_agent_record(index, "left the city with its household")
     }
 
     // `reason` explains the removal when it ends an inspection.
     fn remove_agent_record(
         &mut self,
         index: usize,
-        households: &mut HouseholdSystem,
         reason: &'static str,
     ) -> Option<(usize, usize)> {
         let last = self.agents.len() - 1;
+        let moved_household = self.unlink_for_swap_remove(index);
+        self.swap_remove_lane_bucket_agent(index);
+        self.handles.swap_remove(index, self.agents.len());
         self.agents.swap_remove(index);
-        self.invalidate_lane_bucket_snapshot();
+        self.relink_after_swap_remove(index, moved_household);
         self.repair_inspection_after_remove(index, last, reason);
         if index != last {
-            households.remap_shopper_agent_index(last, index, self);
             Some((last, index))
         } else {
             None
@@ -369,7 +407,6 @@ impl AgentSystem {
             activity: 0,
             transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,
-            money: 100.0,
             journey_start_time: self.sim_time,
             schedule_seed,
             cached_commute_minutes: 0,
@@ -412,7 +449,7 @@ impl AgentSystem {
             vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
             pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
             walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
-            job_lock_days: 0,
+            job_lock_until_day: 0,
             consecutive_unpaid_days: 0,
         }
     }
@@ -420,7 +457,9 @@ impl AgentSystem {
     fn insert_agent(&mut self, agent: Agent) -> usize {
         let index = self.agents.len();
         self.agents.push(agent);
-        self.invalidate_lane_bucket_snapshot();
+        self.handles.register_appended(self.agents.len());
+        self.register_appended_household_members();
+        // The lane-bucket snapshot reads appended agents at the next tick (`SIM-02-K`).
         index
     }
 
@@ -431,7 +470,6 @@ impl AgentSystem {
         agent.age_group = AGE_CHILD;
         agent.freight_shipment_id = shipment_id;
         agent.activity = 2;
-        agent.money = 0.0;
         agent.transit_mode = MODE_CAR;
         agent.vehicle_type = VEHICLE_FREIGHT_DELIVERY;
         self.insert_agent(agent)
@@ -598,7 +636,11 @@ mod tests {
                                 system.spawn_household_arrival_carrier(
                                     origin,
                                     (index % 6) as u16,
-                                    index,
+                                    crate::simulation::economy::agents::household_age_composition(
+                                        origin,
+                                        index,
+                                        (index % 6) as u16,
+                                    ),
                                     (index % 31) as u32,
                                     x,
                                     -x,

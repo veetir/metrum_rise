@@ -100,8 +100,7 @@ impl TripFailureLog {
         self.places.clear();
         self.detailed = 0;
         self.folded = [Folded::default(); CAUSES];
-        self.streaks
-            .retain(|_, last| sim_time - *last < MINUTE_S);
+        self.streaks.retain(|_, last| sim_time - *last < MINUTE_S);
     }
 }
 
@@ -120,6 +119,10 @@ impl AgentSystem {
             return;
         }
         let mut failures = std::mem::take(&mut log.buffer);
+        crate::debug::work::add(
+            crate::debug::work::Work::TripFailures,
+            failures.len() as u64,
+        );
         // Stable: one agent's failures stay in the order its worker found them.
         failures.sort_by_key(|failure| failure.agent);
         let inspected = self.inspected.map(|inspected| inspected.index);

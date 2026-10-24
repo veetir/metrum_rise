@@ -7,8 +7,8 @@ use super::supplier_index::SupplierCandidateIndex;
 use super::timing::freight_cost;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::accessibility::{
-    BoundedScanEvent, ModeComponentIndex, ReachableBucketEntry, chunk_for_point,
-    lower_bound_travel_seconds, max_speed_for_modes,
+    BoundedScanEvent, ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex,
+    chunk_for_point, lower_bound_travel_seconds, max_speed_for_modes,
 };
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -99,9 +99,20 @@ pub(crate) struct RecurringSupply {
     nearest_incumbents: Vec<Option<usize>>,
     #[cfg(test)]
     search_counts: [u64; 6],
+    // Nearest searches, candidates visited, routes priced and input quotes so far, which the
+    // funding census counts as work (`SIM-02-K`); monotonic, never read by any result.
+    work: [u64; 4],
+    // Source handles below this are live buildings, the census's own and any appended since
+    // (which hold no supply); prepared variants are numbered from here (`SIM-02-I`).
+    source_base: usize,
     // Placed source doors, packed for the straight-line prune of every scanned candidate.
     doors: Vec<Option<godot::prelude::Vector2>>,
     index: SupplierCandidateIndex,
+    // A reset's supplier index entries, sorted, and each resource's run of them, and the
+    // layout the index is built for (`SIM-02-K`); empty runs when the reset keeps the index.
+    index_entries: Vec<super::supplier_index::SupplierEntry>,
+    index_runs: Vec<(ResourceRuntimeId, usize, usize)>,
+    index_revision: LayoutRevision,
     components: Option<ModeComponentIndex>,
     max_speed: f32,
 }
@@ -114,14 +125,23 @@ impl RecurringSupply {
         self.search_counts
     }
 
+    /// Nearest searches, candidates visited, routes priced and input quotes made so far, for
+    /// the funding census's work units (`SIM-02-K`). Monotonic counters; O(1).
+    pub(crate) fn work_counts(&self) -> [u64; 4] {
+        self.work
+    }
+
     /// Prepares temporary project owners outside input quotation loops.
     pub(crate) fn prepare_owners(&mut self, owners: usize, input_ports: usize) {
-        if self.owner_receipts.len() < owners {
-            self.owner_receipts.resize(owners, usize::MAX);
-            self.owner_tails.resize(owners, usize::MAX);
-        }
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::grow_rows(&mut self.owner_receipts, owners, usize::MAX);
+        crate::utils::storage::grow_rows(&mut self.owner_tails, owners, usize::MAX);
         let receipts = self.committed.len() + 2 * (self.remaining.len() + input_ports);
-        self.reserve_receipts(receipts);
+        // With spare capacity, which also sizes the receipt journals (`SIM-02-K`).
+        self.reserve_receipts(crate::utils::storage::spare_capacity(
+            receipts,
+            self.committed.capacity(),
+        ));
         self.revalidation.prepare(
             self.remaining.len(),
             self.owner_receipts.len(),
@@ -132,13 +152,13 @@ impl RecurringSupply {
     /// Grows receipt and owner-withdrawal storage only between complete proposal attempts.
     pub(crate) fn reserve_receipts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active());
-        self.committed
-            .reserve(required.saturating_sub(self.committed.len()));
-        self.released.reserve(
-            self.committed
-                .capacity()
-                .saturating_sub(self.released.len()),
-        );
+        let receipts = required.saturating_sub(self.committed.len());
+        crate::utils::storage::reserve_cleared(&mut self.committed, receipts);
+        let released = self
+            .committed
+            .capacity()
+            .saturating_sub(self.released.len());
+        crate::utils::storage::reserve_cleared(&mut self.released, released);
         self.revalidation.follow_receipts(self.committed.capacity());
     }
 
@@ -173,12 +193,23 @@ impl RecurringSupply {
         }
     }
 
+    /// Numbers prepared variants after `buildings` live buildings: a book lent to planning
+    /// after buildings were appended to the census's copy covers them as live sources without
+    /// supply, so a variant handle never names an appended building (`SIM-02-I`). Call before
+    /// [`Self::prepare_projected_sources`]. O(1).
+    pub(crate) fn cover_live_buildings(&mut self, buildings: usize) {
+        debug_assert!(!self.projected_enabled());
+        self.source_base = buildings.max(self.offsets.len().saturating_sub(1));
+    }
+
     /// Invalidates the source view after job-state removal, remapping, or reload.
     pub(crate) fn invalidate(&mut self) {
         self.revision = None;
     }
 
     /// Whether supplier indices and geometry still refer to this allocator/network layout.
+    /// Planning checks the census key instead (`SIM-02-I`).
+    #[cfg(test)]
     pub(crate) fn matches_layout(
         &self,
         allocator: &BuildingAllocator,
@@ -234,6 +265,7 @@ impl RecurringSupply {
             }
         }
         self.revision = source.revision;
+        self.source_base = source.source_base;
         self.max_speed = source.max_speed;
         self.staged.clear();
         self.released.clear();
@@ -297,8 +329,7 @@ impl RecurringSupply {
             let internal = profile
                 .output_port(input.resource_runtime_id)
                 .map_or(0.0, |output| output.units_per_day);
-            input.units_per_day > internal
-                && self.offers_resource(input.resource_runtime_id)
+            input.units_per_day > internal && self.offers_resource(input.resource_runtime_id)
         })
     }
 
@@ -330,6 +361,8 @@ impl RecurringSupply {
     /// rebuilding costs O(outputs log outputs + roads) only when building/access topology changes.
     /// Quantities use sparse output-port storage, not B*R.
     /// Physical shipment stock never creates a recurring offer.
+    /// The census runs the same phases in slices (`SIM-02-K`); this runs them at once.
+    #[cfg(test)]
     pub(crate) fn reset(
         &mut self,
         allocator: &BuildingAllocator,
@@ -338,8 +371,37 @@ impl RecurringSupply {
         catalog: &RuntimeEconomyCatalog,
         funded_activity: &[f32],
     ) {
+        if self.begin_reset(allocator, graph, network, catalog) {
+            self.reset_layout(allocator, catalog, 0..allocator.buildings.len());
+            self.reset_entries(allocator, graph, catalog);
+        }
+        self.build_reset_index(0..self.reset_index_resources());
+        self.reset_rates(
+            allocator,
+            graph,
+            catalog,
+            funded_activity,
+            0..allocator.buildings.len(),
+        );
+    }
+
+    /// A reset's first phase (`SIM-02-K`): the receipt books' reset and whether the geometry
+    /// changed. After a change, [`Self::reset_layout`] over every source range in order,
+    /// [`Self::reset_entries`] and [`Self::build_reset_index`] over every range of
+    /// [`Self::reset_index_resources`] in order; then [`Self::reset_rates`] over every source
+    /// range in order. Any slicing gives one reset's result. Until the index is complete the
+    /// book names no layout, so a reset begun again after an interruption rebuilds it. Returns
+    /// whether the geometry changed. O(B / workers).
+    pub(crate) fn begin_reset(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        network: &TransitNetwork,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> bool {
         debug_assert!(!self.revalidation.is_active());
         self.clear_projected_sources();
+        self.source_base = allocator.buildings.len();
         self.staged.clear();
         self.committed.clear();
         self.released.clear();
@@ -367,7 +429,10 @@ impl RecurringSupply {
             network.cch_graph.metric_revision,
             allocator.buildings.len(),
         );
-        if geometry_revision(self.revision) != geometry_revision(Some(revision)) {
+        self.index_runs.clear();
+        self.index_revision = revision;
+        let rebuilds = geometry_revision(self.revision) != geometry_revision(Some(revision));
+        if rebuilds {
             self.nearest_incumbents
                 .resize(catalog.resource_count() + 1, None);
             self.nearest_incumbents.fill(None);
@@ -375,70 +440,159 @@ impl RecurringSupply {
             self.offsets.reserve(allocator.buildings.len() + 1);
             self.offsets.push(0);
             self.receipt_capacity = 0;
-            for building in &allocator.buildings {
-                self.receipt_capacity += catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map_or(0, |profile| profile.inputs.len());
-                let outputs = catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map_or(0, |profile| profile.outputs.len());
-                self.offsets
-                    .push(self.offsets.last().copied().unwrap() + outputs);
-            }
-            self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
-            self.receipt_capacity += 2 * self.remaining.len();
             self.doors.clear();
-            self.doors
-                .extend((0..allocator.buildings.len()).map(|source| {
-                    allocator
-                        .entrances
-                        .get(source)
-                        .map(|entrance| entrance.door_pos)
-                }));
-            let components = ModeComponentIndex::build(graph, TransitFlags::CAR);
-            // Inactive/unfinished sources remain geometrically indexed. Hourly quantities
-            // enable them only when they have actual staffed, funded net production.
-            self.index = SupplierCandidateIndex::build_filtered(
-                allocator,
-                graph,
-                catalog,
-                &components,
-                false,
-                |_, _| true,
-            );
-            self.index.enable_reservations();
-            let doors = &self.doors;
-            self.index.enable_spatial_bounds(|source| {
-                doors
-                    .get(source)
-                    .copied()
-                    .flatten()
-                    .map(|door| [door.x, door.y])
-            });
-            self.active.resize(self.remaining.len(), true);
-            self.active.fill(true);
-            self.components = Some(components);
+            self.doors.reserve(allocator.buildings.len());
+            // A torn layout or index is never reused: the layout is named once every run of
+            // the index is built.
+            self.revision = None;
         }
         if self.revision != Some(revision) {
             // A metric update can include changed speed limits, so refresh the exact
             // route-search bound even when resource/component geometry stays reusable.
             self.max_speed = max_speed_for_modes(graph, TransitFlags::CAR)
                 .max(crate::config::AGENT_DRIVEWAY_SPEED_MS);
-            self.revision = Some(revision);
+        }
+        if !rebuilds {
+            self.finish_reset_layout();
+        }
+        rebuilds
+    }
+
+    /// The output-port offsets, receipt estimate and doors of sources `range`, the next ones,
+    /// in source order, after a geometry change (`SIM-02-K`). O(range), serial.
+    pub(crate) fn reset_layout(
+        &mut self,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        range: std::ops::Range<usize>,
+    ) {
+        for (source, building) in allocator.buildings[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (range.start + offset, building))
+        {
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            self.receipt_capacity += profile.map_or(0, |profile| profile.inputs.len());
+            let outputs = profile.map_or(0, |profile| profile.outputs.len());
+            self.offsets
+                .push(self.offsets.last().copied().unwrap() + outputs);
+            self.doors.push(
+                allocator
+                    .entrances
+                    .get(source)
+                    .map(|entrance| entrance.door_pos),
+            );
+        }
+    }
+
+    /// After the layout, the quantity rows, the freight components and the supplier index's
+    /// entries, sorted into one run per resource (`SIM-02-K`). O(B × outputs / workers + roads
+    /// + E log E / workers) for E entries.
+    pub(crate) fn reset_entries(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
+        self.receipt_capacity += 2 * self.remaining.len();
+        let components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        // Inactive/unfinished sources remain geometrically indexed. Hourly quantities
+        // enable them only when they have actual staffed, funded net production.
+        SupplierCandidateIndex::collect_filtered(
+            allocator,
+            graph,
+            catalog,
+            &components,
+            false,
+            |_, _| true,
+            &mut self.index_entries,
+        );
+        // Sorted entries split into one run per resource; each run builds the index that
+        // resource's own sorted entries give (`SIM-02-K`).
+        self.index_entries.par_sort_unstable();
+        let mut start = 0;
+        for run in self.index_entries.chunk_by(|left, right| left.0 == right.0) {
+            self.index_runs.push((run[0].0, start, start + run.len()));
+            start += run.len();
+        }
+        self.index.clear();
+        self.active.resize(self.remaining.len(), true);
+        self.active.fill(true);
+        self.components = Some(components);
+        self.finish_reset_layout();
+    }
+
+    // The reset's layout end: the layout's name without an index to build, and the quantity
+    // rows' lengths. O(1) amortized.
+    fn finish_reset_layout(&mut self) {
+        if self.index_runs.is_empty() {
+            self.revision = Some(self.index_revision);
         }
         self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
         self.active.truncate(self.remaining.len());
+        self.production.resize(self.remaining.len(), 0.0);
+    }
+
+    /// Resources whose supplier index the reset builds, zero without a geometry change.
+    pub(crate) fn reset_index_resources(&self) -> usize {
+        self.index_runs.len()
+    }
+
+    /// Builds the supplier index of the reset's resources `range`, in resource order, with
+    /// reservations and door bounds; returns the entries built (`SIM-02-K`). The last range
+    /// names the layout. O(entries log entries).
+    pub(crate) fn build_reset_index(&mut self, range: std::ops::Range<usize>) -> usize {
+        let last = range.end == self.index_runs.len();
+        let mut built = 0;
+        let doors = &self.doors;
+        for &(resource, start, end) in &self.index_runs[range] {
+            let mut buckets = ReachableBucketIndex::from_entries(
+                self.index_entries[start..end]
+                    .iter()
+                    .map(|&(_, entry)| entry)
+                    .collect(),
+            );
+            buckets.enable_reservations();
+            buckets.enable_spatial_bounds(|source| {
+                doors
+                    .get(source)
+                    .copied()
+                    .flatten()
+                    .map(|door| [door.x, door.y])
+            });
+            self.index.insert(resource, buckets);
+            built += end - start;
+        }
+        if last {
+            self.revision = Some(self.index_revision);
+        }
+        built
+    }
+
+    /// Production rates and supplier availability of sources `range`, in source order, after
+    /// the index (`SIM-02-K`); the last range prepares the receipt storage. O(range + changed
+    /// availability × log bucket size), the rates in parallel.
+    pub(crate) fn reset_rates(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        funded_activity: &[f32],
+        range: std::ops::Range<usize>,
+    ) {
+        let slots = self.offsets[range.start]..self.offsets[range.end];
         fill_production_rates(
             allocator,
             catalog,
             funded_activity,
             &self.offsets,
-            0,
-            allocator.buildings.len(),
-            &mut self.remaining,
+            range.start,
+            range.end,
+            &mut self.remaining[slots.clone()],
         );
-        self.production.clone_from(&self.remaining);
-        for source in 0..allocator.buildings.len() {
+        self.production[slots.clone()].copy_from_slice(&self.remaining[slots]);
+        for source in range.clone() {
             let Some(profile) = catalog
                 .profile_by_runtime_id(allocator.buildings[source].economy_profile_runtime_id)
             else {
@@ -459,6 +613,9 @@ impl RecurringSupply {
                 }
             }
         }
+        if range.end < allocator.buildings.len() {
+            return;
+        }
         // At most one outstanding claim per eligible output port in an operation quote.
         self.staged.reserve(self.remaining.len());
         self.offers.reserve(self.remaining.len());
@@ -471,8 +628,8 @@ impl RecurringSupply {
         } else {
             estimate
         };
-        self.committed.reserve(estimate);
-        self.released.reserve(self.remaining.len());
+        crate::utils::storage::reserve_cleared(&mut self.committed, estimate);
+        crate::utils::storage::reserve_cleared(&mut self.released, self.remaining.len());
         self.source_receipts
             .resize(self.remaining.len(), usize::MAX);
         self.source_receipts.fill(usize::MAX);
@@ -664,7 +821,7 @@ impl RecurringSupply {
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
     ) {
-        if source >= self.offsets.len().saturating_sub(1) {
+        if source >= self.source_base {
             self.set_projected_available(source, resource, available, graph);
             return;
         }
@@ -816,7 +973,10 @@ impl RecurringSupply {
 
     /// Prepares at most one extra source receipt per matched customer before publication.
     pub(crate) fn prepare_customer_deliveries(&mut self, receipts: usize) {
-        self.reserve_receipts(self.committed.len() + receipts);
+        self.reserve_receipts(crate::utils::storage::spare_capacity(
+            self.committed.len() + receipts,
+            self.committed.capacity(),
+        ));
     }
 
     /// Publishes the currently staffed part of a financed seller-to-buyer promise.
@@ -1191,6 +1351,7 @@ impl RecurringSupply {
         routes: &mut FreightRouteCache,
         goods_multiplier: f32,
     ) -> InputSupplyCosts {
+        self.work[3] += 1;
         if input.daily_units > 0.0 && !goods_multiplier.is_finite() {
             return InputSupplyCosts {
                 goods: f64::INFINITY,
@@ -1377,7 +1538,6 @@ impl RecurringSupply {
             self.components
                 .as_ref()?
                 .entrance_components(entrance, graph, TransitFlags::CAR);
-        #[cfg(test)]
         let mut counts = [1, 0, 0, 0];
         // Reprice the preceding buyer's supplier as an initial upper bound. Every
         // candidate that can beat it is still checked, so this changes search cost,
@@ -1393,10 +1553,7 @@ impl RecurringSupply {
             {
                 return None;
             }
-            #[cfg(test)]
-            {
-                counts[2] += 1;
-            }
+            counts[2] += 1;
             let seconds =
                 self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
             Some((source, slot, seconds))
@@ -1414,10 +1571,7 @@ impl RecurringSupply {
                 entrance.door_pos.y,
                 |event| match event {
                     BoundedScanEvent::Item { item_idx: source } => {
-                        #[cfg(test)]
-                        {
-                            counts[1] += 1;
-                        }
+                        counts[1] += 1;
                         if Some(self.source_owner(source)) == buyer
                             || Some(self.source_owner(source)) == excluded
                             || best.is_some_and(|best| best.0 == source)
@@ -1450,10 +1604,7 @@ impl RecurringSupply {
                         if self.remaining[slot] <= 0.0 {
                             return true;
                         }
-                        #[cfg(test)]
-                        {
-                            counts[2] += 1;
-                        }
+                        counts[2] += 1;
                         let seconds = self.source_route(
                             source, buyer, entrance, allocator, network, graph, routes,
                         );
@@ -1489,10 +1640,7 @@ impl RecurringSupply {
                     | BoundedScanEvent::RingComplete {
                         next_min_distance_sq,
                     } => {
-                        #[cfg(test)]
-                        {
-                            counts[3] += 1;
-                        }
+                        counts[3] += 1;
                         best.is_none_or(|(_, _, seconds)| {
                             lower_bound_travel_seconds(next_min_distance_sq, self.max_speed)
                                 <= seconds
@@ -1502,6 +1650,9 @@ impl RecurringSupply {
             );
         }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
+        for (total, count) in self.work.iter_mut().zip(&counts[..3]) {
+            *total += count;
+        }
         #[cfg(test)]
         {
             for (total, count) in self.search_counts.iter_mut().zip(counts) {

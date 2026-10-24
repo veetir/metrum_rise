@@ -3,7 +3,9 @@
 //! Save/load regressions for directed sidewalks and junction lane identities.
 
 use super::*;
+use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::network::graph::Edge;
+use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::lanes::geometry::agent_lane_position;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -39,7 +41,6 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             speed_limit: 10.0,
             base_cost: 10.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 5.0,
             end_clip: 5.0,
             geometry: geometry.clone(),
@@ -87,16 +88,7 @@ fn clipped_road_lane_and_its_connector_retire_but_invalid_references_refuse() {
         [old_lane as i64],
     )
     .unwrap();
-    let version = crate::simulation::save::schema::SAVE_VERSION;
-    restore_lane_references(
-        &conn,
-        version,
-        &mut agents,
-        &graph,
-        &mut network,
-        &BuildingAllocator::new(),
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut agents, &graph, &mut network).unwrap();
     assert_eq!(agents.current_lane_id[0], usize::MAX);
     assert_eq!(agents.lane_change_from_lane_id[0], u32::MAX);
     assert!(agents.current_path[0].is_empty());
@@ -107,15 +99,7 @@ fn clipped_road_lane_and_its_connector_retire_but_invalid_references_refuse() {
     )
     .unwrap();
     assert!(
-        restore_lane_references(
-            &conn,
-            version,
-            &mut AgentSystem::new(),
-            &graph,
-            &mut network,
-            &BuildingAllocator::new()
-        )
-        .is_err()
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
     );
     conn.execute("DELETE FROM saved_lanes WHERE lane_id = 10001", [])
         .unwrap();
@@ -155,45 +139,21 @@ fn clipped_road_lane_and_its_connector_retire_but_invalid_references_refuse() {
         [],
     )
     .unwrap();
-    restore_lane_references(
-        &conn,
-        version,
-        &mut AgentSystem::new(),
-        &graph,
-        &mut network,
-        &BuildingAllocator::new(),
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network).unwrap();
     conn.execute(
         "INSERT INTO saved_lanes VALUES (10004, -1, 1, 0, 2, ?1, 10003, 0, 0)",
         [old_lane as i64],
     )
     .unwrap();
     assert!(
-        restore_lane_references(
-            &conn,
-            version,
-            &mut AgentSystem::new(),
-            &graph,
-            &mut network,
-            &BuildingAllocator::new()
-        )
-        .is_err()
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
     );
     conn.execute("DELETE FROM saved_lanes WHERE lane_id >= 10002", [])
         .unwrap();
     conn.execute("UPDATE saved_lanes SET lane_idx = 7 WHERE edge_id = 1", [])
         .unwrap();
     assert!(
-        restore_lane_references(
-            &conn,
-            version,
-            &mut AgentSystem::new(),
-            &graph,
-            &mut network,
-            &BuildingAllocator::new()
-        )
-        .is_err()
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
     );
 }
 
@@ -290,7 +250,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
         agents.lane_change_length_m[i] = 8.0;
         agents.overtake_blocked_time_s[i] = 0.75;
         agents.overtake_cooldown_s[i] = 1.25;
-        agents.job_lock_days[i] = 2;
+        agents.job_lock_until_day[i] = 2;
         agents.consecutive_unpaid_days[i] = 1;
         network.lane_system.lanes[id].frontage_delay_penalty_s = id as f32 * 0.125;
         network.lane_system.lanes[id].live_frontage_delay_s = id as f32 * 0.25;
@@ -305,22 +265,13 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored =
-        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut new_graph);
-    restore_lane_references(
-        &conn,
-        crate::simulation::save::schema::SAVE_VERSION,
-        &mut restored,
-        &new_graph,
-        &mut new_network,
-        &allocator,
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut restored, &new_graph, &mut new_network).unwrap();
     assert_eq!(
         network.frontage_delay_elapsed_s,
         new_network.frontage_delay_elapsed_s
@@ -364,7 +315,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
                 agents.lane_change_length_m[i],
                 agents.overtake_blocked_time_s[i],
                 agents.overtake_cooldown_s[i],
-                agents.job_lock_days[i],
+                agents.job_lock_until_day[i],
                 agents.consecutive_unpaid_days[i]
             ),
             (
@@ -375,7 +326,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
                 restored.lane_change_length_m[i],
                 restored.overtake_blocked_time_s[i],
                 restored.overtake_cooldown_s[i],
-                restored.job_lock_days[i],
+                restored.job_lock_until_day[i],
                 restored.consecutive_unpaid_days[i]
             ),
         );
@@ -418,80 +369,20 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     conn.execute("UPDATE agents SET transit_mode = 0", [])
         .unwrap();
-    let version = crate::simulation::save::schema::SAVE_VERSION;
-    let mut loaded = load_agents(&conn, 0.0, version).unwrap();
+    let mut loaded = load_agents(&conn, 0.0).unwrap();
     // Snapshot edges are compacted; restore against the corresponding compacted graph.
     let tx = conn.transaction().unwrap();
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     tx.commit().unwrap();
     let mut restored_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     network.lane_system.rebuild(&mut restored_graph);
-    let error = restore_lane_references(
-        &conn,
-        version,
-        &mut loaded,
-        &restored_graph,
-        &mut network,
-        &allocator,
-    )
-    .unwrap_err();
+    let error =
+        restore_lane_references(&conn, &mut loaded, &restored_graph, &mut network).unwrap_err();
     assert!(
         error
             .to_string()
             .contains("lane type does not match travel mode")
     );
-}
-
-#[test]
-fn v57_restores_both_sidewalk_directions_and_backward_vehicle_sentinel() {
-    let (graph, network) = fixture();
-    let lanes = &network.lane_system;
-    let mut agents = AgentSystem::new();
-    let ids = &lanes.edge_lanes[&1];
-    for &id in ids {
-        let i = add_agent(&mut agents, id, &graph, lanes);
-        agents.current_lane_id[i] = lanes.lanes[id].lane_idx as usize;
-        // A final frontage leg has already consumed every graph path node.
-        agents.current_path[i] = vec![agents.current_node[i]];
-        agents.current_path_index[i] = 1;
-    }
-    restore_v57_lane_references(&mut agents, &graph, &network, &BuildingAllocator::new()).unwrap();
-    validate_loaded_agents(&mut agents, &graph, &BuildingAllocator::new()).unwrap();
-    assert_eq!(agents.current_lane_id, *ids);
-    assert!(agents.current_path_index.iter().all(|&idx| idx == 1));
-}
-
-#[test]
-fn v57_restores_junction_from_saved_route_and_pose_instead_of_lane_zero() {
-    let (graph, network) = fixture();
-    let lanes = &network.lane_system;
-    let mut agents = AgentSystem::new();
-    let incoming = lanes.edge_lanes[&1]
-        .iter()
-        .copied()
-        .find(|&id| lanes.lanes[id].lane_type == LaneType::Foot && lanes.lanes[id].is_fwd)
-        .unwrap();
-    let connector = lanes.lanes[incoming]
-        .next_lanes
-        .iter()
-        .copied()
-        .find(|&id| lanes.lanes[lanes.lanes[id].next_lanes[0]].edge_id == 2)
-        .unwrap();
-    let i = add_agent(&mut agents, connector, &graph, lanes);
-    agents.current_lane_id[i] = 0;
-    agents.current_path[i] = vec![1, 2, 3];
-    agents.current_path_index[i] = 2;
-    restore_v57_lane_references(&mut agents, &graph, &network, &BuildingAllocator::new()).unwrap();
-    let restored = &lanes.lanes[agents.current_lane_id[i]];
-    assert_eq!(restored.lane_type, LaneType::Foot);
-    assert_eq!(restored.node_id, 2);
-    assert_eq!(lanes.lanes[restored.next_lanes[0]].edge_id, 2);
-    assert!(saved_pose_matches(
-        &agents,
-        i,
-        restored,
-        agents.lane_distance[i]
-    ));
 }
 
 #[test]
@@ -564,20 +455,11 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     )
     .unwrap();
     tx.commit().unwrap();
-    let mut restored =
-        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
-    restore_lane_references(
-        &conn,
-        58,
-        &mut restored,
-        &graph,
-        &mut new_network,
-        &allocator,
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
 
     assert_ne!(restored.current_lane_id[healthy], usize::MAX);
     assert_eq!(restored.transit[healthy], TRANSIT_INTERSECTION);
@@ -603,8 +485,7 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored =
-        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -622,15 +503,7 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
             .collect();
         new_lanes[id].next_lanes = direct.into();
     }
-    restore_lane_references(
-        &conn,
-        58,
-        &mut restored,
-        &graph,
-        &mut new_network,
-        &allocator,
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
 
     assert_eq!(restored.current_lane_id[on_connector], usize::MAX);
     assert_eq!(restored.transit[on_connector], TRANSIT_NETWORK);
@@ -697,6 +570,45 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.current_path_index[i], 0);
     assert_eq!(agents.target_building[i], 0);
     assert_eq!(agents.next_replan_time[i], 0.0);
+
+    // A car saved at a node before its first edge replans there and keeps its next plan, so a
+    // loaded game continues exactly (`SIM-02-A`).
+    agents.transit_mode[i] = MODE_CAR;
+    agents.current_edge[i] = usize::MAX;
+    agents.planned_target_building[i] = 0;
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.transit[i], TRANSIT_NETWORK);
+    assert_eq!(agents.target_building[i], 0);
+    assert_eq!(agents.planned_target_building[i], 0);
+}
+
+#[test]
+fn departure_holds_survive_loaded_plan_repair() {
+    let (graph, network) = fixture();
+    let mut allocator = BuildingAllocator::new();
+    for index in 0..2 {
+        allocator.buildings.push(
+            crate::simulation::buildings::allocator::indexed_test_building(
+                "test:held_trip".into(),
+                crate::simulation::zoning::ZoneType::Residential,
+                index,
+            ),
+        );
+    }
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.planned_target_building[i] = 1;
+    // A shopper reserved on the hour waits at home for its paced departure (`SIM-02-E`).
+    agents.hold_departure(i);
+    validate_loaded_planned_lane_ids(&mut agents, network.lane_system.lanes.len());
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert!(
+        agents.departure_held(i),
+        "loading must not release a held trip early"
+    );
+    assert_eq!(agents.planned_target_building[i], 1);
+    assert!(agents.release_departure(i));
+    assert!(!agents.departure_held(i));
 }
 
 #[test]
@@ -732,15 +644,7 @@ fn obsolete_direct_through_connector_has_no_delay_target() {
         [],
     )
     .unwrap();
-    restore_lane_references(
-        &conn,
-        crate::simulation::save::schema::SAVE_VERSION,
-        &mut AgentSystem::new(),
-        &graph,
-        &mut network,
-        &BuildingAllocator::new(),
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network).unwrap();
     for id in [from, to] {
         assert_eq!(network.lane_system.lanes[id].frontage_delay_penalty_s, 2.5);
         assert_eq!(network.lane_system.lanes[id].live_frontage_delay_s, 1.25);
@@ -794,35 +698,16 @@ fn older_open_node_connectors_retire_without_refusing_the_save() {
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let version = crate::simulation::save::schema::SAVE_VERSION;
-    let mut restored = load_agents(&conn, 0.0, version).unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut rebuilt = TransitNetwork::new();
     rebuilt.lane_system.rebuild(&mut new_graph);
-    restore_lane_references(
-        &conn,
-        version,
-        &mut restored,
-        &new_graph,
-        &mut rebuilt,
-        &allocator,
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt).unwrap();
     assert_eq!(restored.current_lane_id[0], usize::MAX);
     assert_eq!(restored.current_lane_id[1], road);
     assert!(restored.current_path[0].is_empty());
     // The same missing identity under an authored whitelist remains an invalid save.
     new_graph.add_lane_connection(center, 0, 0, 1, -1);
-    let mut restored = load_agents(&conn, 0.0, version).unwrap();
-    assert!(
-        restore_lane_references(
-            &conn,
-            version,
-            &mut restored,
-            &new_graph,
-            &mut rebuilt,
-            &allocator
-        )
-        .is_err()
-    );
+    let mut restored = load_agents(&conn, 0.0).unwrap();
+    assert!(restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt,).is_err());
 }

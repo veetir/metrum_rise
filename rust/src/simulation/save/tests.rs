@@ -25,15 +25,18 @@ use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
+    DestinationRoll, Household, HouseholdSystem, JobBoardRoll, REPLENISHMENT_SHOPPING_TO_STORE,
+    SavedDestinationRoll, SavedDestinationSweep, SavedJobBoard, SavedJobBoardSweep,
 };
 use crate::simulation::economy::logistics::{
-    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
-    ShipmentStatus, ShipmentSystem,
+    CarrierClass, FreightRequest, FreightRequestFailure, FreightRequestKey, FreightRequestKind,
+    SavedSupplierRoll, SavedSupplierSweep, Shipment, ShipmentEndpoint, ShipmentStatus,
+    ShipmentSystem, SupplierRoll,
 };
 use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
+use crate::simulation::grid::sweep::{EnvironmentSweep, SweepCapacities};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
@@ -142,7 +145,6 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: length / DEFAULT_URBAN_ROAD_SPEED_MS,
         physical_length: length,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),
@@ -202,7 +204,6 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 40.0,
         physical_length: 40.0,
-        current_congestion: 0.1,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
@@ -229,6 +230,7 @@ fn snapshot_test_building(
         depth_cells: 3,
         zone_profile_runtime_id: residential_profile,
         parcel_id: 1,
+        applicant_seed: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -246,7 +248,7 @@ fn snapshot_test_building(
         asset_id: residential_asset,
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -263,7 +265,7 @@ fn snapshot_test_building(
         operating_budget: 500.0,
         profit_tax_budget_baseline: 375.0,
         last_day_profit: 125.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -275,8 +277,14 @@ fn snapshot_test_building(
         daily_power_served_units: 77.0,
         recent_power_service_units: 79.0,
         recent_power_served_units: 76.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 456.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -284,7 +292,70 @@ fn snapshot_test_building(
 }
 
 #[test]
-fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
+fn non_canonical_vacancy_order_survives_save() {
+    let (_, edge) = snapshot_test_graph();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "vacancy_home",
+        ZoneClass::Residential,
+    );
+    for _ in 0..3 {
+        allocator
+            .buildings
+            .push(snapshot_test_building(edge, 0, asset.clone()));
+    }
+    allocator.rebuild_zone_index();
+    // Filling the first home and freeing a place moves it behind the others (`SIM-02`).
+    while allocator.buildings[0].occupancy < allocator.household_capacity(0) {
+        allocator.claim_vacancy(0);
+    }
+    allocator.release_vacancy(0);
+    let order = allocator.vacancy_index.clone();
+    assert_eq!(order[0], vec![2, 1, 0]);
+    let save = |allocator: &BuildingAllocator| {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        world::save_vacancy_order(&tx, allocator).unwrap();
+        tx.commit().unwrap();
+        world::load_vacancy_order(&conn, allocator.buildings.len()).unwrap()
+    };
+    let saved = save(&allocator);
+    let mut loaded = allocator.clone();
+    loaded.rebuild_zone_index();
+    assert_eq!(loaded.vacancy_index[0], vec![0, 1, 2]);
+    loaded.restore_vacancy_order(&saved);
+    assert_eq!(loaded.vacancy_index, order);
+    assert_eq!(loaded.vacancy_pos, allocator.vacancy_pos);
+    assert!(!loaded.dirty_index);
+    // The restored order rebuilds the admission order that upkeep kept incrementally.
+    assert!(loaded.admission_order.same_as(&allocator.admission_order));
+
+    // Lists that do not hold exactly the loaded buildings' vacancies, as after the asset packs
+    // changed capacities, leave the rebuild in place.
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    let mut missing = saved.clone();
+    missing.lists[0].pop();
+    let mut repeated = saved.clone();
+    repeated.lists[0][0] = 1;
+    for mismatch in [missing, repeated] {
+        rebuilt.restore_vacancy_order(&mismatch);
+        assert_eq!(rebuilt.vacancy_index[0], vec![0, 1, 2]);
+    }
+
+    // A stale index keeps no order and is stale again after loading.
+    allocator.dirty_index = true;
+    let saved = save(&allocator);
+    assert!(saved.stale && saved.lists.iter().all(Vec::is_empty));
+    rebuilt.restore_vacancy_order(&saved);
+    assert!(rebuilt.dirty_index);
+}
+
+#[test]
+fn pending_household_composition_survives_save() {
     let (graph, edge) = snapshot_test_graph();
     let mut allocator = BuildingAllocator::new();
     let asset = register_test_asset(
@@ -297,7 +368,14 @@ fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
         .buildings
         .push(snapshot_test_building(edge, 0, asset));
     let mut agents = AgentSystem::new();
-    let carrier = agents.spawn_household_arrival_carrier(0, 6, 17, 0, -20.0, 0.0);
+    let carrier = agents.spawn_household_arrival_carrier(
+        0,
+        6,
+        crate::simulation::economy::agents::household_age_composition(0, 17, 6),
+        0,
+        -20.0,
+        0.0,
+    );
     let approved = agents.pending_household_composition(carrier);
     let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
@@ -305,21 +383,11 @@ fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
     let tx = conn.transaction().unwrap();
     agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
     tx.commit().unwrap();
-    let restored = agents::load_agents(&conn, 0.0, SAVE_VERSION).unwrap();
+    let restored = agents::load_agents(&conn, 0.0).unwrap();
     assert_eq!(restored.pending_household_composition(carrier), approved);
     conn.execute("UPDATE agents SET pending_household_adults = 7", [])
         .unwrap();
-    assert!(agents::load_agents(&conn, 0.0, SAVE_VERSION).is_err());
-    conn.execute_batch(
-        "ALTER TABLE agents DROP COLUMN pending_household_adults;
-        ALTER TABLE agents DROP COLUMN pending_household_elders;",
-    )
-    .unwrap();
-    let legacy = agents::load_agents(&conn, 0.0, 71).unwrap();
-    assert_eq!(
-        legacy.pending_household_composition(carrier),
-        crate::simulation::economy::agents::household_age_composition(0, carrier, 6)
-    );
+    assert!(agents::load_agents(&conn, 0.0).is_err());
 }
 
 #[test]
@@ -356,7 +424,7 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
             params![total, extracted],
         )
         .unwrap();
-        let result = world::load_resource_extraction(&conn, 1, SAVE_VERSION);
+        let result = world::load_resource_extraction(&conn, 1);
         assert_eq!(
             result.is_ok(),
             valid,
@@ -405,8 +473,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         .expect("save test parcel");
     let mut pollution = PollutionSystem::new(&config);
     pollution.grid.data[0] = 3.0;
+    pollution.back.data[1] = 4.0;
     let mut noise = NoiseSystem::new(&config);
     noise.grid.data[0] = 7.0;
+    noise.back.data[1] = 6.0;
+    // A sweep in progress; frozen edges past the network are roads added since its start.
+    let environment = EnvironmentSweep {
+        frozen: Some(SweepCapacities {
+            building_handles: 2,
+            edges: 3,
+        }),
+        next_chunk: 12_000,
+        next_edge: 1,
+    };
     let mut demand = DemandSystem::new();
     demand.households_to_admit_today = 2;
     demand.persistent_exit_action_credit = 0.75;
@@ -485,8 +564,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         reserved_store_building_id: 0,
         reserved_amount: 2.5,
         reserved_total_cost: 15.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 1,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::from_parts(0, 1),
         shopping_timeout_hours_remaining: 4,
         replenishment_search_cursor: 24,
         stay_failure_days: 1,
@@ -507,9 +585,78 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.buildings[0].daily_city_funded_input_cost = 17.25;
     households.removed_electricity.settlement.demand_units = 12.0;
     households.removed_electricity.settlement.served_units = 10.0;
-    households.removed_electricity.city_input_cost = -2.5;
-    households.removed_electricity.power_input_cost = -2.5;
-    households.removed_electricity.coal_consumed_kg = 4.5;
+    // Daily settlement windows and the calendar day's totals span a save (`SIM-02-G`).
+    households.day_totals.coal_consumed_kg = 4.5;
+    households.day_totals.unemployment_benefits = 3.25;
+    households.day_totals.utility_providers = [0, 1, 2];
+    households.last_day_totals.private_payroll = 7.5;
+    households.last_day_totals.utility_local_revenue = [0.0, 1.5, 0.75];
+    households.coal_inventory_kg = 11.0;
+    // The hour in progress spans a save bit for bit (`SIM-02-I`).
+    households.electricity_hour.dispatch = 0.625;
+    households.electricity_hour.coverage = 0.875;
+    households.electricity_hour.demand_kwh = 0.1 + 0.2;
+    households.electricity_hour.capacity_kwh = 1.0 / 3.0;
+    households.electricity_hour.coal_burned_kg = 2.0_f64.sqrt();
+    households.electricity_hour.coal_stock_kg = 7.25;
+    households.service_sales.residents = 9;
+    households.service_sales.gross_revenue = 1.0 / 3.0;
+    households.service_sales.gross_by_resource = vec![0.0, 1.0 / 3.0];
+    households.service_sales.capacity_by_resource = vec![0.5, 0.1];
+    households.service_sales.drawable_by_resource = vec![0.0, 0.1 + 0.2];
+    households.service_sales.undrawn_by_resource = vec![-1e-9, 0.7_f64.sqrt()];
+    households.service_sales.hour_residents = 4;
+    households.service_sales.hour_capacity_by_resource = vec![0.25, 0.0];
+    households.service_sales.hour_collected = 1.0 / 7.0;
+    allocator.buildings[0].service_sales_capacity = 1.0 / 3.0;
+    allocator.buildings[0].service_sales_profile_runtime_id = 7;
+    allocator.buildings[0].funded_activity = 0.375;
+    allocator.city_input_day.total = -2.5;
+    allocator.city_input_day.power = -1.25;
+    allocator.buildings[0].paid_workers_in_window = 3;
+    allocator.buildings[0].funded_job_capacity = 4;
+    allocator.buildings[0].unpaid_cash_wages_in_window = 5;
+    households.restore_paid_workers(0, 2);
+    households
+        .handles
+        .register_appended(households.households.len());
+    let first_household = households.handles.handle(0);
+    households.housing_reviews.push(17, first_household);
+    households.rehousing.push(23, first_household);
+    households.restock_requests.push(29, first_household);
+    households.visit_requests.push(31, first_household);
+    households.visit_credit = 448;
+    households.shopper_departures.place(960, 1_200);
+    // A destination front and a sweep in progress (`SIM-02-J`), each kind saved in order.
+    let destinations = SavedDestinationRoll {
+        current: [true, false],
+        front: Some((
+            7,
+            [
+                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2))],
+                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1))],
+            ],
+        )),
+        sweep: Some(SavedDestinationSweep {
+            building_handles: 2,
+            hour: 8,
+            next_chunk: 300,
+            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0))], Vec::new()],
+        }),
+    };
+    households.destinations = DestinationRoll::restore(destinations.clone()).unwrap();
+    let job_board = SavedJobBoard {
+        front: Some((9, vec![Handle::from_parts(0, 0), Handle::from_parts(1, 2)])),
+        sweep: Some(SavedJobBoardSweep {
+            building_handles: 2,
+            hour: 10,
+            next_chunk: 200,
+            members: vec![Handle::from_parts(1, 2)],
+        }),
+    };
+    households.job_board = JobBoardRoll::restore(job_board.clone()).unwrap();
+    households.job_requests.push(37, Handle::from_parts(0, 0));
+    households.exits.push_back(first_household);
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -523,12 +670,26 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 640.0,
         freight_cost: 16.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
+        cargo_loaded: false,
     });
+    // Ids continue past dropped shipments, and the request queue keeps its order (`SIM-02-J`).
+    logistics.next_shipment_id = 5;
+    for (slot, kind) in [
+        (90, FreightRequestKind::Export),
+        (91, FreightRequestKind::Inbound),
+    ] {
+        logistics.freight_requests.push_back(FreightRequest {
+            slot,
+            building: crate::simulation::core::handles::Handle::from_parts(0, 2),
+            kind,
+        });
+    }
     logistics.request_failures.insert(
         FreightRequestKey {
             destination_building_id: 0,
@@ -539,6 +700,21 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             terminal: true,
         },
     );
+    // A supplier index front and a sweep in progress (`SIM-02-I`), each saved sorted.
+    let supplier_roll = SavedSupplierRoll {
+        current: [true, false],
+        front: Some((
+            12,
+            vec![(1, 0, -1, 0, 1 << 32 | 3), (household_supplies, 2, 0, 5, 0)],
+        )),
+        sweep: Some(SavedSupplierSweep {
+            building_handles: 2,
+            hour: 13,
+            next_chunk: 480,
+            entries: vec![(1, 0, 0, 0, 0), (household_supplies, 1, 3, -2, 1)],
+        }),
+    };
+    logistics.supplier_roll = SupplierRoll::restore(supplier_roll.clone()).unwrap();
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
     let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
@@ -576,7 +752,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             transit: TRANSIT_NETWORK,
             transit_mode: MODE_CAR,
             happiness: 88.0,
-            money: 123.0,
             journey_start_time: 12.5,
             schedule_seed: 1,
             cached_commute_minutes: 12,
@@ -628,7 +803,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             transit: TRANSIT_NETWORK,
             transit_mode: MODE_WALK,
             happiness: 77.0,
-            money: 55.0,
             journey_start_time: 6.0,
             schedule_seed: 2,
             cached_commute_minutes: 8,
@@ -709,6 +883,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 1234,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -717,7 +892,21 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         },
         planned_day_index: 2,
         planned_minute_of_day: 180,
+        permit: Default::default(),
+        counted: false,
     });
+    // A finished demand snapshot sweep and part of the next (`SIM-02-I`).
+    for slot in 0..crate::simulation::core::scheduler::SLOTS_PER_HOUR + 37 {
+        demand.advance_snapshot_sweep(
+            slot,
+            &allocator,
+            &households,
+            &fiscal_policy,
+            treasury.balance,
+        );
+    }
+    let demand_snapshot = demand.saved_snapshot_sweep();
+    assert!(demand_snapshot.front.is_some() && demand_snapshot.sweep.is_some());
 
     let path = temp_path("round_trip");
     // Not the defaults: the generator parameters are the vegetation population, so a save that
@@ -778,6 +967,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 noise: &noise,
                 demand: &demand,
                 pending_demand_spawns: &pending_demand_spawns,
+                scheduler: crate::simulation::save::SavedScheduler {
+                    environment,
+                    demand_snapshot: demand_snapshot.clone(),
+                    logistics_next_shipment_id: logistics.next_shipment_id,
+                    ..Default::default()
+                },
                 allocator,
                 households: &households,
                 logistics: &logistics,
@@ -856,6 +1051,118 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         serde_json::to_string(&loaded.households.removed_electricity).unwrap(),
         serde_json::to_string(&households.removed_electricity).unwrap(),
     );
+    for (loaded, saved) in [
+        (&loaded.households.day_totals, &households.day_totals),
+        (
+            &loaded.households.last_day_totals,
+            &households.last_day_totals,
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_string(loaded).unwrap(),
+            serde_json::to_string(saved).unwrap()
+        );
+    }
+    assert_eq!(loaded.households.coal_inventory_kg, 11.0);
+    let (saved_hour, loaded_hour) = (
+        &households.electricity_hour,
+        &loaded.households.electricity_hour,
+    );
+    for (restored, saved) in [
+        (loaded_hour.demand_kwh, saved_hour.demand_kwh),
+        (loaded_hour.capacity_kwh, saved_hour.capacity_kwh),
+        (loaded_hour.coal_burned_kg, saved_hour.coal_burned_kg),
+        (loaded_hour.coal_stock_kg, saved_hour.coal_stock_kg),
+    ] {
+        assert_eq!(restored.to_bits(), saved.to_bits());
+    }
+    assert_eq!(
+        (loaded_hour.dispatch, loaded_hour.coverage),
+        (saved_hour.dispatch, saved_hour.coverage)
+    );
+    let (saved, restored) = (&households.service_sales, &loaded.households.service_sales);
+    assert_eq!(
+        (
+            restored.residents,
+            restored.hour_residents,
+            restored.gross_revenue
+        ),
+        (saved.residents, saved.hour_residents, saved.gross_revenue)
+    );
+    assert_eq!(
+        restored.hour_collected.to_bits(),
+        saved.hour_collected.to_bits()
+    );
+    for (restored, saved) in [
+        (&restored.gross_by_resource, &saved.gross_by_resource),
+        (&restored.capacity_by_resource, &saved.capacity_by_resource),
+        (
+            &restored.hour_capacity_by_resource,
+            &saved.hour_capacity_by_resource,
+        ),
+    ] {
+        assert_eq!(restored, saved);
+    }
+    for (restored, saved) in [
+        (&restored.drawable_by_resource, &saved.drawable_by_resource),
+        (&restored.undrawn_by_resource, &saved.undrawn_by_resource),
+    ] {
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(restored), bits(saved));
+    }
+    assert_eq!(
+        (
+            loaded.allocator.buildings[0].service_sales_capacity,
+            loaded.allocator.buildings[0].service_sales_profile_runtime_id,
+            loaded.allocator.buildings[0].funded_activity
+        ),
+        (1.0 / 3.0, 7, 0.375)
+    );
+    assert_eq!(loaded.households.daily_ledgers()[0].paid_workers, 2);
+    assert_eq!(
+        loaded.households.housing_reviews.iter().collect::<Vec<_>>(),
+        vec![(17, first_household)]
+    );
+    assert_eq!(
+        loaded.households.rehousing.iter().collect::<Vec<_>>(),
+        vec![(23, first_household)]
+    );
+    assert_eq!(
+        loaded
+            .households
+            .restock_requests
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![(29, first_household)]
+    );
+    assert_eq!(
+        loaded.households.visit_requests.iter().collect::<Vec<_>>(),
+        vec![(31, first_household)]
+    );
+    assert_eq!(loaded.households.visit_credit, 448);
+    assert_eq!(
+        loaded.households.shopper_departures,
+        households.shopper_departures
+    );
+    assert_eq!(loaded.households.destinations.saved(), destinations);
+    assert_eq!(loaded.households.job_board.saved(), job_board);
+    assert_eq!(loaded.households.job_requests, households.job_requests);
+    assert_eq!(loaded.households.exits, [first_household]);
+    assert_eq!(
+        (
+            loaded.allocator.city_input_day.total,
+            loaded.allocator.city_input_day.power
+        ),
+        (-2.5, -1.25)
+    );
+    assert_eq!(
+        (
+            loaded.allocator.buildings[0].paid_workers_in_window,
+            loaded.allocator.buildings[0].funded_job_capacity,
+            loaded.allocator.buildings[0].unpaid_cash_wages_in_window
+        ),
+        (3, 4, 5)
+    );
     assert_eq!(
         loaded.allocator.buildings[0]
             .daily_electricity
@@ -926,7 +1233,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         [],
     )
     .unwrap();
-    if agents::load_agents(&conn, 0.0, SAVE_VERSION).is_ok() {
+    if agents::load_agents(&conn, 0.0).is_ok() {
         accepted_corruptions.push("agent path sequence gap".to_owned());
     }
     conn.execute(
@@ -981,18 +1288,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     }
     conn.execute("UPDATE shipments SET freight_cost = 16", [])
         .unwrap();
-    // A border job saved while queued for gateway capacity dispatches on load.
-    conn.execute("UPDATE shipments SET status = 0, queued_hours = 5", [])
-        .unwrap();
-    let dispatched = load_from_sqlite(&path, &allocator.registry).expect("load queued border job");
-    assert_eq!(
-        dispatched.logistics.shipments[0].status,
-        ShipmentStatus::InTransit
-    );
-    assert_eq!(dispatched.logistics.shipments[0].queued_hours, 0);
-    conn.execute("UPDATE shipments SET status = 1, queued_hours = 0", [])
-        .unwrap();
-    // Offsets saved before version 84 cluster in alternate hours and are recomputed (`ECON-19`).
     conn.execute("UPDATE households SET replenishment_offset_hours = 23", [])
         .unwrap();
     let current = load_from_sqlite(&path, &allocator.registry).expect("load current offsets");
@@ -1000,140 +1295,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         current.households.households[0].replenishment_offset_hours,
         23
     );
-    conn.execute("UPDATE save_meta SET version = 83", [])
-        .unwrap();
-    let migrated = load_from_sqlite(&path, &allocator.registry).expect("load old offsets");
-    assert_eq!(
-        migrated.households.households[0].replenishment_offset_hours,
-        crate::simulation::economy::households::stable_replenishment_offset_hours(0, 0)
-    );
-    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION])
-        .unwrap();
-    // Version 69 stores food/grain bundles and larger raw-metal bundles. Convert quantities
-    // once at the read boundary, retaining all money and unchanged household supply quantities.
-    conn.execute("UPDATE save_meta SET version = 69", [])
-        .unwrap();
-    conn.execute("ALTER TABLE buildings DROP COLUMN electricity_usage", [])
-        .unwrap();
-    conn.execute("ALTER TABLE households DROP COLUMN electricity_account", [])
-        .unwrap();
-    conn.execute("DROP TABLE electricity_day_state", [])
-        .unwrap();
-    conn.execute(
-        "ALTER TABLE city_budget_history DROP COLUMN electricity_consumption_cost",
-        [],
-    )
-    .unwrap();
-    let old_power = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(
-        old_power.resource_extraction.sites()[0].reserve_density_kg_per_m2,
-        6.0
-    );
-    assert!(
-        (old_power.allocator.buildings[0].daily_power_service_units - 78.0 / 3.6).abs() < 0.001
-    );
-    assert!((old_power.budget_history[0].power_produced - 70.0 / 3.6).abs() < 0.001);
-    assert_eq!(
-        old_power.households.households[0].power_arrears.total(),
-        0.0
-    );
-    assert_eq!(
-        old_power.households.daily_ledgers()[0]
-            .electricity
-            .consumed_kwh,
-        0.0
-    );
-    conn.execute("UPDATE shipments SET resource_runtime_id = 2", [])
-        .unwrap();
-    conn.execute("INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (0, 8, 12)", []).unwrap();
-    // Older quota ledgers are ignored; old jobs keep their already agreed zero carrier fee.
-    conn.execute_batch(
-        "CREATE TABLE owa_export_saturation(resource_runtime_id INTEGER, units REAL);
-        INSERT INTO owa_export_saturation VALUES (2, 120);
-        ALTER TABLE shipments DROP COLUMN freight_cost;",
-    )
-    .unwrap();
-    let kg_save = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(kg_save.allocator.buildings[0].inventory_units(2), 52.5);
-    assert_eq!(kg_save.allocator.buildings[0].inventory_units(8), 30.0);
-    assert_eq!(kg_save.logistics.shipments[0].amount, 100.0);
-    assert_eq!(
-        kg_save.logistics.shipments[0].total_cost,
-        loaded.logistics.shipments[0].total_cost
-    );
-    assert_eq!(kg_save.logistics.shipments[0].freight_cost, 0.0);
-    assert_eq!(
-        kg_save.households.households[0].stock,
-        loaded.households.households[0].stock
-    );
-    assert_eq!(kg_save.treasury.balance, loaded.treasury.balance);
-    conn.execute("UPDATE shipments SET amount = 30000", [])
+    // `SIM-02` cut over the format: a save of any other version must not load.
+    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION - 1])
         .unwrap();
     assert!(
         load_from_sqlite(&path, &allocator.registry).is_err(),
-        "one carrier cannot restore an oversized load"
+        "an older save must not load"
     );
-    conn.execute(
-        "UPDATE shipments SET resource_runtime_id = 1, amount = 80",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "DELETE FROM building_inventories WHERE resource_runtime_id = 8",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "DELETE FROM owa_export_saturation WHERE resource_runtime_id = 2",
-        [],
-    )
-    .unwrap();
-
-    // A save written before the pin has no `variant` column at all. Reading one must not name
-    // it, or every existing city fails to open on the format that added it.
-    conn.execute("UPDATE save_meta SET version = 62", [])
-        .unwrap();
-    conn.execute("ALTER TABLE vegetation_additions DROP COLUMN variant", [])
-        .unwrap();
-    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load a pre-pin save");
-    let (_, added) = legacy.vegetation_edits.cell(planted);
-    assert_eq!(
-        added,
-        [authored(VARIANT_FROM_SEED), authored(VARIANT_FROM_SEED)],
-        "a plant authored before the pin existed keeps the renderer's own choice"
-    );
-
-    for (column, _) in payment_fields {
-        conn.execute(&format!("ALTER TABLE households DROP COLUMN {column}"), [])
-            .unwrap();
-    }
-    // Older files still carry retired pedestrian storage; the current reader ignores it.
-    conn.execute(
-        "ALTER TABLE agents ADD COLUMN pedestrian_side INTEGER NOT NULL DEFAULT 0",
-        [],
-    )
-    .unwrap();
-    conn.execute("CREATE TABLE agent_ped_steps(agent_id INTEGER, step_index INTEGER, edge_id INTEGER, forward INTEGER, side INTEGER)", []).unwrap();
-    // Older saves contain no unsettled-payment fields; only pre-59 saves lack a camera.
-    for version in [60, 59, 58, 57] {
-        if version == 58 {
-            conn.execute("DROP TABLE camera_state", []).unwrap();
-        }
-        conn.execute("UPDATE save_meta SET version = ?1", [version])
-            .unwrap();
-        let legacy = load_from_sqlite(&path, &allocator.registry).unwrap();
-        assert_eq!(legacy.camera, (version >= 59).then_some(camera));
-        assert_eq!(legacy.weather, WeatherState::default());
-        let ledger = legacy.households.daily_ledgers().first().unwrap();
-        assert_eq!(ledger.power_consumption_cost, 0.0);
-        assert_eq!(ledger.water_consumption_cost, 0.0);
-        assert_eq!(ledger.sewage_consumption_cost, 0.0);
-    }
-    // A save written before the generator was parameterised carries no table, so it keeps the
-    // forest it was built in rather than regenerating a different one under an existing city.
-    conn.execute("DROP TABLE vegetation_config", []).unwrap();
-    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load without vegetation");
-    assert_eq!(legacy.vegetation, VegetationConfig::default());
     drop(conn);
     fs::remove_file(&path).ok();
 
@@ -1182,6 +1350,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_pending.planned_minute_of_day, 180);
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
+    assert_eq!(loaded.pollution.back.data, pollution.back.data);
+    assert_eq!(loaded.noise.back.data, noise.back.data);
+    assert_eq!(loaded.scheduler.environment, environment);
+    assert_eq!(loaded.demand.saved_snapshot_sweep(), demand_snapshot);
+    // The desirability back is rebuilt from the pollution and noise backs.
+    assert_eq!(
+        loaded.desirability.back.data[1],
+        50.0 - 4.0 * 2.0 - 6.0 * 1.5
+    );
     assert_eq!(loaded.graph.edge_count(), 1);
     assert_eq!(
         loaded.graph.edge(0).vehicle_frontage_access,
@@ -1226,10 +1403,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.households.households[0].replenishment_failure_count,
         1
     );
-    assert_eq!(loaded.households.households[0].shopping_agent_id, 0);
     assert_eq!(
-        loaded.households.households[0].shopping_agent_schedule_seed,
-        1
+        loaded.households.households[0].shopping_agent,
+        crate::simulation::economy::agents::AgentHandle::from_parts(0, 1)
     );
     assert_eq!(
         loaded.households.households[0].shopping_timeout_hours_remaining,
@@ -1383,6 +1559,24 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         })
     );
     assert_eq!(loaded.logistics.shipments[0].freight_cost, 16.0);
+    assert_eq!(loaded.logistics.supplier_roll.saved(), supplier_roll);
+    assert_eq!(loaded.logistics.next_shipment_id, 5);
+    assert_eq!(
+        loaded.logistics.freight_requests,
+        logistics.freight_requests
+    );
+}
+
+#[test]
+fn environment_sweep_edge_indices_skip_deleted_edges_when_saved() {
+    let deleted = [false, true, false, true, false];
+    for (live, saved) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 2), (5, 3), (7, 5)] {
+        assert_eq!(
+            super::scheduler::compacted_edge_index(deleted.into_iter(), live),
+            saved,
+            "edge {live}"
+        );
+    }
 }
 
 #[test]
@@ -1415,7 +1609,6 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 120.0,
         physical_length: 120.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
@@ -1451,6 +1644,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         depth_cells: 2,
         zone_profile_runtime_id: residential_profile,
         parcel_id: 1,
+        applicant_seed: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -1468,7 +1662,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         asset_id: residential_asset,
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1477,7 +1671,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
         last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -1489,8 +1683,14 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -1510,6 +1710,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let budget_history = VecDeque::new();
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 10,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -1518,8 +1719,11 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         },
         planned_day_index: 1,
         planned_minute_of_day: 10,
+        permit: Default::default(),
+        counted: false,
     });
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 20,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -1528,6 +1732,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         },
         planned_day_index: 1,
         planned_minute_of_day: 20,
+        permit: Default::default(),
+        counted: false,
     });
 
     let path = temp_path("legacy_overlap");
@@ -1549,6 +1755,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             noise: &noise,
             demand: &demand,
             pending_demand_spawns: &pending_demand_spawns,
+            scheduler: crate::simulation::save::SavedScheduler::default(),
             allocator: &allocator,
             households: &households,
             logistics: &logistics,
@@ -1577,8 +1784,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         )
         .expect("insert crossing end node");
         conn.execute(
-            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
-             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
+            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
+             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
             [],
         )
         .expect("insert crossing edge");
@@ -1842,6 +2049,37 @@ fn benchmark_sqlite_graph_loading() {
         samples.sort_by(f64::total_cmp);
         eprintln!("sqlite_graph edges={count} load_ms={:.6}", samples[5]);
     }
+}
+
+// A road edit that rebuilds the junction lane a walker is crossing leaves it in the network at
+// the junction node with no edge, lane or path, and the next movement pass replans from the node.
+// A load keeps it there, as the running game does, instead of sending it to its destination.
+#[test]
+fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
+    use crate::simulation::network::types::NodeType;
+    let mut graph = RegionGraph::new();
+    let node = graph.add_node(godot::prelude::Vector3::ZERO, NodeType::Junction);
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(snapshot_test_building(
+        usize::MAX,
+        0,
+        "test:home".to_owned(),
+    ));
+    let mut agents = AgentSystem::new();
+    let walker = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.transit[walker] = TRANSIT_NETWORK;
+    agents.transit_mode[walker] = MODE_WALK;
+    agents.current_building[walker] = usize::MAX;
+    agents.target_building[walker] = 0;
+    agents.current_node[walker] = node;
+    agents.current_edge[walker] = usize::MAX;
+    agents.current_lane_id[walker] = usize::MAX;
+    agents.current_path[walker].clear();
+    agents::validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.transit[walker], TRANSIT_NETWORK);
+    assert_eq!(agents.current_node[walker], node);
+    assert_eq!(agents.current_building[walker], usize::MAX);
+    assert_eq!(agents.target_building[walker], 0);
 }
 
 #[test]

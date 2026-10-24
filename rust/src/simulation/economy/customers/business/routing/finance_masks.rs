@@ -50,12 +50,12 @@ impl BusinessMarket {
 
     /// Reserves one dirty-list entry per buyer before any transactional mutation.
     pub(super) fn prepare_finance_mask_storage(&mut self) {
-        self.buyer_dirty.resize(self.budgets.finance.len(), false);
-        self.dirty_buyers.reserve(
-            self.buyer_dirty
-                .len()
-                .saturating_sub(self.dirty_buyers.len()),
+        crate::utils::storage::resize_rows(
+            &mut self.buyer_dirty,
+            self.budgets.finance.len(),
+            false,
         );
+        crate::utils::storage::reserve_rows(&mut self.dirty_buyers, self.buyer_dirty.len());
         self.account_masks.reserve(
             self.budgets
                 .accounts
@@ -109,8 +109,10 @@ impl BusinessMarket {
     // Within one ordinary query claims only decrease finance and units. An excluded account
     // cannot change its own units, so a false mask stays false until the query ends.
     // Cost follows changed buyers' tranches and their existing bucket-tree paths.
-    /// Refreshes only changed buyers; no allocation or unrelated-account traversal.
-    pub(super) fn refresh_finance_masks(&mut self) {
+    /// Refreshes only changed buyers; no allocation or unrelated-account traversal. A
+    /// census's financing publication changes every buyer, so the minute-59 preparation
+    /// refreshes its book before the hour's first masked claim would (`SIM-02-K`).
+    pub(crate) fn refresh_finance_masks(&mut self) {
         while let Some(buyer) = self.dirty_buyers.pop() {
             self.buyer_dirty[buyer] = false;
             let first = self.budgets.buyer_accounts[buyer];

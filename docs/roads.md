@@ -17,6 +17,35 @@ internals, or the shared engineered-ground model. Those are owned by
 
 ## Current Status
 
+### Upstream integration checkpoint — 2026-10-24
+
+`feat/road-upstream-sync` merges upstream `b75e03c9` into road-chain `0cc4a2ab` without
+rewriting either history. Scheduler slicing, planning slots, snapshot culling, lane buckets,
+owned worker pools and shutdown joining are retained alongside the road features.
+Upstream's published preview checks now include median width. The split uses upstream's
+horizontal-station partition of the original physical polyline, preserving supports that do
+not coincide with control knots; median setbacks and pocket metadata remain road-owned.
+Upstream's three-vertex seam retry guard complements the road-chain exact seam/source fixes.
+Terrain buffer normals and safety metrics use upstream's authoritative f64 triangle geometry;
+patch-local f64 subtraction and road diagnostics remain.
+
+Road-chain ID collisions are renamed: validation `ROAD-54` → `ROAD-76`, footpath connectivity
+`ROAD-55` → `ROAD-77`, Finnish surfaces `ROAD-56` → `ROAD-78`, cycling `ROAD-57` → `ROAD-79`,
+medians `ROAD-66` → `ROAD-80`, and junction-priority implementation `TRAFFIC-06` → `TRAFFIC-08`.
+Upstream's fix IDs and its `SIM-02`, `PERF-07`, `PERF-08`, `TRAFFIC-07` rows are preserved.
+
+Fresh pre-merge measurements on Apple M2 Pro, Godot 4.7.2 Metal Forward+, eight Rayon workers,
+`METRUM_DEBUG=0`, 1600×1000, uncapped frames and disabled VSync, read `kuopio-sw-pockets`
+without writing it. With zoning visible: Prisma paused 81.73 fps, Prisma 1× 81.97 fps, KYS 1×
+39.86 fps, city sweep 1× 33.22 fps. This workload does not reproduce the user's 7–12 fps.
+`godot/tests/road_upstream_sync_capture.gd` records raw frame intervals and matching PNGs in
+ignored local captures. Pre-merge road-chunk, six populated locality fixtures and PERF-06 ran
+successfully with eight workers. These are baseline results, not merged-build acceptance.
+
+The combined schema writes version 108. Legacy road-chain migration, plain-upstream save
+loading, the full merged correctness/bridge suite, matched performance contracts and final
+capture comparison remain integration gates; this checkpoint does not claim them complete.
+
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
 Road/yard shader bodies and material setup are shared; the old inline stripe code is removed
@@ -79,7 +108,7 @@ Vsync is disabled during measurement. Build base: `124be55d13d7eccf02681fc7e906e
 this material change; unchanged release extension SHA-256:
 `5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89`.
 
-## Finnish road surface and markings (`ROAD-56`)
+## Finnish road surface and markings (`ROAD-78`)
 
 The carriageway draws as worn Finnish stone-mastic asphalt instead of one tiling texture
 (`godot/assets/materials/road_asphalt.gdshader`, functions in
@@ -355,7 +384,7 @@ gate them by camera height, or make them a graphics setting is open.
 Finnish road signs stand beside the roads, placed in Rust with the road chunks and drawn by
 `godot/scripts/renderers/road_signs.gd` as one MultiMesh per sign model and chunk. They are
 cosmetic for speeds/warnings; B1/B5/B6 reflect the automatic junction control described in
-[`traffic.md`](traffic.md#automatic-vehicle-junction-priority--traffic-06-stage-1a).
+[`traffic.md`](traffic.md#automatic-vehicle-junction-priority--traffic-08-stage-1a).
 
 - **Pedestrian crossings (E1-1, E1-2).** One sign per approach at every zebra, taken from its
   `CrosswalkMarking` (the crossing authority), on the right-hand side facing approaching traffic,
@@ -396,7 +425,7 @@ cosmetic for speeds/warnings; B1/B5/B6 reflect the automatic junction control de
   measured from the sidewalk's inner edge, which put poles in the walking line), or 0.75 m beyond the kerb or shoulder on the
   terrain where there is no sidewalk, and keep 2 m from street-light poles by sliding along the
   road away from the junction; a sign with no room on its edge is left out.
-- **Priority, yield and stop (B1/B5/B6, TRAFFIC-06 stage 1a).** Automatic approach hierarchy
+- **Priority, yield and stop (B1/B5/B6, TRAFFIC-08 stage 1a).** Automatic approach hierarchy
   selects these through the same Rust policy that admits traffic. They use the existing
   pole models and per-chunk batches, before crossing/speed/warning spacing passes. The
   station starts 16 m back from the compiled mouth and pole avoidance slides away from
@@ -413,7 +442,7 @@ per chunk rebuild, ordered by a total pose key, so the same network gives identi
 it ran beside other build jobs on the M2 Pro, so treat it as a scaling check, not an exact cost.
 In game (`traffic-signs.sqlite`) the warning signs face the traffic they warn, on its right.
 
-### TRAFFIC-06 stage 1a road acceptance — 2026-10-21
+### TRAFFIC-08 stage 1a road acceptance — 2026-10-21
 
 Vehicle policy, correctness and PERF-06 acceptance are recorded in
 [`traffic.md`](traffic.md#stage-1a-acceptance--2026-10-2021). Baseline is ROAD-68 checkpoint
@@ -611,7 +640,7 @@ The required band model supports carriageway, curb / shoulder, sidewalk, central
 no-sidewalk profiles. Parking lanes, cycle tracks, tram reservations and richer shoulders must
 also add explicit ordered bands instead of special-case render offsets.
 
-### Central medians and in-place cross-section changes — ROAD-66
+### Central medians and in-place cross-section changes — ROAD-80
 
 Road tooling slice A adds `Edge.median: Option<RoadMedian>`. `None` keeps the original band
 and lane calculations. A median stores its style, total width including kerbs, and independent
@@ -641,7 +670,7 @@ The same bands own terrain clips, earthworks, picking and rendered top surfaces.
 
 Grass uses the terrain grass palette/textures on a separate optional chunk layer, with the
 standard cloud-shadow light include. Paving uses the existing concrete material. Painted
-separators are asphalt with white borders and diagonal hatching emitted through `ROAD-56`'s
+separators are asphalt with white borders and diagonal hatching emitted through `ROAD-78`'s
 marking mesh/shader, clipped to the separator polygons. Raised medians at least two metres
 wide use the existing twin-arm median lamp; poles require at least 1.4 m of median interior
 at their sampled station. Median tree planting is not implemented.
@@ -840,7 +869,7 @@ Open vehicle junctions rebuild lane use from the XZ endpoint tangents of the aut
 centrelines. Turns within the inclusive ±45° sector are straight; outside it the signed cross
 product distinguishes left and right. Elevation, median offsets and clipped lane endpoints do
 not change the classification. There is no traffic-light, priority, yield or stop-control change
-(`TRAFFIC-06`), and `NET-07`'s dead-end-only default U-turn rule is unchanged.
+(`TRAFFIC-08`), and `NET-07`'s dead-end-only default U-turn rule is unchanged.
 
 Only available movements receive lanes. One incoming lane shares all movements. With all three
 movements available, two lanes use left+straight / straight+right; three use left / straight /
@@ -1070,7 +1099,7 @@ preview is rebuilt against current authoritative state. Mid-road count changes u
 in-place cross-section controls and author transitions at incident degree-two nodes.
 
 **Markings and controls.** Finnish white arrows derive from actual permitted approach
-movements through ROAD-56's marking layer. Solid approach divider segments share their
+movements through ROAD-78's marking layer. Solid approach divider segments share their
 no-change interval with the lane selector and stop before zebra clearance. Optional gantries
 remain deferred. Endpoint selection, pocket toggles and pocket/taper dimensions use H mode; existing E and
 directional count keys retain their meaning. The controls and bounds are listed below.
@@ -1535,7 +1564,7 @@ views were captured through Rust road-tool commands and the ordinary routed-car 
 
 The approach matches the reference's median opening and L/S/S/R arrangement. The reference's
 gantry, nearby slip-road islands and underpass remain outside this slice. Queues arise from car
-following and existing reservations; traffic lights and right-of-way remain `TRAFFIC-06`.
+following and existing reservations; traffic lights and right-of-way remain `TRAFFIC-08`.
 `ROAD-68` needs explicit grade/topology separation before junction construction. `ROAD-69`
 still needs ramp roles and connectors; ROAD-62's circulating role is described below. The
 flagged degree-two transition is reserved for lane continuity. These features reuse the lane-use,
@@ -1591,7 +1620,7 @@ For P selected arm samples, A arms and G generated ring/arm samples, layout stor
 O(P + G + A) and construction O(P + G + A log A). Existing R-tree corridor discovery costs
 O(G log E + local candidate segment pairs), with the existing tool-width query halo; there is
 no city-wide road/building/agent scan in planning. The per-node priority cache has the same
-complexity as TRAFFIC-06. No per-tick or per-agent loop is added. Complete commit still includes
+complexity as TRAFFIC-08. No per-tick or per-agent loop is added. Complete commit still includes
 the existing dependent routing/access publication work; planning locality does not claim
 whole-commit locality.
 
@@ -1603,12 +1632,12 @@ two-lane entry selection and spiral exits remain unimplemented. The API is an au
 there is no OSM `junction=roundabout` way parser or matching-size importer mapping in this slice.
 Cursor compilation is synchronous; the approximately 50 ms local preview remains an editor
 responsiveness limit for a future worker integration. General zebra priority remains the
-separate TRAFFIC-06 pedestrian work.
+separate TRAFFIC-08 pedestrian work.
 
 #### First-slice verification — 2026-10-21
 
 Fresh release validation uses baseline `9eec50ea092c66a5ee80abfc0e370fdb8e75b28f`
-(TRAFFIC-06) and this ROAD-62 working tree on Apple M2 Pro (12 logical CPUs), Rust 1.98.1,
+(TRAFFIC-08) and this ROAD-62 working tree on Apple M2 Pro (12 logical CPUs), Rust 1.98.1,
 macOS SDK 26.5 and Godot 4.7.2 (gdext 4.5 API). Preserved binaries, manifests and individual
 logs are local under `$ARTIFACTS`. Release test-executable SHA-256 identities are
 `4972ab34cbe199b60cafed4a17f0c8235af3041cce1298cb65ba62d15b865195` (baseline) and
@@ -1972,7 +2001,7 @@ costs; bounded preview locality is not a whole-commit locality claim.
 hatching and ramp direction signs, curved/graded ramp solving, dedicated resize/removal,
 free-flow right-turn islands, connected diamond presets and terminal controls, loop ramps,
 and `highway=*_link` importer mapping remain pending. The repository currently has no OSM way
-parser. ROAD-68's structural opening work and TRAFFIC-06's authored signals remain separate
+parser. ROAD-68's structural opening work and TRAFFIC-08's authored signals remain separate
 prerequisites for their respective interchange variants. Reference inspection used Muijala's
 ramps/terminal and the Kärsämäki aerial image; their complete interchange geometry is not claimed.
 
@@ -2709,7 +2738,7 @@ O(local incident edges + profile points), with no city-wide work.
 
 Diagnosis (2026-10-20, `e572ef39`): `broken-1.sqlite` and `broken-2.sqlite.sqlite` contain valid
 mild longitudinal profiles. The older one-metre crossing-plane fit (`2ec65ca90`) interpreted
-opposing longitudinal grade changes as crossfall when ROAD-66 made median transitions visual
+opposing longitudinal grade changes as crossfall when ROAD-80 made median transitions visual
 bends. Node 225 (edges 204/205) reconstructed grade 3.48, giving a band vertex 22.89 m outside
 the saved curve height range; node 278 (285/573) reconstructed grade 1.21, with a 12.01 m outlier.
 Each reproduces with its two edges alone. Removing the median only from 205/573 removes the
@@ -3441,7 +3470,7 @@ retain their existing barriers/continuity. This follows [Tieliikennelaki §16](h
 use a nearby marked crossing or grade-separated path, otherwise cross perpendicularly beside a
 nearby junction. The lane graph models nearby marked arms within the same junction; this slice
 does not introduce a world-wide search for nearby overpasses. Vehicle/pedestrian admission and
-signal priority remain TRAFFIC-06 work.
+signal priority remain TRAFFIC-08 work.
 
 Arrows render only for an explicitly authored vehicle lane whitelist (including imported
 `turn:lanes`), a pocket approach, a ramp fork/merge, or same-direction lanes with differing actual
@@ -3631,8 +3660,8 @@ One authoritative pedestrian crossing record drives routing; its optional markin
 Crossing availability and geometry must not be independently reconstructed by the renderer,
 selection queries, or agent movement.
 
-Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
-`ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could
+Footpaths (`TransitType::Foot`, `ROAD-77`) join the same junction graph as one-mouth arms. Until
+`ROAD-77` the builder skipped them, so their lanes had no junction connectors and walkers could
 never plan a route onto one; footpaths had been dead ends since pedestrians moved onto lanes.
 
 - A footpath's lanes stop where the path leaves the paved area of the roads at that node, the
@@ -3763,7 +3792,7 @@ existing agent invalidation pass. Both workloads use Rust 1.98.1, offline releas
 `e37149dd31660156f5cddd4976b2c2cc324536cc888a92c3a71184583f6c3ea1` and
 `991bd166a3c5da6d8620fef8bce48fada818cba4107980a7a141ebe1364a8a5d`.
 
-## Road Geometry Validation (`ROAD-54`)
+## Road Geometry Validation (`ROAD-76`)
 
 Placement accepts geometry no road could have. The profile solver treats its 16% grade as a
 target and relaxes each span's limit to the terrain slope under it
@@ -3937,9 +3966,11 @@ road grade rule, not a 3-D polyline-length rule. The source-fit and final plan s
 limiting stays close to the incident road samples; otherwise the original source-supported plane is
 preserved.
 Clip rebuilds update ownership distances only: they must not copy hard-pinned control geometry
-over the independently eased physical profile. Junction support materialization and edge splits
-sample the existing physical profile at control stations in a linear monotonic walk. Explicit
-terrain authoring remains responsible for synchronizing both profiles after a terrain edit.
+over the independently eased physical profile. Junction support materialization for authored
+profile changes may sample the existing physical profile at control stations in a linear monotonic
+walk. A topology-only split instead partitions the original physical polyline at the matching
+horizontal station, retaining support knots on both halves. Explicit terrain authoring remains
+responsible for synchronizing both profiles after a terrain edit.
 On a link to another connected endpoint, endpoint blending is bounded to its half of the link;
 it must not overwrite the opposite endpoint's profile supports. An open terminal keeps the full
 transition length because it has no competing endpoint profile.
@@ -3982,7 +4013,9 @@ explicitly reprofiled roads; splitting an existing road does not make either ret
 grade authority. Split children inherit profile authorship only from an authored parent. Preview
 and cold commit drain the same ledger, while adoption/rollback/load reset it. At an existing
 junction dirtied only by a remote split, preserve control geometry and apply only the change from
-the previously solved plane to its physical transition. Reapplying the entire blend accumulates
+the previously solved plane to every retained physical support station. Do not rematerialize that
+transition from sparse control knots: doing so can discard its solved vertical curve and create
+conflicting road-owned terrain boundaries (`ROAD-57`). Reapplying the entire blend accumulates
 cut/fill with each nearby edit. New junctions still receive one complete final-profile solve.
 This adds O(local authored edges) bookkeeping and O(local incident profile points) work, with
 no resident-city scan.
@@ -4320,8 +4353,60 @@ Road and walkway tools show the committed parcel overlay. Cheap candidate valida
 commit validation, and completed async previews query the same parcel chunk index and corridor
 width as the simulation-thread commit guard. Conflicts return `parcel_overlap` with the count and
 first parcel id; empty/free parcels remain parcel authority and are not silently removed. Preview
-caches include the zoning revision as well as road geometry/generation. A busy simulation mutex
-produces a retryable pending result, never a cached valid verdict or a blocking hover wait.
+caches include the zoning revision as well as road geometry/generation. No hover query waits on
+the simulation mutex. While the simulation holds it, cheap candidate validation returns a retryable
+pending result.
+
+The completed async preview poll (`get_preview_road_surface_result`) returns `null` only while its
+result is pending or stale (`ROAD-54`). The live checks it adds to a result are the corridor's
+parcel and field clearance with their revisions, the plan state, and why an invalid plan refuses
+the stroke. `PublishedRoadPreviewChecks`
+(`rust/src/nodes/sim/core/road_preview/live_checks.rs`) holds the latest evaluation of the
+current result:
+
+- At the end of every simulation frame, under the mutex and from the state the render snapshot
+  was just built from, the simulation thread evaluates the current result and publishes the
+  checks.
+- A poll that takes the mutex evaluates the checks itself and publishes them, so an immediate
+  refetch of the same result never needs a frame.
+- A poll that finds the mutex held returns the published checks when they belong to its result
+  (same request id and retained-geometry revision). They are as current as the render snapshot.
+- Pending means nothing has evaluated the result since the worker published it. Stale means a
+  newer request superseded it, or it was compiled for an older road-surface generation. Frames
+  stop evaluating such a result, and a frame that meets the worker replacing the result publishes
+  nothing.
+
+Without a current result a frame does O(1) work and allocates nothing. With one, it repeats a
+poll's corridor and plan checks, all local. Their parcel queries allocate scratch sets, as a poll's
+do. Finalized cell-reservation overlap is cached by the cell-store revision: a changed revision
+visits reserved cells once per affected span/node envelope and narrows exact triangle contact with
+the compiled owner's existing query grid, without query-time allocation (`ROAD-66`). Unchanged
+frames reuse that exact result. The populated planning fixtures measure the whole live check as
+`frame_checks` on the full-mode result (release
+`$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored --nocapture
+--test-threads=1`, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, 100
+samples per size, 2026-10-19). From 0 to 100,000 background buildings (600,024 agents, 100,004
+parcels), the p50 goes from 0.0115 to 0.0123 ms in `populated_road_plan_scaling` and from 0.119
+to 0.123 ms with painted cells in `populated_cell_road_plan_scaling` (p95 at most 0.146 ms). The
+cost follows the stroke, not the city. Evaluation only reads the core, so it cannot change
+simulation outcomes. A published verdict is display feedback: the click is still decided under
+the mutex.
+
+`ROAD-66` was reproduced on the reported four-way/neighboring-three-way stroke: its valid local
+plan had about 6,500 top-surface polygons. The former polygon-major query restarted the reserved
+cell chunk walk for every polygon and every frame, keeping the global simulation mutex almost
+continuously. The owner-major query keeps the same positive-area, shared-edge-legal contact rule
+by testing the compiled triangles against the rounded cell interior. On the original save's
+51-position pointer sweep, formerly observed live checks of 201 ms and 1,108 ms fell to 2.55–3.50
+ms on their first cell revision and 0.011–0.020 ms when republished unchanged. The permanent
+regression builds a dense four-way beside a three-way, drives 36 preview positions while the core
+lock is held, compares every published verdict with the commit guard, commits a ready result, and
+keeps the same local verdict after adding 20,000 remote reservations.
+
+A fresh unpinned test-profile locality run on 2026-10-22 (24 Rayon workers, 100 samples per
+size) kept identical local products from 0 through 100,000 remote buildings, cells and 391 remote
+roads. `frame_checks` stayed at 0.041–0.050 ms p50 and 0.080–0.099 ms p95. This is locality
+validation, not a matched release speedup comparison.
 
 Committed farm fields also reserve land (`ECON-07`). Road creation rejects `field_overlap` from
 both the stroke corridor and finalized local carriageway/curb/sidewalk/junction polygons. The

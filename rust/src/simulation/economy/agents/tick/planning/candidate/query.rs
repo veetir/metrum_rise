@@ -341,6 +341,12 @@ impl SharedNetworkQuotes {
         searches
     }
 
+    /// Whether the leg storage is sized for the network's current revision.
+    #[cfg(test)]
+    pub(crate) fn synced_for_test(&self, network: &TransitNetwork) -> bool {
+        self.revision == Some(network_quote_revision(network))
+    }
+
     /// Retained leg count.
     pub(crate) fn len(&self) -> usize {
         self.quotes
@@ -543,13 +549,21 @@ impl TripQueryScratch {
         self.revision = Some(revision);
     }
 
+    /// Whether this scratch is prepared for the network's current revision, and with its route
+    /// buffers when `routes`.
+    #[cfg(test)]
+    pub(crate) fn prepared_for_test(&self, network: &TransitNetwork, routes: bool) -> bool {
+        let revision = (
+            network.cch_graph.build_generation,
+            network.lane_system.lanes.len(),
+            network.lane_system.revision(),
+        );
+        self.revision == Some(revision) && (!routes || self.route_revision == self.revision)
+    }
+
     /// Prepares predecessor and retained-path buffers only for full route work. Cost-only
     /// forecasts keep their existing storage; warm route queries merely check the revision.
-    pub(crate) fn prepare_routes(
-        &mut self,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
+    pub(crate) fn prepare_routes(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
         self.prepare(network, graph);
         if self.route_revision == self.revision {
             return;
@@ -1420,7 +1434,10 @@ mod tests {
         });
         scratch.mark_dirty_quote(0);
         scratch.publish_quotes(&mut shared);
-        assert_eq!(shared.get(&key, network_quote_revision(&network)), Some(Some(2.0)));
+        assert_eq!(
+            shared.get(&key, network_quote_revision(&network)),
+            Some(Some(2.0))
+        );
         assert!(scratch.dirty_quote_slots.is_empty());
         assert!(scratch.deferred_shared);
         assert!(scratch.dirty_quote_slots.capacity() >= scratch.network_quotes.len());

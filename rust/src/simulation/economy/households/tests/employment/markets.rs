@@ -133,6 +133,53 @@ impl MarketFixture {
         );
     }
 
+    // `refresh` run in slices of `budget` rows, restarting after `restart_after` slices.
+    fn refresh_in_slices(
+        &mut self,
+        tuning: &RuntimeEconomyTuning,
+        budget: usize,
+        restart_after: Option<usize>,
+    ) -> usize {
+        self.funding.refresh_in_slices_for_test(
+            &self.allocator,
+            &self.families,
+            &mut self.logistics,
+            &self.network,
+            &self.graph,
+            &self.catalog,
+            tuning,
+            &CityFiscalPolicy::from_runtime_tuning(tuning),
+            &[],
+            0.0,
+            420,
+            budget,
+            restart_after,
+        )
+    }
+
+    // Every census output and book, bit for bit.
+    fn assert_same_census(&self, other: &Self, label: &str) {
+        self.funding.assert_same_operations_for_test(&other.funding);
+        assert_eq!(
+            self.funding.service_capacities, other.funding.service_capacities,
+            "{label}"
+        );
+        assert_eq!(
+            self.funding.freight_capital, other.funding.freight_capital,
+            "{label}"
+        );
+        assert_eq!(
+            self.funding.closure_passes, other.funding.closure_passes,
+            "{label}"
+        );
+        // Each fixture builds its own network, whose revisions differ.
+        assert_eq!(
+            self.funding.census_book_fingerprints_for_test(),
+            other.funding.census_book_fingerprints_for_test(),
+            "{label}"
+        );
+    }
+
     fn district(&self, district: usize) -> Vec<DistrictRow> {
         let first = district * DISTRICT;
         (first + HOMES..first + DISTRICT)
@@ -220,7 +267,11 @@ fn production_market_chunks_match_full_census_after_input_changes() {
             2..=4 => 256,
             _ => count,
         };
-        assert_eq!(cached.funding.market_rows_for_test(), expected, "step {step}");
+        assert_eq!(
+            cached.funding.market_rows_for_test(),
+            expected,
+            "step {step}"
+        );
         assert_eq!(full.funding.market_rows_for_test(), count);
     }
 }
@@ -234,7 +285,9 @@ fn import_plan_handoff_matches_cold_funding_after_input_changes() {
     let source = std::mem::take(&mut cached.funding);
     let mut hits = 0;
     for step in 0..8 {
-        if step == 4 { tuning.owa_import_price_multiplier = 1.25; }
+        if step == 4 {
+            tuning.owa_import_price_multiplier = 1.25;
+        }
         for market in [&mut cached, &mut cold] {
             match step {
                 1 => market.allocator.buildings[HOMES + 1].operating_budget += 10_000.0,
@@ -245,23 +298,36 @@ fn import_plan_handoff_matches_cold_funding_after_input_changes() {
                 7 => {
                     let authored = include_str!("../../../../../../../economy/profiles.toml");
                     market.catalog = std::sync::Arc::new(
-                        crate::simulation::economy::definitions::compile_test_catalog(authored).unwrap()
+                        crate::simulation::economy::definitions::compile_test_catalog(authored)
+                            .unwrap(),
                     );
                 }
                 _ => {}
             }
         }
         cached.funding.refresh_with_service_capacity(
-            &cached.allocator, &cached.families, &mut cached.logistics,
-            &cached.network, &cached.graph, &cached.catalog, &tuning,
-            &CityFiscalPolicy::from_runtime_tuning(&tuning), 0.0,
-            |_, _, _| 0, Some(&source), 420,
+            &cached.allocator,
+            &cached.families,
+            &mut cached.logistics,
+            &cached.network,
+            &cached.graph,
+            &cached.catalog,
+            &tuning,
+            &CityFiscalPolicy::from_runtime_tuning(&tuning),
+            0.0,
+            |_, _, _| 0,
+            Some(&source),
+            420,
         );
         cold.refresh(&tuning);
         cached.assert_same_funding(&cold);
-        cached.funding.assert_same_operations_for_test(&cold.funding);
+        cached
+            .funding
+            .assert_same_operations_for_test(&cold.funding);
         hits += cached.funding.import_plan_replays();
-        if step == 7 { assert_eq!(cached.funding.import_plan_replays(), 0); }
+        if step == 7 {
+            assert_eq!(cached.funding.import_plan_replays(), 0);
+        }
     }
     assert!(hits > 0, "fixture must exercise the import plan handoff");
 }
@@ -349,7 +415,10 @@ fn rejected_direct_household_quotes_restage_before_acceptance() {
     policy.commercial_property_tax_per_building_per_day = 100.0;
     policy.industrial_property_tax_per_building_per_day = 100.0;
     for market in [&mut cached, &mut ordinary] {
-        let profile = market.catalog.profile_for_id("personal_service_small").unwrap();
+        let profile = market
+            .catalog
+            .profile_for_id("personal_service_small")
+            .unwrap();
         for index in HOMES + 1..DISTRICT {
             let building = &mut market.allocator.buildings[index];
             building.economy_profile_runtime_id = profile.runtime_id;
@@ -360,16 +429,29 @@ fn rejected_direct_household_quotes_restage_before_acceptance() {
         market.allocator.bump_building_ref_revision();
         market.allocator.rebuild_zone_index();
         market.funding.refresh(
-            &market.allocator, &market.families, &mut market.logistics,
-            &market.network, &market.graph, &market.catalog, &tuning,
-            &policy, &[], 0.0, 420,
+            &market.allocator,
+            &market.families,
+            &mut market.logistics,
+            &market.network,
+            &market.graph,
+            &market.catalog,
+            &tuning,
+            &policy,
+            &[],
+            0.0,
+            420,
         );
     }
     cached.assert_same_funding(&ordinary);
-    cached.funding.assert_same_operations_for_test(&ordinary.funding);
+    cached
+        .funding
+        .assert_same_operations_for_test(&ordinary.funding);
     let (reused, accepted) = cached.funding.household_rejected_quote_counts();
     assert!(reused > 0, "fixture must reuse a rejected spatial question");
-    assert!(accepted > 0, "a later solvent shop must materialize the reused quote");
+    assert!(
+        accepted > 0,
+        "a later solvent shop must materialize the reused quote"
+    );
     assert_eq!(ordinary.funding.household_rejected_quote_counts(), (0, 0));
 }
 
@@ -1724,5 +1806,151 @@ fn perf_contract_financing_locality() {
     eprintln!(
         "PERF_LOCALITY {}",
         serde_json::json!({ "kind": "financing", "results": results })
+    );
+}
+
+// A labelled fixture and the incomes its census runs at in turn.
+// `SIM-02-K`: a census restarted after any slice, inside the consumer-market refresh's household
+// phases too, equals one run bit for bit. A restart there leaves the customer book torn, and the
+// restarted refresh withdraws it, so the census is the one a loaded game computes. On a cold
+// book the census also rewrites its route quotes, builds its supplier index and lays out its
+// business book, and restarts land inside each of those slices and inside the business claims'
+// serial sweep.
+#[test]
+fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
+    use crate::simulation::economy::hiring::RESTARTED_AT;
+
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    RESTARTED_AT.with_borrow_mut(Vec::clear);
+    // The second census's income: unchanged (the reference retains its book) or changed; or
+    // the census on a cold book, the first of its fixture.
+    for (second, cold) in [(1_000_000.0, false), (7_750.0, false), (7_750.0, true)] {
+        let census = |restart: Option<usize>| {
+            let mut market = financing_chain(2, 3);
+            if !cold {
+                market.families[0].gross_daily_wages = 1_000_000.0;
+                market.families[0].budget = 1_000_000.0;
+                market.refresh(&tuning);
+            }
+            market.families[0].gross_daily_wages = second;
+            market.families[0].budget = second;
+            let slices = match restart {
+                None => {
+                    market.refresh(&tuning);
+                    0
+                }
+                Some(_) => market.refresh_in_slices(&tuning, 1, restart),
+            };
+            (market, slices)
+        };
+        let (reference, _) = census(None);
+        let (_, slices) = census(Some(usize::MAX));
+        let mut torn = 0;
+        for restart in 1..slices {
+            let (market, _) = census(Some(restart));
+            torn += market.funding.customers.torn_refreshes_for_test();
+            reference.assert_same_census(
+                &market,
+                &format!("income {second}, cold {cold}, restart after slice {restart} of {slices}"),
+            );
+        }
+        if !cold {
+            assert!(torn > 0, "some restart must land inside the refresh");
+        }
+    }
+    // The fixture has one family, so its claims' accounts reset in one slice; restarts land
+    // inside the availability reset after them.
+    let restarted = RESTARTED_AT.with_borrow_mut(std::mem::take);
+    for step in [
+        "route_access",
+        "route_quotes",
+        "customer_index_build",
+        "customer_claim_availability",
+        "sources_layout",
+        "sources_index",
+        "sources_rates",
+        "business_seed_rows",
+        "business_layout_access",
+        "business_layout_ports",
+        "business_layout_indices",
+        "business_claims",
+    ] {
+        assert!(
+            restarted
+                .iter()
+                .any(|&(name, done)| name == step && done > 0),
+            "some restart must land inside {step}"
+        );
+    }
+}
+
+type MarketCase = (String, Box<dyn Fn() -> MarketFixture>, Vec<f32>);
+
+// The census in slices of any size, and restarted part way as a network change restarts it,
+// equals the census run at once bit for bit (`SIM-02-I`), through closures of several passes.
+#[test]
+fn a_census_in_slices_or_restarted_equals_one_run_bit_for_bit() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // Budgets in rows, and the slice after which the census starts again.
+    let slicings = [
+        (1, None),
+        (5, Some(3)),
+        (37, None),
+        (37, Some(1)),
+        (1_000, None),
+    ];
+    let mut most_passes = 0;
+    let mut cases: Vec<MarketCase> = vec![(
+        "mixed districts".into(),
+        Box::new(|| MarketFixture::new(&[0, 1, 2, 3])),
+        vec![0.0, 0.0],
+    )];
+    for (length, partial, failing) in [(2, 7_750.0, 7_500.0), (8, 11_250.0, 10_500.0)] {
+        for cascade in [true, false] {
+            cases.push((
+                format!("chain {length} cascade {cascade}"),
+                Box::new(move || {
+                    let mut market = financing_chain(length, 3);
+                    if !cascade {
+                        market.funding.disable_customer_cascade();
+                    }
+                    market
+                }),
+                vec![1_000_000.0, partial, failing, partial, 1_000_000.0],
+            ));
+        }
+    }
+    for (label, build, incomes) in &cases {
+        let mut reference = build();
+        let mut sliced: Vec<_> = slicings.iter().map(|_| build()).collect();
+        for &income in incomes {
+            for market in std::iter::once(&mut reference).chain(&mut sliced) {
+                if income > 0.0 {
+                    market.families[0].gross_daily_wages = income;
+                    market.families[0].budget = income;
+                }
+            }
+            reference.refresh(&tuning);
+            most_passes = most_passes.max(reference.funding.closure_passes);
+            for (market, &(budget, restart)) in sliced.iter_mut().zip(&slicings) {
+                let slices = market.refresh_in_slices(&tuning, budget, restart);
+                assert!(
+                    budget >= 1_000 || slices > 1,
+                    "{label}: {budget} rows a slice"
+                );
+                reference.assert_same_census(
+                    market,
+                    &format!("{label}, income {income}, {budget} rows, restart {restart:?}"),
+                );
+            }
+        }
+    }
+    assert!(
+        most_passes > 2,
+        "the fixtures must close over several passes"
     );
 }

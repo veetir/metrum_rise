@@ -473,7 +473,7 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
     let profile = catalog.profile_for_id("power_plant_basic").unwrap();
     let mut plant = make_building(40.0, ZoneType::None, &asset, 0.0);
     plant.economy_profile_runtime_id = profile.runtime_id;
-    plant.construction_remaining_hours = 24;
+    plant.set_construction_hours_left(24);
     plant.construction_total_hours = 24;
     allocator.buildings.push(plant);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -504,7 +504,7 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
             )]
         );
     }
-    allocator.buildings[0].construction_remaining_hours = 0;
+    allocator.buildings[0].construction_complete_slot = 0;
     funding.refresh(
         &allocator,
         &[],
@@ -522,19 +522,40 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
     assert!(funding.capacities[0] > 0);
     let mut borders = Vec::new();
     crate::simulation::economy::logistics::collect_connected_border_nodes(&graph, &mut borders);
-    assert!(funding.has_current_input_supply(&allocator, &network, &borders, 420));
+    // The census's owner stamps it with the live city's key (`SIM-02-I`).
+    use crate::simulation::economy::hiring::{CensusKey, StructureRevisions};
+    funding.published = Some(CensusKey::live(Default::default(), 0, &network));
+    let key = |network: &TransitNetwork| CensusKey::live(Default::default(), 0, network);
+    let shifted = |buildings, households| {
+        CensusKey::live(
+            StructureRevisions {
+                buildings,
+                households,
+            },
+            0,
+            &network,
+        )
+    };
+    assert!(funding.has_current_input_supply(key(&network), &borders, 420));
     assert!(
         !funding.has_current_input_supply(
-            &allocator,
-            &network,
+            key(&network),
             &borders,
             crate::simulation::economy::logistics::freight_price_phase(&tuning, 480)
         ),
         "a new receiving-price interval cannot reuse earlier profitability"
     );
+    assert!(
+        !funding.has_current_input_supply(shifted(1, 0), &borders, 420),
+        "a building index shift invalidates the books"
+    );
+    assert!(
+        funding.has_current_input_supply(shifted(0, 1), &borders, 420),
+        "a departed household stays in the books until the next census"
+    );
     network.frontage_delay_revision += 1;
     assert!(
-        !funding.has_current_input_supply(&allocator, &network, &borders, 420),
+        !funding.has_current_input_supply(key(&network), &borders, 420),
         "unchanged road geometry cannot validate stale recurring freight prices"
     );
 }
@@ -635,7 +656,7 @@ fn fiscal_service_inputs_share_live_supply_without_turning_payroll_into_private_
 }
 
 #[test]
-fn post_assignment_sync_refreshes_employment_without_census_member_links() {
+fn household_recount_follows_job_assignments() {
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     households
@@ -646,18 +667,18 @@ fn post_assignment_sync_refreshes_employment_without_census_member_links() {
         .push(make_household(usize::MAX, 1, 1_000.0, 5.0));
     for hid in [0, 0, 0, 1] {
         let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[agent] = hid;
+        agents.assign_household_id(agent, hid);
     }
-    // The census predates these job assignments. No membership links are available here.
+    let allocator = BuildingAllocator::new();
     agents.assign_work_building(0, 1, 0);
     agents.assign_work_building(3, 1, 0);
-    households.sync_agent_money_from_households(&mut agents);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(households.households[0].employed_adults, 1);
     assert_eq!(households.households[1].employed_adults, 1);
     agents.assign_work_building(0, usize::MAX, 0);
     agents.assign_work_building(1, 2, 0);
     agents.assign_work_building(2, 2, 0);
-    households.sync_agent_money_from_households(&mut agents);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(households.households[0].employed_adults, 2);
 }
 
@@ -1684,50 +1705,63 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
-    let mut check = |allocator: &BuildingAllocator, logistics: &mut ShipmentSystem, expected| {
-        households.job_funding.refresh(
-            allocator,
-            &households.households,
-            logistics,
-            &network,
-            &graph,
-            &catalog,
-            &tuning,
-            &policy,
-            &[],
-            100_000.0,
-            420,
-        );
-        assert_eq!(households.job_funding.capacities[0], expected);
-        let mut demand = crate::simulation::economy::demand::DemandSystem::new();
-        let zoning = crate::simulation::zoning::ZoningSystem::new(
-            &crate::simulation::core::config::WorldConfig::default(),
-        );
-        let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
-        let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
-        surface.compile_dirty(&graph, &terrain);
-        demand.run_hourly_pass_with_policy(
-            allocator,
-            &mut households,
-            &graph,
-            &zoning,
-            100_000.0,
-            &policy,
-            &network,
-            logistics,
-            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                road_surface: &surface,
-                terrain: &terrain,
-            },
-            420,
-        );
-        assert_eq!(
-            demand.scenario_diagnostics().0.move_in_job_slots,
-            expected,
-            "admission and workplace assignment must consume the same funded jobs"
-        );
-    };
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    let mut check =
+        |allocator: &mut BuildingAllocator, logistics: &mut ShipmentSystem, expected| {
+            households.job_funding.refresh(
+                allocator,
+                &households.households,
+                logistics,
+                &network,
+                &graph,
+                &catalog,
+                &tuning,
+                &policy,
+                &[],
+                100_000.0,
+                420,
+            );
+            assert_eq!(households.job_funding.capacities[0], expected);
+            // The demand snapshot reads the copies a published census leaves (`SIM-02-I`).
+            households.publish_funded_job_capacities(allocator);
+            let mut demand = crate::simulation::economy::demand::DemandSystem::new();
+            let zoning = crate::simulation::zoning::ZoningSystem::new(
+                &crate::simulation::core::config::WorldConfig::default(),
+            );
+            let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
+            let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+            surface.compile_dirty(&graph, &terrain);
+            demand.publish_census_if_stale_for_test(
+                allocator,
+                &mut households,
+                &network,
+                &graph,
+                logistics,
+                &policy,
+                100_000.0,
+                420,
+            );
+            demand.run_planning_hour_for_test(
+                allocator,
+                &mut households,
+                &graph,
+                &zoning,
+                100_000.0,
+                &policy,
+                &network,
+                logistics,
+                crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                    road_surface: &surface,
+                    terrain: &terrain,
+                },
+                420,
+            );
+            assert_eq!(
+                demand.scenario_diagnostics().0.move_in_job_slots,
+                expected,
+                "admission and workplace assignment must consume the same funded jobs"
+            );
+        };
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     let payroll = profile.worker_capacity as f32 * profile.average_daily_wage();
     let paid_goods = capital - payroll - 8.0;
     allocator.buildings[0].operating_budget = payroll;
@@ -1743,21 +1777,23 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: 7,
+        carrier: crate::simulation::economy::agents::AgentHandle::from_parts(7, 0),
         total_cost: paid_goods + 8.0,
         freight_cost: 8.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
+        cargo_loaded: true,
     });
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     allocator.buildings[0].operating_budget -= payroll;
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     allocator.buildings[0].set_inventory_units(
         profile.inputs[0].resource_runtime_id,
         logistics.shipments[0].amount,
     );
     logistics.shipments[0].status = ShipmentStatus::Fulfilled;
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
 }
 
 #[test]
@@ -1821,7 +1857,7 @@ fn owner_money_and_unprofitable_exports_do_not_create_live_jobs() {
         "profitable sales still need working capital"
     );
     allocator.buildings[0].operating_budget = 1_000_000.0;
-    allocator.buildings[0].construction_remaining_hours = 1;
+    allocator.buildings[0].set_construction_hours_left(1);
     households.job_funding.refresh(
         &allocator,
         &[],
@@ -1839,7 +1875,7 @@ fn owner_money_and_unprofitable_exports_do_not_create_live_jobs() {
         households.job_funding.capacities[0], 0,
         "future production cannot pay arrivals"
     );
-    allocator.buildings[0].construction_remaining_hours = 0;
+    allocator.buildings[0].construction_complete_slot = 0;
     for (role, expected) in [
         (NodeType::Border, 10),
         (NodeType::Junction, 0),
@@ -1983,7 +2019,7 @@ fn benchmark_payroll_phase() {
                 .households
                 .push(make_household(0, 1, 1_000.0, 5.0));
             let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-            agents.household_id[agent] = idx;
+            agents.assign_household_id(agent, idx);
             let work = 1 + idx / capacity;
             agents.assign_work_building(agent, work, 0);
             allocator.buildings[work].worker_count += 1;
@@ -2003,7 +2039,7 @@ fn benchmark_payroll_phase() {
                 &mut treasury,
                 &logistics,
             ));
-            households.sync_agent_money_from_households(&mut agents);
+            households.recount_every_household(&agents, &allocator);
         };
         phase();
         let mut samples = [0.0; 11];
@@ -2015,13 +2051,6 @@ fn benchmark_payroll_phase() {
             *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
         }
         assert!(agents.work_building.iter().all(|&work| work != usize::MAX));
-        assert!(
-            agents
-                .money
-                .iter()
-                .zip(&households.households)
-                .all(|(&money, home)| money == home.budget)
-        );
         samples.sort_by(f64::total_cmp);
         eprintln!("payroll_phase workers={count} median_ms={:.3}", samples[5]);
     }
@@ -2077,12 +2106,12 @@ fn no_car_unemployed_adult_can_take_reachable_job_even_with_household_savings() 
 
         let mut agents = AgentSystem::new();
         let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.has_car[agent] = false;
 
-        households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+        households.recount_every_household(&agents, &allocator);
         households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
         assert_eq!(agents.work_building[agent], 1);
@@ -2129,17 +2158,17 @@ fn children_and_elders_do_not_take_jobs() {
 
     let mut agents = AgentSystem::new();
     let child = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[child] = 0;
+    agents.assign_household_id(child, 0);
     agents.age_group[child] = AGE_CHILD;
     agents.transit[child] = TRANSIT_IN_BUILDING;
     agents.current_building[child] = 0;
     let elder = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[elder] = 0;
+    agents.assign_household_id(elder, 0);
     agents.age_group[elder] = AGE_ELDER;
     agents.transit[elder] = TRANSIT_IN_BUILDING;
     agents.current_building[elder] = 0;
 
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[child], usize::MAX);
@@ -2183,7 +2212,7 @@ fn worker_can_take_far_reachable_job() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.has_car[agent] = true;
@@ -2192,6 +2221,10 @@ fn worker_can_take_far_reachable_job() {
 
     assert_eq!(agents.work_building[agent], 1);
     assert_eq!(allocator.buildings[1].worker_count, 1);
+    assert_eq!(
+        households.households[0].employed_adults, 1,
+        "the hire counts at once, before the household's next phase"
+    );
 }
 
 #[test]
@@ -2245,7 +2278,7 @@ fn workplace_claim_falls_back_to_next_ranked_job_when_best_fills() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for agent in [a0, a1] {
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.has_car[agent] = true;
@@ -2311,7 +2344,7 @@ fn missing_entrance_cache_does_not_use_straight_line_work_fallback() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.has_car[agent] = true;
@@ -2365,7 +2398,7 @@ fn deserted_employer_is_ejected_before_wages() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
@@ -2422,7 +2455,7 @@ fn payroll_keeps_funded_store_workers_without_city_sales_activity() {
     let mut agents = AgentSystem::new();
     for _ in 0..staff {
         let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.assign_work_building(agent, 1, 0);
@@ -2479,7 +2512,7 @@ fn insolvent_self_fire_decrements_worker_count() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
@@ -2545,7 +2578,7 @@ fn wage_payment_liquidates_output_inventory_before_unpaid() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
@@ -2613,12 +2646,12 @@ fn full_current_workplace_is_scored_before_switching() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.has_car[agent] = true;
     agents.assign_work_building(agent, 1, 0);
-    agents.job_lock_days[agent] = 0;
+    agents.job_lock_until_day[agent] = 0;
 
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
@@ -2673,7 +2706,7 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for a in [a0, a1] {
-        agents.household_id[a] = hid;
+        agents.assign_household_id(a, hid);
         agents.transit[a] = TRANSIT_IN_BUILDING;
         agents.current_building[a] = 0;
         agents.target_building[a] = usize::MAX;
@@ -2690,70 +2723,61 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
 }
 
 #[test]
-fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
-    let mut households = HouseholdSystem::new();
-    let mut household = make_household(0, 0, 30.0, 30.0);
-    household.stock = 100.0;
-    household.stock_days = 100.0;
-    households.households.push(household);
-
+fn household_counts_and_wages_update_at_its_own_hourly_phase() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let wage = catalog
+        .profile_for_id("food_processor_basic")
+        .unwrap()
+        .average_daily_wage();
     let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
+    let home = register_test_asset(&mut allocator, "test", "phase_home", ZoneClass::Residential);
+    let factory = register_test_asset(
         &mut allocator,
         "test",
-        "fused_tick_res",
-        ZoneClass::Residential,
+        "phase_factory",
+        ZoneClass::Industrial,
     );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "fused_tick_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        0.0,
-    ));
-    allocator.rebuild_zone_index();
-    allocator.prepare_production_changes();
-    let production_revision = allocator.production_revision();
-
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+    allocator
+        .buildings
+        .push(make_building(20.0, ZoneType::Industrial, &factory, 0.0));
+    let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
-    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
-    agents.work_building[agent] = 1;
-    agents.transit[agent] = TRANSIT_IN_BUILDING;
-    agents.current_building[agent] = 0;
-
-    let mut logistics = ShipmentSystem::new();
-    let network = TransitNetwork::new();
-    let graph = RegionGraph::new();
-    let mut treasury_balance = 0.0;
-    households.operational_hour_tick(
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-        &network,
-        &graph,
-        0,
-        0,
-        &mut treasury_balance,
-        &[],
-        &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
-        |_, _| {},
+    for household_id in 0..2 {
+        households.households.push(make_household(0, 0, 0.0, 0.0));
+        for _ in 0..2 {
+            let member = agents.spawn_housed_agent(0, 0.0, 0.0);
+            agents.assign_household_id(member, household_id);
+        }
+    }
+    for member in [0, 2, 3] {
+        allocator.set_worker_count(1, allocator.buildings[1].worker_count + 1);
+        agents.assign_work_building(member, 1, 0);
+    }
+    super::super::membership::assert_worker_counts_match_assignments(&agents, &allocator);
+    households
+        .handles
+        .register_appended(households.households.len());
+    let first = households.handles.handle(0);
+    households.run_household_phase(&[first], &mut agents, &mut allocator);
+    let counted = &households.households[0];
+    assert_eq!((counted.member_count, counted.adult_count), (2, 2));
+    assert_eq!(counted.employed_adults, 1);
+    assert_eq!(counted.gross_daily_wages, wage);
+    let waiting = &households.households[1];
+    assert_eq!(
+        (waiting.member_count, waiting.employed_adults),
+        (0, 0),
+        "the second household keeps its counts until its own phase"
     );
-
-    assert_eq!(households.households[0].member_count, 1);
-    assert_eq!(allocator.buildings[1].worker_count, 1);
-    assert!(!allocator.production_changes_since(production_revision, &mut Vec::new()));
+    let second = households.handles.handle(1);
+    households.run_household_phase(&[second], &mut agents, &mut allocator);
+    let counted = &households.households[1];
+    assert_eq!((counted.member_count, counted.adult_count), (2, 2));
+    assert_eq!(counted.employed_adults, 2);
+    assert_eq!(counted.gross_daily_wages, 2.0 * wage);
 }
 
 #[test]
@@ -3527,17 +3551,17 @@ fn household_wage_snapshot_counts_only_active_paid_adult_assignments() {
     let mut agents = AgentSystem::new();
     for _ in 0..2 {
         let member = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[member] = 0;
+        agents.assign_household_id(member, 0);
         agents.assign_work_building(member, 1, 0);
     }
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(households.households[0].employed_adults, 2);
     assert_eq!(
         households.households[0].gross_daily_wages,
         2.0 * profile.average_daily_wage()
     );
     agents.consecutive_unpaid_days[0] = 1;
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(
         households.households[0].employed_adults, 2,
         "an unpaid worker is still assigned"
@@ -3546,8 +3570,8 @@ fn household_wage_snapshot_counts_only_active_paid_adult_assignments() {
         households.households[0].gross_daily_wages,
         profile.average_daily_wage()
     );
-    allocator.buildings[1].construction_remaining_hours = 1;
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    allocator.buildings[1].set_construction_hours_left(1);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(households.households[0].gross_daily_wages, 0.0);
     assert_eq!(households.households[0].employed_adults, 2);
 }
@@ -3559,21 +3583,21 @@ fn shopping_car_census_uses_eligible_residents_and_resets_removed_access() {
     households
         .households
         .push(make_household(usize::MAX, 2, 0.0, 0.0));
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
     for age in [AGE_ADULT, AGE_CHILD] {
         let index = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-        agents.household_id[index] = 0;
+        agents.assign_household_id(index, 0);
         agents.age_group[index] = age;
         agents.has_car[index] = age == AGE_CHILD;
     }
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert!(
         !households.households[0].shopping_has_car,
         "a child's car cannot supply an eligible household shopper"
     );
     agents.has_car[0] = true;
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert!(households.households[0].shopping_has_car);
     agents.age_group[0] = AGE_ELDER;
     households.households[0].shopping_has_car = false;
@@ -3582,11 +3606,11 @@ fn shopping_car_census_uses_eligible_residents_and_resets_removed_access() {
         households.households[0].shopping_has_car,
         "the load census must include elders without relying on saved household flags"
     );
-    agents.household_id[0] = usize::MAX;
+    agents.assign_household_id(0, usize::MAX);
     households.rebuild_household_shopping_access(&agents);
     assert!(!households.households[0].shopping_has_car);
     households.households[0].shopping_has_car = true;
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert!(
         !households.households[0].shopping_has_car,
         "a removed resident cannot leave cached car access behind"
@@ -3628,14 +3652,14 @@ fn benchmark_consumer_income_forecast() {
         for hid in 0..count {
             for _ in 0..2 {
                 let index = agents.spawn_housed_agent(0, 0.0, 0.0);
-                agents.household_id[index] = hid;
+                agents.assign_household_id(index, hid);
                 agents.assign_work_building(index, 1, 0);
             }
         }
         let mut samples = [0.0; 9];
         for round in 0..12 {
             let start = Instant::now();
-            households.refresh_household_wage_snapshot(black_box(&agents), &allocator);
+            households.recount_every_household(black_box(&agents), &allocator);
             let buyers = affordable_consumer_residents(
                 &households.households,
                 &allocator,
@@ -3659,3 +3683,110 @@ fn benchmark_consumer_income_forecast() {
 }
 
 mod markets;
+
+#[test]
+fn workplace_quotes_expire_a_day_of_passes_after_they_were_added() {
+    let mut households = HouseholdSystem::new();
+    households.restore_workplace_route_cache(
+        0,
+        0,
+        0,
+        vec![((0, 1, false), Some(60), 0), ((1, 0, true), None, 3)],
+        3,
+    );
+    for _ in 0..20 {
+        households.expire_workplace_route_cache();
+    }
+    assert_eq!(households.workplace_route_cache_entries().count(), 2);
+    households.expire_workplace_route_cache();
+    let left: Vec<_> = households
+        .workplace_route_cache_entries()
+        .map(|entry| entry.0)
+        .collect();
+    assert_eq!(left, vec![(1, 0, true)]);
+    for _ in 0..3 {
+        households.expire_workplace_route_cache();
+    }
+    assert_eq!(households.workplace_route_cache_entries().count(), 0);
+}
+
+#[test]
+fn employed_searchers_are_locked_again_when_no_job_is_open() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 5.0, 5.0));
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "locked_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "locked_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    let (graph, network) = simple_work_graph();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.assign_household_id(agent, 0);
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+    allocator.buildings[1].worker_count = 1;
+    assert_eq!(agents.job_lock_until_day[agent], agents.settlement_days);
+    // No building has a funded job open, so the board is empty.
+    households.assign_agent_workplaces_from_census(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        420,
+    );
+    assert_eq!(agents.work_building[agent], 1);
+    assert!(agents.job_lock_until_day[agent] > agents.settlement_days);
+}
+
+#[test]
+fn a_job_board_swept_over_an_hour_equals_one_built_at_once() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::economy::households::JobBoardRoll;
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "board_com", ZoneClass::Commercial);
+    for (index, (funded, workers)) in [(2, 0), (1, 1), (3, 1)].into_iter().enumerate() {
+        let mut building = make_building(index as f32 * 30.0, ZoneType::Commercial, &asset, 0.0);
+        building.funded_job_capacity = funded;
+        building.worker_count = workers;
+        allocator.buildings.push(building);
+    }
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    let mut swept = JobBoardRoll::default();
+    for slot in SLOTS_PER_HOUR..2 * SLOTS_PER_HOUR {
+        swept.advance(slot, &allocator, &catalog);
+    }
+    // A reader with no board for its hour builds one at once.
+    let mut built = JobBoardRoll::default();
+    built.members_for(2, &allocator, &catalog);
+    let handles = &allocator.building_handles;
+    assert_eq!(
+        swept.members_for(2, &allocator, &catalog),
+        [handles.handle(0), handles.handle(2)],
+        "the full building has no open job"
+    );
+    assert_eq!(swept.saved(), built.saved());
+    // A sweep that misses a slot is abandoned; its hour then builds a board at once.
+    let mut missed = JobBoardRoll::default();
+    for slot in (2 * SLOTS_PER_HOUR..3 * SLOTS_PER_HOUR).filter(|slot| slot % 100 != 7) {
+        missed.advance(slot, &allocator, &catalog);
+    }
+    assert!(missed.saved().front.is_none() && missed.saved().sweep.is_none());
+}

@@ -27,7 +27,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![start, end],
@@ -66,7 +65,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![
@@ -98,7 +96,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![
@@ -130,7 +127,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![

@@ -78,8 +78,9 @@ impl ProjectedSupplySource {
 pub(super) struct ProjectedSources {
     // Caller revision of `sources`; retained across live forks for incremental updates.
     key: Option<Vec<u64>>,
-    // Live geometry and first projected slot of the derived offsets and index below.
-    layout: Option<(Option<GeometryRevision>, usize)>,
+    // Live geometry, first projected slot and first variant handle of the derived offsets and
+    // index below.
+    layout: Option<(Option<GeometryRevision>, usize, usize)>,
     // Network topology of every source's cached access.
     access_topology: Option<u32>,
     sources: Vec<ProjectedSupplySource>,
@@ -89,7 +90,54 @@ pub(super) struct ProjectedSources {
     enabled: bool,
 }
 
+impl ProjectedSources {
+    // Replaces the rows with `factory`'s for a changed caller revision, sorted by owner and
+    // asset, and marks the layout stale; current rows are kept. O(factory + rows).
+    fn rebuild_rows(
+        &mut self,
+        caller_revision: &[u64],
+        factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
+    ) {
+        if self.key.as_deref() == Some(caller_revision) {
+            return;
+        }
+        let previous = std::mem::take(&mut self.sources);
+        self.sources = factory(previous, self.key.as_deref());
+        self.key = Some(caller_revision.to_vec());
+        // The offsets, owner ranges and index follow the rows.
+        self.layout = None;
+        crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
+        // Linear for the already-ordered rows the planner returns.
+        self.sources
+            .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
+        debug_assert!(
+            self.sources
+                .windows(2)
+                .all(|pair| (pair[0].owner, &pair[0].asset) != (pair[1].owner, &pair[1].asset))
+        );
+    }
+}
+
 impl RecurringSupply {
+    /// The rows of [`Self::prepare_projected_sources`] alone (`SIM-02-K`): a changed caller
+    /// revision passes the previous rows and their revision to `factory` as there, and the
+    /// layout is left stale, so the next preparation lays these rows out without calling its
+    /// factory again (rows current). Nothing is enabled. O(factory + rows).
+    pub(crate) fn prepare_projected_rows(
+        &mut self,
+        caller_revision: &[u64],
+        factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
+    ) {
+        debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
+        debug_assert!(
+            !self.projected.enabled && self.released.is_empty(),
+            "prepare once after a live fork"
+        );
+        if self.components.is_some() {
+            self.projected.rebuild_rows(caller_revision, factory);
+        }
+    }
+
     /// Prepares only caller-selected recipe/door variants, reusing the existing supplier
     /// buckets. A changed caller revision passes the previous rows and their revision to
     /// `factory`, which may regenerate only changed owners; rows must come back sorted by
@@ -112,32 +160,16 @@ impl RecurringSupply {
         let Some(components) = &self.components else {
             return;
         };
-        let base = self.offsets.len() - 1;
-        let first_slot = self.offsets[base];
+        let base = self.source_base;
+        let first_slot = *self.offsets.last().unwrap();
         let projected = &mut self.projected;
-        let layout = (geometry_revision(self.revision), first_slot);
+        let layout = (geometry_revision(self.revision), first_slot, base);
         let rows_current = projected.key.as_deref() == Some(caller_revision);
         if !rows_current || projected.layout != Some(layout) {
             let timing = crate::debug::Channel::EconomyPhases
                 .enabled()
                 .then(std::time::Instant::now);
-            if !rows_current {
-                let previous = std::mem::take(&mut projected.sources);
-                projected.sources = factory(previous, projected.key.as_deref());
-                projected.key = Some(caller_revision.to_vec());
-                crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
-                // Linear for the already-ordered rows the planner returns.
-                projected
-                    .sources
-                    .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
-                debug_assert!(projected.sources.windows(2).all(|pair| (
-                    pair[0].owner,
-                    &pair[0].asset
-                ) != (
-                    pair[1].owner,
-                    &pair[1].asset
-                )));
-            }
+            projected.rebuild_rows(caller_revision, factory);
             let factory_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
             // Components follow the network topology; door chunks follow the retained entrance.
             let topology = layout.0.map(|revision| revision.2);
@@ -216,17 +248,24 @@ impl RecurringSupply {
         projected.index.disable_all();
         projected.enabled = true;
         let end = *projected.offsets.last().unwrap();
-        self.remaining.resize(end, 0.0);
+        // Source rows follow the city, with spare capacity (`SIM-02-K`).
+        use crate::utils::storage::resize_rows;
+        resize_rows(&mut self.remaining, end, 0.0);
         self.remaining[first_slot..].fill(0.0);
-        self.production.resize(end, 0.0);
+        resize_rows(&mut self.production, end, 0.0);
         self.production[first_slot..].fill(0.0);
-        self.active.resize(end, false);
+        resize_rows(&mut self.active, end, false);
         self.active[first_slot..].fill(false);
-        self.source_receipts.resize(end, usize::MAX);
+        resize_rows(&mut self.source_receipts, end, usize::MAX);
         self.source_receipts[first_slot..].fill(usize::MAX);
-        self.staged.reserve(end);
-        self.released.reserve(end);
-        self.offers.reserve(end);
+        let (staged, released, offers) = (
+            self.staged.len() + end,
+            self.released.len() + end,
+            self.offers.len() + end,
+        );
+        crate::utils::storage::reserve_rows(&mut self.staged, staged);
+        crate::utils::storage::reserve_rows(&mut self.released, released);
+        crate::utils::storage::reserve_rows(&mut self.offers, offers);
     }
 
     /// Finds the prepared variant in this owner's range, without a city or catalogue scan.
@@ -239,7 +278,7 @@ impl RecurringSupply {
             .get(owner)?
             .clone()
             .find(|&index| self.projected.sources[index].asset == asset)
-            .map(|index| self.offsets.len() - 1 + index)
+            .map(|index| self.source_base + index)
     }
 
     /// Changes one source's funded net production while retaining outstanding buyer claims.
@@ -308,7 +347,7 @@ impl RecurringSupply {
 
     /// Maps a supply handle to its real commitment owner, including unplaced recipe variants.
     pub(super) fn source_owner(&self, source: usize) -> usize {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         if source < base {
             source
         } else {
@@ -318,7 +357,7 @@ impl RecurringSupply {
 
     /// Sparse quantity range for an original or prepared source handle.
     pub(super) fn source_range(&self, source: usize) -> Option<Range<usize>> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         let (offsets, index) = if source < base {
             (&self.offsets, source)
         } else if self.projected.enabled {
@@ -336,7 +375,7 @@ impl RecurringSupply {
         allocator: &BuildingAllocator,
         catalog: &'c RuntimeEconomyCatalog,
     ) -> Option<&'c EconomyProfileRuntime> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         let profile = if source < base {
             allocator.buildings.get(source)?.economy_profile_runtime_id
         } else if self.projected.enabled {
@@ -353,7 +392,7 @@ impl RecurringSupply {
         source: usize,
         allocator: &'a BuildingAllocator,
     ) -> Option<&'a BuildingEntrance> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         if source < base {
             allocator.entrances.get(source)
         } else if self.projected.enabled {
@@ -378,7 +417,7 @@ impl RecurringSupply {
         graph: &RegionGraph,
         routes: &mut FreightRouteCache,
     ) -> Option<f32> {
-        if source < self.offsets.len().saturating_sub(1) {
+        if source < self.source_base {
             if let Some(buyer) = buyer {
                 routes.between_buildings(source, buyer, allocator, network, graph)
             } else {
@@ -405,11 +444,7 @@ impl RecurringSupply {
         let Some(components) = &self.components else {
             return;
         };
-        let Some(variant) = self
-            .projected
-            .sources
-            .get(source - (self.offsets.len() - 1))
-        else {
+        let Some(variant) = self.projected.sources.get(source - self.source_base) else {
             return;
         };
         let chunk = chunk_for_point(variant.entrance.door_pos.x, variant.entrance.door_pos.y);
