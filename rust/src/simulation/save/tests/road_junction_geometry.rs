@@ -955,7 +955,7 @@ fn shared_grade_terrain_boundaries_keep_a_certified_source_owner() {
     ];
     let edges = (0..graph.edge_count()).collect::<Vec<_>>();
     surface.compile_owners_for_geometry_audit(&graph, &terrain, &edges, &nodes, false);
-    for node in [1, 2, 7, 8, 23, 24, 25, 43, 45, 50] {
+    for node in [1, 2, 7, 8, 23, 24, 25, 36, 43, 45, 50] {
         let p = graph.node(node).pos;
         let result = surface.terrain_cdt_road_loops_for_world_bounds(
             &graph,
