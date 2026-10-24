@@ -1139,6 +1139,8 @@ fn flat_arbitrary_multiway_junction_matrix_preserves_exact_raw_polygon_identity(
 
 #[test]
 fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
+    // Geometry/owner digests remain the baseline. Carrier witnesses now retain
+    // the intervening source edges instead of repeating an adjacent segment.
     assert_canonical_node_raw_polygon_golden(
         "flat_4way_cross",
         &compile_generated_flat_multiway_junction_raw_identity(
@@ -1153,8 +1155,8 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             source_segment_record_count: 19,
             polygon_key_set_digest: 5647545611315208473,
             top_owner_height_field_digest: 7433445721030018642,
-            carrier_owner_source_height_field_digest: 5687354493498944674,
-            source_segment_id_digest: 17651613363160715331,
+            carrier_owner_source_height_field_digest: 2688543709209250710,
+            source_segment_id_digest: 11382147958459968992,
             source_segment_ids: vec![
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 3 }, source_kind: Carriageway, source_mouth_order_index: 0, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 2460269, z_key: 3500000 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 2928932, z_key: 2928932 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 3 }, source_kind: Carriageway, source_mouth_order_index: 0, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 2928932, z_key: 2928932 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 4444298, z_key: 1685304 } }".to_owned(),
@@ -1165,11 +1167,11 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 9 }, source_kind: Carriageway, source_mouth_order_index: 1, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -1685304, z_key: 4444297 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -761205, z_key: 6173165 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 9 }, source_kind: Carriageway, source_mouth_order_index: 1, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -761205, z_key: 6173165 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -192147, z_key: 8049097 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 15 }, source_kind: Carriageway, source_mouth_order_index: 2, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -10000000, z_key: -1 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -8049097, z_key: -192148 } }".to_owned(),
-                "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 15 }, source_kind: Carriageway, source_mouth_order_index: 2, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -6173166, z_key: -761205 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -4444298, z_key: -1685304 } }".to_owned(),
+                "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 15 }, source_kind: Carriageway, source_mouth_order_index: 2, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -8049097, z_key: -192148 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -6173166, z_key: -761205 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 15 }, source_kind: Carriageway, source_mouth_order_index: 2, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -6173166, z_key: -761205 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -4444298, z_key: -1685304 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 15 }, source_kind: Carriageway, source_mouth_order_index: 2, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: -4444298, z_key: -1685304 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -2928932, z_key: -2928933 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 21 }, source_kind: Carriageway, source_mouth_order_index: 3, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 0, z_key: -10000000 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 192147, z_key: -8049097 } }".to_owned(),
-                "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 21 }, source_kind: Carriageway, source_mouth_order_index: 3, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 761205, z_key: -6173166 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 1685304, z_key: -4444298 } }".to_owned(),
+                "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 21 }, source_kind: Carriageway, source_mouth_order_index: 3, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 192147, z_key: -8049097 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 761205, z_key: -6173166 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 21 }, source_kind: Carriageway, source_mouth_order_index: 3, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 761205, z_key: -6173166 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 1685304, z_key: -4444298 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Sidewalk, owner_index: 5 }, source_kind: Sidewalk, source_mouth_order_index: 0, source_band_index: 5, segment_start: NodeOwnedRegionArrangementKey { x_key: 4720168, z_key: 6472129 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 5509872, z_key: 5509872 } }".to_owned(),
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Sidewalk, owner_index: 11 }, source_kind: Sidewalk, source_mouth_order_index: 1, source_band_index: 5, segment_start: NodeOwnedRegionArrangementKey { x_key: -6472129, z_key: 4720168 }, segment_end: NodeOwnedRegionArrangementKey { x_key: -5509872, z_key: 5509872 } }".to_owned(),
