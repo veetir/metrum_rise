@@ -346,3 +346,4 @@ mod zone_support;
 mod zone_roundabout;
 mod zone_ramps;
 mod zone_links;
+mod zone_lanes;
