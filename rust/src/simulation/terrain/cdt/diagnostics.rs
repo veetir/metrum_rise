@@ -288,40 +288,92 @@ fn source_owned_kerb_return(
     {
         return false;
     }
-    let step = crate::simulation::network::surface::CURB_STEP_HEIGHT_M;
-    for i in 0..3 {
-        let j = (i + 1) % 3;
-        if edge_length_xz_m(points[i], points[j]) > CDT_EPSILON_M {
-            continue;
+    let ax = points[1].x - points[0].x;
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let bz = points[2].z - points[0].z;
+    let longest_edge = (0..3)
+        .map(|i| edge_length_xz_m(points[i], points[(i + 1) % 3]))
+        .fold(0.0_f64, f64::max);
+    // Opposite rails need not use the same longitudinal station. The return's
+    // perpendicular thickness, not its endpoint separation, bounds the kerb face.
+    if longest_edge == 0.0
+        || (ax * bz - az * bx).abs() / longest_edge > CDT_EPSILON_M
+        || terrain_face_plane_slope_ratio(points) <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO
+    {
+        return false;
+    }
+    let step_key = quantized_coord(f64::from(
+        crate::simulation::network::surface::CURB_STEP_HEIGHT_M,
+    ));
+    let height_keys = points.map(|point| quantized_coord(f64::from(point.height_m)));
+    // Test all nonuniform assignments of the source-declared 0/120 mm levels.
+    // Longitudinal grade can make either material's sampled station higher;
+    // raw endpoint height order does not identify the material level.
+    for raised in 1_usize..7 {
+        let base = std::array::from_fn(|i| {
+            height_keys[i]
+                - if raised & (1_usize << i) != 0 {
+                    step_key
+                } else {
+                    0
+                }
+        });
+        if height_keys_admit_ground_grade(points, base) {
+            return true;
         }
-        let (low, high) = if points[i].height_m < points[j].height_m {
-            (i, j)
-        } else {
-            (j, i)
-        };
-        if !same_height(points[high].height_m - points[low].height_m, step) {
-            continue;
-        }
-        // Prove that removing the declared material step leaves a valid ground grade.
-        // The third vertex may belong to either side of the same kerb return.
-        let other = 3 - low - high;
-        for other_raised in [false, true] {
-            let mut base = points.map(|mut point| {
-                point.height_m =
-                    (quantized_coord(f64::from(point.height_m)) as f64 * CDT_EPSILON_M) as f32;
-                point
-            });
-            let lower_material = |height: f32| {
-                ((quantized_coord(f64::from(height)) - quantized_coord(f64::from(step))) as f64
-                    * CDT_EPSILON_M) as f32
-            };
-            // The source contract is in millimetre keys. Subtracting 0.12 directly in
-            // f32 can leave a full ULP across a micrometre-wide kerb corner at 100 m elevation.
-            base[high].height_m = lower_material(base[high].height_m);
-            if other_raised {
-                base[other].height_m = lower_material(base[other].height_m);
+    }
+    false
+}
+
+fn height_keys_admit_ground_grade(points: [TerrainCdtVertex; 3], heights: [i64; 3]) -> bool {
+    let min = heights[0].min(heights[1]).min(heights[2]);
+    let max = heights[0].max(heights[1]).max(heights[2]);
+    if max.abs_diff(min) <= 1 {
+        return true;
+    }
+    let ax = points[1].x - points[0].x;
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let bz = points[2].z - points[0].z;
+    let determinant = ax * bz - az * bx;
+    if determinant == 0.0 {
+        return false;
+    }
+    // Each source key represents one millimetre rounding cell. The eight corners
+    // of their height box map linearly to a convex polygon of plane gradients.
+    // A flat plane is possible exactly when all three height cells intersect
+    // (handled above). Otherwise the least slope is on this polygon's boundary;
+    // its edges are among the 28 segments joining projected box corners.
+    let gradients: [[f64; 2]; 8] = std::array::from_fn(|bits| {
+        let offset = |i: usize| {
+            if bits & (1_usize << i) == 0_usize {
+                -0.5
+            } else {
+                0.5
             }
-            if terrain_face_plane_slope_ratio(base) <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
+        };
+        let ay = (heights[1] as f64 - heights[0] as f64 + offset(1) - offset(0)) * CDT_EPSILON_M;
+        let by = (heights[2] as f64 - heights[0] as f64 + offset(2) - offset(0)) * CDT_EPSILON_M;
+        [
+            (ay * bz - by * az) / determinant,
+            (ax * by - bx * ay) / determinant,
+        ]
+    });
+    let limit_squared = f64::from(MAX_TERRAIN_TIE_IN_SLOPE_RATIO).powi(2);
+    let norm_squared = |g: [f64; 2]| g[0] * g[0] + g[1] * g[1];
+    for (i, &start) in gradients.iter().enumerate() {
+        if norm_squared(start) <= limit_squared {
+            return true;
+        }
+        for &end in &gradients[i + 1..] {
+            let delta = [end[0] - start[0], end[1] - start[1]];
+            let length_squared = norm_squared(delta);
+            if length_squared == 0.0 {
+                continue;
+            }
+            let t = (-(start[0] * delta[0] + start[1] * delta[1]) / length_squared).clamp(0.0, 1.0);
+            if norm_squared([start[0] + t * delta[0], start[1] + t * delta[1]]) <= limit_squared {
                 return true;
             }
         }
@@ -915,5 +967,35 @@ mod tests {
             *boundary_source = None;
         }
         assert!(!source_owned_kerb_return(points, &materials(&[unsourced])));
+    }
+    #[test]
+    fn kerb_return_uses_normal_thickness_and_quantized_ground_grade() {
+        // Exact node-131 return from the university full-width reconstruction.
+        let points = [
+            TerrainCdtVertex::new(-445.934807, 88.122, 2141.990994),
+            TerrainCdtVertex::new(-445.938171, 88.001, 2141.990471),
+            TerrainCdtVertex::new(-434.499753, 88.367, 2143.136390),
+        ];
+        let materials = RoadBoundaryMaterials {
+            node: Some((131, TerrainCdtNodePieceKind::JunctionN)),
+            owners: [true, true, false, false],
+            ..RoadBoundaryMaterials::default()
+        };
+        assert!(source_owned_kerb_return(points, &materials));
+        let graded_stations = [
+            TerrainCdtVertex::new(0.0, 20.0, 0.0),
+            TerrainCdtVertex::new(0.02, 20.122, 0.0002),
+            TerrainCdtVertex::new(10.0, 21.12, 0.0),
+        ];
+        assert!(source_owned_kerb_return(graded_stations, &materials));
+        let mut unsupported_step = points;
+        unsupported_step[0].height_m += 0.005;
+        assert!(!source_owned_kerb_return(unsupported_step, &materials));
+        let mut wide_gap = points;
+        wide_gap[0].z += 0.01;
+        assert!(!source_owned_kerb_return(wide_gap, &materials));
+        let mut impossible_ground = points;
+        impossible_ground[2].height_m += 100.0;
+        assert!(!source_owned_kerb_return(impossible_ground, &materials));
     }
 }

@@ -741,7 +741,9 @@ impl SimulationNode {
             {
                 debug_log!(
                     "road",
-                    "terrain_cdt_rejected_face points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m}"
+                    "terrain_cdt_rejected_face points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} source_points={:?} boundary_sources={:?}",
+                    triangle.map(|index| vertices_source[index]),
+                    triangle_sources[triangle_index],
                 );
                 omitted_pathological_faces += 1;
                 continue;
