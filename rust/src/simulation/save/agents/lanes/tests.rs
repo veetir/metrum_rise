@@ -759,3 +759,5 @@ fn older_open_node_connectors_retire_without_refusing_the_save() {
     .unwrap();
     assert!(restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt,).is_err());
 }
+
+mod tail;
