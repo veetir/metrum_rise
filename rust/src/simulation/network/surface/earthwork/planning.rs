@@ -316,7 +316,33 @@ impl PlannedRoadSurfaceQuery {
                 old.extend(mapped);
                 // Union only after removing superseded owners, and in live owner order.
                 old.sort_by_key(|boundary| clip_owner_key(boundary));
-                let loops = RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old);
+                let loops = match RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old, &[]) {
+                    Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { .. }) => {
+                        // Identity maps cover only this validation excerpt, never the live city.
+                        let local_edges=edge_ids.iter().enumerate().map(|(local,&live)|(live,local)).collect::<HashMap<_,_>>();
+                        let local_nodes=node_ids.iter().enumerate().map(|(local,&live)|(live,local as u32)).collect::<HashMap<_,_>>();
+                        let grades=old.iter().map(|boundary| boundary.source_edges.iter().map(|edge| {
+                            let local_source=match edge.source {
+                                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_idx,.. }
+                                    if edge_idx>=existing_graph.edge_count() || replaced_edges.contains(&edge_idx) =>
+                                        Some(edge.source.with_span_identity(*local_edges.get(&edge_idx)?)),
+                                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id,kind,.. }
+                                | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id,kind,.. }
+                                    if node_id as usize>=existing_graph.node_count() || replaced_nodes.contains(&node_id) =>
+                                        Some(edge.source.with_node_identity(*local_nodes.get(&node_id)?,kind)),
+                                _ => None,
+                            };
+                            if let Some(source)=local_source {
+                                let mut local_edge=*edge;
+                                local_edge.source=source;
+                                surface.terrain_clip_source_grade(graph,&local_edge)
+                                    .map(|(root,level)|(node_ids[root as usize],level))
+                            } else { existing.terrain_clip_source_grade(existing_graph,edge) }
+                        }).collect()).collect::<Vec<_>>();
+                        RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old,&grades)
+                    }
+                    result => result,
+                };
                 Some(PlannedRoadTerrainClipPatch {
                     patch: Arc::new(patch), road_owned: road_margin.is_some(), query_margin_m, loops,
                 })
@@ -484,15 +510,15 @@ mod tests {
             });
             assert_eq!(clip.query_margin_m, margin);
             let patch = &clip.patch;
-            let boundaries = surface.terrain_clip_boundary_loops_for_world_bounds(
-                &graph,
-                patch.world_origin_x - margin,
-                patch.world_origin_z - margin,
-                patch.world_origin_x + patch.world_size_x + margin,
-                patch.world_origin_z + patch.world_size_z + margin,
-            );
-            let loops =
-                RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&boundaries).unwrap();
+            let loops = surface
+                .terrain_cdt_road_loops_for_world_bounds(
+                    &graph,
+                    patch.world_origin_x - margin,
+                    patch.world_origin_z - margin,
+                    patch.world_origin_x + patch.world_size_x + margin,
+                    patch.world_origin_z + patch.world_size_z + margin,
+                )
+                .unwrap();
             assert_eq!(
                 clip.loops.as_ref().unwrap(),
                 &loops,

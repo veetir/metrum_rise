@@ -935,3 +935,35 @@ fn retained_shared_grade_plans_require_valid_source_ownership() {
             .is_empty()
     );
 }
+
+#[test]
+fn shared_grade_terrain_boundaries_keep_a_certified_source_owner() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/junction_terrain_owners.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let config = WorldConfig::new(8000.0, 8000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    // Frontier incidence is intentionally omitted from this exact source excerpt.
+    let nodes = [
+        1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 52,
+    ];
+    let edges = (0..graph.edge_count()).collect::<Vec<_>>();
+    surface.compile_owners_for_geometry_audit(&graph, &terrain, &edges, &nodes, false);
+    for node in [1, 2, 7, 8, 23, 24, 25, 43, 45, 50] {
+        let p = graph.node(node).pos;
+        let result = surface.terrain_cdt_road_loops_for_world_bounds(
+            &graph,
+            p.x - 24.0,
+            p.z - 24.0,
+            p.x + 24.0,
+            p.z + 24.0,
+        );
+        assert!(result.is_ok(), "source node {node}: {result:?}");
+    }
+}

@@ -114,6 +114,7 @@ impl RoadSurfaceSystem {
                     source: source_edge.source,
                     source_index,
                     edge_index,
+                    grade_authority: None,
                 });
             }
         }

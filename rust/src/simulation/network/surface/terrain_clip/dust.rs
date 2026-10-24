@@ -212,6 +212,7 @@ mod tests {
             [0.0, 1.0],
         ];
         let source_edge = |a: [f64; 2], ay, b: [f64; 2], by| TerrainClipSourceEdge {
+            grade_authority: None,
             start: RoadVec3::new(a[0], ay, a[1]),
             end: RoadVec3::new(b[0], by, b[1]),
             kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
@@ -257,6 +258,7 @@ mod tests {
             [0.0, 1.0],
         ];
         let source_edge = |start: [f64; 2], start_y, end: [f64; 2], end_y| TerrainClipSourceEdge {
+            grade_authority: None,
             start: RoadVec3::new(start[0], start_y, start[1]),
             end: RoadVec3::new(end[0], end_y, end[1]),
             kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,

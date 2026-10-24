@@ -504,6 +504,7 @@ mod tests {
 
     fn source_edge(start: RoadVec3, end: RoadVec3, edge_index: usize) -> TerrainClipSourceEdge {
         TerrainClipSourceEdge {
+            grade_authority: None,
             start,
             end,
             kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
