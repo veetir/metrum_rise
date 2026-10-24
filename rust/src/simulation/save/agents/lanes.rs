@@ -207,6 +207,25 @@ pub(in crate::simulation::save) fn restore_lane_references(
                 }
             }
         }
+        let tail = agents.tail_connector_lane_id[i];
+        agents.tail_connector_lane_id[i] = if tail == u32::MAX {
+            u32::MAX
+        } else {
+            match remap.get(&(tail as usize)).copied() {
+                Some(id)
+                    if lanes.lanes[id].edge_id == usize::MAX
+                        && lanes.lanes[id].lane_type == LaneType::Vehicle =>
+                {
+                    id as u32
+                }
+                Some(_) => {
+                    return Err(SaveLoadError::custom(
+                        "tail source is not a vehicle connector",
+                    ));
+                }
+                None => u32::MAX,
+            }
+        };
         let changing_from = agents.lane_change_from_lane_id[i];
         if changing_from != u32::MAX {
             agents.lane_change_from_lane_id[i] = *remap

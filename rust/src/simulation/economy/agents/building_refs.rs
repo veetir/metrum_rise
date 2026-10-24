@@ -717,6 +717,7 @@ impl AgentSystem {
         self.agents.current_node[agent_idx] = current_node;
         self.agents.current_edge[agent_idx] = current_edge;
         self.agents.current_lane_id[agent_idx] = usize::MAX;
+        self.agents.tail_connector_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_distance[agent_idx] = 0.0;
         self.agents.access_flags[agent_idx] = 0;
         self.agents.next_replan_time[agent_idx] = 0.0;
@@ -770,6 +771,7 @@ impl AgentSystem {
         self.agents.current_node[agent_idx] = u32::MAX;
         self.agents.current_edge[agent_idx] = usize::MAX;
         self.agents.current_lane_id[agent_idx] = usize::MAX;
+        self.agents.tail_connector_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_distance[agent_idx] = 0.0;
         self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_change_start_d[agent_idx] = 0.0;

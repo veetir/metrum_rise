@@ -110,8 +110,8 @@ pub(super) unsafe fn handle_network_movement(
                     *slices.speed.get_mut(i) = 0.0;
                 }
             }
-            // Generated junction paths retain body spacing across their boundaries.
-            // Synthetic movement-only fixtures have no compiled control/geometry contract.
+            // Compiled junction mouths define the cross-boundary body stations.
+            // Standalone lanes retain ordinary within-lane following and entry checks.
             let controlled_boundary = transit_network
                 .lane_system
                 .reservation_movement(lane_id)
@@ -220,6 +220,7 @@ unsafe fn reset_invalid_lane(i: usize, slices: &MovementSlices) {
         let s_lane_change_length = &slices.lane_change_length;
 
         *s_lane_id.get_mut(i) = usize::MAX;
+        *slices.tail_connector.get_mut(i) = u32::MAX;
         *s_lane_change_from_lane.get_mut(i) = u32::MAX;
         *s_lane_change_start_d.get_mut(i) = 0.0;
         *s_lane_change_length.get_mut(i) = 0.0;

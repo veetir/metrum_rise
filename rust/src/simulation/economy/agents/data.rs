@@ -109,6 +109,8 @@ pub struct Agent {
     pub current_edge: usize,
     /// Currently traversed lane ID in `LaneSystem`. `usize::MAX` if off-network.
     pub current_lane_id: usize,
+    /// Last connector left by a car whose tail may still occupy it; `u32::MAX` is unknown.
+    pub tail_connector_lane_id: u32,
     /// Distance (in metres) travelled along the `current_lane_id`.
     pub lane_distance: f32,
     /// Source lane for an active lane-change maneuver. `u32::MAX` means no active lane change.

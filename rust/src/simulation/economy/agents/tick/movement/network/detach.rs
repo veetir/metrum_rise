@@ -77,6 +77,7 @@ pub(super) unsafe fn try_network_detach(
                 *s_cur_n.get_mut(i) = u32::MAX;
                 *s_cur_e.get_mut(i) = usize::MAX;
                 *s_lane_id.get_mut(i) = usize::MAX;
+                *slices.tail_connector.get_mut(i) = u32::MAX;
                 *s_lane_d.get_mut(i) = 0.0;
                 *s_speed.get_mut(i) = 0.0;
                 *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;

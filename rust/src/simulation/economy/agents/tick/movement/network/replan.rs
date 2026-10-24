@@ -418,6 +418,7 @@ unsafe fn apply_immigration_trip(
         *s_cur_n.get_mut(i) = border_node;
         *s_cur_e.get_mut(i) = usize::MAX;
         *s_lane_id.get_mut(i) = usize::MAX;
+        *slices.tail_connector.get_mut(i) = u32::MAX;
         *s_lane_d.get_mut(i) = 0.0;
         *s_speed.get_mut(i) = 0.0;
         *s_path.get_mut(i) = plan.current_path;

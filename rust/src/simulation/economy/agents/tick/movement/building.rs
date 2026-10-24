@@ -153,6 +153,7 @@ pub(super) unsafe fn handle_in_building(
             *s_cur_n.get_mut(i) = u32::MAX;
             *s_cur_e.get_mut(i) = usize::MAX;
             *s_lane_id.get_mut(i) = usize::MAX;
+            *slices.tail_connector.get_mut(i) = u32::MAX;
             *s_lane_d.get_mut(i) = 0.0;
             *s_speed.get_mut(i) = 0.0;
             *s_pos_x.get_mut(i) = origin_entrance.door_pos.x;

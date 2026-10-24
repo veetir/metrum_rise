@@ -131,6 +131,9 @@ impl AgentSystem {
         }
 
         for i in 0..self.agents.len() {
+            if affected_lane_ids.contains(&(self.agents.tail_connector_lane_id[i] as usize)) {
+                self.agents.tail_connector_lane_id[i] = u32::MAX;
+            }
             let lid = self.agents.current_lane_id[i];
             if lid == usize::MAX || lid >= lane_system.lanes.len() {
                 continue;
@@ -181,6 +184,7 @@ impl AgentSystem {
                     self.agents.transit[i] = TRANSIT_NETWORK;
                 }
                 self.agents.current_lane_id[i] = usize::MAX;
+                self.agents.tail_connector_lane_id[i] = u32::MAX;
                 self.agents.lane_change_from_lane_id[i] = u32::MAX;
                 self.agents.lane_change_start_d[i] = 0.0;
                 self.agents.lane_change_length_m[i] = 0.0;
@@ -345,7 +349,7 @@ impl AgentSystem {
     /// Records the identity of every lane an agent references, before a full
     /// [`LaneSystem::rebuild`] renumbers all lane ids.
     ///
-    /// O(A), plus one O(L) pass when any agent is inside a junction connector.
+    /// O(A), plus one O(L) pass when any agent references a junction connector.
     pub(crate) fn capture_lane_identities(&self, lane_system: &LaneSystem) -> AgentLaneIdentities {
         let agents = &self.agents;
         let mut lane_ids = HashSet::new();
@@ -355,6 +359,7 @@ impl AgentSystem {
                 agents.planned_attach_lane_id[i],
                 agents.planned_detach_lane_id[i],
                 agents.lane_change_from_lane_id[i],
+                agents.tail_connector_lane_id[i],
             ] {
                 lane_ids.insert(if id == u32::MAX {
                     usize::MAX
@@ -401,6 +406,7 @@ impl AgentSystem {
                         self.agents.lane_distance[i].min(lane_system.lanes[id].length);
                 } else {
                     self.agents.current_lane_id[i] = usize::MAX;
+                    self.agents.tail_connector_lane_id[i] = u32::MAX;
                     lost = true;
                 }
             }
@@ -413,6 +419,8 @@ impl AgentSystem {
                     u32::MAX
                 });
             }
+            self.agents.tail_connector_lane_id[i] =
+                resolve_u32(self.agents.tail_connector_lane_id[i]).unwrap_or(u32::MAX);
             let from = resolve_u32(self.agents.lane_change_from_lane_id[i]).unwrap_or(u32::MAX);
             self.agents.lane_change_from_lane_id[i] = from;
             if from == u32::MAX {
@@ -521,6 +529,7 @@ impl AgentSystem {
             self.agents.transit[i] = TRANSIT_NETWORK;
             self.agents.current_edge[i] = usize::MAX;
             self.agents.current_lane_id[i] = usize::MAX;
+            self.agents.tail_connector_lane_id[i] = u32::MAX;
             self.agents.lane_distance[i] = 0.0;
             self.agents.speed[i] = 0.0;
         }

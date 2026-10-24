@@ -198,6 +198,7 @@ impl SimCore {
                 network_replan_failures: 0,
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
+                tail_connector_lane_id: u32::MAX,
                 lane_distance: 0.0,
                 lane_change_from_lane_id: u32::MAX,
                 lane_change_start_d: 0.0,

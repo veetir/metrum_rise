@@ -49,6 +49,8 @@ pub(super) struct LoadedAgentRecord {
     pub next_replan_time: f32,
     pub current_edge: usize,
     pub current_lane_id: i64,
+    /// Incoming connector identity for the outgoing car’s remaining body tail.
+    pub tail_connector_lane_id: u32,
     pub lane_distance: f32,
     pub pos_x: f32,
     pub pos_y: f32,
@@ -83,7 +85,7 @@ pub(super) fn save_agents(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, tail_connector_lane_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -182,7 +184,8 @@ pub(super) fn save_agents(
             agents.overtake_blocked_time_s[i],
             agents.overtake_cooldown_s[i],
             i64::from(agents.job_lock_until_day[i]),
-            i64::from(agents.consecutive_unpaid_days[i])
+            i64::from(agents.consecutive_unpaid_days[i]),
+            i64::from(agents.tail_connector_lane_id[i])
         ])?;
 
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
@@ -224,7 +227,7 @@ pub(super) fn load_agents(
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare(&format.query("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id", &[(89, "job_lock_until_day", "job_lock_days"),
+        let mut stmt = conn.prepare(&format.query("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, tail_connector_lane_id FROM agents ORDER BY agent_id", &[(109, "tail_connector_lane_id", "4294967295"), (89, "job_lock_until_day", "job_lock_days"),
         (72, "pending_household_adults", "0"), (72, "pending_household_elders", "0"),
         (75, "speed", "NULL"), (75, "planned_target_building", "NULL"), (75, "planned_activity", "NULL"),
         (75, "network_replan_failures", "NULL"), (75, "lane_change_from_lane_id", "NULL"),
@@ -288,6 +291,7 @@ pub(super) fn load_agents(
                     next_replan_time: row.get(18)?,
                     current_edge: db_to_optional_usize(row.get(19)?)?,
                     current_lane_id: row.get(20)?,
+                    tail_connector_lane_id: i64_to_u32(row.get(55)?)?,
                     lane_distance: row.get(21)?,
                     pos_x: row.get(22)?,
                     pos_y: row.get(23)?,
@@ -390,6 +394,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         network_replan_failures: 0,
         current_edge: rec.current_edge,
         current_lane_id: rec.current_lane_id as usize,
+        tail_connector_lane_id: rec.tail_connector_lane_id,
         lane_distance: rec.lane_distance,
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,
@@ -638,6 +643,7 @@ fn repair_orphaned_loaded_network_agent(
         agents.current_node[i] = u32::MAX;
         agents.current_edge[i] = usize::MAX;
         agents.current_lane_id[i] = usize::MAX;
+        agents.tail_connector_lane_id[i] = u32::MAX;
         agents.lane_distance[i] = 0.0;
         agents.transit[i] = TRANSIT_IN_BUILDING;
     }
@@ -648,6 +654,7 @@ fn clear_agent_travel_state(agents: &mut AgentSystem, i: usize) {
     agents.current_path_index[i] = 0;
     agents.current_edge[i] = usize::MAX;
     agents.current_lane_id[i] = usize::MAX;
+    agents.tail_connector_lane_id[i] = u32::MAX;
     agents.lane_distance[i] = 0.0;
     clear_agent_access_plan(agents, i);
     // Intersection and every other moving state return to the plain network state.

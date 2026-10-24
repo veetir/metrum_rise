@@ -14,6 +14,7 @@ macro_rules! enter_lane {
         crate::simulation::economy::agents::lane_state::LaneStateMut {
             agent: i,
             lane: s.lane_id.get_mut(i),
+            tail_connector: s.tail_connector.get_mut(i),
             edge: s.cur_e.get_mut(i),
             node: s.cur_n.get_mut(i),
             distance: s.lane_d.get_mut(i),
@@ -104,6 +105,8 @@ pub(crate) struct MovementSlices {
     pub(super) network_replan_failures: RawSlice<u8>,
     pub(super) cur_e: RawSlice<usize>,
     pub(super) lane_id: RawSlice<usize>,
+    /// Incoming connector retained until the outgoing car’s tail clears its mouth.
+    pub(super) tail_connector: RawSlice<u32>,
     pub(super) lane_d: RawSlice<f32>,
     pub(super) lane_change_from_lane: RawSlice<u32>,
     pub(super) lane_change_start_d: RawSlice<f32>,
@@ -164,6 +167,7 @@ impl MovementSlices {
             network_replan_failures: RawSlice::new(&mut agents.network_replan_failures),
             cur_e: RawSlice::new(&mut agents.current_edge),
             lane_id: RawSlice::new(&mut agents.current_lane_id),
+            tail_connector: RawSlice::new(&mut agents.tail_connector_lane_id),
             lane_d: RawSlice::new(&mut agents.lane_distance),
             lane_change_from_lane: RawSlice::new(&mut agents.lane_change_from_lane_id),
             lane_change_start_d: RawSlice::new(&mut agents.lane_change_start_d),

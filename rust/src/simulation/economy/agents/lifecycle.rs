@@ -434,6 +434,7 @@ impl AgentSystem {
             network_replan_failures: 0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
+            tail_connector_lane_id: u32::MAX,
             lane_distance: 0.0,
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
@@ -503,6 +504,7 @@ impl AgentSystem {
         self.agents.current_node[agent_idx] = u32::MAX;
         self.agents.current_edge[agent_idx] = usize::MAX;
         self.agents.current_lane_id[agent_idx] = usize::MAX;
+        self.agents.tail_connector_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_distance[agent_idx] = 0.0;
         self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_change_start_d[agent_idx] = 0.0;
@@ -542,6 +544,7 @@ impl AgentSystem {
         self.agents.current_node[agent_idx] = border_node;
         self.agents.current_edge[agent_idx] = usize::MAX;
         self.agents.current_lane_id[agent_idx] = usize::MAX;
+        self.agents.tail_connector_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_distance[agent_idx] = 0.0;
         self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_change_start_d[agent_idx] = 0.0;

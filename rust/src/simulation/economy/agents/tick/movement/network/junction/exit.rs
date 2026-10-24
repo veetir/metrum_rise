@@ -82,6 +82,7 @@ pub(super) unsafe fn exit_connector_lane(
         }
         s_path.get_mut(i).clear();
         *s_lane_id.get_mut(i) = usize::MAX;
+        *slices.tail_connector.get_mut(i) = u32::MAX;
         LaneEndAction::Break
     }
 }
