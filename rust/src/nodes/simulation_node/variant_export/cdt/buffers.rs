@@ -5,6 +5,7 @@
 use super::super::super::*;
 use super::types::*;
 use crate::simulation::core::round_f64_to_i64;
+use crate::simulation::network::surface::RoadVec3;
 
 mod paving;
 mod regular;
@@ -705,6 +706,15 @@ impl SimulationNode {
         );
         let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
         let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        // Translate the f64 source before narrowing to the uploaded patch-local f32.
+        // World-space narrowing can weld distinct rails and manufacture vertical faces.
+        let local_point = |point: TerrainCdtVertex| {
+            Vector3::new(
+                (point.x - f64::from(center_x)) as f32,
+                point.height_m,
+                (point.z - f64::from(center_z)) as f32,
+            )
+        };
         let mut vertices = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
@@ -718,14 +728,21 @@ impl SimulationNode {
         let mut longest_triangle_edge_m = 0.0_f32;
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
+            // Keep the existing area floor, evaluated on source geometry so its
+            // acceptance cannot change with world position or float conversion.
+            let source_points = triangle.map(|index| {
+                let point = vertices_source[index];
+                RoadVec3::new(point.x, f64::from(point.height_m), point.z)
+            });
+            let source_normal =
+                (source_points[1] - source_points[0]).cross(source_points[2] - source_points[0]);
+            if source_normal.length_squared() <= 0.000_001 {
+                continue;
+            }
             let mut source_indices = *triangle;
-            let mut points = [
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[0]]),
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[1]]),
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[2]]),
-            ];
+            let mut points = triangle.map(|index| local_point(vertices_source[index]));
             let mut raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-            if raw_normal.length_squared() <= 0.000_001 {
+            if raw_normal.length_squared() == 0.0 {
                 continue;
             }
             if raw_normal.y < 0.0 {
@@ -733,7 +750,6 @@ impl SimulationNode {
                 points.swap(1, 2);
                 raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
             }
-            let normal = raw_normal.normalized();
             let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
                 Self::terrain_buffer_triangle_metrics(points);
             if omit_pathological_terrain_faces
@@ -741,13 +757,14 @@ impl SimulationNode {
             {
                 debug_log!(
                     "road",
-                    "terrain_cdt_rejected_face points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} source_points={:?} boundary_sources={:?}",
+                    "terrain_cdt_rejected_face patch_center=({center_x},{center_z}) points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} source_points={:?} boundary_sources={:?}",
                     triangle.map(|index| vertices_source[index]),
                     triangle_sources[triangle_index],
                 );
                 omitted_pathological_faces += 1;
                 continue;
             }
+            let normal = raw_normal.normalized();
             max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
             max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
             longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
@@ -761,20 +778,18 @@ impl SimulationNode {
             for source_index in source_indices {
                 let mut export_index = vertex_remap[source_index];
                 if export_index == usize::MAX {
-                    let point = Self::terrain_cdt_vertex_to_vector3(vertices_source[source_index]);
+                    let point = vertices_source[source_index];
                     export_index = vertices.len();
                     vertex_remap[source_index] = export_index;
-                    vertices.push(Vector3::new(
-                        point.x - center_x,
-                        point.y,
-                        point.z - center_z,
-                    ));
+                    vertices.push(local_point(point));
                     normals.push(Vector3::new(0.0, 0.0, 0.0));
                     uvs.push(Vector2::new(
-                        ((point.x - patch.world_origin_x) / patch.world_size_x.max(0.001))
-                            .clamp(0.0, 1.0),
-                        ((point.z - patch.world_origin_z) / patch.world_size_z.max(0.001))
-                            .clamp(0.0, 1.0),
+                        ((point.x - f64::from(patch.world_origin_x))
+                            / f64::from(patch.world_size_x.max(0.001)))
+                        .clamp(0.0, 1.0) as f32,
+                        ((point.z - f64::from(patch.world_origin_z))
+                            / f64::from(patch.world_size_z.max(0.001)))
+                        .clamp(0.0, 1.0) as f32,
                     ));
                 }
                 normals[export_index] += normal;

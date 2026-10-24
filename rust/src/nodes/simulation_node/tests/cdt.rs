@@ -246,6 +246,46 @@ fn terrain_cdt_triangle_buffer_stats_measure_emitted_faces() {
 }
 
 #[test]
+fn terrain_cdt_conversion_is_invariant_to_world_translation() {
+    // These distinct source points collapse in world-space f32 around z=2765.
+    let source = [
+        TerrainCdtVertex::new(528.932040, 86.063, 2765.609321),
+        TerrainCdtVertex::new(528.932084, 86.064, 2765.609350),
+        TerrainCdtVertex::new(527.908818, 86.119, 2767.173137),
+    ];
+    let mut far_patch = test_patch();
+    far_patch.world_origin_x = 180.0;
+    far_patch.world_origin_z = 2730.0;
+    far_patch.world_size_x = 510.0;
+    far_patch.world_size_z = 510.0;
+    let far = SimulationNode::terrain_cdt_triangle_buffers(
+        &far_patch,
+        &source,
+        &[[0, 1, 2]],
+        &[Vec::new()],
+        false,
+        true,
+    );
+    assert_eq!(far.omitted_pathological_faces, 0);
+    assert_eq!(far.emitted_faces, 1);
+    let mut near_patch = far_patch.clone();
+    near_patch.world_origin_x = -255.0;
+    near_patch.world_origin_z = -255.0;
+    let translated = source.map(|p| TerrainCdtVertex::new(p.x - 435.0, p.height_m, p.z - 2985.0));
+    let near = SimulationNode::terrain_cdt_triangle_buffers(
+        &near_patch,
+        &translated,
+        &[[0, 1, 2]],
+        &[Vec::new()],
+        false,
+        true,
+    );
+    assert_eq!(far.vertices, near.vertices);
+    assert_eq!(far.normals, near.normals);
+    assert_eq!(far.uvs, near.uvs);
+}
+
+#[test]
 fn terrain_cdt_triangle_buffers_can_omit_pathological_faces() {
     let export = SimulationNode::terrain_cdt_triangle_buffers(
         &test_patch(),
