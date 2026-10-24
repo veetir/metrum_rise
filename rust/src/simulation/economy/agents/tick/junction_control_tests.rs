@@ -345,3 +345,4 @@ fn an_added_turn_pocket_does_not_promote_an_equal_road() {
 mod zone_support;
 mod zone_roundabout;
 mod zone_ramps;
+mod zone_links;
