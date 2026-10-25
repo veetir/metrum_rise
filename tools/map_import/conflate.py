@@ -146,8 +146,11 @@ def aligned(u, a, b, opposite=False):
 
 def conflate(roads, decisions):
     roads = deepcopy(sorted(roads, key=lambda r: r[0]['id']))
+    source_nodes = {f['id']: set(f['node_ids']) for f, _ in roads}
     from .medians import merge_carriageways
     changed, audit = merge_carriageways(roads, decisions)
+    for f, _ in changed:
+        f['_source_nodes'] = set().union(*(source_nodes.get(s, set()) for s in f.get('source_ids', [f['id']])))
     # Explicit sidewalks/crossings were excluded by source semantics in mapping.
     # Proximity is not sidewalk authority: separate cycleways, bridge paths and
     # scenic park paths keep their source geometry even beside a public road.
@@ -160,6 +163,15 @@ def snap_endpoints(roads, only_kind=None):
     Inserts target vertices before build_strokes so simplification cannot erase
     intended junctions. Only endpoints move; a 12 m bound prevents broad drift.
     """
+    def level(f):
+        p = f['properties']
+        return p.get('layer', 0) or (1 if p.get('bridge') else -1 if p.get('tunnel') else 0)
+
+    def continuation(f, target):
+        return (abs(level(target)) > abs(level(f))
+                and bool(f.get('_source_nodes', set(f['node_ids']))
+                         & target.get('_source_nodes', set(target['node_ids']))))
+
     index = SegmentIndex((f['id'], f['points'], (f, m)) for f, m in roads if m['action'] == 'road')
     insertions = defaultdict(list)
     audit = []
@@ -169,11 +181,23 @@ def snap_endpoints(roads, only_kind=None):
         for i in (0, len(f['points'])-1):
             p = f['points'][i]
             hit = index.nearest(p, POLICY['endpoint_snap_m'], lambda s: s[0] != f['id']
-                                and s[3][0]['properties'].get('layer', 0) == f['properties'].get('layer', 0))
+                                and (level(s[3][0]) == level(f) or continuation(f, s[3][0])))
             if not hit:
                 continue
+            target = hit[3][3][0]
+            if level(target) != level(f):
+                # Source-adjacent structure boundaries share an endpoint, not an
+                # arbitrary interior projection on a staggered divided deck.
+                ends = [(distance(p, target['points'][j]), j) for j in (0, -1)]
+                gap, j = min(ends)
+                if gap > POLICY['endpoint_snap_m']:
+                    continue
+                q = target['points'][j]
+                f['points'][i], f['node_ids'][i] = q, target['node_ids'][j]
+                audit.append({'source_id': f['id'], 'distance_m': round(gap, 3), 'point_xz': q,
+                              'reason': 'source_adjacent_structure_boundary'})
+                continue
             if hit[0] < .01:
-                target = hit[3][3][0]
                 # Median reattachment already projected this endpoint onto the segment.
                 # It still needs a target vertex so curve fitting preserves the junction.
                 if (any(distance(p, end) < .01 for end in (hit[3][1], hit[3][2]))

@@ -1084,6 +1084,18 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(prune_stubs(paths, discarded), paths)
         self.assertEqual(discarded, [])
 
+    def test_source_adjacent_bridge_keeps_its_endpoint_and_receives_the_ground_approach(self):
+        bridge = feature('bridge', [(40, 0), (60, 0)], ['ba', 'bb'], bridge=True, layer=1)
+        ground = feature('ground', [(55, 1), (100, 0)], ['ga', 'gb'])
+        bridge['_source_nodes'] = {'source-joint', 'other-bank'}
+        ground['_source_nodes'] = {'source-joint', 'other-end'}
+        original_bridge = copy.deepcopy(bridge['points'])
+        audit = snap_endpoints(list(map(road, [bridge, ground])))
+        self.assertEqual(bridge['points'], original_bridge)
+        self.assertEqual(ground['points'][0], (60, 0))
+        self.assertEqual(ground['node_ids'][0], 'bb')
+        self.assertEqual(audit[0]['reason'], 'source_adjacent_structure_boundary')
+
     def test_near_miss_endpoint_never_snaps_across_source_layers(self):
         roads = [road(feature('upper', [(0, 0), (100, 0)], layer=1)),
                  road(feature('lower', [(50, 5), (50, 100)], layer=0))]
