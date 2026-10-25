@@ -519,7 +519,10 @@ impl FilledCrossing {
             // concrete triangle beside a narrow path.
             let raw_end = toe(p, pair[0].lateral_xz * side, terrain);
             let setback = (RoadVec2::new(raw_end.x - p.x, raw_end.z - p.z)).length();
-            let end = p.lerp(raw_end, (6.0 / setback.max(6.0)).min(1.0));
+            let mut end = p.lerp(raw_end, (6.0 / setback.max(6.0)).min(1.0));
+            // A retaining wing tapers into the opening; source hillside samples
+            // outside it must not pull its tip above the deck or below the floor.
+            end.y = end.y.clamp(bottom(p).y, p.y);
             let mut wing = [p, bottom(p), end, end];
             let source_height =
                 f64::from(terrain.sample_height_world(p.x as f32, p.z as f32) * HEIGHT_SCALE);
@@ -532,7 +535,9 @@ impl FilledCrossing {
                 outer.y = f64::from(
                     terrain.sample_height_world(outer.x as f32, outer.z as f32) * HEIGHT_SCALE,
                 );
-                // Taper the exposed wall into the grass rather than ending in a full-height slab.
+                // The source hillside may rise above the bridge beside a cut.
+                // Its elevation is not authority to grow a concrete spike above the deck.
+                outer.y = outer.y.clamp(bottom(p).y, p.y);
                 wing = [p, bottom(p), outer, outer];
             }
             if side * direction > 0.0 {
@@ -549,6 +554,49 @@ impl FilledCrossing {
         for i in 0..4 {
             let j = (i + 1) % 4;
             self.concrete.push([base[i], base[j], top[j], top[i]]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::{build_surface_edge, types::NodeType};
+
+    #[test]
+    fn wing_tips_stay_between_opening_floor_and_deck_on_a_high_hillside() {
+        let mut graph = RegionGraph::new();
+        let raw = [Vector3::new(-20.0, 6.0, 0.0), Vector3::new(20.0, 6.0, 0.0)];
+        let a = graph.add_node(raw[0], NodeType::Junction);
+        let b = graph.add_node(raw[1], NodeType::Junction);
+        let id = graph.add_edge(build_surface_edge(
+            a,
+            b,
+            raw.to_vec(),
+            1,
+            1,
+            EdgeClass::Bridge,
+        ));
+        let surface = RoadSurfaceSystem::new(16.0);
+        let sections = surface.compile_edge_sections(&graph, id);
+        // A cut can expose an opening below the source terrain. Sampling that
+        // terrain at the wing's outer tip previously made it protrude above the deck.
+        let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 5.0);
+        let pair = &sections[..2];
+        for direction in [-1.0, 1.0] {
+            let mut result = FilledCrossing::default();
+            result.abutment(pair, pair[0].s_m, 0.0, direction, &terrain);
+            let top = boundary(pair, pair[0].s_m, false)
+                .y
+                .max(boundary(pair, pair[0].s_m, true).y);
+            assert_eq!(result.concrete.len(), 3);
+            assert!(
+                result
+                    .concrete
+                    .iter()
+                    .flatten()
+                    .all(|p| p.y >= 0.0 && p.y <= top)
+            );
         }
     }
 }
