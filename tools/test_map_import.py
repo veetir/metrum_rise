@@ -996,6 +996,19 @@ class ConflationTest(unittest.TestCase):
         prepare_curves(strokes, fs)
         self.assertEqual(sum(s['bridge'] for s in strokes), 1)
 
+    def test_turning_loop_with_a_stem_is_split_at_repeated_source_nodes(self):
+        points = [(0, 0), (-20, 0), (-30, 10), (-20, 20), (0, 20), (10, 10), (0, 0), (30, -20)]
+        ids = ['junction', 'a', 'b', 'c', 'd', 'e', 'junction', 'end']
+        f = feature('turning-loop', points, ids, name='Street')
+        strokes, _ = build_strokes([road(f)], (-100, -100, 100, 100), 0)
+        self.assertEqual(len(strokes), 3)
+        self.assertAlmostEqual(sum(s['length_m'] for s in strokes),
+                               sum(distance(a, b) for a, b in zip(points, points[1:])), places=2)
+        for s in strokes:
+            self.assertEqual(s['source_ids'], [f['id']])
+            self.assertEqual(len(set(s['points_xz'])), len(s['points_xz']))
+            self.assertNotEqual(s['points_xz'][0], s['points_xz'][-1])
+
     def test_source_links_are_not_removed_or_relocated_at_a_named_junction(self):
         fs = [feature('main', [(-30, -100), (0, 0), (20, 100)], ['a', 'j', 'b'], name='Arterial'),
               feature('slip', [(-100, 0), (-40, 10), (0, 0)], ['s', 'curve', 'j'],

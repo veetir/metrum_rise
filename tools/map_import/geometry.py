@@ -17,7 +17,7 @@ occupancy. No all-pairs network scans. The game's normal validator remains the
 authority on physical radius, junction angles/degree and surface crowding.
 """
 
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 import math
 
 
@@ -165,8 +165,15 @@ def build_strokes(roads, box, tolerance=1.0, merge_m=2.0):
         source_shapes.add(key)
         p = f['properties']
         signature = (m['action'], m['fwd_lanes'], m['bkw_lanes'], p['road_class'], p['name'], (m.get('median_style', 0), m.get('median_width_m', 0)), (p.get('bridge',False),p.get('tunnel',False),p.get('layer',0)), tuple(m.get('bus_masks', [0, 0])), bool(m.get('oneway', p['oneway'])))
-        segments.append({'nodes': ids, 'source': f['id'], 'mapping': m,
-                         'signature': signature, 'class': p['road_class']})
+        # A source way may revisit a junction before continuing (a turning loop
+        # with a stem, or several service loops). Those visits are topology, not
+        # interior control points of one self-intersecting physical edge.
+        repeated = {n for n, count in Counter(ids).items() if count > 1}
+        cuts = sorted({0, len(ids)-1} | {i for i, n in enumerate(ids) if n in repeated})
+        for lo, hi in zip(cuts, cuts[1:]):
+            if hi > lo:
+                segments.append({'nodes': ids[lo:hi+1], 'source': f['id'], 'mapping': m,
+                                 'signature': signature, 'class': p['road_class']})
     ends = defaultdict(list)
     for i, s in enumerate(segments):
         ends[(s['nodes'][0], s['signature'])].append(i)
