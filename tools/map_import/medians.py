@@ -139,14 +139,16 @@ def merge_carriageways(roads, decisions):
             pts = f['points'][::f['properties']['oneway']]
             dense = list(samples(pts, POLICY['sample_m']))
             dense.append((pts[-1], dense[-1][1], 0))
-            moved, local_sources = [], {f['id']}
-            for p, u, _ in dense:
+            moved, paired_ends, local_sources = [], [], {f['id']}
+            for sample_index, (p, u, _) in enumerate(dense):
                 hit = index.nearest(p, POLICY['carriageway_distance_m'],
                     lambda s: s[3][0]['id'] != c['id'] and s[3][0]['key'] == c['key']
                     and s[3][0]['id'] in active and s[3][1]['properties']['layer'] == f['properties']['layer']
                     and aligned(u, s[1], s[2], True))
                 if hit:
                     local_sources.add(hit[3][0])
+                if sample_index in (0, len(dense)-1):
+                    paired_ends.append(hit is not None)
                 q = tuple(round((p[j]+hit[2][j])/2, 3) for j in range(2)) if hit else tuple(p)
                 if not moved or q != moved[-1]:
                     moved.append(q)
@@ -156,6 +158,7 @@ def merge_carriageways(roads, decisions):
             g['source_ids'] = sorted(local_sources)
             g['properties']['oneway'] = 0
             g['_source_end_nodes'] = [f['node_ids'][::f['properties']['oneway']][i] for i in (0, -1)]
+            g['_paired_endpoints'] = paired_ends
             m = mappings[f['id']]
             if f['properties'].get('survey_cross_section') == 'university_2026_10_22':
                 section = {'median_style': 3, 'median_width_m': 2.0, 'bus_masks': [4, 4]}
@@ -165,12 +168,15 @@ def merge_carriageways(roads, decisions):
     # independent closest-point midlines can disagree at those same source nodes.
     joints = {}
     for f, _ in sorted(retained, key=lambda r: r[0]['id']):
-        for node, point in zip(f['_source_end_nodes'], (f['points'][0], f['points'][-1])):
-            joints.setdefault(node, point)
+        for node, point, paired in zip(f['_source_end_nodes'], (f['points'][0], f['points'][-1]), f.pop('_paired_endpoints')):
+            # A section boundary can extend beyond one opposing chain. Prefer
+            # measured midline evidence over that chain's unshifted source end.
+            if node not in joints or paired and not joints[node][1]:
+                joints[node] = point, paired
     for f, _ in retained:
         for end, node in zip((0, -1), f.pop('_source_end_nodes')):
-            f['points'][end] = joints[node]
-            q = joints[node]
+            q = joints[node][0]
+            f['points'][end] = q
             f['node_ids'][end] = f'median/{q[0]:.3f}/{q[1]:.3f}'
     median_index = SegmentIndex((f['id'], f['points'], f) for f, _ in retained)
     for f, m in roads:

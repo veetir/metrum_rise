@@ -651,6 +651,18 @@ class ConflationTest(unittest.TestCase):
         strokes, _ = build_strokes(result, (-200, -200, 200, 200))
         self.assertEqual(strokes[0]['source_ids'], ['a', 'b'])
 
+    def test_section_joint_prefers_paired_midline_over_an_unshifted_chain_end(self):
+        from tools.map_import.medians import merge_carriageways
+        fs = [feature('a', [(100, -5), (400, -5)], ['join', 'end'], road_class='primary', name='Main', oneway=1),
+              feature('a_return', [(400, 5), (160, 5)], road_class='primary', name='Main', oneway=1),
+              feature('b', [(0, -5), (100, -5)], ['start', 'join'], road_class='primary', name='Main', oneway=1, survey_cross_section='section'),
+              feature('b_return', [(100, 5), (0, 5)], road_class='primary', name='Main', oneway=1, survey_cross_section='section')]
+        result, _ = merge_carriageways(list(map(road, fs)), {})
+        by_id = {f['id']: f for f, _ in result}
+        self.assertEqual(by_id['a']['points'][0], (100, 0))
+        self.assertEqual(by_id['b']['points'][-1], (100, 0))
+        self.assertEqual(merge_carriageways(list(map(road, reversed(fs))), {})[0], result)
+
     def test_split_carriageways_preserve_asymmetric_lane_counts(self):
         fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1, lanes=2),
               feature('b', [(100, 12), (0, 12)], road_class='primary', name='Main', oneway=1, lanes=3)]
