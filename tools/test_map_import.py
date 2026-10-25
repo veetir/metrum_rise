@@ -674,6 +674,18 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(by_id['a']['points'][0], (100, -5))
         self.assertEqual(by_id['b']['points'][-1], (100, -5))
 
+    def test_retained_carriageway_continues_across_a_road_name_and_axis_change(self):
+        from tools.map_import.medians import merge_carriageways
+        fs = [feature('a', [(-100, 0), (0, 0)], ['west_a', 'join_a'], road_class='primary', name='West', oneway=1),
+              feature('b', [(0, 10), (-100, 10)], ['join_b', 'west_b'], road_class='primary', name='West', oneway=1),
+              feature('c', [(0, 0), (60, -100)], ['join_a', 'north_a'], road_class='primary', name='North', oneway=1),
+              feature('d', [(70, -100), (0, 10)], ['north_b', 'join_b'], road_class='primary', name='North', oneway=1)]
+        result, audit = merge_carriageways(list(map(road, fs)), {})
+        self.assertEqual([f['id'] for f, _ in result], ['a', 'c'])
+        self.assertEqual(result[0][0]['points'][-1], result[1][0]['points'][0])
+        self.assertEqual([a['status'] for a in audit], ['merged', 'suppressed', 'merged', 'suppressed'])
+        self.assertEqual(merge_carriageways(list(map(road, reversed(fs))), {}), (result, audit))
+
     def test_split_carriageways_preserve_asymmetric_lane_counts(self):
         fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1, lanes=2),
               feature('b', [(100, 12), (0, 12)], road_class='primary', name='Main', oneway=1, lanes=3)]

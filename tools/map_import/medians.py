@@ -81,6 +81,65 @@ def carriageway_chains(roads):
     return sorted(chains, key=lambda c: c['id'])
 
 
+def carriageway_retention(chains, active, measured, axes):
+    """Orient opposing pairs consistently through unique source continuations.
+
+    Opposing sampled chains have opposite parity. An unambiguous directed
+    source-node continuation has the same parity, even across names/structures.
+    A contradictory component keeps its original one-way sources for audit.
+    """
+    links = {cid: set() for cid in active}
+    def link(a, b, opposite):
+        if a != b and a in links and b in links:
+            links[a].add((b, opposite))
+            links[b].add((a, opposite))
+    ends = defaultdict(lambda: {'in': [], 'out': []})
+    lookup = {c['id']: c for c in chains}
+    for c in chains:
+        if c['id'] not in active:
+            continue
+        for other, _ in measured[c['id']][2]:
+            link(c['id'], other, True)
+        first, last = c['features'][0], c['features'][-1]
+        a = first['node_ids'][::first['properties']['oneway']][0]
+        b = last['node_ids'][::last['properties']['oneway']][-1]
+        ends[c['key'][1], a]['out'].append(c['id'])
+        ends[c['key'][1], b]['in'].append(c['id'])
+    for sides in ends.values():
+        if len(sides['in']) == len(sides['out']) == 1:
+            incoming, outgoing = sides['in'][0], sides['out'][0]
+            a, b = lookup[incoming]['points'][-2:], lookup[outgoing]['points'][:2]
+            u = a[1][0]-a[0][0], a[1][1]-a[0][1]
+            v = b[1][0]-b[0][0], b[1][1]-b[0][1]
+            # Use the existing chain-continuation angle contract. Opposing ways
+            # can meet at an undivided convergence without continuing as one side.
+            if u[0]*v[0]+u[1]*v[1] >= .5*math.hypot(*u)*math.hypot(*v):
+                link(incoming, outgoing, False)
+    retained = {}
+    conflicts = set()
+    for seed in sorted(active):
+        if seed in retained:
+            continue
+        c = lookup[seed]
+        axis = axes[c['key'][:2]]
+        retained[seed] = c['points'][-1][axis] >= c['points'][0][axis]
+        pending = [seed]
+        component, invalid = [], False
+        while pending:
+            current = pending.pop()
+            component.append(current)
+            for other, opposite in sorted(links[current]):
+                keep = retained[current] != opposite
+                if other in retained:
+                    invalid |= retained[other] != keep
+                else:
+                    retained[other] = keep
+                    pending.append(other)
+        if invalid:
+            conflicts.update(component)
+    return {cid: keep for cid, keep in retained.items() if cid not in conflicts}, conflicts
+
+
 def merge_carriageways(roads, decisions):
     # Import here: conflate owns the shared index and calls this pass.
     from .conflate import SegmentIndex, aligned, samples
@@ -112,15 +171,16 @@ def merge_carriageways(roads, decisions):
     active = {c['id'] for c in chains if measured[c['id']][0] and measured[c['id']][1]/measured[c['id']][0] >= POLICY['parallel_fraction']}
     # Only reciprocal chain evidence can remove an entire carriageway.
     active = {cid for cid in active if any(other in active for other, _ in measured[cid][2])}
+    orientation, conflicts = carriageway_retention(chains, active, measured, axes)
+    active.difference_update(conflicts)
     retained, audit, shifted = [], [], set()
     for c in chains:
         total, matched, hits = measured[c['id']]
         if c['id'] not in active:
             audit.append({'name': c['key'][0], 'road_class': c['key'][1], 'source_ids': [f['id'] for f in c['features']], 'status': 'fallback',
-                          'reason': 'irregular_or_unpaired_carriageway', 'paired_m': round(matched, 3), 'length_m': round(total, 3)})
+                          'reason': 'inconsistent_carriageway_pairing_topology' if c['id'] in conflicts else 'irregular_or_unpaired_carriageway', 'paired_m': round(matched, 3), 'length_m': round(total, 3)})
             continue
-        axis = axes[c['key'][:2]]
-        keep = c['points'][-1][axis] >= c['points'][0][axis]
+        keep = orientation[c['id']]
         opponents = [chain_lookup[cid] for cid in sorted({cid for cid, _ in hits}) if cid in active]
         opposing = min(o['lanes'] for o in opponents)
         paved = any(f['properties'].get('median_surface') in ('paved', 'paving_stones', 'concrete', 'asphalt')
