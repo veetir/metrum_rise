@@ -1076,6 +1076,15 @@ class ConflationTest(unittest.TestCase):
                 conn.execute('INSERT INTO world_open_water_fills VALUES(0,0,3)')
             self.assertEqual(sum(d > 0 for d in WaterMask.load(path).depth), 25)
 
+    def test_connected_park_loop_is_not_pulled_onto_a_nearby_motor_road(self):
+        street = road(feature('street', [(-100, 0), (100, 0)], ['west', 'east']))
+        points = [(0, 8), (20, 8), (20, 28), (0, 28)]
+        paths = [road(feature(f'path/{i}', [points[i], points[(i+1)%4]],
+                              [str(i), str((i+1)%4)], road_class='cycleway')) for i in range(4)]
+        original = copy.deepcopy(paths)
+        self.assertEqual(snap_endpoints([street, *paths], only_kind='footpath'), [])
+        self.assertEqual(paths, original)
+
     def test_short_park_path_pieces_keep_a_complete_loop(self):
         points = [(0, 0), (0, 20), (20, 20), (20, 0)]
         paths = [{'source_ids': [str(i)], 'kind': 'footpath', 'length_m': 20,

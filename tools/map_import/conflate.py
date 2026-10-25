@@ -7,7 +7,7 @@ plus stable sorting. The 32 m grid serves parallel detection and endpoint projec
 there is no all-pairs road/path scan. No work runs in the simulation tick.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 import math
 
@@ -173,12 +173,15 @@ def snap_endpoints(roads, only_kind=None):
                          & target.get('_source_nodes', set(target['node_ids']))))
 
     index = SegmentIndex((f['id'], f['points'], (f, m)) for f, m in roads if m['action'] == 'road')
+    path_incidence = Counter(n for f, m in roads if m['action'] == 'footpath' for n in f['node_ids'])
     insertions = defaultdict(list)
     audit = []
     for f, m in roads:
         if only_kind is not None and m['action'] != only_kind:
             continue
         for i in (0, len(f['points'])-1):
+            if m['action'] == 'footpath' and path_incidence[f['node_ids'][i]] > 1:
+                continue
             p = f['points'][i]
             hit = index.nearest(p, POLICY['endpoint_snap_m'], lambda s: s[0] != f['id']
                                 and (level(s[3][0]) == level(f) or continuation(f, s[3][0])))
