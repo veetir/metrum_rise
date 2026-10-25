@@ -178,9 +178,10 @@ impl RoadSurfaceSystem {
             {
                 crate::debug_log!(
                     "road",
-                    "owned_boundary_loop_degenerate area={} points={:?}",
+                    "owned_boundary_loop_degenerate area={} points={:?} segments={:?}",
                     Self::earthwork_signed_polygon_area_xz(&point_loop),
-                    point_loop
+                    point_loop,
+                    loop_segments
                 );
                 return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                     point_count: point_loop.len(),
@@ -333,12 +334,13 @@ mod tests {
     #[test]
     fn earthwork_loop_assembly_uses_the_shared_polygon_area_floor() {
         let loops = RoadSurfaceSystem::owned_region_boundary_segment_loops(vec![
-            boundary_segment(0.0,0.0,0.01,0.0),
-            boundary_segment(0.01,0.0,0.0,0.01),
-            boundary_segment(0.0,0.01,0.0,0.0),
-        ]).expect("a 50 mm² closed roadbed exceeds the 1 mm² overlay area floor");
-        assert_eq!(loops.len(),1);
-        assert_eq!(loops[0].len(),3);
+            boundary_segment(0.0, 0.0, 0.01, 0.0),
+            boundary_segment(0.01, 0.0, 0.0, 0.01),
+            boundary_segment(0.0, 0.01, 0.0, 0.0),
+        ])
+        .expect("a 50 mm² closed roadbed exceeds the 1 mm² overlay area floor");
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].len(), 3);
     }
 
     #[test]

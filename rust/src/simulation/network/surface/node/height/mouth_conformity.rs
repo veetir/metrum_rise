@@ -257,10 +257,7 @@ fn conformed_sections(
         let mut bands = Vec::new();
         for (index, band) in section.bands.iter().enumerate() {
             let boundary = |t: f64| {
-                let lateral = f64::from(band.lateral_start_m)
-                    + f64::from(band.lateral_end_m - band.lateral_start_m) * t;
-                let mut height = f64::from(band.height_start_m)
-                    + f64::from(band.height_end_m - band.height_start_m) * t;
+                let (lateral, mut height) = subdivision_band_boundary(band, t);
                 if t != 0.0 && t != 1.0 {
                     for (side, weight) in [start_weight, end_weight].into_iter().enumerate() {
                         if let Some(projection) = &ends[side]
@@ -293,6 +290,25 @@ fn conformed_sections(
         .flat_map(|(i, split)| std::iter::repeat_n(i, split.len() - 1))
         .collect();
     Some((sections, parents))
+}
+
+// Re-evaluating an endpoint as start + rounded_f32_delta can move a shared
+// carriageway/kerb rail across the micrometre ownership key. Grade subdivision
+// retains both exact source endpoints, including a real vertical step's levels.
+fn subdivision_band_boundary(band: &RoadSurfaceBand, t: f64) -> (f64, f64) {
+    if t == 0.0 {
+        return (
+            f64::from(band.lateral_start_m),
+            f64::from(band.height_start_m),
+        );
+    }
+    if t == 1.0 {
+        return (f64::from(band.lateral_end_m), f64::from(band.height_end_m));
+    }
+    (
+        f64::from(band.lateral_start_m) + f64::from(band.lateral_end_m - band.lateral_start_m) * t,
+        f64::from(band.height_start_m) + f64::from(band.height_end_m - band.height_start_m) * t,
+    )
 }
 
 fn projection_weights(station: f32, start: f32, end: f32, total: f32) -> (f64, f64) {
@@ -357,4 +373,50 @@ fn simplify_grade_breaks(
         .zip(retained)
         .filter_map(|(&t, retained)| retained.then_some(t))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grade_subdivision_preserves_the_exact_asymmetric_carriageway_kerb_seam() {
+        let band = RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Carriageway,
+            lateral_start_m: 0.5150001,
+            lateral_end_m: 7.515,
+            height_start_m: 94.55,
+            height_end_m: 94.77021,
+        };
+        let reconstructed = (f64::from(band.lateral_start_m)
+            + f64::from(band.lateral_end_m - band.lateral_start_m))
+            as f32;
+        assert_ne!(
+            reconstructed.to_bits(),
+            band.lateral_end_m.to_bits(),
+            "fixture must expose rounded-delta cancellation"
+        );
+        for (t, lateral, height) in [
+            (0.0, band.lateral_start_m, band.height_start_m),
+            (1.0, band.lateral_end_m, band.height_end_m),
+        ] {
+            let boundary = subdivision_band_boundary(&band, t);
+            assert_eq!((boundary.0 as f32).to_bits(), lateral.to_bits());
+            assert_eq!((boundary.1 as f32).to_bits(), height.to_bits());
+        }
+        let upper = RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            lateral_start_m: band.lateral_end_m,
+            lateral_end_m: band.lateral_end_m + 0.15,
+            height_start_m: band.height_end_m + 0.12,
+            height_end_m: band.height_end_m + 0.12,
+        };
+        let lower = subdivision_band_boundary(&band, 1.0);
+        let upper = subdivision_band_boundary(&upper, 0.0);
+        assert_eq!(lower.0, upper.0, "a real vertical kerb has one XZ rail");
+        assert!(
+            (upper.1 - lower.1 - 0.12).abs() < 0.00001,
+            "retain the real step"
+        );
+    }
 }
