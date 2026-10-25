@@ -122,8 +122,18 @@ pub(crate) fn get_closest_point_xz_at_level(
     max_dist: f32,
     level: i16,
 ) -> Option<Vector3> {
-    get_closest_network_snap_xz_filtered(graph, world_pos, max_dist, Some(level))
+    get_closest_network_snap_xz_at_level(graph, world_pos, max_dist, level)
         .map(|snap| snap.position)
+}
+
+/// Returns the same level-filtered source snap with its existing graph owner.
+pub(crate) fn get_closest_network_snap_xz_at_level(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    level: i16,
+) -> Option<NetworkSnap> {
+    get_closest_network_snap_xz_filtered(graph, world_pos, max_dist, Some(level))
 }
 
 fn get_closest_network_snap_xz_filtered(

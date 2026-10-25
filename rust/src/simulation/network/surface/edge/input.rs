@@ -198,6 +198,50 @@ impl RoadSurfaceSystem {
         snap: bool,
         level: i16,
     ) -> PreparedRoadInput {
+        // A surface branch may leave an already compiled open cut below the
+        // original DEM. That exact same-level joint is grounded road support,
+        // not an instruction to bore a tunnel through its approach.
+        let open_cut_joint = |point: Vector3| {
+            use crate::simulation::network::interaction::{
+                NetworkSnapTarget, get_closest_network_snap_xz_at_level,
+            };
+            let is_cut = |id| {
+                let edge = graph.edge(id);
+                !edge.deleted
+                    && edge.class == EdgeClass::Standard
+                    && edge.crossing_level == level
+                    && edge.no_building_spawn
+            };
+            let Some(hit) = get_closest_network_snap_xz_at_level(graph, point, 0.05, level) else {
+                return false;
+            };
+            if hit.position.distance_to(point) >= 0.05 {
+                return false;
+            }
+            match hit.target {
+                NetworkSnapTarget::Edge(id) => is_cut(id),
+                NetworkSnapTarget::Node(id) => {
+                    graph.node_adjacency(id).iter().any(|&id| is_cut(id))
+                }
+            }
+        };
+        if snap && raw.len() >= 2 {
+            let ends = [raw[0], *raw.last().unwrap()];
+            let cuts = ends.map(open_cut_joint);
+            if cuts.into_iter().any(|cut| cut)
+                && ends.iter().zip(cuts).all(|(point, cut)| {
+                    cut || (point.y
+                        - terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE)
+                        .abs()
+                        <= PREVIEW_CLEARANCE_M
+                })
+            {
+                let mut prepared =
+                    Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
+                prepared.crossing_level = level;
+                return prepared;
+            }
+        }
         let different_layer = raw.windows(2).any(|pair| {
             let min = Vector3::new(
                 pair[0].x.min(pair[1].x) - 24.0,

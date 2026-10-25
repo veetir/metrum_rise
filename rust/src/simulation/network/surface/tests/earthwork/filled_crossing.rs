@@ -346,6 +346,39 @@ fn under_an_upper_level_can_create_a_level_zero_open_cut() {
 }
 
 #[test]
+fn a_surface_branch_can_join_an_existing_open_underpass_cut() {
+    let (mut graph, terrain, mut surface) = fixture(false, false);
+    // The existing ordinary lower owner is below the original DEM, as after Under.
+    for point in &mut graph.edge_mut(0).geometry {
+        point.y = -4.0;
+    }
+    graph.edge_mut(0).physical_geometry = graph.edge(0).geometry.clone();
+    graph.edge_mut(0).no_building_spawn = true;
+    for node in [graph.edge(0).start_node, graph.edge(0).end_node] {
+        graph.nodes[node as usize].pos.y = -4.0;
+    }
+    surface.mark_edge_dirty(&graph, 0);
+    surface.compile_dirty(&graph, &terrain);
+    let raw = [
+        Vector3::new(-25.0, -4.0, 0.0),
+        Vector3::new(-25.0, 0.0, 30.0),
+        Vector3::new(-25.0, 0.0, 80.0),
+    ];
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &raw, &terrain, &graph, &surface, true, 0,
+    );
+    assert_eq!(prepared.class, EdgeClass::Standard);
+    assert_eq!(prepared.points.first(), raw.first());
+    assert_eq!(prepared.points.last(), raw.last());
+    // A point with no road support still follows the ordinary tunnel rules.
+    let detached = [Vector3::new(-25.0, -4.0, 8.0), raw[1], raw[2]];
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &detached, &terrain, &graph, &surface, true, 0,
+    );
+    assert_eq!(prepared.class, EdgeClass::Tunnel);
+}
+
+#[test]
 fn crossing_envelope_bounds_steep_raw_approaches_without_moving_joints() {
     let (mut graph, _, surface) = fixture(false, false);
     graph.edge_mut(1).deleted = true;
