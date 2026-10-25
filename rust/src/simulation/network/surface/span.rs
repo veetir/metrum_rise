@@ -384,9 +384,9 @@ impl RoadSurfaceSystem {
                 return None;
             }
             // Filled-crossing shells independently rebuild neighboring source sections.
-            // A repaired frame cannot publish beside that unresolved structural producer.
-            // Keep its generation rejected until both consumers can share the same frame.
-            if !self.crossing_neighbors(graph, edge_idx).is_empty() {
+            // A repaired frame cannot overlap that unresolved structural producer.
+            // A nearby broad-phase hit alone does not own this span's geometry.
+            if self.has_layered_span_overlap(graph, edge_idx) {
                 return None;
             }
             // Preserve every successfully validated frame. A rejected nonuniform knot
@@ -394,6 +394,9 @@ impl RoadSurfaceSystem {
             // support and terrain-boundary validation; no approximate acceptance gate.
             let sections =
                 self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true, false);
+            if self.sections_have_layered_span_overlap(graph, edge_idx, &sections) {
+                return None;
+            }
             self.compile_visual_span_piece_from_sections(
                 graph,
                 terrain,
@@ -404,6 +407,9 @@ impl RoadSurfaceSystem {
             .or_else(|| {
                 let sections =
                     self.compile_edge_sections_with_tangent_frame(graph, edge_idx, true, true);
+                if self.sections_have_layered_span_overlap(graph, edge_idx, &sections) {
+                    return None;
+                }
                 self.compile_visual_span_piece_from_sections(
                     graph,
                     terrain,

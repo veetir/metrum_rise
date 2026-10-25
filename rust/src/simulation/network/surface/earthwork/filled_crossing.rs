@@ -40,6 +40,47 @@ impl RoadSurfaceSystem {
         self.crossing_neighbors_in_source(graph, graph.edge(edge_idx))
     }
 
+    // A broad-phase halo is not a structural dependency. A rejected span frame may be
+    // repaired beside a bridge, provided no span-owned pavement actually overlaps it.
+    // Only used on geometry repair: O(log E + K log K + P sum(Q B²)), no tick work.
+    pub(in crate::simulation::network::surface) fn has_layered_span_overlap(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+    ) -> bool {
+        let sections = self.compile_edge_sections(graph, edge_idx);
+        self.sections_have_layered_span_overlap(graph, edge_idx, &sections)
+    }
+
+    pub(in crate::simulation::network::surface) fn sections_have_layered_span_overlap(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        sections: &[RoadSurfaceSection],
+    ) -> bool {
+        let neighbors = self.crossing_neighbors(graph, edge_idx);
+        if neighbors.is_empty() {
+            return false;
+        }
+        let Some((start, end)) =
+            self.visible_corridor_index_range_for_edge(graph, edge_idx, sections)
+        else {
+            return false;
+        };
+        neighbors.into_iter().any(|other| {
+            let lower = self.compile_edge_sections(graph, other);
+            let Some((a, b)) = self.visible_corridor_index_range_for_edge(graph, other, &lower)
+            else {
+                return false;
+            };
+            sections[start..=end].windows(2).any(|pair| {
+                lower[a..=b]
+                    .windows(2)
+                    .any(|other| section_pair_gap(pair, other).is_some())
+            })
+        })
+    }
+
     /// Queries the same structural halo for an edge in a preview excerpt against live owners.
     pub(crate) fn crossing_neighbors_in_source(
         &self,

@@ -113,7 +113,7 @@ impl RoadSurfaceSystem {
                 || input
                     .mouths
                     .iter()
-                    .any(|mouth| !self.crossing_neighbors(graph, mouth.edge_idx).is_empty())
+                    .any(|mouth| self.has_layered_span_overlap(graph, mouth.edge_idx))
             {
                 return None;
             }

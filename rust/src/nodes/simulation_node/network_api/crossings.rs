@@ -35,7 +35,7 @@ impl SimulationNode {
             forward,
             backward,
             over,
-            Some(self.road_tool_crossing_level as i16),
+            Some(self.road_tool_crossing_level),
         )
     }
 
