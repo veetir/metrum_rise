@@ -110,6 +110,14 @@ func _run() -> void:
 		_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
 		if not _roundabout_completion_known():
 			return
+	# Later source junctions, paths or a resumed compiler can resolve earlier refusals.
+	# Retry exact remaining pieces only; accepted geometry is never replayed.
+	if not _results.get("settled_source_retry", false):
+		await _retry_deferred(simulation)
+		if _fatal:
+			return
+		_results["settled_source_retry"] = true
+		_checkpoint(simulation)
 	# A resumed import may use a corrected compiler. Retry only refused source rings,
 	# with the same measured product and normal acknowledged replacement API.
 	for i in _results.get("roundabouts", []).size():
