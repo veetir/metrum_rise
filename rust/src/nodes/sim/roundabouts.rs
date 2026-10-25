@@ -239,14 +239,15 @@ mod tests {
             ),
             (1.3, 1, None),
         ] {
-            let point = Vector3::new(angle.cos(), 0.0, angle.sin()) * 100.0;
+            let length = if lanes == 1 { 33.0 } else { 100.0 };
+            let point = Vector3::new(angle.cos(), 0.0, angle.sin()) * length;
             let end = core.region_graph.add_node(point, NodeType::Junction);
             core.region_graph.add_edge(Edge {
                 start_node: center,
                 end_node: end,
                 geometry: vec![Vector3::ZERO, point],
                 physical_geometry: vec![Vector3::ZERO, point],
-                physical_length: 100.0,
+                physical_length: length,
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 width: f32::from(lanes) * 7.0 + median.map_or(0.0, |m| m.width_m),

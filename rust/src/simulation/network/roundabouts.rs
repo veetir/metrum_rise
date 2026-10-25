@@ -91,7 +91,9 @@ impl RoundaboutLayout {
                 point.y = center.y;
                 let mut trimmed = vec![point];
                 trimmed.extend_from_slice(&points[cut + 1..]);
-                if trimmed.len() < 2 || graph.calculate_length(&trimmed) < 30.0 {
+                // A short retained approach is certified by the same full span/node
+                // compiler as any other edit; 30 m was a preset-stub restriction.
+                if trimmed.len() < 2 || graph.calculate_length(&trimmed) <= f32::EPSILON {
                     return Err("roundabout_arm_too_short");
                 }
                 let angle = (point.z - center.z)
