@@ -220,7 +220,13 @@ impl RoadSurfaceSystem {
     }
 }
 
-fn edges_share_endpoint(a: &RegionGraph, aid: usize, b: &RegionGraph, bid: usize) -> bool {
+/// Recognizes an authored at-grade approach joint across crossing-level labels.
+pub(super) fn edges_share_endpoint(
+    a: &RegionGraph,
+    aid: usize,
+    b: &RegionGraph,
+    bid: usize,
+) -> bool {
     let a = &a.edge(aid).physical_geometry;
     let b = &b.edge(bid).physical_geometry;
     a.first().into_iter().chain(a.last()).any(|&p| {

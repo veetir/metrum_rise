@@ -134,11 +134,17 @@ impl RoadSurfaceSystem {
                 continue;
             }
             let lower = self.compile_edge_sections(graph, lower_id);
-            // Both sides use span ownership. A connected junction mouth is not another
-            // underpass, even where its raw wide approach overlaps this narrower span.
-            let Some((lower_start, lower_end)) =
+            // A genuinely connected approach joint is not another underpass. At an
+            // independent crossing, the lower node-owned pavement still needs the same
+            // opening as its span; clipping it away leaves upper fill beside a lower kerb.
+            let lower_range = if super::super::grade_separation::edges_share_endpoint(
+                graph, edge_idx, graph, lower_id,
+            ) {
                 self.visible_corridor_index_range_for_edge(graph, lower_id, &lower)
-            else {
+            } else {
+                lower.len().checked_sub(1).map(|end| (0, end))
+            };
+            let Some((lower_start, lower_end)) = lower_range else {
                 continue;
             };
             let lower = &lower[lower_start..=lower_end];

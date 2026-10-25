@@ -38,6 +38,59 @@ fn fixture(foot: bool, skew: bool) -> (RegionGraph, TerrainSystem, RoadSurfaceSy
 }
 
 #[test]
+fn filled_opening_includes_an_independent_lower_node_owned_mouth() {
+    let mut graph = RegionGraph::new();
+    for (points, level, class) in [
+        (
+            [Vector3::new(-80.0, 0.0, 0.0), Vector3::new(80.0, 0.0, 0.0)],
+            0,
+            EdgeClass::Standard,
+        ),
+        (
+            [
+                Vector3::new(-79.0, 6.0, -80.0),
+                Vector3::new(-79.0, 6.0, 80.0),
+            ],
+            1,
+            EdgeClass::Bridge,
+        ),
+    ] {
+        let a = graph.add_node(points[0], NodeType::Junction);
+        let b = graph.add_node(points[1], NodeType::Junction);
+        let mut edge = build_surface_edge(
+            a,
+            b,
+            points.to_vec(),
+            1,
+            if level == 1 { 0 } else { 1 },
+            class,
+        );
+        edge.crossing_level = level;
+        graph.add_edge(edge);
+    }
+    let terrain = flat_terrain(257, 257);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let lower = surface.compile_edge_sections(&graph, 0);
+    let (start, _) = surface
+        .visible_corridor_index_range_for_edge(&graph, 0, &lower)
+        .unwrap();
+    assert!(
+        lower[start].center_xz.x
+            > -79.0
+                + f64::from(RoadSurfaceSystem::visual_roadbed_half_width_m(
+                    graph.edge(1)
+                )),
+        "the upper road must cross only lower node-owned pavement, not its clipped span"
+    );
+    let crossing = surface.compiled_visual_span_pieces()[&1]
+        .filled_crossing
+        .as_ref()
+        .unwrap();
+    assert_eq!(crossing.lower_edges, [0]);
+}
+
+#[test]
 fn filled_openings_leave_full_lower_roadbed_clear_and_keep_terrain_below() {
     for foot in [false, true] {
         for skew in [false, true] {
