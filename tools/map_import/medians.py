@@ -29,6 +29,43 @@ def source_through_count(feature):
     return int(p.get('through_lanes') or directional or p.get('lanes') or 1)
 
 
+def infer_carriageway_identities(roads):
+    """Recover an unnamed one-way continuation only from unambiguous source incidence."""
+    candidates = {f['id']: f for f, m in roads if m['action'] == 'road'
+                  and f['properties'].get('oneway') and not f['properties']['road_class'].endswith('_link')}
+    incidence = defaultdict(set)
+    for sid, f in candidates.items():
+        for n in (f['node_ids'][0], f['node_ids'][-1]):
+            incidence[n, f['properties']['road_class']].add(sid)
+    visited, audit = set(), []
+    for seed in sorted(candidates):
+        if seed in visited or candidates[seed]['properties'].get('name') or candidates[seed]['properties'].get('ref'):
+            continue
+        pending, members, identities = [seed], [], set()
+        visited.add(seed)
+        while pending:
+            sid = pending.pop()
+            f = candidates[sid]
+            members.append(f)
+            for n in (f['node_ids'][0], f['node_ids'][-1]):
+                for peer in sorted(incidence[n, f['properties']['road_class']]):
+                    g = candidates[peer]
+                    identity = g['properties'].get('name') or g['properties'].get('ref')
+                    if identity:
+                        identities.add(identity)
+                    elif peer not in visited:
+                        visited.add(peer)
+                        pending.append(peer)
+        if len(identities) != 1:
+            continue
+        identity = next(iter(identities))
+        for f in members:
+            f['properties']['name'] = identity
+        audit.append({'source_ids': sorted(f['id'] for f in members), 'identity': identity,
+                      'authority': 'unambiguous_source_carriageway_continuation'})
+    return audit
+
+
 def carriageway_chains(roads):
     candidates = [(f, m) for f, m in roads if m['action'] == 'road'
                   and f['properties'].get('oneway') and not f['properties']['road_class'].endswith('_link')

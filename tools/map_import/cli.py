@@ -33,6 +33,7 @@ from .survey import TerrainGrid, apply_road_surveys, inspect, university_access
 from .roundabouts import detect_roundabouts
 from .structures import prepare_structure_profiles
 from .service import filter_service_circulation
+from .medians import infer_carriageway_identities
 from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
@@ -110,6 +111,7 @@ def prepare(args):
     roads = [(f, decisions[(f['id'], 'road')]) for f in working if 'road' in f['roles']
              and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
     roads, service_circulation = filter_service_circulation(roads, decisions)
+    identity_inference = infer_carriageway_identities(roads)
     road_surveys = apply_road_surveys(roads, args.include_park_paths)
     roundabouts = collapse_roundabouts(working, roads, decisions)
     roads, conflation = conflate(roads, decisions)
@@ -119,6 +121,7 @@ def prepare(args):
     roads, access_survey = university_access(roads, decisions)
     conflation['university_access'] = access_survey
     conflation['service_circulation'] = service_circulation
+    conflation['identity_inference'] = identity_inference
     conflation['roundabouts'] = roundabouts
     conflation['roundabout_detection'] = ring_detection
     conflation['road_surveys'] = road_surveys

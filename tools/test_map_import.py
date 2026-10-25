@@ -165,18 +165,23 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual((m['fwd_lanes'], m['bkw_lanes']), (3, 3))
         self.assertEqual((m['median_style'], m['median_width_m'], m['bus_masks']), (3, 2.0, [4, 4]))
 
-    def test_university_underpass_keeps_motor_road_and_separate_path(self):
-        from tools.map_import.survey import apply_road_surveys
-        roads = [road(feature('osm/way/'+i, [(0, 0), (100, 0)], road_class=kind))
-                 for i, kind in [('1119987950', 'unclassified'), ('1119987951', 'unclassified'),
-                                 ('987262495', 'cycleway')]]
-        apply_road_surveys(roads)
-        for f, m in roads[:2]:
-            self.assertEqual((m['action'], m['fwd_lanes'], m['bkw_lanes']), ('road', 1, 1))
-            self.assertEqual(f['properties']['road_class'], 'unclassified')
-            self.assertEqual((f['properties']['tunnel'], f['properties']['layer']), (False, 0))
-        self.assertEqual(roads[2][1]['action'], 'footpath')
-        self.assertTrue(roads[2][0]['properties']['survey_underpass'])
+    def test_underpass_source_classes_keep_motor_road_and_separate_path_without_surveys(self):
+        roads = [road(feature('arbitrary/'+kind, [(0, i*10), (100, i*10)], road_class=kind))
+                 for i, kind in enumerate(('unclassified', 'cycleway'))]
+        result, _ = conflate(roads, {})
+        self.assertEqual([m['action'] for f, m in result], ['footpath', 'road'])
+        self.assertTrue(all(f['properties']['layer'] == 0 for f, m in result))
+
+    def test_unnamed_carriageway_identity_uses_source_continuity_only(self):
+        from tools.map_import.medians import infer_carriageway_identities
+        a = feature('a', [(0, 0), (40, 0)], ['a', 'join'], road_class='tertiary', name='Street', oneway=1)
+        b = feature('b', [(40, 0), (80, 0)], ['join', 'b'], road_class='tertiary', oneway=1)
+        self.assertEqual(infer_carriageway_identities(list(map(road, [a, b])))[0]['identity'], 'Street')
+        self.assertEqual(b['properties']['name'], 'Street')
+        b['properties']['name'] = ''
+        c = feature('c', [(80, 0), (120, 0)], ['b', 'c'], road_class='tertiary', name='Other', oneway=1)
+        self.assertEqual(infer_carriageway_identities(list(map(road, [a, b, c]))), [])
+        self.assertFalse(b['properties']['name'])
 
     def test_untagged_motor_faces_are_detected_without_source_ids(self):
         from tools.map_import.roundabouts import detect_roundabouts
