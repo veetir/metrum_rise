@@ -9,7 +9,7 @@ use super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, planned_next_connector,
 };
 use super::traffic::{connector_turn_speed, lane_entry_slot_clear};
-use crate::config::IDM_B;
+use crate::config::{CAR_JUNCTION_MIN_SPEED_MS, IDM_B};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,6 +19,7 @@ struct Request {
     eligible: bool,
     clear: bool,
     granted: bool,
+    start: bool,
     batchable: bool,
     winner: usize,
     index: usize,
@@ -33,6 +34,7 @@ impl Default for Request {
             eligible: false,
             clear: false,
             granted: false,
+            start: false,
             batchable: false,
             winner: usize::MAX,
             index: usize::MAX,
@@ -58,13 +60,27 @@ pub(crate) struct JunctionAdmission {
 }
 
 impl JunctionAdmission {
-    /// Uncontrolled connectors pass through; controlled ones need this tick's snapshot grant.
+    /// Full-traversal readiness, used for approach speed; staged entry has its own zone guard.
     pub(crate) fn allows(&self, agent: usize, connector: usize, network: &TransitNetwork) -> bool {
         network.lane_system.controlled_movement(connector).is_none()
             || self
                 .requests
                 .get(connector)
                 .is_some_and(|request| request.granted && request.agent == agent)
+    }
+
+    /// Right of way to start, with stepwise conflict claims enforcing actual zone entry.
+    pub(super) fn entry_allows(
+        &self,
+        agent: usize,
+        connector: usize,
+        network: &TransitNetwork,
+    ) -> bool {
+        network.lane_system.controlled_movement(connector).is_none()
+            || self
+                .requests
+                .get(connector)
+                .is_some_and(|r| r.start && r.agent == agent)
     }
 
     /// Brakes against the granted routing candidates, including a shorter fan connector
@@ -91,9 +107,16 @@ impl JunctionAdmission {
             .filter(|&id| {
                 self.requests
                     .get(id)
-                    .is_some_and(|r| (r.granted || r.batchable) && r.agent == agent)
+                    .is_some_and(|r| (r.start || r.batchable) && r.agent == agent)
             })
-            .map(|id| connector_turn_speed(&lanes.lanes[id]))
+            .map(|id| {
+                let speed = connector_turn_speed(&lanes.lanes[id]);
+                if self.allows(agent, id, network) {
+                    speed
+                } else {
+                    speed.min(CAR_JUNCTION_MIN_SPEED_MS)
+                }
+            })
             .reduce(f32::min)
             .unwrap_or(0.0)
     }
@@ -104,17 +127,22 @@ impl JunctionAdmission {
         connector: usize,
         network: &TransitNetwork,
     ) -> bool {
-        self.reservations.clear(connector, network)
+        let lane = &network.lane_system.lanes[connector];
+        (network
+            .lane_system
+            .reservation_movement(connector)
+            .is_none()
+            || self.node_seen.get(lane.node_id).copied().unwrap_or(false))
             && self.reservations.exit_available(connector, network)
     }
 
     /// Books downstream storage and the first ordered movement-step zones after admission.
-    pub(super) fn reserve_path(&self, connector: usize, network: &TransitNetwork) {
-        self.reservations.reserve(connector, network);
-        if let Some(request) = self.requests.get(connector) {
-            if let Some(open) = self.component_open.get(request.component) {
-                open.store(true, Ordering::Relaxed);
-            }
+    pub(super) fn reserve_path(&self, agent: usize, connector: usize, network: &TransitNetwork) {
+        self.reservations.reserve(agent, connector, network);
+        if let Some(request) = self.requests.get(connector)
+            && let Some(open) = self.component_open.get(request.component)
+        {
+            open.store(true, Ordering::Relaxed);
         }
     }
 
@@ -127,24 +155,58 @@ impl JunctionAdmission {
         })
     }
 
+    /// Distinguishes brokered zone claims from an unregistered connector-lane owner.
+    pub(super) fn has_entry_claim(&self, connector: usize) -> bool {
+        self.reservations.has_entry_claim(connector)
+    }
+
     /// Protects the downstream prefix against frontage, border and lateral entry.
     pub(super) fn external_entry_clear(&self, lane: usize, distance: f32) -> bool {
         self.reservations.external_entry_clear(lane, distance)
     }
 
     /// Converts a connector's reserved downstream space into actual lane occupancy.
-    pub(super) fn release_exit(&self, connector: usize, out: usize, network: &TransitNetwork) {
-        self.reservations.release_exit(connector, out, network);
+    pub(super) fn release_exit(
+        &self,
+        agent: usize,
+        connector: usize,
+        out: usize,
+        network: &TransitNetwork,
+    ) {
+        self.reservations
+            .release_exit(agent, connector, out, network);
     }
 
     /// Distance to the first unowned conflict interval, including body clearance.
     pub(crate) fn connector_travel_limit(
         &self,
+        agent: usize,
         connector: usize,
         distance: f32,
         network: &TransitNetwork,
     ) -> f32 {
-        self.reservations.travel_limit(connector, distance, network)
+        self.reservations
+            .travel_limit(agent, connector, distance, network)
+    }
+
+    /// Returns one connector's reservations for a failed safety assertion, outside traffic loops.
+    #[cfg(test)]
+    pub(crate) fn zone_diagnostic(
+        &self,
+        connector: usize,
+        network: &TransitNetwork,
+    ) -> serde_json::Value {
+        self.reservations.diagnostic(connector, network)
+    }
+
+    /// Emits manual fixture diagnostics outside traffic loops; absent from gameplay builds.
+    #[cfg(test)]
+    pub(crate) fn diagnostic(&self, network: &TransitNetwork) -> serde_json::Value {
+        let rows: Vec<_> = self.touched.iter().filter_map(|&id| {
+            let r=&self.requests[id];
+            (r.agent != usize::MAX).then(|| serde_json::json!({"connector":id,"agent":r.agent,"eligible":r.eligible,"clear":r.clear,"granted":r.granted,"component":r.component,"reservation":self.reservations.diagnostic(id,network)}))
+        }).collect();
+        serde_json::json!(rows)
     }
 
     fn prepare_buffers(&mut self, lanes: usize, nodes: usize) {
@@ -223,21 +285,21 @@ impl JunctionAdmission {
         let lanes = &network.lane_system;
         for &id in dirty {
             let lane = &lanes.lanes[id];
-            let node = if lane.edge_id == usize::MAX {
-                lane.node_id
+            let endpoints = if lane.edge_id == usize::MAX {
+                [lane.node_id, lane.node_id]
             } else {
                 let edge = graph.edge(lane.edge_id);
-                if lane.is_fwd {
-                    edge.end_node as usize
-                } else {
-                    edge.start_node as usize
-                }
+                [edge.start_node as usize, edge.end_node as usize]
             };
-            if node < self.node_seen.len() && !self.node_seen[node] {
-                self.node_seen[node] = true;
-                self.nodes.push(node);
+            // Outgoing bodies and near-mouth external entry need the source node too.
+            for node in endpoints {
+                if node < self.node_seen.len() && !self.node_seen[node] {
+                    self.node_seen[node] = true;
+                    self.nodes.push(node);
+                }
             }
         }
+
         self.nodes.sort_unstable();
         self.reservations
             .prepare(agents, buckets, &self.nodes, network, delta);
@@ -312,7 +374,7 @@ impl JunctionAdmission {
                     .is_some_and(|&out| lane_entry_slot_clear(out, buckets))
                     && self.reservations.exit_available(id, network);
                 let clear = self.reservations.clear(id, network);
-                // An occupied crossing prevents entry without cancelling a waiting car's
+                // An occupied crossing prevents traversal without cancelling a waiting car's
                 // precedence. Otherwise a minor stream can keep following itself across
                 // the junction while the major approach is repeatedly marked ineligible.
                 self.requests[id].eligible = stopped && exit_clear;
@@ -355,26 +417,28 @@ impl JunctionAdmission {
                     continue;
                 }
                 let root = self.requests[id].component;
-                self.requests[id].granted = self.requests[id].clear
+                self.requests[id].start = lane_entry_slot_clear(id, buckets)
                     && self.requests[id].agent == self.requests[root].low
                     && control.yields_to.iter().all(|&other| {
                         !self.requests[other].eligible
                             || self.requests[other].agent == self.requests[id].agent
                             || self.requests[other].component == root
                     });
+                self.requests[id].granted = self.requests[id].start && self.requests[id].clear;
             }
             for &id in ids {
                 if !self
                     .requests
                     .get(id)
-                    .is_some_and(|r| r.eligible && r.clear && !r.granted)
+                    .is_some_and(|r| r.eligible && !r.start)
                 {
                     continue;
                 }
                 let root = self.requests[id].component;
                 let winner = self.requests[root].winner;
                 let control = lanes.controlled_movement(id).unwrap();
-                self.requests[id].batchable = self.requests[winner].granted
+                self.requests[id].batchable = self.requests[winner].start
+                    && lane_entry_slot_clear(id, buckets)
                     && !control.conflicts.contains(&winner)
                     && control.yields_to.iter().all(|&other| {
                         !self.requests[other].eligible

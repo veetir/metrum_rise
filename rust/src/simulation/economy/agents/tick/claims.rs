@@ -57,12 +57,12 @@ impl<'a> LaneClaimContext<'a> {
         self
     }
 
-    /// Also excludes conflicting connectors already claimed during ordered handoffs.
+    /// Applies right of way, booked exit space and registered stepwise zone claims.
     pub(super) fn connector_allowed(&self, agent: usize, connector: usize) -> bool {
         let Some((admission, network)) = self.junctions else {
             return true;
         };
-        if (!admission.allows(agent, connector, network)
+        if (!admission.entry_allows(agent, connector, network)
             && !admission.batch_allows(agent, connector))
             || !admission.storage_and_zones_clear(connector, network)
             || network.lane_system.lanes[connector]
@@ -84,7 +84,7 @@ impl<'a> LaneClaimContext<'a> {
                 control.conflicts.iter().all(|&other| {
                     self.owners.get(other).is_none_or(|owner| {
                         let owner = owner.load(Ordering::Relaxed);
-                        owner == usize::MAX || owner == agent
+                        owner == usize::MAX || owner == agent || admission.has_entry_claim(other)
                     })
                 })
             })
@@ -142,22 +142,27 @@ impl<'a> LaneClaimContext<'a> {
             return false;
         }
         if let Some((admission, network)) = self.junctions {
-            admission.release_exit(connector, out, network);
+            admission.release_exit(agent, connector, out, network);
         }
         true
     }
 
     /// Reserves zones only for the connector actually chosen by the routing candidate loop.
-    pub(super) fn reserve_connector(&self, connector: usize) {
+    pub(super) fn reserve_connector(&self, agent: usize, connector: usize) {
         if let Some((admission, network)) = self.junctions {
-            admission.reserve_path(connector, network);
+            admission.reserve_path(agent, connector, network);
         }
     }
 
     /// Prevents any connector step from crossing an unowned zone boundary.
-    pub(super) fn connector_travel_limit(&self, connector: usize, distance: f32) -> f32 {
+    pub(super) fn connector_travel_limit(
+        &self,
+        agent: usize,
+        connector: usize,
+        distance: f32,
+    ) -> f32 {
         self.junctions.map_or(f32::MAX, |(a, n)| {
-            a.connector_travel_limit(connector, distance, n)
+            a.connector_travel_limit(agent, connector, distance, n)
         })
     }
 

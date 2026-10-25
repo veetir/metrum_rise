@@ -103,7 +103,7 @@ impl AgentSystem {
                 if transit == TRANSIT_INTERSECTION {
                     target_speed = target_speed.min(braking_speed_for_distance(
                         0.0,
-                        admission.connector_travel_limit(lid, my_d, transit_network),
+                        admission.connector_travel_limit(i, lid, my_d, transit_network),
                     ));
                 }
                 if transit == TRANSIT_NETWORK {

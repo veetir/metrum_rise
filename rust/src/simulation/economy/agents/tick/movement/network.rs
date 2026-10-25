@@ -104,7 +104,7 @@ pub(super) unsafe fn handle_network_movement(
 
             let lane = &transit_network.lane_system.lanes[lane_id];
             if lane.edge_id == usize::MAX && *slices.tmode.get(i) == MODE_CAR {
-                let limit = lane_claims.connector_travel_limit(lane_id, *s_lane_d.get(i));
+                let limit = lane_claims.connector_travel_limit(i, lane_id, *s_lane_d.get(i));
                 if remaining_dist > limit {
                     remaining_dist = limit;
                     *slices.speed.get_mut(i) = 0.0;

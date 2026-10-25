@@ -171,7 +171,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
         if lane_claims.connector_allowed(agent_idx, candidate)
             && claim_lane_entry(agent_idx, candidate, lane_claims)
         {
-            lane_claims.reserve_connector(candidate);
+            lane_claims.reserve_connector(agent_idx, candidate);
             return ConnectorEntry::Enter(candidate);
         }
     }

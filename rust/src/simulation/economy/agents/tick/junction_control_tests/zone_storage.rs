@@ -21,7 +21,9 @@ fn one_car_short_link_reserves_tail_clearance_and_excludes_external_entry() {
             .junction_admission
             .allows(first, connection, &network)
     );
-    agents.junction_admission.reserve_path(connection, &network);
+    agents
+        .junction_admission
+        .reserve_path(first, connection, &network);
     assert!(
         !agents
             .junction_admission
@@ -51,6 +53,6 @@ fn one_car_short_link_reserves_tail_clearance_and_excludes_external_entry() {
     );
     agents
         .junction_admission
-        .release_exit(connection, out, &network);
+        .release_exit(first, connection, out, &network);
     assert!(agents.junction_admission.external_entry_clear(out, 0.0));
 }
