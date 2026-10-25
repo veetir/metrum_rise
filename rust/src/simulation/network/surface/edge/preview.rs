@@ -1639,6 +1639,30 @@ impl RoadSurfaceSystem {
         })
     }
 
+    /// Builds the exact planned crossing topology for median/level regressions.
+    #[cfg(test)]
+    pub(crate) fn build_crossing_validation_graph_for_test(
+        &self,
+        points: &[Vector3],
+        lanes: (u8, u8),
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        level: i16,
+        source: &RegionGraph,
+    ) -> Option<(RegionGraph, usize, Vec<usize>)> {
+        self.build_surface_validation_graph(
+            points,
+            EdgeClass::Standard,
+            lanes.0,
+            lanes.1,
+            source,
+            None,
+            true,
+            median,
+            level,
+        )
+        .map(|v| (v.graph, v.new_edge_idx, v.required_edge_ids))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_surface_validation_graph(
         &self,

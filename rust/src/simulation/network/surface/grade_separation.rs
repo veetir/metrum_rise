@@ -18,6 +18,60 @@ const VEHICLE_CLEARANCE_M: f64 = 4.8;
 const FOOT_CYCLE_CLEARANCE_M: f64 = 2.8;
 
 impl RoadSurfaceSystem {
+    /// Restores exact clearance after local junction profiling, from higher levels down.
+    /// Uses actual compiled mouth widths/crossfall and the existing 12% envelope. Fixed
+    /// joints that cannot clear remain unchanged and fail the normal exact validator.
+    /// Work is bounded by dirty edges and their R-tree neighbors; no simulation-tick work.
+    pub(crate) fn conform_layered_clearance_profiles(
+        &self,
+        graph: &mut RegionGraph,
+        dirty: &HashSet<usize>,
+    ) {
+        let mut ordered = dirty
+            .iter()
+            .copied()
+            .filter(|&id| {
+                id < graph.edge_count()
+                    && !graph.edge(id).deleted
+                    && graph.edge(id).class
+                        == crate::simulation::network::types::EdgeClass::Standard
+            })
+            .collect::<Vec<_>>();
+        ordered.sort_unstable_by_key(|&id| (std::cmp::Reverse(graph.edge(id).crossing_level), id));
+        for id in ordered {
+            let level = graph.edge(id).crossing_level;
+            let neighbors = self.crossing_neighbors(graph, id);
+            if !neighbors
+                .iter()
+                .any(|&other| graph.edge(other).crossing_level > level)
+            {
+                continue;
+            }
+            let mut ignored = neighbors
+                .into_iter()
+                .filter(|&other| graph.edge(other).crossing_level <= level)
+                .collect::<HashSet<_>>();
+            ignored.insert(id);
+            if self
+                .crossing_clearance_violation(graph, id, graph, &ignored)
+                .is_none()
+            {
+                continue;
+            }
+            let Ok(profile) = self.fit_existing_under_crossing(graph, id) else {
+                continue;
+            };
+            graph.remove_from_spatial_index(id);
+            let edge = graph.edge_mut(id);
+            edge.physical_geometry = profile.points;
+            let (cost, length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
+            edge.base_cost = cost;
+            edge.physical_length = length;
+            graph.add_to_spatial_index(id);
+        }
+    }
+
     /// Applies the same corridor clearance guard to synchronous tool feedback.
     pub(crate) fn validate_prepared_crossing_clearance(
         &self,

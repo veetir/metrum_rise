@@ -42,15 +42,17 @@ class Capability:
 
 CAPABILITIES = (
     Capability('road', 'roundabout', (True,), 'skip', 'roundabout_ROAD_62'),
-    Capability('road', 'road_class', ('motorway', 'motorway_link', 'trunk', 'trunk_link'), 'road', 'major_road', 0),
+    Capability('road', 'road_class', ('motorway', 'trunk'), 'road', 'major_road', 0),
     Capability('road', 'road_class', ('steps', 'corridor', 'construction', 'proposed'), 'skip', 'non_placeable_highway'),
     Capability('road', 'footway', ('sidewalk', 'crossing'), 'skip', 'road_includes_sidewalks'),
     Capability('road', 'service', ('parking_aisle', 'driveway', 'drive-through'), 'skip', 'private_or_parking_service'),
     Capability('road', 'access', ('no', 'private', 'permit'), 'skip', 'restricted_access'),
     Capability('road', 'area', (True,), 'skip', 'highway_area_not_centerline'),
-    Capability('road', 'road_class', ('primary', 'primary_link'), 'road', 'ordinary_road', 0),
-    Capability('road', 'road_class', ('secondary', 'secondary_link'), 'road', 'ordinary_road', 1),
-    Capability('road', 'road_class', ('tertiary', 'tertiary_link'), 'road', 'ordinary_road', 2),
+    Capability('road', 'road_class', ('primary',), 'road', 'ordinary_road', 0),
+    Capability('road', 'road_class', ('secondary',), 'road', 'ordinary_road', 1),
+    Capability('road', 'road_class', ('tertiary',), 'road', 'ordinary_road', 2),
+    # A through-road Under profile precedes slip joints that would otherwise pin its DEM height.
+    Capability('road', 'road_class', ('motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'), 'road', 'connecting_road', 3),
     Capability('road', 'road_class', ('residential', 'unclassified', 'living_street', 'road'), 'road', 'ordinary_road', 3),
     Capability('road', 'service', ('alley', 'emergency_access'), 'road', 'explicit_access_street', 4),
     Capability('road', 'road_class', ('service',), 'road', 'ordinary_service_street', 4),

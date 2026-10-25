@@ -58,6 +58,13 @@ def synthetic_tiff(path, east=100, north=200, crs=3067):
 
 
 class RoadFeatureIntegrationTest(unittest.TestCase):
+    def test_through_roads_establish_profiles_before_connecting_links(self):
+        for road_class in ('motorway', 'trunk', 'primary', 'secondary', 'tertiary'):
+            main = road(feature('main', [(0, 0), (100, 0)], road_class=road_class))[1]
+            link = road(feature('link', [(0, 0), (20, 20)], road_class=road_class+'_link', oneway=1, lanes=1))[1]
+            self.assertLess(main['priority'], link['priority'])
+            self.assertEqual((link['fwd_lanes'], link['bkw_lanes']), (1, 0))
+
     def test_bus_permissions_follow_the_saved_edge_direction(self):
         from unittest.mock import patch
         from tools.map_import.features import prepare

@@ -5,7 +5,7 @@
 use super::{band_quad, triangle_overlap, xz};
 use crate::simulation::network::build_surface_edge;
 use crate::simulation::network::graph::{RegionGraph, RoadMedian};
-use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec2};
+use crate::simulation::network::surface::{RoadSurfaceSection, RoadSurfaceSystem, RoadVec2};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags};
 use godot::prelude::Vector3;
 
@@ -45,6 +45,63 @@ impl RoadSurfaceSystem {
         over: bool,
         source_level: Option<i16>,
     ) -> Result<CrossingProfile, &'static str> {
+        self.crossing_profile_with_sections(source, raw, lanes, median, over, source_level, None)
+    }
+
+    // Refit an existing topology using its actual mouth widths, crossfall and median ends.
+    // Convert its 3D sampling stations to the horizontal stations used by the grade envelope.
+    pub(super) fn fit_existing_under_crossing(
+        &self,
+        source: &RegionGraph,
+        id: usize,
+    ) -> Result<CrossingProfile, &'static str> {
+        let edge = source.edge(id);
+        let raw = self.edge_points(edge);
+        if raw.len() < 2 {
+            return Err("too_short");
+        }
+        let mut stations = vec![(0.0_f64, 0.0_f64)];
+        for pair in raw.windows(2) {
+            let (a, b) = *stations.last().unwrap();
+            let delta = pair[1] - pair[0];
+            stations.push((
+                a + f64::from(delta.length()),
+                b + f64::from(delta.x).hypot(f64::from(delta.z)),
+            ));
+        }
+        let mut sections = self.compile_edge_sections(source, id);
+        let mut segment = 0;
+        for section in &mut sections {
+            let s = f64::from(section.s_m);
+            while segment + 2 < stations.len() && stations[segment + 1].0 < s {
+                segment += 1;
+            }
+            let (a, b) = (stations[segment], stations[segment + 1]);
+            let t = ((s - a.0) / (b.0 - a.0).max(f64::EPSILON)).clamp(0.0, 1.0);
+            section.s_m = (a.1 + (b.1 - a.1) * t) as f32;
+        }
+        self.crossing_profile_with_sections(
+            source,
+            raw,
+            (edge.fwd_lanes, edge.bkw_lanes),
+            edge.median,
+            false,
+            Some(edge.crossing_level),
+            Some(sections),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn crossing_profile_with_sections(
+        &self,
+        source: &RegionGraph,
+        raw: &[Vector3],
+        lanes: (u8, u8),
+        median: Option<RoadMedian>,
+        over: bool,
+        source_level: Option<i16>,
+        actual_sections: Option<Vec<RoadSurfaceSection>>,
+    ) -> Result<CrossingProfile, &'static str> {
         if raw.len() < 2 || raw.iter().any(|p| !p.is_finite()) {
             return Err("too_short");
         }
@@ -58,7 +115,8 @@ impl RoadSurfaceSystem {
         edge.median = median;
         edge.width += median.map_or(0.0, |m| m.width_m);
         let candidate_id = candidate.add_edge(edge);
-        let sections = self.compile_edge_sections(&candidate, candidate_id);
+        let sections =
+            actual_sections.unwrap_or_else(|| self.compile_edge_sections(&candidate, candidate_id));
         let length = f64::from(sections.last().ok_or("too_short")?.s_m);
         let halo = Self::visual_roadbed_half_width_m(candidate.edge(candidate_id)) + 24.0;
         let mut neighbors = Vec::new();
@@ -397,6 +455,104 @@ fn triangle_height(triangle: [super::DVec3; 3], point: RoadVec2) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kys_under_profile_clears_the_compiled_divided_bridge() {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/data/kys_under_profile.json")).unwrap();
+        let points = |v: &serde_json::Value| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    Vector3::new(
+                        p[0].as_f64().unwrap() as f32,
+                        p[1].as_f64().unwrap() as f32,
+                        p[2].as_f64().unwrap() as f32,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for slip_first in [true, false] {
+            let mut graph = RegionGraph::new();
+            let mut nodes = std::collections::BTreeMap::new();
+            for source in data["upper"].as_array().unwrap() {
+                if !slip_first && source["fwd"] == 1 && source["bkw"] == 0 {
+                    continue;
+                }
+                let p = points(&source["points"]);
+                let a = *nodes
+                    .entry(source["a"].as_u64().unwrap())
+                    .or_insert_with(|| graph.add_node(p[0], NodeType::Junction));
+                let b = *nodes
+                    .entry(source["b"].as_u64().unwrap())
+                    .or_insert_with(|| graph.add_node(*p.last().unwrap(), NodeType::Junction));
+                let mut edge = build_surface_edge(
+                    a,
+                    b,
+                    p,
+                    source["fwd"].as_u64().unwrap() as u8,
+                    source["bkw"].as_u64().unwrap() as u8,
+                    EdgeClass::Standard,
+                );
+                edge.median = RoadMedian::from_tool(
+                    source["median_style"].as_i64().unwrap() as i32,
+                    source["median_width"].as_f64().unwrap() as f32,
+                )
+                .unwrap();
+                edge.width += edge.median.map_or(0.0, |m| m.width_m);
+                edge.width = source["attributes"]["width"].as_f64().unwrap() as f32;
+                edge.start_clip = source["attributes"]["start_clip"].as_f64().unwrap() as f32;
+                edge.end_clip = source["attributes"]["end_clip"].as_f64().unwrap() as f32;
+                edge.crossing_level = source["level"].as_i64().unwrap() as i16;
+                graph.add_edge(edge);
+            }
+            let raw = points(&data["raw"]);
+            let median = RoadMedian::from_tool(2, 6.08).unwrap();
+            let surface = RoadSurfaceSystem::new(510.0);
+            let profile = surface
+                .prepare_crossing_profile(&graph, &raw, (1, 2), median, false, Some(0))
+                .unwrap();
+            let (planned, _, ids) = surface
+                .build_crossing_validation_graph_for_test(
+                    &profile.points,
+                    (1, 2),
+                    median,
+                    0,
+                    &graph,
+                )
+                .unwrap();
+            for id in ids {
+                let validation = surface.crossing_clearance_violation(
+                    &planned,
+                    id,
+                    &planned,
+                    &std::collections::HashSet::from([id]),
+                );
+                if slip_first {
+                    if validation.is_some() {
+                        break;
+                    }
+                } else {
+                    assert!(validation.is_none(), "{validation:?}");
+                }
+            }
+            if slip_first {
+                assert!(
+                    planned.edges().iter().enumerate().any(|(id, e)| !e.deleted
+                        && surface
+                            .crossing_clearance_violation(
+                                &planned,
+                                id,
+                                &planned,
+                                &std::collections::HashSet::from([id])
+                            )
+                            .is_some()),
+                    "an already pinned slip joint must remain a real refusal"
+                );
+            }
+        }
+    }
 
     #[test]
     fn shared_approach_joint_does_not_erase_another_crossing_of_the_same_road() {

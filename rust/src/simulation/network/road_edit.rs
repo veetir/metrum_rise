@@ -328,6 +328,10 @@ impl TransitNetwork {
             &dirty_edges,
             &authored_edges,
         ));
+        // Junction transitions can lift a previously solved Under plateau. Refit its
+        // physical profile against the actual topology before any preview or commit checks.
+        self.road_surface
+            .conform_layered_clearance_profiles(graph, &dirty_edges);
         let profile_us = start.elapsed().as_micros();
         self.mark_surface_dirty_from_sets(graph, &dirty_edges, &affected_nodes);
         let start = Instant::now();
