@@ -224,6 +224,23 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
             self.assertTrue(all(f.properties['roundabout'] for f in features))
             self.assertTrue(all(f.properties['oneway'] == 1 for f in features))
 
+    def test_bridge_profile_spans_dem_valley_and_precedes_approaches(self):
+        from tools.map_import.structures import prepare_structure_profiles
+        from unittest.mock import Mock
+        bridge = dict(id='b', kind='road', priority=0, bridge=True, layer=1,
+                      points_xz=[(0, 0), (25, 0), (50, 0), (75, 0), (100, 0)])
+        ground = dict(id='a', kind='road', priority=0, bridge=False, layer=0,
+                      points_xz=[(-100, 0), (0, 0)])
+        terrain = Mock()
+        terrain.at.side_effect = lambda p: {0: 90, 100: 92}.get(p[0], 80)
+        result = prepare_structure_profiles([ground, bridge], terrain)
+        self.assertIs(result[0], bridge)
+        self.assertEqual([p[1] for p in bridge['points_xyz']], [90, 90.5, 91, 91.5, 92])
+        self.assertEqual(bridge['endpoint_levels'][0], [0, 1])
+        self.assertEqual(ground['endpoint_levels'][-1], [0, 1])
+        self.assertNotIn('points_xyz', ground)
+        self.assertEqual(terrain.at.call_count, 2)
+
     def test_two_lane_ring_explicitly_records_single_lane_limit(self):
         f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)
         audit = collapse_roundabouts([f], [], {})

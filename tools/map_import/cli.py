@@ -29,8 +29,9 @@ import subprocess
 from .mapping import POLICY, map_role, table
 from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
 from .curves import prepare_curves
-from .survey import apply_road_surveys, inspect, university_access
+from .survey import TerrainGrid, apply_road_surveys, inspect, university_access
 from .roundabouts import detect_roundabouts
+from .structures import prepare_structure_profiles
 from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
@@ -122,6 +123,7 @@ def prepare(args):
     strokes = prune_stubs(strokes, preparation['discarded'])
     strokes = prepare_curves(strokes, features, [{'name': 'Savilahdentie', 'centre_xz': prisma, 'radius_m': 75}],
                              [r['centre_xz'] for r in roundabouts if r['status'] == 'planned'])
+    prepare_structure_profiles(strokes, TerrainGrid(args.world))
     preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=[], water_fills=[])
     zones = []
     survey = inspect(features, args.world, box)

@@ -400,10 +400,15 @@ func _source_point(simulation: Node, _stroke: Dictionary, pos: Vector2) -> Vecto
 func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, strategy: String) -> String:
 	var xyz := []
 	var placed := []
+	var source_heights := {}
+	for p: Array in stroke.get("points_xyz", []):
+		source_heights[Vector2(p[0], p[2])] = p[1]
 	for i in points.size():
 		var p: Array = points[i]
 		var pos := Vector2(float(p[0]), float(p[1]))
 		var world := _source_point(simulation, stroke, pos)
+		if source_heights.has(pos):
+			world.y = source_heights[pos]
 		if i == 0 or i == points.size()-1:
 			var level := int(stroke.get("layer", 0))
 			if level == 0:
@@ -411,6 +416,18 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 			# Source junctions use their declared level and exact compiled height.
 			# A width-expanded cursor snap can attach to a neighbouring carriageway.
 			var snapped: Variant = simulation.get_closest_layered_network_point(world, 2.0, level)
+			# Adjacent source spans share this exact joint even across a structure boundary.
+			# Query only levels recorded at this source endpoint, within coordinate precision.
+			for source_end in 2:
+				var endpoint: Array = stroke["points_xz"][0 if source_end == 0 else -1]
+				if pos != Vector2(endpoint[0], endpoint[1]):
+					continue
+				for source_level: int in stroke.get("endpoint_levels", [[], []])[source_end]:
+					if source_level == level:
+						continue
+					var joint: Variant = simulation.get_closest_layered_network_point(world, 0.01, source_level)
+					if joint is Vector3:
+						snapped = joint
 			if snapped is Vector3 and strategy != "water_unsnapped":
 				world = snapped
 		xyz.append([world.x, world.y, world.z])
@@ -540,7 +557,7 @@ func _place(simulation: Node, stroke: Dictionary, points: Array, record: Diction
 			return
 	# Split at known source junctions first; then bounded bisection isolates the
 	# bad part without sacrificing an entire street. Maximum depth is four.
-	if depth < 4 and _length(points) >= 35.0:
+	if depth < 4 and _length(points) >= 35.0 and not stroke.get("bridge", false):
 		for part in _split(points, stroke.get("junctions_xz", [])):
 			await _place(simulation, stroke, part, record, depth+1, "split/%d" % (depth+1))
 		return
