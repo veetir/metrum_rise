@@ -662,6 +662,14 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(by_id['a']['points'][0], (100, 0))
         self.assertEqual(by_id['b']['points'][-1], (100, 0))
         self.assertEqual(merge_carriageways(list(map(road, reversed(fs))), {})[0], result)
+        # A different named axis retains the source junction authority; its paired
+        # sample must not move the other road's physical crossing onto that axis.
+        for f in fs[2:]:
+            f['properties']['name'] = 'Other'
+        result, _ = merge_carriageways(list(map(road, fs)), {})
+        by_id = {f['id']: f for f, _ in result}
+        self.assertEqual(by_id['a']['points'][0], (100, -5))
+        self.assertEqual(by_id['b']['points'][-1], (100, -5))
 
     def test_split_carriageways_preserve_asymmetric_lane_counts(self):
         fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1, lanes=2),

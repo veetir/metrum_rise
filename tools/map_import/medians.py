@@ -171,8 +171,9 @@ def merge_carriageways(roads, decisions):
         for node, point, paired in zip(f['_source_end_nodes'], (f['points'][0], f['points'][-1]), f.pop('_paired_endpoints')):
             # A section boundary can extend beyond one opposing chain. Prefer
             # measured midline evidence over that chain's unshifted source end.
-            if node not in joints or paired and not joints[node][1]:
-                joints[node] = point, paired
+            identity = (f['properties'].get('name') or f['properties'].get('ref'), f['properties']['road_class'])
+            if node not in joints or (paired and not joints[node][1] and identity == joints[node][2]):
+                joints[node] = point, paired, identity
     for f, _ in retained:
         for end, node in zip((0, -1), f.pop('_source_end_nodes')):
             q = joints[node][0]
