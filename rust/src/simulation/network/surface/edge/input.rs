@@ -202,6 +202,12 @@ impl RoadSurfaceSystem {
         // original DEM. That exact same-level joint is grounded road support,
         // not an instruction to bore a tunnel through its approach.
         let open_cut_joint = |point: Vector3| {
+            if point.y
+                >= terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+                    - PREVIEW_CLEARANCE_M
+            {
+                return false;
+            }
             use crate::simulation::network::interaction::{
                 NetworkSnapTarget, get_closest_network_snap_xz_at_level,
             };
@@ -236,10 +242,29 @@ impl RoadSurfaceSystem {
                         <= PREVIEW_CLEARANCE_M
                 })
             {
-                let mut prepared =
-                    Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
-                prepared.crossing_level = level;
-                return prepared;
+                let overlaps_upper_pavement = raw.windows(2).any(|pair| {
+                    let min = Vector3::new(pair[0].x.min(pair[1].x) - 24.0, 0.0, pair[0].z.min(pair[1].z) - 24.0);
+                    let max = Vector3::new(pair[0].x.max(pair[1].x) + 24.0, 0.0, pair[0].z.max(pair[1].z) + 24.0);
+                    graph.get_edges_near_aabb(min, max).into_iter().any(|id| {
+                        let edge = graph.edge(id);
+                        if edge.deleted || edge.crossing_level == level { return false; }
+                        let half = Self::visual_roadbed_half_width_m(edge);
+                        let xz = |p: Vector3| godot::prelude::Vector2::new(p.x, p.z);
+                        edge.geometry.windows(2).any(|other| {
+                            crate::simulation::network::lanes::geometry::segment_distance_squared_xz(
+                                xz(pair[0]), xz(pair[1]), xz(other[0]), xz(other[1]),
+                            ) <= half * half
+                        })
+                    })
+                });
+                if !overlaps_upper_pavement {
+                    let mut prepared =
+                        Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
+                    prepared.crossing_level = level;
+                    return prepared;
+                }
+                // An actual crossing already has authored clearance knots. Keep
+                // those samples instead of snapping its interior to the upper deck.
             }
         }
         let different_layer = raw.windows(2).any(|pair| {
@@ -283,6 +308,7 @@ impl RoadSurfaceSystem {
             [a, b].iter().all(|p| {
                 (p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE).abs()
                     <= PREVIEW_CLEARANCE_M
+                    || (snap && open_cut_joint(**p))
             })
         });
         let class = if different_layer && grounded_ends {

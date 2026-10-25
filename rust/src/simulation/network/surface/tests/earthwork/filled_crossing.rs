@@ -376,6 +376,27 @@ fn a_surface_branch_can_join_an_existing_open_underpass_cut() {
         &detached, &terrain, &graph, &surface, true, 0,
     );
     assert_eq!(prepared.class, EdgeClass::Tunnel);
+    let raw = [
+        Vector3::new(-25.0, -4.0, 0.0),
+        Vector3::new(0.0, 0.0, 40.0),
+        Vector3::new(25.0, 0.0, 100.0),
+    ];
+    let profile = surface
+        .prepare_crossing_profile(&graph, &raw, (0, 0), None, false, Some(0))
+        .unwrap();
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &profile.points,
+        &terrain,
+        &graph,
+        &surface,
+        true,
+        0,
+    );
+    assert_eq!(prepared.class, EdgeClass::Standard);
+    assert_eq!(
+        prepared.points, profile.points,
+        "an open-cut endpoint must not erase Under clearance knots"
+    );
 }
 
 #[test]
