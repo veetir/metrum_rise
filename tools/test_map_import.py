@@ -224,6 +224,22 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
             self.assertTrue(all(f.properties['roundabout'] for f in features))
             self.assertTrue(all(f.properties['oneway'] == 1 for f in features))
 
+    def test_unnamed_service_loops_do_not_become_through_streets(self):
+        from tools.map_import.service import filter_service_circulation
+        main = feature('main', [(0, 0), (50, 0), (100, 0)], ['a', 'm', 'b'], name='Street')
+        loop = feature('loop', [(0, 0), (0, 40), (100, 40), (100, 0)],
+                       ['a', 'l', 'r', 'b'], road_class='service')
+        spur = feature('spur', [(50, 0), (50, -40)], ['m', 's'], road_class='service')
+        decisions = {}
+        result, audit = filter_service_circulation(list(map(road, [main, loop, spur])), decisions)
+        self.assertEqual([f['id'] for f, _ in result], ['main', 'spur'])
+        self.assertEqual(audit[0]['source_ids'], ['loop'])
+        self.assertEqual(decisions['loop', 'road']['reason'], 'local_service_circulation')
+        other = feature('other', [(100, 0), (150, 0)], ['b', 'end'], name='Other street')
+        result, audit = filter_service_circulation(list(map(road, [main, loop, other])), {})
+        self.assertEqual(len(result), 3)
+        self.assertEqual(audit, [])
+
     def test_bridge_profile_spans_dem_valley_and_precedes_approaches(self):
         from tools.map_import.structures import prepare_structure_profiles
         from unittest.mock import Mock
