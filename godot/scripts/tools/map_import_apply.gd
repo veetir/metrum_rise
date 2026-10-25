@@ -409,6 +409,17 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 		var world := _source_point(simulation, stroke, pos)
 		if source_heights.has(pos):
 			world.y = source_heights[pos]
+		elif not source_heights.is_empty():
+			# A bounded retry can bisect a source segment. Decode its prepared height
+			# from that segment; do not resample the terrain below the structural profile.
+			var profile: Array = stroke["points_xyz"]
+			for j in range(1, profile.size()):
+				var a := Vector2(profile[j-1][0], profile[j-1][2])
+				var b := Vector2(profile[j][0], profile[j][2])
+				var q := Geometry2D.get_closest_point_to_segment(pos, a, b)
+				if q.distance_to(pos) < 0.01 and a.distance_to(b) > 0.0:
+					world.y = lerpf(profile[j-1][1], profile[j][1], a.distance_to(q)/a.distance_to(b))
+					break
 		if i == 0 or i == points.size()-1:
 			var level := int(stroke.get("layer", 0))
 			if level == 0:

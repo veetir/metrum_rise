@@ -279,6 +279,32 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(len(result), 3)
         self.assertEqual(audit, [])
 
+    def test_lower_crossing_profile_ignores_noisy_interior_dem_samples(self):
+        from tools.map_import.structures import prepare_structure_profiles
+        from unittest.mock import Mock
+        upper = dict(id='upper', kind='road', priority=0, bridge=True, layer=1,
+                     points_xz=[(0, -50), (0, 50)])
+        lower = dict(id='lower', kind='road', priority=1, bridge=False, layer=0,
+                     points_xz=[(-100, 0), (-50, 0), (0, 0), (50, 0), (100, 0)])
+        terrain = Mock()
+        terrain.at.side_effect = lambda p: 10 if p[0] == 0 else 1
+        prepare_structure_profiles([upper, lower], terrain)
+        self.assertEqual(lower['profile_authority'], 'source_lower_crossing_chord')
+        self.assertEqual([p[1] for p in lower['points_xyz']], [1]*5)
+        self.assertEqual(terrain.at.call_count, 7)
+
+    def test_crossing_smoothing_does_not_flatten_a_distant_hill(self):
+        from tools.map_import.structures import prepare_structure_profiles
+        from unittest.mock import Mock
+        upper = dict(id='upper', kind='road', priority=0, bridge=True, layer=1,
+                     points_xz=[(0, -50), (0, 50)])
+        lower = dict(id='lower', kind='road', priority=1, bridge=False, layer=0,
+                     points_xz=[(x, 0) for x in range(-500, 501, 10)])
+        terrain = Mock()
+        terrain.at.side_effect = lambda p: 30 if p[0] == 300 else 0
+        prepare_structure_profiles([upper, lower], terrain)
+        self.assertEqual(next(p[1] for p in lower['points_xyz'] if p[0] == 300), 30)
+
     def test_bridge_profile_spans_dem_valley_and_precedes_approaches(self):
         from tools.map_import.structures import prepare_structure_profiles
         from unittest.mock import Mock
@@ -294,7 +320,7 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(bridge['endpoint_levels'][0], [0, 1])
         self.assertEqual(ground['endpoint_levels'][-1], [0, 1])
         self.assertNotIn('points_xyz', ground)
-        self.assertEqual(terrain.at.call_count, 2)
+        self.assertEqual(terrain.at.call_count, 5)
 
     def test_two_lane_ring_explicitly_records_single_lane_limit(self):
         f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)
