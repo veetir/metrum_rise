@@ -831,6 +831,11 @@ fn segments_intersect(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool {
 fn point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool {
     let ab = b - a;
     let ap = point - a;
+    // Explicitly closed loops and repeated source vertices contain zero-length edges.
+    // Their cross product and projection are zero for every point, not just this vertex.
+    if ab.length_squared() <= WATER_SEGMENT_EPSILON * WATER_SEGMENT_EPSILON {
+        return ap.length_squared() <= WATER_SEGMENT_EPSILON * WATER_SEGMENT_EPSILON;
+    }
     if cross_2d(ab, ap).abs() > WATER_SEGMENT_EPSILON {
         return false;
     }
@@ -876,6 +881,50 @@ mod tests {
             road_clip_signature: 0,
             depth_signature,
         }
+    }
+
+    #[test]
+    fn explicitly_closed_or_repeated_road_vertices_do_not_clip_empty_lake_cells() {
+        for repeated in [false, true] {
+            let mut points = vec![
+                Vector2::new(0.0, 0.0),
+                Vector2::new(100.0, 0.0),
+                Vector2::new(100.0, 10.0),
+                Vector2::new(10.0, 10.0),
+                Vector2::new(10.0, 100.0),
+                Vector2::new(0.0, 100.0),
+                Vector2::new(0.0, 0.0),
+            ];
+            if repeated {
+                points.insert(3, points[2]);
+            }
+            let bounds = Rect::from_points(&points);
+            let group = ClipGroup {
+                outer_loops: vec![ClipLoop { points, bounds }],
+                hole_loops: Vec::new(),
+                bounds,
+            };
+            let water = [
+                Vector2::new(50.0, 50.0),
+                Vector2::new(60.0, 50.0),
+                Vector2::new(60.0, 60.0),
+                Vector2::new(50.0, 60.0),
+            ];
+            assert!(!cell_touches_road_clip_group(
+                &water,
+                Rect::from_points(&water),
+                &group
+            ));
+            let road = water.map(|p| p - Vector2::new(49.0, 0.0));
+            assert!(cell_touches_road_clip_group(
+                &road,
+                Rect::from_points(&road),
+                &group
+            ));
+        }
+        let point = Vector2::new(3.0, 4.0);
+        assert!(point_on_segment(point, point, point));
+        assert!(!point_on_segment(Vector2::new(30.0, 40.0), point, point));
     }
 
     #[test]
