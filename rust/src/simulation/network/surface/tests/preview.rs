@@ -11,6 +11,57 @@ use crate::simulation::network::surface::{
 use crate::simulation::zoning::ZoningSystem;
 
 #[test]
+fn roundabout_preview_retires_the_original_junction_footprint() {
+    use crate::simulation::network::roundabouts::RoundaboutRequest;
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    for p in [
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 100.0),
+    ] {
+        let end = graph.add_node(p, NodeType::Junction);
+        graph.add_edge(crate::simulation::network::build_surface_edge(
+            center,
+            end,
+            vec![Vector3::ZERO, p],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+    }
+    let mut network = TransitNetwork::new();
+    network.finalize_road_geometry(&mut graph);
+    let terrain = flat_terrain(300, 300);
+    let mut surface = RoadSurfaceSystem::new(128.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    assert!(surface.compiled_visual_node_pieces.contains_key(&center));
+    let (_, planned) = surface
+        .compile_roundabout_preview(
+            &graph,
+            &terrain,
+            RoundaboutRequest {
+                center: Vector3::ZERO,
+                diameter: 30.0,
+                angles: vec![],
+                replace: Some(center),
+            },
+        )
+        .unwrap();
+    assert!(
+        planned.replaced_nodes.contains(&center),
+        "the old junction is a removed owner, not resident background"
+    );
+    assert!(
+        !planned
+            .surface
+            .compiled_visual_node_pieces
+            .values()
+            .any(|piece| piece.node_id == center)
+    );
+}
+
+#[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     let polygon = RoadSurfaceSystem::make_visual_polygon(vec![
         backend::RoadVec3::new(0.0, 0.0, 0.0),

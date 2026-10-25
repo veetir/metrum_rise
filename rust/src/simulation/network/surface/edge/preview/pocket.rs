@@ -207,7 +207,13 @@ impl RoadSurfaceSystem {
         }
         let replaced_nodes: HashSet<u32> = nodes
             .iter()
-            .filter_map(|(&source, &local)| required_nodes.contains(&local).then_some(source))
+            .filter_map(|(&source, &local)| {
+                // Replacing a junction can retire its center before finalization
+                // gathers affected endpoints. Its resident footprint must disappear
+                // from terrain/site queries even though no new node piece replaces it.
+                (required_nodes.contains(&local) || graph.live_node_connection_count(local) == 0)
+                    .then_some(source)
+            })
             .collect();
         // Prospective live identities preserve road/site ownership in the terrain compiler.
         // Only the local excerpt is copied; new nodes/edges append in the same order as commit.
