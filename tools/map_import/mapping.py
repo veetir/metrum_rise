@@ -46,6 +46,7 @@ CAPABILITIES = (
     Capability('road', 'road_class', ('motorway', 'trunk'), 'road', 'major_road', 0),
     Capability('road', 'road_class', ('steps', 'corridor', 'construction', 'proposed'), 'skip', 'non_placeable_highway'),
     Capability('road', 'footway', ('sidewalk', 'crossing'), 'skip', 'road_includes_sidewalks'),
+    Capability('road', 'bus_only', (True,), 'road', 'dedicated_bus_carriageway', 3),
     Capability('road', 'service', ('parking_aisle', 'driveway', 'drive-through'), 'skip', 'private_or_parking_service'),
     Capability('road', 'access', ('no', 'private', 'permit'), 'skip', 'restricted_access'),
     Capability('road', 'area', (True,), 'skip', 'highway_area_not_centerline'),
@@ -102,7 +103,7 @@ def map_role(feature, role, include_park_paths=False):
             minor = p['road_class'] in ('service', 'residential', 'unclassified', 'living_street', 'tertiary', 'road')
             oneway = bool(p['oneway'])
             result['oneway'] = p['oneway'] if oneway else 0
-            if minor and not oneway:
+            if minor and not oneway and total is None and p.get('lanes_forward') is None and p.get('lanes_backward') is None:
                 fwd, bkw = POLICY['minor_default_lanes']
                 result['reason'] = 'ordinary_two_way_default'
             elif oneway:
@@ -119,5 +120,19 @@ def map_role(feature, role, include_park_paths=False):
             if fwd < 0 or bkw < 0 or fwd != int(fwd) or bkw != int(bkw) or not 1 <= fwd+bkw <= 8:
                 return {**result, 'action': 'skip', 'reason': 'invalid_directional_lanes'}
             result.update(fwd_lanes=int(fwd), bkw_lanes=int(bkw))
+            masks = []
+            for count, tokens in ((int(fwd), p.get('bus_lanes_forward', '')),
+                                  (int(bkw), p.get('bus_lanes_backward', ''))):
+                values = tokens.split('|') if tokens else []
+                if p.get('bus_only'):
+                    masks.append((1 << count)-1)
+                elif values and len(values) == count:
+                    masks.append(sum(1 << i for i, token in enumerate(values) if token in ('designated', 'only')))
+                else:
+                    masks.append(0)
+                    if values:
+                        result['bus_lane_reason'] = 'source_bus_lane_count_mismatch'
+            if any(masks):
+                result['bus_masks'] = masks
         result['speed_applied'] = False
     return result

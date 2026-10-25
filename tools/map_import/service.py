@@ -14,6 +14,7 @@ from collections import defaultdict
 
 def filter_service_circulation(roads, decisions):
     services = {f['id']: (f, m) for f, m in roads if m['action'] == 'road'
+                and not f['properties'].get('bus_only')
                 and f['properties']['road_class'] == 'service' and not f['properties'].get('name')}
     incidence, public = defaultdict(set), defaultdict(set)
     for f, m in roads:

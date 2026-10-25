@@ -213,7 +213,7 @@ def merge_carriageways(roads, decisions):
             dense = list(samples(pts, POLICY['sample_m']))
             dense.append((pts[-1], dense[-1][1], 0))
             moved, paired_ends, local_sources = [], [], {f['id']}
-            peer_counts = []
+            peer_counts, peer_bus_masks = [], []
             for sample_index, (p, u, run) in enumerate(dense):
                 hit = index.nearest(p, POLICY['carriageway_distance_m'],
                     lambda s: s[3][0]['id'] != c['id'] and s[3][0]['key'] == c['key']
@@ -223,6 +223,7 @@ def merge_carriageways(roads, decisions):
                     local_sources.add(hit[3][0])
                     if run > 0:
                         peer_counts.append(source_through_count(hit[3][3][1]))
+                        peer_bus_masks.append(mappings[hit[3][3][1]['id']].get('bus_masks', [0, 0])[0])
                 if sample_index in (0, len(dense)-1):
                     paired_ends.append(hit is not None)
                 q = tuple(round((p[j]+hit[2][j])/2, 3) for j in range(2)) if hit else tuple(p)
@@ -237,6 +238,9 @@ def merge_carriageways(roads, decisions):
             g['_paired_endpoints'] = paired_ends
             m = mappings[f['id']]
             forward, backward = source_through_count(f), min(peer_counts)
+            masks = [m.get('bus_masks', [0, 0])[0], max(peer_bus_masks, default=0)]
+            if any(masks):
+                section = {**section, 'bus_masks': masks}
             if f['properties'].get('survey_cross_section') == 'university_2026_10_22':
                 section = {'median_style': 3, 'median_width_m': 2.0, 'bus_masks': [4, 4]}
             retained.append((g, {**m, 'oneway': 0, 'fwd_lanes': forward, 'bkw_lanes': backward, **section}))

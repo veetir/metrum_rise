@@ -224,6 +224,32 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
             self.assertTrue(all(f.properties['roundabout'] for f in features))
             self.assertTrue(all(f.properties['oneway'] == 1 for f in features))
 
+    def test_source_bus_only_access_overrides_motor_restriction_and_driveway_filter(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'source.json'
+            path.write_text(json.dumps({'elements': [
+                {'type': 'node', 'id': 1, 'lon': 27, 'lat': 63},
+                {'type': 'node', 'id': 2, 'lon': 27.001, 'lat': 63},
+                {'type': 'way', 'id': 3, 'nodes': [1, 2], 'tags': {
+                    'highway': 'secondary_link', 'oneway': 'yes', 'lanes': '1',
+                    'access': 'no', 'motor_vehicle': 'no', 'psv': 'designated'}}]}))
+            f = OsmAdapter().read(path)[-1].record()
+            m = map_role(f, 'road')
+            self.assertEqual((m['action'], m['fwd_lanes'], m['bkw_lanes'], m['bus_masks']), ('road', 1, 0, [1, 0]))
+            f['properties'].update(road_class='service', service='driveway')
+            self.assertEqual(map_role(f, 'road')['bus_masks'], [1, 0])
+
+    def test_bus_lane_tokens_and_explicit_minor_lane_counts_survive_section_splits(self):
+        a = feature('a', [(0, 0), (40, 0)], ['a', 'j'], road_class='tertiary', lanes=4,
+                    lanes_forward=2, lanes_backward=2, bus_lanes_forward='yes|designated')
+        b = feature('b', [(40, 0), (80, 0)], ['j', 'b'], road_class='tertiary', lanes=4,
+                    lanes_forward=2, lanes_backward=2)
+        strokes, _ = build_strokes(list(map(road, [a, b])), (-100, -100, 100, 100))
+        self.assertEqual(len(strokes), 2)
+        self.assertEqual((strokes[0]['fwd_lanes'], strokes[0]['bkw_lanes']), (2, 2))
+        self.assertEqual(strokes[0]['bus_masks'], [2, 0])
+        self.assertEqual(strokes[1]['bus_masks'], [0, 0])
+
     def test_unnamed_service_loops_do_not_become_through_streets(self):
         from tools.map_import.service import filter_service_circulation
         main = feature('main', [(0, 0), (50, 0), (100, 0)], ['a', 'm', 'b'], name='Street')
@@ -517,6 +543,8 @@ class MappingTest(unittest.TestCase):
             f = feature('r', [(0, 0), (50, 0)], road_class=kind, oneway=-1, lanes=3)
             self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (3, 0))
             f['properties']['oneway'] = 0
+            self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (1, 2))
+            f['properties']['lanes'] = None
             self.assertEqual((map_role(f, 'road')['fwd_lanes'], map_role(f, 'road')['bkw_lanes']), (1, 1))
 
 
