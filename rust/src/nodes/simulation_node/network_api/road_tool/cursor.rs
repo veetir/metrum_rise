@@ -28,6 +28,28 @@ impl SimulationNode {
         }
     }
 
+    /// Returns a source endpoint's exact height on the declared crossing level.
+    /// Uses a strict planar radius and existing spatial indices; DEM error does not detach joints.
+    #[func]
+    pub fn get_closest_layered_network_point(
+        &self,
+        world_pos: Vector3,
+        max_dist: f32,
+        level: i32,
+    ) -> Variant {
+        let Ok(level) = i16::try_from(level) else {
+            return Variant::nil();
+        };
+        let core = self.lock_core();
+        crate::simulation::network::interaction::get_closest_point_xz_at_level(
+            &core.region_graph,
+            world_pos,
+            max_dist,
+            level,
+        )
+        .map_or_else(Variant::nil, |point| point.to_variant())
+    }
+
     /// Resolves the road-tool cursor position in one non-blocking Rust query.
     ///
     /// This combines visible-surface picking, zoning-grid snapping, network snapping,

@@ -385,11 +385,14 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 		var p: Array = points[i]
 		var pos := Vector2(float(p[0]), float(p[1]))
 		var world := _source_point(simulation, stroke, pos)
-		var snapped: Variant = simulation.get_closest_network_point(world, 2.0)
 		if i == 0 or i == points.size()-1:
-			# The commit's snap flag only enables 2 m graph matching. The player's
-			# cursor also projects the clicked position onto a node/edge beforehand.
-			if snapped is Vector3 and absf(snapped.y-world.y) < 4.5 and strategy != "water_unsnapped":
+			var level := int(stroke.get("layer", 0))
+			if level == 0:
+				level = 1 if stroke.get("bridge", false) else (-1 if stroke.get("tunnel", false) else 0)
+			# Source junctions use their declared level and exact compiled height.
+			# A width-expanded cursor snap can attach to a neighbouring carriageway.
+			var snapped: Variant = simulation.get_closest_layered_network_point(world, 2.0, level)
+			if snapped is Vector3 and strategy != "water_unsnapped":
 				world = snapped
 		xyz.append([world.x, world.y, world.z])
 		placed.append([world.x, world.z])
