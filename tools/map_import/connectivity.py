@@ -275,8 +275,6 @@ def whole_stroke_actions(path, plan):
         if any(e['class'] != 0 or any(e[a] != source[b] for a, b in
                (('fwd', 'fwd_lanes'), ('bkw', 'bkw_lanes'), ('median_style', 'median_style'))) for e in members):
             continue
-        if source.get('names') == ['Savilahdentie'] and any(distance(p, (-999.179, 1829.554)) < .1 for p in source['points_xz']):
-            continue
         first = members[0]
         actions.append({**source, 'kind': 'replace', 'edge': first['id'],
                         'edges': sorted(e['id'] for e in members), 'node': first['a'],

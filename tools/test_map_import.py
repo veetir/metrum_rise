@@ -59,6 +59,21 @@ def synthetic_tiff(path, east=100, north=200, crs=3067):
 
 
 class RoadFeatureIntegrationTest(unittest.TestCase):
+    def test_whole_stroke_rebuild_has_no_place_specific_exclusion(self):
+        from unittest.mock import patch
+        from tools.map_import.connectivity import whole_stroke_actions
+        source = {'id': 'source', 'names': ['Savilahdentie'], 'length_m': 120,
+                  'points_xz': [(-999.179, 1829.554), (-879.179, 1829.554)],
+                  'fwd_lanes': 1, 'bkw_lanes': 1, 'median_style': 0}
+        nodes = {i: [float(i)*30, 0, 0] for i in range(4)}
+        edges = [{'id': i, 'a': i*2, 'b': i*2+1, 'length_m': 30,
+                  'class': 0, 'fwd': 1, 'bkw': 1, 'median_style': 0, 'source': source}
+                 for i in range(2)]
+        with patch('tools.map_import.connectivity.read_save', return_value=(nodes, edges)), \
+             patch('tools.map_import.connectivity.attribute'):
+            result = whole_stroke_actions('unused', {'strokes': []})
+        self.assertEqual(result['actions'][0]['edges'], [0, 1])
+
     def test_through_roads_establish_profiles_before_connecting_links(self):
         for road_class in ('motorway', 'trunk', 'primary', 'secondary', 'tertiary'):
             main = road(feature('main', [(0, 0), (100, 0)], road_class=road_class))[1]
