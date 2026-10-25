@@ -148,23 +148,10 @@ def conflate(roads, decisions):
     roads = deepcopy(sorted(roads, key=lambda r: r[0]['id']))
     from .medians import merge_carriageways
     changed, audit = merge_carriageways(roads, decisions)
-    streets = SegmentIndex((f['id'], f['points'], f) for f, m in changed if m['action'] == 'road')
-    result, dropped = [], []
-    for f, m in changed:
-        if m['action'] != 'footpath' or f['properties'].get('survey_underpass'):
-            result.append((f, m))
-            continue
-        total, parallel = 0, 0
-        for p, u, run in samples(f['points'], POLICY['sample_m']):
-            total += run
-            if streets.nearest(p, POLICY['parallel_distance_m'], lambda s: aligned(u, s[1], s[2])):
-                parallel += run
-        if total and parallel/total >= POLICY['parallel_fraction']:
-            decisions[f['id'], 'road'] = {**m, 'action': 'skip', 'reason': 'parallel_to_road_sidewalk'}
-            dropped.append({'source_ids': [f['id']], 'reason': 'parallel_to_road_sidewalk', 'length_m': round(total, 3)})
-        else:
-            result.append((f, m))
-    return result, {'carriageways': audit, 'parallel_paths': dropped}
+    # Explicit sidewalks/crossings were excluded by source semantics in mapping.
+    # Proximity is not sidewalk authority: separate cycleways, bridge paths and
+    # scenic park paths keep their source geometry even beside a public road.
+    return changed, {'carriageways': audit, 'parallel_paths': []}
 
 
 def snap_endpoints(roads, only_kind=None):
@@ -181,7 +168,8 @@ def snap_endpoints(roads, only_kind=None):
             continue
         for i in (0, len(f['points'])-1):
             p = f['points'][i]
-            hit = index.nearest(p, POLICY['endpoint_snap_m'], lambda s: s[0] != f['id'])
+            hit = index.nearest(p, POLICY['endpoint_snap_m'], lambda s: s[0] != f['id']
+                                and s[3][0]['properties'].get('layer', 0) == f['properties'].get('layer', 0))
             if not hit:
                 continue
             if hit[0] < .01:
@@ -244,7 +232,7 @@ def prune_stubs(strokes, discarded):
     result = []
     for s in strokes:
         dead_end = any(arms[tuple(p)] == 1 for p in (s['points_xz'][0], s['points_xz'][-1]))
-        if s['kind'] == 'footpath' and (s['length_m'] < POLICY['standalone_path_min_m'] or s['length_m'] < POLICY['dead_end_path_m'] and dead_end):
+        if s['kind'] == 'footpath' and s['length_m'] < POLICY['dead_end_path_m'] and dead_end:
             discarded.append({'source_ids': s['source_ids'], 'reason': 'short_dead_end_path' if dead_end else 'short_standalone_path', 'length_m': s['length_m']})
         else:
             result.append(s)

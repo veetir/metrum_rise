@@ -760,14 +760,14 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(roads[0][0]['points'][-1], (10, 10))
         self.assertEqual(decisions['circle', 'road']['reason'], 'roundabout_player_replacement')
 
-    def test_parallel_paths_drop_but_shortcut_survives(self):
+    def test_separate_parallel_cycleway_and_shortcut_survive(self):
         fs = [feature('r', [(0, 0), (200, 0)]),
               feature('side', [(0, 8), (200, 8)], road_class='cycleway'),
               feature('shortcut', [(100, 0), (100, 100)], road_class='path')]
         decisions = {(f['id'], 'road'): map_role(f, 'road', include_park_paths=True) for f in fs}
         result, audit = conflate([road(f) for f in fs], decisions)
-        self.assertEqual([f['id'] for f, _ in result], ['r', 'shortcut'])
-        self.assertEqual(audit['parallel_paths'][0]['source_ids'], ['side'])
+        self.assertEqual([f['id'] for f, _ in result], ['r', 'shortcut', 'side'])
+        self.assertEqual(audit['parallel_paths'], [])
 
     def test_split_carriageways_create_one_two_way_median(self):
         fs = [feature('a', [(0, 0), (100, 0)], road_class='primary', name='Main', oneway=1),
@@ -997,13 +997,28 @@ class ConflationTest(unittest.TestCase):
                 conn.execute('INSERT INTO world_open_water_fills VALUES(0,0,3)')
             self.assertEqual(sum(d > 0 for d in WaterMask.load(path).depth), 25)
 
-    def test_short_through_path_is_pruned_after_water_clipping(self):
+    def test_short_park_path_pieces_keep_a_complete_loop(self):
+        points = [(0, 0), (0, 20), (20, 20), (20, 0)]
+        paths = [{'source_ids': [str(i)], 'kind': 'footpath', 'length_m': 20,
+                  'points_xz': [points[i], points[(i+1) % 4]]} for i in range(4)]
+        discarded = []
+        self.assertEqual(prune_stubs(paths, discarded), paths)
+        self.assertEqual(discarded, [])
+
+    def test_near_miss_endpoint_never_snaps_across_source_layers(self):
+        roads = [road(feature('upper', [(0, 0), (100, 0)], layer=1)),
+                 road(feature('lower', [(50, 5), (50, 100)], layer=0))]
+        original = copy.deepcopy(roads)
+        self.assertEqual(snap_endpoints(roads), [])
+        self.assertEqual(roads, original)
+
+    def test_short_through_path_keeps_connectivity(self):
         path = {'source_ids': ['p'], 'kind': 'footpath', 'length_m': 60, 'points_xz': [(0, 0), (60, 0)]}
         roads = [{'source_ids': ['r'], 'kind': 'road', 'length_m': 100, 'points_xz': [(0, 0), (0, 100)]},
                  {'source_ids': ['s'], 'kind': 'road', 'length_m': 100, 'points_xz': [(60, 0), (60, 100)]}]
         discarded = []
-        self.assertEqual(prune_stubs([path, *roads], discarded), roads)
-        self.assertEqual(discarded[0]['reason'], 'short_standalone_path')
+        self.assertEqual(prune_stubs([path, *roads], discarded), [path, *roads])
+        self.assertEqual(discarded, [])
 
 
 class ZoningReportTest(unittest.TestCase):
