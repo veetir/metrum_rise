@@ -723,6 +723,7 @@ impl SimulationNode {
         roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
     ) -> VarDictionary {
         let mut result = VarDictionary::new();
+        // Compilation is synchronous: a missing product is a refusal, never pending work.
         let terrain = core.compile_pocket_preview_terrain(roads);
         if let Some(reason) = terrain
             .as_ref()
@@ -733,10 +734,16 @@ impl SimulationNode {
             result.set("detail", reason);
             return result;
         }
-        let Some(patches) = terrain.and_then(|terrain| terrain.preview_patches()) else {
+        let Some(patches) = terrain.as_ref().and_then(|terrain| terrain.preview_patches()) else {
             result.set("is_valid", false);
-            result.set("is_pending", true);
-            result.set("invalid_reason", "surface_preview_pending");
+            result.set("is_pending", false);
+            result.set(
+                "invalid_reason",
+                terrain
+                    .as_ref()
+                    .and_then(|terrain| terrain.failure_reason())
+                    .unwrap_or("surface_preview_terrain_incomplete"),
+            );
             return result;
         };
         let mut payloads = Array::<VarDictionary>::new();
