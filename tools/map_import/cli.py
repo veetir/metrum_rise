@@ -29,7 +29,8 @@ import subprocess
 from .mapping import POLICY, map_role, table
 from .conflate import collapse_roundabouts, conflate, prepare_streets, prune_stubs
 from .curves import prepare_curves
-from .survey import apply_road_surveys, apply_roundabout_surveys, inspect, university_access
+from .survey import apply_road_surveys, inspect, university_access
+from .roundabouts import detect_roundabouts
 from .water_beds import prepare_initial
 from .normalise import normalise
 from .osm import OsmAdapter
@@ -102,11 +103,11 @@ def prepare(args):
     # Keep neutral source geometry immutable; conflation owns its working copy.
     from copy import deepcopy
     working = deepcopy(features)
-    ring_surveys = apply_roundabout_surveys(working)
+    ring_detection = detect_roundabouts(working)
     decisions = {(f['id'], role): map_role(f, role, args.include_park_paths) for f in working for role in f['roles']}
     roads = [(f, decisions[(f['id'], 'road')]) for f in working if 'road' in f['roles']
              and decisions[(f['id'], 'road')]['action'] in ('road', 'footpath')]
-    road_surveys = apply_road_surveys(roads, args.include_park_paths) + ring_surveys
+    road_surveys = apply_road_surveys(roads, args.include_park_paths)
     roundabouts = collapse_roundabouts(working, roads, decisions)
     roads, conflation = conflate(roads, decisions)
     from .medians import simplify_prisma
@@ -115,6 +116,7 @@ def prepare(args):
     roads, access_survey = university_access(roads, decisions)
     conflation['university_access'] = access_survey
     conflation['roundabouts'] = roundabouts
+    conflation['roundabout_detection'] = ring_detection
     conflation['road_surveys'] = road_surveys
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])

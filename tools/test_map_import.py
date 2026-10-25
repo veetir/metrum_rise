@@ -178,18 +178,51 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(roads[2][1]['action'], 'footpath')
         self.assertTrue(roads[2][0]['properties']['survey_underpass'])
 
-    def test_luola_survey_tags_only_the_identified_closed_source_ring(self):
-        from tools.map_import.survey import apply_roundabout_surveys
-        ids = ['1119695044', '1366321598', '1366321599', '1366371228']
-        points = [(0, 0), (20, 0), (20, 20), (0, 20)]
-        neutral = [feature('osm/way/'+value, [points[i], points[(i+1)%4]],
-                           [str(i), str((i+1)%4)], road_class='tertiary', oneway=1, lanes=1)
-                   for i, value in enumerate(ids)]
-        working = copy.deepcopy(neutral)
-        self.assertEqual(apply_roundabout_surveys(working)[0]['reason'], 'user_identified_untagged_luola_ring')
-        self.assertTrue(all(f['properties']['roundabout'] for f in working))
-        self.assertFalse(any(f['properties'].get('roundabout') for f in neutral))
-        self.assertEqual(collapse_roundabouts(working, [], {})[0]['status'], 'planned')
+    def test_untagged_motor_faces_are_detected_without_source_ids(self):
+        from tools.map_import.roundabouts import detect_roundabouts
+        for split in (False, True):
+            points = [(round(15*math.cos(-i*math.tau/24), 3),
+                       round(15*math.sin(-i*math.tau/24), 3)) for i in range(25)]
+            ids = [str(i % 24) for i in range(25)]
+            ring = [feature('arbitrary', points, ids, road_class='tertiary', oneway=1)]
+            if split:
+                ring = [feature(f'part/{i}', points[i:i+7], ids[i:i+7],
+                                road_class='tertiary', oneway=1) for i in range(0, 24, 6)]
+            arms = [feature(f'arm/{i}', [points[i], (points[i][0]*4, points[i][1]*4)],
+                            [ids[i], f'outer/{i}']) for i in (0, 6, 12, 18)]
+            neutral = copy.deepcopy(ring+arms)
+            evidence = detect_roundabouts(ring+arms)
+            self.assertEqual([r['status'] for r in evidence], ['detected'])
+            self.assertTrue(all(f['properties']['roundabout'] for f in ring))
+            self.assertFalse(any(f['properties'].get('roundabout') for f in neutral))
+            self.assertEqual(collapse_roundabouts(ring+arms, list(map(road, arms)), {})[0]['status'], 'planned')
+
+    def test_cycle_recognition_excludes_blocks_parking_and_turning_loops(self):
+        from tools.map_import.roundabouts import detect_roundabouts
+        points = [(15*math.cos(-i*math.tau/24), 15*math.sin(-i*math.tau/24)) for i in range(24)]
+        points.append(points[0])
+        ids = [str(i % 24) for i in range(25)]
+        for cls, direction, arms in [('service', 1, 4), ('tertiary', 0, 4), ('tertiary', 1, 2)]:
+            ring = feature('ring', points, ids, road_class=cls, oneway=direction)
+            roads = [ring]+[feature(f'arm/{i}', [points[i*6], (points[i*6][0]*4, points[i*6][1]*4)],
+                                    [ids[i*6], f'outer/{i}']) for i in range(arms)]
+            evidence = detect_roundabouts(roads)
+            self.assertFalse(ring['properties'].get('roundabout'))
+            if arms == 2:
+                self.assertEqual(evidence[0]['reason'], 'turning_loop_fewer_than_three_external_arms')
+        block = feature('block', [(0, 0), (0, 20), (20, 20), (20, 0), (0, 0)],
+                        ['a', 'b', 'c', 'd', 'a'], oneway=1)
+        self.assertEqual(detect_roundabouts([block]), [])
+
+    def test_osm_circular_and_implied_roundabout_direction(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'osm.json'
+            path.write_text(json.dumps({'elements': [
+                {'type': 'way', 'id': 1, 'tags': {'highway': 'secondary', 'junction': 'roundabout'}},
+                {'type': 'way', 'id': 2, 'tags': {'highway': 'secondary', 'junction': 'circular', 'oneway': 'yes'}}]}))
+            features = OsmAdapter().read(path)
+            self.assertTrue(all(f.properties['roundabout'] for f in features))
+            self.assertTrue(all(f.properties['oneway'] == 1 for f in features))
 
     def test_two_lane_ring_explicitly_records_single_lane_limit(self):
         f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)

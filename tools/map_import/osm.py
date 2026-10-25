@@ -102,7 +102,8 @@ class OsmAdapter:
             if e['type'] == 'node':
                 points = [(e['lon'], e['lat'])]
                 ids = [e['id']]
-            one_way = {'yes': 1, 'true': 1, '1': 1, '-1': -1}.get(tags.get('oneway'), 0)
+            one_way = {'yes': 1, 'true': 1, '1': 1, '-1': -1}.get(
+                tags.get('oneway'), int(tags.get('junction') == 'roundabout' and tags.get('oneway') != 'no'))
             building_use = tags.get('building:use', tags.get('building', 'unknown'))
             if tags.get('shop'):
                 building_use = 'retail'
@@ -119,7 +120,8 @@ class OsmAdapter:
                      'track_grade': tags.get('tracktype', ''), 'surface': tags.get('surface', ''),
                      'access': tags.get('motorcar', tags.get('motor_vehicle', tags.get('vehicle', tags.get('access', '')))), 'footway': tags.get('footway', ''),
                      'oneway_confirmed': tags.get('oneway:source') == 'survey',
-                     'roundabout': tags.get('junction') == 'roundabout',
+                     'roundabout': tags.get('junction') in ('roundabout', 'circular'),
+                     'roundabout_authority': tags.get('junction', ''),
                      'crossing_marked': marked_crossing(tags),
                      'junction_control': tags.get('highway') if tags.get('highway') in ('give_way', 'stop', 'traffic_signals') else None,
                      'control_direction': tags.get('direction', tags.get('traffic_signals:direction', '')),

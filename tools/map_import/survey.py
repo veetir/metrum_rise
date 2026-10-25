@@ -191,23 +191,6 @@ def apply_road_surveys(roads, include_park_paths=True):
     return audit
 
 
-def apply_roundabout_surveys(features):
-    """Tag the user-identified Luola ring in the working copy, retaining neutral OSM.
-
-    This is an explicit source-ID survey correction, not geometric cycle guessing.
-    The ordinary ring assembler still requires a closed source-node cycle.
-    """
-    ids = {'osm/way/'+s for s in ('1119695044', '1366321598', '1366321599', '1366371228')}
-    selected = [f for f in features if f['id'] in ids]
-    if len(selected) != len(ids):
-        return [{'source_ids': sorted(ids), 'reason': 'surveyed_luola_ring_source_missing'}]
-    for f in selected:
-        f['properties']['roundabout'] = True
-    return [{'source_ids': sorted(ids), 'reason': 'user_identified_untagged_luola_ring',
-             'reference': 'broken-roundabout-area.sqlite', 'authority': 'user_2026_10_24'}]
-
-
-
 def university_access(roads, decisions):
     """Use the photographed ordinary two-way parking arm instead of two OSM slips.
 

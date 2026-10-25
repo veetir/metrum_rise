@@ -65,6 +65,7 @@ def collapse_roundabouts(features, roads, decisions):
             decisions[f['id'], 'road'] = {'action': 'skip', 'reason': 'roundabout_player_replacement', 'priority': 0}
         audit.append({'source_ids': [f['id'] for f in fs], 'centre_xz': centre,
                       'diameter_m': round(diameter, 3), 'status': 'planned',
+                      'authority': sorted({f['properties'].get('roundabout_authority', 'source_tag') for f in fs}),
                       'source_lanes': max(int(f['properties'].get('lanes') or 1) for f in fs),
                       'imported_lanes': 1,
                       'remaining': 'two_lane_entry_selection_and_spiral_exits' if any(
