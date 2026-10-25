@@ -248,13 +248,22 @@ impl RoadSurfaceSystem {
             let pair_required = if sin_theta <= VISUAL_CONFLICT_SIN_EPSILON {
                 total_length_m
             } else {
+                // A divided arm's median starts at this handoff. Use the actual
+                // intersection of the facing offset rails, as the vehicle clip solver
+                // does: own width projects by cos(theta), not by one. The old sum
+                // erased long medians even where obtuse arms already diverged.
+                let own_projection = if edge.median.is_some() || other_edge.median.is_some() {
+                    dot
+                } else {
+                    1.0 // Preserve the established undivided-road ownership products.
+                };
                 [
-                    roadbed_half_width_m + other_roadbed_half_width_m,
-                    roadbed_half_width_m + other_carriageway_half_width_m,
-                    carriageway_half_width_m + other_roadbed_half_width_m,
+                    (roadbed_half_width_m, other_roadbed_half_width_m),
+                    (roadbed_half_width_m, other_carriageway_half_width_m),
+                    (carriageway_half_width_m, other_roadbed_half_width_m),
                 ]
                 .into_iter()
-                .map(|width_m| width_m / sin_theta)
+                .map(|(own, other)| ((other + own * own_projection) / sin_theta).max(0.0))
                 .fold(0.0, f32::max)
             };
             let widths_differ = (roadbed_half_width_m - other_roadbed_half_width_m).abs() > 0.1;
@@ -285,5 +294,61 @@ impl RoadSurfaceSystem {
         edge.end_clip
             .max(Self::visual_node_handoff_limit_m(edge))
             .clamp(0.0, total_length_m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::RoadMedian;
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use crate::simulation::terrain::TerrainSystem;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn obtuse_divided_arm_keeps_its_median_after_the_actual_rail_conflict() {
+        let mut graph = RegionGraph::new();
+        let node = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        for angle in [0.0_f32, 120.0, 240.0] {
+            let angle = angle.to_radians();
+            let point = Vector3::new(angle.cos() * 100.0, 0.0, angle.sin() * 100.0);
+            let end = graph.add_node(point, NodeType::Junction);
+            let points = vec![Vector3::ZERO, point];
+            graph.add_edge(Edge {
+                start_node: node,
+                end_node: end,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                fwd_lanes: 2,
+                bkw_lanes: 2,
+                width: 19.0,
+                median: RoadMedian::from_tool(2, 5.0).unwrap(),
+                physical_length: 100.0,
+                geometry: points.clone(),
+                physical_geometry: points,
+                ..Default::default()
+            });
+        }
+        graph.rebuild_all_indices();
+        graph.rebuild_intersection_clips();
+        let terrain = TerrainSystem::with_chunking(257, 257, 1.0, 32, 0.0);
+        let mut surface = RoadSurfaceSystem::new(32.0);
+        let edge = graph.edge(0);
+        let mouth = surface.visual_material_conflict_handoff_m(&graph, 0, edge, 100.0, true);
+        assert!(
+            mouth < 16.0,
+            "obtuse rails diverge before the old 27 m halo: {mouth}"
+        );
+        assert!(mouth >= edge.start_clip);
+        assert!(
+            surface.compile_dirty(&graph, &terrain),
+            "{:?}",
+            surface.last_compile_failure_label()
+        );
+        let sections = &surface.compiled_sections()[&0];
+        let section = sections.iter().find(|s| s.s_m >= 20.0).unwrap();
+        // The authored width includes the two inner kerbs as well as the grass.
+        let width = section.bands[5].lateral_end_m - section.bands[3].lateral_start_m;
+        assert!((width - 5.0).abs() < 0.001, "median width at 20 m: {width}");
     }
 }
