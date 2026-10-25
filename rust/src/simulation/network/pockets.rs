@@ -530,6 +530,28 @@ pub(crate) fn author_lane_count_transitions(
             })
             .collect();
         ids.sort_unstable();
+        // A third road turns an ordinary section transition into a junction. Its
+        // endpoint taper has no authority over the new mouth; remote tapers and
+        // authored pocket pairs retain their existing protection.
+        if ids.len() > 2
+            && graph.node(node).node_type == NodeType::LaneTransition
+            && !ids
+                .iter()
+                .any(|&id| graph.edge(id).pocket_taper().is_some())
+        {
+            for &id in &ids {
+                let end = usize::from(graph.edge(id).end_node == node);
+                let edge = graph.edge_mut(id);
+                if let Some(ends) = &mut edge.lane_tapers {
+                    ends[end] = None;
+                    if ends.iter().all(Option::is_none) {
+                        edge.lane_tapers = None;
+                    }
+                }
+            }
+            graph.set_node_type(node, NodeType::Junction);
+            dirty.extend(ids.iter().copied());
+        }
         if ids.len() != 2
             || graph
                 .node_adjacency(node)
@@ -650,11 +672,12 @@ pub(crate) fn stroke_splits_pocket(graph: &RegionGraph, points: &[Vector3], leve
             // must not attach a third arm to a protected pocket transition on either layer.
             for point in [points[0], *points.last().unwrap()] {
                 for node in [edge.start_node, edge.end_node] {
-                    if matches!(
-                        graph.node(node).node_type,
-                        NodeType::LaneTransition | NodeType::Ramp
-                    ) && point.distance_to(graph.node(node).pos) < 0.2
-                    {
+                    let protected = graph.node(node).node_type == NodeType::Ramp
+                        || (graph.node(node).node_type == NodeType::LaneTransition
+                            && graph.node_adjacency(node).iter().any(|&id| {
+                                !graph.edge(id).deleted && graph.edge(id).pocket_taper().is_some()
+                            }));
+                    if protected && point.distance_to(graph.node(node).pos) < 0.2 {
                         conflict = true;
                     }
                 }
@@ -786,6 +809,59 @@ mod tests {
             PocketLayout::prepare(&graph, request),
             Err("pocket_overlaps_transition")
         ));
+    }
+
+    #[test]
+    fn third_arm_promotes_an_ordinary_transition_and_preserves_remote_tapers() {
+        use std::collections::HashSet;
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        for (x, median) in [(-100.0, 3.0), (100.0, 5.0)] {
+            let p = Vector3::new(x, 0.0, 0.0);
+            let end = graph.add_node(p, NodeType::Junction);
+            graph.add_edge(Edge {
+                start_node: center,
+                end_node: end,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                width: 7.0 + median,
+                median: super::super::graph::RoadMedian::from_tool(2, median).unwrap(),
+                geometry: vec![Vector3::ZERO, p],
+                physical_geometry: vec![Vector3::ZERO, p],
+                physical_length: 100.0,
+                ..Default::default()
+            });
+        }
+        let mut dirty = HashSet::new();
+        author_lane_count_transitions(&mut graph, &HashSet::from([center]), &mut dirty);
+        assert_eq!(graph.node(center).node_type, NodeType::LaneTransition);
+        let taper = graph.edge(1).lane_tapers.as_ref().unwrap()[0].unwrap();
+        graph.edge_mut(1).lane_tapers.as_mut().unwrap()[1] = Some(taper);
+        let branch = [Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)];
+        assert!(!stroke_splits_pocket(&graph, &branch, 0));
+        let end = graph.add_node(branch[1], NodeType::Junction);
+        let mut arm = graph.edge(0).clone();
+        arm.end_node = end;
+        arm.geometry = branch.to_vec();
+        arm.physical_geometry = branch.to_vec();
+        graph.add_edge(arm);
+        author_lane_count_transitions(&mut graph, &HashSet::from([center]), &mut dirty);
+        assert_eq!(graph.node(center).node_type, NodeType::Junction);
+        assert_eq!(
+            graph.edge(1).lane_tapers.as_deref(),
+            Some(&[None, Some(taper)])
+        );
+        assert_eq!(dirty, HashSet::from([0, 1, 2]));
+        assert_eq!((graph.edge(0).width, graph.edge(1).width), (10.0, 12.0));
+        // An authored pocket still refuses the same attachment.
+        graph.set_node_type(center, NodeType::LaneTransition);
+        graph.edge_mut(1).lane_tapers.as_mut().unwrap()[0] = Some(RoadLaneTaper {
+            left_pocket: true,
+            ..taper
+        });
+        assert!(stroke_splits_pocket(&graph, &branch, 0));
     }
 
     #[test]
