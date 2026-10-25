@@ -110,6 +110,17 @@ func _run() -> void:
 		_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
 		if not _roundabout_completion_known():
 			return
+	# A resumed import may use a corrected compiler. Retry only refused source rings,
+	# with the same measured product and normal acknowledged replacement API.
+	for i in _results.get("roundabouts", []).size():
+		var previous: Dictionary = _results["roundabouts"][i]
+		if previous.get("committed", false):
+			continue
+		var retry: Array = await Features.roundabouts(simulation, self, [plan["roundabouts"][i]])
+		retry[0]["previous_attempt"] = previous
+		_results["roundabouts"][i] = retry[0]
+		if not _roundabout_completion_known():
+			return
 	for record in _results["roads"]:
 		_finish_record(record)
 		accepted[record["id"]] = record["accepted_length_m"] > 0.0
@@ -432,6 +443,7 @@ func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dicti
 	return reason
 
 func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
+	Features.acknowledge_headless_render(simulation)
 	var points := PackedVector3Array()
 	for p in attempt["points"]:
 		points.append(Vector3(p[0], p[1], p[2]))
@@ -467,6 +479,7 @@ func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
 	while true:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:
+			Features.acknowledge_headless_render(simulation)
 			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed")), "detail": result.get("detail", ""), "metrics": simulation.get_road_benchmark_state()["command"]}
 		if Time.get_ticks_msec() >= deadline:
 			return {"by": "commit", "reason": "replay_timeout"}

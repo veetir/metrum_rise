@@ -4,11 +4,18 @@
 ## Preparation owns source interpretation; this bridge records every unsupported or refused product.
 extends RefCounted
 
+static func acknowledge_headless_render(simulation: Node) -> void:
+	# No renderer consumes this offline bridge's published CPU products. Clear only
+	# the exact publication backlog; validation and cached meshes remain intact.
+	# Leaving full_replace pending rebuilds the whole city after every source road.
+	simulation.acknowledge_network_render(simulation.get_network_render_generation())
+
 static func finish(simulation: Node, tree: SceneTree, request: int) -> Dictionary:
 	var deadline := Time.get_ticks_msec() + 120000
 	while Time.get_ticks_msec() < deadline:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:
+			acknowledge_headless_render(simulation)
 			return result
 		await tree.process_frame
 	return {"committed": false, "reason": "feature_acknowledgement_timeout", "unknown_completion": true}

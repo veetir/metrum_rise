@@ -17,6 +17,8 @@ func run() -> void:
 		"centre_xz": [0, 0], "diameter_m": 28.675, "source_ids": ["osm/test/ring"],
 		"source_lanes": 1, "remaining": ""}])
 	expect(result.size() == 1 and result[0].get("committed", false), "Imported ring commits at measured source size: " + str(result))
+	expect(not simulation.get_road_mesh_data(false).get("full_replace", true), "Offline consumer acknowledges the exact completed publication")
+	expect(not simulation.get_road_mesh_data(true).get("chunks", []).is_empty(), "Acknowledgement retains validated CPU meshes for later hydration")
 	var ring_count := 0
 	var snapshot: Dictionary = JSON.parse_string(simulation.get_road_terrain_benchmark_snapshot())
 	for edge: Dictionary in snapshot.edges:

@@ -19,6 +19,7 @@ func _run() -> void:
 		_fail("Patch base failed to load")
 		return
 	simulation.set_simulation_speed(0.0)
+	Features.acknowledge_headless_render(simulation)
 	Engine.max_fps = 120
 	_results = {"actions": [], "saved": false}
 	var actions: Array = []
@@ -96,6 +97,7 @@ func _finish_request(simulation: Node, request: int) -> Dictionary:
 	while Time.get_ticks_msec() < deadline:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:
+			Features.acknowledge_headless_render(simulation)
 			return result
 		await process_frame
 	_fail("Patch acknowledgement timed out")
