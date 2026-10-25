@@ -50,6 +50,18 @@ def infer_carriageway_identities(roads):
             for n in (f['node_ids'][0], f['node_ids'][-1]):
                 for peer in sorted(incidence[n, f['properties']['road_class']]):
                     g = candidates[peer]
+                    fn = f['node_ids'][::f['properties']['oneway']]
+                    gn = g['node_ids'][::g['properties']['oneway']]
+                    if not ((fn[-1] == n == gn[0]) or (gn[-1] == n == fn[0])):
+                        continue
+                    fp = f['points'][::f['properties']['oneway']]
+                    gp = g['points'][::g['properties']['oneway']]
+                    fa = fp[-2:] if fn[-1] == n else fp[:2]
+                    ga = gp[:2] if gn[0] == n else gp[-2:]
+                    u = fa[1][0]-fa[0][0], fa[1][1]-fa[0][1]
+                    v = ga[1][0]-ga[0][0], ga[1][1]-ga[0][1]
+                    if u[0]*v[0]+u[1]*v[1] < .5*math.hypot(*u)*math.hypot(*v):
+                        continue
                     identity = g['properties'].get('name') or g['properties'].get('ref')
                     if identity:
                         identities.add(identity)

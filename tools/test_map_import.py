@@ -183,6 +183,14 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(infer_carriageway_identities(list(map(road, [a, b, c]))), [])
         self.assertFalse(b['properties']['name'])
 
+    def test_carriageway_identity_ignores_a_diverging_named_branch(self):
+        from tools.map_import.medians import infer_carriageway_identities
+        a = feature('a', [(0, 0), (40, 0)], ['a', 'join'], road_class='tertiary', name='Street', oneway=1)
+        b = feature('b', [(40, 0), (80, 0)], ['join', 'b'], road_class='tertiary', oneway=1)
+        branch = feature('branch', [(40, 0), (40, 40)], ['join', 'c'], road_class='tertiary', name='Other', oneway=1)
+        self.assertEqual(infer_carriageway_identities(list(map(road, [a, b, branch])))[0]['identity'], 'Street')
+        self.assertEqual(b['properties']['name'], 'Street')
+
     def test_untagged_motor_faces_are_detected_without_source_ids(self):
         from tools.map_import.roundabouts import detect_roundabouts
         for split in (False, True):
