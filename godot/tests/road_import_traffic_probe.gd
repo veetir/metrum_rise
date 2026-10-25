@@ -2,6 +2,7 @@
 
 ## Read-only full-import routing and movement probe through the production vehicle API.
 ## The source save is never written; debug cars exist only in this diagnostic session.
+## METRUM_IMPORT_PROBE_TRIP_FILE optionally adds source-derived trips with XYZ arrays.
 extends "res://tests/road_import_capture.gd"
 
 func run() -> void:
@@ -24,6 +25,21 @@ func run() -> void:
 		{"name": "east_roundabout", "from": Vector3(706.277, 0, 1057.233), "to": Vector3(891.704, 0, 1199.944), "via": Vector3(745.712, 0, 1079.876)},
 		{"name": "prisma", "from": Vector3(-1097.711, 0, 1831.148), "to": Vector3(-983.664, 0, 1792.277), "via": Vector3(-999.179, 0, 1829.554)},
 		{"name": "niirala", "from": Vector3(113.804, 0, 1503.513), "to": Vector3(231.267, 0, 1614.881), "via": Vector3(176.207, 0, 1548.486)}]
+	var trip_file := OS.get_environment("METRUM_IMPORT_PROBE_TRIP_FILE")
+	if not trip_file.is_empty():
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(trip_file))
+		if not parsed is Array:
+			expect(false, "Trip manifest must contain an array")
+			simulation.queue_free()
+			await process_frame
+			quit(failures)
+			return
+		for entry: Dictionary in parsed:
+			var trip: Dictionary = entry.duplicate(true)
+			for key in ["from", "to", "via"]:
+				var xyz: Array = trip[key]
+				trip[key] = Vector3(xyz[0], xyz[1], xyz[2])
+			trips.append(trip)
 	for trip in trips:
 		trip.id = simulation.spawn_debug_car(trip.from, trip.to)
 		trip.position = trip.from
