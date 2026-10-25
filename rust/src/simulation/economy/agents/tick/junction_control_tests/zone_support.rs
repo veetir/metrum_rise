@@ -8,11 +8,23 @@ use crate::simulation::economy::agents::TRANSIT_INTERSECTION;
 
 /// Advances a generated fleet, asserting pair-zone exclusion including outgoing body tails.
 pub(super) fn drain(
+    agents: AgentSystem,
+    network: TransitNetwork,
+    graph: RegionGraph,
+    targets: &[usize],
+    workers: usize,
+) -> Vec<(usize, u32, u32, u8)> {
+    drain_step(agents, network, graph, targets, workers, 0.05)
+}
+
+/// Exercises the same exclusion oracle at an explicit supported simulation time step.
+pub(super) fn drain_step(
     mut agents: AgentSystem,
     mut network: TransitNetwork,
     mut graph: RegionGraph,
     targets: &[usize],
     workers: usize,
+    delta: f32,
 ) -> Vec<(usize, u32, u32, u8)> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
@@ -21,6 +33,7 @@ pub(super) fn drain(
     pool.install(|| {
         let count = targets.len();
         let mut previous = vec![usize::MAX; count];
+        let mut previous_distance = vec![0.0; count];
         let mut tail = vec![usize::MAX; count];
         let mut reached = vec![false; count];
         for _ in 0..4096 {
@@ -32,7 +45,8 @@ pub(super) fn drain(
         nodes.sort_unstable();
         for step in 0..4000 {
             previous.copy_from_slice(&agents.current_lane_id[..count]);
-            agents.tick(&allocator, &mut network, &mut graph, 0.05, &time);
+            previous_distance.copy_from_slice(&agents.lane_distance[..count]);
+            agents.tick(&allocator, &mut network, &mut graph, delta, &time);
             for i in 0..count {
                 let old = previous[i];
                 if old < network.lane_system.lanes.len()
@@ -60,13 +74,13 @@ pub(super) fn drain(
                         let d = if agents.current_lane_id[i] == connector
                             && agents.transit[i] == TRANSIT_INTERSECTION
                         {
-                            agents.lane_distance[i]
+                            f64::from(agents.lane_distance[i])
                         } else if tail[i] == connector {
-                            network.lane_system.lanes[connector].length + agents.lane_distance[i]
+                            f64::from(network.lane_system.lanes[connector].length) + f64::from(agents.lane_distance[i])
                         } else {
                             return false;
                         };
-                        d > begin && d - CAR_LENGTH < end
+                        d > f64::from(begin) && d - f64::from(CAR_LENGTH) < f64::from(end)
                     };
                     for a in 0..count {
                         if !occupies(a, zone.a, zone.movement.enter, zone.movement.exit) {
@@ -81,10 +95,13 @@ pub(super) fn drain(
                                         zone.movement.other_enter,
                                         zone.movement.other_exit
                                     ),
-                                "zone {} at node {node}: cars {a}/{b} overlap at step {step}; a={:?} b={:?} zone={zone:?}",
+                                "zone {} at node {node}: cars {a}/{b} overlap at step {step}; a={:?} b={:?} zone={zone:?}; before_a={:?} before_b={:?}; reservation={}",
                                 zone.movement.id,
                                 (agents.current_lane_id[a], agents.lane_distance[a], tail[a]),
-                                (agents.current_lane_id[b], agents.lane_distance[b], tail[b])
+                                (agents.current_lane_id[b], agents.lane_distance[b], tail[b]),
+                                (previous[a], previous_distance[a]),
+                                (previous[b], previous_distance[b]),
+                                agents.junction_admission.zone_diagnostic(zone.a, &network)
                             );
                         }
                     }
