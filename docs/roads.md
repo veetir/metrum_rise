@@ -192,7 +192,7 @@ original 88133881 build; they were not repeated for this load-only migration.
 The approved [TRAFFIC-09 redesign](traffic.md#upstream-integration-acceptance--traffic-09)
 now compiles paired overlap zones per junction and reserves them per vehicle until tail
 clearance, alongside complete downstream storage promises. Ordered border holds prevent
-first-lane overfill. The existing road-priority and stop rules remain unchanged. The fresh
+first-lane overfill. The existing road-priority and stop rules remain unchanged. The prior-session
 release library suite passes **2,863 tests, zero failures, 166 ignored** (277.00 s); the agent
 group passes 162 and save group 64. The previous migration-only numbers above retain their
 original build identity. New busy-junction captures, bridge results and matched benchmarks
@@ -201,10 +201,13 @@ are recorded with the new model's acceptance below and in `traffic.md`.
 The unchanged initial-world 48-hour regression now passes and fails on unchanged pre-merge
 production behavior, but **TRAFFIC-09 remains open**. A day-14 continuation exposes six full
 road lanes containing 344 cars in circular downstream-storage wait, with clear crossings
-and no zone bookings. A closed road queue consuming its final transferable
-storage is not by itself evidence of faulty reservations. The bounded follow-up audits
-artificial blockages and measures demand against throughput; relaxing clearance is not a repair. The earlier user-requested design stop was superseded by approval of the local zone
-redesign. The remaining failure and exact reproducible evidence are documented in `traffic.md`.
+and no zone bookings. A closed road queue consuming its final transferable storage is not
+by itself evidence of faulty reservations. The completed bounded follow-up finds no additional
+permanent artificial blockage. An unchanged replay records 153,923 city connector exits,
+with the loop filling from 239 to 344 cars; controlled excess demand drains when arrivals
+stop. Signals or larger roads address genuine capacity saturation. The earlier requested
+design stop was superseded by approval of the zone redesign. The evidence and remaining
+integration-contract failures are documented in `traffic.md`.
 
 Reproduce the save checks with `cargo test --release --lib simulation::save -- --test-threads=8`
 and `cargo clippy --all-targets` from `rust`, and
@@ -317,6 +320,31 @@ The native inventory and per-script outcomes are retained locally in `$ARTIFACTS
 script uses an isolated profile. Asset/pack suites use `-- --asset-editor`, as in `run.sh`.
 Two unchanged NumPy-dependent vegetation tooling modules could not import on this host;
 the native vegetation bridge suites ran. No engine patches or dependencies were added.
+
+#### TRAFFIC-09 bounded takeover check — 2026-10-25
+
+The bounded spillback audit adds only test instrumentation (`980b6074`), with no production
+movement, geometry or rendering change after `50e0b60d`. Fresh correctness passes 2,863 library
+cases (168 ignored), 162 agent cases, 64 save cases, the original matched-world regression,
+the two new manual diagnostics and all-target Clippy. Ten isolated road/traffic bridges pass
+individually, including control, roundabouts, ramps, pockets/legacy pockets, turn lanes,
+trajectory, cross-section, grade separation and junction preview. The retained production
+DLL is byte-identical to the library used for the prior probes (`286e2969d4107005…`).
+
+The final full contracts still fail five upstream and two model work gates, with different
+resulting workloads; baseline 10k/30k hour means are 1.164/4.177 ms upstream and
+2.463/7.042 ms for zones. All absolute limits pass. The six PERF-06 work dictionaries match,
+but single-pair timings are mixed, including 30k ingress 0.624→0.909 ms. Full numbers,
+fixture differences and commands are owned by [traffic.md](traffic.md#takeover-full-contract-rerun--2026-10-25).
+No additional road/locality or six-tier frame-budget matrix is run for test/documentation changes.
+
+Fresh windowed `traffic09_capture.gd` output is inspected: KYS before/busy overhead and street,
+plus day-14 city overhead and two street frames at `(200, 0, -850)`. KYS is compared with
+`user-2026-10-21/kys-1.png` and the prior capture. Moving KYS traffic and the city's full queues
+are visible; city car 4960 is stationary for 8.81 real seconds. Signals/gantries, mature trees,
+imported bridge detail and the existing mesh/body-length mismatch remain. This is fresh
+visual inspection, not a fresh FPS comparison. All launched Godot processes exit. Source saves
+are untouched; screenshot LFS noise, captures and generated UIDs remain unstaged.
 
 #### TRAFFIC-09 follow-up road measurements — 2026-10-25
 

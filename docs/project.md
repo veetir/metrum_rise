@@ -12,30 +12,36 @@ claims released after tail clearance, complete downstream storage promises and b
 Priority/full stops remain intact. The original 48-hour world improves from 8,225 network
 occupants / 0.098 m/s to 1,176 physical cars / 4.720 m/s plus 1,660 outside holds (2,836 raw
 occupants); plain upstream remains 944 / 9.112. A longer continuation still forms a six-road
-storage cycle of **344 cars**, with clear, unbooked crossings and no downstream space. A
-bounded follow-up audit will distinguish artificial blockages from realistic junction saturation;
-no clearance or collision check is bypassed
+storage cycle of **344 cars**, with clear, unbooked crossings and no downstream space. The
+bounded audit finds no further permanent reservation fault: the loop is real storage saturation.
+A fixed offered stream supplies 240 cars in 120 movement seconds against 99 straight / 60
+left-turn completions; both finite queues drain when arrivals stop. Signals or bigger roads
+address excess demand; no clearance or collision check is bypassed
 ([model, evidence and audit scope](traffic.md#upstream-integration-acceptance--traffic-09)).
 
-Prior-session coverage passes 2,863 library cases, all four growth integrations and 59 of 65 Godot
-suites; the same six Mac asset/rendering failures remain. All road bridges, including the
-university legacy bridge, pass. All five user-save copies preserve exact pre-merge road/topology
-fingerprints and round-trip in **v109**; real upstream v59/v107 copies round-trip too, with
+Fresh takeover coverage passes 2,863 library cases (168 ignored), the 162 agent and 64 save
+cases, the fresh matched-world regression and ten isolated road/traffic bridges, with clean
+all-target Clippy. The prior session passed all four growth integrations and 59 of 65 Godot
+suites, including every road bridge and the university legacy bridge;
+the same six Mac asset/rendering failures remain historical, not rerun here. Prior proofs
+for all five user-save copies preserve exact pre-merge road/topology fingerprints and round-trip
+in **v109**; real upstream v59/v107 copies round-trip too, with
 unchanged original hashes. The explicit history matrix now covers 54 historical schemas.
 Version 109 persists the tail's source connector instead of guessing it at shared exits.
 
-Both complete economy contracts still fail work-scaling gates (upstream five in 76.50 s,
-merged two in 97.22 s), while absolute limits pass. Warm-up employment/traffic diverges, so
-nominal-tier hour means do not establish equal-work performance. Five alternating PERF-06
-pairs have identical work dictionaries; 30k medians increase about 2–4%. Road locality products
+The final serial full-contract pair still fails work-scaling gates (upstream five in 78.98 s,
+model two in 99.44 s), while absolute limits pass. Baseline 10k/30k hour means are
+1.164/4.177 ms upstream versus 2.463/7.042 ms with zones. Warm-up employment/traffic diverges, so
+nominal-tier hour means do not establish equal-work performance. The final PERF-06 pair has
+identical work dictionaries but mixed timings; the 30k ingress row is 0.624→0.909 ms. Earlier five-pair medians remain historical. Road locality products
 remain identical, with a measured ramp-preview constant increase from 28.0 to 30.1 ms. The
 old PERF-07 matrix remains historical and unaccepted, not validation of this model
-([fresh performance checks](traffic.md#fresh-release-acceptance-checks-for-the-zone-model)).
+([final performance checks](traffic.md#takeover-full-contract-rerun--2026-10-25)).
 
-Fresh zoning-visible captures match the pre-merge harness: Prisma 81.97→81.72 fps, KYS
-39.86→38.02, sweep 33.22→32.17. Live KYS and 10k street/overhead captures are inspected;
-they show moving cars and substantial queues, plus the existing vehicle mesh/body-length
-mismatch. Signals/gantries, mature trees and imported bridge/paint discrepancies remain.
+Prior-session zoning-visible captures match the pre-merge harness: Prisma 81.97→81.72 fps, KYS
+39.86→38.02, sweep 33.22→32.17. Fresh KYS and saturated day-14 street/overhead captures are
+inspected against `kys-1.png`: moving KYS cars and stationary city queues, plus the existing
+vehicle mesh/body-length mismatch. Signals/gantries, mature trees and imported bridge/paint discrepancies remain.
 The [integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records
 save proofs, captures, baseline decisions and preserved upstream IDs. Pocket frontage journals
 and owned-pool road/preview entry fixes remain in place. Earlier counts below describe their

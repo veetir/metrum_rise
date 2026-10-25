@@ -27,12 +27,12 @@ Implementation lives mainly in:
 
 #### Conflict-zone implementation and spillback audit — 2026-10-25
 
-The approved local reservation redesign is implemented. This does **not** close TRAFFIC-09:
-the original 48-hour world now drains, but a longer continuation develops a closed loop of
-full road lanes. The remaining audit must distinguish artificial blockage from genuine demand
-exceeding the capacity of these 1+1 yield-controlled junctions; upstream flow parity is not
-the acceptance criterion.
-No right-of-way, collision, entry or performance threshold was weakened.
+The approved reservation redesign and bounded spillback audit are complete. The original
+48-hour world drains; a longer continuation saturates its road storage. The follow-up found
+no additional permanent artificial blockage to fix. TRAFFIC-09 remains open for integration
+and performance-contract agreement, **not** for a mandatory network-wide admission redesign
+or unsafe upstream flow parity. No right-of-way, collision, entry or performance threshold
+was weakened.
 
 **Compiled authority.** Each conflicting connector pair owns one resource per connected
 component of its swept-path overlap. Fractional segment/capsule clipping gives entry/exit
@@ -83,7 +83,7 @@ vehicle-loop allocation. Geometry compilation costs O(C²·P²) time and O(P²) 
 P sampled segments. The local DFS is an explicit correctness cost beyond the former coarse
 O(conflict degree) gate; equal-work PERF-06 measurements below bound its measured impact.
 
-**Prior-session safety evidence (inspected, not rerun in this takeover).** The agent group passes 162 tests and the save group 64. Independent
+**Safety evidence.** The takeover reruns the agent group (162 pass) and save group (64 pass). Independent
 body/tail assertions observe actual lane transitions, rather than trusting reservation owners.
 Finite all-yield, opposing-left, short-link, roundabout, ramp, pocket and bus-lane fleets drain
 without overlapping opposing pair zones, with identical one/eight-worker results. Additional
@@ -94,7 +94,9 @@ coverage, not a proof against arbitrary saturated road-network cycles.
 
 **Unchanged common initial world, 48 hours.** New zone reservations end with 6,891 employed,
 2,836 raw network occupants, raw car speed 1.957435 m/s, 1,176 physical network cars at
-4.720480 m/s and 1,660 outside holds; non-midnight hour mean in the final replay is 0.430580 ms. The upgraded
+4.720480 m/s and 1,660 outside holds. The fresh takeover regression exactly reproduces these
+counts/speeds and passes in 7.58 s; its non-midnight hour mean is **0.417170 ms** (the prior
+replay measured 0.430580 ms). The upgraded
 regression fails on unchanged `0cc4a2ab` production behavior: 8,225 raw occupants, 8,208
 physical cars and 0.097857 m/s. Its newly generated initial agents and saved-lane rows match
 the preserved original exactly. Passing the regression means drainage, at least the game's
@@ -108,7 +110,7 @@ why outside holds explain part of the raw-count difference, but cannot explain t
 physical traffic under safe junction rules. This build is a causal control, not plain
 upstream acceptance or a production alternative.
 
-**Remaining failure with evidence.** The new default day-12 10k snapshot has 2,649 rows with
+**Saturated continuation, reproduced in the takeover.** The new default day-12 10k snapshot has 2,649 rows with
 workplaces, 7,065 raw network occupants and raw car speed 0.561691 m/s (5,768 physical cars,
 1,269 holds). A diagnostic continuation to day 14 reaches 8,120 raw occupants, 6,461 physical
 cars at 0.285067 m/s and fails the same progress assertion. It contains the directed lane
@@ -123,15 +125,206 @@ an occupied junction or a conflict-zone ownership cycle. The unchanged upstream-
 control remains employed at 7,202 on day 12, with 2,644 raw occupants, 1,212 physical cars,
 1,417 holds and raw car speed 3.035606 m/s.
 
-These observations establish full downstream storage, not the cause of its accumulation.
-The follow-up is bounded to one five-hour window and looks for true blockages: unreleased
-claims or holds, missed wait cycles, faulty platoon-owner transfers, clear-zone starvation
-and legally permitted moves that fail to proceed. Each confirmed fault needs a root fix
-and regression. Genuine saturation must instead be documented with offered demand and
-measured junction throughput; signals or larger roads are the realistic capacity answer.
-No network-wide admission redesign is required merely to reproduce unsafe upstream flow.
-No clearance, priority, fixture or trip/job deletion workaround is shipped. TRAFFIC-09 stays
-open pending that audit and the requested final performance-contract rerun.
+#### Bounded spillback audit and measured demand — 2026-10-25
+
+The takeover adds test-only observations in `traffic09/spillback.rs` and an isolated offered-stream
+measurement in `junction_control_tests/zone_cycles.rs` (`980b6074`). Production movement is
+unchanged from `50e0b60d`. Stable handles track cars across swap-removes, and every lane
+asserts `initial + arrivals = departures + final`. Handle/transition accounting is O(A log A) per frame; rare diagnostic captures and final
+occupancy export deliberately scan test collections. All observers and allocating JSON
+diagnostics are absent from gameplay and are not used for performance timings.
+
+The saved day-12 world advances 48 hours / **2,880 movement seconds** with exactly the earlier
+six-hour traffic/employment checkpoints and day-14 result. The city completes **153,923
+connector exits**. The six loop roads start with **239** cars, receive 1,793 lane arrivals and
+have 1,688 lane departures, ending at **344**. Their six requested connectors admit
+**414 / 431 / 196 / 0** cars in successive 12-hour windows; all are empty and unbooked at
+the final full-loop state. Arrivals/departures include frontage handoffs, not just junctions.
+
+The audit follows all ten connector stops exceeding 30 movement seconds. Each sampled
+head is waiting for an actual conflicting stream it must yield to; the conflicting owners
+change and continue to move. The longest connector stop is **79.47 s**, then releases.
+No permanently retained booking, platoon-transfer fault or hidden local reservation cycle
+was found. Snapshot-granted, physically clear heads with unbooked exit capacity have at most
+**4.27 s** of consecutive stationary observations, not a permanent clear-zone hold; same-tick
+claims are still authoritative. Outside holds have 6,004 arrivals and 5,638 departures,
+growing 1,269→1,635; they resume through the normal entry path rather than starving a free
+network. This is bounded trace evidence, not a proof for arbitrary road graphs.
+
+A separate trace builds the unchanged default 10k recipe, then observes 216 hours from
+day 3 08:00 to day 12 08:00. Its midnight checkpoint at hour **208** exactly reproduces
+5,768 physical cars at 0.685267 m/s and 1,269 holds. No input density, treasury, fixture,
+priority or clearance setting is changed. That diagnostic is distinct from the preserved
+1e15-treasury common-initial-world regression and from the snapshot-backed timing contract.
+
+For the actual day-12→14 replay, count each active network car's remaining intermediate
+route nodes from `current_path_index`, including outside holds. Net offered traversal work
+is measured entries plus the change in these pending requests (so route changes/cancellations
+are netted). These are outstanding route requests, including cars that have not reached the
+approach, **not** measured stop-line arrival rates or free-exit junction capacities:
+
+| Junction node | Pending requests, start→end | Net offered traversals | Measured connector entries |
+| --- | ---: | ---: | ---: |
+| 20, feeding the grid | 1,103→1,413 | 2,131 | 1,821 |
+| 125, loop junction | 134→157 | 283 | 260 |
+| 126, loop junction | 1,182→1,210 | 278 | 250 |
+| 127, loop junction | 1,568→1,571 | 325 | 322 |
+| 166, loop junction | 3→7 | 1,333 | 1,329 |
+| 167, loop junction | 989→965 | 1,281 | 1,305 |
+| 168, loop junction | 1,027→1,000 | 1,291 | 1,318 |
+
+The isolated four-arm, equal-road, 1+1 fixture offers one car per arm every two movement
+seconds, with normal outside entry holds. Absorbing outputs beyond complete tail clearance
+remove downstream congestion **only in this subsystem measurement**. The actual city and
+contract fixtures are untouched. Over the first 120 movement seconds, 240 cars are offered:
+
+| All four approaches | Offered | Junction entries | Completed exits | Still pending | All 240 complete by |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Straight movements | 240 | 105 | 99 | 141 | 269.87 s |
+| Left turns | 240 | 65 | 60 | 180 | 432.00 s |
+
+That is **7,200 offered vs 2,970 / 1,800 completed per 3,600 movement seconds** in the
+observed initial window, not a claim of maximum steady-state capacity or real Finnish field
+capacity. These seconds are the clock-scaled physics step, not wall time or authored hours
+(the city recipe has 1,440 movement seconds per authored day). Finite excess demand drains
+after its source stops, with all priority, full-stop, zone and storage rules retained.
+
+The confirmed artificial defects fixed by the committed redesign are coarse whole-connector
+exclusion, vehicle/platoon wait ownership and tail identity, and first-lane border overfill.
+The remaining full-road loop has no legal tail-clearing transfer along its requested routes.
+This is genuine saturation under fixed routes. Signals or larger roads are the real-world
+capacity response before gridlock; signals cannot create missing exit storage in an already
+full closed loop. Congestion-aware detours are separate future routing work. No arbitrary
+spare-slot rule, whole-city admission graph, trip/job deletion or relaxed box clearance is
+introduced merely to match upstream's less restrictive junction flow.
+
+Reproduce with the release test binary, `METRUM_DEBUG=0`, eight Rayon workers:
+
+```sh
+METRUM_TRAFFIC09_INPUT="$ARTIFACTS/day12.sqlite" \
+METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/spillback" "$TEST_BINARY" \
+  nodes::sim::core::populated_city::traffic09::spillback::audit_saved_spillback \
+  --exact --ignored --nocapture --test-threads=1
+METRUM_TRAFFIC09_HOURS=216 METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/default-trace" \
+  "$TEST_BINARY" nodes::sim::core::populated_city::traffic09::spillback::audit_saved_spillback \
+  --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" \
+  simulation::economy::agents::tick::junction_control_tests::zone_cycles::queued_yield_junction_throughput \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Unset `METRUM_TRAFFIC09_INPUT` for the fresh default trace. Observers write task-owned
+snapshots and JSON; source saves are opened by the normal read-only loader. No new gameplay
+hot-path code, allocation or spatial structure is added by the takeover.
+
+#### Takeover full-contract rerun — 2026-10-25
+
+One final full upstream/model pair was run serially, unprofiled, with eight Rayon workers,
+`METRUM_DEBUG=0`, Apple M2 Pro and the compatible macOS 26.5 SDK. No other build, test or
+Godot ran during either contract. Upstream is the retained `b75e03c9` executable SHA-256
+`c406e5be621f4bea…`; the model test binary at `980b6074` is `8e2418a78e8e3a75…`.
+Only test instrumentation and documentation changed after the production model `50e0b60d`.
+Each invocation includes all default phases, the complete baseline/fiscal next days,
+locality gates and all six PERF-06 modes, with freshly generated default fixtures:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 ./run.sh --perf-contract \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/upstream-contract"
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 ./run.sh --perf-contract \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/model-contract"
+```
+
+Select the corresponding retained executable for each command. Tool `git_head` identifies
+the orchestration checkout, not the archived upstream binary's source.
+
+Both contracts still **fail**, upstream in **78.98 s** with the same five work-count gates,
+model in **99.44 s** with the same two. Upstream failures are baseline buyer sites
+10→369, staffing trials 49,289→231,170 and job-search keys 64→15,448, plus fiscal buyer sites
+716→2,764 and CCH searches 6,771→26,851, against 3.4283×. Model failures are baseline supplier
+searches 14,614→53,548 and supplier routes 177,611→741,463, against 3.5442×.
+All absolute hour/day timing limits, locality gates and fiscal churn checks pass.
+No gate or workload was weakened to manufacture acceptance.
+
+| Complete next-day hour mean, ms | Plain upstream | Zone model |
+| --- | ---: | ---: |
+| Baseline 10k | 1.163902 | 2.462754 |
+| Baseline 30k | 4.177447 | 7.042008 |
+| Fiscal stress 10k | 7.088239 | 12.382824 |
+| Fiscal stress 30k | 29.621661 | 38.877199 |
+
+These are **different resulting workloads**, not equal-work timing acceptance. Both retain
+the corrected 1e10 treasury and ordinary densities/roads, but their warm-ups produce:
+
+| Tier / build | Employed | Raw network occupants | Physical network cars | Outside cars | Physical car speed, m/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10k upstream | 7,186 | 2,481 | 2,443 | 17 | 4.988378 |
+| 10k model | 2,621 | 7,065 | 5,768 | 1,269 | 0.685267 |
+| 30k upstream | 16,715 | 7,951 | 7,680 | 227 | 3.372985 |
+| 30k model | 5,186 | 22,467 | 18,601 | 3,838 | 0.434326 |
+
+Employment is the production diagnostic, not merely a non-null workplace column. Final
+baseline employment is 7,179/3,040 at 10k and 16,674/5,191 at 30k (upstream/model); fiscal
+final employment is 67/67 and 201/245. These reproduce the earlier workload differences.
+Separate one-time baseline setup is **32.47→54.96 s** / **100.61→179.69 s** at 10k/30k;
+fiscal preparation is **13.38→24.05 s** / **40.14→77.89 s**. Exact saved/straight-through
+continuation checks pass for all four new fixtures. Setup is excluded from timed contract costs.
+
+All six corresponding PERF-06 work dictionaries match exactly. This final invocation's
+per-tick ms are single observations, not the earlier five-pair medians:
+
+| Mode | Agents | Upstream | Zone model |
+| --- | ---: | ---: | ---: |
+| Network | 10k | 0.527917 | 0.697542 |
+| Network | 30k | 1.017584 | 0.902459 |
+| Access egress | 10k | 0.950083 | 0.656833 |
+| Access egress | 30k | 1.654584 | 1.794125 |
+| Access ingress | 10k | 0.466875 | 0.471875 |
+| Access ingress | 30k | 0.623667 | 0.909084 |
+
+The 10k network and 30k ingress rows increase 32.1% and 45.8%; other rows move in both
+directions. This one pair neither establishes a speedup nor resolves timing significance.
+These long-road fixtures do not exercise occupied zone DFS. The earlier repeated results
+below retain their original build identity; they do not replace this final observation.
+Integration remains unaccepted while the work gates and realistic-traffic contract are
+resolved with upstream. Safe road saturation is not a reason to bypass yield rules.
+
+Fresh correctness checks at this code checkpoint pass **2,863 library tests, 168 ignored**
+(280.06 s), the 162-agent and 64-save groups, and clean all-target Clippy. The two new ignored
+manual diagnostics were run explicitly and pass. Build and verification commands from the
+repository root (`SDKROOT` selects the installed MacOSX26.5 SDK on this host):
+
+```sh
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" --test-threads=8
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+```
+
+Ten fresh isolated Godot bridges pass individually: `road_junction_control_test`,
+`road_roundabouts_test`, `road_ramps_test`, `road_pockets_test`, `road_pockets_legacy_test`,
+`road_turn_lanes_test`, `road_trajectory_test`, `road_cross_section_test`,
+`road_grade_separation_test` and `road_junction_preview_test`. Each uses:
+
+```sh
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" \
+  --script res://tests/<name>.gd
+```
+
+The unchanged production DLL is SHA-256 `286e2969d4107005…`; test-only additions do not
+require replacing it. The 65-suite Mac inventory, four growth integrations, five-user-save
+fingerprints and FPS comparisons remain prior-session evidence, not newly repeated matrices.
+
+Fresh windowed Godot 4.7.2 / Metal captures use the existing `traffic09_capture.gd`, a read-only
+KYS copy and this audit's **day-14** snapshot, with `METRUM_TRAFFIC09_CITY_PIVOT=200,0,-850`.
+All six PNGs are inspected: KYS before/busy overhead and busy street, plus city overhead and
+two street frames. The city view shows full lanes with clear junction space; selected car
+4960 stays at `(194.5, 0, -848.25)`, 0 m/s, over **8.81 real seconds**. KYS car 23 moves
+about 15.1 m between samples (13.89→7.69 m/s). The KYS views are compared with
+`user-2026-10-21/kys-1.png` and the prior captures. Missing signals/gantries, mature trees
+and imported bridge detail remain; visible mesh interpenetration still reflects the existing
+2.6 m simulation body versus independently sized vehicle meshes. This follow-up changes
+neither vehicle dimensions nor those import/rendering systems. No fresh FPS acceptance is
+claimed. The capture process exits successfully; every Godot launched for this takeover
+has exited. PNGs, captures, generated UIDs and LFS screenshot noise remain unstaged.
 
 #### Fresh release acceptance checks for the zone model
 
@@ -204,7 +397,8 @@ The 30k observed increases are 3.4%, 1.7% and 3.6%; the 10k network median rises
 Ranges overlap and macOS has no affinity control here, so these short mixed observations
 establish neither a general speedup nor a significant change. PERF-06's long-road fixtures
 have no occupied junction conflicts: they check equal-work dispatch/following/access overhead,
-not worst-case zone DFS. The dense-world failure therefore remains a performance blocker.
+not worst-case zone DFS. The full-city work-scaling gates and integration-contract agreement
+remain open; realistic road saturation is not itself evidence of defective zone arbitration.
 The previously completed PERF-07 matrix remains **historical and unaccepted**, including
 missing macOS run-queue statistics; it was not rerun for this follow-up and is not presented
 as validation of the new model.

@@ -952,7 +952,9 @@ for the original controls and subsequent approved zone redesign. No scheduler,
 production movement rule or budget threshold was weakened. The six-tier frame-budget matrix
 below remains evidence of its original build; it was not repeated for the reader repair or
 the TRAFFIC-09 zone follow-up. Fresh full contracts and repeated PERF-06 results are recorded
-in the traffic specification; the new model still has a separate full-road storage-cycle failure.
+in the traffic specification. The bounded follow-up identifies the full-road storage cycle as
+saturation under fixed routes; it finds no further permanent reservation fault. Integration
+performance-contract agreement remains open.
 The actual migrated-city frame captures are recorded in [roads.md](roads.md#upstream-integration-checkpoint--2026-10-24).
 
 The earlier full-day, unprofiled release runs compare plain upstream `b75e03c9` with merged Rust
