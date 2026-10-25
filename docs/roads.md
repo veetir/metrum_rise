@@ -2035,6 +2035,99 @@ Cursor compilation is synchronous; the approximately 50 ms local preview remains
 responsiveness limit for a future worker integration. General zebra priority remains the
 separate TRAFFIC-08 pedestrian work.
 
+#### Player-pointer preview repair — 2026-10-25
+
+The roundabout tool now uses the existing immutable road-tool cursor query, with neutral
+road-drawing options. The base network picker used a live-core `try_lock` raycast and turned
+a contended result into `(0,0,0)`. It also picked twice each frame. In a windowed flat map
+centred on `(180,160)` and in read-only `kuopio-sw-pockets.sqlite` at node 317
+`(993.806,103.891,1274.964)`, this moved the replacement off screen while the label still
+said **Click to place**. Same-pixel probes showed a missing live-core hit alongside a correct
+immutable-query hit. The scripted-pointer capture skipped that entire failure path.
+
+Picking now happens once per frame; clicks explicitly repick before authorizing placement.
+It reuses the road snapshot's terrain raycast and indexed network lookup, with the same
+spatial complexity and no new index, city scan or agent/tick work. The shared local-layout
+exporter also preserves permanent terrain errors as `surface_geometry_invalid` with their
+original diagnostic `detail`, instead of calling them pending. Node 1123
+`(-951.351,92.667,1284.087)` deterministically reports `terrain_cdt_pathological_output`;
+the player sees **The road surfaces cannot join here. Try another size or location.**
+Genuinely incomplete results clear the hover key for retry without mouse movement. Failed
+resident-patch staging explains that road/terrain patches are still awaited. Both are
+uncommittable. Status classification adds O(1) work; no terrain acceptance rule changes.
+
+`road_roundabouts_test.gd` now exercises O and the toolbar, viewport mouse motion, ground
+placement, junction replacement, stationary reuse, invalid-size feedback and cancellation.
+A local viewport makes mouse events reproducible headlessly. Its legacy surface picker
+returns null deterministically, while the actual Rust snapshot query and compiler remain
+live; no scripted world pointer is used for those checks. The original tool fails five
+player-path assertions. A separate one-pending-response probe then uses the real compiler
+at the same stationary point and checks successful recovery.
+
+Fresh verification of `56e16063` on Apple M2 Pro, four Rayon workers, Godot 4.7.2
+(gdext 4.5 API), Metal Forward+, and macOS SDK 26.5:
+
+```sh
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo build --manifest-path rust/Cargo.toml --release
+for bridge in road_roundabouts road_pockets road_ramps road_junction_control \
+  road_junction_preview road_preview_stream network_tool_chunk_renderer; do
+  METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+    godot --headless --path godot --script "res://tests/${bridge}_test.gd"
+done
+```
+
+Results: **2,863 passed, 0 failed, 168 ignored**; release build and Clippy pass with no
+warnings. All seven bridge scripts pass individually. The shared junction/chunk renderer
+fixtures retain their previously documented shutdown leaks (eight/three ObjectDB instances,
+one resource each); no new assertion or script failures occur. The initial library-test
+link used the installed SDK 27 stub format, which this linker rejects; the documented SDK
+26.5 command above completed successfully. Deployed release-library SHA-256:
+`8e95c6a0854bf5534e9b7412e7d1f767d5aeed1b17a3c2bf74f1a2920882f640`.
+
+The ignored local harnesses use the real gameplay scene, InputManager O routing and native
+viewport mouse coordinates, never `set_scripted_pointer`. Desktop automation/screen capture
+was unavailable on this host, so the windowed harness warped/centred the native cursor and
+read the engine framebuffer. An unfocused retry drifted outside the window and was rejected;
+the final focused run passes. At both the flat site and node 317 it records **120/120 visible
+preview frames and zero origin jumps**. Final nonblack captures were inspected in
+`captures/roundabout-preview/`:
+
+| Case | Before | After |
+|------|--------|-------|
+| Flat `(180,160)` | `flat_default_missing_before.png` — label says Click to place, ring displaced off screen | `flat_default_after.png` — ring at the cursor |
+| Kuopio node 317 | `kuopio_junction_317_missing_before.png` — original junction, label says Click to place | `kuopio_junction_317_after.png` — roundabout replacement and correct replacement label |
+| Refused Kuopio node 1123 | `probe-before.json` — native response says Surface Preview Pending | `kuopio_junction_1123_after.png` — actionable surface-geometry refusal |
+
+The read-only node-1123 native probe also passes independently of desktop input. The save's
+SHA-256 remains `f02608e4c74b72690872989c18b5bdb75180e327adb6362caed2dad30edbbd6c`;
+no task save was created. All task Godot instances are closed. Capture/probe commands use
+`$ARTIFACTS` for the local harness directory:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --path godot --windowed --resolution 1440x900 --script "$ARTIFACTS/after.gd"
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+  godot --headless --path godot --script "$ARTIFACTS/refusal_probe.gd"
+```
+
+Comparison with the inspected Finnish references `Haapavesi_roundabout.jpg` and
+`Roundabout_in_Otalampi_Vihti.jpg` confirms the existing visual scope remains incomplete:
+splitter islands, entry paint and decorated centres are absent. Node 317's replacement
+preview also retains a central asphalt remnant, recorded for later ROAD-62 geometry work.
+This repair does not change those products or claim visual parity.
+
+A matched ABBA native hover-frame attempt reused `road_upstream_sync_capture.gd`'s sampler,
+the same release library, paused node-317 view, 1440×900 viewport, four workers, uncapped
+frames and disabled VSync, comparing `bcc167b5`'s tool with `56e16063`. It stalled after the
+first activation and produced no completed timing metrics; **no timing acceptance or speedup
+is claimed**. Its local command was the same windowed command above with
+`$ARTIFACTS/frame_benchmark.gd`. Simulation tick and road compilation/locality benchmarks
+were not rerun: their algorithms and inputs are unchanged. The repair changes picking/status
+publication only; the first-slice performance evidence below remains historical.
+
 #### First-slice verification — 2026-10-21
 
 Fresh release validation uses baseline `9eec50ea092c66a5ee80abfc0e370fdb8e75b28f`

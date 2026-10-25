@@ -635,6 +635,10 @@ loads six uneven arms with 36 cars taking the long path around the ring and veri
 and bit-identical final edge/distance/speed results with one and four Rayon workers. This
 fixture has open exits; it does not promise flow through physically blocked downstream roads.
 
+The 2026-10-25 [player-pointer preview repair](roads.md#player-pointer-preview-repair--2026-10-25)
+changes only tool picking and preview status; circulation priority, trajectories, occupancy
+and tick complexity are unchanged.
+
 Geometry/tool contracts, first-slice limits and fresh acceptance evidence live in
 [ROAD-62](roads.md#single-lane-roundabout-authoring--road-62-first-slice). Two-lane destination
 lane choice, spiral exits and pedestrian crossing priority remain pending.

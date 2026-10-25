@@ -101,10 +101,13 @@ planning remain local.
 
 ROAD-62 has a first single-lane authoring slice: O activates 3–6-arm presets or replacement of
 an ordinary junction, with paired geometry/terrain/prop previews, one-step undo and persisted
-circulating priority. Compact presets, splitter islands, yield paint, tree/art presets,
-two-lane spiral rules and OSM way mapping remain open. Fresh 2,619-test release library,
-all-target Clippy and fourteen individual road bridges pass; populated planning retains
-identical local products through 100,000 background buildings. Synchronous previews still
+circulating priority. The 2026-10-25 preview repair removes cursor jumps to the world origin
+under simulation-lock contention, retries transient results at a stationary pointer and
+explains permanent terrain refusals. Fresh repair validation: 2,863 library tests, Clippy and
+seven road/traffic bridges pass. Compact presets, splitter islands, yield paint, tree/art
+presets, two-lane spiral rules and OSM way mapping remain open. Historical first-slice
+validation passed 2,619 release tests, Clippy and fourteen road bridges; populated planning
+retained identical local products through 100,000 background buildings. Synchronous previews still
 cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
 
 ROAD-69 has a first restricted ramp-stub authoring slice: the road-menu Ramp tool snaps to a
