@@ -2,6 +2,8 @@
 
 //! Identical-initial-world flow regression and manual diagnostics for TRAFFIC-09.
 
+mod spillback;
+
 use super::*;
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use std::path::Path;

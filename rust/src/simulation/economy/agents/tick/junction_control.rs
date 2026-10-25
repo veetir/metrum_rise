@@ -209,6 +209,28 @@ impl JunctionAdmission {
         serde_json::json!(rows)
     }
 
+    /// Reports clear granted heads after movement for the manual starvation observer.
+    #[cfg(test)]
+    pub(crate) fn audit_ready_heads(&self, network: &TransitNetwork) -> Vec<(usize, usize, usize)> {
+        self.touched
+            .iter()
+            .filter_map(|&id| {
+                let r = &self.requests[id];
+                (r.granted && self.reservations.exit_available(id, network)).then(|| {
+                    (
+                        id,
+                        network
+                            .lane_system
+                            .controlled_movement(id)
+                            .unwrap()
+                            .incoming,
+                        r.agent,
+                    )
+                })
+            })
+            .collect()
+    }
+
     fn prepare_buffers(&mut self, lanes: usize, nodes: usize) {
         for &id in &self.touched {
             self.requests[id] = Request::default();
