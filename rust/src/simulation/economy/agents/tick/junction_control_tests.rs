@@ -354,3 +354,4 @@ mod zone_storage;
 mod zone_cache;
 mod zone_step;
 mod zone_staging;
+mod zone_fast;
