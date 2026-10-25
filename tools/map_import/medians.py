@@ -23,6 +23,12 @@ def median_section(separation, forward, backward, paved=False):
     return {'median_style': style, 'median_width_m': round(max(low, min(high, gap)), 2)}
 
 
+def source_through_count(feature):
+    p = feature['properties']
+    directional = p.get('lanes_forward' if p['oneway'] == 1 else 'lanes_backward')
+    return int(p.get('through_lanes') or directional or p.get('lanes') or 1)
+
+
 def carriageway_chains(roads):
     candidates = [(f, m) for f, m in roads if m['action'] == 'road'
                   and f['properties'].get('oneway') and not f['properties']['road_class'].endswith('_link')
@@ -71,11 +77,7 @@ def carriageway_chains(roads):
         pts = [p for j, g in enumerate(fs) for p in g['points'][::g['properties']['oneway']][int(j > 0):]]
         # Through-only lane tags take precedence. The minimum along a chain
         # removes local widening/turn pockets which slice B cannot represent.
-        counts = []
-        for g in fs:
-            p = g['properties']
-            directional = p.get('lanes_forward' if p['oneway'] == 1 else 'lanes_backward')
-            counts.append(int(p.get('through_lanes') or directional or p.get('lanes') or 1))
+        counts = [source_through_count(g) for g in fs]
         chains.append({'id': min(g['id'] for g in fs), 'key': key, 'features': fs,
                        'points': pts, 'lanes': min(counts)})
     return sorted(chains, key=lambda c: c['id'])
@@ -150,6 +152,7 @@ def merge_carriageways(roads, decisions):
     index = SegmentIndex((f['id'], f['points'][::f['properties']['oneway']], (c, f))
                          for c in chains for f in c['features'])
     measured = {}
+    feature_opponents = defaultdict(set)
     for c in chains:
         hits, total, matched = [], 0., 0.
         for f in c['features']:
@@ -162,6 +165,7 @@ def merge_carriageways(roads, decisions):
                 if hit:
                     matched += run
                     hits.append((hit[3][3][0]['id'], hit[0]))
+                    feature_opponents[f['id']].add(hit[3][3][0]['id'])
         measured[c['id']] = total, matched, hits
     extents = defaultdict(list)
     for c in chains:
@@ -173,6 +177,13 @@ def merge_carriageways(roads, decisions):
     active = {cid for cid in active if any(other in active for other, _ in measured[cid][2])}
     orientation, conflicts = carriageway_retention(chains, active, measured, axes)
     active.difference_update(conflicts)
+    paired_features = {fid for fid, opponents in feature_opponents.items() if opponents & active}
+    for c in chains:
+        if c['id'] in active:
+            # Cross-median connectors and unpaired approach heads are not evidence
+            # of the parallel carriageway's cross-section. Keep those source ways
+            # separately; only actual paired features supply the shared lane counts.
+            c['lanes'] = min(source_through_count(f) for f in c['features'] if f['id'] in paired_features)
     retained, audit, shifted = [], [], set()
     for c in chains:
         total, matched, hits = measured[c['id']]
@@ -191,22 +202,27 @@ def merge_carriageways(roads, decisions):
                       'status': 'merged' if keep else 'suppressed', 'paired_m': round(matched, 3),
                       'length_m': round(total, 3), 'separation_m': round(statistics.median(d for _, d in hits), 3),
                       'fwd_lanes': c['lanes'], 'bkw_lanes': opposing, **section,
-                      'reason': 'lane_pockets_simplified_to_chain_through_lanes'})
-        shifted.update(n for f in c['features'] for n in f['node_ids'])
+                      'reason': 'paired_source_sections_with_native_transitions'})
+        shifted.update(n for f in c['features'] if f['id'] in paired_features for n in f['node_ids'])
         if not keep:
             continue
         for f in c['features']:
+            if f['id'] not in paired_features:
+                continue
             pts = f['points'][::f['properties']['oneway']]
             dense = list(samples(pts, POLICY['sample_m']))
             dense.append((pts[-1], dense[-1][1], 0))
             moved, paired_ends, local_sources = [], [], {f['id']}
-            for sample_index, (p, u, _) in enumerate(dense):
+            peer_counts = []
+            for sample_index, (p, u, run) in enumerate(dense):
                 hit = index.nearest(p, POLICY['carriageway_distance_m'],
                     lambda s: s[3][0]['id'] != c['id'] and s[3][0]['key'] == c['key']
                     and s[3][0]['id'] in active and s[3][1]['properties']['layer'] == f['properties']['layer']
                     and aligned(u, s[1], s[2], True))
                 if hit:
                     local_sources.add(hit[3][0])
+                    if run > 0:
+                        peer_counts.append(source_through_count(hit[3][3][1]))
                 if sample_index in (0, len(dense)-1):
                     paired_ends.append(hit is not None)
                 q = tuple(round((p[j]+hit[2][j])/2, 3) for j in range(2)) if hit else tuple(p)
@@ -220,9 +236,12 @@ def merge_carriageways(roads, decisions):
             g['_source_end_nodes'] = [f['node_ids'][::f['properties']['oneway']][i] for i in (0, -1)]
             g['_paired_endpoints'] = paired_ends
             m = mappings[f['id']]
+            forward, backward = source_through_count(f), min(peer_counts)
             if f['properties'].get('survey_cross_section') == 'university_2026_10_22':
                 section = {'median_style': 3, 'median_width_m': 2.0, 'bus_masks': [4, 4]}
-            retained.append((g, {**m, 'oneway': 0, 'fwd_lanes': c['lanes'], 'bkw_lanes': opposing, **section}))
+            retained.append((g, {**m, 'oneway': 0, 'fwd_lanes': forward, 'bkw_lanes': backward, **section}))
+            audit[-1].setdefault('sections', []).append({'source_id': f['id'], 'fwd_lanes': forward,
+                                                        'bkw_lanes': backward, **section})
     # One named-road axis keeps the retained direction consistent through short
     # structures. Shared source endpoint IDs then supply exact joints across levels;
     # independent closest-point midlines can disagree at those same source nodes.
@@ -252,7 +271,7 @@ def merge_carriageways(roads, decisions):
     median_index = SegmentIndex((f['id'], f['points'], f) for f, _ in retained)
     for f, m in roads:
         chain = by_source.get(f['id'])
-        if chain and chain['id'] in active:
+        if chain and chain['id'] in active and f['id'] in paired_features:
             continue
         for i, node in enumerate(f['node_ids']):
             if node in shifted:

@@ -681,6 +681,28 @@ class ConflationTest(unittest.TestCase):
         self.assertEqual(by_id['a']['points'][0], (100, -5))
         self.assertEqual(by_id['b']['points'][-1], (100, -5))
 
+    def test_paired_sections_keep_their_local_directional_lane_counts(self):
+        from tools.map_import.medians import merge_carriageways
+        fs = [feature('a1', [(0, 0), (50, 0)], ['a0', 'aj'], road_class='primary', name='Main', oneway=1, lanes=3),
+              feature('a2', [(50, 0), (100, 0)], ['aj', 'ae'], road_class='primary', name='Main', oneway=1, lanes=2),
+              feature('b1', [(50, 12), (0, 12)], ['bj', 'b0'], road_class='primary', name='Main', oneway=1, lanes=1),
+              feature('b2', [(100, 12), (50, 12)], ['be', 'bj'], road_class='primary', name='Main', oneway=1, lanes=2)]
+        result, _ = merge_carriageways(list(map(road, fs)), {})
+        mapped = {f['id']: (m['fwd_lanes'], m['bkw_lanes']) for f, m in result}
+        self.assertEqual(mapped, {'a1': (3, 1), 'a2': (2, 2)})
+
+    def test_unpaired_one_lane_head_does_not_narrow_the_paired_carriageway(self):
+        from tools.map_import.medians import merge_carriageways
+        fs = [feature('a_head', [(-8, -10), (0, 0)], ['head', 'join'], road_class='primary', name='Main', oneway=1, lanes=1),
+              feature('a_main', [(0, 0), (100, 0)], ['join', 'east'], road_class='primary', name='Main', oneway=1, lanes=2),
+              feature('b', [(100, 10), (0, 10)], road_class='primary', name='Main', oneway=1, lanes=2)]
+        result, audit = merge_carriageways(copy.deepcopy(list(map(road, fs))), {})
+        mapped = {f['id']: m for f, m in result}
+        self.assertEqual((mapped['a_main']['fwd_lanes'], mapped['a_main']['bkw_lanes']), (2, 2))
+        self.assertEqual((mapped['a_head']['fwd_lanes'], mapped['a_head']['bkw_lanes']), (1, 0))
+        self.assertTrue(all((a['fwd_lanes'], a['bkw_lanes']) == (2, 2) for a in audit))
+        self.assertEqual(merge_carriageways(list(map(road, reversed(fs))), {}), (result, audit))
+
     def test_retained_carriageway_continues_across_a_road_name_and_axis_change(self):
         from tools.map_import.medians import merge_carriageways
         fs = [feature('a', [(-100, 0), (0, 0)], ['west_a', 'join_a'], road_class='primary', name='West', oneway=1),
