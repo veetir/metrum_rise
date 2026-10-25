@@ -49,7 +49,12 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
     ) -> Vec<RoadSurfaceSection> {
-        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, false, false)
+        // Divided approaches expose their median noses at the actual offset-rail
+        // conflict. Sample the derivative on the real nonuniform knot spacing from
+        // the outset, including for independently rebuilt layered-crossing shells.
+        // A later frame retry cannot safely disagree with those structural producers.
+        let nonuniform = graph.edge(edge_idx).median.is_some();
+        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, nonuniform, false)
     }
 
     /// Rebuilds span-knot frames while retaining the exact source mouths and center stations.

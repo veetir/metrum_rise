@@ -252,7 +252,10 @@ impl RoadSurfaceSystem {
                 // intersection of the facing offset rails, as the vehicle clip solver
                 // does: own width projects by cos(theta), not by one. The old sum
                 // erased long medians even where obtuse arms already diverged.
-                let own_projection = if edge.median.is_some() || other_edge.median.is_some() {
+                let own_projection = if (edge.median.is_some() || other_edge.median.is_some())
+                    && !edge.roundabout
+                    && !other_edge.roundabout
+                {
                     dot
                 } else {
                     1.0 // Preserve the established undivided-road ownership products.

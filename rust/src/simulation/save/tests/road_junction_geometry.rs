@@ -1024,3 +1024,40 @@ fn shared_grade_terrain_boundaries_keep_a_certified_source_owner() {
         assert!(result.is_ok(), "source node {node}: {result:?}");
     }
 }
+
+#[test]
+fn kys_divided_lower_span_keeps_one_frame_for_surface_and_crossing_producers() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/kys_divided_lower.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let original = graph.edges().to_vec();
+    let config = WorldConfig::new(4000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 100.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    // The excerpt retains the exact KYS/roundabout endpoint incidence. Distant ends
+    // are frontier supports, not independent test junctions.
+    let edges = (0..graph.edge_count()).collect::<Vec<_>>();
+    surface.compile_owners_for_geometry_audit(&graph, &terrain, &edges, &[0, 9], false);
+    let span = surface
+        .compiled_visual_span_pieces()
+        .get(&4)
+        .expect("the divided lower span must compile without an independent frame repair");
+    assert!(std::sync::Arc::ptr_eq(
+        &surface.compiled_sections()[&4],
+        &span.sections
+    ));
+    assert!(
+        surface.compiled_visual_span_pieces().contains_key(&3),
+        "retain the higher crossing"
+    );
+    assert_eq!((graph.edge(4).fwd_lanes, graph.edge(4).bkw_lanes), (2, 2));
+    for (edge, original) in graph.edges().iter().zip(original) {
+        assert_eq!(edge.geometry, original.geometry);
+        assert_eq!(edge.physical_geometry, original.physical_geometry);
+        assert_eq!(edge.median, original.median);
+    }
+}

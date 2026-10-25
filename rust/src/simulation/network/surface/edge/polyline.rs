@@ -17,7 +17,7 @@ pub(super) struct SpanTangentFrame {
     pub(super) start_tangent: RoadVec2,
     /// Exact end-mouth direction supplied to both span and node compilers.
     pub(super) end_tangent: RoadVec2,
-    /// Quadratic-knot derivative used only when the ordinary frame failed geometry validation.
+    /// Quadratic-knot derivative for divided producers and validated ordinary-frame retries.
     pub(super) nonuniform_knots: bool,
 }
 
