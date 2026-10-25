@@ -152,8 +152,19 @@ pub(super) fn declared_levels(
     let step_mm = (f64::from(crate::simulation::network::surface::CURB_STEP_HEIGHT_M) * 1000.0)
         .round() as i64;
     let mut result = BTreeMap::new();
+    let mut paths = Vec::new();
     for mouth in &input.mouths {
         let bands = &mouth.band_intervals;
+        if let [band] = bands.as_slice()
+            && band.band_kind == RoadSurfaceBandKind::Footpath
+        {
+            paths.push(NodeBandHeightFieldId::new(
+                mouth.order_index,
+                band.band_index,
+                band.band_kind,
+            ));
+            continue;
+        }
         let road = bands
             .iter()
             .position(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)?;
@@ -202,6 +213,21 @@ pub(super) fn declared_levels(
                 NodeBandHeightFieldId::new(mouth.order_index, band.band_index, band.band_kind),
                 level as f64 / 1000.0,
             );
+        }
+    }
+    if !paths.is_empty() {
+        // A road/path contact already gives the sidewalk height authority. Extend
+        // that same declared level to the path only when every source sidewalk
+        // agrees; pure paths and inconsistent custom sections keep their old path.
+        let mut sidewalks = result.iter().filter_map(|(id, &level)| {
+            (id.kind() == RoadSurfaceBandKind::Sidewalk).then_some(level)
+        });
+        let level = sidewalks.next()?;
+        if sidewalks.any(|other| other != level) {
+            return None;
+        }
+        for id in paths {
+            result.insert(id, level);
         }
     }
     Some(result)

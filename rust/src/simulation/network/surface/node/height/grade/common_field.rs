@@ -86,15 +86,23 @@ impl NodeMaterialGradeField {
         let mut supports = BTreeMap::<SurfaceXzKey, f64>::new();
         let mut center = None;
         for mouth in &input.mouths {
-            let first = mouth
+            if let Some(first) = mouth
                 .band_intervals
                 .iter()
-                .find(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)?;
-            let last = mouth
+                .find(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)
+            {
+                let last = mouth
+                    .band_intervals
+                    .iter()
+                    .rfind(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)?;
+                center.get_or_insert((first.endpoint_start_world + last.endpoint_end_world) * 0.5);
+            } else if !mouth
                 .band_intervals
                 .iter()
-                .rfind(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)?;
-            center.get_or_insert((first.endpoint_start_world + last.endpoint_end_world) * 0.5);
+                .all(|band| band.band_kind == RoadSurfaceBandKind::Footpath)
+            {
+                return None;
+            }
             for band in &mouth.band_intervals {
                 let level = levels[&NodeBandHeightFieldId::new(
                     mouth.order_index,

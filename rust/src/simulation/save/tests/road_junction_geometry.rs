@@ -73,6 +73,32 @@ fn university_import_parking_uses_the_certified_common_grade_for_folded_carriers
 }
 
 #[test]
+fn university_import_path_and_motor_road_share_a_certified_junction_grade() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("data/university_import_path.sql"))
+        .unwrap();
+    let graph = network::load_graph(&conn).unwrap();
+    let original = graph.edges().to_vec();
+    let config = WorldConfig::new(3000.0, 4000.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(510.0, 80.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(510.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    assert!(
+        surface.failed_node_ids().is_empty(),
+        "{:?}",
+        surface.last_compile_failure_label()
+    );
+    assert!(surface.compiled_visual_node_pieces().contains_key(&6));
+    for (edge, original) in graph.edges().iter().zip(original) {
+        assert_eq!(edge.geometry, original.geometry);
+        assert_eq!(edge.physical_geometry, original.physical_geometry);
+    }
+}
+
+#[test]
 #[ignore = "read-only imported-map audit; set METRUM_JUNCTION_SAVE and METRUM_JUNCTION_OUTPUT"]
 fn audit_imported_junction_geometry() {
     if std::env::var("METRUM_DEBUG").as_deref() == Ok("1") {
