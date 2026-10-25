@@ -81,7 +81,49 @@ impl NodeHeightSolution {
             });
         }
         let fields_start = road_debug.then(Instant::now);
-        let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
+        let mut fields = match height_fields_by_source_for_ownership(input, rails, Some(ownership))
+        {
+            Ok(fields) => fields,
+            Err(error) => {
+                if !matches!(
+                    &error,
+                    NodeHeightFieldError::InvalidHeightCarrierContour {
+                        reason: "height_carrier_invalid_constraint",
+                        ..
+                    }
+                ) {
+                    return Err(error);
+                }
+                // A curved wide mouth can fold an independently extended band carrier.
+                // The existing common grade already proves every material boundary; use
+                // it only when ownership certifies all source points and full validation
+                // still accepts the reconstructed height solution.
+                let built = grade
+                    .is_none()
+                    .then(|| super::NodeMaterialGradeField::for_input(input))
+                    .flatten();
+                let Some(field) = grade.or(built.as_ref()) else {
+                    return Err(error);
+                };
+                let Some(mut regions) = field.height_regions(input, ownership) else {
+                    return Err(error);
+                };
+                if !super::grade::apply_source_material_contact_grades(
+                    input,
+                    &mut regions,
+                    Some(field),
+                ) {
+                    return Err(error);
+                }
+                validate_explicit_material_seam_heights(&regions)?;
+                validate_shared_source_height_agreement(&regions)?;
+                return Ok(Self {
+                    node_id: ownership.node_id,
+                    piece_kind: ownership.piece_kind,
+                    regions,
+                });
+            }
+        };
         let fields_ms = elapsed_profile_ms(fields_start);
         // Ownership regions are already canonical and immutable at this stage. Their completeness
         // points feed both support registration and authority resolution, so compute the sorted
