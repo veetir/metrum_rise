@@ -112,6 +112,9 @@ func _update_preview(refresh_pointer: bool = false) -> void:
 	_label.text = "Roundabout %.0f m · %d arms · [ / ] size · N arms · , / . rotate\n%s" % [diameter, arms, "Click to replace junction" if _replace >= 0 else "Click to place"]
 	if not _valid:
 		_label.text += "\n" + _reason(str(preview.get("invalid_reason", "")))
+		# Only transient incomplete results retry; native terrain failures are final refusals.
+		if bool(preview.get("is_pending", false)):
+			_key = []
 		return
 	var road: Node3D = get_node("../RoadTool")
 	var payloads: Array = preview.get("terrain_preview", {}).get("patches", [])
@@ -124,6 +127,7 @@ func _update_preview(refresh_pointer: bool = false) -> void:
 		_terrain.discard(staged)
 		_valid = false
 		_key = []
+		_label.text += "\nWaiting for visible road and terrain patches."
 
 func _invalidate() -> void:
 	_key = []
@@ -151,6 +155,7 @@ func _reason(reason: String) -> String:
 		"roundabout_has_lane_restrictions": return "Remove the junction's vehicle turn restrictions first."
 		"roundabout_arm_too_short": return "An approach is too short for this diameter."
 		"roundabout_replacement_too_large": return "Junction replacement supports diameters up to 60 m."
+		"surface_preview_pending": return "Preparing terrain preview."
 		"surface_geometry_invalid": return "The road surfaces cannot join here. Try another size or location."
 		"water_requires_bridge": return "The roundabout needs dry ground."
 		"parcel_overlap", "zoning_cell_overlap", "field_overlap": return "Clear the occupied land before placing the roundabout."

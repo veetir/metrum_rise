@@ -723,10 +723,17 @@ impl SimulationNode {
         roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
     ) -> VarDictionary {
         let mut result = VarDictionary::new();
-        let Some(patches) = core
-            .compile_pocket_preview_terrain(roads)
-            .and_then(|terrain| terrain.preview_patches())
-        else {
+        let terrain = core.compile_pocket_preview_terrain(roads);
+        if let Some(reason) = terrain
+            .as_ref()
+            .and_then(|terrain| terrain.failure_reason())
+        {
+            result.set("is_valid", false);
+            result.set("invalid_reason", "surface_geometry_invalid");
+            result.set("detail", reason);
+            return result;
+        }
+        let Some(patches) = terrain.and_then(|terrain| terrain.preview_patches()) else {
             result.set("is_valid", false);
             result.set("is_pending", true);
             result.set("invalid_reason", "surface_preview_pending");

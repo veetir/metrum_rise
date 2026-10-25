@@ -15,6 +15,28 @@ class BusySurfaceTool extends "res://scripts/tools/roundabout_tool.gd":
 		legacy_picks += 1
 		return null
 
+class PendingPreviewBridge extends Node:
+	var backend: Node
+	var calls := 0
+
+	func get_closest_node(point: Vector3, radius: float) -> int:
+		return backend.get_closest_node(point, radius)
+
+	func get_road_tool_surface_generation() -> int:
+		return backend.get_road_tool_surface_generation()
+
+	func get_zoning_overlay_revision() -> int:
+		return backend.get_zoning_overlay_revision()
+
+	func get_agriculture_field_overlay_revision() -> int:
+		return backend.get_agriculture_field_overlay_revision()
+
+	func preview_roundabout(center: Vector3, diameter: float, angles: PackedFloat32Array, replacement: int) -> Dictionary:
+		calls += 1
+		if calls == 1:
+			return {"is_valid": false, "is_pending": true, "invalid_reason": "surface_preview_pending"}
+		return backend.preview_roundabout(center, diameter, angles, replacement)
+
 func run() -> void:
 	if OS.get_environment("METRUM_RB_CAPTURE") == "1":
 		await capture_roundabouts()
@@ -229,6 +251,22 @@ func check_player_pointer() -> void:
 		if button is Button and button.text == "Roundabout (O)":
 			button.pressed.emit()
 	expect(tool.active, "Toolbar Roundabout button activates the same controller")
+	# Isolate the transient-response contract after the real-input checks above. The
+	# second request uses the real compiler; the world pointer stays exactly unchanged.
+	tool.set_process(false)
+	tool.diameter = 40.0
+	tool.set_scripted_pointer(true, ground(-180, -160))
+	var bridge := PendingPreviewBridge.new()
+	bridge.backend = simulation
+	tool.simulation_node = bridge
+	tool._key = []
+	tool._update_preview()
+	expect(not tool._valid and tool._key.is_empty(), "A pending preview cannot poison the stationary-pointer cache")
+	expect(tool._label.text.contains("Preparing terrain preview"), "Pending placement explains what the player is waiting for")
+	tool._update_preview()
+	expect(bridge.calls == 2 and tool._valid, "Stationary hover retries a transient result and installs the completed preview")
+	tool.simulation_node = simulation
+	bridge.free()
 	manager._cancel_active_tool()
 	viewport.queue_free()
 	await process_frame
