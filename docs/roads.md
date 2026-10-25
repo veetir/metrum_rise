@@ -1550,7 +1550,7 @@ captures and measurements above remain historical evidence for `6ec0b858`.
 and pocket editing. Hover a road end, **J / K** toggle the left / right pocket, **U / I** shorten /
 lengthen its body by 10 m, and **Shift+U / I** adjust taper length by 5 m. Click the highlighted
 end to apply. Both toggles off remove the pocket and coalesce its two edges; resizing moves the
-same hidden node. Bodies are 60–300 m and tapers 12–100 m. A left pocket requires at least
+same hidden node. Bodies are 12–300 m and tapers 12–100 m. A left pocket requires at least
 3.8 m of median, leaving at least 0.3 m after consuming a 3.5 m lane. Directional totals stay
 within four lanes. Existing **E**, **[ / ]** (or **Down / Up**) and **, / .** count controls remain;
 change the count between consecutive drawn segments, or use E on one existing segment. A
@@ -4225,8 +4225,8 @@ new agent spatial index or claim to remove that O(A) work.
 The importer task retains its historical ROAD-76 name in branches and test artifacts. Its
 tracker is ROAD-81 after upstream integration assigned ROAD-76 to geometry validation.
 
-The importer branch is rebased onto road-chain tip `3f4abd8d` (ROAD-73, following ROAD-74/75
-and the second ROAD-68 slice). The six importer/water commits retain their content on
+The importer branch is rebased onto `feat/road-upstream-sync` at `bcc167b5`, including
+ROAD-73, old-save migration and the TRAFFIC-09 reservation redesign. The importer/water commits retain their content on
 `feat/kuopio-import-v2`; original tips remain in `backup/niirala-importer-2026-10-21` and
 `backup/import-water-level-2026-10-21`. No forest branch existed. Documentation conflicts
 retain both sides' changes. The unrelated pre-existing VEG-27 edit stays outside this commit.
@@ -4274,7 +4274,7 @@ calls unsourced near-miss gap repair, relocates/trims a refused junction, or ret
 
 The university survey selects six original source way IDs: 3+3 lanes and outer bus permissions
 in each direction. The 2 m paved median is a procedural section choice, not a measured width. The source-ID correction also retains the photographed
-light-traffic underpass and replaces the two obsolete parking slips with one ordinary two-way
+motor-road underpass and replaces the two obsolete parking slips with one ordinary two-way
 refuge/zebra arm. Neutral OSM provenance remains unchanged. Directional masks follow the attributed source tangent when saved edge orientation is reversed.
 The normal bus permission setter owns persistence/routing. Bus paint is corrected to Finnish plain asphalt with white BUS
 lettering; red ribbons are removed. No bus vehicle simulation is claimed. `give_way`, `stop`
@@ -4299,9 +4299,9 @@ O(source vertices + sampled length + local candidates + N log N), with linear so
 Postprocessing uses the same index plus endpoint incidence and a 32 m node grid. All work is
 offline. No new simulation index, per-agent field, tick allocation or save schema is introduced.
 Bus word emission keeps its existing bounded station traversal and O(log sections) samples;
-removing coloured ribbons deletes its per-section quad emission. ROAD-73's independent legacy
-junction/terrain ownership defects remain open; acceptance of the reconstructed university
-section does not close its separate plain-to-median boundary defect.
+removing coloured ribbons deletes its per-section quad emission. The Oct 22 reconstruction
+did not accept the independent ROAD-73 defects; the subsequent upstream-sync fixes and fresh
+full-import checks below supersede that checkpoint.
 
 Reproduction from the repository root (choose `$ARTIFACTS` below `maps/processed`):
 
@@ -4317,7 +4317,7 @@ python3.12 -m tools.map_import.features "$ARTIFACTS/pockets/city.sqlite" \
 # Apply those actions with map_import_patch.gd, again into a distinct output.
 ```
 
-Fresh checks: 69 Python importer tests; release `cargo test --lib` passes 2,657 tests, zero
+**Historical Oct 22 checks.** 69 Python importer tests; release `cargo test --lib` passed 2,657 tests, zero
 failures, 153 ignored; `cargo clippy --all-targets` has no warnings. The two changed bus paint
 tests pass again after the final Clippy-only test syntax correction. `cargo doc --no-deps`
 has zero missing-doc warnings and two pre-existing link warnings. The measured-size importer
@@ -4328,7 +4328,7 @@ pockets, trajectory, junction control, roundabouts, ramps, grade separation, fil
 rejection report, selection gesture, vehicle ground support, junction debug overlay and marking
 rules. The isolated native profile uses the same deployed library; player settings are untouched.
 
-**Acceptance is incomplete; ROAD-76 stays in progress.** The full import reached a checkpoint
+**Historical Oct 22 acceptance (superseded blockers below).** The full import reached a checkpoint
 of 640/1,053 strokes (1,398 edges, 1,407 nodes). Reload and the native diagnostic capture both
 refuse `stage=all_nodes ... failed_nodes=[654,752]`. A fresh read-only production audit finds
 all 1,398 spans but two missing nodes: node 654 has missing sidewalk/curb seam constraints;
@@ -4352,13 +4352,181 @@ inflating the measured ring is not an accepted import fix.
 The new `roads-c-uni-underpass-v2.sqlite` is installed as a separate save and passes exact
 reload checks. The original `uni-underpass.sqlite` remains unchanged (SHA-256
 `b17a5931763fa83892307a8be1eef88ef34226f1cd6dd33bfe9d0f4014974433`).
-No `kuopio-sw-v2.sqlite` is installed because the city is not accepted. KYS, Bioteknia,
-Prisma, Niirala and imported-ring reference captures are still missing: the full checkpoint
-fails loading before the capture script can render them. Source zebra/arrow actions and the
+At that Oct 22 checkpoint no `kuopio-sw-v2.sqlite` was installed. KYS, Bioteknia,
+Prisma, Niirala and imported-ring reference captures were missing because that checkpoint
+failed loading before the capture script could render them. Source zebra/arrow actions and the
 university bus actions have targeted coverage, not completed full-city visual acceptance.
 Authored stop/yield/signals remain reported as unsupported by TRAFFIC-06 stage 1a.
 
-**Matched release locality checks.** Apple M2 Pro/arm64, Rust 1.98.1, four Rayon workers,
+**Oct 25 continuation.** Focused source import now commits the university's 3+3 main road,
+short level-one structure, ordinary refuge parking arm and full 1+1 motor underpass road
+(OSM 1119987950/51). The parking compiler now uses its existing certified common grade if an
+independently extended carrier folds, retaining seam/source checks and source geometry.
+The focused seven-stroke import also accepts the separate Piipolku (987262495), its mixed
+sidewalk tie-in and the service return, in one motor component. No road is narrowed to pass
+the compiler. The complete import retains explicit refusals for any remaining source pieces.
+
+Both OSM-tagged motor rings (38.916 and 28.675 m) and the surveyed, untagged Luola ring
+(33.132 m; ways 1119695044/1366321598/1366321599/1366371228) pass native replacement in the
+focused import. Replacement preserves 1+1 through 2+2 median arms and delegates short retained
+arms to full geometry/terrain validation. Automatic degree-two section transitions can become
+ordinary junctions when a third arm arrives; authored pockets, ramps and remote tapers remain
+protected. A replacement preview now explicitly removes the retired center's resident footprint
+from terrain/site queries. Keeping that stale owner caused the west/Luola boundary failures.
+The inner-kerb numeric backtrack fix removes only same-height, sub-resolution needles within
+existing coordinate and cumulative-area budgets; real corners and steps remain certified.
+Synchronous terrain refusals report their actual label, never an indefinitely pending preview.
+Source endpoint snapping uses the existing node grid/R-tree with a strict planar radius and
+explicit level, so a DEM height error or another wide carriageway cannot detach the intended joint.
+All additions run during bounded local edits; no agent-tick work, index or save schema is added.
+
+The filled opening covers independent lower node-owned mouths as well as span pavement.
+The old span-only cut left a terrain cliff above an otherwise valid motor underpass junction.
+After junction finalization, only dirty lower edges that actually violate a higher road's
+clearance are refitted against its finalized cross-section; endpoint pins, maximum grade,
+spatial indices, lengths and costs remain authoritative. No change runs in the agent tick.
+
+Paired source retention now follows exact continuation incidence across road-name boundaries.
+Lane counts come from the locally paired source features, so an unpaired one-lane cross-median
+connector cannot narrow an entire arterial. Unique divided continuations share C1 endpoint
+controls across names; controls inside the existing roadbed are removed only when unpinned,
+and planned roundabout centres are excluded. Source geometry/provenance stays in the audit.
+
+Divided junction ownership uses the facing rails' angular projection rather than adding both
+half-widths at every angle. This keeps medians and approach paint nearer the real vehicle
+conflict on obtuse arms; undivided products and native ring ownership retain their previous
+rules. Divided spans and independent crossing shells select the same nonuniform-knot frame
+before compilation. Grade subdivisions copy exact source endpoints: reconstructing an endpoint
+with a rounded f32 delta separated a Luola carriageway from its kerb by a micrometre ownership
+key. The fix preserves the actual 0.12 m step and the ordinary source/terrain validators.
+All changes remain within the existing local edit closure and section traversal bounds.
+
+The offline bridge acknowledges exact completed render generations while retaining validated
+CPU mesh caches. With no renderer consuming its publication backlog, it previously requested a
+full-city mesh replacement after every stroke. Subsequent edits now rebuild their dirty chunks.
+Finalization retries only exact refused source pieces and measured failed ring products against
+the settled network; accepted pieces are never replayed and previous ring refusals remain in
+the report. Unknown acknowledgement still stops the import. No geometric relocation, arbitrary
+elevation offset, narrower cross-section or save-file repair is used.
+
+**Fresh full import, Oct 25.** `kuopio-sw-v2.sqlite` is installed as a new save, with an
+adjacent `kuopio-sw-v2.import.json` provenance manifest. It starts from the cached Kuopio OSM
+extract and authored DEM/water world, never from `uni-underpass.sqlite` or the earlier
+university reconstruction. It imports roads and paths only: no buildings, zones or population.
+The original four inspected user saves are unchanged. Compiler revision is `40b1656e`;
+source-plan SHA-256 is `aa72b2bdb700b8bc215c7be81a9521431396431462a5170c374e47486fbaa974`;
+save SHA-256 is `070b841f3ba0c9a384b77d2d3a03b98dd2be927ee8e5ba31816118076ccd3cf3`,
+format 109. OSM SHA-256 is `4cecc0229ea596cc1cf9b1ee5509ecd15946e2f2b2ad41d0ce19122ddf7e3817`;
+original DEM world is `07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd`;
+prepared water-bed world is `d7b06ce5e432a701b374d325b7178d0d041c14958c6fdb0bd4b580d2b15e9011`.
+Ignored local artifacts retain every action/refusal in `maps/processed/kuopio_sw/road-76b`:
+`plan14`, `full-plan14-run6`, `pockets22-run`, `features22-run`, `final-audit`,
+`final-network-accounting.json` and `installed-save.json`.
+
+All 1,065 source strokes were processed (619 motor-road, 446 path): roads 521 accepted,
+70 partial, 28 refused; paths 328 accepted, 115 partial, three refused. Accepted source length
+is 198.193 km. The saved graph has 2,379 edges and 1,852 nodes; 1,305 motor edges cover
+109.904 km in 54 undirected components. The largest has 1,116 motor edges/91.321 km and contains
+all requested landmarks, the parking arm, lower university motor road and three rings.
+This does not claim that all source access roads or directed routes are connected. The named
+street report lists 170 complete, 28 partial and nine missing streets. Remaining source-piece
+refusals include water/bridge requirements, surface/render compilation, arm angles, short
+crossing approaches and profile grade. Piipolku is retained but has two exterior pieces
+refused as `crossing_approach_too_short`; the actual 1+1 lower motor stroke is fully accepted.
+
+All **two OSM-tagged motor roundabouts** became native, plus the surveyed untagged Luola ring:
+
+| Ring | Source ways | Outside diameter | Result |
+| --- | --- | --- | --- |
+| West/Niiralankatu | 355522675/676/679/681 | 38.916 m | Native, single lane, divided approaches retained |
+| East/Niiralankatu | 653384159/169/177/179 | 28.675 m | Native, single lane, divided approaches retained |
+| Luola/Savonia | 1119695044, 1366321598/599, 1366371228 | 33.132 m | Native, single lane, source-sized |
+| Cycle-only circle | 1119987965 | — | Not converted to a motor roundabout: `highway=cycleway` |
+
+No motor ring remains unconverted. No two-lane motor ring occurs in this extract; future
+support needs entry-lane/destination choice, two-lane circulation and spiral exit connectivity.
+Single-lane approximation remains explicit if such input is encountered.
+
+**Compact source pockets.** The ordinary pocket tool now accepts a 12 m body, preserving the
+12 m minimum taper and an independently validated 0.5 m retained span between transitions.
+Exact clips, the far ordinary taper and source token counts bound the available body; left-only
+pockets do not widen the footprint. Both Prisma turn heads commit, including its four-lane
+incoming head (12 m body/13.054 m taper). Five of ten requested pocket edits commit; the other
+five retain `pocket_overlaps_transition`, `pocket_road_too_short` or `pocket_movement_missing`.
+8–20 m lanes use a 5 m arrow with a 1.5 m upstream margin and the actual zebra gap; ordinary
+12/42 m arrow stations are unchanged. Source bus intent prevents an incompatible extra pocket;
+all seven university 3+3 sections retain outer masks 4/4. Feature actions commit seven bus,
+246 crossing and 13 complete-node lane-rule edits; 39 crossing edits refuse. The source audit
+also records 225 marked entries without an attributed arm within 24 m, and 49 authored
+signal/stop/yield controls unsupported by the current API. These are omissions, not installed
+controls or successful markings.
+
+**Fresh verification.** Release `cargo test --lib` passes 2,886 tests (168 ignored),
+`cargo clippy --all-targets` is clean, and 81 Python importer tests pass. Rustdoc has zero
+missing-doc warnings and four existing link warnings. The 21 individual native bridge suites
+listed above and `road_import_features` all pass on this compiler (22 total). The four legacy new-road
+geometry hashes preserve the two undivided products exactly; the two divided products change
+intentionally with the facing-rail ownership rule. `road_import_traffic_probe.gd` cold-loads the
+full save and drives seven cars beyond the university motor opening, at-grade parking arm,
+three native rings, a Prisma turn and the Niirala residential junction, without route failures.
+It writes an explicit save-hash report and never writes the save. This is a small diagnostic,
+not a saturation or populated-city traffic benchmark.
+
+The strict full-map geometry audit **does not pass**. Cold `load_runtime` succeeds, with no
+missing span/node, oversized kerb step or node-window terrain-export failure. It reports one
+overlapping grade pair (793/794, short Prisma-area parking edges), and seven node/edge mouth
+height discontinuities: 1169/2149 (24.6 mm), 1175/1460 (100.5 mm), 1444/2155 (86.8 mm),
+1568/2294 (9.6 mm), 1634/2176 (13.1 mm), 1807/1867 (73.3 mm), 1808/1771 (137.2 mm).
+It also records 21 steep retained source profiles and five visible span profiles above 50%
+grade. These remain ROAD-81 defects; a successful cold load does not accept their geometry.
+The old 654/752 unloadable checkpoint is no longer a blocker.
+
+**Reference inspection.** Sixteen current full-save captures are in
+`captures/road_76b/full-final`, with a save-hash/origin manifest. The Niirala views target the
+actual Ruotsinkatu/Huuhankatu grid rather than the earlier empty-ground camera. KYS before
+(`captures/road_76b/before/kys_user_view.png`) and after use the exact user camera: pivot
+−73.19017/98.29294/922.70374, distance 110 m, pitch −1.05, yaw −1.94. The earlier university
+v2 save remains explicitly an Oct 18/v88 reconstruction and is not redelivered.
+
+| Current views | References opened | Findings and remaining differences |
+| --- | --- | --- |
+| KYS exact/overhead/street | `kys-1..3.png`, `kys-top.png`, user's Oct 25 mangled-junction image, night3 `kys_pond.png` | Bridge, lower road and native west ring load; original water cliff is gone. Medians extend closer to the junction, but central asphalt remains too broad and the slip/median layout is not accepted against the photos. |
+| Bioteknia overhead/street | night3 `bioteknia.png` | The old tall kerb wall is absent; continuous paving/kerbs and the slip island render. Broad main-junction asphalt remains a layout defect. |
+| Prisma overhead/street | `prisma-1..4.png`, `prisma-top.png`, night3 `prisma_zebras.png`, Oct 18 `real_prisma_junction_streetview.png`/`map_prisma_junction.png` | Median arterial and both turn heads survive; the street view shows four incoming lanes and selective arrows. No old narrowing tangle. Central median termination and junction shape remain schematic; traffic signals are not installed. Street photos override the obsolete satellite zebra. |
+| Niirala overhead/street | night3 `niirala_arrows.png` | Ordinary residential arms no longer have all-turn arrows and automatic zebras; the street grid is present. The comparison is regional, not a pixel-matched replay of the old camera. |
+| Neulamäki/Luola | Oct 18 `real_neulamaentie_streetview.png`, `game_neulamaentie.png`, `game_two_roads_side_by_side.png`; read-only Luola save/camera | Main divided road is one median road, not twin two-way streets; Luola is native. Short-arm flares and abrupt approach median noses remain visible. |
+| University overhead/parking/opening | `university-1.png`, `university_yliopistonranta_level_junction.png`, `university-underpass-1..2.png` | Six-lane bus/median section, short structure, ordinary refuge/zebra parking arm and actual motor road below; route probes cross both. Filled opening includes lower junction pavement at 4.8 m vehicle clearance. Wing walls are angular/oversized; parallel bays/columns, detailed cycle infrastructure and buildings are not reconstructed. |
+| West/east rings | `roundabout-niiralankatu-1..2.png`, `roundabout-other-1.png` | Both native at measured sizes, preserving median approaches. No detailed splitter islands, entry paint, planting/art or two-lane circulation; broad mouths/abrupt noses differ from photos. |
+
+ROAD-81 stays in progress because the remaining layout, source and strict-audit defects are
+real. The installed save is available for testing with that explicit limitation.
+
+**Fresh matched release/locality acceptance.** Apple M2 Pro/arm64, Rust 1.98.1, SDK 26.5,
+four Rayon workers, `METRUM_DEBUG=0`; three alternating unprofiled process pairs, setup excluded.
+Baseline is the preserved post-filled-opening build `dd682ec2`, SHA-256
+`164cc9d70aaa533afa116fde2d7da88483750d1191696dd3274ead4c3fcd493c`; candidate `40b1656e`,
+SHA-256 `9d7f2a70181d593c40cc421aba87b91c6fb7090e39fd0541e8f8531f67bfe659`.
+This comparison covers subsequent ownership, source-endpoint and compact-pocket changes;
+earlier crossing-profile changes retain their separate historical baseline evidence.
+
+| Background buildings | Pocket median p50, ms (before → after) | Ring median p50, ms | Crossing-profile median, ms |
+| --- | --- | --- | --- |
+| 0 | 18.604 → 18.561 | 49.655 → 52.092 | 1.14346 → 1.14629 |
+| 1,000 | 19.275 → 19.158 | 49.254 → 52.312 | 1.14379 → 1.14304 |
+| 10,000 | 18.932 → 19.203 | 53.395 → 52.197 | 1.14558 → 1.14633 |
+| 100,000 | 19.391 → 19.708 | 51.002 → 52.055 | 1.14550 → 1.14517 |
+
+Local products match at every tier, including 600,024 agents, 100,004 parcels and 391 remote
+roads in the largest populated fixture. Preview p50 is 13.355 → 13.174 ms without terrain,
+17.524 → 17.936 ms with terrain. The small mixed deltas establish bounded local planning,
+not a speedup. Run each preserved `$TEST_BINARY` with `RAYON_NUM_THREADS=4 METRUM_DEBUG=0`,
+fixture filter `populated_pocket_plan_scaling`, `populated_roundabout_plan_scaling`,
+`benchmark_road_preview_modes` or `benchmark_crossing_profile_locality`, and
+`--ignored --nocapture --test-threads=1`. All 24 processes pass. Offline publication acknowledgements
+also reduced observed per-edit dirty mesh work from a full-city backlog to one or two chunks;
+those import observations are not a matched timing or frame-rate claim.
+
+**Historical Oct 22 matched release locality checks.** Apple M2 Pro/arm64, Rust 1.98.1, four Rayon workers,
 `METRUM_DEBUG=0`, three alternating unprofiled process pairs. The baseline is the rebased
 importer before the bus ribbon removal, not the pristine road-chain tip. Fixture setup and
 one-time snapshots are excluded from repeated planning measurements. Each process measures
@@ -4400,7 +4568,11 @@ RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' godot --headless --path godo
   --script res://tests/road_import_features_test.gd
 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' godot --headless --path godot \
   --script res://scripts/tools/map_import_network_test.gd
-# Run each of the 21 names above as res://tests/<name>_test.gd individually.
+# Run each native suite above as res://tests/<name>_test.gd individually.
+# road_import_capture.gd and road_import_traffic_probe.gd require an explicit source save.
+# Strict diagnostic (currently reports the documented remaining defects):
+METRUM_JUNCTION_SAVE="$ARTIFACTS/features/city.sqlite" METRUM_JUNCTION_OUTPUT="$ARTIFACTS/audit" \
+  "$TEST_BINARY" audit_imported_junction_geometry --ignored --nocapture --test-threads=1
 ```
 
 ### Lane Reattachment Audit Measurements (2026-09-12)

@@ -57,22 +57,28 @@ terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the 
 layout still needs that importer repair
 ([design and acceptance](roads.md#imported-junction-geometry--road-73)).
 
-ROAD-76 brings the Kuopio importer onto the current road chain. Structure extents now survive
-carriageway conflation, the blanket bridge lift is removed, and source rings use ROAD-62's
-atomic replacement. The university rebuild preserves 3+3 lanes, a median and outer bus lanes,
-with a short filled opening and parking access at grade. Its three native captures and exact
-save/reload checks pass; `roads-c-uni-underpass-v2.sqlite` is installed separately. ROAD-76
-remains incomplete: the full checkpoint refuses load at two junction owners, the source-layout
-parking arm still refuses compilation, and both real ring replacements refuse. No
-`kuopio-sw-v2.sqlite` is installed; full-city reference acceptance is pending
-([import contract](roads.md#kuopio-import-integration--road-76-now-road-81)).
+The historical ROAD-76 importer task is tracked as ROAD-81 after the upstream ID collision.
+Rebased onto `feat/road-upstream-sync`/TRAFFIC-09 (`bcc167b5`), it now produces the installed
+`kuopio-sw-v2.sqlite`: a fresh full OSM/DEM **road/path import**, with no Oct 18 save input,
+buildings, zoning or population. All 1,065 source strokes were processed; 849 are complete,
+185 partial and 31 refused. Both tagged motor rings and the surveyed Luola ring are native,
+retaining median approaches up to 2+2. The university keeps 3+3 lanes/median/outer bus lanes,
+a short filled opening carrying the actual 1+1 road and a separate path, and at-grade parking.
+The final save cold-loads; seven full-map traffic probes, 2,886 Rust tests, 22 native suites,
+Clippy and matched local-planning benchmarks pass. Sixteen reference views were inspected.
+ROAD-81 remains open: KYS/Bioteknia still have excessive central asphalt, some source profiles
+are too steep, and the stricter geometry audit reports one overlapping grade pair and seven
+mouth-height discontinuities. Source omissions, rejected markings and unsupported authored
+traffic controls are explicit in the report. The earlier university v2 save is an Oct 18/v88
+reconstruction; it is not the new full import
+([source, visual findings and acceptance](roads.md#kuopio-import-integration--road-76-now-road-81)).
 
 
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
 hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
 crossable beside ordinary junctions without zebra clearance. Arrows now require authored or
 lane-dependent turn use, pockets or ramps; plain 1+1 approaches re-render without them.
-ROAD-76 supplies source crossing and turn-lane actions after topology
+ROAD-81 supplies source crossing and turn-lane actions after topology
 ([marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75)).
 
 Road cross-sections support painted, grass and paved medians plus in-place lane/median editing
@@ -119,7 +125,7 @@ circulating priority. The 2026-10-25 preview repair removes cursor jumps to the 
 under simulation-lock contention, retries transient results at a stationary pointer and
 explains permanent terrain refusals. Fresh repair validation: 2,863 library tests, Clippy and
 seven road/traffic bridges pass. Compact presets, splitter islands, yield paint, tree/art
-presets and two-lane spiral rules remain open. ROAD-81 supplies OSM ring mapping; actual median/multilane approaches still exceed the replacement contract. Historical first-slice
+presets and two-lane spiral rules remain open. ROAD-81 adds source ring mapping and preserves median approaches up to 2+2 in replacement; wider and protected transition arms remain unsupported. Historical first-slice
 validation passed 2,619 release tests, Clippy and fourteen road bridges; populated planning
 retained identical local products through 100,000 background buildings. Synchronous previews still
 cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
