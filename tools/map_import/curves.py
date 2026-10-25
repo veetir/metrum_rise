@@ -8,7 +8,8 @@ O(vertices + sampled length); no simulation hot path or extra dependencies.
 """
 
 import math
-from .geometry import distance, length
+from collections import defaultdict
+from .geometry import distance, length, roadbed_half_width
 
 
 def smooth(points, step=4.0, fixed_tangents=None):
@@ -60,18 +61,66 @@ def straight_throat(points, centre, radius):
     return controls, {p: axis for p in (anchors[0], centre, anchors[1])}
 
 
-def prepare_curves(strokes, features, straight_throats=()):
+def name_boundary_controls(strokes, roundabout_centres=()):
+    """Share one C1 direction where a unique divided corridor changes its name.
+
+    Source controls inside the existing roadbed cannot author an independent
+    bend before the through corridor resumes. Pinned junctions stay intact.
+    Endpoint incidence and local prefix/suffix walks are O(strokes + vertices).
+    """
+    excluded = set(map(tuple, roundabout_centres))
+    groups = defaultdict(list)
+    for s in strokes:
+        if s.get('kind') != 'road' or not s.get('median_style') or not s['fwd_lanes'] or not s['bkw_lanes']:
+            continue
+        for end in (0, -1):
+            groups[tuple(s['points_xz'][end]), s['road_class'], s.get('layer', 0)].append((s, end))
+    changes = {}
+    for (joint, _, _), arms in groups.items():
+        if joint in excluded or len(arms) != 2 or not all(s['names'] for s, _ in arms) or set(arms[0][0]['names']) & set(arms[1][0]['names']):
+            continue
+        prepared = []
+        for s, end in arms:
+            points, tangents = changes.get(s['id'], ([tuple(p) for p in s['points_xz']], {}))
+            points = list(points)
+            pins = set(map(tuple, s.get('junctions_xz', [])))
+            neighbor = 1 if end == 0 else -2
+            half = roadbed_half_width(s)
+            while len(points) > 2 and distance(points[neighbor], joint) < half and points[neighbor] not in pins:
+                points.pop(neighbor)
+            gap = distance(points[neighbor], joint)
+            if gap < half:
+                break
+            outward = tuple((points[neighbor][j]-joint[j])/gap for j in range(2))
+            prepared.append((s, end, points, dict(tangents), outward))
+        if len(prepared) != 2 or sum(a*b for a,b in zip(prepared[0][4], prepared[1][4])) > -.5:
+            continue
+        axis = tuple(prepared[0][4][j]-prepared[1][4][j] for j in range(2))
+        norm = math.hypot(*axis)
+        axis = tuple(v/norm for v in axis)
+        for i, (s, end, points, tangents, _) in enumerate(prepared):
+            sign = (1 if end == 0 else -1) * (1 if i == 0 else -1)
+            tangents[joint] = tuple(sign*v for v in axis)
+            changes[s['id']] = points, tangents
+    return changes
+
+
+def prepare_curves(strokes, features, straight_throats=(), roundabout_centres=()):
     lookup = {f['id']: f for f in features}
     for s in strokes:
         sources = [lookup[i] for i in s['source_ids'] if i in lookup]
         s['names'] = sorted({f['properties']['name'] for f in sources if f['properties']['name']})
+    joined = name_boundary_controls(strokes, roundabout_centres)
+    for s in strokes:
         # Authoring semantics come from the retained segment, not the union of
         # provenance IDs: opposing chains may include a distant short bridge.
         s.setdefault('layer', 0)
         s.setdefault('bridge', False)
         s.setdefault('tunnel', False)
         s['source_points_xz'] = s['points_xz']
-        controls, tangents = s['points_xz'], {}
+        controls, tangents = joined.get(s['id'], (s['points_xz'], {}))
+        if tangents:
+            s['name_boundary_joints_xz'] = sorted(tangents)
         for throat in straight_throats:
             if throat['name'] in s['names']:
                 controls, fixed = straight_throat(controls, throat['centre_xz'], throat['radius_m'])

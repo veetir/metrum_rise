@@ -4,6 +4,7 @@
 
 import copy
 import json
+import math
 from pathlib import Path
 import random
 import sqlite3
@@ -494,6 +495,24 @@ class WaterBedTest(unittest.TestCase):
 
 
 class CurveTest(unittest.TestCase):
+    def test_a_divided_corridor_keeps_one_tangent_across_its_name_boundary(self):
+        from tools.map_import.curves import name_boundary_controls, smooth
+        base = {'kind': 'road', 'road_class': 'primary', 'fwd_lanes': 2, 'bkw_lanes': 2, 'median_style': 2, 'median_width_m': 4}
+        west = {**base, 'id': 'west', 'names': ['West'], 'points_xz': [(-100, 40), (-12, 6), (-2, 1), (0, 0)]}
+        east = {**base, 'id': 'east', 'names': ['East'], 'points_xz': [(0, 0), (1, -2), (8, -12), (50, -50)]}
+        joined = name_boundary_controls([west, east])
+        a = smooth(joined['west'][0], .01, joined['west'][1])
+        b = smooth(joined['east'][0], .01, joined['east'][1])
+        u, v = tuple(-x for x in a[-2]), b[1]
+        self.assertGreater(sum(x*y for x,y in zip(u,v))/math.hypot(*u)/math.hypot(*v), .99999)
+        self.assertEqual((a[0], b[-1]), ((-100, 40), (50, -50)))
+        self.assertNotIn((-2, 1), joined['west'][0])
+        self.assertNotIn((1, -2), joined['east'][0])
+        self.assertEqual(name_boundary_controls([east, west]), joined)
+        self.assertEqual(name_boundary_controls([west, east], [(0,0)]), {})
+        third = {**base, 'id': 'third', 'names': ['Third'], 'points_xz': [(0,0), (0,100)]}
+        self.assertEqual(name_boundary_controls([west,east,third]), {})
+
     def test_explicit_straight_throat_survives_curve_fitting(self):
         from tools.map_import.curves import smooth, straight_throat
         source = [(-100, -40), (-45, 0), (0, 0), (42, 0), (110, 30)]
