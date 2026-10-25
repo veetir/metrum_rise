@@ -6,29 +6,40 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-Upstream integration is in progress on `feat/road-upstream-sync`: scheduler/performance work
-from `b75e03c9` is combined with the road chain. Fresh migration coverage passes all 2,848 library cases
-and 59 of 65 native suites; the same six pre-existing Mac bridge failures reproduce. The
-university legacy bridge passes from its migrated copy; the four earlier growth integrations
-remain evidence of their original build. All five user-save copies now load and
-round-trip in v108, with exact pre-merge road/topology fingerprints and unchanged original hashes.
-The populated compatibility matrix covers 53 schema checkpoints from the old v57 minimum,
-plus the tracked v59 wage backport; real upstream v59/v107 copies also round-trip. Full economy and frame-budget
-checks fail, with 100k 1× raw p99.9 increasing 12.66 → 20.75 ms
-([TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09),
-[full matrix](simulation.md#road-chain-integration-check-on-macos--2026-10-24)). Legacy loading is repaired;
-matched visible-zoning captures are complete (Prisma 81.97 → 81.20 fps, KYS 39.86 → 37.90,
-sweep 33.22 → 32.08). TRAFFIC-09 also reproduces on pre-merge `0cc4a2ab`; matched-world
-controls isolate the whole-connector conflict reservation, rather than the scheduler or lane
-choice. A safe conflict-zone/storage redesign needs a separate decision, so work stops at the
-requested redesign boundary and this integration remains unaccepted. Both complete economy
-contracts still fail their original work-scaling gates. Pocket edits now
-journal frontage changes for the rolling census, with a forward/undo regression. The
-road edit and preview entry points now use upstream's owned Rayon pool, with a regression
-that disables the global pool. The
-[integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records decisions,
-baseline measurements and the road-ID renumbering. Earlier acceptance counts below describe
-their original road-chain builds.
+Upstream integration remains **unaccepted** on `feat/road-upstream-sync`. The approved
+TRAFFIC-09 redesign is implemented: junction-owned paired overlap zones, ordered per-vehicle
+claims released after tail clearance, complete downstream storage promises and border holds.
+Priority/full stops remain intact. The original 48-hour world improves from 8,225 network
+occupants / 0.098 m/s to 1,176 physical cars / 4.720 m/s plus 1,660 outside holds (2,836 raw
+occupants); plain upstream remains 944 / 9.112. A longer continuation still forms a six-road
+storage cycle of **344 cars**, with clear, unbooked crossings and no downstream space. A
+bounded follow-up audit will distinguish artificial blockages from realistic junction saturation;
+no clearance or collision check is bypassed
+([model, evidence and audit scope](traffic.md#upstream-integration-acceptance--traffic-09)).
+
+Prior-session coverage passes 2,863 library cases, all four growth integrations and 59 of 65 Godot
+suites; the same six Mac asset/rendering failures remain. All road bridges, including the
+university legacy bridge, pass. All five user-save copies preserve exact pre-merge road/topology
+fingerprints and round-trip in **v109**; real upstream v59/v107 copies round-trip too, with
+unchanged original hashes. The explicit history matrix now covers 54 historical schemas.
+Version 109 persists the tail's source connector instead of guessing it at shared exits.
+
+Both complete economy contracts still fail work-scaling gates (upstream five in 76.50 s,
+merged two in 97.22 s), while absolute limits pass. Warm-up employment/traffic diverges, so
+nominal-tier hour means do not establish equal-work performance. Five alternating PERF-06
+pairs have identical work dictionaries; 30k medians increase about 2–4%. Road locality products
+remain identical, with a measured ramp-preview constant increase from 28.0 to 30.1 ms. The
+old PERF-07 matrix remains historical and unaccepted, not validation of this model
+([fresh performance checks](traffic.md#fresh-release-acceptance-checks-for-the-zone-model)).
+
+Fresh zoning-visible captures match the pre-merge harness: Prisma 81.97→81.72 fps, KYS
+39.86→38.02, sweep 33.22→32.17. Live KYS and 10k street/overhead captures are inspected;
+they show moving cars and substantial queues, plus the existing vehicle mesh/body-length
+mismatch. Signals/gantries, mature trees and imported bridge/paint discrepancies remain.
+The [integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records
+save proofs, captures, baseline decisions and preserved upstream IDs. Pocket frontage journals
+and owned-pool road/preview entry fixes remain in place. Earlier counts below describe their
+original road-chain builds.
 
 ROAD-73's compiler repairs are complete: full KYS/Bioteknia views settle, all four original
 pockets fault signatures are zero, and 3,496 production terrain windows pass. The university

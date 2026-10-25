@@ -45,7 +45,9 @@ without writing it. With zoning visible: Prisma paused 81.73 fps, Prisma 1× 81.
 ignored local captures. Pre-merge road-chunk, six populated locality fixtures and PERF-06 ran
 successfully with eight workers. These are baseline results, not merged-build acceptance.
 
-The combined schema writes version 108 and reads upstream version 107 directly. Fresh
+The combined schema now writes version 109 and reads upstream version 107 directly. Format
+109 adds authoritative outgoing vehicle-tail connector identity for TRAFFIC-09; v108 and
+older histories explicitly initialise the missing identity to unknown. Fresh
 follow-up checks pass 15 imported-junction, 18 building-site and 40 save regressions, including
 the untouched plain-upstream v107 Kuopio fixture. Eleven road SQL fixtures now omit only the
 retired congestion column/value; authored geometry, profiles and clip values are preserved.
@@ -104,11 +106,11 @@ remain unchanged. `godot/tests/road_legacy_save_probe.gd` reproduces this using 
 #### Save histories and initialization
 
 The histories are distinguished by the v87 upstream handle-table cutover, rather than treating
-road v88–95 as scheduler saves with the same numbers. `save_history_schemas.json` records 53
+road v88–95 as scheduler saves with the same numbers. `save_history_schemas.json` records 54
 committed historical SQL checkpoints with their source commit hashes; the populated
 serialization regression loads every one and preserves buildings, households, agents, jobs,
 lane identities, road geometry and existing electricity/input accounts. Coverage restores the
-old reader's v57 minimum through upstream v107, alongside road v88–95 and current v108.
+old reader's v57 minimum through upstream v107, alongside road v88–95, combined v108 and current v109.
 A separate populated v59 backport check preserves the wage-column pair carried by the
 tracked Kuopio fixture; a partially present pair is rejected.
 
@@ -154,7 +156,8 @@ tracked Kuopio fixture; a partially present pair is rejected.
 | v105 | Retired per-edge congestion |
 | v106 | Planning setup between setup and planning slots |
 | v107 | Weather and both sky layers |
-| v108 | Combined road/scheduler authority; writer version is unchanged by this reader repair |
+| v108 | Combined road/scheduler authority from the original integration |
+| v109 | Authoritative vehicle-tail connector identity; v108 and earlier project unknown explicitly |
 
 Absent queues, rolls and scratch begin with the same owning constructors/defaults as upstream;
 the existing production load path then rebuilds indices, census/planning storage, cells, paths
@@ -186,12 +189,22 @@ and its original hash is unchanged. This supplements the five requested save pro
 The earlier four growth integrations and road/locality benchmarks remain evidence of their
 original 88133881 build; they were not repeated for this load-only migration.
 
-The controlled [TRAFFIC-09 diagnosis](traffic.md#upstream-integration-acceptance--traffic-09)
-reproduces the jam on the original road chain and isolates whole-connector conflict
-reservations as the bottleneck. A safe conflict-zone/storage redesign is required; no
-production traffic rule, collision check, fixture or gate was weakened. The requested
-large-redesign stop applies, so dense-city integration remains unaccepted despite the repaired
-legacy loading and completed matching captures.
+The approved [TRAFFIC-09 redesign](traffic.md#upstream-integration-acceptance--traffic-09)
+now compiles paired overlap zones per junction and reserves them per vehicle until tail
+clearance, alongside complete downstream storage promises. Ordered border holds prevent
+first-lane overfill. The existing road-priority and stop rules remain unchanged. The fresh
+release library suite passes **2,863 tests, zero failures, 166 ignored** (277.00 s); the agent
+group passes 162 and save group 64. The previous migration-only numbers above retain their
+original build identity. New busy-junction captures, bridge results and matched benchmarks
+are recorded with the new model's acceptance below and in `traffic.md`.
+
+The unchanged initial-world 48-hour regression now passes and fails on unchanged pre-merge
+production behavior, but **TRAFFIC-09 remains open**. A day-14 continuation exposes six full
+road lanes containing 344 cars in circular downstream-storage wait, with clear crossings
+and no zone bookings. A closed road queue consuming its final transferable
+storage is not by itself evidence of faulty reservations. The bounded follow-up audits
+artificial blockages and measures demand against throughput; relaxing clearance is not a repair. The earlier user-requested design stop was superseded by approval of the local zone
+redesign. The remaining failure and exact reproducible evidence are documented in `traffic.md`.
 
 Reproduce the save checks with `cargo test --release --lib simulation::save -- --test-threads=8`
 and `cargo clippy --all-targets` from `rust`, and
@@ -304,6 +317,107 @@ The native inventory and per-script outcomes are retained locally in `$ARTIFACTS
 script uses an isolated profile. Asset/pack suites use `-- --asset-editor`, as in `run.sh`.
 Two unchanged NumPy-dependent vegetation tooling modules could not import on this host;
 the native vegetation bridge suites ran. No engine patches or dependencies were added.
+
+#### TRAFFIC-09 follow-up road measurements — 2026-10-25
+
+Fresh serial unprofiled release comparisons use pre-merge `0cc4a2ab` and final model
+`50e0b60d`, eight Rayon workers, `METRUM_DEBUG=0`, the same Apple M2 Pro / SDK 26.5 host,
+and the unchanged commands above. All chunk ownership/signature gates and all six locality
+product gates pass. These replace neither the earlier build identities nor their historical
+measurements. Criterion point estimates:
+
+| Road chunk workload | Pre-merge | Zone model |
+| --- | ---: | ---: |
+| Targeted emission, 1 chunk | 42.576 µs | 42.238 µs |
+| Targeted emission, 1,024 chunks | 43.582 µs | 43.160 µs |
+| Full emission, 1 chunk | 40.474 µs | 40.213 µs |
+| Full emission, 1,024 chunks | 41.464 ms | 41.482 ms |
+| Dirty compile + targeted emission, 1 chunk | 133.29 µs | 136.01 µs |
+| Dirty compile + targeted emission, 1,024 chunks | 219.50 µs | 218.80 µs |
+
+Full emission is effectively equal in this pair; the earlier 32.9→42.0 ms observation is
+historical and is not reproduced by this fresh pair (both now about 41.5 ms). Dirty rows
+include cache invalidation/compilation and remain diagnostics, not pure emission timings.
+Local products remain identical at 0/1k/10k/100k remote buildings, up to 600,024 agents and
+391 extra remote roads; p50 ms at **0 / 100k** remote buildings, with repeated planning
+separated from one-time snapshots/setup:
+
+| Local product | Pre-merge | Zone model |
+| --- | ---: | ---: |
+| Paved full worker | 6.532 / 6.579 | 6.705 / 6.803 |
+| Cell full worker | 5.507 / 5.562 | 5.685 / 5.746 |
+| Pocket preview | 18.277 / 18.091 | 18.757 / 18.633 |
+| Zebra preview | 16.781 / 16.606 | 16.829 / 16.635 |
+| Roundabout preview | 43.113 / 42.430 | 43.050 / 42.613 |
+| Ramp preview | 28.193 / 27.956 | 30.229 / 30.081 |
+
+The populated-map cost stays local, but ramp preview's constant cost increases about 7–8%,
+pocket preview about 3%, and paved/cell full workers about 3–4%. These are observed complete
+merge differences; the new zone compiler's share has not been isolated. Ramp layout prep at
+100k is 62.875→83.666 µs, including the merged owned-pool dispatch. Separate one-time
+snapshot costs at 0/100k are paved 16.5/126.0→4.7/131.4 µs and cell 6.0/147.2→2.8/145.7 µs;
+these individual snapshot samples are not repeated-plan timing claims.
+
+The final full Rust library run passes 2,863 cases (166 ignored), and all four growth
+integrations pass in 141.94 s; the manual scaling integration remains ignored. The full
+library run precedes only two equivalent Clippy condition flattenings; the final release
+agent group (162 cases) and 48-hour common-world regression were rerun afterward. All-target
+Clippy is clean. Source/library SHA prefixes and all traffic-performance work/count failures
+are recorded under [TRAFFIC-09](traffic.md#fresh-release-acceptance-checks-for-the-zone-model).
+
+The final production Godot probe loads all five user copies plus upstream v59/v107 read-only,
+then writes and reloads **v109** task outputs. Every user road/topology fingerprint still
+matches the preserved pre-merge runtime output, and each v109 resave matches its first v109
+save. All five originals and input copies retain their recorded hashes. The new 54th historical
+checkpoint covers the former combined v108 writer. The complete 65-script Godot inventory
+has **59 passes and the same six Mac failures**: two asset-selection Ctrl+click assertions,
+five building-window, five dawn-paving, three plot-material, two terrain-canopy and 29
+vegetation-level assertions. All road suites and the university legacy bridge pass unchanged.
+The paired headless road-chunk upload/drain check passes: 1 changed chunk at 1,024 residents
+is 4.366→4.365 ms median, 4 changed chunks 14.330→14.326 ms, and 16 changed chunks
+58.447→57.293 ms. These are CPU/dummy-renderer measurements, not physical GPU upload times.
+
+All eight fresh matching zoning-visible PNGs were inspected alongside the pre-merge captures
+and `user-2026-10-21/prisma-1.png` / `kys-1.png`. The final library SHA prefix is
+`286e2969d4107005`; capture conditions remain 1600×1000 Metal Forward+, VSync disabled,
+uncapped, same copied `kuopio-sw-pockets`, no concurrent build/test load.
+
+| Capture, visible zoning | Pre-merge fps | Final zone-model fps |
+| --- | ---: | ---: |
+| Prisma paused | 81.73 | 81.64 |
+| Prisma 1× | 81.97 | 81.72 |
+| KYS 1× | 39.86 | 38.02 |
+| City sweep 1× | 33.22 | 32.17 |
+
+Neither run reproduces 7–12 fps. These remain single-run observations, with four PNG readbacks
+included in each sweep. Roads, medians, pockets and visible zoning retain their layout.
+The reference discrepancies remain: missing signal gantries/lights and mature trees, omitted
+KYS bridge/import detail, and retained legacy Prisma zebra paint where the current Street View
+has no zebra. The migration deliberately preserves that authored save data; this follow-up
+makes no importer repair or signalised-reference acceptance claim.
+
+`godot/tests/traffic09_capture.gd` separately loads read-only task copies, seeds 30 spaced
+native debug routes through KYS at 4× and captures street/overhead views, then loads the
+unchanged common-world 10k final save at 1×. Its overhead, street and later street frames were
+inspected: cars actually move, with inspected city car 9108 advancing 10.60 m over 5.07 real
+seconds. KYS's inspected passing car reports 13.89 m/s. The pictures also show long queues;
+they do not certify dense-city flow. Vehicle graphics can visibly interpenetrate at compact
+queue spacing: the existing simulation body is 2.6 m, while model sizing is independent
+(the procedural car alone is 4.2 m long). Zone safety assertions cover the configured physical
+body, not arbitrary rendered mesh bounds; resolving that existing mismatch is still missing.
+No collision clearance was shortened to make the captures or tests pass.
+
+Reproduce the live inspection in an isolated task profile with `METRUM_JUNCTION_SAVE` set to
+the Kuopio copy, `METRUM_TRAFFIC09_CITY_SAVE` to the new 10k task snapshot and
+`METRUM_TRAFFIC09_CAPTURE_OUTPUT` to a fresh capture directory:
+
+```sh
+perl -e 'alarm 900; exec @ARGV' godot --path "$ISOLATED_PROJECT" \
+  --script res://tests/traffic09_capture.gd
+```
+
+All launched Godot processes exit; captures, generated UIDs and screenshot LFS noise remain
+unstaged. Player saves and mods are never the output of a probe or capture.
 
 Road tops now share world-space paving sampling and matte Lambert lighting with authored
 plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.

@@ -948,9 +948,11 @@ The later `cfcb2bd3` migration restores both save histories, with 2,848 passing 
 cases and 59/65 native suites (six existing Mac failures). Its matched-initial-world traffic
 experiment reproduces the jam on `0cc4a2ab` and identifies coarse connector conflict
 reservations as the throughput bottleneck; see [TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09)
-for controls, default full-contract reruns and the requested redesign stop. No scheduler,
+for the original controls and subsequent approved zone redesign. No scheduler,
 production movement rule or budget threshold was weakened. The six-tier frame-budget matrix
-below remains evidence of its original build; it was not repeated for the reader-only repair.
+below remains evidence of its original build; it was not repeated for the reader repair or
+the TRAFFIC-09 zone follow-up. Fresh full contracts and repeated PERF-06 results are recorded
+in the traffic specification; the new model still has a separate full-road storage-cycle failure.
 The actual migrated-city frame captures are recorded in [roads.md](roads.md#upstream-integration-checkpoint--2026-10-24).
 
 The earlier full-day, unprofiled release runs compare plain upstream `b75e03c9` with merged Rust
