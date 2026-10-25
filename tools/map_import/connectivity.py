@@ -22,11 +22,16 @@ def read_save(path):
         shapes = defaultdict(list)
         for i, x, y, z in c.execute('SELECT edge_id,x,y,z FROM network_edge_geometry WHERE physical=0 ORDER BY edge_id,point_index'):
             shapes[i].append([x, y, z])
-        edges = [dict(zip(('id', 'a', 'b', 'fwd', 'bkw', 'class', 'median_style', 'median_width', 'length_m'), row))
-                 for row in c.execute('SELECT edge_id,start_node,end_node,fwd_lanes,bkw_lanes,class,median_style,median_width,physical_length FROM network_edges WHERE fwd_lanes+bkw_lanes>0')]
+        edges = [dict(zip(('id', 'a', 'b', 'fwd', 'bkw', 'class', 'median_style', 'median_width', 'length_m', 'start_clip', 'end_clip'), row))
+                 for row in c.execute('SELECT edge_id,start_node,end_node,fwd_lanes,bkw_lanes,class,median_style,median_width,physical_length,start_clip,end_clip FROM network_edges WHERE fwd_lanes+bkw_lanes>0')]
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         marked = set(c.execute('SELECT node_id,edge_id FROM road_crosswalks WHERE marked=1')) if 'road_crosswalks' in tables else set()
+        tapers = defaultdict(dict)
+        if 'road_lane_tapers' in tables:
+            for eid, end, run, left, right, fwd, bkw in c.execute('SELECT edge_id,end_index,length_m,left_pocket,right_pocket,from_fwd,from_bkw FROM road_lane_tapers'):
+                tapers[eid][end] = {'length_m': run, 'pocket': bool(left or right), 'from_fwd': fwd, 'from_bkw': bkw}
         for e in edges:
+            e['tapers'] = tapers[e['id']]
             e['points'] = shapes[e['id']]
             e['marked_nodes'] = [n for n in (e['a'], e['b']) if (n, e['id']) in marked]
     return nodes, edges

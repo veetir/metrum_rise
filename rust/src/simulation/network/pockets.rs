@@ -172,7 +172,7 @@ impl PocketLayout {
         }
         if !length.is_finite()
             || !taper.is_finite()
-            || !(60.0..=300.0).contains(&length)
+            || !(12.0..=300.0).contains(&length)
             || !(12.0..=100.0).contains(&taper)
         {
             return Err("invalid_pocket_dimensions");
@@ -217,12 +217,11 @@ impl PocketLayout {
         };
         if base.lane_tapers.as_ref().is_some_and(|ends| {
             ends[usize::from(!at_start)].is_some()
-                || ends[usize::from(at_start)]
-                    .is_some_and(|far| span + far.length_m + 12.0 >= total)
+                || ends[usize::from(at_start)].is_some_and(|far| span + far.length_m + 0.5 > total)
         }) {
             return Err("pocket_overlaps_transition");
         }
-        if span + far_clip + 12.0 >= total {
+        if span + far_clip + 0.5 > total {
             return Err("pocket_road_too_short");
         }
         let split = if at_start { span } else { total - span };
@@ -805,6 +804,68 @@ mod tests {
         layout.apply(&mut graph);
         graph.edge_mut(0).lane_tapers.as_mut().unwrap()[0] = Some(far);
         request.left = true;
+        assert!(matches!(
+            PocketLayout::prepare(&graph, request),
+            Err("pocket_overlaps_transition")
+        ));
+    }
+
+    #[test]
+    fn compact_left_pocket_preserves_a_close_remote_transition() {
+        let mut graph = RegionGraph::new();
+        let junction = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(68.0, 0.0, 0.0), NodeType::LaneTransition);
+        let far = RoadLaneTaper {
+            length_m: 28.0,
+            from_fwd: 2,
+            from_bkw: 2,
+            from_median_m: 6.0,
+            left_pocket: false,
+            right_pocket: false,
+        };
+        let road = Edge {
+            start_node: junction,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 20.0,
+            geometry: vec![Vector3::ZERO, graph.node(end).pos],
+            physical_geometry: vec![Vector3::ZERO, graph.node(end).pos],
+            physical_length: 68.0,
+            median: super::super::graph::RoadMedian::from_tool(2, 6.0).unwrap(),
+            lane_tapers: Some(Box::new([None, Some(far)])),
+            ..Default::default()
+        };
+        graph.add_edge(road.clone());
+        for z in [-100.0, 100.0] {
+            let node = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+            graph.add_edge(Edge {
+                end_node: node,
+                geometry: vec![Vector3::ZERO, graph.node(node).pos],
+                physical_geometry: vec![Vector3::ZERO, graph.node(node).pos],
+                physical_length: 100.0,
+                lane_tapers: None,
+                ..road.clone()
+            });
+        }
+        let mut request = PocketRequest {
+            edge: 0,
+            at_start: true,
+            left: true,
+            right: false,
+            length: 12.0,
+            taper: 12.0,
+        };
+        let layout = PocketLayout::prepare(&graph, request).unwrap();
+        assert_eq!(layout.pieces[0].bkw_lanes, 3);
+        assert_eq!(
+            layout.pieces[1].lane_tapers.as_deref(),
+            Some(&[None, Some(far)])
+        );
+        assert_eq!(layout.pieces[0].width, road.width);
+        request.length = 20.0;
         assert!(matches!(
             PocketLayout::prepare(&graph, request),
             Err("pocket_overlaps_transition")

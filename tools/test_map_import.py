@@ -220,6 +220,45 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
 
 
 class PocketLaneTest(unittest.TestCase):
+    def test_bus_intent_removes_only_a_pocket_with_the_same_source_base(self):
+        from tools.map_import.pockets import bus_section_pocket_removals
+        edge = {'id': 7, 'source': {'bus_masks': [4, 4], 'fwd_lanes': 3, 'bkw_lanes': 3},
+                'tapers': {1: {'pocket': True, 'from_fwd': 3, 'from_bkw': 3}}}
+        action, = bus_section_pocket_removals([edge])
+        self.assertEqual((action['edge'], action['at_start'], action['left'], action['right']),
+                         (7, True, False, False))
+        edge['tapers'][1]['from_bkw'] = 2
+        self.assertEqual(bus_section_pocket_removals([edge]), [])
+        edge['tapers'][1]['from_bkw'] = 3
+        edge['source']['bus_masks'] = [0, 0]
+        self.assertEqual(bus_section_pocket_removals([edge]), [])
+
+    def test_compact_left_storage_fits_the_exact_clips_in_either_direction(self):
+        from tools.map_import.pockets import fit_compact_left_pocket
+        for at_start in (True, False):
+            near = 0 if at_start else 1
+            edge = {'length_m': 68.139946, 'start_clip': 15.3285, 'end_clip': 27.256926,
+                    'tapers': {1: {'length_m': 27.256926, 'pocket': False}}}
+            if not at_start:
+                edge['start_clip'], edge['end_clip'] = edge['end_clip'], edge['start_clip']
+                edge['tapers'] = {0: edge['tapers'][1]}
+            action = {'at_start': at_start, 'left': True, 'right': False,
+                      'pocket_m': 70, 'taper_m': 20}
+            fit_compact_left_pocket(action, edge)
+            self.assertEqual(action['pocket_m'], 12)
+            self.assertGreaterEqual(action['taper_m'], 12)
+            self.assertLessEqual(action['pocket_m'] + action['taper_m'] + 15.3285 + 27.256926 + .5,
+                                 edge['length_m'])
+            self.assertEqual(edge['tapers'][1-near]['length_m'], 27.256926)
+
+    def test_compact_fit_does_not_reinterpret_a_protected_near_taper_or_widened_road(self):
+        from tools.map_import.pockets import fit_compact_left_pocket
+        edge = {'length_m': 68, 'tapers': {0: {'length_m': 28, 'pocket': False}}}
+        for left, right in ((True, False), (True, True), (False, True)):
+            action = {'at_start': True, 'left': left, 'right': right, 'pocket_m': 70, 'taper_m': 20}
+            fit_compact_left_pocket(action, edge)
+            self.assertEqual((action['pocket_m'], action['taper_m']), (70, 20))
+
     def test_directional_turn_tags_keep_travel_order(self):
         from tools.map_import.pockets import turn_lanes
         p = {'oneway': 0, 'lanes_forward': 3, 'lanes_backward': 2,

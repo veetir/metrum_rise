@@ -356,6 +356,24 @@ fn approach_needs_arrows(
     })
 }
 
+// The existing glyph spans five metres. Compact storage keeps 1.5 m at the
+// upstream end and the actual zebra corridor clear; ordinary placements stay exact.
+fn approach_arrow_stations(length: f32, zebra: bool) -> [Option<f32>; 2] {
+    if length >= 20.0 {
+        return [Some(12.0), (length >= 50.0).then_some(42.0)];
+    }
+    let minimum_back = if zebra {
+        config::CROSSWALK_INSET
+            + CROSSWALK_STRIPE_LEN * 0.5
+            + LANE_MARKING_CROSSWALK_CLEARANCE_M
+            + 2.5
+    } else {
+        4.0
+    };
+    let back = (length * 0.5).max(minimum_back);
+    [(back <= length - 4.0).then_some(back), None]
+}
+
 fn emit_approach_arrows(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
@@ -380,10 +398,10 @@ fn emit_approach_arrows(
         if mask == 0 || !approach_needs_arrows(graph, lanes, lane, ids, end, mask) {
             continue;
         }
-        for back in [12.0, 42.0] {
-            if lane.length < back + 8.0 {
-                continue;
-            }
+        for back in approach_arrow_stations(lane.length, graph.arm_has_zebra(end, edge))
+            .into_iter()
+            .flatten()
+        {
             let center = lane_point(lane, lane.length - back);
             let Some(forward) = (lane_point(lane, lane.length - back + 1.0)
                 - lane_point(lane, lane.length - back - 1.0))
@@ -631,6 +649,19 @@ pub(super) fn emit_marking_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_approach_arrows_fit_before_the_real_zebra() {
+        assert_eq!(approach_arrow_stations(8.0, false), [Some(4.0), None]);
+        assert_eq!(approach_arrow_stations(7.9, false), [None, None]);
+        assert_eq!(approach_arrow_stations(12.0, true), [Some(8.0), None]);
+        assert_eq!(approach_arrow_stations(11.9, true), [None, None]);
+        assert_eq!(approach_arrow_stations(20.0, true), [Some(12.0), None]);
+        assert_eq!(
+            approach_arrow_stations(50.0, false),
+            [Some(12.0), Some(42.0)]
+        );
+    }
+
     #[test]
     fn shallow_ramp_exits_keep_directional_arrows_in_both_stored_directions() {
         for sign in [1.0, -1.0] {

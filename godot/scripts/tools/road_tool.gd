@@ -351,7 +351,7 @@ func adjust_pocket_length(delta: float, taper: bool) -> void:
 	if taper:
 		pocket_taper = clampf(pocket_taper + delta * 5.0, 12.0, 100.0)
 	else:
-		pocket_length = clampf(pocket_length + delta * 10.0, 60.0, 300.0)
+		pocket_length = clampf(pocket_length + delta * 10.0, 12.0, 300.0)
 	_pocket_preview_key = []
 	_refresh_cross_section_label()
 

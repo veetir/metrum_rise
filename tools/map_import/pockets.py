@@ -33,6 +33,52 @@ def turn_lanes(properties):
     return result
 
 
+def fit_compact_left_pocket(action, edge):
+    """Fit source storage between exact existing clips; a left pocket keeps roadbed width.
+
+    Twelve metres of storage and taper are the native compact minima. Keep the
+    compiler's 0.5 m retained span, and source dimensions at millimetre precision.
+    Right pockets widen the footprint and still require the normal width preview.
+    """
+    if not action['left'] or action['right']:
+        return
+    near = 0 if action['at_start'] else 1
+    tapers = edge.get('tapers', {})
+    if near in tapers or any(t['pocket'] for t in tapers.values()):
+        return
+    clips = [edge.get('start_clip', 0), edge.get('end_clip', 0)]
+    far = max(clips[1-near], tapers.get(1-near, {}).get('length_m', 0))
+    room = edge['length_m'] - clips[near] - far - 0.5
+    taper = min(action['taper_m'], room - 12.0)
+    storage = min(action['pocket_m'], room - taper)
+    if storage >= 12.0 and taper >= 12.0:
+        action['pocket_m'] = math.floor(storage * 1000) / 1000
+        action['taper_m'] = math.floor(taper * 1000) / 1000
+
+
+def bus_section_pocket_removals(edges):
+    """Undo an imported pocket only when its base exactly matches authored bus intent.
+
+    The current tool cannot author bus ranks together with a pocket. Preserve the
+    source/survey bus section instead of creating an extra lane that blocks it.
+    """
+    actions = []
+    for e in edges:
+        source = e.get('source', {})
+        if not any(source.get('bus_masks', [])):
+            continue
+        counts = [source['fwd_lanes'], source['bkw_lanes']]
+        if not e.get('source_forward', True):
+            counts.reverse()
+        for end, taper in e.get('tapers', {}).items():
+            if taper['pocket'] and [taper['from_fwd'], taper['from_bkw']] == counts:
+                actions.append({'kind': 'pocket', 'edge': e['id'], 'at_start': end == 1,
+                                'left': False, 'right': False, 'pocket_m': 12, 'taper_m': 12,
+                                'reason': 'restore_authored_bus_cross_section',
+                                'source_ids': source.get('source_ids', [])})
+    return actions
+
+
 def prepare(path, plan, features):
     nodes, edges = read_save(path)
     _, incident = topology(nodes, edges)
@@ -88,6 +134,11 @@ def prepare(path, plan, features):
                 record['reason'] = 'no_matching_saved_junction_within_carriageway_limit'
                 continue
             gap, _, n, at_start, e = min(choices)
+
+            if any(e['source'].get('bus_masks', [])):
+                record.update(edge=e['id'], junction=n, at_start=at_start, source_gap_m=gap,
+                              reason='bus_section_requires_combined_pocket_rank_authoring')
+                continue
             lanes = spec['lanes']
             left = bool(lanes and lanes[0] and all(t in ('left', 'slight_left', 'sharp_left') for t in lanes[0]))
             right = bool(lanes and lanes[-1] and all(t in ('right', 'slight_right', 'sharp_right') for t in lanes[-1]))
@@ -104,11 +155,22 @@ def prepare(path, plan, features):
             if not action['left'] and not right:
                 record['reason'] = record['reason'] or 'no_exclusive_pocket_lane'
                 continue
+            incoming = e['bkw'] if at_start else e['fwd']
+            if incoming == len(lanes):
+                record['reason'] = 'saved_approach_already_has_source_lane_count'
+                continue
+            base = next((t['from_bkw' if at_start else 'from_fwd']
+                         for t in e.get('tapers', {}).values() if t['pocket']), incoming)
+            action['base_lanes'] = base
+            if base + int(action['left']) + int(action['right']) != len(lanes):
+                record['reason'] = 'source_through_count_mismatch'
+                continue
+            fit_compact_left_pocket(action, e)
             key = e['id'], at_start
             score = (gap, -int(left)-int(right), f['id'])
             if key not in selected or score < selected[key][0]:
                 selected[key] = score, action
-    return {'actions': [v[1] for _, v in sorted(selected.items())], 'source_audit': audit}
+    return {'actions': bus_section_pocket_removals(edges) + [v[1] for _, v in sorted(selected.items())], 'source_audit': audit}
 
 
 def movement(incoming, outgoing):
