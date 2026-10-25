@@ -180,19 +180,17 @@ impl Reservations {
                         .first()
                         .and_then(|&out| buckets.get(out))
                         .and_then(|b| b.first())
-                    {
-                        if f64::from(d) - f64::from(CAR_LENGTH)
+                        && f64::from(d) - f64::from(CAR_LENGTH)
                             < f64::from(zone.exit) - f64::from(lanes.lanes[id].length)
-                        {
-                            let source = agents.tail_connector_lane_id[a];
-                            if source == u32::MAX {
-                                self.seed(zone.id, OUTGOING_TAIL);
-                            } else if source as usize == id {
-                                let slot = self.slot(a, id).unwrap_or_else(|| {
-                                    self.register(a, id, lanes.lanes[id].length + d, FREE, false)
-                                });
-                                self.seed(zone.id, slot);
-                            }
+                    {
+                        let source = agents.tail_connector_lane_id[a];
+                        if source == u32::MAX {
+                            self.seed(zone.id, OUTGOING_TAIL);
+                        } else if source as usize == id {
+                            let slot = self.slot(a, id).unwrap_or_else(|| {
+                                self.register(a, id, lanes.lanes[id].length + d, FREE, false)
+                            });
+                            self.seed(zone.id, slot);
                         }
                     }
                 }
@@ -449,10 +447,10 @@ impl Reservations {
         {
             return;
         }
-        if let Some(slot) = self.slot(agent, connector) {
-            if self.vehicles[slot].inside.swap(false, Ordering::Relaxed) {
-                self.path_state[connector].fetch_sub(1, Ordering::Relaxed);
-            }
+        if let Some(slot) = self.slot(agent, connector)
+            && self.vehicles[slot].inside.swap(false, Ordering::Relaxed)
+        {
+            self.path_state[connector].fetch_sub(1, Ordering::Relaxed);
         }
         let old = self.exits[out].fetch_sub(1, Ordering::Relaxed);
         debug_assert!(
