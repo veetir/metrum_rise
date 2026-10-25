@@ -16,6 +16,7 @@ import bisect
 import math
 
 from .geometry import distance
+from .mapping import POLICY
 from .conflate import SegmentIndex
 
 
@@ -89,8 +90,52 @@ def prepare_structure_profiles(strokes, terrain):
             start, end = heights[a], heights[b]
             for i in range(a, b+1):
                 heights[i] = start+(end-start)*(stations[i]-stations[a])/(stations[b]-stations[a])
+        if s.get('bridge'):
+            # A DEM samples the lower road even at a short deck's OSM endpoints.
+            # Recover the supports outside that data-resolution footprint, then
+            # interpolate the whole deck without a place-specific height offset.
+            halo = terrain.cell * POLICY['bridge_bank_halo_cells']
+            a, b = points[0], points[-1]
+            u = (a[0]-points[1][0], a[1]-points[1][1])
+            v = (b[0]-points[-2][0], b[1]-points[-2][1])
+            ur, vr = math.hypot(*u), math.hypot(*v)
+            if ur and vr:
+                supports = [(a[0]+u[0]*halo/ur, a[1]+u[1]*halo/ur),
+                            (b[0]+v[0]*halo/vr, b[1]+v[1]*halo/vr)]
+                start, end = map(terrain.at, supports)
+                heights = [start+(end-start)*(halo+station)/(stations[-1]+2*halo) for station in stations]
+                s['bridge_support_points_xyz'] = [[q[0], y, q[1]] for q, y in zip(supports, (start, end))]
         s['points_xyz'] = [[p[0], round(y, 6), p[1]] for p, y in zip(points, heights)]
         s['profile_authority'] = 'source_bridge_bank_chord' if s.get('bridge') else 'source_lower_crossing_chord'
+    # Source-shared ordinary approaches use the same deck endpoint and resume
+    # sampled ground outside the support halo. The Rust standard solver smooths
+    # these supplied targets before the layered clearance envelope is applied.
+    deck_ends = {tuple(s['points_xz'][i]): s['points_xyz'][i][1] for s in strokes
+                 if s.get('bridge') and 'points_xyz' in s for i in (0, -1)}
+    for s in strokes:
+        if s.get('bridge'):
+            continue
+        points = s['points_xz']
+        ends = [i for i in (0, -1) if tuple(points[i]) in deck_ends]
+        if not ends:
+            continue
+        stations = [0.0]
+        for a, b in zip(points, points[1:]):
+            stations.append(stations[-1]+distance(a, b))
+        heights = [p[1] for p in s['points_xyz']] if 'points_xyz' in s else [terrain.at(p) for p in points]
+        for i in ends:
+            heights[i] = deck_ends[tuple(points[i])]
+        halo = terrain.cell * POLICY['bridge_bank_halo_cells']
+        for i in ends:
+            a, b = (0, min(len(points)-1, bisect.bisect_left(stations, halo))) if i == 0 else (
+                max(0, bisect.bisect_right(stations, stations[-1]-halo)-1), len(points)-1)
+            if stations[b] <= stations[a]:
+                continue
+            start, end = heights[a], heights[b]
+            for j in range(a, b+1):
+                heights[j] = start+(end-start)*(stations[j]-stations[a])/(stations[b]-stations[a])
+        s['points_xyz'] = [[p[0], round(y, 6), p[1]] for p, y in zip(points, heights)]
+        s['profile_authority'] = 'source_bridge_approach_chord'
     # Install decks before ordinary roads pin the source joints to the ground below.
     # Paths remain after motor topology, including their independent bridge decks.
     strokes.sort(key=lambda s: (s['kind'] == 'footpath', not s.get('bridge', False), s['priority'], s['id']))

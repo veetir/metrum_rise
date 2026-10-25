@@ -73,6 +73,45 @@ enum TerminalExtensionEndpoint {
 }
 
 impl RoadSurfaceSystem {
+    /// Conditions dense source alignments with the existing terrain/profile solver while
+    /// pinning both supplied endpoint heights. This runs before imported layer clearance;
+    /// nearby structural owners must not bypass terrain-noise smoothing or capture interior pins.
+    /// Fixed-pass work and scratch remain O(P), with no simulation-tick work.
+    pub(crate) fn prepare_source_road_profile(raw: &[Vector3]) -> Vec<Vector3> {
+        let Some(&first) = raw.first() else {
+            return Vec::new();
+        };
+        let mut samples = vec![RoadVerticalProfileSample {
+            x: first.x,
+            z: first.z,
+            target_y: first.y,
+            y: first.y,
+            pinned: true,
+        }];
+        for pair in raw.windows(2) {
+            let steps =
+                (Self::xz_distance(pair[0], pair[1]) / ROAD_PROFILE_SAMPLE_STEP_M).ceil() as usize;
+            for step in 1..=steps {
+                let point = pair[0].lerp(pair[1], step as f32 / steps as f32);
+                samples.push(RoadVerticalProfileSample {
+                    x: point.x,
+                    z: point.z,
+                    target_y: point.y,
+                    y: point.y,
+                    pinned: false,
+                });
+            }
+        }
+        if let Some(last) = samples.last_mut() {
+            last.pinned = true;
+        }
+        Self::solve_standard_road_profile(&mut samples);
+        samples
+            .into_iter()
+            .map(|p| Vector3::new(p.x, p.y, p.z))
+            .collect()
+    }
+
     /// Prepares road-tool input into the physical geometry used by preview and committed roads.
     ///
     /// Standard roads keep the authored XZ alignment, are densified against terrain samples, and
@@ -920,6 +959,32 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_conditioning_removes_dense_height_noise_and_preserves_structural_endpoint_pins() {
+        let mut raw: Vec<_> = (0..=15)
+            .map(|i| {
+                Vector3::new(
+                    -30.0 + i as f32 * 4.0,
+                    if i % 2 == 0 { 0.2 } else { -0.2 },
+                    0.0,
+                )
+            })
+            .collect();
+        raw[0].y = 1.0;
+        raw.last_mut().unwrap().y = 1.0;
+        let result = RoadSurfaceSystem::prepare_source_road_profile(&raw);
+        assert_eq!(result[0], raw[0]);
+        assert_eq!(result.last(), raw.last());
+        let variation = |points: &[Vector3]| {
+            points
+                .windows(2)
+                .map(|p| (p[1].y - p[0].y).abs())
+                .sum::<f32>()
+        };
+        assert!(variation(&result) < variation(&raw) * 0.75);
+        assert!(result.iter().all(|p| (-0.2..=1.0).contains(&p.y)));
+    }
 
     #[test]
     fn feasible_endpoints_do_not_flatten_an_interior_hill_or_valley() {

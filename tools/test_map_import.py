@@ -286,12 +286,12 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
                      points_xz=[(0, -50), (0, 50)])
         lower = dict(id='lower', kind='road', priority=1, bridge=False, layer=0,
                      points_xz=[(-100, 0), (-50, 0), (0, 0), (50, 0), (100, 0)])
-        terrain = Mock()
+        terrain = Mock(cell=10)
         terrain.at.side_effect = lambda p: 10 if p[0] == 0 else 1
         prepare_structure_profiles([upper, lower], terrain)
         self.assertEqual(lower['profile_authority'], 'source_lower_crossing_chord')
         self.assertEqual([p[1] for p in lower['points_xyz']], [1]*5)
-        self.assertEqual(terrain.at.call_count, 7)
+        self.assertEqual(terrain.at.call_count, 9)
 
     def test_crossing_smoothing_does_not_flatten_a_distant_hill(self):
         from tools.map_import.structures import prepare_structure_profiles
@@ -300,10 +300,25 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
                      points_xz=[(0, -50), (0, 50)])
         lower = dict(id='lower', kind='road', priority=1, bridge=False, layer=0,
                      points_xz=[(x, 0) for x in range(-500, 501, 10)])
-        terrain = Mock()
+        terrain = Mock(cell=10)
         terrain.at.side_effect = lambda p: 30 if p[0] == 300 else 0
         prepare_structure_profiles([upper, lower], terrain)
         self.assertEqual(next(p[1] for p in lower['points_xyz'] if p[0] == 300), 30)
+
+    def test_short_deck_uses_supports_outside_the_dem_void_and_continuous_approaches(self):
+        from tools.map_import.structures import prepare_structure_profiles
+        from unittest.mock import Mock
+        deck = dict(id='deck', kind='road', priority=0, bridge=True, layer=1,
+                    points_xz=[(0, 0), (10, 0), (20, 0)])
+        approach = dict(id='approach', kind='road', priority=0, bridge=False, layer=0,
+                        points_xz=[(20, 0), (25, 0), (30, 0), (40, 0), (80, 0)])
+        terrain = Mock(cell=10)
+        terrain.at.side_effect = lambda p: 84 if 0 <= p[0] <= 30 else 89
+        prepare_structure_profiles([deck, approach], terrain)
+        self.assertEqual([p[1] for p in deck['points_xyz']], [89, 89, 89])
+        self.assertEqual([p[1] for p in approach['points_xyz']], [89]*5)
+        self.assertEqual(approach['points_xyz'][0], deck['points_xyz'][-1])
+        self.assertEqual(approach['profile_authority'], 'source_bridge_approach_chord')
 
     def test_bridge_profile_spans_dem_valley_and_precedes_approaches(self):
         from tools.map_import.structures import prepare_structure_profiles
@@ -312,15 +327,15 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
                       points_xz=[(0, 0), (25, 0), (50, 0), (75, 0), (100, 0)])
         ground = dict(id='a', kind='road', priority=0, bridge=False, layer=0,
                       points_xz=[(-100, 0), (0, 0)])
-        terrain = Mock()
-        terrain.at.side_effect = lambda p: {0: 90, 100: 92}.get(p[0], 80)
+        terrain = Mock(cell=10)
+        terrain.at.side_effect = lambda p: 80 if 20 < p[0] < 80 else 90+p[0]*.02
         result = prepare_structure_profiles([ground, bridge], terrain)
         self.assertIs(result[0], bridge)
         self.assertEqual([p[1] for p in bridge['points_xyz']], [90, 90.5, 91, 91.5, 92])
         self.assertEqual(bridge['endpoint_levels'][0], [0, 1])
         self.assertEqual(ground['endpoint_levels'][-1], [0, 1])
-        self.assertNotIn('points_xyz', ground)
-        self.assertEqual(terrain.at.call_count, 5)
+        self.assertEqual(ground['points_xyz'][-1], bridge['points_xyz'][0])
+        self.assertEqual(terrain.at.call_count, 9)
 
     def test_two_lane_ring_explicitly_records_single_lane_limit(self):
         f = feature('ring', [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)], ['a', 'b', 'c', 'd', 'a'], roundabout=True, lanes=2)

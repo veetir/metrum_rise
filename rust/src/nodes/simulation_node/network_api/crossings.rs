@@ -6,6 +6,15 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Smooths dense imported terrain samples with the ordinary profile solver, preserving
+    /// supplied structural endpoint heights. Apply source-layer clearance after this step.
+    #[func]
+    pub fn prepare_source_road_profile(&self, points: PackedVector3Array) -> PackedVector3Array {
+        PackedVector3Array::from(
+            RoadSurfaceSystem::prepare_source_road_profile(points.as_slice()).as_slice(),
+        )
+    }
+
     /// Solves a crossing's grounded approaches and clearance in Rust. The returned points
     /// and layer must be supplied unchanged to the existing road preview/commit entry points.
     /// Refuses strokes with insufficient approach length instead of moving their endpoints.

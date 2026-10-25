@@ -27,7 +27,7 @@ POLICY = {'parallel_distance_m': 35.0, 'parallel_angle_deg': 30.0,
           'endpoint_snap_m': 12.0, 'dead_end_path_m': 100.0,
           'standalone_path_min_m': 65.0,
           'water_margin_m': 1.0, 'roundabout_max_diameter_m': 90.0,
-          'roundabout_min_circularity': 0.85,
+          'roundabout_min_circularity': 0.85, 'bridge_bank_halo_cells': 2,
           'minor_default_lanes': [1, 1]}
 
 
