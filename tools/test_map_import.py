@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 from tools.map_import.cli import validate_outcome
-from tools.map_import.geometry import build_strokes, clip_line, point_segment_distance, radius_audit, simplify
+from tools.map_import.geometry import build_strokes, clip_line, distance, point_segment_distance, radius_audit, simplify
 from tools.map_import.mapping import map_role, table
 from tools.map_import.conflate import collapse_roundabouts, conflate, prepare_streets, snap_endpoints, prune_stubs
 from tools.map_import.water import WaterMask
@@ -653,7 +653,7 @@ class ConflationTest(unittest.TestCase):
 
     def test_section_joint_prefers_paired_midline_over_an_unshifted_chain_end(self):
         from tools.map_import.medians import merge_carriageways
-        fs = [feature('a', [(100, -5), (400, -5)], ['join', 'end'], road_class='primary', name='Main', oneway=1),
+        fs = [feature('a', [(100, -5), (102, -5), (104, -5), (150, -5), (400, -5)], ['join', 'a2', 'a4', 'a50', 'end'], road_class='primary', name='Main', oneway=1),
               feature('a_return', [(400, 5), (160, 5)], road_class='primary', name='Main', oneway=1),
               feature('b', [(0, -5), (100, -5)], ['start', 'join'], road_class='primary', name='Main', oneway=1, survey_cross_section='section'),
               feature('b_return', [(100, 5), (0, 5)], road_class='primary', name='Main', oneway=1, survey_cross_section='section')]
@@ -661,6 +661,9 @@ class ConflationTest(unittest.TestCase):
         by_id = {f['id']: f for f, _ in result}
         self.assertEqual(by_id['a']['points'][0], (100, 0))
         self.assertEqual(by_id['b']['points'][-1], (100, 0))
+        self.assertGreaterEqual(distance(by_id['a']['points'][1], (100, 0)), 8.25)
+        self.assertNotIn((102, -5), by_id['a']['points'])
+        self.assertNotIn((104, -5), by_id['a']['points'])
         self.assertEqual(merge_carriageways(list(map(road, reversed(fs))), {})[0], result)
         # A different named axis retains the source junction authority; its paired
         # sample must not move the other road's physical crossing onto that axis.

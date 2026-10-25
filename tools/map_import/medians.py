@@ -12,7 +12,7 @@ from copy import deepcopy
 import math
 import statistics
 
-from .geometry import distance, simplify
+from .geometry import distance, roadbed_half_width, simplify
 from .mapping import POLICY
 
 
@@ -174,11 +174,21 @@ def merge_carriageways(roads, decisions):
             identity = (f['properties'].get('name') or f['properties'].get('ref'), f['properties']['road_class'])
             if node not in joints or (paired and not joints[node][1] and identity == joints[node][2]):
                 joints[node] = point, paired, identity
-    for f, _ in retained:
+    for f, m in retained:
         for end, node in zip((0, -1), f.pop('_source_end_nodes')):
             q = joints[node][0]
+            moved = distance(f['points'][end], q) > .01
             f['points'][end] = q
             f['node_ids'][end] = f'median/{q[0]:.3f}/{q[1]:.3f}'
+            if moved:
+                # Reattachment replaces the old carriageway mouth. Its controls
+                # inside the new roadbed footprint cannot define a separate bend
+                # before the retained outside alignment resumes.
+                half = roadbed_half_width({'kind': 'road', **m})
+                adjacent = 1 if end == 0 else -2
+                while len(f['points']) > 2 and distance(f['points'][adjacent], q) < half:
+                    f['points'].pop(adjacent)
+                    f['node_ids'].pop(adjacent)
     median_index = SegmentIndex((f['id'], f['points'], f) for f, _ in retained)
     for f, m in roads:
         chain = by_source.get(f['id'])
