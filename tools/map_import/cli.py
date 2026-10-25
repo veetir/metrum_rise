@@ -115,9 +115,6 @@ def prepare(args):
     road_surveys = apply_road_surveys(roads, args.include_park_paths)
     roundabouts = collapse_roundabouts(working, roads, decisions)
     roads, conflation = conflate(roads, decisions)
-    from .medians import simplify_prisma
-    prisma = tuple(round(v, 3) for v in transform.world(*tm35fin(62.887133, 27.629350)))
-    roads, conflation['prisma'] = simplify_prisma(roads, prisma, decisions)
     roads, access_survey = university_access(roads, decisions)
     conflation['university_access'] = access_survey
     conflation['service_circulation'] = service_circulation
@@ -127,7 +124,7 @@ def prepare(args):
     conflation['road_surveys'] = road_surveys
     strokes, preparation, endpoint_snaps = prepare_streets(roads, box, args.simplify_m)
     strokes = prune_stubs(strokes, preparation['discarded'])
-    strokes = prepare_curves(strokes, features, [{'name': 'Savilahdentie', 'centre_xz': prisma, 'radius_m': 75}],
+    strokes = prepare_curves(strokes, features, (),
                              [r['centre_xz'] for r in roundabouts if r['status'] == 'planned'])
     prepare_structure_profiles(strokes, TerrainGrid(args.world))
     preparation.update(conflation=conflation, endpoint_snaps=endpoint_snaps, water=[], water_fills=[])

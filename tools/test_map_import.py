@@ -996,18 +996,17 @@ class ConflationTest(unittest.TestCase):
         prepare_curves(strokes, fs)
         self.assertEqual(sum(s['bridge'] for s in strokes), 1)
 
-    def test_prisma_divided_arms_share_a_straight_throat(self):
-        from tools.map_import.medians import simplify_prisma
-        fs = [feature('main', [(-30, -100), (-14, -50), (2, -10), (8, 20), (20, 60), (35, 100)], name='Savilahdentie'),
-              feature('west', [(-150, 0), (-50, 0), (-10, 2)], name='Sarastuskaari')]
-        result, audit = simplify_prisma(list(map(road, fs)), (0, 0), {})
-        main, west = [f for f, _ in result]
-        self.assertIn((0, 0), main['points'])
-        self.assertEqual(west['points'][-1], (0, 0))
-        self.assertIn('junction/prisma', main['node_ids'])
-        axis = audit[-1]['axis_xz']
-        for x, z in main['points'][1:-1]:
-            self.assertAlmostEqual(x*axis[1]-z*axis[0], 0, delta=.001)
+    def test_source_links_are_not_removed_or_relocated_at_a_named_junction(self):
+        fs = [feature('main', [(-30, -100), (0, 0), (20, 100)], ['a', 'j', 'b'], name='Arterial'),
+              feature('slip', [(-100, 0), (-40, 10), (0, 0)], ['s', 'curve', 'j'],
+                      road_class='primary_link', oneway=1),
+              feature('bus', [(0, 0), (20, -20), (100, 0)], ['j', 'turn', 'out'],
+                      road_class='primary_link', oneway=1, bus_only=True, access='no')]
+        original = copy.deepcopy(fs)
+        result, _ = conflate(list(map(road, fs)), {})
+        self.assertEqual({f['id']: f['points'] for f, _ in result},
+                         {f['id']: f['points'] for f in original})
+        self.assertEqual(next(m for f, m in result if f['id'] == 'bus')['bus_masks'], [1, 0])
 
     def test_near_miss_inserts_shared_junction(self):
         roads = [road(feature('a', [(0, 0), (100, 0)])), road(feature('b', [(50, 5), (50, 80)]))]
