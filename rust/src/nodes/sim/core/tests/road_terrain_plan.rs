@@ -215,6 +215,101 @@ fn inputs(core: &mut SimCore) -> Vec<RefinedTerrainPatchBuildInput> {
     core.collect_refined_terrain_patch_build_inputs(2.0)
 }
 
+#[test]
+fn divided_roundabout_keeps_refined_terrain_at_the_inner_kerb() {
+    use crate::nodes::simulation_node::SimulationNode;
+    use crate::simulation::network::graph::RoadMedian;
+    use crate::simulation::network::roundabouts::{RoundaboutLayout, RoundaboutRequest};
+    let mut core = SimCore::new(WorldConfig {
+        width_m: 640.0,
+        height_m: 640.0,
+        terrain_cell_m: 4.0,
+        terrain_chunk_m: 128.0,
+        ..WorldConfig::default()
+    });
+    for (points, lanes, median) in [
+        (
+            vec![
+                Vector3::new(-180.0, 0.0, 0.0),
+                Vector3::new(180.0, 0.0, 0.0),
+            ],
+            2,
+            RoadMedian::from_tool(3, 2.0).unwrap(),
+        ),
+        (vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 180.0)], 1, None),
+    ] {
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let plan = RoadEditPlan::compile(
+            &core,
+            RoadPreviewRequest {
+                crossing_level: 0,
+                median,
+                enqueued_at: None,
+                include_terrain: true,
+                request_id: 1,
+                surface_generation: core.road_tool_surface_generation,
+                points: points.clone(),
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+            },
+        );
+        assert_eq!(plan.status(&core), "ready");
+        let result = core.commit_road(
+            RoadCommitRequest {
+                crossing_level: 0,
+                median,
+                points,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+                edit_plan: Some(Arc::new(plan)),
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(result.committed, "{}", result.rejection);
+    }
+    let center = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 3.0)
+        .unwrap();
+    let layout = RoundaboutLayout::prepare(
+        &core.region_graph,
+        RoundaboutRequest {
+            center: core.region_graph.node(center).pos,
+            diameter: 28.675,
+            angles: vec![],
+            replace: Some(center),
+        },
+    )
+    .unwrap();
+    let changed = layout.apply(&mut core.region_graph);
+    core.region_graph.rebuild_intersection_clips();
+    for edge in changed {
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, edge);
+    }
+    core.precompute_road_mesh_data();
+    let patches = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
+    assert!(!patches.is_empty());
+    for patch in patches {
+        assert_eq!(
+            SimulationNode::cached_refined_cdt_failure_label(&patch),
+            None,
+            "patch {:?}: {:?}",
+            patch.key,
+            patch.mesh_buffers.as_ref().map(|b| (
+                b.omitted_pathological_terrain_faces,
+                b.terrain_max_face_slope_ratio
+            ))
+        );
+    }
+}
+
 pub(super) fn commit_ready(core: &mut SimCore, points: Vec<Vector3>) -> Arc<RoadEditPlan> {
     commit_ready_with_lanes(core, points, 1, 1)
 }

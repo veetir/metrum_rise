@@ -2,7 +2,11 @@
 
 //! Terrain-clip sourced loop construction.
 
-use super::super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, backend::RoadVec2};
+use super::super::super::{
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M,
+    backend::{RoadVec2, RoadVec3},
+    keys::SurfaceHeightMmKey,
+};
 use super::*;
 
 impl RoadSurfaceSystem {
@@ -303,6 +307,19 @@ impl RoadSurfaceSystem {
                 end,
             },
         )?;
+        let before = output_edges.len();
+        let output_edges = Self::remove_terrain_clip_numeric_spikes(output_edges);
+        let output_edges = if output_edges.len() != before {
+            Self::complete_terrain_clip_source_edge_chain(output_edges).map_err(
+                |(start, end)| RoadSurfaceTerrainClipExportError::UnclosedOutputBoundary {
+                    shape_index: topology.shape_index,
+                    start,
+                    end,
+                },
+            )?
+        } else {
+            output_edges
+        };
         let first_start = output_edges.first().map(|edge| edge.start).ok_or({
             RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
@@ -335,6 +352,72 @@ impl RoadSurfaceSystem {
             points_world,
             source_edges: output_edges,
         }))
+    }
+
+    fn remove_terrain_clip_numeric_spikes(
+        edges: Vec<RoadSurfaceTerrainClipSourceEdge>,
+    ) -> Vec<RoadSurfaceTerrainClipSourceEdge> {
+        let area = |a: RoadSurfaceTerrainClipSourceEdge, b: RoadSurfaceTerrainClipSourceEdge| {
+            Self::world_points_same_for_boundary(a.end, b.start)
+                .then(|| Self::terrain_clip_numeric_spike_area([a.start, a.end, b.end]))
+                .flatten()
+        };
+        if !edges.windows(2).any(|p| area(p[0], p[1]).is_some())
+            && area(*edges.last().unwrap(), edges[0]).is_none()
+        {
+            return edges;
+        }
+        let perimeter = edges
+            .iter()
+            .map(|e| (e.end.x - e.start.x).hypot(e.end.z - e.start.z))
+            .sum::<f64>() as f32;
+        let budget = f64::from(Self::overlay_numeric_area_budget_m2(perimeter, edges.len()));
+        let mut removed = 0.0;
+        let mut compact = Vec::with_capacity(edges.len());
+        // Stack removals and the cyclic prefix each visit an edge at most twice.
+        for &edge in &edges {
+            compact.push(edge);
+            while compact.len() >= 2 {
+                let n = compact.len();
+                let Some(delta) = area(compact[n - 2], compact[n - 1]) else {
+                    break;
+                };
+                if removed + delta > budget {
+                    break;
+                }
+                removed += delta;
+                compact.truncate(n - 2);
+            }
+        }
+        let mut first = 0;
+        while compact.len().saturating_sub(first) > 4 {
+            let Some(delta) = area(*compact.last().unwrap(), compact[first]) else {
+                break;
+            };
+            if removed + delta > budget {
+                break;
+            }
+            removed += delta;
+            compact.pop();
+            first += 1;
+        }
+        if compact.len().saturating_sub(first) < 3 {
+            return edges;
+        }
+        compact.drain(..first);
+        compact
+    }
+
+    fn terrain_clip_numeric_spike_area([a, b, c]: [RoadVec3; 3]) -> Option<f64> {
+        let width = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        if (c.x - a.x).hypot(c.z - a.z) > width
+            || SurfaceHeightMmKey::from_m_f64(a.y) != SurfaceHeightMmKey::from_m_f64(b.y)
+            || SurfaceHeightMmKey::from_m_f64(a.y) != SurfaceHeightMmKey::from_m_f64(c.y)
+        {
+            return None;
+        }
+        let area = ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs() * 0.5;
+        (area <= f64::from(NODE_OVERLAY_MIN_AREA_M2)).then_some(area)
     }
 
     fn terrain_clip_is_collapsed_numeric_loop(
@@ -403,6 +486,25 @@ mod tests {
         RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceTerrainClipEdgeKind,
         RoadSurfaceVisualNodePieceKind, RoadVec3,
     };
+
+    #[test]
+    fn numeric_inner_kerb_spike_requires_subresolution_area_and_one_source_height() {
+        let points = [
+            RoadVec3::new(-0.000006, 0.24, 9.337499),
+            RoadVec3::new(0.0, 0.24, 9.3923675),
+            RoadVec3::new(0.000006, 0.24, 9.337499),
+        ];
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(points).is_some());
+        let mut step = points;
+        step[1].y += 0.12;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(step).is_none());
+        let mut corner = points;
+        corner[2].x = 0.0005;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(corner).is_none());
+        let mut island = points;
+        island[1].z += 1.0;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(island).is_none());
+    }
 
     #[test]
     fn partially_covered_numeric_corner_uses_its_exterior_anchors() {
