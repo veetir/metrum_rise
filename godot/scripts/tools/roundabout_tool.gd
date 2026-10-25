@@ -62,14 +62,37 @@ func _unhandled_input(event: InputEvent) -> void:
 		_key = []
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		# Re-resolve authority at click; never commit a different hover selection.
-		_update_preview()
+		_update_preview(true)
 		if _valid:
 			_request = simulation_node.place_roundabout(_center, diameter, _angles, _replace)
 			_clear()
 		get_viewport().set_input_as_handled()
 
-func _update_preview() -> void:
-	var point: Vector3 = _scripted_pointer_position if _scripted_pointer_enabled else get_world_mouse_pos()
+# Use the same immutable query as RoadTool: the legacy world raycast can return null
+# while the simulation owns its mutex, which the base picker turns into the world origin.
+func get_world_mouse_pos() -> Vector3:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		is_valid = false
+		return Vector3.ZERO
+	var mouse := get_viewport().get_mouse_position()
+	var cursor: Variant = simulation_node.get_road_tool_cursor_pos(
+		camera.project_ray_origin(mouse), camera.project_ray_normal(mouse),
+		0.0, true, 0, Vector3.ZERO, Vector3.ZERO, false, 1, 1, 0.0, {}, 0.0, Vector3.ZERO
+	)
+	is_valid = cursor != null
+	return cursor.position if is_valid else Vector3.ZERO
+
+func _update_preview(refresh_pointer: bool = false) -> void:
+	if refresh_pointer and not _scripted_pointer_enabled:
+		_last_world_mouse_pos = get_world_mouse_pos()
+	if not _scripted_pointer_enabled and not is_valid:
+		_clear()
+		_key = []
+		_label.text = "Roundabout · Point at the map to preview."
+		return
+	# NetworkTool already resolved the viewport pointer this frame. Only clicks repick.
+	var point: Vector3 = _scripted_pointer_position if _scripted_pointer_enabled else _last_world_mouse_pos
 	point.x = snappedf(point.x, 0.5)
 	point.z = snappedf(point.z, 0.5)
 	_replace = simulation_node.get_closest_node(point, 5.0)

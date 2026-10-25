@@ -6,6 +6,15 @@ extends "res://tests/road_junction_control_test.gd"
 
 const ANGLES := [0.0, 1.4, 3.0, 4.7]
 
+class BusySurfaceTool extends "res://scripts/tools/roundabout_tool.gd":
+	# A contended legacy raycast returns null. Keep the actual viewport projection and
+	# immutable Rust cursor query live, so a scripted world pointer cannot mask this bug.
+	var legacy_picks := 0
+
+	func get_terrain_interaction():
+		legacy_picks += 1
+		return null
+
 func run() -> void:
 	if OS.get_environment("METRUM_RB_CAPTURE") == "1":
 		await capture_roundabouts()
@@ -20,6 +29,7 @@ func run() -> void:
 		await check_presets()
 		simulation.queue_free()
 		await process_frame
+		await check_player_pointer()
 	quit(failures)
 
 func junction() -> void:
@@ -135,3 +145,91 @@ func capture_roundabouts() -> void:
 	await capture("traffic_drained_above", ground(0, 0), 100.0, -1.35)
 	main.queue_free()
 	await process_frame
+
+func player_key(code: Key, viewport: Viewport) -> void:
+	var event := InputEventKey.new()
+	event.keycode = code
+	event.pressed = true
+	viewport.push_input(event, true)
+	event = event.duplicate()
+	event.pressed = false
+	viewport.push_input(event, true)
+
+func check_player_pointer() -> void:
+	# A local viewport accepts mouse events in headless Godot too; the display server's
+	# native warp is a no-op there. All tool/input/HUD nodes still use their normal viewport.
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1440, 900)
+	root.add_child(viewport)
+	main = load("res://scenes/Main.tscn").instantiate()
+	main.set_script(null)
+	viewport.add_child(main)
+	await process_frame
+	await process_frame
+	var manager: Node = main.get_node("InputManager")
+	var original: Node = manager.roundabout_tool
+	main.remove_child(original)
+	original.queue_free()
+	var tool := BusySurfaceTool.new()
+	tool.name = "RoundaboutTool"
+	main.add_child(tool)
+	manager.roundabout_tool = tool
+	simulation = main.get_node("SimulationNode")
+	camera = main.get_node("CameraNode")
+	expect(simulation.create_blank_world(1024, 1024, 4, 128, 0), "Player-pointer blank map")
+	manager._refresh_after_world_load()
+	var target := ground(180, 160)
+	camera.set_view_state(PackedFloat32Array([target.x, target.y, target.z, -0.65, -1.2, 170, 0]))
+	var motion := InputEventMouseMotion.new()
+	motion.position = Vector2(viewport.size) * 0.5
+	viewport.push_input(motion, true)
+	await settle()
+	player_key(KEY_O, viewport)
+	expect(tool.active and manager.current_tool == manager.Tool.ROUNDABOUT, "O activates the actual roundabout controller")
+	expect(not tool._scripted_pointer_enabled, "Player-pointer regression never supplies a scripted world position")
+	var deadline := Time.get_ticks_msec() + 15000
+	while not tool._valid and Time.get_ticks_msec() < deadline:
+		await process_frame
+	expect(tool._valid, "A busy legacy surface query must not suppress the roundabout preview")
+	expect(tool._center.distance_to(target) < 1.0, "Viewport pointer must remain at the requested ground, never jump to the origin: %s" % tool._center)
+	expect(tool.legacy_picks == 0, "Roundabout picking must use the existing immutable road query")
+	expect(tool._scene.generation >= 0 and not tool._terrain._patches.is_empty(), "Player hover installs both road and terrain replacements")
+	var first_center: Vector3 = tool._center
+	motion.position.x += 30.0
+	viewport.push_input(motion, true)
+	await process_frame
+	await process_frame
+	expect(tool._center.distance_to(first_center) > 1.0, "Viewport mouse motion moves the roundabout preview")
+	motion.position.x -= 30.0
+	viewport.push_input(motion, true)
+	await build(stroke(Vector2(180, 160), [Vector2(-110, 0), Vector2(110, 0)]), 1, 1, 0, 0.0)
+	await build(stroke(Vector2(180, 160), [Vector2(0, -110), Vector2(0, 110)]), 1, 1, 0, 0.0)
+	await settle()
+	var junction_id: int = simulation.get_closest_node(target, 5.0)
+	expect(tool._valid and junction_id >= 0 and tool._replace == junction_id, "Player hover previews the existing four-arm junction")
+	expect(tool._label.text.contains("Click to replace junction"), "Replacement label describes the actual hovered junction")
+	# The same stationary pointer retains the installed preview without rebuilding it.
+	var request: int = tool._scene.request_id
+	for frame in 8:
+		await process_frame
+	expect(tool._scene.request_id == request, "Stationary player hover reuses its preview")
+	for step in 28:
+		player_key(KEY_BRACKETLEFT, viewport)
+	await process_frame
+	await process_frame
+	expect(not tool._valid and tool._scene.generation < 0, "Invalid compact placement clears the previous road preview")
+	expect(tool._label.visible and tool._label.text.contains("Arms need more room"), "Invalid player placement has a visible, actionable reason")
+	player_key(KEY_O, viewport)
+	await process_frame
+	expect(not tool.active and not tool._label.visible, "O cancels the player preview")
+	# Exercise the road menu's actual button signal as well as the shortcut.
+	var ui: Node = main.get_node("MainUI")
+	ui.road_main_btn.pressed.emit()
+	for button in ui.road_sub_menu.get_children():
+		if button is Button and button.text == "Roundabout (O)":
+			button.pressed.emit()
+	expect(tool.active, "Toolbar Roundabout button activates the same controller")
+	manager._cancel_active_tool()
+	viewport.queue_free()
+	await process_frame
+	main = null
