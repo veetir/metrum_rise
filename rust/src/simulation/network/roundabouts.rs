@@ -72,8 +72,9 @@ impl RoundaboutLayout {
                 if edge.roundabout
                     || edge.class != EdgeClass::Standard
                     || edge.primary_type != TransitType::Road
-                    || !(1..=2).contains(&edge.fwd_lanes)
-                    || !(1..=2).contains(&edge.bkw_lanes)
+                    || edge.fwd_lanes > 2
+                    || edge.bkw_lanes > 2
+                    || edge.fwd_lanes + edge.bkw_lanes == 0
                     || edge.lane_tapers.is_some()
                     || edge.start_node == edge.end_node
                     || edge.crossing_level != 0
@@ -375,6 +376,44 @@ mod tests {
                         .iter()
                         .any(|&lane| lanes.lanes[lane].lane_type == LaneType::Vehicle)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_preserves_one_way_entry_and_exit_arms() {
+        for reverse in [false, true] {
+            let mut graph = RegionGraph::new();
+            let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+            for (i, (fwd, bkw)) in [(1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+                let angle = i as f32 * std::f32::consts::TAU / 3.0;
+                let end = Vector3::new(angle.cos(), 0.0, angle.sin()) * 120.0;
+                let node = graph.add_node(end, NodeType::Junction);
+                let mut edge = road(vec![Vector3::ZERO, end], fwd, bkw);
+                edge.start_node = center;
+                edge.end_node = node;
+                if reverse {
+                    std::mem::swap(&mut edge.start_node, &mut edge.end_node);
+                    edge.geometry.reverse();
+                    edge.physical_geometry.reverse();
+                }
+                graph.add_edge(edge);
+            }
+            let mut replacement = request(3, 40.0);
+            replacement.replace = Some(center);
+            let layout = RoundaboutLayout::prepare(&graph, replacement).unwrap();
+            layout.apply(&mut graph);
+            graph.rebuild_intersection_clips();
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            for (id, counts) in [(1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+                let edge = graph.edge(id);
+                assert_eq!((edge.fwd_lanes, edge.bkw_lanes), counts);
+                let vehicle = lanes.edge_lanes[&id]
+                    .iter()
+                    .filter(|&&id| lanes.lanes[id].lane_type == LaneType::Vehicle)
+                    .count();
+                assert_eq!(vehicle, usize::from(counts.0 + counts.1));
             }
         }
     }
