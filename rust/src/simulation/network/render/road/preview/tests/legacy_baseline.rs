@@ -295,6 +295,10 @@ fn add(
 }
 
 #[test]
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    ignore = "set ROAD_SECTION_COMPARE to a preserved native-target capture, or ROAD_SECTION_CAPTURE to create one"
+)]
 fn exact_compiled_legacy_baseline() {
     let mut records = Records::new();
     let modes = TransitFlags::CAR | TransitFlags::FOOT;
@@ -546,7 +550,7 @@ fn exact_compiled_legacy_baseline() {
         capture("ramp", &mut fixture, &mut records);
     }
     let path = std::env::var("ROAD_SECTION_COMPARE").ok();
-    if let Some(path) = path {
+    if let Some(path) = &path {
         let expected: Records = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for key in expected.keys().chain(records.keys()) {
             if expected.get(key) != records.get(key) {
@@ -581,13 +585,22 @@ fn exact_compiled_legacy_baseline() {
             )
         })
         .collect();
-    let expected: BTreeMap<String, String> =
-        serde_json::from_str(include_str!("legacy_baseline_hashes.json")).unwrap();
-    for key in expected.keys().chain(manifest.keys()) {
-        assert_eq!(
-            expected.get(key),
-            manifest.get(key),
-            "first differing owner/field {key}"
+    // Transcendental geometry and its exact snapshots are target-specific. Other targets
+    // use the same raw comparator with their preserved native baseline, never Mac goldens.
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        let expected: BTreeMap<String, String> =
+            serde_json::from_str(include_str!("legacy_baseline_hashes.json")).unwrap();
+        for key in expected.keys().chain(manifest.keys()) {
+            assert_eq!(
+                expected.get(key),
+                manifest.get(key),
+                "first differing owner/field {key}"
+            );
+        }
+    } else {
+        assert!(
+            path.is_some() || std::env::var_os("ROAD_SECTION_CAPTURE").is_some(),
+            "provide a preserved native-target capture or an output capture path"
         );
     }
     if let Ok(path) = std::env::var("ROAD_SECTION_MANIFEST") {
