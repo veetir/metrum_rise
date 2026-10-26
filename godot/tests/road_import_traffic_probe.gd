@@ -48,7 +48,7 @@ func run() -> void:
 		trip.observations = 0
 		trip.last_failure = ""
 		trip.passed_feature = false
-		trip.exit_distance_m = 12.0 if trip.name == "prisma" else 24.0
+		trip.exit_distance_m = float(trip.get("exit_distance_m", 12.0 if trip.name == "prisma" else 24.0))
 		expect(trip.id >= 0, "Full-map car route: %s" % trip.name)
 	simulation.set_simulation_speed(4.0)
 	var deadline := Time.get_ticks_msec() + 45000
