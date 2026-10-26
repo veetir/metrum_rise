@@ -1023,6 +1023,441 @@ input, and display debug data. They must not:
 - mask missing topology with shader, water, zoning, material order, or background color
 - perform expensive geometry decisions in editor input loops
 
+## Road classes and cross-sections — ROAD-83 / ROAD-84 (design)
+
+**Decision:** classes supply defaults; an explicit, ordered cross-section supplies geometry.
+Resolve both when authoring a road, not during simulation ticks. Extend the existing roadbed
+compiler, lane system and ROAD-80 transaction; do not build a second geometry or routing system.
+This is a design, not shipped behavior. ROAD-83 precedes ROAD-84 implementation; neither
+reclassifies existing saves automatically. ROAD-84 owns ROAD-58 crossing placement and ROAD-79
+cycling surfaces. Parking occupancy/search remains TRAFFIC-10.
+
+### Finnish basis and scope
+
+Use functional hierarchy, distinct from structural `EdgeClass` (Standard/Bridge/Tunnel).
+[SKTY Katu2020 §1.4](https://katu2020.info/2020/09/30/katujen-luokittelu/)
+distinguishes main, collector and local streets; its typical speeds support 40–50 km/h
+collectors and 30 km/h local streets. This is SKTY's municipal street guidance, not a
+Kuntaliitto publication. [Katu2020 §4.2](https://katu2020.info/2020/09/30/liikennetekninen-poikkileikkaus/)
+sizes the complete street for traffic, clearance and maintenance. Its obstacle clearance is
+1 m on main streets and 0.5 m on collector/local streets and cycle paths; one lane trapped
+between kerbs needs 4.5 m clear width on stretches over 20 m (4 m on shorter stretches,
+with the guidance's specific short-island exception). Preserve these as clearance constraints,
+not invisible additions to a nominal lane width.
+
+[Väylävirasto 34/2022, table 4](https://aineistot.vayla.fi/api/file/ava/Julkaisut/Vaylavirasto/vo_2022-34_jalankulun_suunnittelu.pdf)
+recommends sidewalk pavement widths starting at 2 m in quiet settings, increasing with
+footfall; constrained exceptions and shared winter maintenance differ. The game's 2 m local
+and 2.5 m collector sidewalk presets follow that distinction.
+[Helsinki's collector guidance](https://kaupunkitilaohje.hel.fi/kortti/alueellinen-kokoojakatu-tyyppiratkaisu/)
+supports 3.25–3.5 m traffic lanes and 2–2.5 m sidewalks;
+[Vantaa's street types](https://kaupunkitilaohje.vantaa.fi/fi/katutila/katuluokat)
+also distinguish 3 m local collector lanes from 3.25 m bus lanes and require a door buffer
+beside parking/cycling. These are Finnish municipal examples, not Kuopio-specific rules.
+[Väylävirasto's 18/2020 introduction](https://aineistot.vayla.fi/api/file/ava/Julkaisut/Vaylavirasto/vo_2020-18_esittely_web.pdf)
+establishes the cycle design guidance's scope;
+[Helsinki's cycle design manual, §4](https://www.hel.fi/static/public/hela/Kaupunkisuunnittelulautakunta/Suomi/Esitys/2016/Ksv_2016-04-19_Kslk_13_El/435D7F6C-9CB3-4C7F-8872-05644902223D/Liite.pdf)
+supports separate cycle/foot space and roughly 2.5–3 m two-way cycle paths.
+
+The table below defines **legal authoring ranges in this game**, not universal statutory
+Finnish width limits. Lane, shoulder, ditch and combined-path preset values not specifically
+attributed above are engineering choices informed by Finnish practice, including the author's
+background knowledge; they are not claimed quotations from Väylävirasto/Kuntaliitto. Geometry,
+clearance, bus access and speed constraints can make a value inside a range invalid.
+
+The supplied `roads/spec/traficom_liite14.txt` is the 2023 longitudinal-marking specification:
+K1/K2 change at 50 km/h, and bus/tram lane separation has its own K2 dimensions. It does not
+specify zebra geometry. [Traficom Liite 15, L0/L3/L4](https://www.traficom.fi/files/media/regulation/LIITE_15_Tieliikennelain_merkkiryhm%C3%A4n_L_tiemerkint%C3%B6jen_mitoitus_15.pdf)
+supplies transverse dimensions: ordinary zebras use 0.5 m stripes/gaps, at least 2.5 m length
+at ≤50 km/h and 4 m at 60 km/h; cycle extensions use their own L4 arrangement. Do not treat
+every combined path as a segregated path needing a divider. Traficom lists a
+[replacement regulation effective 1 October 2026](https://www.traficom.fi/fi/tieliikenteen-turvallisuus-ja-valvonta/tie-ja-raitioliikenteen-ohjauslaitteiden-varit-rakenne-ja-mitoitus).
+Its annex content was not available through the inspected Finlex page: pin/check the current
+L3/L4 drawings in the markings slice before claiming current regulatory compliance; the local
+2023 reference and inspected 2021 transverse drawings are the explicit design baseline.
+
+### Classes, defaults and overrides
+
+Dimensions below are metres; speeds are km/h. Side lists run **from carriageway outward**,
+in stored start→end orientation, never camera orientation. `K` = 0.15 m kerb, `W` = sidewalk
+clear pavement, `C` = cycle path, `J` = combined walking/cycling path, `V` = verge,
+`S` = shoulder, `D` = ditch. Paths have their own edge profile, not two artificial sidewalks.
+
+| Functional class / preset | Speed; lanes and widths | Default left / right strips | Frontage; modes; parking eligibility | Junction role and sign set |
+| --- | --- | --- | --- | --- |
+| Motorway / moottoritie | 100; 2+2 × 3.5, 4 m grass median | Both: S 3 + V 2 + D 2; 0.75 m inner paved margin each side of median | No frontage; motor only; no parking strips | Controlled access, no at-grade crossings; motorway entry/end, speed, ramp direction/merge signs |
+| Main road / päätie, rural | 80; 1+1 × 3.5 | Both: S 1.5 + V 1 + D 2 | No automatic frontage (explicit access possible); motor, walking/cycling on eligible shoulder unless motorroad restriction; no parking | Main-route priority proposal; speed and priority/yield at real junctions; motorroad signs only with that explicit restriction |
+| Main street / pääkatu (same class, urban preset) | 50; 1+1 × 3.5 | Both: K + V 1 + J 3.5 | Frontage off by default, can enable; motor plus path modes; parking off, eligible at ≤50 | Main-route priority proposal; speed, priority and path signs |
+| Collector / kokoojakatu | 40; 1+1 × 3.25 | Left K + W 2.5; right K + V 1 + J 3.5 | Frontage on; motor plus provisioned foot/cycle; parking off, eligible | Collector priority below main, above local; speed and path signs; yield on subordinate arms |
+| Local/residential / tonttikatu | 30; 1+1 × 3.0 | Both: K + W 2 | Frontage on; motor/foot, future cycles in carriageway; parking eligible, off by default | Equal local junctions yield to right; speed/zone entry, no automatic priority signs on equal arms |
+| Service / huoltotie | 20; 1+1 × 2.75 | Both: S 1, explicitly foot-traversable | Frontage on; motor/foot, future cycles in carriageway; parking eligible, off | Subordinate access; speed/access signs only as authored; yield at street exit |
+| Pedestrian way | Walking pace; no motor lanes | One 2.5 m W surface, 0.25 m support shoulder each side | Foot frontage allowed, no car access; foot only; no parking | Pedestrian-path sign; no vehicle hierarchy |
+| Cycle way | No motor speed; no motor lanes | One 3 m two-way C surface, 0.25 m support shoulders | No frontage; cycle only; no parking | Cycle-path sign, explicit crossing control |
+| Combined path | Walking pace for walkers; cycle speed deferred to TRANSIT-05 | One 3.5 m J surface, 0.25 m support shoulders | Foot frontage allowed, no car access; foot/cycle; no parking | Combined-path sign, explicit crossing control |
+
+Main road versus main street is a preset distinction within one class; OSM `trunk` does not
+by itself prove motorway restrictions. Bus-only is lane use, not a class. Roundabouts retain
+20 km/h circulating speed and circulating priority; ramps inherit parent access restrictions
+and use an explicit speed capped at 60 until ROAD-85 supplies their design. An isolated
+cycle-only way has no walk lane today; do not misrepresent it as `FOOT` just to make it routable.
+
+Class presets are immutable catalog defaults copied into authored values. Store provenance
+(preset/import/player) and override bits; a preset update never changes a saved road.
+Changing class in the tool previews a full preset replacement, retaining only explicitly
+pinned overrides that remain valid. Speed-only editing never resizes a road or changes its
+priority. Permit finite speeds 10–120 in 10 km/h UI steps (exact finite imported limits are
+retained within that range); validate geometry with ROAD-76. Above 60, kerbed urban layouts
+require extra clearance; motorway restrictions cannot be bypassed by ticking a frontage box.
+Independent directional limits use an optional cold override; `Edge.speed_limit` remains the
+common limit (or conservative minimum), with directed routing and movement reading resolved
+directional values where supplied. No automatic seasonal/time-conditional speed simulation.
+New roads resolve frontage from class/access authority into `no_building_spawn`; speed changes
+must not silently override that authored policy. The old loader's speed-based exclusion is
+preserved only as an explicit migrated value.
+
+TRAFFIC-08's current `lanes/control.rs::rank` uses roundabout, speed, lane count and width.
+Replace its default on newly classed roads with explicit class rank; equal ranks retain the
+right-hand rule. Priority is an authored junction control proposal, emitted together with its
+signs, not a claim that a wider street has legal priority. Junction overrides/source signing
+win; roundabout and ramp/transition rules remain. Width, pockets and parking never alter
+rank. Keep the current stop-versus-yield rule for a slow subordinate approach to a ≥60 km/h
+road until an explicit junction policy changes it. Existing saves preserve resolved controls.
+
+### One cross-section authority
+
+The road axis remains the authored axis; asymmetric outer strips do not move it. The core
+contains ordered forward/backward **individual lane widths**, existing median bands and any
+explicit inner margins. Keep `Edge.width` as the derived core envelope excluding outer strips;
+it is not a total roadbed width and cannot answer side-specific queries. Existing lane rank
+zero remains innermost. A side strip records stable local identity, role, width, surface,
+edge heights/crossfall, permitted modes/direction, and clearance/furniture policy. Kerb and
+shoulder are distinct authoring roles even where both currently compile as `CurbOrShoulder`.
+
+| Strip / component | New default; accepted authoring range | Rules |
+| --- | --- | --- |
+| Motor lane | Class table; 2.75–4.5 | ≥3.25 on bus routes/bus-only lanes, ≥3.5 at ≥80; use explicit edge margin for passing clearance, not wider vehicle centre spacing by accident |
+| Kerb | 0.15 wide, 0.12 high; width 0.10–0.30, step 0–0.18 | Counts once, outside clear pavement. Flush/lowered ends at crossings and driveways; no raised motorway kerb default |
+| Sidewalk | 2–2.5 clear; 1.5–6 | 1.5 is constrained authoring with warning, not the recommended new minimum; preserve 1.35 clear legacy pavement exactly |
+| One-way cycle track / cycle lane | 2.0 / 1.75; 1.5–3 / 1.5–2.5 | Track is separated, cycle lane is flush with carriageway; direction explicit, supports contraflow independently of motor lanes |
+| Two-way cycle track | 3; 2.5–5 | Segregated foot space is another W strip, not part of this width |
+| Combined path | 3.5; 3–6 | Foot and cycle share one surface; no segregation line by default |
+| Verge / furniture / separation | 1; 0.5–8 | Tree preset ≥2; growing space/obstacle clearance separate from traversable width; not a pedestrian lane |
+| Parking strip (parallel) | 2.25; 2–3 | Not a through lane or bus-mask bit; eligible only at ≤50; 0.75–1 m explicit buffer next to cycling. ROAD-86 owns stalls and angled/perpendicular depth envelopes |
+| Shoulder / paved edge margin | 0.5–3 by class; 0.25–3.5 | Explicit foot-access policy; shoulder does not imply FOOT automatically. Motorway shoulder is not a walk lane |
+| Ditch | 2; 1–6 plan width | Explicit depressed profile, bounded by earthwork slope validation; no routing/furniture on ditch. Culvert/drainage simulation is separate |
+| Median | Existing ROAD-80 widths | Painted 0.5–2, grass 2–12, paved 1–3, including median kerbs; preserve setbacks and same-side frontage rules |
+
+At most eight outer strips per side, eight motor lanes total (existing maximum four per
+direction), and 32 compiled bands per section. Reject excessive profiles rather than
+truncating them. Nonexistent strips are absent, not arbitrarily narrow traversable ribbons.
+Zero width is permitted only at an authored transition endpoint. Stable strip identity and
+explicit correspondence across stations prevent band-index matching from joining a sidewalk
+to a cycle path. One walk facility per road side is sufficient for these presets; multiple
+independent walk routes use separate edges.
+
+Extend ROAD-67's station profile: existing median/taper/pocket fields remain their owners;
+new width/strip endpoint layouts are cold data interpreted by the **same** evaluator. Precompute
+lane centres, each strip's two boundaries, walk/cycle axes, carriageway edges, pavement edge,
+road-owned ground edge and frontage boundary at construction stations. A left pocket consumes
+its actual lane width from the median, retaining kerb allowance; a right pocket shifts only
+its side and its outer strips. Keep the opposite kerb and through-lane centres fixed. Bus masks
+still address motor lane ranks only. Reject an edit that invalidates masks without an explicit
+lane-use remap; resizing must never silently make a bus lane general traffic.
+
+Profiles changing along a road use ordered station intervals, up to 32 per edge, otherwise
+split with the existing lifecycle. Bay ends, strip disappearance and pedestrian access changes
+require an explicit transition/connection, not interpolation of mode bits. Walk/cycle clearance
+cannot taper to zero on a live route without a connection or a declared dead end. Compile spans
+by a linear station sweep; runtime movement uses compiled lanes, never scans these intervals.
+
+A path behind a verge is still a road strip when it shares the road alignment, stationing,
+grade and junction ownership. One-sided paths create mouths on that side only. A path with
+independent alignment/grade, a separate bridge/underpass, or independent junctions is its own
+`Foot` edge with a pedestrian/combined profile, or a cycle-mode edge; connect only at authored
+nodes/access links. Proximity alone creates neither conflation nor a crossing. Road-without-
+sidewalk permits walking only if an explicit walkable shoulder/shared facility exists.
+Add a distinct CYCLE permission (the existing u8 has free bits) and a persisted cycle edge
+type without renumbering existing transit encodings. `Edge.traversal_flags` currently preserves
+only FOOT when a direction has no car lane: resolve path permissions independently of motor
+lane count. Until TRANSIT-05, preserve cycle authority without creating cycle agents/routes.
+
+### Storage, lookup and scaling
+
+Add road-owned side tables alongside graph authority, not fields or per-road vectors in
+`graph/data.rs::Edge`. ROAD-68's `Option<Box<FilledCrossing>>` illustrates keeping cold products
+off Edge, but its meshes are derived; **layouts are authored and must be saved**. The graph owns
+an edge-indexed compact section reference; the surface system owns compiled products.
+
+Budget 16 bytes per allocated edge slot: layout ID, optional detail ID and revision (three
+u32s), class/access bytes and u16 override flags. Deleted slots follow graph tombstones;
+split, compaction/remap, excerpt construction, clone and undo must carry the table in lockstep.
+Intern immutable common layouts using canonical finite f32 bit patterns (normalize negative
+zero for new input, reject NaN), structural equality and stable IDs. No width quantization
+on migration. A sorted-key intern map gives O(B log U) edit/load insertion for B bounded
+components and U unique layouts; consumers use two array reads, O(1). Never intern in ticks.
+Parallel workers compile independently with Rayon; publish owners/IDs in deterministic order.
+
+Target ≤384 bytes per distinct base layout, plus explicitly accounted sparse transition,
+directional-speed and source/override records. Resolve directional speeds into an optional
+8-byte-per-edge pair table when asymmetric limits exist, so movement lookup is O(1), without
+a sparse-map search. Cache four f32 side extents per road (16 bytes)
+for broad-phase/frontage queries. Thus 100k roads cost about 3.2 MB for references/extents;
+one million road slots cost 32 MB, plus <0.4 MB for 1,000 shared layouts. One million unique
+layouts could add 384 MB: report this worst case, enforce the strip/station bounds, and measure
+actual `size_of`/capacity at implementation. One million **agents** does not mean one million
+roads. No layout pointer or copy per agent. A pedestrian lane's cached lateral clearance pair
+adds 8 bytes per physical lane if existing lane geometry cannot supply it; account separately.
+
+Queries have named semantics: `lane_center`, `carriageway_bounds`, `walk_axis`, `paved_bounds`,
+`owned_ground_bounds`, `frontage_boundary`, and `clearance_envelope`. Fixed-section queries are
+O(1) using resolved fields; station lookup is O(log T), followed by O(B) bounded evaluation,
+or O(1) for a specified compiled band. Do not call an O(log T) authoring query from each agent.
+Lane pose sampling retains its existing O(log lane-points) search plus O(1) lateral arithmetic.
+Speed edits recalculate local cost in O(edge points); walking cost remains walking pace,
+not the road speed (`pathing/cost.rs::walk_cost_s`). Re-customize affected directed routing
+weights and invalidate cost-dependent plans in the same transaction. Mode/topology changes
+also rebuild the relevant lane graph/CCH/flow fields; existing global rebuild costs must be
+reported, not mislabeled O(1).
+
+Surface work remains O(affected samples × B), plus the existing local node arrangement work;
+ROAD-68 overlap work retains its documented O(P sum(Q B²)) local band term. Use existing
+road R-tree/owner chunks and 512 m building/routing indices: no new spatial index or global
+search for a layout. Expand existing R-tree envelopes to include resolved asymmetric owned
+bounds and update them atomically; the present fixed structural halo cannot discover an
+arbitrarily wide new layout reliably. Candidate queries are O(log E + K), then exact local
+geometry tests; local publication sorting is O(K log K). Frontage work is O(local candidates +
+affected rows), not a fresh all-building scan. One-time snapshot/global routing setup is
+measured separately from repeatable local planning.
+
+### Consumer conversion ledger
+
+Inventory command: `rg -n 'SIDEWALK_WIDTH|LANE_WIDTH' rust/src rust/benches godot tools`.
+Every production occurrence falls in the following groups; imports/declarations follow their
+consumer. Paths below are relative to `rust/src/` unless marked otherwise. Do not merely rename
+the constants: callers choose the semantic boundary they actually need.
+
+| Constant(s) and current consumers | Replacement / acceptance obligation |
+| --- | --- |
+| L: `config.rs`; `simulation/network/mod.rs`, `roundabouts.rs`, `ramps.rs` | Preset defaults only; constructors resolve a profile. Ring outside diameter uses circulating lane width; ramps copy parent lane width/modes and explicit margins. Constants survive only as named legacy fixture dimensions |
+| L: `network/graph/cross_section.rs`, `graph/lane_taper.rs`; L/S: `network/pockets.rs`; L: `save/network.rs` pocket validation | Shared core/strip evaluator and actual pocket lane width; median minimum = consumed width + retained kerbs. Preserve opposite kerb, through lanes and taper endpoints |
+| L/S: `network/surface/edge/profile.rs`; L: `edge/sections.rs`; L/S: `network/graph/rebuild/clips.rs` | Explicit bands and directional extents, including Foot/no-foot profiles; no `max(LANE_WIDTH)` surrogate for path width. Junction clip/corner solve consumes actual mouth boundaries and clearance, not one symmetric half-width |
+| L/S: `network/lanes/rebuild.rs`, `lanes/geometry.rs`; S: `lanes/pedestrian_junctions.rs` | Prefix sums of lane widths; authored walk axes and real mouths. Preserve old ±100 identities for the first walk facility on each side. Footpath trimming uses the contacted side's pavement boundary and legal connector, not maximum nominal asphalt plus 1.5 |
+| L/S: `network/lanes/vehicle_junctions.rs`; L: `lanes/control.rs` | Fillet/swept-path bounds from actual lane width and junction envelope; replace width-based priority with authored class/control. No new per-tick profile resolution |
+| L: `network/render/road/standard_surface/bus.rs`, `standard_surface/markings.rs` | Bus symbols at resolved lane centres; divider lines at actual shared boundaries; speed-dependent K1/K2 patterns consume effective speed |
+| L/S: `nodes/sim/editing.rs`, `core/road_edit_plan.rs`, `core/road_preview/live_checks.rs`; L: `nodes/simulation_node/network_api/road_tool/cursor.rs`, `system_api.rs` | Immutable resolved selection shared by coarse checks, exact preview and commit. Replace scalar lane-width bridge with profile dimensions; property edits use complete old/new swept bounds |
+| S: `simulation/buildings/allocator/geometry.rs`, `lifecycle.rs`, `placement.rs`, `site/grading.rs`; `nodes/sim/render/buildings.rs` | Side/station-specific frontage boundary for lots/setbacks; paved contact for driveway/yard height; owned-ground envelope for collisions. Keep allocator row-change hooks, entrance books and derived plans coherent. Sidewalk centre is not the parcel boundary |
+| S: `simulation/zoning/parcels/geometry/bounds.rs`, `road_overlap.rs`, `parcels/placement/projection.rs`, `parcels/store.rs` | Exact side frontage projection and road-owned footprint; broad-phase projection bounds use the cached maximum reach, followed by side-specific validation |
+| S: `simulation/zoning/cells/generation.rs`, `generation/curves.rs`, `generation/continuity.rs`, `cells/snapping.rs`, `cells/store/alignment.rs`, `cells/store/chunks.rs`, `system/cell_lots/dirty.rs` | Side-specific grid origin/alignment, frontage depth and old/new dirty bounds; retain existing chunk indices and locality |
+| No direct constant: surface node rails/ownership/terrain export; `surface/earthwork/filled_crossing.rs`, grade separation; renderer lights/signs | Audit indirect assumptions too: repeated kinds need stable strip identities. Structures clear the full traversable/owned corridor and furniture envelope; earthworks start at owned-ground edge, never at W's outer edge by assumption. Poles/signs select eligible verge/median/furniture area, respecting clearance and sight lines; omit if no valid location, never block W/C/J |
+
+Here L/S mean `LANE_WIDTH`/`SIDEWALK_WIDTH`; `network/` abbreviates `simulation/network/`,
+and shorter following filenames inherit their preceding directory. Test-only occurrences are **not**
+production migration work: `lanes/tests.rs`, `lanes/tests/footpaths.rs`, `lanes/trajectory_tests.rs`,
+`lanes/lane_use.rs`'s test module; `surface/edge/sections.rs` and `edge/preview_visual.rs` tests;
+`surface/tests/{core.rs,junction/ownership.rs,earthwork/grounded.rs,support/fixtures.rs,support/preview.rs}`;
+`surface/query/visible.rs` tests; `render/{cross_section_tests.rs,test_road_mesh.rs}`;
+`render/road/{street_lights,road_signs}/tests.rs`; allocator tests
+`{curved_yards,lifecycle,runtime}.rs`; zoning tests `placement/road.rs` and
+`cells/tests/generation/{conflicts,snapping}.rs`; node tests `vegetation_api/tests.rs`,
+`sim/core/tests/road_preview_checks.rs`, and the test tail of `nodes/sim/editing.rs`.
+Retain explicit old dimensions in legacy fixtures; add minimal variable/asymmetric fixtures
+to their owning suites. `rust/benches/surface_benchmark.rs` directly widens a fixture: keep
+setup outside timing and mutate a consistent resolved section instead of only `Edge.width`.
+
+**Pedestrians and crossings.** Replace the implicit two-sidewalk premise in
+`test_ped_junction.rs`: its 64 connectors remain correct for its eight-mouth legacy fixture,
+not for every new road. Build the local legal walk graph from actual mouths and side joins;
+crossing steps connect only reachable foot facilities. Preserve square-to-road crossings,
+stationary reversals, no diagonal asphalt shortcuts, and ROAD-77 path-to-corner attachment.
+One authoritative crossing object contains crossing station, approach/landing strips,
+carriageway/cycle-track crossing segments, refuge stages, heights, mode permissions and
+optional paint. ROAD-58 is absorbed here: place paint from that object's actual kerb/ramp
+endpoints, never by subtracting a nominal sidewalk from a junction width. A verge is crossed
+by an explicit connecting paved strip; missing sidewalks do not manufacture landing space.
+Use authored finite crossing station/setback, defaulting to the existing 4 m inset only when
+it fits all landings and median clearance; refuse invalid forced paint with a reason. Preserve
+ROAD-74's unmarked legal crossing versus painted zebra distinction. Motorways have neither.
+Raised crossings change physical profiles, ramps and accessibility, not just decals.
+
+ROAD-79 maps dedicated cycling to `CycleTrack`, combined surfaces to a distinct shared-mode
+role, and segregation lines to the boundary between C and W; bicycle symbols and L4 blocks
+use those surfaces. Crossing priority is explicit control, never inferred from paint or a
+raised surface. TRANSIT-05 later compiles cycle lanes/connectors from the same strip IDs,
+directions and crossing conflict resources; it adds cyclists' behavior/costs, not new width
+authority. Coarse FOOT reachability must not bridge disconnected sides: walking requests
+validate the side-aware lane route, and exact building access keeps its facility identity.
+Cycle-only profiles reserve cycle permissions and produce no current pedestrian shortcuts.
+
+`lanes/geometry.rs::agent_lane_position` currently adds deterministic jitter up to ±1.4 m,
+independent of pavement. Cache permitted lateral clearance with compiled walk lanes and bound
+that existing visual offset to it, tapering to zero at connector endpoints. This is O(1),
+allocation-free and must not change trip selection or timing. It is an intentional cosmetic
+containment correction, distinct from byte-identical **compiled** legacy geometry; test saved
+pose restoration separately rather than claiming identical moving pedestrian pixels.
+
+### Save migration and exact legacy proof
+
+Reserve **version 110** after current `save/schema.rs::SAVE_VERSION = 109` (use the next free
+version if another schema lands first). Add versioned layout/strip tables, per-edge references
+and sparse profile/control overrides; serialize interned layouts in deterministic ID order.
+Retain existing `network_edges` speed, modes, structural class, median, pocket, bus-mask and
+crossing authority. Derived caches/meshes are rebuilt. Validate references, finite dimensions,
+mode/layout consistency, strip correspondence and lane masks before publication.
+
+Migration runs once after the existing historical-schema decoder, in edge order. Assign an
+unclassified/custom preset with explicit existing speed, access and widths; never infer a
+motorway from width or force 50 km/h. A normal old road becomes 3.5 m motor lanes plus its
+unchanged median and **1.5 m total sidewalk assembly per permitted foot side: 0.15 m kerb +
+1.35 m clear pavement, 0.12 m step**. Its walk axis stays 0.75 m outside the carriageway,
+stored as an explicit axis within that assembly (new profiles normally use clear-space centre).
+Preserve exceptional saved core widths as explicit core margins/boundaries, not rounded lane
+counts. Old Foot edges keep their stored width and single Footpath band, including the current
+`max(width, 2)` compiled boundary where applicable. Old non-FOOT motor
+roads keep the compiler's 0.75 m `CurbOrShoulder` bands and their existing height, not the new
+flat rural preset. No layout choice may be derived from `allowed_types & CAR` alone for new
+bus-only/cycle layouts. Preserve the existing loader's effective frontage result, including
+its high-speed exclusion, and record old derived junction controls as ordinary explicit
+approach controls so priority does not change on load. Reauthoring those controls is explicit.
+Persist existing crossing inset/marking dimensions and the old profile's sign/light anchor
+policy as ordinary authored overrides; new clearance/marking defaults must not reposition
+legacy furniture or repaint old crossings. Preserve each existing frontage anchor as well.
+Geometry-valid retained dimensions may fall below new-authoring recommendations; validation
+must distinguish loading retained authority from creating a new profile. New layouts enforce
+the clear walking/cycling space rule; editing a constrained old layout shows its conflicts.
+
+Do not keep a second production legacy compiler or compatibility flag. The general evaluator
+must express those dimensions, axes, boundaries and operation ordering. Retain existing f32
+arithmetic order for equivalent layouts, stable band order, sampling/triangulation order and
+cosmetic owner identities; replacing multiplication with differently ordered accumulation can
+break byte equality even at the same nominal dimensions.
+
+Acceptance uses the preserved baseline revision and deterministic repository fixtures: straight,
+bend, T/cross, sloped, Foot-only/mixed, no-FOOT, asymmetric lane counts, all median styles,
+pockets/tapers, bus-only, ring/ramp, zebra/unmarked and filled/bridge crossings. Compare raw
+float bits and ordered bytes of sections, meshes/attributes, clip loops, earthworks/structures,
+lanes/connectors/crossings, sign/light poses and frontage anchors **before vs migrated compile**;
+report first differing owner/field, not a tolerance or screenshot. Add load→110→reload→resave
+equality and the existing historical-schema matrix. `tools/road_save_fingerprint.py` proves
+authored road preservation, but does not replace compiled-product comparison. Migration is
+O(E + authored components), plus interning; no player saves are required for these tests.
+
+### Import mapping and source authority
+
+Extend `tools/map_import/osm.py`, `mapping.py`, stroke signatures in `geometry.py`, and the
+Rust request together. The current `speed_applied = False`, skipped `footway=sidewalk`, and
+hardcoded importer roadbed widths must disappear only when the bridge actually applies and
+round-trips the fields. Keep a capability/provenance record for every applied/defaulted/refused
+tag. Per-side/directional tags are interpreted before reversing a way; reversal swaps sides,
+directions, bus masks and strip IDs consistently. Do not merge a stroke across profile, speed,
+mode or access changes. Offline decisions remain deterministic, not place-name exceptions.
+
+| Source tags | Deterministic mapping |
+| --- | --- |
+| `highway=motorway`; `trunk`, `primary`; `secondary`, `tertiary`; `residential`, `unclassified`; `service` | Motorway; main; collector; local; service respectively. `trunk` needs explicit `motorroad`/access authority for restricted modes. Missing environment uses the stated class preset (main defaults rural); explicit sidewalk/cycle tags produce the corresponding strips without needing an urban guess |
+| `*_link`, `junction=roundabout` | Parent class + link role with current ramp restrictions; ring keeps ROAD-62 ownership and speed. ROAD-85 later consumes link role for interchange geometry |
+| `footway`, `cycleway`, `path`, `pedestrian` | Foot/cycle/combined profile from explicit `foot`/`bicycle`/`segregated` tags; untagged `path` defaults combined, untagged `footway` foot. Respect explicit prohibitions. `living_street` is flagged for shared-space semantics; do not claim an ordinary 20 km/h service street implements legal pedestrian priority. Unsupported shared-space behavior is reported, not silently approximated |
+| `maxspeed`, directional variants | Parse numeric km/h, explicit mph conversion and recognized Finnish symbolic values; exact source overrides class speed. Unsupported conditional/variable values retained as unresolved diagnostics, with reported class fallback. `none`, walking-speed tokens and contradictory directional values are not coerced to 50. Walking costs stay independent |
+| `lanes`, `lanes:forward/backward`, `oneway` | Retain existing directional validation and reverse-way handling; default counts from class. A two-way single shared lane is unsupported until passing behavior exists: report/refuse rather than silently widening to 1+1. Turn/bus masks map only to motor ranks |
+| `sidewalk=both/left/right/no/none/separate`, side-specific forms and widths | Explicit values override class provision on that side; `separate` suppresses the integrated W and expects a retained separate path. `yes` uses both sides with an explicit ambiguity/default note. Missing tags use class defaults; do not remove a combined path on `sidewalk=no` if explicit cycle/foot tags authorize it |
+| `cycleway=lane/track/shared_lane/no/separate`, `cycleway:left/right/both:*`, `oneway:bicycle`, `bicycle`, `foot`, `segregated` | Lane → flush cycle strip; track → separated cycle strip; foot=yes/designated with segregated=no → combined; segregated=yes → C + W. `shared_lane` reserves future cycling on the motor lane, adds no width. `opposite*`/direction tags set contraflow explicitly. Separate retains its own edge; no cycle agents are invented |
+| `footway=sidewalk` / separately mapped crossing ways | Stop blanket skipping. Conflate only with a unique same-level parent association whose topology, alignment, grade and side fit a road-owned strip; use source association/shared junction evidence plus exact compatibility, not the existing distance/angle thresholds alone. Transfer width/modes and crossing connections; record consumed IDs. Ambiguous or independent paths remain separate with a diagnostic. Suppress duplicate class-default W only after association is proven; `sidewalk=separate` already supplies suppression authority |
+| `parking:lane:left/right/both` and modern `parking:left/right/both` plus `orientation`, `width`, `restriction` | Parallel/on-street → parking strip plus required buffer. `no` removes; `separate` is ROAD-86 area linkage. Half/on-kerb parking is not permission to consume W. Angle/perpendicular tags retain depth/orientation for ROAD-86 and report unsupported authoring until its envelope exists; restrictions do not imply usable stalls today |
+| `width`, `width:lanes`, side/path widths | Explicit component widths win. On motor ways treat `width` as carriageway total, excluding sidewalks/verges, and report that interpretation; subtract known parking/cycle lanes contained in it and explicit median/margins before assigning equal remaining motor widths. Reject inconsistent totals/out-of-range widths instead of silently clamping. Path `width` is clear path pavement. Never infer lane count from width; retain unresolved source text |
+
+An independent path with no reliable parent association stays independent even beside a
+street. Do not discard real paths to make a prettier import; unresolved duplicate-default
+cases must be visible in the import report. Missing tags use **new-import class defaults**,
+never legacy-save defaults. One Kuopio re-import/shape pass follows the agreed geometry set;
+this design task does not perform it.
+
+### Player tools and in-place edits
+
+Show a class card, speed chip, lane-count controls and a live labelled cross-section thumbnail.
+Side presets are **Walk / Combined path / Separate cycle + walk / Rural shoulder / None**;
+parking and verge are optional add-ons. Mirror sides by default, unlock left/right with one
+control, and show total occupied width. Collector's asymmetric default clearly labels its path
+side and offers Swap sides. Advanced details expose individual widths, surface, modes and
+frontage; they are not the default screen. No GDScript simulation decisions.
+
+Reuse ROAD-80's in-place cross-section transaction and exact preview, keeping road/node IDs
+and centreline. Preview the affected parcels, clearance failures, crossings and structure
+dependencies before committing. Stage side tables, lanes, cost/control books, frontage,
+spatial entries and render/terrain products together. Include layout identity/revision and
+all overrides in preview certificates and cache keys. Rebuild the existing complete incident
+lane closure, reattach/replan affected agents, use allocator journals, and undo everything as
+one action. Reject widening into protected/occupied land with the measured conflict; never
+delete buildings or relocate a path implicitly. A pure speed edit skips mesh work except
+affected signs/markings, and preserves width and junction-control authority.
+
+### Forward compatibility checks
+
+**ROAD-85 interchanges/slip lanes:** link-role edges use the same lane/strip station profiles;
+gore/island boundaries are node-owned explicit surfaces and mode barriers. Parent restrictions,
+grade layers and per-side path crossings survive splits. Slip-lane pedestrian refuges reference
+the crossing stages; no default sidewalk is extruded across a motorway merge.
+
+**ROAD-86 parking:** a parking strip owns station intervals, depth/orientation and access side.
+Stall geometry/IDs and capacity are derived there; a parking lot is a separate area owner with
+aisle edges and explicit street/path access. TRAFFIC-10 adds occupancy/search to those IDs
+without modifying carriageway widths or counting parked cars as through lanes.
+
+**Traffic lights:** signals bind to existing lane movements and crossing stages/conflict zones,
+not to a guessed road centre. Stop lines use the same approach station; pole footprints use
+furniture clearance. Signal timing changes admission policy, not strips or geometry ownership.
+
+**Bus stops/bays:** a stop binds to motor-lane rank plus station interval; a bay is a tapered
+bus-access strip with a platform/waiting strip and explicit walk/cycle bypass links. The common
+station profile carries bay width, eliminating another `LANE_WIDTH` special case. Passenger
+queues do not occupy a cycle track by default; bus-lane masks remain separate from bay identity.
+
+**Future trams:** street-running rails are an overlay bound to a motor lane's stable identity,
+with shared-mode access and clearance. Reserved tracks use the existing `TramReservation`
+band role plus explicit track lanes/platform strips. Stops, crossings and conflicts reference
+the same station/strip identities; transit behavior and electrical infrastructure are later work.
+
+### Independently shippable implementation slices
+
+Sizes are rough focused engineering days including targeted tests, not elapsed-time promises.
+Do not expose a new preset until every consumer it requires is converted. Intermediate slices
+can ship internal schema/consumer support with unchanged player choices; no feature flags or
+duplicate legacy production path are needed.
+
+| Slice | Deliverable and rough size | Acceptance before shipping |
+| --- | --- | --- |
+| A — authority and migration | Cold tables, interning, semantic query API, explicit legacy profiles, v110, remap/undo; **3–5 d** | Unit validation/interning/reversal/split/compact tests, historical save matrix and exact compiled baseline proof; measured reference/layout memory. Existing tools still author explicit legacy geometry |
+| B — ROAD-83 speed and policy | Classes/provenance, speed and directed cost updates, access/frontage restrictions, class-based authored priority/signs; **3–5 d** | Speed-edit routing preference, invariant walk cost, directional limits, motorway mode denial, no frontage spawning, equal-class right-hand rule, unchanged rank after width edit, save/undo. Expose speed/class policy on existing geometry with explicit layout override until F supplies full presets |
+| C — lane/core geometry | Individual motor widths, median/taper/pocket arithmetic, bus masks, markings, ring/ramp widths; **3–5 d** | Legacy bytes, mixed 3/3.25/3.5 widths, reverse direction, opposite-kerb/through-centre preservation, mask remap rejection, preview/commit/undo parity. Old outer strips retained explicitly |
+| D — complete outer-strip consumers | General band compiler, asymmetric junction mouths/clips, frontage/zoning, earthworks/structures and streetscape; **5–8 d** | All ledger sites converted; asymmetric/one-sided/no-sidewalk and wide lower-road opening fixtures; building entrances and parcel journals; no pole in walking/cycling space; locality and legacy equality. New strip choices remain internal until E |
+| E — paths and crossings (ROAD-58/79) | Side-aware walk lanes, separate path links, shared/cycle surfaces, crossing stages/landings/paint and bounded pedestrian offsets; **4–7 d** | Legacy eight-mouth 64-route regression, one-/zero-side reachability, Foot junction full/partial rebuild, no false side shortcuts, cycles excluded from FOOT, kerb ramps/refuges/skew/raised crossings, L3/L4 reference check, old compiled bytes and cosmetic-offset test |
+| F — presets and importer | Full class/side preset UI, in-place edits, tag parsing/provenance and complete Rust request; **3–5 d** | Table-driven missing/explicit/conflicting tags, reversed ways, sidewalk conflation versus independent path, width conservation, no unsupported approximations, import→save→load equality; tool preview/commit/cancel/undo with populated locality |
+
+For **each slice touching compile/edit costs**, run matched unprofiled release surface and
+road-chunk benchmarks using existing fixtures, fixed compiler/build/workload IDs and Rayon
+worker count. Include a fixed affected neighborhood with increasing background roads,
+buildings, parcels and agents: identical local products and stable local planning work/cost
+are mandatory; isolate one-time snapshots and any existing global routing rebuild. Mixed new
+layouts need their own bounded-band workload alongside the unchanged legacy control. No speed
+claim from profiled timings. For slices touching movement, access, routing integration or lane
+publication, also run the [PERF-06 contract](traffic.md#short-agent-tick-contract-perf-06) against
+a kept baseline: setup-free 10k/30k tiers, ≤3.6× phase-count growth, zero stays zero, no hot-loop
+allocations; matched alternating release pairs at these feature milestones. Compile-only work
+does not need the long `agent_benchmark`. Every Rust slice runs relevant unit/integration
+regressions and all-target Clippy; bridge/visual QA belongs to implementation acceptance.
+These are future gates: no tests, builds or benchmarks were run for this documentation change.
+
+### Player decisions still open
+
+1. **Local-street feel:** keep two 3 m lanes and sidewalks on both sides by default, or favor
+   narrower shared residential space? **Recommend the former now**, with a later explicit
+   shared-space preset when pedestrian priority/passing behavior exists; never fake it by
+   drawing two lanes inside a single-lane street.
+2. **Collector character:** default to a combined path on one side, or segregated cycling on
+   both sides? **Recommend one combined side** for the initial Kuopio palette, with a prominent
+   two-sided segregated preset; both use the same data model.
+3. **Parking visibility before the mechanic:** should new local roads start with parking?
+   **Recommend off by default**, optional explicit strips now, stall visuals/capacity in ROAD-86,
+   and no occupancy or parking-search effect until TRAFFIC-10 is agreed.
+
 ## Roadbed Model
 
 One authoritative roadbed model drives preview, committed mesh, visible-world picking, lane
