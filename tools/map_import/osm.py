@@ -45,6 +45,21 @@ def marked_crossing(tags):
     return None
 
 
+def motor_access(tags, suffix=''):
+    for key in ('motorcar', 'motor_vehicle', 'vehicle', 'access'):
+        if key+suffix in tags:
+            return tags[key+suffix]
+    return ''
+
+
+def motor_lane_access(tags, direction):
+    for key in ('motorcar', 'motor_vehicle', 'vehicle', 'access'):
+        for suffix in (':lanes:'+direction, ':lanes') if direction == 'forward' else (':lanes:'+direction,):
+            if key+suffix in tags:
+                return tags[key+suffix]
+    return ''
+
+
 def assemble_rings(members, ways, nodes):
     """Join endpoint-connected member ways by role, preserving open fragments."""
     rings = []
@@ -118,18 +133,21 @@ class OsmAdapter:
                      'turn_lanes_backward': tags.get('turn:lanes:backward', ''),
                      'speed_kmh': speed(tags.get('maxspeed')), 'service': tags.get('service', ''),
                      'track_grade': tags.get('tracktype', ''), 'surface': tags.get('surface', ''),
-                     'access': tags.get('motorcar', tags.get('motor_vehicle', tags.get('vehicle', tags.get('access', '')))), 'footway': tags.get('footway', ''),
+                     'access': motor_access(tags), 'footway': tags.get('footway', ''),
                      'oneway_confirmed': tags.get('oneway:source') == 'survey',
                      'roundabout': tags.get('junction') in ('roundabout', 'circular'),
                      'roundabout_authority': tags.get('junction', ''),
                      'crossing_marked': marked_crossing(tags),
                      'junction_control': tags.get('highway') if tags.get('highway') in ('give_way', 'stop', 'traffic_signals') else None,
                      'control_direction': tags.get('direction', tags.get('traffic_signals:direction', '')),
-                     'bus_only': tags.get('bus') in ('designated', 'only') or tags.get('psv') in ('designated', 'only')
-                     or (tags.get('motor_vehicle', tags.get('access')) == 'no'
-                         and (tags.get('bus') == 'yes' or tags.get('psv') == 'yes')),
+                     'bus_only': motor_access(tags) in ('no', 'private', 'permit')
+                     and (tags.get('bus') in ('yes', 'designated', 'only')
+                          or tags.get('psv') in ('yes', 'designated', 'only')),
+                     'bus_designated': tags.get('bus') in ('designated', 'only') or tags.get('psv') in ('designated', 'only'),
                      'bus_lanes_forward': tags.get('bus:lanes:forward', tags.get('bus:lanes', tags.get('psv:lanes:forward', tags.get('psv:lanes', '')))),
                      'bus_lanes_backward': tags.get('bus:lanes:backward', tags.get('psv:lanes:backward', '')),
+                     'motor_lanes_forward': motor_lane_access(tags, 'forward'),
+                     'motor_lanes_backward': motor_lane_access(tags, 'backward'),
                      'bridge': tags.get('bridge', 'no') != 'no', 'tunnel': tags.get('tunnel', 'no') != 'no',
                      'layer': number(tags.get('layer')) or 0, 'building_use': building_use,
                      'landuse': tags.get('landuse'), 'relation_type': tags.get('type', ''),

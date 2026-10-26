@@ -47,6 +47,7 @@ CAPABILITIES = (
     Capability('road', 'road_class', ('steps', 'corridor', 'construction', 'proposed'), 'skip', 'non_placeable_highway'),
     Capability('road', 'footway', ('sidewalk', 'crossing'), 'skip', 'road_includes_sidewalks'),
     Capability('road', 'bus_only', (True,), 'road', 'dedicated_bus_carriageway', 3),
+    Capability('road', 'bus_designated', (True,), 'road', 'designated_bus_access', 3),
     Capability('road', 'service', ('parking_aisle', 'driveway', 'drive-through'), 'skip', 'private_or_parking_service'),
     Capability('road', 'access', ('no', 'private', 'permit'), 'skip', 'restricted_access'),
     Capability('road', 'area', (True,), 'skip', 'highway_area_not_centerline'),
@@ -121,13 +122,18 @@ def map_role(feature, role, include_park_paths=False):
                 return {**result, 'action': 'skip', 'reason': 'invalid_directional_lanes'}
             result.update(fwd_lanes=int(fwd), bkw_lanes=int(bkw))
             masks = []
-            for count, tokens in ((int(fwd), p.get('bus_lanes_forward', '')),
-                                  (int(bkw), p.get('bus_lanes_backward', ''))):
+            for count, tokens, motor in ((int(fwd), p.get('bus_lanes_forward', ''), p.get('motor_lanes_forward', '')),
+                                         (int(bkw), p.get('bus_lanes_backward', ''), p.get('motor_lanes_backward', ''))):
                 values = tokens.split('|') if tokens else []
+                access = motor.split('|') if motor else []
                 if p.get('bus_only'):
                     masks.append((1 << count)-1)
                 elif values and len(values) == count:
-                    masks.append(sum(1 << i for i, token in enumerate(values) if token in ('designated', 'only')))
+                    masks.append(sum(1 << i for i, token in enumerate(values)
+                                     if len(access) == count and token in ('yes', 'designated', 'only')
+                                     and access[i] in ('no', 'private', 'permit')))
+                    if len(access) != count:
+                        result['bus_lane_reason'] = 'bus_designation_has_no_exclusive_motor_access_authority'
                 else:
                     masks.append(0)
                     if values:
