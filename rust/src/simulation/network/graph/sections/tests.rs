@@ -214,3 +214,58 @@ fn section_certificates_survive_local_ids_and_reject_revision_or_override_change
     local.road_sections.references[id].overrides ^= RoadSectionRef::SPEED_OVERRIDE;
     assert!(!snapshot.matches(&local, id));
 }
+
+#[test]
+fn split_preserves_each_halfs_end_pocket_layout_before_any_rebuild() {
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::{
+        TransitNetwork,
+        graph::{RoadLaneTaper, RoadMedian},
+        topology::split_edge,
+        types::NodeType,
+    };
+    use crate::simulation::zoning::ZoningSystem;
+    use godot::prelude::Vector3;
+    for left in [false, true] {
+        let mut graph = graph();
+        graph
+            .set_edge_cross_section(0, 2, 1, RoadMedian::from_tool(2, 5.0).unwrap())
+            .unwrap();
+        graph.set_node_type(1, NodeType::LaneTransition);
+        graph.remove_from_spatial_index(0);
+        let edge = graph.edge_mut(0);
+        if left {
+            edge.width = 12.0;
+        }
+        edge.lane_tapers = Some(Box::new([
+            None,
+            Some(RoadLaneTaper {
+                length_m: 20.0,
+                from_fwd: 1,
+                from_bkw: 1,
+                from_median_m: 5.0,
+                left_pocket: left,
+                right_pocket: !left,
+            }),
+        ]));
+        graph.add_to_spatial_index(0);
+        let junction = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        split_edge(
+            &mut TransitNetwork::new(),
+            &mut graph,
+            0,
+            0,
+            0.5,
+            junction,
+            &mut ZoningSystem::new(&WorldConfig::default()),
+            &mut BuildingAllocator::new(),
+        );
+        assert_eq!(graph.edge_count(), 2);
+        assert_ne!(graph.road_layout(0), graph.road_layout(1));
+        for id in 0..2 {
+            assert_eq!(*graph.road_layout(id), RoadLayout::legacy(graph.edge(id)));
+        }
+        assert!(graph.validate_road_sections().is_ok());
+    }
+}

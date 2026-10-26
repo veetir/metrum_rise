@@ -686,7 +686,11 @@ impl RegionGraph {
         first: usize,
         second: usize,
     ) {
+        // An endpoint pocket can remain only on the appended half. Its already-resolved
+        // layout must survive policy inheritance; the two halves need not share their axes.
+        let second_layout = self.road_sections.references[second].layout;
         self.road_sections.references[second] = self.road_sections.references[first];
+        self.road_sections.references[second].layout = second_layout;
         self.road_sections.references[first].revision = self.road_sections.references[first]
             .revision
             .wrapping_add(1);
