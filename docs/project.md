@@ -57,21 +57,25 @@ terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the 
 layout still needs that importer repair
 ([design and acceptance](roads.md#imported-junction-geometry--road-73)).
 
-The historical ROAD-76 importer task is tracked as ROAD-81 after the upstream ID collision.
-Rebased onto `feat/road-upstream-sync`/TRAFFIC-09 (`bcc167b5`), it now produces the installed
-`kuopio-sw-v2.sqlite`: a fresh full OSM/DEM **road/path import**, with no Oct 18 save input,
-buildings, zoning or population. All 1,065 source strokes were processed; 849 are complete,
-185 partial and 31 refused. Both tagged motor rings and the surveyed Luola ring are native,
-retaining median approaches up to 2+2. The university keeps 3+3 lanes/median/outer bus lanes,
-a short filled opening carrying the actual 1+1 road and a separate path, and at-grade parking.
-The final save cold-loads; seven full-map traffic probes, 2,886 Rust tests, 22 native suites,
-Clippy and matched local-planning benchmarks pass. Sixteen reference views were inspected.
-ROAD-81 remains open: KYS/Bioteknia still have excessive central asphalt, some source profiles
-are too steep, and the stricter geometry audit reports one overlapping grade pair and seven
-mouth-height discontinuities. Source omissions, rejected markings and unsupported authored
-traffic controls are explicit in the report. The earlier university v2 save is an Oct 18/v88
-reconstruction; it is not the new full import
-([source, visual findings and acceptance](roads.md#kuopio-import-integration--road-76-now-road-81)).
+The historical ROAD-76 importer is tracked as ROAD-81. Rebased onto upstream-sync
+`cc038ea8` including the t32 preview fix, it produces the new **diagnostic**
+`kuopio-sw-v3.sqlite` full OSM/DEM road/path import, with provenance and 31 matched view
+pairs. V2 and user saves remain unchanged. General source rules replace the Luola,
+university lower-road/path and Prisma layout overrides. It conditions bridge banks
+and approaches, separates service circulation, preserves bus permissions, caps wing
+tips and fixes Valkeinen water clipping.
+The fresh run processes 1,688 strokes: 1,207 complete, 349 partial, 132 refused.
+
+**ROAD-81 acceptance still fails.** Three of six motor ring candidates are native;
+west Niiralankatu regresses from v2. The map cold-loads, but only 3/12 traffic trips pass,
+versus a fresh 7/7 v2 legacy check on the same runtime. The strict map audit retains
+one overlapping grade pair and 12 mouth discontinuities; steep motor profiles, bridge
+approach gaps, KYS/Bioteknia widths, angular structures and the Valkeinen path loop remain.
+The source structure inventory has 37 built / one partial / 51 refused road/path sources,
+plus ten unsupported railway structures. Separately, 2,892 Rust tests, 100 importer tests,
+25 native suites, Clippy and 24 matched locality benchmark processes pass. The save is
+not accepted as a completed upgrade; its renderer fixes require this branch's rebuilt
+library ([source rules, measurements and explicit acceptance failures](roads.md#general-source-inference-and-structural-profiles--road-81-2026-10-26)).
 
 
 ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,

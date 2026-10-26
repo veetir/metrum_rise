@@ -4929,6 +4929,17 @@ Remaining direction:
 
 ### 5. Chunk-Local Terrain / Water Rendering Is Now Live
 
+ROAD-81's Valkeinen investigation (2026-10-26) found a render clipping defect, not
+missing lake fill or bathymetry. A zero-length edge in a closed/repeated road loop
+made the boundary predicate accept every query point; unrelated water cells inside
+the road's bounding box disappeared. Degenerate segments now test distance to their
+single endpoint. A synthetic concave road loop covers repeated internal/closing
+vertices, genuine road cells and an empty lake cell. Native before/after captures of
+the unchanged v2 save retain 481 wet samples in the affected eastern patch while
+road-clipped cells fall from 370 to four and water triangles rise from 172 to 904.
+The straight cutoff at the 510 m patch boundary disappears. This adds constant work
+to the existing segment predicate, with no new index, fill operation or save edit.
+
 Now that `terrain_cell_m` exists, the live render boundary is chunk-local instead of whole-world.
 
 Authoritative rule:

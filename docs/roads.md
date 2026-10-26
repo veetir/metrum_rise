@@ -4526,6 +4526,176 @@ fixture filter `populated_pocket_plan_scaling`, `populated_roundabout_plan_scali
 also reduced observed per-edit dirty mesh work from a full-city backlog to one or two chunks;
 those import observations are not a matched timing or frame-rate claim.
 
+#### General source inference and structural profiles — ROAD-81, 2026-10-26
+
+The branch is rebased onto upstream-sync `cc038ea8`, including the roundabout cursor
+preview repair. `backup/kuopio-import-v2-2026-10-25-c` preserves the pre-rebase tip.
+Both documentation histories are retained; VEG-27 remains an unrelated uncommitted edit.
+
+Explicit `junction=roundabout|circular` and split-way rings retain source authority.
+Untagged rings are inferred from directed faces of the source motor graph: consistent
+one-way circulation/layer, outside diameter at most 90 m, circularity at least 0.85,
+and at least three external source arms. Service circuits, rectangular divided
+junctions, turning loops and faces containing only part of a source way are excluded
+or explicitly refused. Half-edge traversal costs O(V + E log maximum degree), with
+O(V+E) offline scratch; there is no cycle enumeration or gameplay work. Native
+replacement now retains one-way entry/exit arms as well as divided approaches.
+The source's two-lane Tietoteknia ring is explicitly a single-lane approximation;
+destination entry selection and spiral exits are still unsupported.
+
+Bridge/tunnel/layer boundaries continue to split source chains. Explicit bridge decks
+use an affine bank profile sampled two DEM cells outside their endpoints, avoiding
+the lower-road/riverbed samples inside short deck voids. Source-shared adjoining
+approaches retain that exact deck joint and resume ground beyond the same support
+halo. Source incidence permits cross-level boundary snaps only to the exact structural
+endpoint; unrelated levels never snap together. Lower source crossings use a bounded
+100 m approach chord on either side. Before native clearance, dense non-bridge
+profiles use the existing fixed 64-pass grade/curvature solver on supplied source
+height targets, with endpoint pins. Engineered heights must not be resampled from
+the terrain beneath them. Work is linear in resampled profile size; indexed crossing
+queries remain bounded to nearby source segments. No arbitrary bridge height offset,
+save repair, terrain-noise-following lower profile or narrower fallback is introduced.
+
+The retaining-wing tip is bounded by the opening floor and deck, so hillside samples
+cannot create above-deck concrete spikes. This does not model the reference's separate
+path bays, columns or detailed Finnish abutments; oversized/angular walls remain a
+separate visual acceptance question. Valkeinen's missing eastern water was a degenerate
+road-loop clipping predicate, documented in `terrain.md`, rather than missing fill.
+
+Unnamed service components returning only to one public street are local circulation,
+not through streets. They are excluded without consuming that street; named services,
+single-access spurs and links between different streets remain eligible. Repeated
+source-junction visits split a returning way before joins, preserving real turning
+loops without importing one self-intersecting lasso. Explicit sidewalk/crossing tags
+still defer to native pavement, but proximity alone no longer suppresses independent
+park/cycle paths; connected path joints cannot be pulled onto nearby motor roads.
+Both source-incidence passes are O(source vertices + local indexed candidates).
+
+Recoverable Luola identity/ring, university lower-road/path and Prisma layout overrides
+are removed. Directed, aligned source continuation supplies missing carriageway names.
+The remaining photo surveys are the university's six-way 3+3/outer-bus section and its
+single ordinary two-way refuge parking arm: cached OSM lacks or contradicts those facts.
+The 2 m paved median is explicitly procedural, not a measured width. The existing
+Kallavesi 82.41 m water-level correction also remains an explicit local survey.
+Source `bus:lanes`/`psv:lanes` and dedicated bus links use ROAD-72's existing mask API;
+no new bus simulation, agent fields, tick allocations or save schema are added.
+
+A full-map path insertion exposed another preview-cache dependency error: a layered
+Standard halo span could reuse a filled opening after its lower corridor was absent
+from the bounded excerpt. Its resident lower-edge IDs then reached a local-ID remap
+and panicked. Filled support artifacts now always rebuild in the target graph; an empty
+local neighbor query cannot certify their source dependencies. The synthetic regression
+removes the lower corridor between resident capture and local replay, and the fresh
+native continuation passes the actual previously failing insertion. The guard is O(1)
+per candidate, with existing bounded local compilation and no tick work. The importer
+resumes only completed importer-owned checkpoints of the exact source plan.
+
+Cold-load inspection also exposed a transport-topology invariant: node union promotes
+a count transition to Junction before automatic taper reconciliation. A joining footpath
+then left its old local taper attached to a non-transition node. Reconciliation now checks
+complete live transport incidence, retires only the local ordinary taper even after role
+promotion, and preserves remote tapers and authored-pocket protection. Both road and foot
+node-union cases have a regression. Work remains O(local nodes + local incidence), without
+city scans or tick changes. Invalid importer checkpoints are retained for diagnosis; the
+continuation replays from the last valid source checkpoint rather than editing save rows.
+
+Exact-source retries also checkpoint their stage, sweep and acknowledged failure markers.
+A process limit can resume within a long sweep without retrying its already rejected prefix;
+accepted pieces remain absent from the pending set. Recovery state survives checkpoints, so
+an earlier accepted piece still triggers the next bounded sweep after resuming. Completed
+motor and settled stages are distinct. Marker checks are O(1) per pending piece, offline only;
+the existing eight-sweep bound and source geometry stay unchanged. A serialized checkpoint
+regression covers skipped prefixes, later acceptance, the next sweep and completed-stage replay.
+
+**Round-three correctness and matched locality.** Release `cargo test --lib` passes
+2,892 tests (168 ignored); Clippy all-targets is clean. All 100 synthetic Python importer
+tests and 25 individual native suites pass: the previous 22 road/traffic suites,
+importer network accounting, the source-profile bridge and checkpoint retry regression. The profile bridge
+checks endpoint pins and an engineered 8 m plateau, preventing accidental resampling
+from lower terrain. Rustdoc has no missing-doc warnings and four existing link warnings.
+
+Fresh measurements use Apple M2 Pro/arm64, Rust 1.98.1, SDK 26.5, upstream Godot 4.7.2,
+four Rayon workers and `METRUM_DEBUG=0`. Three alternating unprofiled process pairs per
+fixture run without competing Godot/build work; setup/snapshots are excluded. Baseline
+is the rebased pre-round-three `29278a82` binary, SHA-256
+`6b1e0da54a5ccc71a418fe2bb3a94fc34a35bab5eb6a151c136d597ec975f842`;
+candidate native code is `7fcf2871`, test-binary SHA-256
+`d3bd26a69aed8fcdafa13821a84050f63d8f9dda5b53c730a7293c884019ae4c`.
+
+| Background buildings/roads for crossing fixture | Pocket median p50, ms (before → after) | Ring median p50, ms | Crossing-profile median, ms |
+| --- | --- | --- | --- |
+| 0 | 18.962 → 18.721 | 52.296 → 52.078 | 1.14092 → 1.14321 |
+| 1,000 | 19.396 → 18.788 | 52.495 → 50.470 | 1.14125 → 1.14263 |
+| 10,000 | 19.249 → 18.827 | 51.443 → 49.370 | 1.14062 → 1.14442 |
+| 100,000 | 19.206 → 19.056 | 51.504 → 50.233 | 1.14354 → 1.14275 |
+
+Every populated fixture retains identical local products while its largest background
+has 600,024 agents, 100,004 parcels and 391 remote roads. The crossing fixture separately
+holds one local road fixed while increasing remote roads to 100,000. Preview p50 is
+13.137 → 13.008 ms without terrain and 17.666 → 17.310 ms with terrain. These small mixed
+deltas establish bounded local planning, not a speedup. All 24 processes pass. Run each
+preserved `$TEST_BINARY` with the four filters and `--ignored --nocapture --test-threads=1`
+listed in the preceding Oct 25 recipe. No agent-tick code changes or new tick timing claim.
+
+**Round-three full-map source accounting.** The fresh plan processes 1,688 strokes:
+1,207 complete, 349 partial and 132 refused. Motor roads are 499/78/25 of 602;
+paths are 708/271/107 of 1,086. V2 processed 619 motor and 446 path strokes, so raw
+totals are different workloads. The motor complete count is lower and its partial
+count higher; this round does not establish a uniform connectivity improvement.
+
+Six motor ring candidates are automatic. Luola, Bellanranta and east Niiralankatu
+are native. Tietoteknia, the inferred tertiary ring and west Niiralankatu retain
+`roundabout_overlaps_road` on the final attempt; west Niiralankatu is a regression
+from v2, with an earlier `render_geometry_invalid` refusal also retained. The
+cycleway-only source circle is explicitly excluded from motor replacement and is
+not yet retained as a path product; non-motor circle handling remains open.
+
+Every tagged bridge/tunnel/nonzero-layer source in the target road/path data is
+inventoried: 37 built, one partial and 51 refused. Ten additional railway structures
+are explicitly unsupported. Built means all linked source products were accepted;
+connected approaches and reference-accurate structures require separate checks.
+Both motorway decks over Tasavallankatu, Saaristokatu 400332371 and the university
+decks are accepted. Of 46 lower-crossing profile strokes, 13 are complete, five
+partial and 28 refused. Thirty-one unbuilt/partial source structures report
+`crossing_approach_too_short`; other reasons and preparation exclusions remain
+explicit. No conflicting road is deleted or ring enlarged to force acceptance.
+
+The final save cold-loads and publishes 3,933 spans / 2,849 nodes. The strict map audit
+**fails**: one overlapping grade pair (809/810) and 12 mouth discontinuities remain,
+versus the v2 handoff's one/seven. It reports no failed nodes, missing spans, oversized
+kerb steps or terrain-loop export failures. Eight visible spans exceed 50% grade;
+34 retained physical profiles do so after runtime reconstruction. A separate read-only
+SQLite motor-profile diagnostic counts 26 car edges above 50%, versus 13 on v2 under
+the same query; road populations differ, but a grade improvement is not established.
+Offline smoothing does not resolve all later junction/profile constraints.
+
+A fresh v2 check with the same current native runtime still passes all seven legacy
+trips. The v3 12-trip probe passes only university motor underpass, west-ring
+area traversal and Niirala. Eight trips cannot create a route; east Niiralankatu does
+not finish traversal. Native ring identity is a separate inventory check: passing
+through the west-ring area does not make it a native roundabout. Valkeinen has 108
+dedicated path edges in the lake+80 m diagnostic window (v2: 31), but neither those nor
+all foot-accessible roads form an enclosing loop. Face walks decompose repeated-node
+spurs before testing cycles. Path continuity remains open despite the renderer fix.
+
+All 27 bus-mask actions and seven lane-rule actions commit. Crossing actions are
+233 accepted / 42 refused; 247 marked source intents lack an existing arm within 24 m,
+and 49 authored signal/stop/yield controls still lack an import setter. Only three
+of nine pocket actions commit. The provenance and per-source inventories retain all
+refusals. This is a diagnostic v3 delivery, not completed ROAD-81 visual, profile or
+connectivity acceptance; use the branch's updated runtime for its water/compiler fixes.
+
+All 31 final cameras are inspected against their declared references and matching
+before views. Bellanranta now visibly has yield/roundabout signs, but only its south
+zebra remains; two reported arm zebras are missing. Tasavallankatu's under-deck view
+has a light-blue void/incorrect surface and green cut triangles. University motor
+profile traversal improves, but parking regresses and massive/angular wings remain.
+The malformed Viestikatu lasso becomes a compact source turning loop, while Prisma
+and Volttikatu still have broken connections. Full per-view findings, named ring
+results and every structure refusal live in `$ARTIFACTS/visual-review.json`,
+`$ARTIFACTS/source-structures-final.json`, `$ARTIFACTS/before-after.html` and
+`$ARTIFACTS/handoff.txt`, with source/runtime fingerprints in the installed sidecar.
+
 **Historical Oct 22 matched release locality checks.** Apple M2 Pro/arm64, Rust 1.98.1, four Rayon workers,
 `METRUM_DEBUG=0`, three alternating unprofiled process pairs. The baseline is the rebased
 importer before the bus ribbon removal, not the pristine road-chain tip. Fixture setup and

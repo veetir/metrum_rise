@@ -759,6 +759,20 @@ future lane graph. No agent layout, movement loop or tick allocation changes.
 Saved masks and transactional edit behavior are owned by
 [the road contract](roads.md#bus-only-lane-authoring--road-72-lane-use-slice).
 
+ROAD-81 (2026-10-26) maps explicit motor restrictions with `bus:lanes`/`psv:lanes`
+permission and dedicated bus/PSV carriageways through this existing API. Designation
+alone does not exclude cars: per-lane masks require an explicit motor restriction,
+and scalar access follows the more specific motorcar permission. This follows the
+[OSM bus-lane access contract](https://wiki.openstreetmap.org/wiki/Key%3Abus%3Alanes).
+A motor restriction with explicit PSV permission does not become a skipped private
+driveway. Source masks
+stop stroke joins at permission boundaries and follow retained carriageway direction.
+The KYS source has such a separately mapped one-way bus link; geometry acceptance
+and any missing endpoints remain separate from permission support. No bus vehicle
+simulation is added. Native roundabout replacement also preserves genuine one-way
+entry/exit arms (zero lanes in the unused direction), with vehicle lane rebuild tests
+covering both saved edge orientations. NET-07 and the agent tick are unchanged.
+
 ### Imported road compiler completion — ROAD-73
 
 The ROAD-73 span-frame repair keeps successful existing section geometry and all lane
