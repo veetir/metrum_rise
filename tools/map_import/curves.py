@@ -14,7 +14,7 @@ from .geometry import distance, length, roadbed_half_width
 
 def smooth(points, step=4.0, fixed_tangents=None):
     points = [tuple(p) for i, p in enumerate(points) if not i or distance(p, points[i-1]) > .05]
-    if len(points) <= 2:
+    if len(points) < 2:
         return points
     fixed_tangents = fixed_tangents or {}
     tangents = []

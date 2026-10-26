@@ -775,7 +775,10 @@ class CurveTest(unittest.TestCase):
         a = (cooked[i][0]-cooked[i-1][0], cooked[i][1]-cooked[i-1][1])
         b = (cooked[i+1][0]-cooked[i][0], cooked[i+1][1]-cooked[i][1])
         self.assertGreater((a[0]*b[0]+a[1]*b[1])/(distance(a,(0,0))*distance(b,(0,0))), .999)
-        self.assertEqual(smooth([(0, 0), (0, 0), (100, 0)]), [(0, 0), (100, 0)])
+        straight = smooth([(0, 0), (0, 0), (100, 0)])
+        self.assertEqual((straight[0], straight[-1]), ((0, 0), (100, 0)))
+        self.assertTrue(all(b[0]-a[0] <= 4 and b[1] == 0 for a, b in zip(straight, straight[1:])))
+        self.assertEqual(len(straight), 26)
 
     def test_grade_change_splits_authoring_strokes(self):
         a = feature('a', [(0, 0), (40, 0)], ['a','joint'])

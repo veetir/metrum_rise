@@ -40,6 +40,9 @@ func run() -> void:
 				var xyz: Array = trip[key]
 				trip[key] = Vector3(xyz[0], xyz[1], xyz[2])
 			trips.append(trip)
+	var selected := OS.get_environment("METRUM_IMPORT_PROBE_NAMES").split(",", false)
+	if not selected.is_empty():
+		trips = trips.filter(func(trip: Dictionary): return String(trip.name) in selected)
 	for trip in trips:
 		trip.id = simulation.spawn_debug_car(trip.from, trip.to)
 		trip.position = trip.from
