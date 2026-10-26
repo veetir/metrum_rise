@@ -4696,6 +4696,111 @@ results and every structure refusal live in `$ARTIFACTS/visual-review.json`,
 `$ARTIFACTS/source-structures-final.json`, `$ARTIFACTS/before-after.html` and
 `$ARTIFACTS/handoff.txt`, with source/runtime fingerprints in the installed sidecar.
 
+#### Round-four focused fixes — ROAD-81, acceptance incomplete
+
+The full-map acceptance gate is still **not met**. No round-four full import has run,
+and no `kuopio-sw-v4.sqlite` or provenance sidecar has been installed. Do not reuse the
+failed structural-layer experiments as a final plan. The installed v2/v3 and user saves
+remain read-only; focused outputs live under `$ARTIFACTS/road-81v4`.
+
+**Traffic causes and committed fixes.** The debug-car endpoint query previously selected
+nearer footpath-only nodes. It now requires a live incident car direction in the existing
+node grid. This repairs the diagnostic's mode mismatch, not missing motor geometry.
+Median source joins also retained obsolete controls inside the relocated mouth, producing
+backward hooks at Luola and Prisma. End controls inside the roadbed are removed up to the
+first real source junction. Straight two-point strokes now receive the same 4 m source
+samples as curved strokes; otherwise an interior terrain/profile constraint could disappear
+between endpoints, refusing the university parking connection.
+
+Two clip invariants were independently broken. An east Niiralankatu exit split by a path
+had only about 0.29 m of lane after a 9.625 m junction clip. Mouth fitting now reserves
+`CAR_LENGTH + IDM_S_MIN` (2.7 m) on motor spans. A partial node rebuild also scaled both
+ends but published only the dirty end, allowing the untouched opposite clip to exceed
+the budget. A single dirty end is now fitted against the actual fixed opposite clip;
+the two-dirty-end proportional fit remains. Both behaviors have targeted regressions.
+All of these changes are offline preparation or local edit/query work. Clip fitting adds
+O(1) work per local edge; no agent tick, allocation, save format or NET-07 change is made.
+Saved old clips are not silently rewritten on load.
+
+Focused source imports drive the original Luola, university parking and east-ring trips,
+and a source-derived Bellanranta trip. The east fixture refuses the offending path with
+`render_geometry_invalid`; its successful motor traversal is not acceptance of that path.
+Prisma's directed route is recovered and its car travels 146.26 m, but still stops:
+edge 19 is a 6.362 m source section with a 3.777 m vehicle lane, entering node 3 in the
+left-only lane when the route needs edge 3 toward node 5. Its straight lane is reachable
+only by a lane change, whose existing minimum is 18 m. This remaining short-approach
+lane-selection problem is not fixed. The filtered focused probe uses car ID 0; this is
+not the seven-car full-map probe or proof that all v2 trips pass. West-ring native identity
+also remains unverified on a new full import. Do not substitute historical v2/v3 results
+for round-four acceptance.
+
+**Reported bridges.** At an exact elevated bridge terminal, a source approach with its
+other end grounded was classified as one whole bridge. Ordinary mixed cut/fill approaches
+now recognize that exact terminal support, including on the same structural layer. The
+regression checks exact connection, supplied profile pins, both layer cases and rejection
+of nearby unrelated support. Existing local node incidence is reused.
+
+Saaristokatu's source deck 400332371 and both main approaches now commit in the focused
+fixture. Three movement probes pass: deck-only (63.09 m travelled), the long approach route
+through the deck (463.24 m), and Kumpusaarentie beneath it (27.02 m). The matching capture
+shows the missing north upper approach restored. A subsidiary source street is still
+partial and terrain slivers remain; this is not complete visual acceptance.
+
+At the reported motorway/Tasavallankatu location, the source lower street is named
+Siikalahdentie. The focused lower stroke commits, but the interchange remains disconnected.
+Ordinary level-0 motorway/ramp approaches overlap adjacent level-1 deck footprints and
+still hit `crossing_approach_too_short`, alongside render/junction refusals. Extending
+source-connected banks by 20/100 m, or assigning whole approaches the deck layer, removes
+some refusals but introduces surface/clearance/grade/junction failures. Those experiments
+are discarded, not committed or accepted. The street capture still shows the blue void;
+upper approach gaps remain. Recovery of the inventory's 31 short-approach cases is unproven.
+
+**Fresh verification.** `cargo test --release --lib`: 2,895 passed, 168 ignored;
+`cargo clippy --all-targets`: clean; `python3.12 -m unittest tools.test_map_import`:
+101 passed. All 25 native suites from the preceding round's verification manifest pass
+individually on native commit `450f76f7`. A fresh read-only v2 probe on this runtime
+still passes all seven legacy trips. Focused probe JSON retains save hashes and failed
+route details. Full-import/installed-save traffic acceptance remains outstanding.
+
+**Fresh matched locality.** Native baseline `7fcf2871`, SHA-256
+`d3bd26a69aed8fcdafa13821a84050f63d8f9dda5b53c730a7293c884019ae4c`; candidate `450f76f7`, SHA-256
+`0893db174aacd9122609cb1c534cd82c43b0b1c0098b7990121e9b2ee88e60aa`. Apple M2 Pro/arm64, SDK 26.5, four Rayon workers,
+`METRUM_DEBUG=0`; three alternating unprofiled process pairs per fixture, setup excluded,
+with no competing Godot/build work. All 24 processes pass. Run each preserved
+`$TEST_BINARY <filter> --ignored --nocapture --test-threads=1`, with filters
+`populated_pocket_plan_scaling`, `populated_roundabout_plan_scaling`,
+`benchmark_road_preview_modes` and `benchmark_crossing_profile_locality`.
+
+| Background buildings/roads for crossing fixture | Pocket median p50, ms (before → after) | Ring median p50, ms | Crossing-profile median, ms |
+| --- | --- | --- | --- |
+| 0 | 18.365 → 19.799 | 52.213 → 52.186 | 1.14254 → 1.14125 |
+| 1,000 | 18.877 → 19.471 | 51.825 → 52.795 | 1.14229 → 1.14042 |
+| 10,000 | 19.041 → 19.212 | 51.761 → 51.585 | 1.14254 → 1.14075 |
+| 100,000 | 19.633 → 20.075 | 52.880 → 53.144 | 1.14213 → 1.14071 |
+
+Local products match across population tiers, including 600,024 agents, 100,004 parcels
+and 391 remote roads at the largest populated tier. Crossing profiles retain one local
+edge with up to 100,000 remote roads. Preview p50 is 13.235 → 13.126 ms without terrain and
+17.735 → 17.765 ms with terrain. Pocket timings increase in this sample (about 1.4 ms at
+zero background); the cost remains bounded to the affected neighborhood. These runs
+establish locality, not a speedup or full-map acceptance. No agent-tick benchmark is
+needed because no agent-tick code changed. Logs and identities are in
+`$ARTIFACTS/road-81v4/benchmarks/manifest.json` and `summary.json`.
+
+**Captures and remaining scope.** Exact before cameras are in `captures/road-81v4/before`;
+focused after views are in `captures/road-81v4/focused-saaristo` and
+`captures/road-81v4/focused-highway`. All six images were opened. The before images show
+v3's complete map, while after images deliberately show focused source fixtures: absent
+background roads/forest changes are not improvements. The highway camera is extracted
+from read-only `highway-prisma.sqlite`; Saaristokatu matches the prior reported view.
+Opened Finnish references are `user-2026-10-21/prisma-1.png` and
+`commons/c_underpasses/Alikulkutunneli_Kouvola.jpg`. Neither is an exact photo of these two
+bridges; they support only the junction/continuous paved opening comparison. No new visual
+detail was designed. Terrain slivers, the motorway void and gaps remain explicit failures.
+
+Tietoteknia ring, Valkeinen walkway, KYS/Bioteknia layout, wing walls, mouth discontinuities
+and the bus-lane junction remain open for the next PR; none is accepted or worked on here.
+
 **Historical Oct 22 matched release locality checks.** Apple M2 Pro/arm64, Rust 1.98.1, four Rayon workers,
 `METRUM_DEBUG=0`, three alternating unprofiled process pairs. The baseline is the rebased
 importer before the bus ribbon removal, not the pristine road-chain tip. Fixture setup and

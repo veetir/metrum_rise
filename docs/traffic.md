@@ -745,6 +745,17 @@ Build identities, exact commands, timing tables and the populated-road locality 
 The corresponding authoring scope and pending signs, islands, interchange presets and import
 mapping are recorded in [roads.md](roads.md#restricted-ramp-stubs--road-69-first-slice).
 
+ROAD-81 round four commits local clip storage and partial-rebuild fixes: motor spans retain
+2.7 m (`CAR_LENGTH + IDM_S_MIN`), and one dirty mouth respects the fixed opposite clip.
+The debug probe attaches only to car-accessible nodes. Neither change adds tick work or
+changes NET-07. Fresh focused imports pass Luola, university parking, east Niiralankatu,
+Bellanranta and three Saaristokatu deck/approach/lower-road trips. The east fixture still
+refuses its problematic path. Prisma recovers a route but car ID 0 stalls on a short
+left-only approach with insufficient distance for the existing 18 m lane change. These
+focused results do not establish the required full-map seven-trip acceptance; no v4 is
+installed. Causes, regressions, bridge failures and verification are recorded in
+[the round-four checkpoint](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete).
+
 ### Bus-only car exclusion — ROAD-72 lane-use slice
 
 Reserved physical ribbons remain in road geometry but are absent from the car `LaneSystem`.

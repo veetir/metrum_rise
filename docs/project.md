@@ -66,6 +66,14 @@ and approaches, separates service circulation, preserves bus permissions, caps w
 tips and fixes Valkeinen water clipping.
 The fresh run processes 1,688 strokes: 1,207 complete, 349 partial, 132 refused.
 
+Round four commits fixes for median mouth hooks, straight source sampling, car probe
+endpoints, junction clip storage/partial rebuilds and exact bridge approach support.
+Focused Luola, parking, east-ring, Bellanranta and Saaristokatu movement checks pass;
+Prisma still stalls and the motorway interchange still has gaps/voids. No full v4 import
+or installation has run because the focused gate remains unmet. Fresh 2,895 Rust tests,
+101 importer tests, 25 native suites and Clippy pass
+([round-four evidence and open work](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete)).
+
 **ROAD-81 acceptance still fails.** Three of six motor ring candidates are native;
 west Niiralankatu regresses from v2. The map cold-loads, but only 3/12 traffic trips pass,
 versus a fresh 7/7 v2 legacy check on the same runtime. The strict map audit retains
