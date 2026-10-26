@@ -149,6 +149,7 @@ impl RoadLayout {
                     role: StripRole::Sidewalk,
                     surface: 1,
                     modes: TransitFlags::FOOT,
+                    policy: RoadStrip::FURNITURE_ALLOWED,
                     ..Default::default()
                 };
                 layout.strip_counts[side] = 2;
@@ -381,19 +382,26 @@ impl RegionGraph {
             if reference.class != 0 {
                 return Err("unsupported_section_class");
             }
-            if reference.detail != u32::MAX {
-                self.road_sections
-                    .details
-                    .get(reference.detail as usize)
-                    .ok_or("invalid_section_detail_reference")?
-                    .validate()?;
+            if reference.detail == u32::MAX {
+                return Err("missing_authored_section_detail");
             }
+            self.road_sections
+                .details
+                .get(reference.detail as usize)
+                .ok_or("invalid_section_detail_reference")?
+                .validate_supported()?;
             let edge = &self.edges[id];
             if reference.access != edge.allowed_types
                 || layout.lane_counts != [edge.fwd_lanes, edge.bkw_lanes]
                 || layout.core_width.get().to_bits() != edge.width.to_bits()
             {
                 return Err("section_edge_authority_mismatch");
+            }
+            if layout.as_ref() != &RoadLayout::legacy(edge) {
+                return Err("unsupported_section_authority");
+            }
+            if self.road_sections.extents[id] != self.section_extents(id) {
+                return Err("stale_section_side_extents");
             }
             for (count, mask) in layout.lane_counts.iter().zip(edge.bus_lanes) {
                 if u16::from(mask) >= (1u16 << count) {
@@ -412,8 +420,20 @@ pub struct RoadSectionDetail {
     pub approaches: [u8; 2],
     /// Crossing inset, stripe width, stripe gap and stripe length, in metres.
     pub crossing: [SectionScalar; 4],
-    /// Explicit streetscape placement policy revision; zero preserves the current anchors.
-    pub furniture_policy: u16,
+    /// Lamp axis inset from the outer sidewalk edge, in metres.
+    pub light_sidewalk_back_inset: SectionScalar,
+    /// Lamp axis beyond a road shoulder when no sidewalk is present.
+    pub light_verge_offset: SectionScalar,
+    /// Lamp axis beyond an independent path's pavement.
+    pub light_path_offset: SectionScalar,
+    /// Minimum median interior width for a central lamp.
+    pub median_light_clear_width: SectionScalar,
+    /// Sign axis offset from the carriageway kerb face.
+    pub sign_kerb_offset: SectionScalar,
+    /// Sign axis beyond the shoulder without a sidewalk.
+    pub sign_verge_offset: SectionScalar,
+    /// Longitudinal sign setback from a crossing's centre.
+    pub crossing_sign_setback: SectionScalar,
 }
 
 impl Default for RoadSectionDetail {
@@ -421,22 +441,50 @@ impl Default for RoadSectionDetail {
         Self {
             approaches: [0; 2],
             crossing: [4.0, 0.5, 0.5, 2.5].map(SectionScalar::retained),
-            furniture_policy: 0,
+            light_sidewalk_back_inset: SectionScalar::retained(0.35),
+            light_verge_offset: SectionScalar::retained(0.75),
+            light_path_offset: SectionScalar::retained(0.5),
+            median_light_clear_width: SectionScalar::retained(1.4),
+            sign_kerb_offset: SectionScalar::retained(0.5),
+            sign_verge_offset: SectionScalar::retained(0.75),
+            crossing_sign_setback: SectionScalar::retained(1.75),
         }
     }
 }
 
 impl RoadSectionDetail {
-    /// Checks persisted dimensions and currently implemented anchor/control policy codes.
+    /// Checks finite positive anchor dimensions and recognized approach control codes.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.approaches.iter().any(|&v| v > 3)
-            || self.furniture_policy != 0
-            || self
-                .crossing
-                .iter()
-                .any(|v| !v.get().is_finite() || v.get() <= 0.0)
+            || [
+                self.light_sidewalk_back_inset,
+                self.light_verge_offset,
+                self.light_path_offset,
+                self.median_light_clear_width,
+                self.sign_kerb_offset,
+                self.sign_verge_offset,
+                self.crossing_sign_setback,
+            ]
+            .iter()
+            .chain(self.crossing.iter())
+            .any(|v| !v.get().is_finite() || v.get() <= 0.0)
         {
             return Err("invalid_section_detail");
+        }
+        Ok(())
+    }
+}
+
+impl RoadSectionDetail {
+    fn validate_supported(&self) -> Result<(), &'static str> {
+        self.validate()?;
+        let expected = Self {
+            approaches: self.approaches,
+            ..Self::default()
+        };
+        // These dimensions become editable only when D/E convert their consumers.
+        if *self != expected {
+            return Err("unsupported_section_anchor_dimensions");
         }
         Ok(())
     }
@@ -475,9 +523,8 @@ impl RegionGraph {
         mut reference: RoadSectionRef,
     ) -> Result<(), &'static str> {
         layout.validate(true)?;
-        if let Some(detail) = &detail {
-            detail.validate()?;
-        }
+        let detail = detail.ok_or("missing_authored_section_detail")?;
+        detail.validate_supported()?;
         let edge = self.get_edge(id).ok_or("invalid_section_edge")?;
         // Until C–E convert consumers, accepting an unsupported shape would save authority
         // the game cannot render or route. Reject it before any record is published.
@@ -488,8 +535,7 @@ impl RegionGraph {
             return Err("unsupported_section_authority");
         }
         reference.layout = self.road_sections.intern(layout);
-        reference.detail =
-            detail.map_or(u32::MAX, |detail| self.road_sections.intern_detail(detail));
+        reference.detail = self.road_sections.intern_detail(detail);
         self.road_sections.references[id] = reference;
         self.road_sections.extents[id] = self.section_extents(id);
         Ok(())
@@ -536,8 +582,33 @@ impl RegionGraph {
 }
 
 impl RoadSectionRef {
-    /// Pins lane/core/strip geometry, speed, access/frontage, controls and furniture policy.
-    pub const LEGACY_OVERRIDES: u16 = 0x7f;
+    /// Retains individual lane widths when applying a preset.
+    pub const LANES_OVERRIDE: u16 = 1;
+    /// Retains the saved core envelope and exceptional margins.
+    pub const CORE_OVERRIDE: u16 = 1 << 1;
+    /// Retains the ordered outer strips and explicit walking axes.
+    pub const STRIPS_OVERRIDE: u16 = 1 << 2;
+    /// Retains the explicit speed independently of class defaults.
+    pub const SPEED_OVERRIDE: u16 = 1 << 3;
+    /// Retains access and frontage policy independently of class defaults.
+    pub const ACCESS_OVERRIDE: u16 = 1 << 4;
+    /// Retains authored approach controls independently of class proposals.
+    pub const CONTROLS_OVERRIDE: u16 = 1 << 5;
+    /// Retains authored crossing and furniture anchor dimensions.
+    pub const FURNITURE_OVERRIDE: u16 = 1 << 6;
+    /// Pins all currently authored legacy properties.
+    pub const LEGACY_OVERRIDES: u16 = Self::LANES_OVERRIDE
+        | Self::CORE_OVERRIDE
+        | Self::STRIPS_OVERRIDE
+        | Self::SPEED_OVERRIDE
+        | Self::ACCESS_OVERRIDE
+        | Self::CONTROLS_OVERRIDE
+        | Self::FURNITURE_OVERRIDE;
+}
+
+impl RoadStrip {
+    /// Allows explicitly retained furniture inside this strip's clearance policy.
+    pub const FURNITURE_ALLOWED: u16 = 1;
 }
 
 impl Default for RoadSectionRef {
@@ -633,5 +704,18 @@ impl RegionGraph {
         }
         self.road_sections.extents[first] = self.section_extents(first);
         self.road_sections.extents[second] = self.section_extents(second);
+    }
+}
+
+impl RoadSectionSnapshot {
+    // IDs are graph-local; compare immutable authority across excerpt catalog remaps.
+    pub(crate) fn matches(&self, graph: &RegionGraph, id: usize) -> bool {
+        let current = graph.road_section_ref(id);
+        self.reference.revision == current.revision
+            && self.reference.class == current.class
+            && self.reference.access == current.access
+            && self.reference.overrides == current.overrides
+            && self.layout.as_ref() == graph.road_layout(id)
+            && self.detail.as_deref() == graph.road_section_detail(id)
     }
 }

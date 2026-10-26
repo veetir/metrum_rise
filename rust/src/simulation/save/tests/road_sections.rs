@@ -108,6 +108,7 @@ fn section_load_rejects_corruption_before_publication() {
     for mutation in [
         "UPDATE road_edge_sections SET layout_id=999",
         "UPDATE road_edge_sections SET detail_id=999",
+        "UPDATE road_edge_sections SET detail_id=-1",
         "UPDATE road_edge_sections SET access=0",
         "UPDATE road_edge_sections SET class=255",
         "UPDATE road_edge_sections SET overrides=32768",
@@ -148,4 +149,28 @@ pub(super) fn legacy_fixture_schema(conn: &Connection) {
         [],
     )
     .unwrap();
+}
+
+#[test]
+fn historical_frontage_exclusion_is_materialized_once() {
+    let (mut graph, id) = snapshot_test_graph();
+    graph.edge_mut(id).speed_limit = 100.0 / 3.6;
+    graph.edge_mut(id).no_building_spawn = false;
+    let current = snapshot(&graph);
+    assert!(
+        !network::load_graph(&current)
+            .unwrap()
+            .edge(0)
+            .no_building_spawn
+    );
+    current
+        .execute(
+            "INSERT INTO save_meta VALUES (109,0,'legacy-speed-exclusion')",
+            [],
+        )
+        .unwrap();
+    let old = network::load_graph(&current).unwrap();
+    assert!(old.edge(0).no_building_spawn);
+    let restored = network::load_graph(&snapshot(&old)).unwrap();
+    assert!(restored.edge(0).no_building_spawn);
 }

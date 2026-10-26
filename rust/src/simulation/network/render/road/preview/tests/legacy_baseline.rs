@@ -17,6 +17,8 @@ fn f32s(values: impl IntoIterator<Item = f32>) -> Vec<u64> {
 }
 
 fn capture(name: &str, fixture: &mut Fixture, records: &mut Records) {
+    fixture.graph =
+        crate::simulation::save::tests::road_sections::migrate_compile_fixture(&fixture.graph);
     fixture.network.road_surface.clear();
     fixture
         .network
@@ -293,7 +295,6 @@ fn add(
 }
 
 #[test]
-#[ignore = "exact raw-byte baseline capture; set ROAD_SECTION_CAPTURE or ROAD_SECTION_COMPARE"]
 fn exact_compiled_legacy_baseline() {
     let mut records = Records::new();
     let modes = TransitFlags::CAR | TransitFlags::FOOT;
@@ -481,26 +482,12 @@ fn exact_compiled_legacy_baseline() {
         fixture.graph.set_node_type(0, NodeType::LaneTransition);
         capture(name, &mut fixture, &mut records);
     }
-    for (name, ring, ramp, bus) in [("bus", false, false, true)] {
+    {
         let mut fixture = Fixture::new(false);
         let points = [fixture.point(20., 100.), fixture.point(220., 100.)];
-        let id = add(
-            &mut fixture,
-            &points,
-            if bus { 2 } else { 1 },
-            0,
-            modes,
-            if bus { 7. } else { 3.5 },
-            EdgeClass::Standard,
-        );
-        fixture.graph.edge_mut(id).roundabout = ring;
-        if ramp {
-            fixture.graph.set_node_type(0, NodeType::Ramp);
-        }
-        if bus {
-            fixture.graph.edge_mut(id).bus_lanes = [1, 0];
-        }
-        capture(name, &mut fixture, &mut records);
+        let id = add(&mut fixture, &points, 2, 0, modes, 7., EdgeClass::Standard);
+        fixture.graph.edge_mut(id).bus_lanes = [1, 0];
+        capture("bus", &mut fixture, &mut records);
     }
     {
         let mut fixture = Fixture::new(false);
@@ -586,7 +573,7 @@ fn exact_compiled_legacy_baseline() {
                 hash.update(word.to_le_bytes());
             }
             (
-                key,
+                key.clone(),
                 hash.finalize()
                     .iter()
                     .map(|b| format!("{b:02x}"))
@@ -594,6 +581,15 @@ fn exact_compiled_legacy_baseline() {
             )
         })
         .collect();
+    let expected: BTreeMap<String, String> =
+        serde_json::from_str(include_str!("legacy_baseline_hashes.json")).unwrap();
+    for key in expected.keys().chain(manifest.keys()) {
+        assert_eq!(
+            expected.get(key),
+            manifest.get(key),
+            "first differing owner/field {key}"
+        );
+    }
     if let Ok(path) = std::env::var("ROAD_SECTION_MANIFEST") {
         std::fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }

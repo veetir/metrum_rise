@@ -148,10 +148,10 @@ impl RegionGraph {
             paved: core,
             owned: core,
         };
-        for side in 0..2 {
+        for (side, &core_boundary) in core.iter().enumerate() {
             let sign = if side == 0 { -1.0 } else { 1.0 };
             // Add outward in compiler order; summing widths first changes raw f32 bits.
-            let mut boundary = core[side] * sign;
+            let mut boundary = core_boundary * sign;
             for strip in &layout.strips[side][..usize::from(layout.strip_counts[side])] {
                 boundary += strip.width.get();
                 if !matches!(strip.role, StripRole::Verge | StripRole::Ditch) && strip.surface != 3

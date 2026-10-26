@@ -14,6 +14,7 @@ use super::{
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
     SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
+use crate::simulation::network::graph::sections::RoadSectionSnapshot;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -165,6 +166,7 @@ struct RoadPreviewSpanSource {
 struct RoadPreviewSpanTopologyReuse {
     edge_idx: usize,
     source: RoadPreviewSpanSource,
+    section_input: RoadSectionSnapshot,
     sections: Arc<Vec<RoadSurfaceSection>>,
     visible_ranges: Vec<(usize, usize)>,
     earthwork_ranges: Vec<(usize, usize)>,
@@ -176,10 +178,26 @@ struct RoadPreviewNodeTopologyReuse {
     node_id: u32,
     position_xz: SurfaceXzKey,
     input: Arc<RoadSurfaceVisualNodeCompileInput>,
+    section_inputs: Box<[RoadSectionSnapshot]>,
     piece: Arc<RoadSurfaceVisualNodePiece>,
     earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
     // Absent once the committed surface evicted it; exact replay does not need it.
     topology: Option<Arc<NodeCanonicalTopologyCache>>,
+}
+
+impl RoadPreviewNodeTopologyReuse {
+    fn section_inputs_match(
+        &self,
+        graph: &RegionGraph,
+        input: &RoadSurfaceVisualNodeCompileInput,
+    ) -> bool {
+        self.section_inputs.len() == input.mouths.len()
+            && self
+                .section_inputs
+                .iter()
+                .zip(&input.mouths)
+                .all(|(section, mouth)| section.matches(graph, mouth.edge_idx))
+    }
 }
 
 impl std::fmt::Debug for RoadPreviewTopologyReuse {
@@ -229,11 +247,16 @@ impl RoadPreviewTopologyReuse {
         let candidate_index = self
             .nodes
             .iter()
-            .position(|candidate| candidate.node_id == node_id && candidate.input.as_ref() == input)
+            .position(|candidate| {
+                candidate.node_id == node_id
+                    && candidate.input.as_ref() == input
+                    && candidate.section_inputs_match(graph, input)
+            })
             .or_else(|| {
                 self.nodes.iter().position(|candidate| {
                     candidate.position_xz == position_xz
                         && candidate.input.topology_eq_ignoring_edge_identity(input)
+                        && candidate.section_inputs_match(graph, input)
                 })
             })?;
         Some(self.nodes.swap_remove(candidate_index))
@@ -255,15 +278,15 @@ impl RoadPreviewTopologyReuse {
         {
             return None;
         }
-        let candidate_key = if self
-            .spans
-            .get(&edge_idx)
-            .is_some_and(|candidate| candidate.exact_input_matches(edge, sections))
-        {
+        let candidate_key = if self.spans.get(&edge_idx).is_some_and(|candidate| {
+            candidate.section_input.matches(graph, edge_idx)
+                && candidate.exact_input_matches(edge, sections)
+        }) {
             edge_idx
         } else {
             let mut matches = self.spans.iter().filter(|(_, candidate)| {
                 candidate.source.topology_eq_ignoring_node_identity(edge)
+                    && candidate.section_input.matches(graph, edge_idx)
                     && sections_eq_ignoring_edge_identity(&candidate.sections, sections)
             });
             let (&candidate_key, _) = matches.next()?;
@@ -507,6 +530,7 @@ impl RoadSurfaceSystem {
                     RoadPreviewSpanTopologyReuse {
                         edge_idx,
                         source: RoadPreviewSpanSource::from_edge(edge),
+                        section_input: graph.capture_road_section(edge_idx),
                         sections: Arc::clone(sections),
                         visible_ranges: self
                             .visible_section_ranges_for_edge(graph, terrain, edge_idx, sections),
@@ -586,6 +610,11 @@ impl RoadSurfaceSystem {
                         graph.node(node_id).pos,
                     )),
                     input: input.clone(),
+                    section_inputs: input
+                        .mouths
+                        .iter()
+                        .map(|mouth| graph.capture_road_section(mouth.edge_idx))
+                        .collect(),
                     piece: Arc::clone(piece),
                     earthwork_boundaries: self
                         .compiled_visual_node_earthwork_boundaries

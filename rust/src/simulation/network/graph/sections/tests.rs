@@ -189,3 +189,28 @@ fn exceptional_core_width_preserves_exact_lane_envelope_walk_axes() {
     assert_ne!(layout.walk_axes[1].get(), edge.width * 0.5 + 0.75);
     assert_eq!(layout.reversed().walk_axes, layout.walk_axes);
 }
+
+#[test]
+fn section_certificates_survive_local_ids_and_reject_revision_or_override_changes() {
+    let mut source = graph();
+    let snapshot = source.capture_road_section(0);
+    let mut local = RegionGraph::new();
+    for node in source.nodes() {
+        local.add_node(node.pos, node.node_type);
+    }
+    let mut different = source.edge(0).clone();
+    different.width = 10.5;
+    different.fwd_lanes = 2;
+    local.add_edge(different);
+    let id = local.add_edge(source.edge(0).clone());
+    local.copy_road_section(id, &source, 0);
+    assert_ne!(
+        source.road_section_ref(0).layout,
+        local.road_section_ref(id).layout
+    );
+    assert!(snapshot.matches(&local, id));
+    source.road_sections.references[0].revision += 1;
+    assert!(!snapshot.matches(&source, 0));
+    local.road_sections.references[id].overrides ^= RoadSectionRef::SPEED_OVERRIDE;
+    assert!(!snapshot.matches(&local, id));
+}
