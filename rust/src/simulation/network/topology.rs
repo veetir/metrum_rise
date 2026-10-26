@@ -980,6 +980,32 @@ pub fn process_intersections(
 // within which a junction and an existing node are one place.
 const SPLIT_KNOT_MERGE_M: f32 = INTERSECTION_NODE_CAPTURE_EPSILON;
 
+/// Transfers authored endpoint rules to the split half that still reaches that node.
+/// Shared by cold splitting and adoption of a precomputed local topology plan.
+pub(super) fn migrate_split_endpoint_rules(
+    graph: &mut RegionGraph,
+    old_end_node: u32,
+    edge_id: usize,
+    new_edge_id: usize,
+) {
+    let endpoint = &mut graph.nodes[old_end_node as usize];
+    let previous = std::mem::take(&mut endpoint.lane_connections);
+    for ((from, lane), mut targets) in previous {
+        for (edge, _) in &mut targets {
+            if *edge == edge_id {
+                *edge = new_edge_id;
+            }
+        }
+        endpoint.lane_connections.insert(
+            (if from == edge_id { new_edge_id } else { from }, lane),
+            targets,
+        );
+    }
+    if let Some(enabled) = endpoint.crosswalk_overrides.remove(&edge_id) {
+        endpoint.crosswalk_overrides.insert(new_edge_id, enabled);
+    }
+}
+
 /// Splits an existing edge at a specific segment and junction node.
 ///
 /// Handles the geometric split, re-indexing, and migration of all dependent
@@ -1116,22 +1142,7 @@ pub fn split_edge(
     let new_edge_id = graph.add_edge(new_edge);
     // The retained half no longer reaches the old endpoint. Carry its authored rules and
     // zebra override to the appended half before rebuilding any junction consumers.
-    let endpoint = &mut graph.nodes[old_end_node as usize];
-    let previous = std::mem::take(&mut endpoint.lane_connections);
-    for ((from, lane), mut targets) in previous {
-        for (edge, _) in &mut targets {
-            if *edge == edge_id {
-                *edge = new_edge_id;
-            }
-        }
-        endpoint.lane_connections.insert(
-            (if from == edge_id { new_edge_id } else { from }, lane),
-            targets,
-        );
-    }
-    if let Some(enabled) = endpoint.crosswalk_overrides.remove(&edge_id) {
-        endpoint.crosswalk_overrides.insert(new_edge_id, enabled);
-    }
+    migrate_split_endpoint_rules(graph, old_end_node, edge_id, new_edge_id);
 
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;
@@ -1155,6 +1166,7 @@ pub fn split_edge(
         splits.push(super::road_edit::PlannedRoadSplit {
             edge_id,
             new_edge_id,
+            old_end_node,
             first_length_m: new_len_first,
             second_length_m: new_len_second,
         });

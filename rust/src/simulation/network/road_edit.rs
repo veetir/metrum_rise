@@ -36,6 +36,8 @@ pub(super) struct PlannedRoadSplit {
     pub(super) edge_id: usize,
     /// Local edge slot appended for the second split half.
     pub(super) new_edge_id: usize,
+    /// Endpoint whose authored lane rules and crossing override move to the second half.
+    pub(super) old_end_node: u32,
     /// First-half length at the split, before junction finalization.
     pub(super) first_length_m: f32,
     /// Second-half length at the split, before junction finalization.
@@ -447,6 +449,12 @@ impl TransitNetwork {
             graph.adjacency[*id as usize].dedup();
         }
         for split in &plan.splits {
+            topology::migrate_split_endpoint_rules(
+                graph,
+                node_ids[split.old_end_node as usize],
+                edge_ids[split.edge_id],
+                edge_ids[split.new_edge_id],
+            );
             topology::migrate_split_dependents(
                 edge_ids[split.edge_id],
                 edge_ids[split.new_edge_id],
