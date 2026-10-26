@@ -4801,6 +4801,92 @@ detail was designed. Terrain slivers, the motorway void and gaps remain explicit
 Tietoteknia ring, Valkeinen walkway, KYS/Bioteknia layout, wing walls, mouth discontinuities
 and the bus-lane junction remain open for the next PR; none is accepted or worked on here.
 
+#### Round-five ring checkpoint — ROAD-81, acceptance incomplete
+
+Three general fixes are committed, with no new geographic or OSM-ID exception:
+
+- An unnamed split entry/exit recovers its street identity only from an exact opposing
+  source pair sharing both the source ring and an outside convergence, with matching
+  class/layer/structure. Existing median conflation then produces one two-way approach
+  instead of folded duplicate one-way spans. The synthetic test also rejects a different
+  outside node. Preparation adds O(eligible source ways) offline work and storage.
+- Precomputed topology adoption now replays the cold splitter's endpoint rule migration.
+  Zebra overrides and authored lane connections follow the appended half that still
+  reaches their endpoint, including repeated splits. A path split after native ring
+  replacement previously saved a crossing on a nonincident edge and prevented cold load.
+  Work is O(authored endpoint rules) per local split, with O(local splits) plan metadata.
+- Ring plan-view clearance no longer rejects every overlap across explicitly different
+  levels. All local preset previews run the ordinary exact sampled-band clearance check
+  after junction/profile finalization. Same-level overlap remains refused; regressions
+  accept a clear deck and refuse impossible low and same-level crossings. The existing
+  bounded Under solver can clear feasible low crossings. This adds the existing indexed
+  local clearance cost per changed corridor, without a city scan or simulation tick work.
+
+The fresh tertiary fixture becomes native, cold-loads without orphan crossing references,
+then drives through the ring (48.76 m travelled, closest centre 9.65 m). Tietoteknia also
+commits and cold-loads using the already committed round-four profile/mouth fixes; its
+source two-lane ring still has the explicitly reported one-lane approximation. Local
+circulation passes (40.34 m travelled, closest centre 17.69 m). Its new long motorway-ramp
+to street probe cannot create a route: the first 24.90 m of the ramp remains refused with
+`junction_arm_angle`. This is not complete ramp acceptance. Neither focused result establishes acceptance of a new complete map.
+
+West Niiralankatu remains refused. In the full local-source fixture the east approach is
+partial (`road_plan_invalid`) and the south approach is refused (`grade_separation_clearance`),
+leaving too few arms. The east terrain plan reports `terrain_cdt_pathological_output`:
+kerb heights 95.92/95.80 m occur about 11 micrometres apart, producing a terrain face with
+slope ratio 11,263. No triangle suppression or guard relaxation is accepted. A smaller
+fixture with all three approaches commits as an ordinary junction but still refuses ring
+replacement against a nonincident continuation of a split approach: its end cap is tested
+as another whole corridor rather than using span/node ownership. The explicit-layer fix
+is general correctness, not a claim that it resolves these remaining west-ring causes.
+
+No full v5 import, installation or provenance sidecar has been produced: the focused gate
+is unmet. KYS/Bioteknia layout, structure geometry, mouth discontinuities and the Valkeinen
+walkway remain open. The fresh strict audit of unchanged installed v3 still fails grade
+pair 809/810 and twelve mouth discontinuities, with no failed nodes, missing spans or
+terrain export failures. This is baseline evidence, not a v5 audit. The exact read-only
+KYS camera is captured as `kys_user_exact`; all seven KYS/Prisma street references were
+opened and the broad asphalt remains unaccepted. Thirty-one before views and three
+inspected focused after views are retained in `captures/road-81v5`. Background differences
+between complete v3 and focused fixtures are not improvements; there is no full-map after
+series. Both KYS underpass side views retain angular supports. University profile code
+has not changed, but no new university visual acceptance is claimed.
+
+Fresh `cargo test --release --manifest-path rust/Cargo.toml --lib` passes 2,897 tests
+(168 ignored); `cargo clippy --manifest-path rust/Cargo.toml --all-targets` is clean;
+`python3.12 -m unittest tools.test_map_import` passes 102 tests. All 25 established native
+suites pass individually. The final runtime retains all seven v2 legacy passes and all
+seven round-four focused trip passes (Luola, parking, east ring, Bellanranta and three
+Saaristokatu trips); five previously passing v3 diagnostic trips also pass. These are
+read-only checks on their original saves, not re-import/full-map traffic acceptance.
+
+Matched unprofiled release comparisons use four Rayon workers, `METRUM_DEBUG=0`, Apple
+M2 Pro/arm64, SDK 26.5, Rust 1.98.1 and upstream Godot 4.7.2. Baseline native code is
+`450f76f7`, test binary SHA-256
+`0893db174aacd9122609cb1c534cd82c43b0b1c0098b7990121e9b2ee88e60aa`;
+candidate is `8b1448df`, SHA-256
+`2312d096335ac0ff93c4f0ca1b4aa04c2005c40de1ff1bd8eeb632b8aa843d7f`.
+Three alternating process pairs per filter run without competing Godot/build work;
+setup/snapshots are excluded. All 24 processes pass and local products match at every
+background tier, including 600,024 agents, 100,004 parcels and 391 remote roads.
+
+| Background buildings/roads for crossing fixture | Pocket p50 ms, before → after | Ring p50 ms | Crossing median ms |
+| --- | --- | --- | --- |
+| 0 | 19.075 → 19.129 | 52.676 → 50.615 | 1.14221 → 1.14242 |
+| 1,000 | 19.179 → 19.181 | 52.048 → 51.573 | 1.14113 → 1.14188 |
+| 10,000 | 19.033 → 19.141 | 51.420 → 51.385 | 1.14138 → 1.14483 |
+| 100,000 | 19.312 → 19.306 | 51.451 → 51.063 | 1.14088 → 1.14150 |
+
+Preview p50 is 13.27600 → 13.24400 ms without terrain and 17.684 → 17.741 ms with terrain.
+These small mixed changes establish locality, not a speedup or map acceptance. Run each
+preserved `$TEST_BINARY <filter> --ignored --nocapture --test-threads=1`, for
+`populated_pocket_plan_scaling`, `populated_roundabout_plan_scaling`,
+`benchmark_road_preview_modes` and `benchmark_crossing_profile_locality`. Full identities,
+commands and fresh results are in `$ARTIFACTS/road-81v5/benchmarks/manifest.json` and
+`summary.json`. No agent tick, NET-07 or save-format change is made. The existing university
+cross-section/access and Kallavesi water-level surveys remain unchanged and explicitly
+justified in the preceding importer contract.
+
 **Historical Oct 22 matched release locality checks.** Apple M2 Pro/arm64, Rust 1.98.1, four Rayon workers,
 `METRUM_DEBUG=0`, three alternating unprofiled process pairs. The baseline is the rebased
 importer before the bus ribbon removal, not the pristine road-chain tip. Fixture setup and

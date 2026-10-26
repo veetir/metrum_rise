@@ -74,7 +74,15 @@ or installation has run because the focused gate remains unmet. Fresh 2,895 Rust
 101 importer tests, 25 native suites and Clippy pass
 ([round-four evidence and open work](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete)).
 
-**ROAD-81 acceptance still fails.** Three of six motor ring candidates are native;
+Round five commits source-convergent ring-arm identity, planned split crossing/lane-rule
+migration and exact layered ring clearance. Fresh tertiary and Tietoteknia fixtures become
+native; both local ring trips pass, while Tietoteknia's long ramp route and west Niiralankatu
+remain unresolved. No full v5 import/install has run. Fresh 2,897 Rust tests, 102 importer
+tests, 25 native suites, clean Clippy and 24 matched locality processes pass. All prior
+round-four passing trip workloads are retained on their original saves
+([round-five checkpoint](roads.md#round-five-ring-checkpoint--road-81-acceptance-incomplete)).
+
+**Installed v3 acceptance still fails.** Three of six motor ring candidates are native;
 west Niiralankatu regresses from v2. The map cold-loads, but only 3/12 traffic trips pass,
 versus a fresh 7/7 v2 legacy check on the same runtime. The strict map audit retains
 one overlapping grade pair and 12 mouth discontinuities; steep motor profiles, bridge

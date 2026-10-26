@@ -756,6 +756,17 @@ focused results do not establish the required full-map seven-trip acceptance; no
 installed. Causes, regressions, bridge failures and verification are recorded in
 [the round-four checkpoint](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete).
 
+ROAD-81 round five also replays endpoint zebra and authored lane-rule migration when
+adopting precomputed road splits, using the same helper as cold splitting. A crossing can
+no longer remain on the nonincident first half after a later path splits a native ring
+approach. Repeated-split parity has a targeted regression. The new tertiary fixture cold-loads
+and drives through its native ring. Final-runtime checks retain all seven v2 legacy trips
+and all seven round-four focused trip passes on their original saves. Local Tietoteknia
+circulation also passes, but its long ramp trip cannot create a route; west-ring/full-map
+acceptance remains open. There
+are no agent-tick, NET-07 or save-format changes. See the
+[round-five checkpoint](roads.md#round-five-ring-checkpoint--road-81-acceptance-incomplete).
+
 ### Bus-only car exclusion — ROAD-72 lane-use slice
 
 Reserved physical ribbons remain in road geometry but are absent from the car `LaneSystem`.
