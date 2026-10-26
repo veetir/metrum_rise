@@ -1028,8 +1028,9 @@ input, and display debug data. They must not:
 **Decision:** classes supply defaults; an explicit, ordered cross-section supplies geometry.
 Resolve both when authoring a road, not during simulation ticks. Extend the existing roadbed
 compiler, lane system and ROAD-80 transaction; do not build a second geometry or routing system.
-This is a design, not shipped behavior. ROAD-83 precedes ROAD-84 implementation; neither
-reclassifies existing saves automatically. ROAD-84 owns ROAD-58 crossing placement and ROAD-79
+Slice A's internal authority/migration implementation is complete (acceptance below); class policy and
+consumer conversion remain the later slices below. ROAD-83 precedes ROAD-84 player behavior;
+neither reclassifies existing saves automatically. ROAD-84 owns ROAD-58 crossing placement and ROAD-79
 cycling surfaces. Parking occupancy/search remains TRAFFIC-10.
 
 ### Finnish basis and scope
@@ -1316,9 +1317,9 @@ pose restoration separately rather than claiming identical moving pedestrian pix
 
 ### Save migration and exact legacy proof
 
-Reserve **version 110** after current `save/schema.rs::SAVE_VERSION = 109` (use the next free
-version if another schema lands first). Add versioned layout/strip tables, per-edge references
-and sparse profile/control overrides; serialize interned layouts in deterministic ID order.
+Slice A uses **version 110**, the next free version after 109 (`save/schema.rs::SAVE_VERSION`).
+It adds versioned layout/strip tables, per-edge references and sparse profile/control overrides;
+serialize interned layouts in deterministic ID order.
 Retain existing `network_edges` speed, modes, structural class, median, pocket, bus-mask and
 crossing authority. Derived caches/meshes are rebuilt. Validate references, finite dimensions,
 mode/layout consistency, strip correspondence and lane masks before publication.
@@ -1327,10 +1328,13 @@ Migration runs once after the existing historical-schema decoder, in edge order.
 unclassified/custom preset with explicit existing speed, access and widths; never infer a
 motorway from width or force 50 km/h. A normal old road becomes 3.5 m motor lanes plus its
 unchanged median and **1.5 m total sidewalk assembly per permitted foot side: 0.15 m kerb +
-1.35 m clear pavement, 0.12 m step**. Its walk axis stays 0.75 m outside the carriageway,
-stored as an explicit axis within that assembly (new profiles normally use clear-space centre).
-Preserve exceptional saved core widths as explicit core margins/boundaries, not rounded lane
-counts. Old Foot edges keep their stored width and single Footpath band, including the current
+1.35 m clear pavement, 0.12 m step**. Its walk axis stays 0.75 m outside the **legacy lane
+envelope**, stored as exact signed full-section axes (new profiles normally use clear-space
+centre). Implementation inspection found that the old lane builder uses directional lane
+counts and the pocket-adjusted median for this envelope, while surfaces use saved `Edge.width`.
+For an exceptional 8.125 m core with 1+1 lanes, the old axes are ±4.25 m, not ±4.8125 m.
+Retain that discrepancy exactly; moving those axes is not migration. Preserve exceptional
+saved core widths as explicit core margins/boundaries, not rounded lane counts. Old Foot edges keep their stored width and single Footpath band, including the current
 `max(width, 2)` compiled boundary where applicable. Old non-FOOT motor
 roads keep the compiler's 0.75 m `CurbOrShoulder` bands and their existing height, not the new
 flat rural preset. No layout choice may be derived from `allowed_types & CAR` alone for new
@@ -1443,7 +1447,7 @@ duplicate legacy production path are needed.
 
 | Slice | Deliverable and rough size | Acceptance before shipping |
 | --- | --- | --- |
-| A — authority and migration | Cold tables, interning, semantic query API, explicit legacy profiles, v110, remap/undo; **3–5 d** | Unit validation/interning/reversal/split/compact tests, historical save matrix and exact compiled baseline proof; measured reference/layout memory. Existing tools still author explicit legacy geometry |
+| A — authority and migration | **Implemented, v110** ([acceptance](#slice-a-implementation-and-acceptance--2026-10-26)): cold tables, interning, semantic query API, explicit legacy profiles, remap/undo; original estimate **3–5 d** | Unit validation/interning/reversal/split/compact tests, historical save matrix and exact compiled baseline proof; measured reference/layout memory. Existing tools still author explicit legacy geometry |
 | B — ROAD-83 speed and policy | Classes/provenance, speed and directed cost updates, access/frontage restrictions, class-based authored priority/signs; **3–5 d** | Speed-edit routing preference, invariant walk cost, directional limits, motorway mode denial, no frontage spawning, equal-class right-hand rule, unchanged rank after width edit, save/undo. Expose speed/class policy on existing geometry with explicit layout override until F supplies full presets |
 | C — lane/core geometry | Individual motor widths, median/taper/pocket arithmetic, bus masks, markings, ring/ramp widths; **3–5 d** | Legacy bytes, mixed 3/3.25/3.5 widths, reverse direction, opposite-kerb/through-centre preservation, mask remap rejection, preview/commit/undo parity. Old outer strips retained explicitly |
 | D — complete outer-strip consumers | General band compiler, asymmetric junction mouths/clips, frontage/zoning, earthworks/structures and streetscape; **5–8 d** | All ledger sites converted; asymmetric/one-sided/no-sidewalk and wide lower-road opening fixtures; building entrances and parcel journals; no pole in walking/cycling space; locality and legacy equality. New strip choices remain internal until E |
@@ -1462,7 +1466,175 @@ a kept baseline: setup-free 10k/30k tiers, ≤3.6× phase-count growth, zero sta
 allocations; matched alternating release pairs at these feature milestones. Compile-only work
 does not need the long `agent_benchmark`. Every Rust slice runs relevant unit/integration
 regressions and all-target Clippy; bridge/visual QA belongs to implementation acceptance.
-These are future gates: no tests, builds or benchmarks were run for this documentation change.
+The original design-only pass ran no tests, builds or benchmarks; slice A's implementation
+acceptance is recorded below.
+
+### Slice A implementation and acceptance — 2026-10-26
+
+**Status: slice A implemented; migration, exact geometry, correctness and performance gates pass.** `RegionGraph` owns parallel 16-byte section
+references and 16-byte side-extent records; `Edge` stays 120 bytes. Immutable bounded layouts
+use exact finite float-bit keys in a sorted intern map whose `Arc` keys share the layout allocation.
+Fixed queries read resolved fields/caches; no tick or movement consumer has been converted.
+Existing median, taper/pocket, bus-mask, speed, crossing and frontage fields retain their owners.
+Every existing tool continues to resolve the explicit legacy dimensions. Nonlegacy layout or
+class payloads are rejected until their implementing slices make them consumable.
+
+Version **110** adds versioned layout, ordered strip, shared detail and per-edge reference tables.
+Layout/strip dimensions serialize as integer IEEE bits. Saved catalogs retain deterministic ID
+order; save compaction remaps only live references. Historical graph decoding finishes before
+edge-ordered migration and validation; the high-speed frontage exclusion becomes an explicit
+migrated value. Current snapshots retain their saved frontage value. Local excerpt/plan/undo
+records share immutable products and carry revisions/overrides; slot tombstones follow the graph.
+
+The measured base layout is **372 bytes**, each strip **20 bytes**, and the initial shared detail
+record **48 bytes** (crossing dimensions, seven ordinary furniture anchor dimensions and
+approach controls; there is no persisted legacy/compiler selector). Exactly reserved 100,000
+slots retain **3,200,000 bytes** for references plus
+extents; one million reserved slots retain **32,000,000 bytes**. A 1,000-layout insertion retains
+372,000 payload bytes and 8,192 bytes of catalog pointer capacity (1,024 entries). Arc counters,
+B-tree nodes and allocator overhead are additional: the design's <0.4 MB figure described base
+payloads, not the whole interner. One million distinct base payloads alone would add **372 MB**;
+there is no layout copy or reference per agent. Allocator/node overhead is not claimed as a
+`size_of` measurement.
+
+**Baseline protocol correction:** authoring can retain a different incidence order from historical
+loading, which reconstructs it in edge order. Direct-authoring versus loaded captures differed
+in 172 lane records while every section, mesh, clip, earthwork, structure, furniture and frontage
+record matched. The acceptance comparison must start both preserved-v109 and migrated-v110
+compilation from the same historical decoder, without sorting output products. The preserved
+production baseline is `20b241d8`; the initial capture harness is `f943d981`. Exact captures cover
+22 fixture scenarios and report the first differing owner/field and ordered word. The final raw
+comparison matches **10,530 records / 1,537,405 ordered words** exactly in debug and release;
+a one-bit clip-word negative control is rejected at `straight/edge/0/clips`, word zero. A checked-in
+per-owner/field digest manifest also gates the native aarch64 macOS library test. Other targets
+run the ignored harness with their own preserved native capture; they must not compare a Mac
+transcendental-geometry snapshot as a universal platform-independent golden.
+
+Fresh correctness: **2,910 library tests pass, 168 ignored**, including the **54-schema** history
+matrix and load→110→reload→resave equality of all authoritative network/section rows. Targeted
+coverage includes canonical zero/NaN handling, bounded validation, reversal, split, catalog
+remap/compaction, clone, local certificates and undo. The final split audit added both left- and
+right-end-pocket cases: each half retains its independently resolved layout immediately, before
+any later clip/index repair. All-target Clippy is clean; rustfmt is limited to touched files.
+Fifteen isolated Godot road bridges pass on official Godot **4.7.2**, with API 4.5 bindings.
+
+**Visual QA limit.** The task's windowed pocket harness exercises the existing Rust tools,
+preview/commit/undo and routed debug traffic. The first run supplied street/overhead traffic
+captures but reported missing imported headlight textures. After repairing only the local
+import cache, the final-production run and a retry **20+ minutes later** both stopped making
+viewport progress; their task processes were closed. The retry produced ten fresh PNGs through
+the pocket/taper scenarios, with no texture errors. Inspected
+`captures/road83_a_retry/stage5_pocket_taper_street.png` and
+`stage5_pocket_taper_above.png` retain the old kerbs, grass median and white lane markings.
+The earlier `captures/road83_a/stage5_prisma_traffic_street.png` and overhead companion show
+routed debug block vehicles, but are **not** claimed as a fresh post-import-repair traffic
+capture. Compared against `user-2026-10-21/prisma-1.png` and `prisma-2.png`: these isolated
+flat fixtures omit the real urban buildings, bridge context, signals/gantries and mature
+street planting; the debug vehicles are boxes. A complete error-free windowed traffic capture
+remains unverified. Headless bridge, raw geometry and release performance acceptance passed;
+this slice introduces no new visual design.
+
+Implementation owners: `graph/sections.rs`, `sections/queries.rs` and `sections/tests.rs`
+under `rust/src/simulation/network/`; lifecycle edits stay with graph/topology/pockets/edit,
+excerpt and preview owners. `rust/src/simulation/save/road_sections.rs` owns the v110 codec;
+`save/tests/road_sections.rs` and the preview `tests/legacy_baseline.rs` own migration/equality
+and exact compiled-product proof respectively.
+
+**Matched performance acceptance.** Apple M2 Pro, aarch64, Rust 1.98.1
+(`48a229cea`), Xcode clang / macOS 26.5 SDK, unprofiled release, `RAYON_NUM_THREADS=4`,
+`METRUM_DEBUG=0`. Baseline production is `20b241d8`; candidate production is `8362ea3a`.
+Three alternating pairs (AB, BA, AB) use the unchanged 18×18 surface grid and chunk fixtures.
+The width-change fixture now refreshes/validates its cold authority in **untimed setup**;
+its physical input and timed compile kernel are unchanged. Table values are milliseconds,
+median of three per-run Criterion mean estimates; these are acceptance timings, not speedup claims.
+
+| Surface workload | Baseline | Candidate |
+| --- | ---: | ---: |
+| `compile_all_grid` | 1572.628 | 1522.765 |
+| `compile_dirty_unchanged_edge` | 0.5422 | 0.5182 |
+| `compile_dirty_lane_width_change` | 23.609 | 22.901 |
+
+| Occupied chunks | Emit only, baseline → candidate | Dirty compile + emit, baseline → candidate |
+| ---: | ---: | ---: |
+| 1 | 0.0428 → 0.0429 | 0.1286 → 0.1235 |
+| 64 | 0.0436 → 0.0434 | 0.1333 → 0.1304 |
+| 256 | 0.0437 → 0.0438 | 0.1399 → 0.1411 |
+| 1024 | 0.0437 → 0.0436 | 0.2103 → 0.2110 |
+
+The populated cell-road planning check ran two alternating release pairs (AB, BA), with 100
+measured samples per tier/run. Every tier reports identical local products in both builds.
+The four tiers contain 4/1004/10004/100004 parcels, 24/6024/60024/600024 agents, and
+0/4/40/391 background roads respectively. Medians across the two runs:
+
+| Background buildings | Compile p50, baseline → candidate | Worker p50, baseline → candidate | One-time snapshot, baseline → candidate |
+| ---: | ---: | ---: | ---: |
+| 0 | 5.1499 → 4.7812 | 1.5092 → 1.4384 | 0.0056 → 0.0042 |
+| 1000 | 5.2961 → 4.7303 | 1.5322 → 1.4271 | 0.0156 → 0.0133 |
+| 10000 | 5.0864 → 4.8762 | 1.4765 → 1.4930 | 0.0434 → 0.0430 |
+| 100000 | 5.1100 → 5.0442 | 1.4862 → 1.5263 | 0.1633 → 0.2031 |
+
+Candidate full-worker p50 stays 5.859–6.191 ms across these tiers (baseline 6.221–6.451 ms).
+The size-dependent snapshot is reported separately, not called local O(1) work. New mutation
+work is O(B log U), with bounded B≤16 outer strips; unchanged-shape checks are O(B).
+Local detail resolution adds O(K(B log U + D)) for K incident edges and local degree D, alongside
+the existing index/profile work. Fixed queries and two-end ROAD-67 evaluation are O(1);
+no new work or allocation runs per agent/tick. No movement/routing consumer changed, so the
+long agent benchmark and PERF-06 were not rerun for this compile/authority slice.
+
+Reproduction commands (the binaries/logs remain local under `$ARTIFACTS`; see `docs/README.md`):
+
+```sh
+cd rust
+cargo test --lib
+cargo clippy --all-targets
+cargo build --release
+cargo test --release --lib --no-run
+cargo bench --bench surface_benchmark --bench road_chunk_benchmark --no-run
+cd ..
+# Run from the repo root; check only task-touched sources, never cargo fmt.
+git diff --name-only 20b241d8 -- '*.rs' | xargs rustfmt --edition 2024 --config skip_children=true --check
+ROAD_SECTION_COMPARE="$ARTIFACTS/baseline-loaded.json" "$TEST_BINARY" exact_compiled_legacy_baseline --nocapture
+ROAD_SECTION_MEMORY="$ARTIFACTS/memory.json" "$TEST_BINARY" section_memory_budget
+CRITERION_HOME="$ARTIFACTS/<pair>/<build>/surface" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$BENCH_BINARY" --bench 'RoadSurfaceSystem/(compile_all_grid|compile_dirty_unchanged_edge|compile_dirty_lane_width_change)$' --noplot --warm-up-time 1 --measurement-time 2
+CRITERION_HOME="$ARTIFACTS/<pair>/<build>/chunks" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$BENCH_BINARY" --bench 'RoadChunkRenderer/(chunk_emit_only|dirty_compile_plus_chunk_emit_diagnostic)' --noplot --warm-up-time 1 --measurement-time 2
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" populated_cell_road_plan_scaling --ignored --nocapture
+```
+
+The targeted commands were also run as the implementation grew:
+`cargo test --lib graph::sections`, `cargo test --lib section`,
+`cargo test --lib save::tests`, and
+`cargo test --lib split_preserves_each_halfs_end_pocket_layout_before_any_rebuild`.
+The final full suite includes their coverage. Each bridge was launched individually against
+an isolated task profile, with this command shape (no player saves/mods):
+
+```sh
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ARTIFACTS/godot-profile/project" --script res://tests/<name>.gd
+```
+
+Passing names: `road_cross_section_test`, `road_pockets_test`, `road_roundabouts_test`,
+`road_ramps_test`, `road_grade_separation_test`, `road_filled_underpass_test`,
+`road_bus_streetscape_test`, `road_import_features_test`, `road_import_profile_test`,
+`network_tool_chunk_renderer_test`, `road_junction_preview_test`, `road_preview_stream_test`,
+`road_preview_metrics_test`, `road_benchmark_metrics_test`, `surface_patch_debug_test`.
+Native captures used the same alarm/profile without `--headless` and a temporary subclass of
+`road_pockets_test.gd`; only ignored captures/cache artifacts remain local.
+
+The fixture group retains 10 samples / 2 s for surface and 20 samples / 3 s for chunks; the
+chunk group's explicit duration overrides the global CLI duration. Benchmark binary SHA-256
+prefixes: baseline surface `bd3cdfe4ecd1b83d`, chunks `aad9bda08c9f4b35`; candidate surface
+`21f6373ce914d6dc`, chunks `c71303def66dd5a0`. Locality test binaries: baseline
+`5c529294426432ab`, candidate `2810ad6fc5c38b02`. The baseline test overlay only calls the
+preserved v109 save/load codec before capture; it changes no production numeric code.
+
+No new station, directional-speed or source-provenance payload is authored in A: existing
+ROAD-67 stations retain their owner, and B/C/D add their specific cold detail records when
+those edits become valid. No preset, class behavior, importer behavior, mesh consumer, routing
+consumer or player choice is exposed by this slice. B must define class/provenance codes, use
+the named override bits, preserve the migrated explicit approaches, add directed-speed/cost
+transactions and access/frontage restrictions, and keep legacy layout geometry pinned until
+the later consumers.
 
 ### Player decisions (2026-10-26)
 

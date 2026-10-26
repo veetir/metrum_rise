@@ -6,6 +6,18 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-83/84 **slice A** is implemented on `feat/road-structure-design`: road-owned cold layout,
+detail/revision, class/access/override and extent tables; immutable interning and semantic queries;
+lockstep split/remap/excerpt/preview/undo; deterministic validated **v110** saves with historical
+migration. Existing tools and consumers keep legacy geometry and behavior. Exact compiled proof
+matches **10,530 owner/field records / 1,537,405 ordered words**; all 54 historical schemas and
+load→110→reload→resave pass. Fresh **2,910** library tests (168 ignored), clean Clippy, 15 isolated
+road bridges and matched release compile/chunk/locality checks pass. `Edge` remains 120 B;
+references plus extents cost 32 B/slot (3.2 MB at 100k reserved slots), base layouts 372 B each.
+Windowed pocket captures were inspected, but the required delayed retry also stalled before a
+fresh error-free traffic capture. Slice B adds class/speed/access/provenance policy; C–F convert
+consumers and expose new presets ([acceptance, deviations and measurements](roads.md#slice-a-implementation-and-acceptance--2026-10-26)).
+
 Upstream integration remains **unaccepted** on `feat/road-upstream-sync`. The approved
 TRAFFIC-09 redesign is implemented: junction-owned paired overlap zones, ordered per-vehicle
 claims released after tail clearance, complete downstream storage promises and border holds.
