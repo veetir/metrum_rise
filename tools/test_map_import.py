@@ -721,6 +721,18 @@ class WaterBedTest(unittest.TestCase):
 
 
 class CurveTest(unittest.TestCase):
+    def test_joined_median_removes_old_mouth_controls_but_keeps_source_junctions(self):
+        from tools.map_import.curves import prepare_curves
+        base = {'id': 'arbitrary', 'source_ids': [], 'kind': 'road', 'road_class': 'primary',
+                'fwd_lanes': 2, 'bkw_lanes': 3, 'median_style': 2, 'median_width_m': 7,
+                'points_xz': [(0, 0), (-3, -5), (6, -23), (30, -66)], 'junctions_xz': []}
+        cooked = prepare_curves([copy.deepcopy(base)], [])[0]['points_xz']
+        self.assertNotIn((-3, -5), cooked)
+        self.assertTrue(all(p[0] >= 0 for p in cooked))
+        pinned = {**base, 'junctions_xz': [(-3, -5)]}
+        self.assertIn((-3, -5), prepare_curves([pinned], [])[0]['points_xz'])
+        self.assertEqual((cooked[0], cooked[-1]), (base['points_xz'][0], base['points_xz'][-1]))
+
     def test_a_divided_corridor_keeps_one_tangent_across_its_name_boundary(self):
         from tools.map_import.curves import name_boundary_controls, smooth
         base = {'kind': 'road', 'road_class': 'primary', 'fwd_lanes': 2, 'bkw_lanes': 2, 'median_style': 2, 'median_width_m': 4}

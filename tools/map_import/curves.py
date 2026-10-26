@@ -119,6 +119,16 @@ def prepare_curves(strokes, features, straight_throats=(), roundabout_centres=()
         s.setdefault('tunnel', False)
         s['source_points_xz'] = s['points_xz']
         controls, tangents = joined.get(s['id'], (s['points_xz'], {}))
+        # Joining reprojected carriageway sections can put their former mouth
+        # controls inside the final wider roadbed. Keep actual source junctions,
+        # but remove those obsolete controls before fitting the approach tangent.
+        if s.get('median_style'):
+            controls = list(controls)
+            pins = set(map(tuple, s.get('junctions_xz', [])))
+            half = roadbed_half_width(s)
+            for end, neighbor in ((0, 1), (-1, -2)):
+                while len(controls) > 2 and distance(controls[end], controls[neighbor]) < half and tuple(controls[neighbor]) not in pins:
+                    controls.pop(neighbor)
         if tangents:
             s['name_boundary_joints_xz'] = sorted(tangents)
         for throat in straight_throats:
