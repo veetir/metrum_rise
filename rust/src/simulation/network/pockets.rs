@@ -529,11 +529,22 @@ pub(crate) fn author_lane_count_transitions(
             })
             .collect();
         ids.sort_unstable();
-        // A third road turns an ordinary section transition into a junction. Its
-        // endpoint taper has no authority over the new mouth; remote tapers and
-        // authored pocket pairs retain their existing protection.
-        if ids.len() > 2
-            && graph.node(node).node_type == NodeType::LaneTransition
+        let live_degree = graph
+            .node_adjacency(node)
+            .iter()
+            .filter(|&&id| !graph.edge(id).deleted)
+            .count();
+        // Any added transport arm invalidates an ordinary two-road transition.
+        // Node union can already have promoted its role to Junction. Clear only
+        // the local taper; remote tapers and authored pocket pairs stay protected.
+        if (ids.len() != 2 || live_degree != 2)
+            && (graph.node(node).node_type == NodeType::LaneTransition
+                || ids.iter().any(|&id| {
+                    let edge = graph.edge(id);
+                    edge.lane_tapers
+                        .as_ref()
+                        .is_some_and(|ends| ends[usize::from(edge.end_node == node)].is_some())
+                }))
             && !ids
                 .iter()
                 .any(|&id| graph.edge(id).pocket_taper().is_some())
@@ -548,17 +559,12 @@ pub(crate) fn author_lane_count_transitions(
                     }
                 }
             }
-            graph.set_node_type(node, NodeType::Junction);
+            if graph.node(node).node_type == NodeType::LaneTransition {
+                graph.set_node_type(node, NodeType::Junction);
+            }
             dirty.extend(ids.iter().copied());
         }
-        if ids.len() != 2
-            || graph
-                .node_adjacency(node)
-                .iter()
-                .filter(|&&id| !graph.edge(id).deleted)
-                .count()
-                != 2
-        {
+        if ids.len() != 2 || live_degree != 2 {
             continue;
         }
         if ids
@@ -870,6 +876,65 @@ mod tests {
             PocketLayout::prepare(&graph, request),
             Err("pocket_overlaps_transition")
         ));
+    }
+
+    #[test]
+    fn merged_transport_arm_retires_local_ordinary_taper_after_role_promotion() {
+        use crate::simulation::network::build_surface_edge;
+        use std::collections::HashSet;
+        for kind in [TransitType::Road, TransitType::Foot] {
+            let mut graph = RegionGraph::new();
+            let center = graph.add_node(Vector3::ZERO, NodeType::LaneTransition);
+            let far = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::LaneTransition);
+            let other = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+            let mut wide = build_surface_edge(
+                center,
+                far,
+                vec![Vector3::ZERO, graph.node(far).pos],
+                2,
+                2,
+                EdgeClass::Standard,
+            );
+            let taper = RoadLaneTaper {
+                length_m: 20.0,
+                from_fwd: 1,
+                from_bkw: 1,
+                from_median_m: 0.0,
+                left_pocket: false,
+                right_pocket: false,
+            };
+            wide.lane_tapers = Some(Box::new([Some(taper), Some(taper)]));
+            let wide_id = graph.add_edge(wide);
+            graph.add_edge(build_surface_edge(
+                center,
+                other,
+                vec![Vector3::ZERO, graph.node(other).pos],
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+            let attachment = graph.add_node(Vector3::ZERO, NodeType::Junction);
+            let tip = graph.add_node(Vector3::new(0.0, 0.0, 80.0), NodeType::Junction);
+            let mut branch = build_surface_edge(
+                attachment,
+                tip,
+                vec![Vector3::ZERO, graph.node(tip).pos],
+                0,
+                0,
+                EdgeClass::Standard,
+            );
+            branch.primary_type = kind;
+            graph.add_edge(branch);
+            graph.unite_nodes(center, attachment);
+            assert_eq!(graph.node(center).node_type, NodeType::Junction);
+            let mut dirty = HashSet::new();
+            author_lane_count_transitions(&mut graph, &HashSet::from([center]), &mut dirty);
+            assert_eq!(
+                graph.edge(wide_id).lane_tapers.as_deref(),
+                Some(&[None, Some(taper)])
+            );
+            assert!(dirty.contains(&wide_id));
+        }
     }
 
     #[test]
