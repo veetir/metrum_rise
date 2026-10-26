@@ -360,14 +360,12 @@ impl RoadSurfaceSystem {
                     graph.find_node_within(point, 0.05).is_some_and(|node| {
                         graph.node_adjacency(node).iter().any(|&id| {
                             let edge = graph.edge(id);
-                            !edge.deleted
-                                && edge.class == EdgeClass::Bridge
-                                && edge.crossing_level != level
+                            !edge.deleted && edge.class == EdgeClass::Bridge
                         })
                     })
                 },
             );
-        let class = if different_layer && (grounded_ends || grounded_bridge_approach) {
+        let class = if (different_layer && grounded_ends) || grounded_bridge_approach {
             // Ground-to-ground crossings own a mixed cut/fill corridor. The compiled
             // opening supplies its structure; hills along the approaches are not tunnels.
             // An exact deck terminal is also support for a ground approach. Its raised

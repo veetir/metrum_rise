@@ -314,6 +314,30 @@ fn source_ground_approach_to_a_deck_terminal_keeps_mixed_earthworks() {
     );
     assert_eq!(prepared.class, EdgeClass::Standard);
     assert_eq!(prepared.points, raw);
+    let same_level = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &raw,
+        &core.heightmap,
+        &core.region_graph,
+        &core.transit_network.road_surface,
+        true,
+        1,
+    );
+    assert_eq!(same_level.class, EdgeClass::Standard);
+    let mut nearby = raw.clone();
+    nearby.last_mut().unwrap().x += 0.2;
+    let nearby = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &nearby,
+        &core.heightmap,
+        &core.region_graph,
+        &core.transit_network.road_surface,
+        true,
+        0,
+    );
+    assert_eq!(
+        nearby.class,
+        EdgeClass::Bridge,
+        "nearby decks are not endpoint support"
+    );
     build(&mut core, raw, 1, 0, None);
     assert_eq!(core.region_graph.edge(1).class, EdgeClass::Standard);
     assert_eq!(
