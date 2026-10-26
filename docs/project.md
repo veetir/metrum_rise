@@ -6,9 +6,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-ROAD-61 short tunnels are in validation: the player Tunnel mode preserves buried profiles,
-continuous pavement supports traffic, and concrete portals/lining own closed-terrain transitions.
-Native portal/interior/overhead captures pass; full-suite and matched performance acceptance remain open ([owning contract](roads.md#short-road-tunnels--road-61)).
+ROAD-61 short tunnels are complete on `feat/road-structure-design`: explicit player intent,
+continuous buried pavement, shared quick/exact cover checks and concrete portal/terrain ownership.
+Fresh 2,915 library tests, clean Clippy, exact legacy geometry, 22 bridge assertion passes,
+four inspected native captures with traffic, and matched release compile/chunk/locality checks
+are recorded with baseline shutdown errors and the intermittent importer-ack observation
+([owning contract and acceptance](roads.md#short-road-tunnels--road-61)).
 
 ROAD-83/84 **slice A** is implemented on `feat/road-structure-design`: road-owned cold layout,
 detail/revision, class/access/override and extent tables; immutable interning and semantic queries;
@@ -196,8 +199,9 @@ emission, while local planning remains bounded with identical products. ROAD-73 
 repairs the refused sloping plain-to-median terrain boundary and validates the university
 rebuild at full 3+3 bus-lane width.
 The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
-strip without changing physical geometry. ROAD-61 now preserves authored buried profiles and publishes continuous tunnel pavement,
-with explicit player intent and concrete portal/terrain ownership under validation
+strip without changing physical geometry. ROAD-61 now preserves authored buried profiles and
+publishes continuous tunnel pavement, with explicit player intent and validated concrete
+portal/terrain ownership
 ([tunnel contract](roads.md#short-road-tunnels--road-61)).
 
 The importer water crop is fixed in data preparation ([WATER-05](terrain.md#complete-importer-lake-beds--water-05-2026-10-21)):

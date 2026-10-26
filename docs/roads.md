@@ -911,7 +911,8 @@ Windowed acceptance used the final native library, an isolated profile and a fre
 
 ```bash
 METRUM_JC_CAPTURE=1 METRUM_DEBUG=0 RAYON_NUM_THREADS=4 \
-    perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/profile/project" \
+  \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/profile/project" \
     --script res://tests/road_junction_control_test.gd
 ```
 
@@ -3889,8 +3890,9 @@ conservative padding and grid-aligned roof-rail samples must not lower the cover
 omitted. This addresses both a soil curtain across the mouth and terrain triangles hanging
 through the soffit, rather than hiding those faces in the renderer.
 
-Compilation is O(S B) for S local sections and their bounded B bands, plus O(E log P) for E local
-terrain-boundary edges and P portal boundary points. Exterior triangle-grid filtering is O(log H)
+Shell compilation is O(S B) for S local sections and their bounded B bands. The transition-stamp
+guard adds O(R B) for R local open support strips; boundary construction adds O(E log P) for E
+local terrain-boundary edges and P portal boundary points. Exterior triangle-grid filtering is O(log H)
 in this stroke's H covered runs, allocation-free. The shell is cold derived data and uses the
 existing owner chunks/bounds. There is no new spatial index, city-wide scan, agent state or
 per-tick work. Car and foot lanes keep the normal access flags; a car-only tunnel has no foot
@@ -3903,7 +3905,8 @@ rectangular concrete opening, broad header and retaining wings into the grassy s
 secondary concrete header/retaining-wall joint reference. The short cast-concrete box lining is
 an interpretation of Finnish cut-and-cover practice; these photos are underpasses, not a claim
 that either site has this tunnel's length or profile. Their railings, individual construction
-joints, signs and the second photo's cycle-surface treatment are not reproduced.
+joints, signs and the second photo's cycle-surface treatment are not reproduced. The fixture retains the game's
+existing walkable road section; Honkanummentie has narrower verges.
 
 **Importer boundary.** No importer code changes. Supporting OSM `tunnel=yes` will require
 explicit structural intent, a physical vertical profile with DEM cover and portal transitions,
@@ -3913,6 +3916,151 @@ supply the vertical profile. Imported rock tunnels, tunnel junctions and long-tu
 ventilation remain outside ROAD-61. The original player save has not been loaded; the recorded
 blank-world failures are the reproduced regressions.
 
+**Fresh correctness and visual acceptance — 2026-10-27, `55cf6f85`.** The preserved
+pre-fix `eb8fcaac` production build reproduces both diagnosed failures. The same checked-in
+`road_tunnels_test.gd` in diagnosis-only mode fails its buried-profile assertions for grounded
+ends and its exact/commit assertions for the fully buried stroke. A separate baseline API probe
+records quick/exact `true/true` with the interior erased, and `true/false` with
+`surface_geometry_invalid`, respectively. These are freshly rerun baseline observations, not
+historical results substituted for current validation.
+
+On the final build, all **21 tunnel Rust tests** pass in debug and release. They cover both
+failures, shared quick/exact acceptance and refusal (including an off-centre hill), one-step undo,
+physical/exterior separation, pavement widths, concrete winding, car/foot access, and covered
+DEM samples on both aligned and offset 4 m grids. All **2,915 library tests pass, 168 ignored**;
+`cargo clippy --all-targets` is clean. A fresh release comparison against the preserved native
+baseline matches **10,530 owner/field records / 1,537,405 ordered words** exactly for roads
+without tunnels, including ordered section, physical-query and render products.
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk"
+RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --lib tunnel
+RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --lib -- --test-threads=4
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" tunnel
+# Capture with the preserved baseline executable, compare with the final executable.
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 ROAD_SECTION_CAPTURE="$ARTIFACTS/baseline-exact.json" \
+  "$TEST_BINARY" exact_compiled_legacy_baseline --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 ROAD_SECTION_COMPARE="$ARTIFACTS/baseline-exact.json" \
+  "$TEST_BINARY" exact_compiled_legacy_baseline --nocapture --test-threads=1
+```
+
+The native script creates only fresh blank worlds and ROAD-61-prefixed saves. Its diagnosis-only
+mode also runs against the preserved baseline; the final normal mode additionally sculpts a
+28 m hill, previews/commits the straight road through the actual player Tunnel tool, and runs
+a car from the west approach through the bore and out the east portal. The final recorded
+positions progress from x=-149.07 to x=101.85 m, all y=0, with `entered=true` and `exited=true`.
+Save/load digests preserve concrete and terrain ownership after undo. The Main scene uses the
+production road, terrain, material and lighting renderers with an isolated application name.
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_ROAD61_DIAGNOSE_ONLY=1 \
+  perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ARTIFACTS/baseline-project" \
+  --script res://tests/road_tunnels_test.gd
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_ROAD61_CAPTURE=1 \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/isolated-project" \
+  --script res://tests/road_tunnels_test.gd
+```
+
+All **22 individual road/traffic bridge processes exit 0 and pass their assertions** on the
+final build. `network_tool_chunk_renderer`, `road_junction_preview` and `surface_patch_debug`
+still emit one resource-at-exit error apiece; the same three errors were freshly reproduced
+with the preserved baseline. One initial `road_import_features` offline-acknowledgement assertion
+failed during concurrent builds. It passed unchanged in the final run and all five alternating
+baseline/candidate retries; its intermittent cause is not diagnosed here. No importer code or
+assertions were changed to obtain those passes.
+
+Each script is a separate headless process. The isolated project uses the application-name
+override `MetrumRoad61Tests`, task-local cache/config directories and a parent `captures` symlink
+to the worktree output directory. The baseline copy has its own binary and application name.
+No player mods or saves are read or changed.
+
+```bash
+for test in road_tunnels road_cross_section road_pockets road_pockets_legacy \
+  road_roundabouts road_ramps road_grade_separation road_filled_underpass \
+  road_bus_streetscape road_import_features road_import_profile \
+  network_tool_chunk_renderer road_junction_preview road_preview_stream \
+  road_preview_metrics road_benchmark_metrics surface_patch_debug road_turn_lanes \
+  road_junction_control road_trajectory road_marking_rules road_rejection_report; do
+  METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+    godot --headless --path "$ARTIFACTS/isolated-project" --script "res://tests/${test}_test.gd"
+done
+```
+
+The four final `captures/road61/{west_portal,east_portal,inside_street,overhead}.png` images were
+opened and inspected. Portal and interior captures were compared with the Honkanummentie reference;
+the Turuntie reference supplied the secondary header/retaining joint check. The street view
+checks continuous pavement, concrete walls/soffit and the visible far exit. The overhead view
+checks the unbroken grassy hill and absence of pavement showing through its roof. No ground
+curtain, soffit intrusion or exposed blue gap remains in these captures. Reference differences
+listed above remain deliberate; lighting/ventilation is outside this short-tunnel pass. PNGs and
+`traffic_probe.json` remain local and ignored; they are not committed.
+
+**Matched performance acceptance — 2026-10-27.** Apple M2 Pro, aarch64 macOS 27.0.1,
+Rust 1.98.1 (`48a229cea`), Xcode/macOS 26.5 SDK, unprofiled release,
+`RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`. Production baseline is `eb8fcaac`; candidate is
+`55cf6f85`. Three separate process pairs run in AB / BA / AB order, after all builds, tests
+and Godot processes finish. The existing 18×18 surface grid, 1/64/256/1024 occupied-chunk
+fixtures and populated-cell locality fixture are unchanged. Table values are milliseconds,
+medians of three per-process Criterion **mean** estimates; these ordinary-road controls measure
+compile/emission overhead around the new tunnel path, rather than timing a newly valid tunnel
+against a refused old commit. Raw runs, binary SHA-256 identities and the aggregation remain
+local in `$ARTIFACTS/matched/{identity,summary}.json` and its per-process directories.
+
+| Surface workload | Baseline | Candidate |
+| --- | ---: | ---: |
+| `compile_all_grid` | 1532.2356 | 1531.6457 |
+| `compile_dirty_unchanged_edge` | 0.5287 | 0.5062 |
+| `compile_dirty_lane_width_change` | 23.3377 | 23.0817 |
+
+| Occupied chunks | Emit only, baseline → candidate | Dirty compile + emit, baseline → candidate |
+| ---: | ---: | ---: |
+| 1 | 0.04237 → 0.04300 | 0.12332 → 0.12539 |
+| 64 | 0.04294 → 0.04357 | 0.13090 → 0.12917 |
+| 256 | 0.04337 → 0.04380 | 0.13758 → 0.13726 |
+| 1024 | 0.04329 → 0.04389 | 0.19984 → 0.20158 |
+
+The locality check measures 100 observations per tier/process after three warmups, retaining
+four occupied local sites while background buildings grow through 0/1,000/10,000/100,000.
+Parcels are 4/1,004/10,004/100,004, housed agents 24/6,024/60,024/600,024, and remote roads
+0/4/40/391. All six processes prove identical local products at every tier. Fixture/index setup
+and the one-time immutable snapshot are outside repeated planning/worker timing. Values below
+are medians of the three per-process p50s; snapshot values are medians of the separately timed
+once-per-edit snapshots, not pooled distributions.
+
+| Background buildings | Compile p50, baseline → candidate | Worker p50, baseline → candidate | One-time snapshot, baseline → candidate |
+| ---: | ---: | ---: | ---: |
+| 0 | 4.6197 → 4.7466 | 1.3741 → 1.4158 | 0.00479 → 0.00542 |
+| 1,000 | 4.6813 → 4.7507 | 1.3831 → 1.3882 | 0.01029 → 0.00896 |
+| 10,000 | 4.6402 → 4.7087 | 1.3944 → 1.3885 | 0.03642 → 0.03296 |
+| 100,000 | 4.7613 → 4.8477 | 1.3923 → 1.4331 | 0.13017 → 0.14183 |
+
+Full-grid compilation changes −0.04%; unchanged-edge and width-mutation controls change −4.26%
+and −1.10%. Chunk emission adds roughly 0.4–0.6 µs (about 1–1.5%); dirty compile + emit ranges
+from −1.32% to +1.68%. Populated planning adds 0.07–0.13 ms with matching local products
+and no city-proportional growth.
+At 100,000 buildings, full-worker p50 changes 5.8224 → 5.9238 ms and its process-p95 median
+6.2056 → 6.4613 ms. Candidate compile p50 grows only 2.13% from the empty-background tier to
+100,000 buildings; worker p50 grows 1.22%. The size-dependent snapshot is explicitly separate.
+These small edit/emission costs are accepted for the structural fix; they are not a speedup
+claim or a claim of zero runtime cost. Agent movement/tick code is unchanged, so PERF-06 is
+not rerun. Tunnel shell/stamp construction remains O(S B + R B) plus local boundary work as above.
+
+```bash
+cargo bench --manifest-path rust/Cargo.toml --bench surface_benchmark --bench road_chunk_benchmark --no-run
+# Use the corresponding baseline/candidate surface executable for each AB / BA / AB run.
+CRITERION_HOME="$ARTIFACTS/run-surface" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$BENCH_BINARY" --bench 'RoadSurfaceSystem/(compile_all_grid|compile_dirty_unchanged_edge|compile_dirty_lane_width_change)$' \
+  --noplot --warm-up-time 1 --measurement-time 2
+# Then use the corresponding chunk executable.
+CRITERION_HOME="$ARTIFACTS/run-chunks" RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+  "$BENCH_BINARY" --bench 'RoadChunkRenderer/(chunk_emit_only|dirty_compile_plus_chunk_emit_diagnostic)' \
+  --noplot --warm-up-time 1 --measurement-time 2
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" populated_cell_road_plan_scaling \
+  --ignored --nocapture --test-threads=1
+```
 
 ### Straight cross-section transitions — ROAD-70
 
