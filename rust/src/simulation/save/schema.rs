@@ -5,8 +5,8 @@
 use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
-/// Current save format combining scheduler/road history with authoritative vehicle tails.
-pub const SAVE_VERSION: i64 = 109;
+/// Current save format, including explicit cold road cross-section authority.
+pub const SAVE_VERSION: i64 = 110;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -17,6 +17,32 @@ CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,
     game_build TEXT NOT NULL
+);
+CREATE TABLE road_layouts(
+    layout_id INTEGER PRIMARY KEY,
+    format_version INTEGER NOT NULL,
+    layout_blob BLOB NOT NULL
+);
+CREATE TABLE road_layout_strips(
+    layout_id INTEGER NOT NULL,
+    side INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    strip_blob BLOB NOT NULL,
+    PRIMARY KEY(layout_id, side, ordinal)
+);
+CREATE TABLE road_section_details(
+    detail_id INTEGER PRIMARY KEY,
+    format_version INTEGER NOT NULL,
+    detail_blob BLOB NOT NULL
+);
+CREATE TABLE road_edge_sections(
+    edge_id INTEGER PRIMARY KEY,
+    layout_id INTEGER NOT NULL,
+    detail_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    class INTEGER NOT NULL,
+    access INTEGER NOT NULL,
+    overrides INTEGER NOT NULL
 );
 CREATE TABLE camera_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),

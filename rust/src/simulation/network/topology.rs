@@ -1140,6 +1140,7 @@ pub fn split_edge(
     new_edge.physical_length = length_new;
 
     let new_edge_id = graph.add_edge(new_edge);
+    graph.inherit_split_road_section(edge_id, new_edge_id);
     // The retained half no longer reaches the old endpoint. Carry its authored rules and
     // zebra override to the appended half before rebuilding any junction consumers.
     migrate_split_endpoint_rules(graph, old_end_node, edge_id, new_edge_id);

@@ -5,6 +5,7 @@
 mod cell_zoning;
 mod legacy;
 mod road_junction_geometry;
+pub(crate) mod road_sections;
 
 use super::*;
 use crate::assets::AssetManifest;
@@ -1812,6 +1813,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
 
     {
         let conn = rusqlite::Connection::open(&path).expect("open saved sqlite");
+        conn.execute("UPDATE save_meta SET version=109", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![2_i64, 0.0_f32, 0.0_f32, -80.0_f32, 0_i64],
@@ -2022,6 +2025,11 @@ fn road_median_save_round_trip_and_older_schema_default() {
         assert_eq!(loaded.edge(0).median, Some(median));
         assert_eq!(loaded.edge(0).width, graph.edge(id).width);
         // Removing the four new columns models a pre-89 network table, with actual old width.
+        conn.execute(
+            "INSERT INTO save_meta VALUES (88,0,'pre-median-fixture')",
+            [],
+        )
+        .unwrap();
         conn.execute_batch("UPDATE network_edges SET width = 7; ALTER TABLE network_edges DROP COLUMN median_style; ALTER TABLE network_edges DROP COLUMN median_width; ALTER TABLE network_edges DROP COLUMN median_start_setback; ALTER TABLE network_edges DROP COLUMN median_end_setback;").unwrap();
         let old = network::load_graph(&conn).unwrap();
         assert_eq!(old.edge(0).median, None);
@@ -2125,6 +2133,11 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
 fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
+    conn.execute(
+        "INSERT INTO save_meta VALUES (109,0,'pre-section-geometry-fixture')",
+        [],
+    )
+    .unwrap();
     conn.execute_batch(include_str!("tests/data/headlight_house_junction.sql"))
         .unwrap();
     let config = WorldConfig::new(500.0, 500.0, 40.0, 10.0)
@@ -2220,11 +2233,8 @@ fn crossing_levels_round_trip_and_old_saves_default_without_changing_geometry() 
 #[test]
 fn roundabout_roles_round_trip_and_legacy_tables_default_to_ordinary_roads() {
     let (mut graph, id) = snapshot_test_graph();
-    let edge = graph.edge_mut(id);
-    edge.roundabout = true;
-    edge.fwd_lanes = 1;
-    edge.bkw_lanes = 0;
-    edge.width = 3.5;
+    graph.edge_mut(id).roundabout = true;
+    graph.set_edge_cross_section(id, 1, 0, None).unwrap();
     let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();

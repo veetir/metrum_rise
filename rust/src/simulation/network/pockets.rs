@@ -487,6 +487,7 @@ pub(super) fn replace_edge(graph: &mut RegionGraph, id: usize, edge: Edge) {
     let (a, b) = (edge.start_node, edge.end_node);
     let live = !edge.deleted;
     graph.edges[id] = edge;
+    graph.sync_legacy_section(id);
     if live {
         graph.adjacency[a as usize].push(id);
         graph.adjacency[b as usize].push(id);

@@ -45,6 +45,7 @@ mod format;
 mod handles;
 mod legacy;
 pub mod network;
+mod road_sections;
 mod scheduler;
 pub mod schema;
 pub(crate) mod sqlite;

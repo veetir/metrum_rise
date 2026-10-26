@@ -6,8 +6,13 @@ mod cross_section;
 mod crossings;
 mod lane_access;
 mod lane_taper;
+pub(crate) mod sections;
 pub use lane_access::LaneUse;
 pub use lane_taper::RoadLaneTaper;
+pub use sections::{
+    RoadLayout, RoadSectionDetail, RoadSectionRef, RoadSideExtents, RoadStrip, SectionScalar,
+    StripRole,
+};
 /// Core data structures for nodes and edges.
 pub mod data;
 pub use cross_section::{MedianStyle, RoadMedian};

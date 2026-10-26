@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 #[test]
 fn kys_crossfall_uses_control_supports_without_rewriting_physical_relief() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/kys_slip_bend.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -44,7 +44,7 @@ fn kys_crossfall_uses_control_supports_without_rewriting_physical_relief() {
 #[test]
 fn university_import_parking_uses_the_certified_common_grade_for_folded_carriers() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/university_import_parking.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -75,7 +75,7 @@ fn university_import_parking_uses_the_certified_common_grade_for_folded_carriers
 #[test]
 fn university_import_path_and_motor_road_share_a_certified_junction_grade() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/university_import_path.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -469,7 +469,7 @@ fn audit_imported_junction_geometry() {
 #[test]
 fn overlapping_bioteknia_profiles_resolve_one_continuous_longitudinal_grade() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -526,7 +526,7 @@ fn overlapping_bioteknia_profiles_resolve_one_continuous_longitudinal_grade() {
 #[test]
 fn imported_tight_terminal_curve_publishes_a_complete_span() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/tight_terminal_curve.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -554,7 +554,7 @@ fn imported_short_approaches_keep_ordinary_kerb_steps() {
         crate::debug::set_mask(crate::debug::Channel::Road.bit());
     }
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/graded_continuation.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -583,7 +583,7 @@ fn imported_short_approaches_keep_ordinary_kerb_steps() {
 #[test]
 fn bioteknia_grade_conformity_survives_dirty_compilation_and_undo() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -620,7 +620,7 @@ fn bioteknia_complete_mouth_profile_matches_junction_grade() {
         crate::debug::set_mask(crate::debug::Channel::Road.bit());
     }
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/bioteknia_overlap.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -647,7 +647,7 @@ fn bioteknia_complete_mouth_profile_matches_junction_grade() {
 #[test]
 fn curved_terminal_cap_keeps_the_approach_grade_at_its_mouth() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/terminal_cap_grade.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -668,7 +668,7 @@ fn curved_terminal_cap_keeps_the_approach_grade_at_its_mouth() {
 #[test]
 fn terrain_window_keeps_overlapping_junction_contributors_complete() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_query_cohort.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -767,7 +767,7 @@ fn terrain_window_keeps_overlapping_junction_contributors_complete() {
 #[test]
 fn shared_grade_refinement_preserves_source_contacts_and_facet_quality() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_grade_breaks.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -806,7 +806,7 @@ fn shared_grade_cohort_survives_dirty_compilation_undo_and_preview() {
         crate::debug::set_mask(crate::debug::Channel::Road.bit());
     }
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_query_cohort.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -876,7 +876,7 @@ fn refined_junction_steps_keep_declared_contacts_on_retained_top_edges() {
         crate::debug::set_mask(crate::debug::Channel::Road.bit());
     }
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_refined_steps.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -907,7 +907,7 @@ fn refined_footprint_uses_one_canonical_grade_at_source_and_generated_vertices()
         crate::debug::set_mask(crate::debug::Channel::Road.bit());
     }
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_refined_boundary.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -934,7 +934,7 @@ fn refined_footprint_uses_one_canonical_grade_at_source_and_generated_vertices()
 #[test]
 fn restored_junction_footprints_keep_connected_grades_coherent() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_grade_breaks.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -965,7 +965,7 @@ fn restored_junction_footprints_keep_connected_grades_coherent() {
 #[test]
 fn retained_shared_grade_plans_require_valid_source_ownership() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_grade_source_plans.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -996,7 +996,7 @@ fn retained_shared_grade_plans_require_valid_source_ownership() {
 #[test]
 fn shared_grade_terrain_boundaries_keep_a_certified_source_owner() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/junction_terrain_owners.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();
@@ -1028,7 +1028,7 @@ fn shared_grade_terrain_boundaries_keep_a_certified_source_owner() {
 #[test]
 fn kys_divided_lower_span_keeps_one_frame_for_surface_and_crossing_producers() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
+    super::road_sections::legacy_fixture_schema(&conn);
     conn.execute_batch(include_str!("data/kys_divided_lower.sql"))
         .unwrap();
     let graph = network::load_graph(&conn).unwrap();

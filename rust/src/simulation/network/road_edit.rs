@@ -57,6 +57,8 @@ struct PlannedEdge {
     split_parent: Option<usize>,
     // Unchanged frontier edges need only an ID mapping, not another profile allocation.
     geometry: Option<Edge>,
+    section: Option<super::graph::sections::RoadSectionSnapshot>,
+    source_section: Option<super::graph::RoadSectionRef>,
 }
 
 /// Final local graph delta in deterministic preview-local ID order, never a whole-city snapshot.
@@ -166,6 +168,10 @@ impl RoadTopologyPlan {
                         || edge.start_clip != before.start_clip
                         || edge.end_clip != before.end_clip
                         || edge.deleted != before.deleted
+                        || local.road_layout(id) != source.road_layout(source_id)
+                        || local.road_section_detail(id) != source.road_section_detail(source_id)
+                        || local.road_section_ref(id).revision
+                            != source.road_section_ref(source_id).revision
                 });
                 if changed {
                     dirty_edges.insert(id);
@@ -174,6 +180,8 @@ impl RoadTopologyPlan {
                     source: source_id,
                     split_parent: parents[id],
                     geometry: changed.then(|| edge.clone()),
+                    section: changed.then(|| local.capture_road_section(id)),
+                    source_section: source_id.map(|id| source.road_section_ref(id)),
                 }
             })
             .collect();
@@ -301,11 +309,13 @@ impl RoadTopologyPlan {
             .iter()
             .filter_map(|node| node.source)
             .all(|id| (id as usize) < graph.node_count() && graph.get_valid_node(id) == id)
-            && self
-                .edges
-                .iter()
-                .filter_map(|edge| edge.source)
-                .all(|id| id < graph.edge_count() && !graph.edge(id).deleted)
+            && self.edges.iter().all(|edge| {
+                edge.source.is_none_or(|id| {
+                    id < graph.edge_count()
+                        && !graph.edge(id).deleted
+                        && edge.source_section == Some(graph.road_section_ref(id))
+                })
+            })
     }
 }
 
@@ -393,6 +403,14 @@ impl TransitNetwork {
             let id = edge.source.unwrap_or_else(|| {
                 let id = graph.edges.len();
                 graph.edges.push(Edge::default());
+                graph
+                    .road_sections
+                    .references
+                    .push(super::graph::RoadSectionRef::default());
+                graph
+                    .road_sections
+                    .extents
+                    .push(super::graph::RoadSideExtents::default());
                 id
             });
             edge_ids.push(id);
@@ -435,6 +453,10 @@ impl TransitNetwork {
             edge.start_node = node_ids[geometry.start_node as usize];
             edge.end_node = node_ids[geometry.end_node as usize];
             graph.edges[id] = edge;
+            if let Some(section) = &planned.section {
+                graph.restore_road_section(id, section.clone());
+            }
+            graph.sync_legacy_section(id);
             if !graph.edge(id).deleted {
                 let edge = &graph.edges[id];
                 graph.adjacency[edge.start_node as usize].push(id);

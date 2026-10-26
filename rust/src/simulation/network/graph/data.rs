@@ -140,6 +140,7 @@ impl Edge {
 pub struct RegionGraph {
     // Source ordinals for deterministic cosmetic ordering in bounded preview excerpts only.
     placement_ids: Option<std::sync::Arc<(Vec<usize>, Vec<u32>)>>,
+    pub(in crate::simulation::network) road_sections: super::sections::RoadSections,
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
     pub(in crate::simulation::network) nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
@@ -165,6 +166,7 @@ pub(crate) struct RegionGraphUndoDelta {
     original_edge_count: usize,
     nodes: Vec<(u32, Node)>,
     edges: Vec<(usize, Edge)>,
+    sections: Vec<(usize, super::sections::RoadSectionSnapshot)>,
     aliases: Vec<(u32, Option<u32>)>,
 }
 
@@ -232,6 +234,7 @@ impl RegionGraph {
     pub fn new() -> Self {
         Self {
             placement_ids: None,
+            road_sections: super::sections::RoadSections::default(),
             nodes: Vec::new(),
             edges: Vec::new(),
             node_aliases: std::collections::HashMap::new(),
@@ -350,6 +353,10 @@ impl RegionGraph {
             original_node_count: self.nodes.len(),
             original_edge_count: self.edges.len(),
             nodes,
+            sections: edges
+                .iter()
+                .map(|(id, _)| (*id, self.capture_road_section(*id)))
+                .collect(),
             edges,
             aliases,
         }
@@ -369,6 +376,12 @@ impl RegionGraph {
     pub(crate) fn restore_undo_delta(&mut self, delta: RegionGraphUndoDelta) {
         self.nodes.truncate(delta.original_node_count);
         self.edges.truncate(delta.original_edge_count);
+        self.road_sections
+            .references
+            .truncate(delta.original_edge_count);
+        self.road_sections
+            .extents
+            .truncate(delta.original_edge_count);
         for (node_id, node) in delta.nodes {
             if let Some(target) = self.nodes.get_mut(node_id as usize) {
                 *target = node;
@@ -378,6 +391,9 @@ impl RegionGraph {
             if let Some(target) = self.edges.get_mut(edge_idx) {
                 *target = edge;
             }
+        }
+        for (id, section) in delta.sections {
+            self.restore_road_section(id, section);
         }
         self.node_aliases
             .retain(|&node_id, _| (node_id as usize) < delta.original_node_count);
@@ -576,5 +592,9 @@ impl RegionGraph {
     pub fn set_nodes_edges_for_test(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) {
         self.nodes = nodes;
         self.edges = edges;
+        self.road_sections = super::sections::RoadSections::default();
+        for id in 0..self.edges.len() {
+            self.sync_legacy_section(id);
+        }
     }
 }

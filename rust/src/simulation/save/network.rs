@@ -19,6 +19,7 @@ pub(super) fn save_network(
     graph: &RegionGraph,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
+    super::road_sections::save(tx, graph, maps)?;
     // 1. Nodes
     {
         let mut node_rows: Vec<(u32, u32)> = maps
@@ -223,6 +224,7 @@ pub(super) fn save_network(
 
 pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
+    let explicit_sections = super::road_sections::is_current(conn)?;
     {
         let mut stmt =
             conn.prepare("SELECT node_id, x, y, z, node_type FROM network_nodes ORDER BY node_id")?;
@@ -285,8 +287,8 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 )));
             }
             let speed_limit = row.get(9)?;
-            let no_building_spawn =
-                row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+            let no_building_spawn = row.get::<_, i64>(14)? != 0
+                || (!explicit_sections && speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS);
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
@@ -495,6 +497,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     if !geometry.is_empty() || !physical_geometry.is_empty() {
         return Err(SaveLoadError::custom("orphan edge geometry"));
     }
+    super::road_sections::load(conn, &mut graph)?;
     // add_node/add_edge already maintained adjacency and both spatial indices.
     Ok(graph)
 }

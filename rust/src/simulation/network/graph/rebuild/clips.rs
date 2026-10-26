@@ -56,6 +56,7 @@ impl RegionGraph {
             self.add_to_spatial_index(i);
         }
         self.rebuild_adjacency_list();
+        self.resolve_legacy_road_details(0..self.edges.len());
     }
 
     /// Rebuilds intersection clips for only the edges incident to `affected_nodes`.
@@ -98,9 +99,10 @@ impl RegionGraph {
         }
 
         // Update the spatial R-tree only for the affected edges (not full rebuild).
-        for edge_idx in reindex_ids {
+        for &edge_idx in &reindex_ids {
             self.add_to_spatial_index(edge_idx);
         }
+        self.resolve_legacy_road_details(reindex_ids);
         // Adjacency is unchanged — no rebuild needed.
     }
 

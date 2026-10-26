@@ -2179,6 +2179,7 @@ impl RoadSurfaceSystem {
             copied_edge.physical_length = length;
         }
         let local_edge = validation_graph.add_edge(copied_edge);
+        validation_graph.copy_road_section(local_edge, existing_graph, edge_idx);
         copied_edges.insert(edge_idx, local_edge);
         for (source, local) in [(edge.start_node, start_node), (edge.end_node, end_node)] {
             if let Some(&marked) = existing_graph
