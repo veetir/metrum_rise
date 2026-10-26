@@ -72,10 +72,13 @@ func run() -> void:
 			trip.passed_feature = trip.closest_via_m < 24.0 and Vector2(position.x - trip.via.x, position.z - trip.via.z).dot(axis) > trip.exit_distance_m
 			trip.observations += 1
 			trip.last_failure = details.get("last_failure", "")
+			trip.last_details = details
 		if complete:
 			break
 	simulation.set_simulation_speed(0.0)
 	for trip in trips:
+		if trip.id >= 0 and not trip.passed_feature and simulation.pick_debug_agent(trip.position, 50.0) == trip.id:
+			trip.remaining_route = simulation.get_agent_route_lines(trip.id)
 		expect(trip.passed_feature, "Car crosses its intended imported feature: %s" % trip)
 		expect(trip.last_failure.is_empty(), "Imported route remains valid: %s" % trip.name)
 	var report := FileAccess.open(destination, FileAccess.WRITE)

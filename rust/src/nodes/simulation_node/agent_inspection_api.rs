@@ -114,7 +114,7 @@ impl SimulationNode {
     }
 
     /// For debugging and bridge tests: places a car at the start of the shortest car route
-    /// between the road nodes nearest `from` and `to` (XZ, within 50 m) and returns its render
+    /// between the car-accessible road nodes nearest `from` and `to` (XZ, within 50 m) and returns its render
     /// ID, or `-1` without a route. The car has no home or destination building and stops where
     /// the route ends. It changes the simulation outside the tick, so the session is no longer
     /// reproducible.
@@ -178,11 +178,52 @@ fn nearest_road_node(graph: &RegionGraph, pos: Vector3) -> Option<u32> {
     graph.visit_nodes_near_aabb(pos - reach, pos + reach, |node_id| {
         let node = graph.node(node_id).pos;
         let distance_sq = (node.x - pos.x).powi(2) + (node.z - pos.z).powi(2);
-        if graph.node_has_live_incident_edge(node_id)
-            && best.is_none_or(|best| (distance_sq, node_id) < best)
+        if graph.node_adjacency(node_id).iter().any(|&id| {
+            let edge = graph.edge(id);
+            !edge.deleted
+                && edge.allowed_types & TransitFlags::CAR != 0
+                && (edge.fwd_lanes > 0 || edge.bkw_lanes > 0)
+        }) && best.is_none_or(|best| (distance_sq, node_id) < best)
         {
             best = Some((distance_sq, node_id));
         }
     });
     best.map(|(_, node_id)| node_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::{
+        graph::Edge,
+        types::{NodeType, TransitType},
+    };
+
+    #[test]
+    fn debug_car_endpoint_ignores_nearer_pedestrian_nodes() {
+        let mut graph = RegionGraph::new();
+        let foot = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let foot_end = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: foot,
+            end_node: foot_end,
+            primary_type: TransitType::Foot,
+            allowed_types: TransitFlags::FOOT,
+            geometry: vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 20.0)],
+            ..Default::default()
+        });
+        let road = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        let road_end = graph.add_node(Vector3::new(10.0, 0.0, 20.0), NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: road,
+            end_node: road_end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 20.0)],
+            ..Default::default()
+        });
+        assert_eq!(nearest_road_node(&graph, Vector3::ZERO), Some(road));
+    }
 }
