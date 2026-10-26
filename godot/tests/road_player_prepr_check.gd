@@ -300,16 +300,9 @@ func ramp() -> void:
 	var tool: Node = main.get_node("RampTool")
 	tool.set_scripted_pointer(true, ground(0, 0))
 	tool.active = true
-	# The first click uses the tool's viewport picker, aimed at the anchor.
-	camera.set_view_state(PackedFloat32Array([0, 50, 0, 0, -1.57, 240, 0]))
-	Input.warp_mouse(Vector2(600, 400))
-	await process_frame
-	if captures:
-		click(tool)
-	else:
-		# Headless DisplayServer cannot move the native pointer; use the same Rust picker.
-		tool._anchor = simulation.get_ramp_anchor(ground(0, 0))
-	if not note(not tool._anchor.is_empty(), "ramp anchor click" if captures else "ramp Rust anchor picker"):
+	# Scripted pointer positions enter the same immutable picker in both display modes.
+	click(tool)
+	if not note(not tool._anchor.is_empty(), "ramp anchor click", tool._anchor):
 		return
 	tool.set_scripted_pointer(true, ground(200, 100))
 	var deadline := Time.get_ticks_msec() + 15000

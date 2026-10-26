@@ -4,7 +4,18 @@
 ## METRUM_RP_CAPTURE=1 writes only captures/ramps and roads-rp-prefixed local saves.
 extends "res://tests/road_pockets_legacy_test.gd"
 
+class BusySurfaceTool extends "res://scripts/tools/ramp_tool.gd":
+	var legacy_picks := 0
+
+	func get_terrain_interaction():
+		legacy_picks += 1
+		return null
+
 func run() -> void:
+	if OS.get_environment("METRUM_RP_POINTER_ONLY") == "1":
+		await check_player_pointer()
+		quit(failures)
+		return
 	if OS.get_environment("METRUM_RP_LEGACY_ONLY") == "1":
 		await legacy_tapers()
 		quit(failures)
@@ -23,6 +34,7 @@ func run() -> void:
 				await drive_ramp(exit_ramp, forward)
 		simulation.queue_free()
 		await process_frame
+		await check_player_pointer()
 	quit(failures)
 
 func endpoint(exit_ramp: bool, forward: bool) -> Vector3:
@@ -173,3 +185,59 @@ func legacy_tapers() -> void:
 		file.store_string(JSON.stringify(hashes))
 	simulation.queue_free()
 	await process_frame
+
+func check_player_pointer() -> void:
+	# Real viewport rays on a 2% slope, while the legacy mutex raycast is contended.
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1440, 900)
+	root.add_child(viewport)
+	main = load("res://scenes/Main.tscn").instantiate()
+	main.set_script(null)
+	viewport.add_child(main)
+	await process_frame
+	await process_frame
+	var manager: Node = main.get_node("InputManager")
+	var original: Node = manager.ramp_tool
+	main.remove_child(original)
+	original.queue_free()
+	var tool := BusySurfaceTool.new()
+	tool.name = "RampTool"
+	main.add_child(tool)
+	manager.ramp_tool = tool
+	simulation = main.get_node("SimulationNode")
+	camera = main.get_node("CameraNode")
+	expect(simulation.create_blank_world(1600, 1024, 4, 128, 2.5), "Ramp player-pointer blank world")
+	simulation.slope_terrain(Vector2.ZERO, 1600, Vector2(-800, 0), 34, Vector2(800, 0), 66, 1000)
+	manager._refresh_after_world_load()
+	manager.set_simulation_speed(0)
+	await build(PackedVector3Array([ground(-600, 0), ground(600, 0)]), 2, 2, 2, 5)
+	var target := ground(180, 0)
+	camera.set_view_state(PackedFloat32Array([target.x, target.y, target.z, 0, -1.2, 180, 0]))
+	var motion := InputEventMouseMotion.new()
+	motion.position = Vector2(viewport.size) * 0.5
+	viewport.push_input(motion, true)
+	tool.active = true
+	await settle()
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	tool._unhandled_input(click)
+	expect(not tool._scripted_pointer_enabled, "Ramp pointer regression never supplies a scripted world position")
+	expect(not tool._anchor.is_empty() and tool._anchor.position.distance_to(target) < 1.0, "Busy first click retains its actual slope anchor instead of the world origin: %s" % tool._anchor)
+	expect(tool.legacy_picks == 0, "Ramp picking uses the existing immutable road query")
+	# Camera-only pointer motion must also update the outer endpoint preview.
+	target = ground(380, 100)
+	camera.set_view_state(PackedFloat32Array([target.x, target.y, target.z, 0, -1.2, 180, 0]))
+	var deadline := Time.get_ticks_msec() + 15000
+	while not tool._valid and Time.get_ticks_msec() < deadline:
+		await process_frame
+	expect(tool._valid, "Actual player pointer installs the sloping ramp preview: %s" % tool._label.text)
+	if tool._valid:
+		expect(tool._points[-1].distance_to(target) < 1.0, "Ramp endpoint stays at the camera's real world pointer")
+		tool.set_process(false)
+		tool._unhandled_input(click)
+		var result := await finish_request(tool._request)
+		expect(result.get("committed", false), "Commit the real-pointer slope ramp: %s" % result)
+	viewport.queue_free()
+	await process_frame
+	main = null

@@ -47,6 +47,9 @@ func _process(delta: float) -> void:
 		return
 	_update_preview()
 
+func get_world_mouse_pos() -> Vector3:
+	return get_immutable_world_mouse_pos()
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not active or _request > 0:
 		return
@@ -61,7 +64,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		if _anchor.is_empty():
-			_anchor = simulation_node.get_ramp_anchor(get_world_mouse_pos())
+			var point := get_world_mouse_pos()
+			if is_valid:
+				_anchor = simulation_node.get_ramp_anchor(point)
 			_key = []
 		else:
 			_update_preview()
@@ -75,7 +80,12 @@ func _update_preview() -> void:
 	if _anchor.is_empty():
 		_label.text = "Ramp · Click a straight divided road · E exit/entry · F carriageway"
 		return
-	var point: Vector3 = _scripted_pointer_position if _scripted_pointer_enabled else get_world_mouse_pos()
+	var point := get_world_mouse_pos()
+	if not is_valid:
+		_clear()
+		_key = []
+		_label.text = "Ramp · Point at the map to preview."
+		return
 	point.x = snappedf(point.x, 2.0)
 	point.z = snappedf(point.z, 2.0)
 	var key: Array = [point, _anchor, forward, exit_ramp, auxiliary_length, taper_length, simulation_node.get_road_tool_surface_generation(), simulation_node.get_zoning_overlay_revision(), simulation_node.get_agriculture_field_overlay_revision()]
@@ -89,6 +99,8 @@ func _update_preview() -> void:
 	_label.text = "%s ramp · %s carriageway · %.0f m auxiliary lane · [ / ] length\nClick outer endpoint · E exit/entry · F carriageway" % ["Exit" if exit_ramp else "Entry", "Forward" if forward else "Reverse", auxiliary_length]
 	if not _valid:
 		_label.text += "\n" + _reason(str(preview.get("invalid_reason", "")))
+		if preview.get("is_pending", false):
+			_key = []
 		return
 	var road: Node3D = get_node("../RoadTool")
 	var payloads: Array = preview.get("terrain_preview", {}).get("patches", [])

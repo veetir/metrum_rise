@@ -232,6 +232,24 @@ func get_terrain_interaction():
 	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
 	return simulation_node.intersect_world_surface(ray_origin, ray_dir)
 
+# Use the same immutable query as RoadTool: the legacy world raycast can return null
+# while the simulation owns its mutex, which the base picker turns into the world origin.
+func get_immutable_world_mouse_pos() -> Vector3:
+	if _scripted_pointer_enabled:
+		is_valid = true
+		return _scripted_pointer_position
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		is_valid = false
+		return Vector3.ZERO
+	var mouse := get_viewport().get_mouse_position()
+	var cursor: Variant = simulation_node.get_road_tool_cursor_pos(
+		camera.project_ray_origin(mouse), camera.project_ray_normal(mouse),
+		0.0, true, 0, Vector3.ZERO, Vector3.ZERO, false, 1, 1, 0.0, {}, 0.0, Vector3.ZERO
+	)
+	is_valid = cursor != null
+	return cursor.position if is_valid else Vector3.ZERO
+
 func get_world_mouse_pos() -> Vector3:
 	var pos_variant = get_terrain_interaction()
 	if pos_variant == null: 
