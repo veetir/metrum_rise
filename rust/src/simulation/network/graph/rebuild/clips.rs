@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const CLIP_MIN_SIN: f32 = 0.0001;
-const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
+// A clipped motor span must hold one complete car before a junction can admit it.
+// In particular, a footpath split must not turn a usable exit into a sub-car stub.
+const CLIP_LENGTH_RESERVE_M: f32 = crate::config::CAR_LENGTH + crate::config::IDM_S_MIN;
 const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.1;
 const CLIP_ACUTE_MAX_HALFWIDTH_FACTOR: f32 = 5.0;
 
