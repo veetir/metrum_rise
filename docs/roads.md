@@ -3925,6 +3925,104 @@ accepted after views** of those two scenes and no claim that KYS now reads like 
 street references. South/west are geometry checks at other locations, not KYS layout matches.
 All three user-save SHA-256 values match their pre-task values. ROAD-73 remains open.
 
+### Player placement pre-PR check — ROAD-82
+
+**Light check completed 2026-10-26; full placement QA remains open.** ROAD-82 was free in
+both this branch and upstream; ROAD-81 continues to own the importer. Runtime base is
+`d352a11d`, replay harness `32df65ca`, and the pointer repair is `a1cbcf6d`. No graph is
+written by the replay. It creates fresh 1,600 m square worlds through the normal world API,
+then uses RoadTool strokes, Junction/Over/Under, roundabout/ramp controller clicks, pocket
+editing, Road Properties bus checkboxes, Selection's zebra API, BulldozeTool and global undo.
+The zebra path exercises the Selection preview/setter boundary, not picking its 3D toggle.
+One world per fixture bounds the check and isolates undo. The second copy uses the existing
+terrain editor to make a measured 2% plane. The base terrain value `2.5` is stored in terrain
+units and renders at 50 m; slope anchors use world metres.
+
+The ten fixtures per surface are median 1+1 T90/T45 and median 2+2 X90/X45 (each with a
+left pocket and one authored zebra), a 2+2 bus road, 50 m three-/four-arm roundabouts,
+automatic motor-road Over and Under crossings, and a divided-road exit ramp stub. Each
+stroke/feature is undone and restored; each final fixture is bulldozed and undone. A car route
+and initial movement smoke check run per result. This does not establish loaded traffic flow.
+
+**Small root repair.** RampTool still used the nullable, mutex-based legacy raycast. A busy
+first click became `Vector3.ZERO`; on the sloping 50 m road this projected to an unintended
+anchor near x = −1 m. A focused real-viewport test aiming at x = 180 m reproduces that origin
+jump and a failed outer-endpoint preview before the fix. Ramps now share the roundabout's
+existing immutable road cursor query, reject absent hits and retry transient preview results.
+The same test passes its actual pointer, paired preview and commit after the repair. This adds
+constant controller dispatch around the existing indexed cursor query; there is no new spatial
+structure, simulation loop, compiler algorithm, save change or agent allocation.
+
+**Fresh acceptance.** Final headless replay: **400 checks, zero findings**, including the slope
+ramp through its repaired controller. ROAD-73's read-only audit runs on all 20 final saved
+fixtures with full material validation: **82 spans / 92 nodes / 305,082 vertices**. All publish;
+missing spans, failed nodes, oversized kerb steps, terrain-export failures, section outliers,
+steep source/visible profiles, steep node planes, junction grade conflicts and mouth-height
+discontinuities are all zero. These counts describe independent small fixtures, not a city.
+The Rust suite passes **2,897 tests, 168 ignored**, and Clippy is clean. Rust source is unchanged.
+No benchmark was run or speedup claimed: the repair changes tool picking only, leaving agent
+ticks, local edit planning and road compilation unchanged.
+
+The one windowed Metal run (Godot 4.7.2, Apple M2 Pro) produced **278 PNGs** and closed. Its
+396 diagnostic checks recorded three findings: one dropped slope-underpass bulldoze click,
+one slope-ramp preview refusal and the consequent absent ramp route. The ramp repair and
+400-check headless rerun came afterward; there is **no windowed after capture of that fix**.
+All artifacts are ignored locally in `captures/player_prepr/`: `window-report.json` and
+`window-fixtures/` preserve the window results, `final-headless-report.json` and
+`audit-final-summary.json` describe the repaired fixtures. PNGs retain the original window
+run. The script's exit code checks harness errors; its JSON findings must also be read.
+
+#### Full placement QA handoff
+
+All capture names below are relative to `captures/player_prepr/`. Viewed references are
+`user-2026-10-21/prisma-1.png`, `roundabout-niiralankatu-1.png`,
+`university-underpass-1.png`, and `commons/e_bus_lanes/Ratatie_street_by_Dixi_in_Tikkurila,_Vantaa,_Finland,_2022_April.jpg`
+in the road reference collection. They establish Finnish appearance, not matched synthetic
+layouts. No new visual convention or feature was designed in this check.
+
+| Finding / remaining check | Captures and next acceptance |
+|---|---|
+| **Dropped bulldoze click, still open.** A valid target did not change the roadbed on the first slope-underpass click; a later retry deleted it and undo restored it. The bridge returns `simulation busy` without queuing, and the controller clears its hover without feedback. | `slope_under_bulldoze_ignored_overhead.png`, `slope_under_bulldozed_overhead.png`; reproduce contention and retain/queue the intended deletion with normal revalidation. Do not treat the replay's retry as a fix. |
+| **Ramp origin jump repaired; native after check missing.** The original slope refusal is retained, rather than relabelled as a successful render. | `slope_ramp_final_overhead.png`, `slope_ramp_final_street.png`; repeat actual pointer placement after `a1cbcf6d`. Before/after headless pointer logs and the final complete ramp fixture supply correctness evidence only. |
+| **Local preview visual parity needs a controlled camera.** The zebra preview frame is unmarked while its built frame is marked; camera/terrain residency can invalidate a local preview that this direct replay does not reinstall through continuous Selection hover. Some committed pocket/junction views also lack the lamps seen in the initial road preview. These are observations, not a diagnosed renderer bug. | Compare `flat_t90_zebra_preview_overhead.png` / `flat_t90_zebra_built_overhead.png`, `flat_t90_main_preview_street.png` / `flat_t90_final_street.png`, and the equivalent X45/slope frames. Hold the camera fixed, assert the paired preview is still installed at draw, and compare canonical prop poses before blaming restoration. |
+| **Roundabout reference detail is not accepted.** The 50 m presets have continuous rings and grass centres, but do not reproduce Niiralankatu's splitter/refuge islands and paved entry details. Several generic street frames look from outside an arm. Those details remain with ROAD-62. | `flat_ring3_preview_overhead.png` / `flat_ring3_built_overhead.png`, `slope_ring4_built_overhead.png`, `flat_ring3_final_street.png`; compare with `roundabout-niiralankatu-1.png` from an actual entry. Add compact sizes, replacement junctions and uneven arms in the later QA matrix. |
+| **Structures need close portal/wing views.** Over/Under profiles match their prepared commit geometry, and the compiler audit is clean. Generic overheads and distant street approaches do not accept concrete edges, wing termination, parapets or the university layout. | `flat_over_over_preview_overhead.png` / `flat_over_over_built_overhead.png`, `slope_over_over_built_street.png`, `slope_under_under_built_overhead.png`; take under-deck and portal close-ups against `university-underpass-1.png`. |
+| **Marking/stub polish and broader gestures remain.** Inspected T/X pocket and zebra surfaces are continuous; bus paint is white on ordinary asphalt, matching the Ratatie reference. BUS glyph dimensions, signs, stop-line offsets and refuge details need measured close views. Ramp gore/sign details remain ROAD-69; Prisma's gantries/signals are not represented by the small fixtures. | `flat_x45_pocket_built_overhead.png`, `flat_x90_final_overhead.png`, `flat_bus_final_street.png`, `slope_bus_final_street.png`, `flat_ramp_preview_overhead.png` / `flat_ramp_built_overhead.png`; compare pocket markings with `prisma-1.png`. Later QA must exercise free curves, endpoint dragging, replacements, repeated edits and populated traffic; this pass covers straight strokes and short movement smoke checks. |
+
+#### Commands and checks
+
+Use an isolated Godot profile (`$ISOLATED_PROJECT`), never the player's settings/mods/saves.
+`$ARTIFACTS` below is `captures/player_prepr` in this run. Rust commands run from `rust/`;
+this Mac uses Rust 1.98.1 and `SDKROOT` selecting the installed MacOSX26.5 SDK.
+
+```sh
+cargo build --release
+RAYON_NUM_THREADS=4 cargo test --lib
+cargo test --release --lib --no-run
+cargo clippy --all-targets
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --script res://tests/road_player_prepr_check.gd
+METRUM_RP_POINTER_ONLY=1 perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --script res://tests/road_ramps_test.gd
+# The single capture invocation omitted --headless and set METRUM_PLAYER_CAPTURE=1.
+# For each roads-player-*.sqlite, use its own audit output directory:
+RAYON_NUM_THREADS=4 METRUM_JUNCTION_MESH=1 METRUM_JUNCTION_SAVE="$SAVE" \
+  METRUM_JUNCTION_OUTPUT="$ARTIFACTS/audit-final/$CASE" \
+  "$TEST_BINARY" simulation::save::tests::road_junction_geometry::audit_imported_junction_geometry \
+  --ignored --exact --nocapture
+```
+
+The 23 passing bridge scripts ran individually with the same headless command:
+`road_ramps_test`, `road_roundabouts_test`, `road_cross_section_test`, `road_turn_lanes_test`,
+`road_pockets_test`, `road_pockets_legacy_test`, `road_bus_streetscape_test`,
+`road_trajectory_test`, `road_junction_control_test`, `road_grade_separation_test`,
+`road_filled_underpass_test`, `road_marking_rules_test`, `road_import_features_test`,
+`road_import_profile_test`, `road_junction_preview_test`, `road_preview_stream_test`,
+`road_rejection_report_test`, `road_preview_metrics_test`, `road_benchmark_metrics_test`,
+`network_tool_chunk_renderer_test`, `vehicle_ground_support_test`, `street_lamp_grid_test`,
+and `junction_debug_overlay_test`. Some existing preview suites report ObjectDB/resource
+cleanup warnings on exit despite passing their assertions. `road_university_underpass_test`
+was invoked but refused its required copied-save path guard; its historical reconstruction
+was not run and no player save was opened. Fresh Over/Under and filled-underpass suites passed.
+
 ### Bridge abutment cutout bounds — ROAD-71
 
 A bridge abutment cutout ends at the last contacting section on each endpoint's existing

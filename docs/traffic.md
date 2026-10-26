@@ -811,6 +811,17 @@ changes. Compiler and renderer measurements are not agent-tick performance claim
 exceptions, legacy grade comparisons and fresh acceptance evidence are owned by
 [the ROAD-73 road contract](roads.md#imported-junction-geometry--road-73).
 
+### Player placement smoke check — ROAD-82
+
+The 2026-10-26 [player-tool check](roads.md#player-placement-pre-pr-check--road-82)
+creates the standard set on flat terrain and a 2% slope through player entry points. Final
+headless fixtures all accept a car route and show initial movement; all feature and bulldoze
+undos restore their tested state. This is a movement smoke check, not loaded-junction or
+reservation acceptance. The repaired ramp pointer shares the existing immutable cursor query;
+there is no change to circulation priority, turn rules, NET-07, agent ticks or allocation.
+The original native slope-ramp refusal, one dropped bulldoze click and remaining capture/QA
+limits are listed under ROAD-82. ROAD-81 continues to own import acceptance.
+
 ### ROAD-72 release traffic verification — 2026-10-21
 
 Baseline is `c81d4477`; final source/build identities and road acceptance are in

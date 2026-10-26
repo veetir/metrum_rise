@@ -57,6 +57,13 @@ terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the 
 layout still needs that importer repair
 ([design and acceptance](roads.md#imported-junction-geometry--road-73)).
 
+The light player-tool pre-PR check is complete; full placement QA is **ROAD-82**, separate
+from ROAD-81. A ramp click could jump to the origin during a busy surface query; it now uses
+the roundabout's immutable picker. The repaired flat/2% slope matrix passes 400 checks, and
+20 ROAD-73 fixture audits have zero fault signatures. One native window supplied 278 captures;
+a dropped bulldoze click and visual parity/detail follow-ups remain open. Fresh 2,897 Rust
+tests, 23 bridge suites and Clippy pass. [Evidence and handoff](roads.md#player-placement-pre-pr-check--road-82).
+
 The historical ROAD-76 importer is tracked as ROAD-81. Rebased onto upstream-sync
 `cc038ea8` including the t32 preview fix, it produces the new **diagnostic**
 `kuopio-sw-v3.sqlite` full OSM/DEM road/path import, with provenance and 31 matched view
