@@ -1029,3 +1029,5 @@ fn zebra_preview_add_remove_matches_committed_neighborhood() {
         }
     }
 }
+
+mod legacy_baseline;
