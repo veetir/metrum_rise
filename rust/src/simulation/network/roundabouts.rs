@@ -201,7 +201,12 @@ impl RoundaboutLayout {
             let halo = Vector3::new(half + 24.0, 0.0, half + 24.0);
             for id in graph.get_edges_near_aabb(min - halo, max + halo) {
                 let other = graph.edge(id);
-                if other.deleted || self.originals.iter().any(|(original, _)| *original == id) {
+                // Layered overlaps are checked against actual compiled bands after
+                // the layout's junction/profile solve, including deck depth and kerbs.
+                if other.deleted
+                    || other.crossing_level != edge.crossing_level
+                    || self.originals.iter().any(|(original, _)| *original == id)
+                {
                     continue;
                 }
                 let gap = half + RoadSurfaceSystem::visual_roadbed_half_width_m(other);

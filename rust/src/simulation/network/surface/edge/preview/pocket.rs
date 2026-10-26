@@ -205,6 +205,15 @@ impl RoadSurfaceSystem {
             );
             return Err("surface_geometry_invalid");
         }
+        // Presets change whole corridors too. Validate their final sampled bands
+        // with the ordinary edit-time clearance authority before publishing preview.
+        for &id in &required {
+            if let Some(validation) =
+                surface.crossing_clearance_violation(&graph, id, &graph, &HashSet::from([id]))
+            {
+                return Err(validation.invalid_reason);
+            }
+        }
         let replaced_nodes: HashSet<u32> = nodes
             .iter()
             .filter_map(|(&source, &local)| {
