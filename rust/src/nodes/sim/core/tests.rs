@@ -662,6 +662,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             enqueued_at: None,
@@ -906,6 +907,7 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             enqueued_at: None,
@@ -966,6 +968,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             enqueued_at: None,
@@ -2886,6 +2889,7 @@ fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click()
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 enqueued_at: None,
@@ -2937,6 +2941,7 @@ fn preview_terrain_revisions_keep_unchanged_plain_patches_across_poses() {
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 enqueued_at: None,
@@ -2991,6 +2996,7 @@ fn benchmark_road_preview_modes() {
             let preview = super::road_preview::compile_road_preview_with_sites(
                 &context,
                 RoadPreviewRequest {
+                    tunnel: false,
                     crossing_level: 0,
                     median: None,
                     enqueued_at: None,

@@ -24,6 +24,13 @@ impl SimulationNode {
         }
     }
 
+    /// Selects a tunnel profile without using the crossing layer to infer structure.
+    /// Grounded endpoints retain the submitted interior heights in all validation paths.
+    #[func]
+    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
+        self.road_tool_tunnel = tunnel;
+    }
+
     /// Selects an explicit crossing layer; higher layers must pass above lower layers.
     #[func]
     pub fn set_road_tool_crossing_level(&mut self, level: i32) -> GString {
@@ -304,6 +311,7 @@ impl SimulationNode {
         let send_ok = self
             .cmd_tx
             .send(crate::nodes::sim::core::SimCommand::AddRoad {
+                tunnel: self.road_tool_tunnel,
                 crossing_level: self.road_tool_crossing_level,
                 median: self.road_tool_median,
                 points,
@@ -734,7 +742,10 @@ impl SimulationNode {
             result.set("detail", reason);
             return result;
         }
-        let Some(patches) = terrain.as_ref().and_then(|terrain| terrain.preview_patches()) else {
+        let Some(patches) = terrain
+            .as_ref()
+            .and_then(|terrain| terrain.preview_patches())
+        else {
             result.set("is_valid", false);
             result.set("is_pending", false);
             result.set(

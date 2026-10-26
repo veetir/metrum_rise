@@ -259,6 +259,8 @@ pub struct SimulationNode {
     /// Current editor selection, copied into every immutable preview and commit request.
     /// Current crossing layer, captured by preview and commit submission.
     pub(crate) road_tool_crossing_level: i16,
+    /// Explicit tunnel profile intent copied into preview and commit requests.
+    pub(crate) road_tool_tunnel: bool,
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
     pub(crate) road_commit_result:
@@ -533,6 +535,7 @@ impl INode3D for SimulationNode {
             road_commit_request_id: 0,
             pocket_preview_revision: 0,
             road_tool_crossing_level: 0,
+            road_tool_tunnel: false,
             road_tool_median: None,
             road_commit_result: None,
             road_preview_tx,

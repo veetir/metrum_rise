@@ -1044,6 +1044,7 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         surface_query: Arc::new(Default::default()),
         span_owned_regions: Arc::new(Vec::new()),
         edge_class: EdgeClass::Standard,
+        exterior_ranges: None,
         start_mouth_profile: None,
         end_mouth_profile: None,
         start_terrain_clip_node: false,

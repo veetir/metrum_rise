@@ -31,6 +31,7 @@ fn build(
 ) {
     let result = core.commit_road(
         RoadCommitRequest {
+            tunnel: false,
             crossing_level: level,
             median: None,
             points,
@@ -107,6 +108,7 @@ fn preview_commit_and_reverse_build_order_keep_the_crossing_unrelated() {
                 let plan = RoadEditPlan::compile_road(
                     &core,
                     RoadPreviewRequest {
+                        tunnel: false,
                         crossing_level: 1,
                         median: None,
                         enqueued_at: None,
@@ -162,6 +164,7 @@ fn stale_preview_layer_is_rebuilt_and_insufficient_clearance_is_atomic() {
     let mut core = fixture();
     build(&mut core, lower(), 1, 0, None);
     let request = |height, level| RoadPreviewRequest {
+        tunnel: false,
         crossing_level: level,
         median: None,
         enqueued_at: None,
@@ -182,6 +185,7 @@ fn stale_preview_layer_is_rebuilt_and_insufficient_clearance_is_atomic() {
     let history = core.undo_stack.len();
     let result = core.commit_road(
         RoadCommitRequest {
+            tunnel: false,
             crossing_level: 1,
             median: None,
             points: upper(5.0),

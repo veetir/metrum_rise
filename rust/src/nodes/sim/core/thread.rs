@@ -49,6 +49,8 @@ pub(crate) enum SimCommand {
     AddRoad {
         /// Authored crossing layer captured at submission.
         crossing_level: i16,
+        /// Preserve the authored buried profile instead of following source terrain.
+        tunnel: bool,
         /// Authored median selection captured at submission.
         median: Option<crate::simulation::network::graph::RoadMedian>,
         /// World-space polyline points.
@@ -313,6 +315,7 @@ pub(crate) fn run_sim_thread(
                     }
                 }
                 Ok(SimCommand::AddRoad {
+                    tunnel,
                     crossing_level,
                     median,
                     points,
@@ -350,6 +353,7 @@ pub(crate) fn run_sim_thread(
                         );
                         c.commit_road(
                             RoadCommitRequest {
+                                tunnel,
                                 crossing_level,
                                 median,
                                 points,

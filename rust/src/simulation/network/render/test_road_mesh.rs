@@ -2537,7 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tunnel_surface_only_renders_portals() {
+    fn test_tunnel_pavement_renders_inside_the_bore() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -2589,7 +2589,10 @@ mod tests {
 
         assert!(left_portal >= 0.2);
         assert!(right_portal >= 0.2);
-        assert!(buried_center <= 0.05);
+        assert!(
+            buried_center >= 0.95,
+            "interior pavement must be present below the closed terrain roof"
+        );
     }
 
     #[test]

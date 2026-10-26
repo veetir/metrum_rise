@@ -124,6 +124,7 @@ fn assets_installed(core: &mut SimCore) {
 fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
     let outcome = core.commit_road(
         RoadCommitRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             points: vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
@@ -403,6 +404,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         Vector3::new(-300.0, 0.0, 400.0),
     ];
     assert!(road_preview.submit(RoadPreviewRequest {
+        tunnel: false,
         crossing_level: 0,
         median: None,
         enqueued_at: None,
@@ -426,6 +428,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
             completion: cell_done,
         },
         SimCommand::AddRoad {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             points,

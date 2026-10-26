@@ -208,7 +208,11 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            for quad in piece.road_surface_polygons() {
+            for region in piece.span_owned_regions.iter().filter(|region| {
+                piece.region_is_exterior(region)
+                    && region.owner().kind == super::super::RoadSurfaceBandKind::Carriageway
+            }) {
+                let quad = piece.region_quad(region);
                 Self::visit_surface_triangles(quad.triangles().iter().copied(), &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
@@ -353,7 +357,11 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_id) else {
                 continue;
             };
-            for region in piece.span_owned_regions.iter() {
+            for region in piece
+                .span_owned_regions
+                .iter()
+                .filter(|region| piece.region_is_exterior(region))
+            {
                 let carriageway =
                     region.owner().kind == super::super::RoadSurfaceBandKind::Carriageway;
                 for triangle in piece.region_quad(region).triangles() {
@@ -513,7 +521,7 @@ impl RoadSurfaceTriangleQueryIndex {
             &self.grid,
             point,
             |item| (self.triangles[item as usize], false),
-            |_, _| true,
+            |_, _, _| true,
         )
     }
 }
@@ -528,7 +536,7 @@ impl RoadSurfaceVisualSpanPiece {
             &self.surface_query,
             point,
             |item| self.surface_query_triangle(item),
-            |_, carriageway| !carriageway_only || carriageway,
+            |_, _, carriageway| !carriageway_only || carriageway,
         )
     }
 
@@ -540,7 +548,10 @@ impl RoadSurfaceVisualSpanPiece {
             &self.surface_query,
             point,
             |item| self.surface_query_triangle(item),
-            |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+            |item, triangle, _| {
+                self.query_item_is_exterior(item)
+                    && RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle)
+            },
         )
     }
 }
@@ -555,7 +566,7 @@ impl RoadSurfaceVisualNodePiece {
             &self.surface_query,
             point,
             |item| self.surface_query_triangle(item),
-            |_, carriageway| !carriageway_only || carriageway,
+            |_, _, carriageway| !carriageway_only || carriageway,
         )
     }
 
@@ -567,7 +578,7 @@ impl RoadSurfaceVisualNodePiece {
             &self.surface_query,
             point,
             |item| self.surface_query_triangle(item),
-            |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+            |_, triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
         )
     }
 }
@@ -578,12 +589,12 @@ fn sample_grid_height(
     grid: &SurfaceTriangleGrid,
     point: RoadVec2,
     triangle: impl Fn(u32) -> ([RoadVec3; 3], bool),
-    accepts: impl Fn([RoadVec3; 3], bool) -> bool,
+    accepts: impl Fn(u32, [RoadVec3; 3], bool) -> bool,
 ) -> Option<f32> {
     let mut height = None;
     for &item in grid.cell_items(point) {
         let (triangle, carriageway) = triangle(item);
-        if !accepts(triangle, carriageway) {
+        if !accepts(item, triangle, carriageway) {
             continue;
         }
         if let Some(height_m) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point) {
@@ -925,7 +936,7 @@ mod tests {
                 &grid,
                 point,
                 |item| (triangles[item as usize], false),
-                |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+                |_, triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
             )
         };
         for point in [

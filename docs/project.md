@@ -6,6 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-61 short tunnels are in progress: explicit tool intent preserves grounded-end buried
+profiles, and continuous buried pavement publishes independently from exterior/terrain support.
+Concrete portals, player controls and acceptance remain open ([owning contract](roads.md#short-road-tunnels--road-61-diagnosis-fix-planned)).
+
 ROAD-83/84 **slice A** is implemented on `feat/road-structure-design`: road-owned cold layout,
 detail/revision, class/access/override and extent tables; immutable interning and semantic queries;
 lockstep split/remap/excerpt/preview/undo; deterministic validated **v110** saves with historical

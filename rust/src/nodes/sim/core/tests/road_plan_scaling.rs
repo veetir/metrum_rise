@@ -610,6 +610,7 @@ fn measure_populated_road_plan_scaling(
         let mut frame_checks_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             enqueued_at: None,

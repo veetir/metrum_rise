@@ -76,7 +76,11 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for region in piece.span_owned_regions.iter() {
+        for region in piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| piece.region_is_exterior(region))
+        {
             Self::visit_surface_triangles(
                 piece.region_quad(region).triangles().iter().copied(),
                 visitor,

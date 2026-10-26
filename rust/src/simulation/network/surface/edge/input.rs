@@ -227,6 +227,42 @@ impl RoadSurfaceSystem {
         }
     }
 
+    /// Explicit structural intent preserves every authored height, including grounded ends.
+    /// O(P) input work; ordinary road preparation retains its legacy solver unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_road_input_for_tool_with_tunnel(
+        raw: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        surface: &RoadSurfaceSystem,
+        snap: bool,
+        level: i16,
+        tunnel: bool,
+    ) -> PreparedRoadInput {
+        if tunnel {
+            let mut points = raw.to_vec();
+            points.dedup();
+            if snap && points.len() >= 2 {
+                for index in [0, points.len() - 1] {
+                    // Only an authored coincident joint may move a structural endpoint.
+                    if let Some(id) = graph.find_node_within(points[index], 0.05) {
+                        points[index] = graph.node(id).pos;
+                    }
+                }
+            }
+            return PreparedRoadInput {
+                crossing_level: level,
+                median: None,
+                validation_points: points.clone(),
+                points,
+                class: EdgeClass::Tunnel,
+                endpoint_snap_enabled: snap,
+                extension: None,
+            };
+        }
+        Self::prepare_road_input_for_tool_at_level(raw, terrain, graph, surface, snap, level)
+    }
+
     /// Prepares authored grade-separated profiles without snapping their interior to the upper road.
     /// Default-level neighborhoods retain the existing solver and exact legacy arithmetic.
     pub(crate) fn prepare_road_input_for_tool_at_level(

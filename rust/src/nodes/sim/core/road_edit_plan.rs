@@ -61,13 +61,14 @@ impl RoadEditPlan {
     /// Builds the same local road solution as the worker without cloning the resident city.
     pub(crate) fn compile_road(core: &SimCore, request: RoadPreviewRequest) -> Self {
         use crate::simulation::network::surface::RoadSurfaceSystem;
-        let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
             &request.points,
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.road_surface,
             request.snap_to_existing_roads,
             request.crossing_level,
+            request.tunnel,
         );
         prepared.median = request.median;
         let (preview, reuse, _, topology) = core
@@ -416,6 +417,11 @@ impl RoadEditPlan {
         self.road.prepared.crossing_level
     }
 
+    /// Structural profile intent pinned to this request, separately from topology.
+    pub(crate) fn tunnel(&self) -> bool {
+        self.road.request.tunnel
+    }
+
     /// Median selected by this immutable request; part of commit/preview identity.
     pub(crate) fn median(&self) -> Option<crate::simulation::network::graph::RoadMedian> {
         self.road.prepared.median
@@ -463,6 +469,7 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 enqueued_at: None,
@@ -517,6 +524,7 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 enqueued_at: None,

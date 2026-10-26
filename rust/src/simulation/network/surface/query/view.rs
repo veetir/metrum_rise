@@ -318,7 +318,8 @@ impl RoadSurfaceSystem {
         let bounds = CellBounds::from_points(*cell);
         let bounds = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y];
         piece.surface_query.items_in_bounds(bounds).any(|item| {
-            Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
+            piece.query_item_is_exterior(item)
+                && Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
         })
     }
 

@@ -15,6 +15,7 @@ fn compile_preview(core: &SimCore, request_id: u64) -> RoadPreviewSnapshot {
     super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
             crossing_level: 0,
             median: None,
             enqueued_at: None,
@@ -147,6 +148,7 @@ fn code_17_four_way_preview_stream_keeps_live_validation_local_and_commit_exact(
         let preview = super::super::road_preview::compile_road_preview_from_context(
             &context,
             RoadPreviewRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 enqueued_at: None,

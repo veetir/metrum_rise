@@ -26,6 +26,8 @@ use godot::prelude::Vector3;
 pub(crate) struct RoadCommitRequest {
     /// Authored crossing layer, captured in exact preview/commit identity.
     pub(crate) crossing_level: i16,
+    /// Explicit tunnel profile selection; independent of crossing topology.
+    pub(crate) tunnel: bool,
     /// Authored median selection captured with this input.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// World-space polyline points.
@@ -97,6 +99,7 @@ impl SimCore {
         mut edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
         let RoadCommitRequest {
+            tunnel,
             crossing_level,
             median,
             points,
@@ -115,6 +118,7 @@ impl SimCore {
         record_crash_phase_for_core(self, "add road preview plan validation");
         let edit_plan = edit_plan.filter(|plan| {
             plan.crossing_level() == crossing_level
+                && plan.tunnel() == tunnel
                 && plan.median() == median
                 && plan
                     .prepared_input_for(
@@ -137,6 +141,7 @@ impl SimCore {
             let road_plan = Arc::new(RoadEditPlan::compile_road(
                 self,
                 RoadPreviewRequest {
+                    tunnel,
                     crossing_level,
                     median,
                     enqueued_at: None,
@@ -368,6 +373,7 @@ mod tests {
         ];
         let outcome = core.commit_road(
             RoadCommitRequest {
+                tunnel: false,
                 crossing_level: 0,
                 median: None,
                 points: points.clone(),
@@ -431,6 +437,7 @@ mod tests {
             let median = RoadMedian::from_tool(style, width).unwrap();
             let first = core.commit_road(
                 RoadCommitRequest {
+                    tunnel: false,
                     crossing_level: 0,
                     points: vec![
                         Vector3::new(-100.0, 0.0, 0.0),
@@ -449,6 +456,7 @@ mod tests {
             assert!(core.change_road_cross_section(0, 2, 2, median));
             let crossing = core.commit_road(
                 RoadCommitRequest {
+                    tunnel: false,
                     crossing_level: 0,
                     points: vec![Vector3::new(0.0, 0.0, -90.0), Vector3::new(0.0, 0.0, 90.0)],
                     fwd_lanes: 1,

@@ -88,6 +88,9 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub(in crate::simulation::network::surface) surface_query: Arc<SurfaceTriangleGrid>,
     pub(crate) span_owned_regions: Arc<Vec<RoadSurfaceSpanOwnedRegion>>,
     pub(crate) edge_class: EdgeClass,
+    // Tunnel pavement is continuous inside the bore. Only these endpoint ranges may
+    // participate in exterior picking, vegetation clearance and surface zoning.
+    pub(crate) exterior_ranges: Option<Box<[(usize, usize)]>>,
     pub(crate) start_mouth_profile: Option<IncidentMouthProfile>,
     pub(crate) end_mouth_profile: Option<IncidentMouthProfile>,
     /// Whether the start node footprint belongs to a grounded bridge abutment cutout.
@@ -143,6 +146,7 @@ impl RoadSurfaceVisualSpanPiece {
             surface_query: Arc::clone(&self.surface_query),
             span_owned_regions: Arc::clone(&self.span_owned_regions),
             edge_class: self.edge_class,
+            exterior_ranges: self.exterior_ranges.clone(),
             start_mouth_profile: self.start_mouth_profile.clone(),
             end_mouth_profile: self.end_mouth_profile.clone(),
             start_terrain_clip_node: self.start_terrain_clip_node,
@@ -307,6 +311,26 @@ impl RoadSurfaceSpanOwnedRegion {
 }
 
 impl RoadSurfaceVisualSpanPiece {
+    // At most two portal ranges; O(1), allocation-free and independent of city size.
+    pub(in crate::simulation::network::surface) fn region_is_exterior(
+        &self,
+        region: &RoadSurfaceSpanOwnedRegion,
+    ) -> bool {
+        self.exterior_ranges.as_ref().is_none_or(|ranges| {
+            ranges.iter().any(|&(a, b)| {
+                let station = region.start_section_index();
+                station >= a && station < b
+            })
+        })
+    }
+
+    pub(in crate::simulation::network::surface) fn query_item_is_exterior(
+        &self,
+        item: u32,
+    ) -> bool {
+        self.region_is_exterior(&self.span_owned_regions[(item >> 1) as usize])
+    }
+
     // Retained lists are built by pushing; drop their spare capacity once, at publication size.
     fn shrink_retained(&mut self) {
         self.outer_boundary_loops.shrink_to_fit();
@@ -456,6 +480,17 @@ impl RoadSurfaceSystem {
         let visible_ranges_start = road_debug.then(Instant::now);
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, &sections);
+        let exterior_ranges =
+            (edge.class == EdgeClass::Tunnel).then(|| visible_ranges.clone().into_boxed_slice());
+        // A buried span still owns physical pavement and lane support. Terrain support
+        // remains limited to the separate portal ranges below.
+        let visible_ranges = if edge.class == EdgeClass::Tunnel {
+            self.visible_corridor_index_range_for_edge(graph, edge_idx, &sections)
+                .into_iter()
+                .collect()
+        } else {
+            visible_ranges
+        };
         let visible_ranges_ms = elapsed_ms(visible_ranges_start);
         let visible_geometry_start = road_debug.then(Instant::now);
         let mut visible_regions = self.resolve_span_regions_for_ranges(
@@ -626,6 +661,7 @@ impl RoadSurfaceSystem {
             surface_query: Arc::default(),
             span_owned_regions,
             edge_class: edge.class,
+            exterior_ranges,
             start_mouth_profile,
             end_mouth_profile,
             start_terrain_clip_node,

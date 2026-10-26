@@ -3856,10 +3856,10 @@ coverage deliberately hides buried top surfaces; it does not prove a usable, lin
 portal. The mixed-depth probe's zero concrete output confirms that missing structure in this
 fixture, but does not diagnose every terrain/rendering failure in the original player report.
 
-Leave the fix planned: explicit structural/profile intent, a distinction between an entirely
+The fix is in progress. Explicit structural/profile intent, a distinction between an entirely
 buried valid road and missing surface geometry, paired quick/exact refusal rules, and actual
-portal/terrain-cut ownership belong together. Do not use a crossing-layer number as an implicit
-tunnel-mode workaround, or change old saved geometry on load. The original player tunnel case
+portal/terrain-cut ownership belong together. A crossing-layer number is not tunnel intent;
+old saved physical profiles must not be re-solved on load. The original player tunnel case
 has not been loaded/reproduced. The local probe and JSON results remain in `$ARTIFACTS`;
 they create only fresh blank worlds and never read or write player saves.
 
@@ -3868,6 +3868,17 @@ METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_ROADS_C_TUNNEL_OUTPUT="$ARTIFACTS/tunn
   perl -e 'alarm 900; exec @ARGV' godot --headless --path godot \
   --script "$ARTIFACTS/roads_c_tunnel_probe.gd"
 ```
+
+**Backend checkpoint — 2026-10-26.** Tool requests now carry explicit tunnel intent independently
+of crossing level, pinning it through quick preparation, async preview, stale-result rejection
+and exact commit. With that intent, grounded endpoints preserve every authored interior height;
+ordinary tool requests retain the old profile solver. A tunnel span publishes continuous physical
+pavement even if entirely buried. Its separate exterior ranges bound picking, surface zoning
+and vegetation clearance; terrain support remains portal-only, and lane-height queries can use
+the bore pavement. This adds O(P) authoring work and at most two O(1) exterior-range tests per
+local triangle-grid candidate, with no per-agent/tick change or new spatial index. The existing
+saved `EdgeClass::Tunnel` and physical geometry carry committed intent; no schema changes.
+Concrete portals, the player selector, native captures and performance acceptance are still open.
 
 ### Straight cross-section transitions — ROAD-70
 

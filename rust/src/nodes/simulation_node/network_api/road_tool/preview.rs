@@ -42,13 +42,14 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
                 self.road_tool_crossing_level,
+                self.road_tool_tunnel,
             );
             prepared_input.median = self.road_tool_median;
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
@@ -161,13 +162,14 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
                 self.road_tool_crossing_level,
+                self.road_tool_tunnel,
             );
             prepared_input.median = self.road_tool_median;
             let new_edge_validation = query.road_surface.validate_prepared_road_surface(
@@ -359,6 +361,7 @@ impl SimulationNode {
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
         let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            tunnel: self.road_tool_tunnel,
             crossing_level: self.road_tool_crossing_level,
             median: self.road_tool_median,
             enqueued_at: None,
@@ -427,6 +430,7 @@ impl SimulationNode {
         };
         if preview.request_id != request_id
             || preview.crossing_level != self.road_tool_crossing_level
+            || preview.tunnel != self.road_tool_tunnel
         {
             return Variant::nil();
         }
@@ -472,6 +476,7 @@ impl SimulationNode {
         let mut terrain_patches = None;
         dict.set("include_terrain", preview.include_terrain);
         dict.set("crossing_level", i32::from(preview.crossing_level));
+        dict.set("tunnel", preview.tunnel);
         let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
         dict.set("plan_state", if valid { "provisional" } else { "invalid" });
         // Present only for a plan whose stroke is still valid after the corridor checks.
