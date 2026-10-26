@@ -393,6 +393,24 @@ class RoadFeatureIntegrationTest(unittest.TestCase):
         self.assertEqual(arm['points'], [(0, 0), (30, 0), (60, 0)])
         self.assertEqual(arm['node_ids'][1:], ['out', 'far'])
 
+    def test_split_ring_arm_recovers_name_only_from_exact_opposing_source_pair(self):
+        circle = feature('ring', [(10, 0), (0, 10), (-10, 0), (0, -10), (10, 0)],
+                         ['a', 'b', 'c', 'd', 'a'], roundabout=True)
+        for joint in ('outside', 'other'):
+            arms = [feature('out', [(0, 10), (0, 40)], ['b', 'outside'],
+                            road_class='tertiary', name='Street', oneway=1),
+                    feature('in', [(0, 40), (10, 0)], [joint, 'a'],
+                            road_class='tertiary', oneway=1)]
+            roads = list(map(road, arms))
+            collapse_roundabouts([circle], roads, {})
+            self.assertEqual(arms[1]['properties']['name'], 'Street' if joint == 'outside' else '')
+            if joint == 'outside':
+                merged, _ = conflate(roads, {})
+                self.assertEqual(len(merged), 1)
+                self.assertEqual((merged[0][1]['fwd_lanes'], merged[0][1]['bkw_lanes']), (1, 1))
+                self.assertEqual(set(merged[0][0]['source_ids']), {'out', 'in'})
+                self.assertIn((0, 0), merged[0][0]['points'])
+
     def test_open_and_cycle_rings_do_not_move_car_approaches(self):
         open_ring = feature('open', [(0, 0), (20, 0), (20, 20)], ['a', 'b', 'c'], roundabout=True)
         cycle = feature('cycle', [(0, 0), (20, 0), (20, 20), (0, 0)], ['a', 'b', 'c', 'a'], roundabout=True, road_class='cycleway')

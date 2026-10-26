@@ -70,6 +70,32 @@ def collapse_roundabouts(features, roads, decisions):
                       'imported_lanes': 1,
                       'remaining': 'two_lane_entry_selection_and_spiral_exits' if any(
                           (f['properties'].get('lanes') or 1) > 1 for f in fs) else ''})
+    # A split entry/exit may have a name on only one source way. Its two
+    # directed arms share an exact outside convergence and the same source ring;
+    # retain that identity before conflation, rather than overlaying both ways
+    # after their ring endpoints are moved to the centre.
+    approaches = defaultdict(list)
+    for f, m in roads:
+        if m['action'] != 'road' or not f['properties'].get('oneway'):
+            continue
+        ids = f['node_ids'][::f['properties']['oneway']]
+        for end in (0, -1):
+            if ids[end] in remap and ids[~end] not in remap:
+                p = f['properties']
+                key = (remap[ids[end]][0], ids[~end], p['road_class'],
+                       p.get('layer', 0), p.get('bridge', False), p.get('tunnel', False))
+                approaches[key].append((f, end))
+    for arms in approaches.values():
+        if len(arms) != 2 or arms[0][1] == arms[1][1]:
+            continue
+        identities = {f['properties'].get('name') or f['properties'].get('ref') for f, _ in arms}
+        identities.discard('')
+        identities.discard(None)
+        if len(identities) == 1:
+            identity = next(iter(identities))
+            for f, _ in arms:
+                if not (f['properties'].get('name') or f['properties'].get('ref')):
+                    f['properties']['name'] = identity
     for f, m in roads:
         if m['action'] != 'road':
             continue
