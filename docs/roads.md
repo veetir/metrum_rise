@@ -1089,7 +1089,7 @@ clear pavement, `C` = cycle path, `J` = combined walking/cycling path, `V` = ver
 | Main road / päätie, rural | 80; 1+1 × 3.5 | Both: S 1.5 + V 1 + D 2 | No automatic frontage (explicit access possible); motor, walking/cycling on eligible shoulder unless motorroad restriction; no parking | Main-route priority proposal; speed and priority/yield at real junctions; motorroad signs only with that explicit restriction |
 | Main street / pääkatu (same class, urban preset) | 50; 1+1 × 3.5 | Both: K + V 1 + J 3.5 | Frontage off by default, can enable; motor plus path modes; parking off, eligible at ≤50 | Main-route priority proposal; speed, priority and path signs |
 | Collector / kokoojakatu | 40; 1+1 × 3.25 | Left K + W 2.5; right K + V 1 + J 3.5 | Frontage on; motor plus provisioned foot/cycle; parking off, eligible | Collector priority below main, above local; speed and path signs; yield on subordinate arms |
-| Local/residential / tonttikatu | 30; 1+1 × 3.0 | Both: K + W 2 | Frontage on; motor/foot, future cycles in carriageway; parking eligible, off by default | Equal local junctions yield to right; speed/zone entry, no automatic priority signs on equal arms |
+| Local/residential / tonttikatu | 40 (town-centre preset 30); 1+1 × 3.0, no centre line | Right: K + W 2.5; left: K only (town-centre/apartment preset: both K + W 2.5) | Frontage on; motor/foot, future cycles in carriageway; kerbside parking permitted on the carriageway | Equal local junctions yield to right; speed/zone entry, no automatic priority signs on equal arms |
 | Service / huoltotie | 20; 1+1 × 2.75 | Both: S 1, explicitly foot-traversable | Frontage on; motor/foot, future cycles in carriageway; parking eligible, off | Subordinate access; speed/access signs only as authored; yield at street exit |
 | Pedestrian way | Walking pace; no motor lanes | One 2.5 m W surface, 0.25 m support shoulder each side | Foot frontage allowed, no car access; foot only; no parking | Pedestrian-path sign; no vehicle hierarchy |
 | Cycle way | No motor speed; no motor lanes | One 3 m two-way C surface, 0.25 m support shoulders | No frontage; cycle only; no parking | Cycle-path sign, explicit crossing control |
@@ -1464,18 +1464,21 @@ does not need the long `agent_benchmark`. Every Rust slice runs relevant unit/in
 regressions and all-target Clippy; bridge/visual QA belongs to implementation acceptance.
 These are future gates: no tests, builds or benchmarks were run for this documentation change.
 
-### Player decisions still open
+### Player decisions (2026-10-26)
 
-1. **Local-street feel:** keep two 3 m lanes and sidewalks on both sides by default, or favor
-   narrower shared residential space? **Recommend the former now**, with a later explicit
-   shared-space preset when pedestrian priority/passing behavior exists; never fake it by
-   drawing two lanes inside a single-lane street.
-2. **Collector character:** default to a combined path on one side, or segregated cycling on
-   both sides? **Recommend one combined side** for the initial Kuopio palette, with a prominent
-   two-sided segregated preset; both use the same data model.
-3. **Parking visibility before the mechanic:** should new local roads start with parking?
-   **Recommend off by default**, optional explicit strips now, stall visuals/capacity in ROAD-86,
-   and no occupancy or parking-search effect until TRAFFIC-10 is agreed.
+1. **Local streets:** a 6 m carriageway (two 3 m lanes, no centre line) with a 2.5 m sidewalk
+   on one side, at 40 km/h. Finnish local-street plans commonly use a 6 m carriageway with one
+   sidewalk ([Espoo, Finnoonpuro](https://espoo-sv.oncloudos.com/kokous/2021293-5-48550.PDF),
+   [Espoo, Kalasääksentie](https://espoo-sv.oncloudos.com/kokous/20231036-6-219056.PDF)), and
+   [Kuopio uses 40 and 30 km/h](https://www.kuopio.fi/en/environment-and-housing/transport/traffic-safety/speed-limits/)
+   in residential areas with 30 in the centre. A town-centre preset uses 30 km/h and sidewalks on
+   both sides. A shared-space preset waits for pedestrian priority and passing behaviour.
+2. **Collectors:** a 2.5 m sidewalk on one side and a 3.5 m combined walking-and-cycling path on
+   the other, the common Finnish collector layout; a two-sided segregated preset is offered.
+3. **Parking:** permitted by default. Finnish law allows parking at the kerb unless signs forbid
+   it, so local streets and collectors carry a parking permission on the carriageway edge with no
+   extra width (parked cars then narrow the street once `TRAFFIC-10` exists). Marked parking
+   strips and bays stay optional authored strips; `ROAD-86` adds stalls and capacity.
 
 ## Roadbed Model
 
