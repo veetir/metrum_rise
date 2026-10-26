@@ -6,6 +6,7 @@ use super::super::road_commit::RoadCommitRequest;
 use super::super::road_edit_plan::RoadEditPlan;
 use super::*;
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+use crate::simulation::network::surface::RoadSurfaceSystem;
 use std::time::Instant;
 
 fn fixture() -> SimCore {
@@ -291,5 +292,32 @@ fn raised_crossing_connects_to_ordinary_straight_approaches_at_authored_endpoint
                 TransitFlags::CAR
             )
             .is_none()
+    );
+}
+
+#[test]
+fn source_ground_approach_to_a_deck_terminal_keeps_mixed_earthworks() {
+    let mut core = fixture();
+    build(&mut core, upper(6.0), 1, 1, None);
+    let raw = vec![
+        Vector3::new(0.0, 0.0, -200.0),
+        Vector3::new(0.0, 0.0, -140.0),
+        Vector3::new(0.0, 6.0, -80.0),
+    ];
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &raw,
+        &core.heightmap,
+        &core.region_graph,
+        &core.transit_network.road_surface,
+        true,
+        0,
+    );
+    assert_eq!(prepared.class, EdgeClass::Standard);
+    assert_eq!(prepared.points, raw);
+    build(&mut core, raw, 1, 0, None);
+    assert_eq!(core.region_graph.edge(1).class, EdgeClass::Standard);
+    assert_eq!(
+        core.region_graph.edge(0).start_node,
+        core.region_graph.edge(1).end_node
     );
 }

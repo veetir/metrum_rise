@@ -350,9 +350,28 @@ impl RoadSurfaceSystem {
                     || (snap && open_cut_joint(**p))
             })
         });
-        let class = if different_layer && grounded_ends {
+        let grounded_bridge_approach = snap
+            && Self::terminal_bridge_transition_endpoint(&points, terrain, graph).is_some_and(
+                |end| {
+                    let point = match end {
+                        TerminalExtensionEndpoint::Start => points[0],
+                        TerminalExtensionEndpoint::End => *points.last().unwrap(),
+                    };
+                    graph.find_node_within(point, 0.05).is_some_and(|node| {
+                        graph.node_adjacency(node).iter().any(|&id| {
+                            let edge = graph.edge(id);
+                            !edge.deleted
+                                && edge.class == EdgeClass::Bridge
+                                && edge.crossing_level != level
+                        })
+                    })
+                },
+            );
+        let class = if different_layer && (grounded_ends || grounded_bridge_approach) {
             // Ground-to-ground crossings own a mixed cut/fill corridor. The compiled
             // opening supplies its structure; hills along the approaches are not tunnels.
+            // An exact deck terminal is also support for a ground approach. Its raised
+            // joint must not classify the entire terrain-following approach as a bridge.
             EdgeClass::Standard
         } else if points.iter().any(|p| {
             p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE > PREVIEW_CLEARANCE_M
