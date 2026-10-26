@@ -1101,6 +1101,25 @@ by itself prove motorway restrictions. Bus-only is lane use, not a class. Rounda
 and use an explicit speed capped at 60 until ROAD-85 supplies their design. An isolated
 cycle-only way has no walk lane today; do not misrepresent it as `FOOT` just to make it routable.
 
+**Rural network (`ROAD-87`, later extension).** Most Finnish road length is outside towns:
+public roads (*maantie*: *valtatie*, *kantatie*, *seututie*, *yhdystie*), private roads
+(*yksityistie*) and forest roads (*metsäautotie*), much of it gravel. The rural main-road
+preset above covers only the paved upper end. The model must leave room for:
+- **Surface as a cross-section attribute**, not a class: asphalt, oil gravel and gravel. A
+  gravel road has no kerbs or longitudinal markings, a crowned profile, and shoulders and
+  ditches from the strip list; gravel can also lower the default speed and add a routing cost.
+- **Lower rural classes**, below the rural main road: *seututie*/*yhdystie* (narrow paved or
+  gravel, 60–80 km/h), private road and forest road, with OSM mapping from `highway=unclassified`/
+  `tertiary` outside built-up areas, `highway=track` with `tracktype`, `surface=*`,
+  `access=private`/`forestry`.
+- **Single-lane two-way roads.** Forest and many private roads are one ~3.5–4 m lane used in
+  both directions, with passing places (*kohtaamispaikka*) and turning places at road ends.
+  This needs single-lane two-way traffic behaviour, so the importer refuses or flags these
+  until it exists (see the `lanes` row of the import mapping).
+
+None of this changes the slices below; `ROAD-87` adds presets, the surface attribute and the
+single-lane behaviour on the same strip model.
+
 Class presets are immutable catalog defaults copied into authored values. Store provenance
 (preset/import/player) and override bits; a preset update never changes a saved road.
 Changing class in the tool previews a full preset replacement, retaining only explicitly
