@@ -47,7 +47,7 @@ var _edit_message: String = ""
 var _candidate_cache_median_style: int = -1
 var _candidate_cache_median_width: float = -1.0
 var altitude_offset: float = 0.0
-var crossing_mode: int = 0 # Junction, Over, Under; Rust owns the solved profile and level.
+var crossing_mode: int = 0 # Junction, Over, Under, Tunnel; Rust owns profiles and structure.
 var crossing_level: int = 0
 var _crossing_profile_key: Array = []
 var _crossing_profile: Dictionary = {}
@@ -272,9 +272,10 @@ func cycle_median() -> void:
 	set_median((median_style + 1) % 4, [3.0, 1.0, 5.0, 2.0][(median_style + 1) % 4])
 
 func set_crossing_mode(mode: int) -> void:
-	crossing_mode = clampi(mode, 0, 2)
+	crossing_mode = clampi(mode, 0, 3)
 	crossing_level = 0
 	simulation_node.set_road_tool_crossing_level(0)
+	simulation_node.set_road_tool_tunnel(crossing_mode == 3)
 	_crossing_profile_key = []
 	_crossing_refusal = {}
 	_crossing_highlight.clear()
@@ -285,7 +286,7 @@ func set_crossing_mode(mode: int) -> void:
 
 func _prepare_crossing_points(points: PackedVector3Array) -> PackedVector3Array:
 	_crossing_refusal = {}
-	if crossing_mode == 0 or points.size() < 2:
+	if crossing_mode == 0 or crossing_mode == 3 or points.size() < 2:
 		return points
 	var key: Array = [points, crossing_mode, fwd_lanes, bkw_lanes, median_style, median_width, simulation_node.get_road_tool_surface_generation()]
 	if key != _crossing_profile_key:

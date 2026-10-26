@@ -209,41 +209,21 @@ impl RoadSurfaceSystem {
         }
 
         let mut ranges = Vec::new();
-
-        if self.section_is_tunnel_surface_visible(&sections[start_index], terrain) {
-            let mut visible_end = start_index;
-            while visible_end < end_index
-                && self.section_is_tunnel_surface_visible(&sections[visible_end + 1], terrain)
-            {
-                visible_end += 1;
+        let mut cursor = start_index;
+        for (a, b) in Self::tunnel_bore_ranges(sections, terrain) {
+            let a = a.max(start_index);
+            let b = b.min(end_index);
+            if a > b {
+                continue;
             }
-            let transition_end = (visible_end + 1).min(end_index);
-            if transition_end > start_index {
-                ranges.push((start_index, transition_end));
+            if a > cursor {
+                ranges.push((cursor, a));
             }
+            cursor = cursor.max(b);
         }
-
-        if self.section_is_tunnel_surface_visible(&sections[end_index], terrain) {
-            let mut visible_start = end_index;
-            while visible_start > start_index
-                && self.section_is_tunnel_surface_visible(&sections[visible_start - 1], terrain)
-            {
-                visible_start -= 1;
-            }
-            let transition_start = visible_start.saturating_sub(1).max(start_index);
-            if end_index > transition_start {
-                if let Some(last) = ranges.last_mut() {
-                    if transition_start <= last.1 {
-                        last.1 = end_index;
-                    } else {
-                        ranges.push((transition_start, end_index));
-                    }
-                } else {
-                    ranges.push((transition_start, end_index));
-                }
-            }
+        if cursor < end_index {
+            ranges.push((cursor, end_index));
         }
-
         ranges
     }
 }

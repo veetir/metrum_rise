@@ -3835,7 +3835,7 @@ unchanged work, inconclusive short timings and a small sustained +1.1% at 1M for
 increment. They do not establish a universal absence of runtime regression. The feature is
 accepted with the measured emission/tick costs and this explicit historical uncertainty.
 
-### Short road tunnels — ROAD-61 (diagnosis, fix planned)
+### Short road tunnels — ROAD-61
 
 Fresh blank-world authoring probes on 2026-10-20 reproduce two failures through
 `validate_road_candidate_with_snap` and `add_road_with_snap`, using one lane each way, default
@@ -3856,29 +3856,63 @@ coverage deliberately hides buried top surfaces; it does not prove a usable, lin
 portal. The mixed-depth probe's zero concrete output confirms that missing structure in this
 fixture, but does not diagnose every terrain/rendering failure in the original player report.
 
-The fix is in progress. Explicit structural/profile intent, a distinction between an entirely
-buried valid road and missing surface geometry, paired quick/exact refusal rules, and actual
-portal/terrain-cut ownership belong together. A crossing-layer number is not tunnel intent;
-old saved physical profiles must not be re-solved on load. The original player tunnel case
-has not been loaded/reproduced. The local probe and JSON results remain in `$ARTIFACTS`;
-they create only fresh blank worlds and never read or write player saves.
+**Structural contract — 2026-10-27.** The road tool's existing crossing selector adds
+**Tunnel** beside Junction / Over / Under. Place both ends outside the hill; a straight stroke
+keeps the chord between the chosen endpoint elevations instead of climbing the hill. Curved
+strokes retain their authored profile. Tunnel intent is independent of crossing level and is
+captured in quick preparation, async preview identity, stale-result rejection, exact commit and
+rejection replay. Grounded endpoints no longer erase an explicitly authored buried interior.
+Ordinary requests retain the existing profile solver. No ROAD-83/84 consumer conversion is part
+of this change: shell widths come from the existing `paved_bounds(edge, station)` query.
 
-```bash
-METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_ROADS_C_TUNNEL_OUTPUT="$ARTIFACTS/tunnel-diagnosis.json" \
-  perl -e 'alarm 900; exec @ARGV' godot --headless --path godot \
-  --script "$ARTIFACTS/roads_c_tunnel_probe.gd"
-```
+A tunnel publishes continuous physical pavement even when every section is buried. Physical
+lane-height queries use that pavement. Separate, ordered open-cut ranges constrain exterior
+picking, surface zoning, vegetation clearance and terrain support. Quick and exact profile
+clearance use the same allocation-free, at-most-4 m sampling lattice, including two-point strokes
+and off-centre hills. Existing endpoint/topology checks still apply. Committed intent is already
+represented by saved `EdgeClass::Tunnel` and physical geometry; derived shells rebuild on load,
+and undo restores the same road/terrain ownership. Save version remains 110.
 
-**Backend checkpoint — 2026-10-26.** Tool requests now carry explicit tunnel intent independently
-of crossing level, pinning it through quick preparation, async preview, stale-result rejection
-and exact commit. With that intent, grounded endpoints preserve every authored interior height;
-ordinary tool requests retain the old profile solver. A tunnel span publishes continuous physical
-pavement even if entirely buried. Its separate exterior ranges bound picking, surface zoning
-and vegetation clearance; terrain support remains portal-only, and lane-height queries can use
-the bore pavement. This adds O(P) authoring work and at most two O(1) exterior-range tests per
-local triangle-grid candidate, with no per-agent/tick change or new spatial index. The existing
-saved `EdgeClass::Tunnel` and physical geometry carry committed intent; no schema changes.
-Concrete portals, the player selector, native captures and performance acceptance are still open.
+Covered section runs own a short concrete box lining, soffit and roof, with a concrete header,
+jambs and flared retaining wings at each transition to an open approach. Clear height is 4.8 m
+above the highest existing paved section band, roof thickness 0.6 m and wall thickness 0.45 m.
+Concrete floor strips close the lining setback, and approach aprons close the widened cutouts
+without changing lane widths. Walls clear the queried pavement by 0.25 m; wings flare 2 m and fit inside the adjoining open
+section interval (up to 6 m long). Fully buried endpoints represent continuations, so do not
+manufacture surface portals. Consecutive covered runs retain their own transitions.
+
+Terrain cutouts cover only open approaches. At a mouth their boundary follows the outer
+retaining wings and joins the roof rail, whose explicit `TunnelPortalRoof` provenance is distinct
+from pavement support. The covered bore never cuts the terrain above it. Approach floor stamps
+use exact triangle containment and omit the transition interval touching a covered section:
+conservative padding and grid-aligned roof-rail samples must not lower the covered bore. The concrete shell owns its structure; duplicate generic earthwork skirts are
+omitted. This addresses both a soil curtain across the mouth and terrain triangles hanging
+through the soffit, rather than hiding those faces in the renderer.
+
+Compilation is O(S B) for S local sections and their bounded B bands, plus O(E log P) for E local
+terrain-boundary edges and P portal boundary points. Exterior triangle-grid filtering is O(log H)
+in this stroke's H covered runs, allocation-free. The shell is cold derived data and uses the
+existing owner chunks/bounds. There is no new spatial index, city-wide scan, agent state or
+per-tick work. Car and foot lanes keep the normal access flags; a car-only tunnel has no foot
+lanes. Routing, junction priority and NET-07 U-turn rules are unchanged.
+
+**Finnish visual basis.** The primary reference is
+`$HOME/dev/metrum_rise-refs/roads/commons/c_underpasses/Underpass_at_Honkanummentie_in_Itä-Hakkila_Vantaa_Finland_2021.jpg`:
+rectangular concrete opening, broad header and retaining wings into the grassy slope.
+`Underpass_under_Turuntie_in_Leppävaara_in_May_2025.jpg` in the same directory supplies the
+secondary concrete header/retaining-wall joint reference. The short cast-concrete box lining is
+an interpretation of Finnish cut-and-cover practice; these photos are underpasses, not a claim
+that either site has this tunnel's length or profile. Their railings, individual construction
+joints, signs and the second photo's cycle-surface treatment are not reproduced.
+
+**Importer boundary.** No importer code changes. Supporting OSM `tunnel=yes` will require
+explicit structural intent, a physical vertical profile with DEM cover and portal transitions,
+consistent endpoint snaps / crossing-layer topology, source access flags and existing section
+width queries, followed by the same exact publication and lane rebuild. A tag alone cannot
+supply the vertical profile. Imported rock tunnels, tunnel junctions and long-tunnel lighting /
+ventilation remain outside ROAD-61. The original player save has not been loaded; the recorded
+blank-world failures are the reproduced regressions.
+
 
 ### Straight cross-section transitions — ROAD-70
 

@@ -231,10 +231,10 @@ func _build_ui():
 	crossing_label.custom_minimum_size.x = 92.0
 	crossing_row.add_child(crossing_label)
 	var crossing_choice := OptionButton.new()
-	for crossing_name in ["Junction", "Over", "Under"]:
+	for crossing_name in ["Junction", "Over", "Under", "Tunnel"]:
 		crossing_choice.add_item(crossing_name)
 	crossing_choice.focus_mode = Control.FOCUS_NONE
-	crossing_choice.tooltip_text = "Cross an existing road with a junction, a raised road, or a road in a cut. Leave room for the approaches."
+	crossing_choice.tooltip_text = "Junction, Over and Under cross existing roads. Tunnel preserves the drawn elevation through a hill, with concrete portals. Place both ends outside the hill."
 	crossing_choice.item_selected.connect(road_tool.set_crossing_mode)
 	crossing_row.add_child(crossing_choice)
 	road_options_menu.add_child(crossing_row)

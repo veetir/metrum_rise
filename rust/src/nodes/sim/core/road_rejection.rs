@@ -38,6 +38,8 @@ impl RejectedBy {
 pub(crate) struct RoadAttempt<'a> {
     /// Explicit topology layer accompanying the submitted physical profile.
     pub(crate) crossing_level: i16,
+    /// Explicit structural intent needed to replay a grounded-end tunnel.
+    pub(crate) tunnel: bool,
     pub(crate) points: &'a [Vector3],
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
@@ -125,6 +127,7 @@ impl RoadRejection {
             reason: &self.reason,
             generation,
             crossing_level: attempt.crossing_level,
+            tunnel: attempt.tunnel,
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
@@ -143,6 +146,7 @@ struct AttemptRecord<'a> {
     reason: &'a str,
     generation: u64,
     crossing_level: i16,
+    tunnel: bool,
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
@@ -319,6 +323,7 @@ mod tests {
             .with_note("checked twice");
         let attempt = RoadAttempt {
             crossing_level: -1,
+            tunnel: true,
             points: &points,
             fwd_lanes: 2,
             bkw_lanes: 1,
@@ -339,6 +344,7 @@ mod tests {
         assert_eq!(record["reason"], "bridge_clearance");
         assert_eq!(record["generation"], 42);
         assert_eq!(record["crossing_level"], -1);
+        assert_eq!(record["tunnel"], true);
         assert_eq!(
             (record["fwd_lanes"].clone(), record["bkw_lanes"].clone()),
             (2.into(), 1.into())
@@ -395,6 +401,7 @@ mod tests {
         );
         let attempt = RoadAttempt {
             crossing_level: 0,
+            tunnel: false,
             points: &[],
             fwd_lanes: 1,
             bkw_lanes: 1,

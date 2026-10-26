@@ -421,8 +421,11 @@ pub(super) fn terrain_cdt_boundary_source_allows_retaining_wall(
             support_policy,
             ..
         } => {
-            edge_class != TerrainCdtEdgeClass::Standard
-                || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+            // The concrete tunnel shell owns retention along this roof/wing rail.
+            // Its neighboring terrain faces are ground, not a second retaining mesh.
+            support_policy != TerrainCdtEarthworkSupportPolicy::TunnelPortalRoof
+                && (edge_class != TerrainCdtEdgeClass::Standard
+                    || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan)
         }
         TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
         | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. } => false,

@@ -326,6 +326,7 @@ impl SimCore {
             rejection.report(
                 RejectedBy::Commit,
                 RoadAttempt {
+                    tunnel,
                     crossing_level,
                     points: &submitted_points,
                     fwd_lanes,

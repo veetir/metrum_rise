@@ -4279,6 +4279,10 @@ func _road_geometry_cdt_support_policy_label(code: int) -> String:
 		return "bridge_endpoint_abutments"
 	if code == 2:
 		return "tunnel_visible_portals"
+	if code == 3:
+		return "tunnel_portal_roof"
+	if code == 4:
+		return "tunnel_open_cut"
 	return "unknown"
 
 func _road_geometry_cdt_owner_kind_label(code: int) -> String:

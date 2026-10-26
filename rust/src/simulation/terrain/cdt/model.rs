@@ -207,6 +207,10 @@ pub(crate) enum TerrainCdtEarthworkSupportPolicy {
     StandardFullGroundedSpan,
     BridgeEndpointAbutments,
     TunnelVisiblePortals,
+    // Roof-height terrain rail around a clear structural portal opening.
+    TunnelPortalRoof,
+    // Open approach of a compiled shell; retention is classified by actual slope.
+    TunnelOpenCut,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -189,7 +189,9 @@ mod tests {
                 let d1 = v1 - v0;
                 let d2 = v2 - v0;
                 let projected_cross = d1.x * d2.z - d1.z * d2.x;
-                if projected_cross.abs() >= 0.001 {
+                // Concrete includes downward-facing tunnel soffits. Its 3D winding
+                // is checked against emitted normals below. Pavement still faces up.
+                if label != "concrete" && projected_cross.abs() >= 0.001 {
                     assert!(
                         projected_cross >= -0.001,
                         "{label} tri {tri_idx}: back-facing winding detected (cross={projected_cross:.4})"
@@ -247,6 +249,7 @@ mod tests {
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
+
         validate_triangles(&mesh_data.earthwork_vertices, max_dist, "earthwork");
         validate_raised_step_normals(
             &mesh_data.raised_step_vertices,
@@ -2564,6 +2567,21 @@ mod tests {
         graph.rebuild_adjacency_list();
         let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 90.0);
+        for (points, normals) in mesh_data
+            .concrete_vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(mesh_data.concrete_normals.as_chunks::<3>().0)
+        {
+            let facing = (points[2] - points[0])
+                .cross(points[1] - points[0])
+                .normalized();
+            assert!(
+                normals.iter().all(|normal| normal.dot(facing) > 0.99),
+                "concrete normal and Godot-visible winding must agree"
+            );
+        }
 
         let left_portal = visible_coverage_ratio(
             &mesh_data,

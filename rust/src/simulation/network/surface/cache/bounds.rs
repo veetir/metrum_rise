@@ -84,6 +84,16 @@ impl RoadSurfaceSystem {
             }
         }
 
+        if let Some(tunnel) = &piece.short_tunnel {
+            for point in tunnel.concrete.iter().flatten() {
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
+                min_z = min_z.min(point.z);
+                max_z = max_z.max(point.z);
+                saw_point = true;
+            }
+        }
+
         match kind {
             ChunkCacheKind::Surface => {
                 for point in piece

@@ -27,29 +27,38 @@ pub(super) fn emit_filled_crossing(
         (MeshLayer::MedianGrass, &crossing.fill, Color::WHITE),
         (MeshLayer::Concrete, &crossing.concrete, concrete_color()),
     ] {
-        for face in faces {
-            let vertices = face.map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32));
-            let uvs = [
-                Vector2::ZERO,
-                Vector2::new(1.0, 0.0),
-                Vector2::ONE,
-                Vector2::new(0.0, 1.0),
-            ];
-            for ids in [[0, 1, 2], [0, 2, 3]] {
-                let triangle = ids.map(|i| vertices[i]);
-                if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
-                    continue;
-                }
-                let normal = (triangle[2] - triangle[0]).cross(triangle[1] - triangle[0]);
-                push_triangle_preserving_winding_with_exact_normal(
-                    mesh,
-                    layer,
-                    triangle,
-                    ids.map(|i| uvs[i]),
-                    color,
-                    normal,
-                );
+        emit_shell_faces(mesh, layer, faces, color);
+    }
+}
+
+pub(super) fn emit_shell_faces(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    faces: &[[crate::simulation::network::surface::RoadVec3; 4]],
+    color: Color,
+) {
+    for face in faces {
+        let vertices = face.map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+        let uvs = [
+            Vector2::ZERO,
+            Vector2::new(1.0, 0.0),
+            Vector2::ONE,
+            Vector2::new(0.0, 1.0),
+        ];
+        for ids in [[0, 1, 2], [0, 2, 3]] {
+            let triangle = ids.map(|i| vertices[i]);
+            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+                continue;
             }
+            let normal = (triangle[2] - triangle[0]).cross(triangle[1] - triangle[0]);
+            push_triangle_preserving_winding_with_exact_normal(
+                mesh,
+                layer,
+                triangle,
+                ids.map(|i| uvs[i]),
+                color,
+                normal,
+            );
         }
     }
 }

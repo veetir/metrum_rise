@@ -1248,6 +1248,13 @@ save version 90 persists the sparse taper records while lane identities remain d
 H edits pockets, J/K toggle sides, U/I adjust body length and Shift+U/I taper length; both off
 removes it. See the linked road spec for constraints and preview publication.
 
+ROAD-61 tunnel pavement remains available to physical lane-height queries inside a covered bore,
+independently of exterior visibility and terrain support. The ordinary access flags create foot
+lanes only when walking is allowed. A native capture probe routes a car through both portals
+and checks its buried height; Rust coverage checks car-only and car/foot lane construction.
+There is no change to the agent tick, junction reservations, priority or NET-07 U-turn policy.
+See [short tunnels](roads.md#short-road-tunnels--road-61) for current verification and captures.
+
 ROAD-67 connector trajectories are constructed at lane rebuild time. A single turn uses
 the largest circular fillet fitting the entry/exit tangent intersection, with straight tangent
 leads for unequal mouth distances. Curvature stays zero or one signed reciprocal radius;

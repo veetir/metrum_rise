@@ -614,7 +614,15 @@ fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
             assert!(span_piece.render_earthwork_faces.is_empty());
         } else {
             assert!(!span_piece.span_earthwork_support_regions.is_empty());
-            assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, edge_class);
+            assert!(span_piece.render_earthwork_faces.is_empty());
+            assert!(
+                !span_piece
+                    .short_tunnel
+                    .as_ref()
+                    .unwrap()
+                    .concrete
+                    .is_empty()
+            );
             assert!(
                 span_piece
                     .span_earthwork_support_regions

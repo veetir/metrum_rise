@@ -116,6 +116,13 @@ valley and water bridges retain their existing deck/pier treatment. See the
 [ROAD-68 completion contract](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)
 for tool behavior and acceptance.
 
+`ROAD-61` short tunnels separate continuous physical pavement from exterior open cuts.
+Concrete lining, portals and retaining wings own the multi-height structure. Approach terrain
+cutouts follow the wings and terminate at an explicitly sourced roof rail; there is no cutout or
+floor stamp over the covered bore. Exact-contained approach stamps prevent heightfield padding
+from lowering roof samples. Generic earthwork skirts do not duplicate the concrete shell.
+See the [short-tunnel contract and acceptance](roads.md#short-road-tunnels--road-61).
+
 ### 4. Placed Client Surfaces Stay Fixed Under Later Terrain Edits
 
 Placement and later terrain authoring are separate operations.
@@ -448,8 +455,8 @@ That means:
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
 - bridges do not stamp terrain earthworks; raised spans and elevated terminals render structural
   concrete support instead of terrain fill
-- tunnel earthworks remain portal-only and use class-owned endpoint ranges so visible portals are
-  not trimmed away before portal visibility is evaluated
+- tunnel earthworks use the open-cut complement of covered section runs; portal roof rails and
+  flared retaining wings own the transition, while terrain above each bore stays closed
 
 Road-specific section and junction rules continue to live in [`roads.md`](roads.md).
 

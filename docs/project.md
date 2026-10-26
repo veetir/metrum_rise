@@ -6,9 +6,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-ROAD-61 short tunnels are in progress: explicit tool intent preserves grounded-end buried
-profiles, and continuous buried pavement publishes independently from exterior/terrain support.
-Concrete portals, player controls and acceptance remain open ([owning contract](roads.md#short-road-tunnels--road-61-diagnosis-fix-planned)).
+ROAD-61 short tunnels are in validation: the player Tunnel mode preserves buried profiles,
+continuous pavement supports traffic, and concrete portals/lining own closed-terrain transitions.
+Native portal/interior/overhead captures pass; full-suite and matched performance acceptance remain open ([owning contract](roads.md#short-road-tunnels--road-61)).
 
 ROAD-83/84 **slice A** is implemented on `feat/road-structure-design`: road-owned cold layout,
 detail/revision, class/access/override and extent tables; immutable interning and semantic queries;
@@ -196,9 +196,9 @@ emission, while local planning remains bounded with identical products. ROAD-73 
 repairs the refused sloping plain-to-median terrain boundary and validates the university
 rebuild at full 3+3 bus-lane width.
 The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
-strip without changing physical geometry. ROAD-61 blank-world probes reproduce erased buried
-profiles and quick/exact tunnel-validation disagreement; its structural fix remains planned
-([tunnel diagnosis](roads.md#short-road-tunnels--road-61-diagnosis-fix-planned)).
+strip without changing physical geometry. ROAD-61 now preserves authored buried profiles and publishes continuous tunnel pavement,
+with explicit player intent and concrete portal/terrain ownership under validation
+([tunnel contract](roads.md#short-road-tunnels--road-61)).
 
 The importer water crop is fixed in data preparation ([WATER-05](terrain.md#complete-importer-lake-beds--water-05-2026-10-21)):
 complete edited lakes receive bathymetry while their measured levels and wet/dry masks stay

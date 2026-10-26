@@ -104,6 +104,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
     /// Multi-height support at explicitly layered crossings; absent on ordinary bridges.
     pub(crate) filled_crossing: Option<Box<super::earthwork::FilledCrossing>>,
+    /// Derived lining and portal ownership; never contributes a terrain carrier above the bore.
+    pub(crate) short_tunnel: Option<Box<super::earthwork::ShortTunnel>>,
 }
 
 impl RoadSurfaceVisualSpanPiece {
@@ -156,6 +158,7 @@ impl RoadSurfaceVisualSpanPiece {
             earthwork_outer_boundary_loops: self.earthwork_outer_boundary_loops.clone(),
             render_earthwork_faces,
             filled_crossing: self.filled_crossing.clone(),
+            short_tunnel: self.short_tunnel.clone(),
         }
     }
 }
@@ -311,16 +314,15 @@ impl RoadSurfaceSpanOwnedRegion {
 }
 
 impl RoadSurfaceVisualSpanPiece {
-    // At most two portal ranges; O(1), allocation-free and independent of city size.
+    // Ordered open-cut ranges; O(log H) in this stroke's H bores, allocation-free.
     pub(in crate::simulation::network::surface) fn region_is_exterior(
         &self,
         region: &RoadSurfaceSpanOwnedRegion,
     ) -> bool {
         self.exterior_ranges.as_ref().is_none_or(|ranges| {
-            ranges.iter().any(|&(a, b)| {
-                let station = region.start_section_index();
-                station >= a && station < b
-            })
+            let station = region.start_section_index();
+            let i = ranges.partition_point(|&(_, end)| end <= station);
+            ranges.get(i).is_some_and(|&(start, _)| station >= start)
         })
     }
 
@@ -540,7 +542,7 @@ impl RoadSurfaceSystem {
         }
         let reuse_visible_regions_for_earthwork =
             edge.class == EdgeClass::Standard && earthwork_ranges == visible_ranges;
-        let (terrain_clip_boundary_loops, span_earthwork_support_regions, bridge_outer_loops) =
+        let (mut terrain_clip_boundary_loops, span_earthwork_support_regions, bridge_outer_loops) =
             if reuse_visible_regions_for_earthwork {
                 (
                     visible_terrain_clip_boundary_loops,
@@ -565,7 +567,9 @@ impl RoadSurfaceSystem {
                     EdgeClass::Bridge => {
                         std::mem::take(&mut clearance_regions.terrain_clip_boundary_loops)
                     }
-                    EdgeClass::Tunnel => Vec::new(),
+                    EdgeClass::Tunnel => {
+                        std::mem::take(&mut clearance_regions.terrain_clip_boundary_loops)
+                    }
                 };
                 (
                     terrain_clip_boundary_loops,
@@ -575,41 +579,50 @@ impl RoadSurfaceSystem {
             };
         let earthwork_regions_ms = elapsed_ms(earthwork_regions_start);
         let earthwork_geometry_start = road_debug.then(Instant::now);
-        let (earthwork_outer_boundary_loops, render_earthwork_faces) =
-            if edge.class == EdgeClass::Bridge || filled_crossing.is_some() {
-                // The filled shell owns these slopes and portal walls, including cuts.
-                (bridge_outer_loops, Vec::new())
-            } else {
-                let earthwork_boundary_segments =
-                    Self::span_earthwork_boundary_segment_loops_from_support_regions(
-                        &sections,
-                        &span_earthwork_support_regions,
-                        edge.class,
-                    )
-                    .map_err(|error| {
-                        crate::debug_log!(
-                            "road",
-                            "span_earthwork_boundary_failed edge={} error={:?}",
-                            edge_idx,
-                            error
-                        );
-                    })
-                    .ok()?;
-                self.build_closed_earthwork_geometry_from_boundary_segments(
-                    &earthwork_boundary_segments,
-                    terrain,
-                    None,
+        let short_tunnel = Self::compile_short_tunnel(graph, terrain, edge_idx, &sections);
+        if let Some(tunnel) = &short_tunnel {
+            for boundary in &mut terrain_clip_boundary_loops {
+                tunnel.lift_portal_clip_boundaries(boundary, &sections, graph, terrain, edge_idx);
+            }
+        }
+        let (earthwork_outer_boundary_loops, render_earthwork_faces) = if edge.class
+            == EdgeClass::Bridge
+            || filled_crossing.is_some()
+            || short_tunnel.is_some()
+        {
+            // Structural shells own their concrete; stitched terrain owns ordinary cut slopes.
+            (bridge_outer_loops, Vec::new())
+        } else {
+            let earthwork_boundary_segments =
+                Self::span_earthwork_boundary_segment_loops_from_support_regions(
+                    &sections,
+                    &span_earthwork_support_regions,
+                    edge.class,
                 )
                 .map_err(|error| {
                     crate::debug_log!(
                         "road",
-                        "span_earthwork_geometry_failed edge={} error={:?}",
+                        "span_earthwork_boundary_failed edge={} error={:?}",
                         edge_idx,
                         error
                     );
                 })
-                .ok()?
-            };
+                .ok()?;
+            self.build_closed_earthwork_geometry_from_boundary_segments(
+                &earthwork_boundary_segments,
+                terrain,
+                None,
+            )
+            .map_err(|error| {
+                crate::debug_log!(
+                    "road",
+                    "span_earthwork_geometry_failed edge={} error={:?}",
+                    edge_idx,
+                    error
+                );
+            })
+            .ok()?
+        };
         let earthwork_geometry_ms = elapsed_ms(earthwork_geometry_start);
 
         let finalize_start = road_debug.then(Instant::now);
@@ -671,6 +684,7 @@ impl RoadSurfaceSystem {
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
             filled_crossing,
+            short_tunnel,
         };
         piece.surface_query = Arc::new(piece.surface_triangle_grid());
         piece.shrink_retained();

@@ -118,6 +118,14 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
         } else {
             asphalt.for_each(emit_asphalt);
         }
+        if let Some(tunnel) = &piece.short_tunnel {
+            super::bridge::emit_shell_faces(
+                mesh,
+                MeshLayer::Concrete,
+                &tunnel.concrete,
+                super::super::concrete_color(),
+            );
+        }
         if let Some(crossing) = &piece.filled_crossing {
             super::bridge::emit_filled_crossing(mesh, crossing);
         } else if edge.class == EdgeClass::Bridge {

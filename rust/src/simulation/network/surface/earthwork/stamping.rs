@@ -83,6 +83,7 @@ pub(super) struct EarthworkStampTriangle {
     triangle_xz: [RoadVec2; 3],
     area_xz: f64,
     height_offset_m: f32,
+    conservative_margin_m: f32,
     grid_min_x: usize,
     grid_max_x: usize,
     grid_min_z: usize,
@@ -164,6 +165,7 @@ impl EarthworkStampTriangle {
             triangle_xz,
             area_xz,
             height_offset_m,
+            conservative_margin_m,
             grid_min_x,
             grid_max_x,
             grid_min_z,
@@ -299,6 +301,15 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
         triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
         height_offset_m: f32,
     ) {
+        self.collect_triangles_with_margin(triangles, height_offset_m, self.conservative_margin_m);
+    }
+
+    fn collect_triangles_with_margin(
+        &mut self,
+        triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
+        height_offset_m: f32,
+        margin_m: f32,
+    ) {
         self.stats.regions_visited += 1;
         self.stats.regions_stamped += 1;
         RoadSurfaceSystem::visit_surface_triangles(triangles, &mut |triangle| {
@@ -307,7 +318,7 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
                 self.terrain,
                 self.chunk,
                 triangle,
-                self.conservative_margin_m,
+                margin_m,
                 height_offset_m,
                 &mut self.stats,
             ) {
@@ -398,7 +409,7 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
                             self.stats.point_triangle_tests += 1;
                             if !triangle.point_is_inside_or_near_xz(
                                 point_xz,
-                                f64::from(self.conservative_margin_m),
+                                f64::from(triangle.conservative_margin_m),
                             ) {
                                 continue;
                             }
@@ -479,10 +490,7 @@ impl RoadSurfaceSystem {
         section: &RoadSurfaceSection,
         terrain: &TerrainSystem,
     ) -> bool {
-        let terrain_height = terrain
-            .sample_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
-            * config::HEIGHT_SCALE;
-        section.center_height_m >= terrain_height - super::TUNNEL_PORTAL_STAMP_DEPTH_M
+        !super::tunnel::roof_is_covered(section, terrain)
     }
 
     pub(in crate::simulation::network::surface) fn tunnel_throat_is_visible(
@@ -555,9 +563,30 @@ impl RoadSurfaceSystem {
         builder.stats.span_owners += 1;
         let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
         for region in piece.span_earthwork_support_regions.iter() {
-            builder.collect_triangles(
+            if piece.edge_class == crate::simulation::network::types::EdgeClass::Tunnel
+                && [region.start_section_index(), region.end_section_index()]
+                    .into_iter()
+                    .any(|index| {
+                        super::tunnel::roof_is_covered(&piece.sections[index], builder.terrain)
+                    })
+            {
+                // The transition interval belongs to the cutout and concrete shell.
+                // Even an exactly aligned DEM sample on its roof rail must retain
+                // source height, rather than taking the approach floor height.
+                builder.skip_region();
+                continue;
+            }
+            // A tunnel's open cut ends at a roof boundary. Expanding its floor stamp
+            // beyond that boundary lowers DEM samples inside the covered bore, which
+            // makes the terrain CDT hang triangles through the portal soffit.
+            builder.collect_triangles_with_margin(
                 piece.region_quad(region).triangles().iter().copied(),
                 height_offset_m,
+                if piece.edge_class == crate::simulation::network::types::EdgeClass::Tunnel {
+                    0.0
+                } else {
+                    builder.conservative_margin_m
+                },
             );
         }
         if let Some(crossing) = &piece.filled_crossing {

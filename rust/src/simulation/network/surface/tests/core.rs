@@ -1054,6 +1054,7 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         earthwork_outer_boundary_loops: Vec::new(),
         render_earthwork_faces: Vec::new(),
         filled_crossing: None,
+        short_tunnel: None,
     }
 }
 

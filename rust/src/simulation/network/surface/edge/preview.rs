@@ -703,6 +703,9 @@ impl RoadSurfaceSystem {
         if Self::preview_stroke_too_short(prepared_points) {
             return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
         }
+        if edge_class == EdgeClass::Tunnel {
+            return Self::validate_tunnel_profile_clearance(validation, prepared_points, terrain);
+        }
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
         {
@@ -736,6 +739,31 @@ impl RoadSurfaceSystem {
             }
         }
 
+        validation
+    }
+
+    // One construction lattice for quick and exact checks, including two-point and
+    // off-centre hills. O(P + L / 4 m), allocation-free, only during road editing.
+    fn validate_tunnel_profile_clearance(
+        mut validation: RoadPreviewValidation,
+        points: &[Vector3],
+        terrain: &TerrainSystem,
+    ) -> RoadPreviewValidation {
+        let mut cover = f32::NEG_INFINITY;
+        for pair in points.windows(2) {
+            let steps = ((pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z) / 4.0)
+                .ceil()
+                .max(1.0) as usize;
+            for i in 0..=steps {
+                let p = pair[0].lerp(pair[1], i as f32 / steps as f32);
+                cover = cover.max(Self::preview_terrain_height_m(terrain, p.x, p.z) - p.y);
+            }
+        }
+        validation.clearance_m = cover;
+        validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+        if cover < PREVIEW_CLEARANCE_M {
+            return validation.with_invalid_reason(PREVIEW_TUNNEL_CLEARANCE_REASON);
+        }
         validation
     }
 
@@ -838,6 +866,9 @@ impl RoadSurfaceSystem {
                 validation.offending_span_end_support_delta_m =
                     pair[1].center_height_m - validation.offending_span_end_terrain_height_m;
             }
+        }
+        if edge_class == EdgeClass::Tunnel {
+            return Self::validate_tunnel_profile_clearance(validation, prepared_points, terrain);
         }
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)

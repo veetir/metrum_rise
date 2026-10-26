@@ -136,6 +136,12 @@ impl RoadSurfaceSystem {
             RoadSurfaceEarthworkSupportPolicy::TunnelVisiblePortals => {
                 TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals
             }
+            RoadSurfaceEarthworkSupportPolicy::TunnelOpenCut => {
+                TerrainCdtEarthworkSupportPolicy::TunnelOpenCut
+            }
+            RoadSurfaceEarthworkSupportPolicy::TunnelPortalRoof => {
+                TerrainCdtEarthworkSupportPolicy::TunnelPortalRoof
+            }
         }
     }
 

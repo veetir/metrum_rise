@@ -45,6 +45,7 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	var bkw := int(attempt.get("bkw_lanes", 1))
 	var snap := bool(attempt.get("snap", true))
 	simulation.set_road_tool_crossing_level(int(attempt.get("crossing_level", 0)))
+	simulation.set_road_tool_tunnel(bool(attempt.get("tunnel", false)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
 	var validation: Dictionary = {}
