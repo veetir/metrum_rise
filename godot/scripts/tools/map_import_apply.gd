@@ -81,7 +81,7 @@ func _run() -> void:
 				_deferred.append({"stroke": stroke, "record": record, "failure": failure})
 			continue
 		if stroke["kind"] == "footpath" and not roads_repaired:
-			await _retry_deferred(simulation)
+			await _retry_deferred(simulation, "motor")
 			_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
 			if not _roundabout_completion_known():
 				return
@@ -105,7 +105,7 @@ func _run() -> void:
 			_checkpoint(simulation)
 	if not roads_repaired:
 		_checkpoint(simulation)
-		await _retry_deferred(simulation)
+		await _retry_deferred(simulation, "motor")
 	if not roundabouts_applied:
 		_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
 		if not _roundabout_completion_known():
@@ -113,7 +113,7 @@ func _run() -> void:
 	# Later source junctions, paths or a resumed compiler can resolve earlier refusals.
 	# Retry exact remaining pieces only; accepted geometry is never replayed.
 	if not _results.get("settled_source_retry", false):
-		await _retry_deferred(simulation)
+		await _retry_deferred(simulation, "settled")
 		if _fatal:
 			return
 		_results["settled_source_retry"] = true
@@ -340,25 +340,30 @@ func _finish_record(record: Dictionary) -> void:
 	record["status"] = "refused" if record["pieces"].is_empty() else ("partial" if not record["failed_pieces"].is_empty() else "accepted")
 	record["reason"] = String(record["failed_pieces"][-1]["reason"]) if record["status"] == "refused" and not record["failed_pieces"].is_empty() else ""
 
-func _retry_deferred(simulation: Node) -> void:
-	for sweep in 8:
+func _retry_deferred(simulation: Node, stage: String) -> void:
+	# Failed pieces retain a pass marker, so checkpoint resumes skip work already
+	# acknowledged in this sweep. Accepted pieces disappear from the pending set.
+	var stages: Dictionary = _results.get_or_add("source_retry_sweeps", {})
+	var state: Dictionary = stages.get_or_add(stage, {"sweep": 0, "recovered": false, "complete": false})
+	while not state["complete"]:
+		var pass_key := stage+"/"+str(int(state["sweep"]))
 		var pending: Array = _deferred
 		_deferred = []
-		var before := 0
-		var after := 0
 		var processed := 0
 		for entry in pending:
+			if entry["failure"].get("retry_pass", "") == pass_key:
+				_deferred.append(entry)
+				continue
 			var record: Dictionary = entry["record"]
-			before += record["pieces"].size()
-			# Retry the exact refused source geometry against the settled network.
-			var reason := await _attempt(simulation, entry["stroke"], entry["failure"]["points_xz"], record, "deferred_exact/%d" % sweep)
+			var reason := await _attempt(simulation, entry["stroke"], entry["failure"]["points_xz"], record, "deferred_exact/%d" % int(state["sweep"]))
 			if reason.is_empty():
 				record["failed_pieces"].erase(entry["failure"])
 				record["pieces"].append(record["attempts"][-1]["points_xz"])
+				state["recovered"] = true
 			else:
 				entry["failure"]["reason"] = reason
+				entry["failure"]["retry_pass"] = pass_key
 				_deferred.append(entry)
-			after += record["pieces"].size()
 			_finish_record(record)
 			if _fatal:
 				return
@@ -366,10 +371,11 @@ func _retry_deferred(simulation: Node) -> void:
 			if processed % 20 == 0:
 				_write_results()
 				_checkpoint(simulation)
+		state["sweep"] = int(state["sweep"])+1
+		state["complete"] = not state["recovered"] or int(state["sweep"]) >= 8
+		state["recovered"] = false
 		_write_results()
 		_checkpoint(simulation)
-		if after == before:
-			break
 
 func _clear_forest(simulation: Node, box: Array) -> Dictionary:
 	var removed := 0
