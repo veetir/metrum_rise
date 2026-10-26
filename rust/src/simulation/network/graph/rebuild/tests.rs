@@ -724,6 +724,9 @@ fn short_exit_beside_a_path_retains_space_for_a_car() {
     foot.bkw_lanes = 0;
     graph.add_edge(foot);
     graph.rebuild_intersection_clips();
+    graph.edge_mut(0).end_clip = 5.0;
+    graph.rebuild_intersection_clips_for_nodes(&HashSet::from([junction]));
+    assert_eq!(graph.edge(0).end_clip, 5.0, "the remote mouth is unchanged");
     let mut lanes = crate::simulation::network::lanes::LaneSystem::new();
     lanes.rebuild(&mut graph);
     for lane in lanes.lanes.iter().filter(|l| {

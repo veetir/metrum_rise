@@ -254,8 +254,16 @@ impl RegionGraph {
             } else {
                 edge.end_clip
             };
-            let (start_clip, end_clip) =
-                Self::fit_clips_to_edge_length(start_clip, end_clip, length_m);
+            let start_dirty = affected_nodes.is_none_or(|nodes| nodes.contains(&start_node));
+            let end_dirty = affected_nodes.is_none_or(|nodes| nodes.contains(&end_node));
+            // A local rebuild publishes only dirty mouths. Fit against the unchanged
+            // opposite clip rather than scaling a value that will not be published.
+            let budget = (length_m - CLIP_LENGTH_RESERVE_M).max(0.0);
+            let (start_clip, end_clip) = match (start_dirty, end_dirty) {
+                (true, false) => (start_clip.min((budget - end_clip).max(0.0)), end_clip),
+                (false, true) => (start_clip, end_clip.min((budget - start_clip).max(0.0))),
+                _ => Self::fit_clips_to_edge_length(start_clip, end_clip, length_m),
+            };
             computed.push((edge_idx, start_clip, end_clip));
         }
 
