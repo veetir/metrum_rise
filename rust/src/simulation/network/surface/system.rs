@@ -273,6 +273,12 @@ impl RoadPreviewTopologyReuse {
             candidate_key
         };
         let candidate = self.spans.get(&candidate_key)?;
+        // A bounded excerpt can omit the lower corridor of a read-only halo span.
+        // An empty local neighbor query cannot certify a cached opening whose
+        // dependency IDs still belong to the source graph. Rebuild it locally.
+        if candidate.piece.filled_crossing.is_some() {
+            return None;
+        }
         let visible_ranges =
             surface.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
         let visible_ranges_match = candidate.visible_ranges == visible_ranges;

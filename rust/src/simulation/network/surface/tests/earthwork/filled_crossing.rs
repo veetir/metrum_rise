@@ -38,6 +38,38 @@ fn fixture(foot: bool, skew: bool) -> (RegionGraph, TerrainSystem, RoadSurfaceSy
 }
 
 #[test]
+fn cached_filled_support_is_not_replayed_without_its_lower_corridor() {
+    let (mut source, terrain, _) = fixture(false, false);
+    // Layered Standard approaches can own fill too; checking Bridge alone is insufficient.
+    source.edge_mut(1).class = EdgeClass::Standard;
+    let mut resident = RoadSurfaceSystem::new(16.0);
+    assert!(resident.compile_dirty(&source, &terrain));
+    assert!(
+        resident.compiled_visual_span_pieces()[&1]
+            .filled_crossing
+            .is_some()
+    );
+    let reuse = resident
+        .preview_topology_reuse(&source, &terrain, &[])
+        .unwrap();
+
+    let mut local = RegionGraph::new();
+    let mut upper = source.edge(1).clone();
+    upper.start_node = local.add_node(source.node(upper.start_node).pos, NodeType::Junction);
+    upper.end_node = local.add_node(source.node(upper.end_node).pos, NodeType::Junction);
+    let id = local.add_edge(upper);
+    let mut excerpt = RoadSurfaceSystem::new(16.0);
+    excerpt.enqueue_preview_topology_reuse(reuse);
+    assert!(excerpt.compile_dirty(&local, &terrain));
+    assert!(
+        excerpt.compiled_visual_span_pieces()[&id]
+            .filled_crossing
+            .is_none()
+    );
+    assert_eq!(excerpt.last_reused_span_topology_count, 0);
+}
+
+#[test]
 fn filled_opening_includes_an_independent_lower_node_owned_mouth() {
     let mut graph = RegionGraph::new();
     for (points, level, class) in [
