@@ -1061,9 +1061,9 @@ impl BuildingAllocator {
         halves
     }
 
-    /// Puts back the rows [`Self::migrate_split_frontages`] moved, from its `undo` entries,
-    /// and records them. O(rows).
-    pub(crate) fn restore_split_frontages(&mut self, rows: &[(usize, usize, usize, f32)]) {
+    /// Applies edge/cell/frontage remaps from a topology edit or its undo, recording the changed
+    /// rows for indexed readers and the rolling census input copy. O(rows).
+    pub(crate) fn apply_frontage_remaps(&mut self, rows: &[(usize, usize, usize, f32)]) {
         for &(index, edge_idx, cell_x, frontage_t) in rows {
             let building = &mut self.buildings[index];
             building.edge_idx = edge_idx;

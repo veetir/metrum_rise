@@ -73,6 +73,7 @@ fn update_generated_band_contour_constraint(
             && constraint.owner == contour.owner
         {
             constraint.points_xz = contour.points_xz.clone();
+            constraint.points_xz.push(contour.points_xz[0]);
         }
     }
 }

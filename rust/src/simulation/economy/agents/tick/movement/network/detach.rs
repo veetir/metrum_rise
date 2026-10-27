@@ -6,7 +6,6 @@ use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_ING
 use super::super::super::access::{local_access_point, local_access_side_label};
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::slices::MovementSlices;
-use super::super::super::traffic::claim_lane_entry;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
@@ -16,6 +15,8 @@ use crate::traffic_log;
 /// Returns `true` when movement should stop for this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Keep frontage geometry and logging out of the frequently executed road movement loop.
+#[inline(never)]
 pub(super) unsafe fn try_network_detach(
     i: usize,
     lane_id: usize,
@@ -54,7 +55,7 @@ pub(super) unsafe fn try_network_detach(
 
         let detach_d = *s_plan_detach_lane_d.get(i);
         let detach_allowed = if *s_tmode.get(i) == MODE_CAR {
-            claim_lane_entry(i, planned_detach_lane_id, lane_claims)
+            lane_claims.claim_lane_departure(i, planned_detach_lane_id)
         } else {
             true
         };
@@ -76,6 +77,7 @@ pub(super) unsafe fn try_network_detach(
                 *s_cur_n.get_mut(i) = u32::MAX;
                 *s_cur_e.get_mut(i) = usize::MAX;
                 *s_lane_id.get_mut(i) = usize::MAX;
+                *slices.tail_connector.get_mut(i) = u32::MAX;
                 *s_lane_d.get_mut(i) = 0.0;
                 *s_speed.get_mut(i) = 0.0;
                 *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;

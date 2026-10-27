@@ -285,6 +285,57 @@ fn crossing_and_close_double_t_adopt_exact_final_profiles() {
 }
 
 #[test]
+fn split_adoption_migrates_live_crosswalk_and_lane_rules_like_cold_splitting() {
+    let mut planned = Fixture::new(false);
+    let mut cold = Fixture::new(false);
+    for ((sx, sz), (ex, ez)) in [
+        ((-60.0, 0.0), (60.0, 0.0)),
+        ((60.0, 0.0), (110.0, 0.0)),
+        ((60.0, 0.0), (60.0, 50.0)),
+    ] {
+        let raw = [planned.point(sx, sz), planned.point(ex, ez)];
+        let (prepared, plan, reuse) = planned.plan(&raw);
+        cold.cold_add(&prepared);
+        planned.adopt(&plan, reuse);
+    }
+    for fixture in [&mut planned, &mut cold] {
+        fixture.graph.set_crosswalk_override(0, 0, false);
+        fixture.graph.set_crosswalk_override(1, 0, true);
+        fixture.graph.add_lane_connection(1, 0, 0, 1, 0);
+    }
+    // Two later insertions exercise ordered migration through repeated split halves.
+    for x in [0.0, 20.0] {
+        let raw = [planned.point(x, -50.0), planned.point(x, 0.0)];
+        let (prepared, plan, reuse) = planned.plan(&raw);
+        cold.cold_add(&prepared);
+        planned.adopt(&plan, reuse);
+        for node in [0, 1] {
+            assert_eq!(
+                planned.graph.node(node).crosswalk_overrides,
+                cold.graph.node(node).crosswalk_overrides
+            );
+            assert_eq!(
+                planned.graph.node(node).lane_connections,
+                cold.graph.node(node).lane_connections
+            );
+            for &edge in planned.graph.node(node).crosswalk_overrides.keys() {
+                let edge = planned.graph.edge(edge);
+                assert!(edge.start_node == node || edge.end_node == node);
+            }
+        }
+        assert!(
+            planned
+                .graph
+                .node(1)
+                .crosswalk_overrides
+                .values()
+                .any(|&marked| marked)
+        );
+        assert!(!planned.graph.node(1).crosswalk_overrides.contains_key(&0));
+    }
+}
+
+#[test]
 fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
     let mut planned = Fixture::new(false);
     let mut cold = Fixture::new(false);

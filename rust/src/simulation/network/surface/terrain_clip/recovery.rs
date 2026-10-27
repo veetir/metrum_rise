@@ -233,7 +233,7 @@ impl RoadSurfaceSystem {
         point: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipSourceEdge> {
-        Self::terrain_clip_source_edges_at_world_xz_point(point, source_edges)
+        Self::terrain_clip_source_edges_at_world_point(point, source_edges)
             .into_iter()
             .filter(|edge| {
                 matches!(
@@ -504,6 +504,7 @@ mod tests {
 
     fn source_edge(start: RoadVec3, end: RoadVec3, edge_index: usize) -> TerrainClipSourceEdge {
         TerrainClipSourceEdge {
+            grade_authority: None,
             start,
             end,
             kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,

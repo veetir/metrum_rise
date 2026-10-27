@@ -453,6 +453,11 @@ Use this exact derived rule:
 Then:
 
 - if `vehicle_frontage_access == SameSideOnly`, car local access is always same-side
+The entrance cache uses `Edge::effective_vehicle_frontage_access`: a raised central median
+forces `SameSideOnly`, while a painted median keeps the edge's authored policy. Removing the
+raised median restores that policy. This changes the derived lane options and routing quotes,
+not a per-tick crossover heuristic; the `NET-07` U-turn rule remains unchanged (`ROAD-80`).
+
 - if `vehicle_frontage_access == BothSides` and the chosen car lane id equals `same_side_car_lane_id`, car local access is same-side
 - if `vehicle_frontage_access == BothSides` and the chosen car lane id equals `opposite_side_car_lane_id`, car local access is an opposite-side crossover
 - if the chosen car lane id is neither `same_side_car_lane_id` nor `opposite_side_car_lane_id`, the access plan is invalid and must not be built

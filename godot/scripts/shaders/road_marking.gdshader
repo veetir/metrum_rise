@@ -14,7 +14,10 @@ uniform float opacity : hint_range(0.0, 1.0) = 0.8;
 
 void fragment() {
 	float pattern = round(UV.y);
-	if (UV.y > 1.5 && pattern > 2.5) {
+	// Median hatching is clipped by the actual separator polygons, including their noses.
+	if (pattern > 4.5) {
+		if (mod(UV.x, 3.0) > 0.35) { discard; }
+	} else if (UV.y > 1.5 && pattern > 2.5) {
 		float dash_m = pattern > 3.5 ? 3.0 : 1.0;
 		if (mod(UV.x, dash_m * 4.0) > dash_m) {
 			discard;

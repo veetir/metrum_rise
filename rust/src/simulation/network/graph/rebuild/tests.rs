@@ -685,3 +685,57 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
         after.grade()
     );
 }
+
+#[test]
+fn short_exit_beside_a_path_retains_space_for_a_car() {
+    let mut graph = RegionGraph::new();
+    let junction = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let split = graph.add_node(Vector3::new(9.91, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    for (a, b) in [(junction, split), (split, end)] {
+        let mut edge = profile_test_edge(vec![graph.node(a).pos, graph.node(b).pos]);
+        edge.start_node = a;
+        edge.end_node = b;
+        edge.width = 14.0;
+        edge.fwd_lanes = 2;
+        edge.bkw_lanes = 2;
+        edge.physical_length = graph.calculate_length(&edge.geometry);
+        graph.add_edge(edge);
+    }
+    for point in [
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 100.0),
+    ] {
+        let end = graph.add_node(point, NodeType::Junction);
+        let mut edge = profile_test_edge(vec![Vector3::ZERO, point]);
+        edge.start_node = junction;
+        edge.end_node = end;
+        edge.width = 14.0;
+        edge.physical_length = 100.0;
+        graph.add_edge(edge);
+    }
+    let foot_end = graph.add_node(Vector3::new(9.91, 0.0, 20.0), NodeType::Junction);
+    let mut foot = profile_test_edge(vec![graph.node(split).pos, graph.node(foot_end).pos]);
+    foot.start_node = split;
+    foot.end_node = foot_end;
+    foot.primary_type = TransitType::Foot;
+    foot.allowed_types = TransitFlags::FOOT;
+    foot.fwd_lanes = 0;
+    foot.bkw_lanes = 0;
+    graph.add_edge(foot);
+    graph.rebuild_intersection_clips();
+    graph.edge_mut(0).end_clip = 5.0;
+    graph.rebuild_intersection_clips_for_nodes(&HashSet::from([junction]));
+    assert_eq!(graph.edge(0).end_clip, 5.0, "the remote mouth is unchanged");
+    let mut lanes = crate::simulation::network::lanes::LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    for lane in lanes.lanes.iter().filter(|l| {
+        l.edge_id == 0 && l.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+    }) {
+        assert!(
+            lane.length > crate::config::CAR_LENGTH,
+            "path split left an unusable exit: {}",
+            lane.length
+        );
+    }
+}

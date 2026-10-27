@@ -21,9 +21,8 @@ pub(crate) fn raised_step_band_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
     match kind {
         RoadSurfaceBandKind::Carriageway => Some(0),
         RoadSurfaceBandKind::CurbOrShoulder => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Sidewalk | RoadSurfaceBandKind::Median => Some(2),
         RoadSurfaceBandKind::Footpath
-        | RoadSurfaceBandKind::Median
         | RoadSurfaceBandKind::Parking
         | RoadSurfaceBandKind::CycleTrack
         | RoadSurfaceBandKind::TramReservation => None,
@@ -102,6 +101,10 @@ mod tests {
         assert!(raised_step_kinds_can_contact(
             RoadSurfaceBandKind::CurbOrShoulder,
             RoadSurfaceBandKind::Sidewalk
+        ));
+        assert!(raised_step_kinds_can_contact(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Median
         ));
         assert!(!raised_step_kinds_can_contact(
             RoadSurfaceBandKind::Carriageway,

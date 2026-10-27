@@ -29,6 +29,8 @@ var road_mesh_root: Node3D # Final road chunks owned only by RoadTool
 var _street_lights: StreetLights
 var _road_signs: RoadSigns
 var _road_chunk_instances: Dictionary = {}
+# Canonical packed poses share their arrays; only previewed chunk keys are restored.
+var _road_prop_chunks: Dictionary = {}
 var _road_mesh_generation: int = -1
 var _road_chunk_span_m: float = 0.0
 var _road_chunk_origin_x_m: float = 0.0
@@ -229,6 +231,24 @@ func get_terrain_interaction():
 	
 	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
 	return simulation_node.intersect_world_surface(ray_origin, ray_dir)
+
+# Use the same immutable query as RoadTool: the legacy world raycast can return null
+# while the simulation owns its mutex, which the base picker turns into the world origin.
+func get_immutable_world_mouse_pos() -> Vector3:
+	if _scripted_pointer_enabled:
+		is_valid = true
+		return _scripted_pointer_position
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		is_valid = false
+		return Vector3.ZERO
+	var mouse := get_viewport().get_mouse_position()
+	var cursor: Variant = simulation_node.get_road_tool_cursor_pos(
+		camera.project_ray_origin(mouse), camera.project_ray_normal(mouse),
+		0.0, true, 0, Vector3.ZERO, Vector3.ZERO, false, 1, 1, 0.0, {}, 0.0, Vector3.ZERO
+	)
+	is_valid = cursor != null
+	return cursor.position if is_valid else Vector3.ZERO
 
 func get_world_mouse_pos() -> Vector3:
 	var pos_variant = get_terrain_interaction()
@@ -489,6 +509,7 @@ func _commit_road_mesh_update(
 	if props:
 		_street_lights.configure_chunks(chunk_span_m, Vector2(chunk_origin_x_m, chunk_origin_z_m))
 	if full_replace:
+		_road_prop_chunks.clear()
 		for key in _road_chunk_instances.keys():
 			_remove_road_chunk(key)
 		if props:
@@ -497,6 +518,7 @@ func _commit_road_mesh_update(
 	for chunk_data in validated_updates:
 		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
 		if chunk_data["removed"]:
+			_road_prop_chunks.erase(key)
 			_remove_road_chunk(key)
 			if props:
 				_street_lights.remove_chunk(key)
@@ -509,6 +531,7 @@ func _commit_road_mesh_update(
 			0.0,
 			chunk_origin_z_m + float(key.y) * chunk_span_m
 		)
+		_road_prop_chunks[key] = {"street_lights": chunk_data.get("street_lights", PackedFloat32Array()), "road_signs": chunk_data.get("road_signs", PackedFloat32Array())}
 		var lights = chunk_data.get("street_lights")
 		_street_lights.set_chunk(
 			key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
@@ -528,7 +551,30 @@ func _commit_road_mesh_update(
 	_road_chunk_origin_z_m = chunk_origin_z_m
 	return surface_generation
 
+# Applies the complete paired prop poses without touching canonical chunk payloads.
+func set_road_prop_preview(chunks: Array) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	if _street_lights == null or _road_signs == null:
+		return keys
+	for data: Dictionary in chunks:
+		var key := Vector2i(data.chunk_x, data.chunk_z)
+		keys.append(key)
+		_set_road_prop_poses(key, data)
+	return keys
+
+func clear_road_prop_preview(keys: Array[Vector2i]) -> void:
+	if _street_lights == null or _road_signs == null:
+		return
+	for key: Vector2i in keys:
+		_set_road_prop_poses(key, _road_prop_chunks.get(key, {}))
+
+func _set_road_prop_poses(key: Vector2i, data: Dictionary) -> void:
+	var origin := Vector3(_road_chunk_origin_x_m + key.x * _road_chunk_span_m, 0.0, _road_chunk_origin_z_m + key.y * _road_chunk_span_m)
+	_street_lights.set_chunk(key, origin, data.get("street_lights", PackedFloat32Array()))
+	_road_signs.set_chunk(key, origin, data.get("road_signs", PackedFloat32Array()))
+
 func reset_main_mesh_chunks() -> void:
+	_road_prop_chunks.clear()
 	discard_staged_main_mesh_update()
 	for key in _road_chunk_instances.keys():
 		_remove_road_chunk(key)
@@ -599,6 +645,9 @@ func _place_road_chunk_instance(
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure.
 func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
+	# A failed material union cannot be rescued by a finite-buffer fallback scan.
+	if chunk_data.get("road_mesh_compilation_succeeded", true) != true:
+		return false
 	_ensure_road_mesh_materials()
 	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
 	# certificate falls back to the full scan; a malformed one rejects the chunk.
@@ -641,6 +690,10 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 	):
 		return false
 	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat, rust_validated):
+		return false
+	if chunk_data.has("median_grass_vertices") and not _append_road_surface(
+		arr_mesh, chunk_data, "median_grass", WorldMaterials.road_median_grass_material(), rust_validated
+	):
 		return false
 	if not _append_road_surface(
 		arr_mesh,

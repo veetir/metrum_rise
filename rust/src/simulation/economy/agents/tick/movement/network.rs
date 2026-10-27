@@ -12,8 +12,10 @@ mod replan;
 use super::super::super::{MODE_CAR, TRANSIT_INTERSECTION};
 use super::super::claims::LaneClaimContext;
 use super::super::slices::MovementSlices;
-use super::super::traffic::{connector_turn_speed, junction_car_speed};
-use crate::config::CAR_JUNCTION_SPEED_MS;
+use super::super::traffic::{
+    connector_turn_speed, continuation_headroom, junction_car_speed, lane_motion_headroom,
+};
+use crate::config::{CAR_JUNCTION_SPEED_MS, CAR_LENGTH, IDM_S_MIN};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -58,6 +60,7 @@ pub(super) unsafe fn handle_network_movement(
             return;
         }
 
+        let initial_lane = *s_lane_id.get(i);
         let speed = network_movement_speed(i, transit_network, slices);
         let mut remaining_dist = speed * delta;
         let mut allow_zero_speed_network_bootstrap =
@@ -73,6 +76,8 @@ pub(super) unsafe fn handle_network_movement(
                     transit_network,
                     graph,
                     pathfind_count,
+                    lane_buckets,
+                    lane_claims,
                     slices,
                 ) {
                     LaneEntryAction::Ready => {}
@@ -92,11 +97,52 @@ pub(super) unsafe fn handle_network_movement(
                 lane_id,
                 lane_buckets,
                 transit_network,
+                graph,
                 lane_claims,
                 slices,
             );
 
             let lane = &transit_network.lane_system.lanes[lane_id];
+            if lane.edge_id == usize::MAX && *slices.tmode.get(i) == MODE_CAR {
+                let limit = lane_claims.connector_travel_limit(i, lane_id, *s_lane_d.get(i));
+                if remaining_dist > limit {
+                    remaining_dist = limit;
+                    *slices.speed.get_mut(i) = 0.0;
+                }
+            }
+            // Compiled junction mouths define the cross-boundary body stations.
+            // Standalone lanes retain ordinary within-lane following and entry checks.
+            let controlled_boundary = transit_network
+                .lane_system
+                .reservation_movement(lane_id)
+                .is_some()
+                || lane.next_lanes.iter().any(|&id| {
+                    transit_network
+                        .lane_system
+                        .reservation_movement(id)
+                        .is_some()
+                });
+            if *slices.tmode.get(i) == MODE_CAR && controlled_boundary {
+                let bound = if lane_id != initial_lane
+                    || lane.length - *s_lane_d.get(i) <= remaining_dist + CAR_LENGTH + IDM_S_MIN
+                {
+                    lane_motion_headroom
+                } else {
+                    continuation_headroom
+                };
+                let limit = bound(
+                    i,
+                    lane_id,
+                    *s_lane_d.get(i),
+                    remaining_dist,
+                    transit_network,
+                    lane_buckets,
+                );
+                if remaining_dist > limit {
+                    remaining_dist = limit;
+                    *slices.speed.get_mut(i) = remaining_dist / delta;
+                }
+            }
             let dist_to_end = lane.length - *s_lane_d.get(i);
             if remaining_dist < dist_to_end {
                 *s_lane_d.get_mut(i) += remaining_dist;
@@ -174,6 +220,7 @@ unsafe fn reset_invalid_lane(i: usize, slices: &MovementSlices) {
         let s_lane_change_length = &slices.lane_change_length;
 
         *s_lane_id.get_mut(i) = usize::MAX;
+        *slices.tail_connector.get_mut(i) = u32::MAX;
         *s_lane_change_from_lane.get_mut(i) = u32::MAX;
         *s_lane_change_start_d.get_mut(i) = 0.0;
         *s_lane_change_length.get_mut(i) = 0.0;

@@ -23,16 +23,43 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface) fn classify_visual_node_kind(
         &self,
+        graph: &RegionGraph,
         incidents: &[IncidentSurfaceEdge],
     ) -> CompiledNodeKind {
         match incidents.len() {
             0 | 1 => CompiledNodeKind::Terminal,
             2 => {
+                let node = match incidents[0].side {
+                    IncidentEdgeSide::Start => graph.edge(incidents[0].edge_idx).start_node,
+                    IncidentEdgeSide::End => graph.edge(incidents[0].edge_idx).end_node,
+                };
+                if graph.node(node).node_type
+                    == crate::simulation::network::types::NodeType::LaneTransition
+                {
+                    return CompiledNodeKind::PassThrough;
+                }
                 let a = incidents[0];
                 let b = incidents[1];
                 let straight =
                     a.direction_xz.dot(b.direction_xz) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD);
-                if !straight {
+                let edge_a = graph.edge(a.edge_idx);
+                let edge_b = graph.edge(b.edge_idx);
+                let median_key =
+                    |edge: &Edge| edge.median.map(|median| (median.style, median.width_m));
+                let outward = |edge: &Edge, side: IncidentEdgeSide| {
+                    if side == IncidentEdgeSide::Start {
+                        (edge.fwd_lanes, edge.bkw_lanes)
+                    } else {
+                        (edge.bkw_lanes, edge.fwd_lanes)
+                    }
+                };
+                let lanes_a = outward(edge_a, a.side);
+                let lanes_b = outward(edge_b, b.side);
+                let median_transition = (edge_a.median.is_some() || edge_b.median.is_some())
+                    && (median_key(edge_a) != median_key(edge_b)
+                        || edge_a.width != edge_b.width
+                        || lanes_a != (lanes_b.1, lanes_b.0));
+                if !straight || median_transition {
                     return CompiledNodeKind::Bend;
                 }
                 CompiledNodeKind::PassThrough
@@ -47,7 +74,7 @@ impl RoadSurfaceSystem {
         node_id: u32,
     ) -> Option<CompiledNodeKind> {
         let incidents = self.sorted_incident_surface_edges_from_graph_geometry(graph, node_id);
-        (!incidents.is_empty()).then(|| self.classify_visual_node_kind(&incidents))
+        (!incidents.is_empty()).then(|| self.classify_visual_node_kind(graph, &incidents))
     }
 
     pub(in crate::simulation::network::surface) fn sorted_incident_surface_edges_from_graph_geometry(

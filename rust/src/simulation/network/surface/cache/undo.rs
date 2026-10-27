@@ -32,6 +32,7 @@ impl RoadSurfaceSystem {
             .into_iter()
             .map(|node_id| RoadSurfaceNodeTopologyUndo {
                 node_id,
+                material_grade: self.node_material_grade_fields.get(&node_id).cloned(),
                 piece: self.compiled_visual_node_pieces.get(&node_id).cloned(),
                 input: self.compiled_visual_node_inputs.get(&node_id).cloned(),
                 earthwork_boundaries: self
@@ -61,6 +62,17 @@ impl RoadSurfaceSystem {
         if !self.topology_undo_is_valid(&undo, affected_edge_ids, affected_node_ids) {
             return false;
         }
+        let crossing_dependents = self.filled_crossing_dependents(affected_edge_ids);
+        // Shared grades may touch source records outside the graph undo ledger. Rebuild
+        // those derived owners locally after restoring the authoritative graph checkpoint.
+        let mut grade_dependents = affected_node_ids.clone();
+        self.extend_grade_cohort_nodes(&mut grade_dependents);
+        for node in &undo.nodes {
+            if let Some(members) = node.material_grade.as_ref().and_then(|f| f.cohort_nodes()) {
+                grade_dependents.extend(members.iter().copied());
+            }
+        }
+        grade_dependents.retain(|node| !affected_node_ids.contains(node));
         self.note_compile_invalidation();
 
         let mut affected_edges = affected_edge_ids.iter().copied().collect::<Vec<_>>();
@@ -77,6 +89,7 @@ impl RoadSurfaceSystem {
             self.remove_node_piece_coverage(node_id);
             self.compiled_visual_node_pieces.remove(&node_id);
             self.compiled_visual_node_inputs.remove(&node_id);
+            self.node_material_grade_fields.remove(&node_id);
             self.compiled_visual_node_earthwork_boundaries
                 .remove(&node_id);
             self.compiled_visual_node_topologies.remove(&node_id);
@@ -95,6 +108,9 @@ impl RoadSurfaceSystem {
             }
         }
         for node in undo.nodes {
+            if let Some(grade) = node.material_grade {
+                self.node_material_grade_fields.insert(node.node_id, grade);
+            }
             if let Some(piece) = node.piece {
                 self.insert_node_piece_coverage(&piece);
                 self.compiled_visual_node_pieces.insert(node.node_id, piece);
@@ -116,6 +132,29 @@ impl RoadSurfaceSystem {
         }
         for node_id in affected_node_ids {
             self.dirty_nodes.remove(node_id);
+        }
+        self.dirty_nodes.extend(grade_dependents);
+        self.dirty_edges.extend(crossing_dependents);
+        // A restored lower road may introduce an opening into a bridge which currently has
+        // none. Its restored owner chunks bound discovery without scanning resident spans.
+        for edge_idx in affected_edge_ids {
+            let Some(chunks) = self.surface_span_chunks.get(edge_idx) else {
+                continue;
+            };
+            for chunk in chunks.iter() {
+                if let Some(owners) = self.surface_chunk_spans.get(chunk) {
+                    for owner in owners.iter() {
+                        if !affected_edge_ids.contains(owner)
+                            && self
+                                .compiled_visual_span_pieces
+                                .get(owner)
+                                .is_some_and(|piece| piece.edge_class != EdgeClass::Tunnel)
+                        {
+                            self.dirty_edges.insert(*owner);
+                        }
+                    }
+                }
+            }
         }
 
         crate::debug_log!(

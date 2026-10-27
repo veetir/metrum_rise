@@ -35,6 +35,7 @@ impl RegionGraph {
 
     /// Inserts an edge into the R-Tree spatial index.
     pub fn add_to_spatial_index(&mut self, edge_idx: usize) {
+        self.sync_legacy_section(edge_idx);
         let edge = &self.edges[edge_idx];
         if edge.deleted {
             return;

@@ -65,6 +65,7 @@ struct EdgeLateralBandSpec {
 }
 
 impl RoadSurfaceSystem {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface::edge) fn build_lateral_bands(
         &self,
         edge: &Edge,
@@ -72,6 +73,8 @@ impl RoadSurfaceSystem {
         lateral_xz: RoadVec2,
         profile_blend: Option<EdgeProfilePlaneBlend>,
         carriageway_half_width_override_m: Option<f32>,
+        median_scale: f32,
+        station: Option<f32>,
     ) -> Vec<RoadSurfaceBand> {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
             let flat_height_m = center.y as f32;
@@ -92,16 +95,35 @@ impl RoadSurfaceSystem {
             base_height_m + offset_m
         };
 
-        let mut bands = Vec::new();
-        Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, |spec| {
-            bands.push(RoadSurfaceBand {
-                kind: spec.kind,
-                lateral_start_m: spec.lateral_start_m,
-                lateral_end_m: spec.lateral_end_m,
-                height_start_m: boundary_height_m(spec.lateral_start_m, spec.height_offset_start_m),
-                height_end_m: boundary_height_m(spec.lateral_end_m, spec.height_offset_end_m),
-            });
-        });
+        // The authored profile has an exact band count; reserve it once per sampled section.
+        let band_count = if edge.primary_type == TransitType::Foot
+            || (edge.allowed_types & TransitFlags::CAR) == 0
+        {
+            1
+        } else if edge.median.is_some() {
+            9
+        } else {
+            6
+        };
+        let mut bands = Vec::with_capacity(band_count);
+        Self::for_each_lateral_band_spec(
+            edge,
+            carriageway_half_width_override_m,
+            median_scale,
+            |spec| {
+                let spec = taper_band_spec(edge, station, median_scale, spec);
+                bands.push(RoadSurfaceBand {
+                    kind: spec.kind,
+                    lateral_start_m: spec.lateral_start_m,
+                    lateral_end_m: spec.lateral_end_m,
+                    height_start_m: boundary_height_m(
+                        spec.lateral_start_m,
+                        spec.height_offset_start_m,
+                    ),
+                    height_end_m: boundary_height_m(spec.lateral_end_m, spec.height_offset_end_m),
+                });
+            },
+        );
         bands
     }
 
@@ -117,7 +139,8 @@ impl RoadSurfaceSystem {
     ) -> (f32, f32) {
         let mut roadbed_half_width_m = 0.0_f32;
         let mut carriageway_half_width_m = 0.0_f32;
-        Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, |spec| {
+        Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, 1.0, |spec| {
+            let spec = taper_band_spec(edge, None, 1.0, spec);
             let band_half_width_m = spec.lateral_start_m.abs().max(spec.lateral_end_m.abs());
             roadbed_half_width_m = roadbed_half_width_m.max(band_half_width_m);
             if spec.kind == RoadSurfaceBandKind::Carriageway {
@@ -130,6 +153,7 @@ impl RoadSurfaceSystem {
     fn for_each_lateral_band_spec(
         edge: &Edge,
         carriageway_half_width_override_m: Option<f32>,
+        median_scale: f32,
         mut emit: impl FnMut(EdgeLateralBandSpec),
     ) {
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
@@ -181,20 +205,75 @@ impl RoadSurfaceSystem {
             height_offset_start_m: raised_offset_m,
             height_offset_end_m: raised_offset_m,
         });
-        emit(EdgeLateralBandSpec {
-            kind: RoadSurfaceBandKind::Carriageway,
-            lateral_start_m: -half_carriageway,
-            lateral_end_m: 0.0,
-            height_offset_start_m: 0.0,
-            height_offset_end_m: 0.0,
-        });
-        emit(EdgeLateralBandSpec {
-            kind: RoadSurfaceBandKind::Carriageway,
-            lateral_start_m: 0.0,
-            lateral_end_m: half_carriageway,
-            height_offset_start_m: 0.0,
-            height_offset_end_m: 0.0,
-        });
+        if let Some(median) = edge.median {
+            let half_median = median.width_m * 0.5 * median_scale;
+            let center = edge.median_center_offset();
+            let kerb = if median.is_raised() {
+                CURB_BAND_WIDTH_M * median_scale
+            } else {
+                0.0
+            };
+            let height = if median.is_raised() {
+                CURB_STEP_HEIGHT_M
+            } else {
+                0.0
+            };
+            for (kind, start, end, offset) in [
+                (
+                    RoadSurfaceBandKind::Carriageway,
+                    -half_carriageway,
+                    center - half_median,
+                    0.0,
+                ),
+                (
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    center - half_median,
+                    center - half_median + kerb,
+                    height,
+                ),
+                (
+                    RoadSurfaceBandKind::Median,
+                    center - half_median + kerb,
+                    center + half_median - kerb,
+                    height,
+                ),
+                (
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    center + half_median - kerb,
+                    center + half_median,
+                    height,
+                ),
+                (
+                    RoadSurfaceBandKind::Carriageway,
+                    center + half_median,
+                    half_carriageway,
+                    0.0,
+                ),
+            ] {
+                emit(EdgeLateralBandSpec {
+                    kind,
+                    lateral_start_m: start,
+                    lateral_end_m: end,
+                    height_offset_start_m: offset,
+                    height_offset_end_m: offset,
+                });
+            }
+        } else {
+            emit(EdgeLateralBandSpec {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: -half_carriageway,
+                lateral_end_m: 0.0,
+                height_offset_start_m: 0.0,
+                height_offset_end_m: 0.0,
+            });
+            emit(EdgeLateralBandSpec {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: 0.0,
+                lateral_end_m: half_carriageway,
+                height_offset_start_m: 0.0,
+                height_offset_end_m: 0.0,
+            });
+        }
         emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: half_carriageway,
@@ -238,4 +317,47 @@ impl RoadSurfaceSystem {
 
         points
     }
+}
+
+fn taper_band_spec(
+    edge: &Edge,
+    station: Option<f32>,
+    scale: f32,
+    mut spec: EdgeLateralBandSpec,
+) -> EdgeLateralBandSpec {
+    if edge.lane_tapers.is_none() {
+        return spec;
+    }
+    let profile = station.map_or_else(|| edge.full_lane_section(), |s| edge.lane_section_at(s));
+    let half = edge.width * 0.5;
+    let old_center = edge.median_center_offset();
+    let old_half = edge.median.map_or(0.0, |m| m.width_m * 0.5 * scale);
+    let center = (profile.median_left + profile.median_right) * 0.5;
+    let new_half = (profile.median_right - profile.median_left) * 0.5 * scale;
+    let kerb = edge
+        .median
+        .filter(|m| m.is_raised())
+        .map_or(0.0, |_| CURB_BAND_WIDTH_M * scale);
+    let remap = |x: f32| {
+        if x <= -half {
+            profile.left + (x + half)
+        } else if x >= half {
+            profile.right + (x - half)
+        } else if edge.median.is_none() {
+            profile.left + (x + half) / (half * 2.0) * (profile.right - profile.left)
+        } else if x == old_center - old_half {
+            center - new_half
+        } else if x == old_center - old_half + kerb {
+            center - new_half + kerb
+        } else if x == old_center + old_half - kerb {
+            center + new_half - kerb
+        } else if x == old_center + old_half {
+            center + new_half
+        } else {
+            x
+        }
+    };
+    spec.lateral_start_m = remap(spec.lateral_start_m);
+    spec.lateral_end_m = remap(spec.lateral_end_m);
+    spec
 }

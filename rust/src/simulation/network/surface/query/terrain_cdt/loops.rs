@@ -17,18 +17,34 @@ impl RoadSurfaceSystem {
     ) -> Result<(Vec<TerrainCdtRoadLoop>, usize), RoadSurfaceTerrainClipExportError> {
         let boundary_loops =
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
-        Self::terrain_cdt_road_loops_from_boundaries(&boundary_loops)
+        match Self::terrain_cdt_road_loops_from_boundaries(&boundary_loops, &[]) {
+            Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { .. }) => {
+                let grades = boundary_loops
+                    .iter()
+                    .map(|boundary| {
+                        boundary
+                            .source_edges
+                            .iter()
+                            .map(|edge| self.terrain_clip_source_grade(graph, edge))
+                            .collect()
+                    })
+                    .collect::<Vec<_>>();
+                Self::terrain_cdt_road_loops_from_boundaries(&boundary_loops, &grades)
+            }
+            result => result,
+        }
     }
 
     pub(in crate::simulation::network::surface) fn terrain_cdt_road_loops_from_boundaries(
         boundary_loops: &[Cow<'_, RoadSurfaceTerrainClipLoop>],
+        source_grades: &[Vec<Option<(u32, i64)>>],
     ) -> Result<(Vec<TerrainCdtRoadLoop>, usize), RoadSurfaceTerrainClipExportError> {
         let source_count = boundary_loops.len();
         let boundary_loops = boundary_loops
             .iter()
             .map(|boundary| &**boundary)
             .collect::<Vec<_>>();
-        let export = Self::union_terrain_clip_boundary_refs_export(&boundary_loops)?;
+        let export = Self::union_terrain_clip_boundary_refs_export(&boundary_loops, source_grades)?;
         let footprint_group_ids =
             Self::terrain_cdt_stable_footprint_group_ids_for_terrain_clip_export(&export);
         let road_loops = export

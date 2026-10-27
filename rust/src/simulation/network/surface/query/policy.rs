@@ -56,7 +56,7 @@ impl RoadSurfaceSystem {
         &self,
         piece: &RoadSurfaceVisualSpanPiece,
     ) -> bool {
-        piece.edge_class == EdgeClass::Tunnel
+        piece.edge_class == EdgeClass::Tunnel || piece.filled_crossing.is_some()
     }
 
     pub(crate) fn span_earthwork_face_uses_visible_earthwork(

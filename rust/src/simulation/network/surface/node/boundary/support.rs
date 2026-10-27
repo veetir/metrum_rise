@@ -29,6 +29,39 @@ impl NodeFinalOwnedFootprintBoundarySupport {
 }
 
 impl NodeFootprintBoundaryExportSources {
+    /// Retains source-backed grade breakpoints before assigning heights to a footprint loop.
+    pub(in crate::simulation::network::surface::node) fn final_boundary_keys_on_segment(
+        &self,
+        start: arrangement::NodeArrangementKey,
+        end: arrangement::NodeArrangementKey,
+    ) -> Vec<arrangement::NodeArrangementKey> {
+        let first = ArrangementBoundaryPointKey {
+            x_key: start.x_key().min(end.x_key()),
+            z_key: i64::MIN,
+            y_mm: i64::MIN,
+        };
+        let last = ArrangementBoundaryPointKey {
+            x_key: start.x_key().max(end.x_key()),
+            z_key: i64::MAX,
+            y_mm: i64::MAX,
+        };
+        let mut keys = self
+            .final_vertex_sources
+            .range(first..=last)
+            .map(|(point, _)| point.xz_key())
+            .filter(|key| key.lies_on_segment(start, end))
+            .collect::<Vec<_>>();
+        keys.sort_unstable_by_key(|key| {
+            super::super::segments::segment_parameter_key(
+                arrangement_key(start),
+                arrangement_key(end),
+                arrangement_key(*key),
+            )
+        });
+        keys.dedup();
+        keys
+    }
+
     pub(in crate::simulation::network::surface) fn canonical_final_height_endpoint_dust_point(
         &self,
         point_key: ArrangementBoundaryPointKey,

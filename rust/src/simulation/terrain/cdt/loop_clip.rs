@@ -9,9 +9,8 @@ use i_overlay::core::overlay::{IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::i_float::int::point::IntPoint;
 
-// Keep overlay topology well below the authoritative 1 mm CDT identity grid. Relative i32
-// coordinates at 0.01 mm still cover more than 21 km around one queried loop.
-const CDT_OVERLAY_GRID_M: f64 = 0.000_01;
+/// Rectangle clipping uses the same topology lattice as authoritative road contours.
+pub(super) const CDT_OVERLAY_GRID_M: f64 = CDT_XZ_IDENTITY_GRID_M;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct TerrainCdtLoopBounds {
@@ -109,10 +108,14 @@ pub(super) fn clip_loop_to_patch_components(
         rotate_loop_to_canonical_start(&mut vertices);
         return vec![vertices];
     }
-    let Some(origin) = overlay_grid_origin(points, patch) else {
+    // First bound coordinates to the tile in f64. Even a 20 km source contour then
+    // fits the micrometre integer lattice. Even-odd overlay resolves the weak boundary
+    // bridges produced by rectangle clipping into separate connected components.
+    let axis_clipped = clip_loop_to_patch_axis_aligned(points.to_vec(), patch);
+    let Some(origin) = overlay_grid_origin(&axis_clipped, patch) else {
         return Vec::new();
     };
-    let Some(subject_contour) = overlay_contour(points, origin) else {
+    let Some(subject_contour) = overlay_contour(&axis_clipped, origin) else {
         return Vec::new();
     };
     let Some(clip_contour) = overlay_patch_contour(patch, origin) else {
@@ -131,9 +134,6 @@ pub(super) fn clip_loop_to_patch_components(
         },
         Default::default(),
     );
-    // This pass preserves exact source-edge intersection heights; the integer overlay below owns
-    // disconnected-component topology.
-    let axis_clipped = clip_loop_to_patch_axis_aligned(points.to_vec(), patch);
     let mut original_vertices_by_xz = points
         .iter()
         .copied()
@@ -200,8 +200,8 @@ pub(super) fn clip_loop_to_patch_components(
     components.sort_by_key(|component| {
         let first = component[0];
         (
-            quantized_coord(first.x),
-            quantized_coord(first.z),
+            quantized_xz_coord(first.x),
+            quantized_xz_coord(first.z),
             component.len(),
             quantized_coord(signed_area(component)),
         )
@@ -276,7 +276,7 @@ fn clipped_vertex_from_overlay(
 }
 
 fn terrain_cdt_vertex_xz_key(vertex: TerrainCdtVertex) -> (i64, i64) {
-    (quantized_coord(vertex.x), quantized_coord(vertex.z))
+    (quantized_xz_coord(vertex.x), quantized_xz_coord(vertex.z))
 }
 
 fn clip_loop_to_patch_axis_aligned(
@@ -440,13 +440,11 @@ fn interpolate_height(start: f32, end: f32, parameter: f64) -> f32 {
 }
 
 pub(super) fn rotate_loop_to_canonical_start(vertices: &mut [TerrainCdtVertex]) {
-    if let Some((start_index, _)) = vertices.iter().enumerate().min_by_key(|(_, vertex)| {
-        (
-            quantized_coord(vertex.x),
-            quantized_coord(vertex.z),
-            quantized_coord(f64::from(vertex.height_m)),
-        )
-    }) {
+    if let Some((start_index, _)) = vertices
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, vertex)| terrain_cdt_vertex_key(**vertex))
+    {
         vertices.rotate_left(start_index);
     }
 }
@@ -573,7 +571,7 @@ pub(super) fn ensure_ccw(mut points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVer
 }
 
 pub(super) fn same_xz(a: TerrainCdtVertex, b: TerrainCdtVertex) -> bool {
-    quantized_coord(a.x) == quantized_coord(b.x) && quantized_coord(a.z) == quantized_coord(b.z)
+    terrain_cdt_vertex_xz_key(a) == terrain_cdt_vertex_xz_key(b)
 }
 
 pub(super) fn same_coord(a: f64, b: f64) -> bool {
@@ -586,6 +584,13 @@ pub(super) fn same_height(a: f32, b: f32) -> bool {
 
 pub(super) fn shared_road_constraint_height(a: f32, b: f32) -> Option<f32> {
     same_height(a, b).then_some(a)
+}
+
+// Roadbed union retains micrometre topology. The millimetre height/side tolerance
+// must not weld distinct kerb corners and turn an ordinary step into a height conflict.
+/// Retains the same XZ topology resolution as the authoritative roadbed union.
+pub(super) fn quantized_xz_coord(value: f64) -> i64 {
+    round_f64_to_i64(value / CDT_XZ_IDENTITY_GRID_M)
 }
 
 pub(super) fn quantized_coord(value: f64) -> i64 {

@@ -165,6 +165,10 @@ impl SimCore {
 
     pub(crate) fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
         let mut dict = VarDictionary::new();
+        dict.set(
+            "road_mesh_compilation_succeeded",
+            mesh_data.render_compilation_succeeded(),
+        );
         // Certified off the Godot main thread; Godot still checks Variant types and counts.
         dict.set(
             "road_mesh_payload_validated",
@@ -293,6 +297,28 @@ impl SimCore {
             "concrete_colors",
             PackedColorArray::from_iter(mesh_data.concrete_colors.iter().copied()),
         );
+        if let Some(grass) = mesh_data
+            .median_grass
+            .as_deref()
+            .filter(|grass| !grass.vertices.is_empty())
+        {
+            dict.set(
+                "median_grass_vertices",
+                PackedVector3Array::from_iter(grass.vertices.iter().copied()),
+            );
+            dict.set(
+                "median_grass_normals",
+                PackedVector3Array::from_iter(grass.normals.iter().copied()),
+            );
+            dict.set(
+                "median_grass_uvs",
+                PackedVector2Array::from_iter(grass.uvs.iter().copied()),
+            );
+            dict.set(
+                "median_grass_colors",
+                PackedColorArray::from_iter(grass.colors.iter().copied()),
+            );
+        }
         // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
         dict.set(
             "street_lights",

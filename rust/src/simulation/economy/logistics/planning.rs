@@ -243,6 +243,11 @@ mod tests {
         let start = graph.add_node(points[0], NodeType::Junction);
         let end = graph.add_node(points[1], NodeType::Junction);
         graph.add_edge(Edge {
+            crossing_level: 0,
+            median: None,
+            lane_tapers: None,
+            roundabout: false,
+            bus_lanes: [0; 2],
             start_node: start,
             end_node: end,
             primary_type: TransitType::Road,

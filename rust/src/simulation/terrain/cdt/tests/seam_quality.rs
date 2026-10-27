@@ -148,3 +148,57 @@ fn cdt_merges_subbudget_same_authority_seam_fragments_before_triangulation() {
         other => panic!("merged seam must preserve span authority, got {other:?}"),
     }
 }
+
+#[test]
+fn seam_hardening_keeps_noncollinear_submillimetre_road_corners() {
+    let points = vec![
+        TerrainCdtVertex::new(3.0, 0.12, 3.0),
+        TerrainCdtVertex::new(5.0, 0.12, 3.0),
+        TerrainCdtVertex::new(5.004, 0.12, 2.9995),
+        TerrainCdtVertex::new(7.0, 0.12, 3.0),
+        TerrainCdtVertex::new(7.0, 0.12, 7.0),
+        TerrainCdtVertex::new(3.0, 0.12, 7.0),
+    ];
+    let road = sourced_road_loop(
+        79,
+        0,
+        points.clone(),
+        test_span_boundary_source(79, TerrainCdtRoadBandKind::Sidewalk, 5),
+    );
+    let quality = harden_terrain_cdt_road_loop_seams(
+        points.clone(),
+        &road.source_edges,
+        TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+    );
+    assert_eq!(
+        quality.points, points,
+        "short curves must retain the exact road/terrain cut"
+    );
+    assert_eq!(quality.merged_subbudget_seam_edges, 0);
+}
+
+#[test]
+fn cdt_seam_hardening_preserves_a_mergeable_minimum_triangle() {
+    let points = vec![
+        TerrainCdtVertex::new(0.0, 0.12, 0.0),
+        TerrainCdtVertex::new(0.02, 0.12, 0.0),
+        TerrainCdtVertex::new(2.0, 0.12, 0.02),
+    ];
+    let source = test_span_boundary_source(7, TerrainCdtRoadBandKind::Sidewalk, 5);
+    let edges = (0..points.len())
+        .map(|i| TerrainCdtRoadLoopSourceEdge {
+            start: points[i],
+            end: points[(i + 1) % points.len()],
+            source,
+        })
+        .collect::<Vec<_>>();
+    let quality = harden_terrain_cdt_road_loop_seams(
+        points.clone(),
+        &edges,
+        TerrainCdtPatch::new(-1.0, -1.0, 3.0, 1.0, [0.0; 4]),
+    );
+    assert_eq!(quality.points, points);
+    assert_eq!(quality.merged_subbudget_seam_edges, 0);
+    assert_eq!(quality.edge_sources, vec![Some(source); 3]);
+    assert_eq!(quality.accepted_seam_edges, 3);
+}

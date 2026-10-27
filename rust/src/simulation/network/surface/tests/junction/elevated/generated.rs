@@ -283,8 +283,8 @@ fn sloped_four_way_explicit_step_index_matches_full_scan() {
         .expect("sloped four-way fixture must produce a JunctionN input");
 
     // Test builds assert every lookup against the unindexed step x edge scan. Compiling on this
-    // thread lets the counts prove the fixture exercises both outcomes; the oblique mixed-width
-    // case is the sloped four-way whose raised vertices land on explicit-step lower edges.
+    // thread proves the index still follows the full scan. Shared material grading now
+    // keeps raised contacts above their lower edges; the direct index fixture covers hits.
     crate::simulation::network::surface::node::take_explicit_step_match_stats();
     let node_piece = surface.compile_visual_node_piece_from_input(&graph, &terrain, center, &input);
     let (queries, matches) =
@@ -295,8 +295,8 @@ fn sloped_four_way_explicit_step_index_matches_full_scan() {
         "sloped four-way junction must compile"
     );
     assert!(
-        matches > 0,
-        "no explicit-step lower-height match in {queries} lookups"
+        queries > 0,
+        "sloped junction must exercise explicit-step lower-height queries"
     );
     assert!(
         matches < queries,

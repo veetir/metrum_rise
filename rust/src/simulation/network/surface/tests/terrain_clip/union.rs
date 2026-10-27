@@ -6,6 +6,33 @@ use super::*;
 use crate::simulation::network::surface::backend::RoadVec3;
 
 #[test]
+fn terrain_clip_union_discards_a_height_matched_reversed_numeric_hole() {
+    let outer = [
+        RoadVec3::new(0.0, 0.0, -30.0),
+        RoadVec3::new(20.0, 0.0, -30.0),
+        RoadVec3::new(20.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+    ];
+    // The rotated ring produced this 1.75 m long, approximately one-micron wide hole.
+    let hole = [
+        RoadVec3::new(10.633308, 0.12, -24.275761),
+        RoadVec3::new(11.313586, 0.0, -25.888126),
+        RoadVec3::new(11.313585, 0.0, -25.888127),
+    ];
+    let sources = [
+        terrain_clip_loop_for_node_test(&outer, 0),
+        terrain_clip_loop_for_node_test(&hole, 1),
+    ];
+    let result = RoadSurfaceSystem::union_terrain_clip_boundary_export(&sources).unwrap();
+    assert_eq!(result.loops.len(), 1);
+    assert_eq!(
+        result.loop_topologies[0].role,
+        RoadSurfaceTerrainClipContourRole::Outer
+    );
+    assert_eq!(result.loops[0].points_world.len(), 4);
+}
+
+#[test]
 fn terrain_clip_union_exports_hole_contours_for_ring_footprint() {
     let y = 2.0;
     let rectangles = [
@@ -176,5 +203,71 @@ fn terrain_clip_union_preserves_boundary_only_connector_by_interpolation() {
             .iter()
             .any(|point| point.y > p1.y && point.y < p2.y),
         "sub-budget connector must carry interpolated seam heights between adjacent solved footprint vertices"
+    );
+}
+
+#[test]
+fn terrain_union_preserves_real_point_touching_components_and_holes() {
+    let figure_eight = [
+        [0.0, 0.0],
+        [4.0, 0.0],
+        [4.0, 4.0],
+        [0.0, 0.0],
+        [-4.0, 4.0],
+        [-4.0, 0.0],
+    ];
+    let points = figure_eight.map(|p| RoadVec3::new(p[0], 10.0, p[1]));
+    let output =
+        RoadSurfaceSystem::union_terrain_clip_boundary_export(&[terrain_clip_loop_for_node_test(
+            &points, 0,
+        )])
+        .unwrap();
+    assert_eq!(output.loops.len(), 2);
+    assert!(
+        output
+            .loop_topologies
+            .iter()
+            .all(|t| t.role == RoadSurfaceTerrainClipContourRole::Outer)
+    );
+    let area = |points: &[RoadVec3]| RoadSurfaceSystem::signed_polygon_area_xz(points).abs();
+    assert_eq!(
+        output
+            .loops
+            .iter()
+            .map(|l| area(&l.points_world))
+            .sum::<f32>(),
+        16.0
+    );
+    let outer =
+        [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]].map(|p| RoadVec3::new(p[0], 10.0, p[1]));
+    let hole = [[0.0, 0.0], [2.0, 3.0], [3.0, 2.0]].map(|p| RoadVec3::new(p[0], 10.0, p[1]));
+    let output = RoadSurfaceSystem::union_terrain_clip_boundary_export(&[
+        terrain_clip_loop_for_node_test(&outer, 0),
+        terrain_clip_loop_for_node_test(&hole, 0),
+    ])
+    .unwrap();
+    assert_eq!(output.loops.len(), 2);
+    let occupied_area = output
+        .loops
+        .iter()
+        .zip(&output.loop_topologies)
+        .map(|(l, t)| {
+            area(&l.points_world)
+                * if t.role == RoadSurfaceTerrainClipContourRole::Outer {
+                    1.0
+                } else {
+                    -1.0
+                }
+        })
+        .sum::<f32>();
+    assert_eq!(
+        occupied_area, 61.5,
+        "the real terrain island must remain a hole"
+    );
+    assert!(
+        output
+            .loops
+            .iter()
+            .all(|l| l.source_edges.len() == l.points_world.len())
     );
 }

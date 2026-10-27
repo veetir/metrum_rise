@@ -169,6 +169,28 @@ pub(crate) fn side_join_plan(
 ) -> Result<NodeInputSideJoinPlan, SideJoinGenerationError> {
     let mut bands_by_mouth = vec![Vec::new(); input.mouths.len()];
     let mut gap_summaries = Vec::new();
+    if input.piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+        && let [a, b] = input.mouths.as_slice()
+        && a.band_intervals
+            .iter()
+            .any(|band| band.band_kind == RoadSurfaceBandKind::Median)
+        && a.endpoint_rails.len() == b.endpoint_rails.len()
+        && a.endpoint_rails
+            .iter()
+            .zip(b.endpoint_rails.iter().rev())
+            .all(|(a, b)| {
+                a.band_kind == b.band_kind
+                    && a.start_world == b.end_world
+                    && a.end_world == b.start_world
+            })
+    {
+        // Shared bisector profiles already join every explicit band. Adding the legacy
+        // outside-corner fan would overlap these complete approach ribbons.
+        return Ok(NodeInputSideJoinPlan {
+            bands_by_mouth,
+            gap_summaries,
+        });
+    }
     match input.piece_kind {
         RoadSurfaceVisualNodePieceKind::Bend => {
             generation::add_bend_side_join_bands(

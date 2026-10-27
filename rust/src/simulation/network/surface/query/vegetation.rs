@@ -39,7 +39,8 @@ impl RoadSurfaceSystem {
                         continue;
                     };
                     if piece.surface_query.items_in_bounds(bounds).any(|item| {
-                        kinds(piece.span_owned_regions[(item >> 1) as usize].owner().kind)
+                        piece.query_item_is_exterior(item)
+                            && kinds(piece.span_owned_regions[(item >> 1) as usize].owner().kind)
                             && triangle_near_disc(
                                 piece.surface_query_triangle(item).0,
                                 point,

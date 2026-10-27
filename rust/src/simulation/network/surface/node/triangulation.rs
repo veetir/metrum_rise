@@ -30,6 +30,8 @@ pub(crate) struct NodeTriangulationSolution {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulatedRegion {
+    /// Original arrangement region; numeric CDT omissions do not renumber retained owners.
+    pub(crate) source_region_index: usize,
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
     pub(crate) height_field_id: NodeBandHeightFieldId,
@@ -118,6 +120,7 @@ struct NodeTriangulationPointKey {
 struct NodeTriangulationHeightKey(i64);
 
 mod build;
+pub(in crate::simulation::network::surface) use build::arrangement_region_is_numeric;
 mod coverage;
 mod regions;
 mod vertices;

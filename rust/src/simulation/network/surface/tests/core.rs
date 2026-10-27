@@ -1044,6 +1044,7 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         surface_query: Arc::new(Default::default()),
         span_owned_regions: Arc::new(Vec::new()),
         edge_class: EdgeClass::Standard,
+        exterior_ranges: None,
         start_mouth_profile: None,
         end_mouth_profile: None,
         start_terrain_clip_node: false,
@@ -1052,6 +1053,8 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         earthwork_surface_order: Default::default(),
         earthwork_outer_boundary_loops: Vec::new(),
         render_earthwork_faces: Vec::new(),
+        filled_crossing: None,
+        short_tunnel: None,
     }
 }
 
@@ -1123,5 +1126,106 @@ fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
         earthwork_surface_order: Default::default(),
         earthwork_outer_boundary_loops: Vec::new(),
         render_earthwork_faces: Vec::new(),
+    }
+}
+
+#[test]
+fn straight_median_transition_does_not_invent_crossfall_from_longitudinal_grades() {
+    use crate::simulation::network::graph::RoadMedian;
+
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 100.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    // Two mild longitudinal grades on a nearly straight alignment do not define crossfall.
+    // A median ending here requires a visual Bend, although the profile finalizer correctly
+    // treats the alignment as pass-through and never solves a shared crossing plane.
+    for (endpoint, median) in [
+        (Vector3::new(0.0, 101.2, 24.0), None),
+        (
+            Vector3::new(0.024, 99.52, -24.0),
+            RoadMedian::from_tool(2, 3.2).unwrap(),
+        ),
+    ] {
+        let end = graph.add_node(endpoint, NodeType::Junction);
+        let mut edge = test_edge(
+            center,
+            end,
+            vec![center_pos, endpoint],
+            if median.is_some() { 10.2 } else { 7.0 },
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        );
+        edge.median = median;
+        edge.fwd_lanes = 1;
+        edge.bkw_lanes = 1;
+        edge.start_clip = 7.26;
+        graph.add_edge(edge);
+    }
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    assert_eq!(
+        surface.classify_surface_node_kind_from_graph_geometry(&graph, center),
+        Some(super::super::CompiledNodeKind::Bend)
+    );
+    for edge_idx in 0..2 {
+        for section in surface.compile_edge_sections(&graph, edge_idx) {
+            for band in &section.bands {
+                for height in [band.height_start_m, band.height_end_m] {
+                    assert!(
+                        (height - section.center_height_m).abs() <= CURB_STEP_HEIGHT_M + 0.001,
+                        "a straight median transition invented crossfall: {section:?}"
+                    );
+                }
+            }
+        }
+    }
+    let terrain = TerrainSystem::with_chunking(128, 128, 1.0, 8, 5.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    assert!(surface.published_generation_matches_source());
+}
+
+#[test]
+fn sloping_plain_to_paved_median_exports_exact_terrain_at_full_width() {
+    use crate::simulation::network::graph::RoadMedian;
+
+    let positions = [
+        Vector3::new(-534.482, 85.3693, 1186.639),
+        Vector3::new(-518.8075, 84.51024, 1197.3206),
+        Vector3::new(-503.133, 83.65118, 1208.002),
+    ];
+    for lanes in [1, 3] {
+        let mut graph = RegionGraph::new();
+        let nodes = positions.map(|pos| graph.add_node(pos, NodeType::Junction));
+        for segment in 0..2 {
+            let mut edge = test_edge(
+                nodes[segment],
+                nodes[segment + 1],
+                positions[segment..=segment + 1].to_vec(),
+                f32::from(lanes) * crate::config::LANE_WIDTH * 2.0
+                    + if segment == 1 { 2.0 } else { 0.0 },
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            );
+            edge.fwd_lanes = lanes;
+            edge.bkw_lanes = lanes;
+            edge.crossing_level = 1;
+            if lanes == 3 {
+                edge.bus_lanes = [1, 1];
+            }
+            if segment == 1 {
+                edge.median = RoadMedian::from_tool(3, 2.0).unwrap();
+            }
+            graph.add_edge(edge);
+        }
+        let terrain = flat_terrain(64, 64);
+        let mut surface = RoadSurfaceSystem::new(510.0);
+        assert!(
+            surface.compile_dirty(&graph, &terrain),
+            "{lanes}+{lanes} transition compiles"
+        );
+        surface
+            .terrain_cdt_road_loops_for_world_bounds(&graph, -580.0, 1140.0, -460.0, 1260.0)
+            .unwrap_or_else(|error| panic!("{lanes}+{lanes} exact terrain: {error:?}"));
     }
 }

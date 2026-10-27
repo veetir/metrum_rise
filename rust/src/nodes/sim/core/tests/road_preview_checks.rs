@@ -15,6 +15,9 @@ fn compile_preview(core: &SimCore, request_id: u64) -> RoadPreviewSnapshot {
     super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id,
@@ -43,6 +46,11 @@ fn add_dense_test_road(core: &mut SimCore, start_node: u32, end_node: u32, lanes
     let geometry = dense_line(start, end);
     let length = start.distance_to(end);
     core.region_graph.add_edge(Edge {
+        crossing_level: 0,
+        median: None,
+        lane_tapers: None,
+        roundabout: false,
+        bus_lanes: [0; 2],
         start_node,
         end_node,
         primary_type: TransitType::Road,
@@ -140,6 +148,9 @@ fn code_17_four_way_preview_stream_keeps_live_validation_local_and_commit_exact(
         let preview = super::super::road_preview::compile_road_preview_from_context(
             &context,
             RoadPreviewRequest {
+                tunnel: false,
+                crossing_level: 0,
+                median: None,
                 enqueued_at: None,
                 include_terrain: false,
                 request_id,

@@ -113,7 +113,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_generated_conto
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
     let contour = cleaned_closed_contour(kind, mouth_order_index, band_index, points)?;
-    let points_xz = polyline_to_road_points(&contour);
+    let mut points_xz = polyline_to_road_points(&contour);
     let height_points_world = match height_points_world.as_deref() {
         Some(points_world) => Some(
             align_height_points_to_contour(&points_xz, points_world).ok_or(
@@ -138,6 +138,9 @@ pub(in crate::simulation::network::surface::node::rails) fn push_generated_conto
         height_points_world,
         backend_polyline: contour,
     });
+    // Constraint consumers traverse open paths. Encode the closing edge of this
+    // proved closed contour explicitly, without closing unrelated rail paths.
+    points_xz.push(points_xz[0]);
     push_constraint(
         constraints,
         constraint_kind,
@@ -248,4 +251,61 @@ fn validate_paired_path_band_height_carrier(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_contour_constraint_keeps_closing_edge_through_noding() {
+        let mut contours = Vec::new();
+        let mut constraints = Vec::new();
+        let kind = RoadSurfaceBandKind::Carriageway;
+        let owner = NodeBandOwner::new(kind, 7);
+        push_generated_contour(
+            NodeGeneratedContourKind::Band { kind },
+            1,
+            Some(2),
+            Some(owner),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            NodeRailConstraintKind::BandContour { kind },
+            vec![
+                RoadVec2::new(0.0, 0.0),
+                RoadVec2::new(1.0, 0.0),
+                RoadVec2::new(1.0, 1.0),
+                RoadVec2::new(0.0, 1.0),
+            ],
+            None,
+            &mut contours,
+            &mut constraints,
+        )
+        .unwrap();
+        assert_eq!(contours[0].points_xz.len(), 4);
+        assert_eq!(constraints[0].points_xz.len(), 5);
+        assert_eq!(
+            constraints[0].points_xz.first(),
+            constraints[0].points_xz.last()
+        );
+        super::super::super::topology::set_generated_contour_from_keys(
+            &mut contours[0],
+            &mut constraints,
+            vec![
+                (0, 0),
+                (1_000_000, 0),
+                (1_000_000, 1_000_000),
+                (0, 1_000_000),
+                (0, 500_000),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            constraints[0].points_xz.first(),
+            constraints[0].points_xz.last()
+        );
+        assert_eq!(
+            constraints[0].points_xz.len(),
+            contours[0].points_xz.len() + 1
+        );
+    }
 }

@@ -233,6 +233,57 @@ impl RoadSurfaceSystem {
         dump.push_str("]}");
     }
 
+    /// Reports sampled height discontinuities where a node top meets an exact span mouth.
+    #[cfg(test)]
+    pub(crate) fn mouth_height_discontinuities_for_geometry_audit(
+        &self,
+        graph: &RegionGraph,
+    ) -> Vec<(u32, usize, f32)> {
+        let mut failures = Vec::new();
+        for (&node_id, piece) in &self.compiled_visual_node_pieces {
+            for edge_idx in self.debug_incident_edges_for_node(graph, node_id) {
+                let edge = graph.edge(edge_idx);
+                let Some(span) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                    continue;
+                };
+                let mouth = if graph.get_valid_node(edge.start_node) == node_id {
+                    span.start_mouth_profile.as_ref()
+                } else {
+                    span.end_mouth_profile.as_ref()
+                };
+                let Some(mouth) = mouth else { continue };
+                let anchors = Self::mouth_top_match_anchors(mouth)
+                    .into_iter()
+                    .map(|anchor| (anchor.point, anchor.material))
+                    .chain(mouth.bands.iter().flat_map(|band| {
+                        [0.25, 0.5, 0.75].map(|t| {
+                            (
+                                band.start_point_world.lerp(band.end_point_world, t),
+                                Self::debug_material_for_band_kind(band.kind),
+                            )
+                        })
+                    }));
+                let maximum = anchors
+                    .filter_map(|(point, material)| {
+                        let closest = Self::closest_debug_top_support_for_material(point, material, piece)?;
+                        if closest.xz_error_m <= DEBUG_VERTEX_NEAR_TOLERANCE_M
+                            && closest.y_delta_m.abs() > DEBUG_VERTEX_MATCH_TOLERANCE_M {
+                            crate::debug_log!("road", "mouth_height_discontinuity node={} edge={} material={} source={:?} closest={:?} error={}", node_id, edge_idx, material, point, closest.point, closest.y_delta_m);
+                        }
+                        Some(closest)
+                    })
+                    .filter(|closest| closest.xz_error_m <= DEBUG_VERTEX_NEAR_TOLERANCE_M)
+                    .map(|closest| closest.y_delta_m.abs())
+                    .fold(0.0_f32, f32::max);
+                if maximum > DEBUG_VERTEX_MATCH_TOLERANCE_M {
+                    failures.push((node_id, edge_idx, maximum));
+                }
+            }
+        }
+        failures.sort_by_key(|&(node, edge, _)| (node, edge));
+        failures
+    }
+
     pub(super) fn append_mouth_seam_debug_literal(
         &self,
         dump: &mut String,

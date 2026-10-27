@@ -204,17 +204,23 @@ fn source_owned_vertex_can_be_removed(
     if merged_len_m <= CDT_EPSILON_M {
         return false;
     }
-    let cross = cross_xz(
-        vertex.x - previous.x,
-        vertex.z - previous.z,
-        next.x - previous.x,
-        next.z - previous.z,
-    )
-    .abs();
-    if cross > CDT_EPSILON_M * merged_len_m.max(1.0) {
+    let key = |p: TerrainCdtVertex| {
+        (
+            i128::from(quantized_xz_coord(p.x)),
+            i128::from(quantized_xz_coord(p.z)),
+        )
+    };
+    let (px, pz) = key(previous);
+    let (vx, vz) = key(vertex);
+    let (nx, nz) = key(next);
+    let (ax, az, bx, bz) = (vx - px, vz - pz, nx - px, nz - pz);
+    // Seam hardening must not straighten a real corner and expose terrain inside the
+    // roadbed. Remove only collinear, ordered vertices on the authoritative XZ lattice.
+    if ax * bz != az * bx {
         return false;
     }
-    if !point_bounds_overlap_segment(vertex, previous, next) {
+    let dot = ax * bx + az * bz;
+    if dot < 0 || dot > bx * bx + bz * bz {
         return false;
     }
     let t = clamp_unit(segment_parameter(previous, next, vertex.x, vertex.z));
@@ -504,18 +510,21 @@ fn terrain_cdt_segment_lies_on_source_edge(
     if !segment_bounds_overlap(start, end, source_edge.start, source_edge.end) {
         return false;
     }
-    if source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, start)
-        .is_none()
-    {
-        return false;
+    for point in [start, end] {
+        let t = segment_parameter(source_edge.start, source_edge.end, point.x, point.z);
+        if !unit_interval_contains(t) {
+            return false;
+        }
+        let projected = interpolate_vertex(source_edge.start, source_edge.end, clamp_unit(t));
+        // Halo and core rectangle clipping each use the micrometre topology lattice.
+        // Source recovery owns that bounded positional error, not topology identity.
+        // Height agreement prevents borrowing the opposite side of a kerb return.
+        if edge_length_xz_m(projected, point) > 2.0 * CDT_OVERLAY_GRID_M
+            || !same_height(projected.height_m, point.height_m)
+        {
+            return false;
+        }
     }
-    if source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, end).is_none()
-    {
-        return false;
-    }
-    // Distinct 1 mm identity cells can be separated by less than 1 mm across a rounding
-    // boundary. Both endpoints lying on the source is sufficient; seam hardening owns the
-    // separate decision to merge or retain such a short sourced edge.
     true
 }
 

@@ -188,6 +188,7 @@ fn test_rail_contour_set_from_constraints(
         &BTreeMap::new(),
     );
     NodeRailContourSet {
+        material_grade: None,
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),

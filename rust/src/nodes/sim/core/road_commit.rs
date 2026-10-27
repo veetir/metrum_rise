@@ -24,6 +24,12 @@ use godot::prelude::Vector3;
 
 /// One player road stroke as submitted by the road tool.
 pub(crate) struct RoadCommitRequest {
+    /// Authored crossing layer, captured in exact preview/commit identity.
+    pub(crate) crossing_level: i16,
+    /// Explicit tunnel profile selection; independent of crossing topology.
+    pub(crate) tunnel: bool,
+    /// Authored median selection captured with this input.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// World-space polyline points.
     pub(crate) points: Vec<Vector3>,
     /// Forward lane count.
@@ -93,6 +99,9 @@ impl SimCore {
         mut edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
         let RoadCommitRequest {
+            tunnel,
+            crossing_level,
+            median,
             points,
             fwd_lanes,
             bkw_lanes,
@@ -108,15 +117,19 @@ impl SimCore {
         // click rebuild use the same local compiler; neither clones the city here.
         record_crash_phase_for_core(self, "add road preview plan validation");
         let edit_plan = edit_plan.filter(|plan| {
-            plan.prepared_input_for(
-                self.road_tool_surface_generation,
-                self.heightmap.source_generation(),
-                &points,
-                fwd_lanes,
-                bkw_lanes,
-                snap_to_existing_roads,
-            )
-            .is_some()
+            plan.crossing_level() == crossing_level
+                && plan.tunnel() == tunnel
+                && plan.median() == median
+                && plan
+                    .prepared_input_for(
+                        self.road_tool_surface_generation,
+                        self.heightmap.source_generation(),
+                        &points,
+                        fwd_lanes,
+                        bkw_lanes,
+                        snap_to_existing_roads,
+                    )
+                    .is_some()
                 && plan.road_status(self) == "ready"
         });
         record_crash_phase_for_core(self, "add road preview plan validated");
@@ -128,6 +141,9 @@ impl SimCore {
             let road_plan = Arc::new(RoadEditPlan::compile_road(
                 self,
                 RoadPreviewRequest {
+                    tunnel,
+                    crossing_level,
+                    median,
                     enqueued_at: None,
                     include_terrain: false,
                     request_id: 0,
@@ -310,6 +326,8 @@ impl SimCore {
             rejection.report(
                 RejectedBy::Commit,
                 RoadAttempt {
+                    tunnel,
+                    crossing_level,
                     points: &submitted_points,
                     fwd_lanes,
                     bkw_lanes,
@@ -356,6 +374,9 @@ mod tests {
         ];
         let outcome = core.commit_road(
             RoadCommitRequest {
+                tunnel: false,
+                crossing_level: 0,
+                median: None,
                 points: points.clone(),
                 fwd_lanes: 2,
                 bkw_lanes: 1,
@@ -399,5 +420,64 @@ mod tests {
             replayed,
             points.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>()
         );
+    }
+    #[test]
+    fn drawn_medians_survive_widening_and_cross_junction_splits() {
+        use crate::simulation::network::graph::RoadMedian;
+        use std::time::Instant;
+        for (style, width) in [(1, 1.0), (2, 5.0), (3, 2.0)] {
+            let mut core = SimCore::new(WorldConfig {
+                width_m: 512.0,
+                height_m: 512.0,
+                terrain_cell_m: 4.0,
+                terrain_chunk_m: 128.0,
+                ..WorldConfig::default()
+            });
+            core.create_blank_world_internal(512.0, 512.0, 4.0, 128.0, 0.0)
+                .unwrap();
+            let median = RoadMedian::from_tool(style, width).unwrap();
+            let first = core.commit_road(
+                RoadCommitRequest {
+                    tunnel: false,
+                    crossing_level: 0,
+                    points: vec![
+                        Vector3::new(-100.0, 0.0, 0.0),
+                        Vector3::new(100.0, 0.0, 0.0),
+                    ],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    median,
+                    snap_to_existing_roads: true,
+                    edit_plan: None,
+                },
+                Instant::now(),
+                Default::default(),
+            );
+            assert!(first.committed, "style={style}: {}", first.rejection);
+            assert!(core.change_road_cross_section(0, 2, 2, median));
+            let crossing = core.commit_road(
+                RoadCommitRequest {
+                    tunnel: false,
+                    crossing_level: 0,
+                    points: vec![Vector3::new(0.0, 0.0, -90.0), Vector3::new(0.0, 0.0, 90.0)],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    median: None,
+                    snap_to_existing_roads: true,
+                    edit_plan: None,
+                },
+                Instant::now(),
+                Default::default(),
+            );
+            assert!(crossing.committed, "style={style}: {}", crossing.rejection);
+            assert_eq!(
+                core.region_graph
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.median == median)
+                    .count(),
+                2
+            );
+        }
     }
 }

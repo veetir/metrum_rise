@@ -23,6 +23,859 @@ Implementation lives mainly in:
 
 ## Current Scope
 
+### Upstream integration acceptance — TRAFFIC-09
+
+#### Conflict-zone implementation and spillback audit — 2026-10-25
+
+The approved reservation redesign and bounded spillback audit are complete. The original
+48-hour world drains; a longer continuation saturates its road storage. The follow-up found
+no additional permanent artificial blockage to fix. TRAFFIC-09 remains open for integration
+and performance-contract agreement, **not** for a mandatory network-wide admission redesign
+or unsafe upstream flow parity. No right-of-way, collision, entry or performance threshold
+was weakened.
+
+**Compiled authority.** Each conflicting connector pair owns one resource per connected
+component of its swept-path overlap. Fractional segment/capsule clipping gives entry/exit
+stations on both paths, rather than reserving whole sampled segments or connectors. These
+resources live with the junction, have stable pair/path order, rebuild only with affected
+junctions, and refresh their distance stations after terrain fitting. No overlap geometry
+runs during traffic. The existing right-hand/major-road policy, complete stop requirement,
+roundabout circulation priority and yielding-cycle arbitration remain authoritative.
+
+**Vehicle claims.** Occupancy buckets seed physical body/tail ownership. A vehicle claims
+reachable zones in path order; an opposing path cannot use a zone until the owner's tail
+clears it. A same-path platoon retains ordinary following separation and names its rearmost
+claimant, whose tail clears last. Wait vertices are individual vehicles, with immediate
+following edges and remaining-zone dependencies. Before a claim or platoon-owner transfer,
+retained DFS scratch checks that it cannot close a local circular wait. Connector cohorts
+are insufficient: a leader must not inherit all of its followers' future waits. Sorted
+junction/connector/bucket order and existing ordered handoffs make claims deterministic;
+ordinary independent movement remains parallel. Released zones become available in the next
+occupancy snapshot, so a parallel step never relies on another car moving first.
+
+Full-crossing readiness still controls approach braking. Statutory permission can also let
+a car stage on a clear connector prefix at junction crawl speed; a separate per-vehicle
+travel bound stops strictly before an unclaimed zone, including at the maximum UI time step.
+Touching an entrance is not occupation. A front strictly beyond entry and a tail strictly
+before exit occupies the interval; f64 subtraction avoids f32 tail-clearance cancellation.
+
+**Storage and entries.** Each admitted car also books one complete tail-clearing slot in
+the downstream lane's free prefix, after promises to other in-flight cars. Connector exit
+consumes that booking. Frontage, lateral and border insertion cannot consume booked storage
+or leave their own tail across the mouth. First network entry now uses the existing ordered
+gap/claim path; denied cars wait outside the lane without losing their trip, freight event,
+target or scheduler state. They remain visible in raw network counts. Format **109** persists
+`tail_connector_lane_id` through handoffs, compaction and lane remapping: choosing a guessed
+incoming connector at a shared exit is unsafe. Older saves explicitly initialise it to
+unknown; such an outgoing tail conservatively excludes new conflicting entry until clear.
+The legacy road/upstream version histories remain distinct and supported.
+
+**Bounds.** For one local junction, let C be connectors, Z zone references, J registered cars
+and tails, E their remaining wait/following links, q a lane's occupants, B local successors,
+and z_v a vehicle's path zones. One vehicle costs O(z_v·(J+E) + log q + B), with empty-opposite
+paths skipping DFS. Junction preparation/claims cost O(Z·log q + C·B + E +
+Σ_v z_v·(J+E)); statutory Tarjan remains O(C+K) for K yield links. Finding and sorting active
+junctions costs O(D·log D) for D occupied lanes. There is no citywide agent/spatial scan in
+zone arbitration. Storage is retained O(A+L+Z+J) scratch for A agent-index slots and L lanes;
+only active slots reset. Z counts the allocated zone-ID high-water until a full lane rebuild,
+as incremental rebuilds preserve remote IDs. Buffers grow before visitation, with no steady-state
+vehicle-loop allocation. Geometry compilation costs O(C²·P²) time and O(P²) temporary pair workspace for
+P sampled segments. The local DFS is an explicit correctness cost beyond the former coarse
+O(conflict degree) gate; equal-work PERF-06 measurements below bound its measured impact.
+
+**Safety evidence.** The takeover reruns the agent group (162 pass) and save group (64 pass). Independent
+body/tail assertions observe actual lane transitions, rather than trusting reservation owners.
+Finite all-yield, opposing-left, short-link, roundabout, ramp, pocket and bus-lane fleets drain
+without overlapping opposing pair zones, with identical one/eight-worker results. Additional
+regressions cover a busy-prefix stage, exact entrance touching, maximum-speed steps, booked
+exit storage, height/incremental cache rebuilds, border holds and v109 mid-exit save/remapping.
+The existing priority/stop/roundabout/ramp/pocket tests are retained. This is constructed-case
+coverage, not a proof against arbitrary saturated road-network cycles.
+
+**Unchanged common initial world, 48 hours.** New zone reservations end with 6,891 employed,
+2,836 raw network occupants, raw car speed 1.957435 m/s, 1,176 physical network cars at
+4.720480 m/s and 1,660 outside holds. The fresh takeover regression exactly reproduces these
+counts/speeds and passes in 7.58 s; its non-midnight hour mean is **0.417170 ms** (the prior
+replay measured 0.430580 ms). The upgraded
+regression fails on unchanged `0cc4a2ab` production behavior: 8,225 raw occupants, 8,208
+physical cars and 0.097857 m/s. Its newly generated initial agents and saved-lane rows match
+the preserved original exactly. Passing the regression means drainage, at least the game's
+minimum junction speed and preserved initial employment; it does not certify parity with
+upstream's 944 / 9.112 m/s. That gap remains explicit.
+
+A separate diagnostic build applies **only the border hold** to plain `b75e03c9`: it ends
+with 7,019 employed, 1,321 raw network occupants, 1,310 network cars at 6.123514 m/s,
+875 physical cars at 9.136034 m/s and 435 outside holds (hour mean 0.219886 ms). This shows
+why outside holds explain part of the raw-count difference, but cannot explain the slower
+physical traffic under safe junction rules. This build is a causal control, not plain
+upstream acceptance or a production alternative.
+
+**Saturated continuation, reproduced in the takeover.** The new default day-12 10k snapshot has 2,649 rows with
+workplaces, 7,065 raw network occupants and raw car speed 0.561691 m/s (5,768 physical cars,
+1,269 holds). A diagnostic continuation to day 14 reaches 8,120 raw occupants, 6,461 physical
+cars at 0.285067 m/s and fails the same progress assertion. It contains the directed lane
+cycle `732 → 738 → 1572 → 979 → 973 → 1513 → 732`: four 39 m lanes hold 14 cars each and
+two 389 m lanes hold 144 each, for **344 cars**. Their head requests are connectors
+`10674, 10751, 13807, 13725, 13651, 10605`. All six crossings are clear, all have zero zone
+bookings, and every downstream entry capacity is zero. The first cars are at 3.9 m on the
+short lanes and about 2.9 m on the long ones; neither leaves the 5.3 m prefix needed to
+accept another 2.6 m body with the existing 0.1 m gap and clear its tail. No car can legally
+start the transfer that would free the next road. This is road-storage circular wait, not
+an occupied junction or a conflict-zone ownership cycle. The unchanged upstream-plus-border
+control remains employed at 7,202 on day 12, with 2,644 raw occupants, 1,212 physical cars,
+1,417 holds and raw car speed 3.035606 m/s.
+
+#### Bounded spillback audit and measured demand — 2026-10-25
+
+The takeover adds test-only observations in `traffic09/spillback.rs` and an isolated offered-stream
+measurement in `junction_control_tests/zone_cycles.rs` (`980b6074`). Production movement is
+unchanged from `50e0b60d`. Stable handles track cars across swap-removes, and every lane
+asserts `initial + arrivals = departures + final`. Handle/transition accounting is O(A log A) per frame; rare diagnostic captures and final
+occupancy export deliberately scan test collections. All observers and allocating JSON
+diagnostics are absent from gameplay and are not used for performance timings.
+
+The saved day-12 world advances 48 hours / **2,880 movement seconds** with exactly the earlier
+six-hour traffic/employment checkpoints and day-14 result. The city completes **153,923
+connector exits**. The six loop roads start with **239** cars, receive 1,793 lane arrivals and
+have 1,688 lane departures, ending at **344**. Their six requested connectors admit
+**414 / 431 / 196 / 0** cars in successive 12-hour windows; all are empty and unbooked at
+the final full-loop state. Arrivals/departures include frontage handoffs, not just junctions.
+
+The audit follows all ten connector stops exceeding 30 movement seconds. Each sampled
+head is waiting for an actual conflicting stream it must yield to; the conflicting owners
+change and continue to move. The longest connector stop is **79.47 s**, then releases.
+No permanently retained booking, platoon-transfer fault or hidden local reservation cycle
+was found. Snapshot-granted, physically clear heads with unbooked exit capacity have at most
+**4.27 s** of consecutive stationary observations, not a permanent clear-zone hold; same-tick
+claims are still authoritative. Outside holds have 6,004 arrivals and 5,638 departures,
+growing 1,269→1,635; they resume through the normal entry path rather than starving a free
+network. This is bounded trace evidence, not a proof for arbitrary road graphs.
+
+A separate trace builds the unchanged default 10k recipe, then observes 216 hours from
+day 3 08:00 to day 12 08:00. Its midnight checkpoint at hour **208** exactly reproduces
+5,768 physical cars at 0.685267 m/s and 1,269 holds. No input density, treasury, fixture,
+priority or clearance setting is changed. That diagnostic is distinct from the preserved
+1e15-treasury common-initial-world regression and from the snapshot-backed timing contract.
+
+For the actual day-12→14 replay, count each active network car's remaining intermediate
+route nodes from `current_path_index`, including outside holds. Net offered traversal work
+is measured entries plus the change in these pending requests (so route changes/cancellations
+are netted). These are outstanding route requests, including cars that have not reached the
+approach, **not** measured stop-line arrival rates or free-exit junction capacities:
+
+| Junction node | Pending requests, start→end | Net offered traversals | Measured connector entries |
+| --- | ---: | ---: | ---: |
+| 20, feeding the grid | 1,103→1,413 | 2,131 | 1,821 |
+| 125, loop junction | 134→157 | 283 | 260 |
+| 126, loop junction | 1,182→1,210 | 278 | 250 |
+| 127, loop junction | 1,568→1,571 | 325 | 322 |
+| 166, loop junction | 3→7 | 1,333 | 1,329 |
+| 167, loop junction | 989→965 | 1,281 | 1,305 |
+| 168, loop junction | 1,027→1,000 | 1,291 | 1,318 |
+
+The isolated four-arm, equal-road, 1+1 fixture offers one car per arm every two movement
+seconds, with normal outside entry holds. Absorbing outputs beyond complete tail clearance
+remove downstream congestion **only in this subsystem measurement**. The actual city and
+contract fixtures are untouched. Over the first 120 movement seconds, 240 cars are offered:
+
+| All four approaches | Offered | Junction entries | Completed exits | Still pending | All 240 complete by |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Straight movements | 240 | 105 | 99 | 141 | 269.87 s |
+| Left turns | 240 | 65 | 60 | 180 | 432.00 s |
+
+That is **7,200 offered vs 2,970 / 1,800 completed per 3,600 movement seconds** in the
+observed initial window, not a claim of maximum steady-state capacity or real Finnish field
+capacity. These seconds are the clock-scaled physics step, not wall time or authored hours
+(the city recipe has 1,440 movement seconds per authored day). Finite excess demand drains
+after its source stops, with all priority, full-stop, zone and storage rules retained.
+
+The confirmed artificial defects fixed by the committed redesign are coarse whole-connector
+exclusion, vehicle/platoon wait ownership and tail identity, and first-lane border overfill.
+The remaining full-road loop has no legal tail-clearing transfer along its requested routes.
+This is genuine saturation under fixed routes. Signals or larger roads are the real-world
+capacity response before gridlock; signals cannot create missing exit storage in an already
+full closed loop. Congestion-aware detours are separate future routing work. No arbitrary
+spare-slot rule, whole-city admission graph, trip/job deletion or relaxed box clearance is
+introduced merely to match upstream's less restrictive junction flow.
+
+Reproduce with the release test binary, `METRUM_DEBUG=0`, eight Rayon workers:
+
+```sh
+METRUM_TRAFFIC09_INPUT="$ARTIFACTS/day12.sqlite" \
+METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/spillback" "$TEST_BINARY" \
+  nodes::sim::core::populated_city::traffic09::spillback::audit_saved_spillback \
+  --exact --ignored --nocapture --test-threads=1
+METRUM_TRAFFIC09_HOURS=216 METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/default-trace" \
+  "$TEST_BINARY" nodes::sim::core::populated_city::traffic09::spillback::audit_saved_spillback \
+  --exact --ignored --nocapture --test-threads=1
+"$TEST_BINARY" \
+  simulation::economy::agents::tick::junction_control_tests::zone_cycles::queued_yield_junction_throughput \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Unset `METRUM_TRAFFIC09_INPUT` for the fresh default trace. Observers write task-owned
+snapshots and JSON; source saves are opened by the normal read-only loader. No new gameplay
+hot-path code, allocation or spatial structure is added by the takeover.
+
+#### Takeover full-contract rerun — 2026-10-25
+
+One final full upstream/model pair was run serially, unprofiled, with eight Rayon workers,
+`METRUM_DEBUG=0`, Apple M2 Pro and the compatible macOS 26.5 SDK. No other build, test or
+Godot ran during either contract. Upstream is the retained `b75e03c9` executable SHA-256
+`c406e5be621f4bea…`; the model test binary at `980b6074` is `8e2418a78e8e3a75…`.
+Only test instrumentation and documentation changed after the production model `50e0b60d`.
+Each invocation includes all default phases, the complete baseline/fiscal next days,
+locality gates and all six PERF-06 modes, with freshly generated default fixtures:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 ./run.sh --perf-contract \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/upstream-contract"
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 ./run.sh --perf-contract \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/model-contract"
+```
+
+Select the corresponding retained executable for each command. Tool `git_head` identifies
+the orchestration checkout, not the archived upstream binary's source.
+
+Both contracts still **fail**, upstream in **78.98 s** with the same five work-count gates,
+model in **99.44 s** with the same two. Upstream failures are baseline buyer sites
+10→369, staffing trials 49,289→231,170 and job-search keys 64→15,448, plus fiscal buyer sites
+716→2,764 and CCH searches 6,771→26,851, against 3.4283×. Model failures are baseline supplier
+searches 14,614→53,548 and supplier routes 177,611→741,463, against 3.5442×.
+All absolute hour/day timing limits, locality gates and fiscal churn checks pass.
+No gate or workload was weakened to manufacture acceptance.
+
+| Complete next-day hour mean, ms | Plain upstream | Zone model |
+| --- | ---: | ---: |
+| Baseline 10k | 1.163902 | 2.462754 |
+| Baseline 30k | 4.177447 | 7.042008 |
+| Fiscal stress 10k | 7.088239 | 12.382824 |
+| Fiscal stress 30k | 29.621661 | 38.877199 |
+
+These are **different resulting workloads**, not equal-work timing acceptance. Both retain
+the corrected 1e10 treasury and ordinary densities/roads, but their warm-ups produce:
+
+| Tier / build | Employed | Raw network occupants | Physical network cars | Outside cars | Physical car speed, m/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10k upstream | 7,186 | 2,481 | 2,443 | 17 | 4.988378 |
+| 10k model | 2,621 | 7,065 | 5,768 | 1,269 | 0.685267 |
+| 30k upstream | 16,715 | 7,951 | 7,680 | 227 | 3.372985 |
+| 30k model | 5,186 | 22,467 | 18,601 | 3,838 | 0.434326 |
+
+Employment is the production diagnostic, not merely a non-null workplace column. Final
+baseline employment is 7,179/3,040 at 10k and 16,674/5,191 at 30k (upstream/model); fiscal
+final employment is 67/67 and 201/245. These reproduce the earlier workload differences.
+Separate one-time baseline setup is **32.47→54.96 s** / **100.61→179.69 s** at 10k/30k;
+fiscal preparation is **13.38→24.05 s** / **40.14→77.89 s**. Exact saved/straight-through
+continuation checks pass for all four new fixtures. Setup is excluded from timed contract costs.
+
+All six corresponding PERF-06 work dictionaries match exactly. This final invocation's
+per-tick ms are single observations, not the earlier five-pair medians:
+
+| Mode | Agents | Upstream | Zone model |
+| --- | ---: | ---: | ---: |
+| Network | 10k | 0.527917 | 0.697542 |
+| Network | 30k | 1.017584 | 0.902459 |
+| Access egress | 10k | 0.950083 | 0.656833 |
+| Access egress | 30k | 1.654584 | 1.794125 |
+| Access ingress | 10k | 0.466875 | 0.471875 |
+| Access ingress | 30k | 0.623667 | 0.909084 |
+
+The 10k network and 30k ingress rows increase 32.1% and 45.8%; other rows move in both
+directions. This one pair neither establishes a speedup nor resolves timing significance.
+These long-road fixtures do not exercise occupied zone DFS. The earlier repeated results
+below retain their original build identity; they do not replace this final observation.
+Integration remains unaccepted while the work gates and realistic-traffic contract are
+resolved with upstream. Safe road saturation is not a reason to bypass yield rules.
+
+Fresh correctness checks at this code checkpoint pass **2,863 library tests, 168 ignored**
+(280.06 s), the 162-agent and 64-save groups, and clean all-target Clippy. The two new ignored
+manual diagnostics were run explicitly and pass. Build and verification commands from the
+repository root (`SDKROOT` selects the installed MacOSX26.5 SDK on this host):
+
+```sh
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" --test-threads=8
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+```
+
+Ten fresh isolated Godot bridges pass individually: `road_junction_control_test`,
+`road_roundabouts_test`, `road_ramps_test`, `road_pockets_test`, `road_pockets_legacy_test`,
+`road_turn_lanes_test`, `road_trajectory_test`, `road_cross_section_test`,
+`road_grade_separation_test` and `road_junction_preview_test`. Each uses:
+
+```sh
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" \
+  --script res://tests/<name>.gd
+```
+
+The unchanged production DLL is SHA-256 `286e2969d4107005…`; test-only additions do not
+require replacing it. The 65-suite Mac inventory, four growth integrations, five-user-save
+fingerprints and FPS comparisons remain prior-session evidence, not newly repeated matrices.
+
+Fresh windowed Godot 4.7.2 / Metal captures use the existing `traffic09_capture.gd`, a read-only
+KYS copy and this audit's **day-14** snapshot, with `METRUM_TRAFFIC09_CITY_PIVOT=200,0,-850`.
+All six PNGs are inspected: KYS before/busy overhead and busy street, plus city overhead and
+two street frames. The city view shows full lanes with clear junction space; selected car
+4960 stays at `(194.5, 0, -848.25)`, 0 m/s, over **8.81 real seconds**. KYS car 23 moves
+about 15.1 m between samples (13.89→7.69 m/s). The KYS views are compared with
+`user-2026-10-21/kys-1.png` and the prior captures. Missing signals/gantries, mature trees
+and imported bridge detail remain; visible mesh interpenetration still reflects the existing
+2.6 m simulation body versus independently sized vehicle meshes. This follow-up changes
+neither vehicle dimensions nor those import/rendering systems. No fresh FPS acceptance is
+claimed. The capture process exits successfully; every Godot launched for this takeover
+has exited. PNGs, captures, generated UIDs and LFS screenshot noise remain unstaged.
+
+#### Fresh release acceptance checks for the zone model
+
+The following are completed prior-session measurements, inspected during takeover;
+they are not new reruns. All runs below are serial and unprofiled on Apple M2 Pro, Rust 1.98.1 / macOS SDK 26.5,
+eight Rayon workers, `METRUM_DEBUG=0`, without concurrent builds/tests/Godot. The final model
+is Rust `50e0b60d`; full-contract binary SHA-256 prefixes are plain `b75e03c9`
+`c406e5be621f4bea` and merged `bfc70121e0182eb7`. The separate plain-upstream matched-world
+driver is `5e68…` (test instrumentation only); its fresh replay reproduces the original
+944 / 9.112031 result. `git_head` in tool reports identifies the orchestration checkout,
+not the source of an archived binary.
+
+The complete commands, without narrowing phases or shortening windows, are:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 ./run.sh --perf-contract \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/final-contract"
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Both full contracts **fail**: upstream has the same five work-scaling failures in **76.50 s**;
+merged has two in **97.22 s**. All absolute hour/day limits, locality gates, agent gates and
+fiscal churn coverage pass. Upstream failures remain baseline buyer sites 10→369, staffing
+trials 49,289→231,170, job-search keys 64→15,448, fiscal buyer sites 716→2,764 and CCH searches
+6,771→26,851, against 3.4283×. Merged fails baseline supplier searches 14,614→53,548 and
+supplier routes 177,611→741,463, against 3.5442×. The observed excessive work is retained;
+no gate or fixture was changed to pass.
+
+| Complete next-day hour mean, ms | Plain upstream | Zone model |
+| --- | ---: | ---: |
+| Baseline 10k | 1.017743 | 2.463531 |
+| Baseline 30k | 3.947025 | 6.582522 |
+| Fiscal stress 10k | 7.062749 | 11.902543 |
+| Fiscal stress 30k | 29.432408 | 37.583617 |
+
+These unchanged default recipes use the corrected 1e10 treasury, unlike the preserved
+1e15 common-world reproducer. Their own warm-ups diverge. At the saved baseline boundary,
+resident employment uses the production census diagnostic (not merely non-null job rows):
+
+| Tier / build | Employed | Raw network occupants | Physical network cars | Outside cars | Raw car speed, m/s | Physical car speed, m/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10k upstream | 7,186 | 2,481 | 2,443 | 17 | 4.953905 | 4.988378 |
+| 10k zone model | 2,621 | 7,065 | 5,768 | 1,269 | 0.561691 | 0.685267 |
+| 30k upstream | 16,715 | 7,951 | 7,680 | 227 | 3.277907 | 3.372985 |
+| 30k zone model | 5,186 | 22,467 | 18,601 | 3,838 | 0.360038 | 0.434326 |
+
+After the measured next day, baseline employment is 7,179/3,040 at 10k and 16,674/5,191 at
+30k (upstream/model). Fiscal final employment is 67/67 and 201/245. Thus the hour means are
+observations of different resulting work, not equal-work acceptance or a claimed speedup.
+One-time baseline fixture generation, separately timed, increases **30.68→53.35 s** at 10k
+and **95.83→164.20 s** at 30k; fiscal preparation is **13.10→22.83 s** and **35.98→72.20 s**.
+Exact saved/straight-through continuation checks pass for all four new fixtures.
+
+PERF-06 repeats five upstream/model pairs, alternating pair order. All 60 records have
+matching work dictionaries for their six corresponding modes. Median per-tick ms
+(min–max across the five independent invocations):
+
+| Mode | Agents | Upstream | Zone model |
+| --- | ---: | ---: | ---: |
+| Network | 10k | 0.518 (0.419–0.570) | 0.588 (0.510–0.788) |
+| Network | 30k | 1.010 (0.890–1.159) | 1.044 (0.860–1.391) |
+| Access egress | 10k | 0.781 (0.752–0.859) | 0.727 (0.702–0.750) |
+| Access egress | 30k | 1.683 (1.663–1.745) | 1.712 (1.640–1.777) |
+| Access ingress | 10k | 0.472 (0.363–0.555) | 0.414 (0.380–0.543) |
+| Access ingress | 30k | 0.672 (0.466–1.053) | 0.696 (0.584–0.827) |
+
+The 30k observed increases are 3.4%, 1.7% and 3.6%; the 10k network median rises 13.4%.
+Ranges overlap and macOS has no affinity control here, so these short mixed observations
+establish neither a general speedup nor a significant change. PERF-06's long-road fixtures
+have no occupied junction conflicts: they check equal-work dispatch/following/access overhead,
+not worst-case zone DFS. The full-city work-scaling gates and integration-contract agreement
+remain open; realistic road saturation is not itself evidence of defective zone arbitration.
+The previously completed PERF-07 matrix remains **historical and unaccepted**, including
+missing macOS run-queue statistics; it was not rerun for this follow-up and is not presented
+as validation of the new model.
+
+Fresh road chunk and six populated locality comparisons against `0cc4a2ab` pass their
+unchanged product/bounds assertions; the new constant-cost differences, separate setup
+measurements and rendered inspection are recorded in `roads.md`.
+
+#### Historical controlled diagnosis after legacy migration
+
+The jam already exists on pre-merge `0cc4a2ab`. Its unchanged 10k fixture, admitted through
+`PopulatedCity::admit_households` and advanced through the usual 48 warm-up hours, ends with
+8,225 network occupants and mean network-car speed 0.097857 m/s. This run happens before
+any reload, so the earlier vacancy-reserve continuation failure cannot explain the jam.
+
+A task-owned v95 snapshot immediately after that original admission is the common initial
+world for the following runs. All start with 7,396 buildings, 12,242 agents, 10,000 residents,
+6,690 employed agents, 2,263 network occupants and seven intersection occupants. Hashes of
+nodes, control/physical geometry and directed saved-lane topology match across old, merged,
+all mechanism controls and plain upstream. All 446 edges have 1+1 lanes: there are no pockets
+and zero lanes requiring turn preparation. ROAD-67 lane choice/pocket-capacity branches
+therefore do no work in this fixture; this is not an acceptance claim for a multilane city.
+
+Eight-worker, serial, unprofiled release results after the same 48 hours, Apple M2 Pro,
+`METRUM_DEBUG=0`, maximum fixture speed:
+
+| Build / isolated mechanism | Employed | Network occupants | Car speed, m/s | Non-midnight hour mean, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Original road chain, straight through | 6,937 | 8,225 | 0.097857 | 10.592841 |
+| Plain upstream, common initial world | 7,210 | 944 | 9.112031 | 0.245382 |
+| Merged, all road rules | 6,957 | 7,216 | 0.192786 | 0.459187 |
+| Diagnostic: precedence removed, crossing reservations retained | 6,899 | 7,290 | 0.178700 | 0.413355 |
+| Diagnostic: snapshot conflict-occupancy gate bypassed | 7,181 | 2,115 | 3.302306 | 0.440684 |
+| Diagnostic: downstream admission gate bypassed | 6,825 | 6,440 | 1.075079 | 0.443910 |
+| Diagnostic: connector controls removed | 7,210 | 1,000 | 9.124341 | 0.466623 |
+
+The mechanism variants exist only in the task-owned experimental source archive/test builds;
+none is a production fix. Precedence removal clears statutory yield/stop decisions while
+retaining crossing occupancy, downstream admission and same-tick conflict claims. Snapshot
+bypass leaves precedence, downstream admission and same-tick conflict claims in place. Exit
+bypass leaves precedence and crossing checks in place. Ordinary road entry/exit gap and lane
+claims remain in every variant. Complete control removal is an intentionally unsafe causal
+control, not a permitted repair. These are matched *initial* workloads; their eventual trip
+and employment counts differ. The fixture retains the old chain's 1e15 funded treasury;
+whole-contract runs below retain upstream's corrected 1e10 fixture. Do not mix their means.
+
+Plain upstream cannot read road v95. For this no-feature grid only, the merged build loads
+that snapshot and writes v108; a new task-owned copy advertises v107 for the upstream reader.
+The shared SQL/runtime schema is upstream v107, the added road tables are empty/default,
+and the initial topology/agent-count hashes above verify this control. Neither the canonical
+initial snapshot nor any player save is edited. A preliminary reload-driver attempt remained
+paused because production load pauses the clock; it produced no timing observation. The
+corrected driver explicitly restores the existing fixture's maximum speed after load.
+
+The responsible mechanism is the road chain's coarse connector conflict reservation, rather
+than the new scheduler or the statutory right-hand/major-road ordering alone.
+`JunctionAdmission::prepare` marks a movement clear only when **every conflicting connector
+bucket is empty**; `LaneClaimContext::connector_allowed` also reserves the entire conflicting
+movement during a handoff. Conflict lists are derived once from any overlap of the complete
+swept connector trajectories. Thus the intersection reserves whole traversals, rather than
+releasing individual conflict zones when a vehicle's tail clears them. Turning/braking and
+exit-storage holds extend those reservations; removing precedence alone cannot restore flow.
+The two narrower controls show both the occupancy gate's dominant effect and the additional
+cost of downstream holding. Disabling the checks would trade the jam for vehicle conflicts.
+
+`TRAFFIC-07` is independently present: before warm-up, 2,182 cars occupy distance zero of
+border-entry lane 2040. At hour 48, the merged city still stacks 1,839 there; plain upstream
+from the same initial world clears the stack completely. `prepare_lane_entry` still bypasses
+the ordinary attach-gap/claim path for first network entry. Overfill supplies unrealistic
+pressure, but the unchanged initial stack drains under upstream/control-removal behavior;
+it does not by itself account for the road-rule throughput collapse. No entry check was
+loosened, no fixture changed and no cars/jobs deleted to obtain these results.
+
+The original handoff stopped at the redesign decision. The user subsequently approved the
+conflict-zone implementation above; that earlier stop is superseded. The historical controls
+below remain evidence of their original builds, not validation of the new reservation model.
+
+The committed ignored driver `nodes::sim::core::populated_city::traffic09::dense_city_warmup`
+records six-hour checkpoints, initial/final SQL snapshots and lane/control geometry without
+altering production rules. With `METRUM_TRAFFIC09_INPUT` omitted it constructs the normal
+fixture; with it set it loads the common initial snapshot read-only. A fresh replay of the
+committed driver reproduces all nine authority checkpoints exactly; its all-target Clippy
+check is clean. The timings in the table remain those of the original matched sequence:
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 METRUM_TRAFFIC09_INPUT="$ARTIFACTS/initial.sqlite" \
+  METRUM_TRAFFIC09_OUTPUT="$ARTIFACTS/fresh-run" "$TEST_BINARY" \
+  nodes::sim::core::populated_city::traffic09::dense_city_warmup \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+#### Historical whole-contract rerun after migration
+
+The road/scheduler merge is not accepted for dense-city behavior. Fresh serial, unprofiled
+release reruns after the migration use upstream `b75e03c9` and merged Rust `cfcb2bd3`, Apple
+M2 Pro, eight Rayon workers and `METRUM_DEBUG=0`, with no concurrent builds/tests/Godot.
+Both full `./run.sh --perf-contract` checks still fail work-scaling limits: five on upstream
+in 76.44 s, three on merged in 85.94 s. All absolute hour/day limits pass. Revision-checked
+copies of the original complete contract caches are retained; no fixture or threshold was
+changed. These default day-12/day-16 cities have diverged during their own warm-ups, unlike
+the common initial world in the causal experiment above.
+
+| Full-day hour mean, ms | Plain upstream | Merged |
+| --- | ---: | ---: |
+| Baseline 10k | 0.999110 | 2.500121 |
+| Baseline 30k | 4.143611 | 6.753725 |
+| Fiscal stress 10k | 6.961491 | 9.433688 |
+| Fiscal stress 30k | 29.796770 | 26.580440 |
+
+The pre-merge road binary `0cc4a2ab` fails its 10k snapshot's exact save/reload preparation
+check: `vacancy_reserve` changes from 531 to 511 on reload, while the other recorded fields
+match. No full economy timing from that rejected snapshot is used. The table therefore
+compares plain upstream with merged, not the older road binary with merged.
+
+The prepared day-12 10k saves already diverge before loading: upstream has 7,186 employed
+agents and 2,481 network occupants; merged has 716 employed and 9,092 network occupants.
+Car speed on network lanes averages 4.954 versus 0.052 m/s. This establishes a dense-traffic
+flow/behavior regression during fixture warm-up, not a save-loader loss. The controlled
+follow-up above identifies the connector-reservation bottleneck. These day-12 figures remain observations of their original builds, not matched initial
+workloads or proof of a repaired city.
+
+Upstream work-limit failures are baseline buyer sites 10 → 369, staffing trials 49,289 →
+231,170 and job-search keys 64 → 15,448; fiscal buyer sites 716 → 2,764 and combined CCH
+searches 6,771 → 26,851. Their 10k→30k bound is 3.4283×. Merged failures are baseline supplier
+routes 144,303 → 530,202 and combined CCH searches 9,465 → 33,953; fiscal job-search keys
+7 → 59, against 3.5112×. These failures remain visible; none of the limits were weakened.
+
+At the prepared default baseline boundary, upstream/merged 10k employment is 7,186/716,
+network occupancy 2,481/9,092 and car speed 4.953905/0.051891 m/s. At 30k it is
+16,729/1,932 employed, 7,951/26,131 network occupants and 3.277907/0.076792 m/s. These
+nominal tiers are not matched work, and their hour means cannot certify equal-work performance.
+The earlier 88133881 means (1.058/2.541 ms at 10k and 4.040/6.708 at 30k) remain historical
+observations; the new measurements above do not establish an improvement in the traffic model.
+
+Reproduce both full runs with `./run.sh --perf-contract --binary "$TEST_BINARY" --artifacts
+"$ARTIFACTS/fresh-contract"`, without `--phase`, `--agents` or shortened periods. Retained
+binary SHA-256 prefixes are upstream `c406e5be621f4bea` and merged `998cd542b60b40b9`;
+report `git_head` denotes the orchestration checkout, not an archived binary's source.
+
+The short `PERF-06` agent contract passes on all three binaries. Upstream and merged have
+identical work dictionaries in all six 10k/30k modes; the older road binary also counted the
+congestion pass that upstream deliberately removed. Earlier 30k per-tick observations, ms:
+
+| Mode | Road `0cc4a2ab` | Upstream `b75e03c9` | Merged `88133881` |
+| --- | ---: | ---: | ---: |
+| Network | 0.963 | 0.968 | 1.062 |
+| Access egress | 1.595 | 1.644 | 1.750 |
+| Access ingress | 0.604 | 0.809 | 0.686 |
+
+These are single short contract invocations, not repeated sustained-tick acceptance or
+evidence that the dense-city regression is repaired.
+
+Separately, the production bridge loads untouched populated upstream v107 saves at 10k and
+30k with exactly 7,396/11,042 and 20,359/31,597 buildings/agents. Both advance at least a full
+hour without a bridge error. This verifies upstream runtime loading, not dense-city throughput
+acceptance. The road-chain v88–v95 copied-save/fingerprint probes, restored upstream v57–107 readers and
+university bridge now pass; the migration evidence is recorded in the
+[road integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24).
+
+### Automatic vehicle junction priority — TRAFFIC-08 stage 1a
+
+The road-chain implementation was tracked as `TRAFFIC-06` before upstream integration.
+It now uses `TRAFFIC-08`; upstream's `TRAFFIC-06` planning row remains preserved.
+
+Stage 1a adds automatic vehicle right of way to the existing connector reservations. It is a staged
+implementation: zebra priority, fixed-time signals, authored control/major-road selection, all-way stop,
+control previews/undo and importer setters are still pending. ROAD-62 now supplies explicit roundabout entry priority (below).
+The signalised Prisma reference is **not** represented by this stage's priority capture. ROAD-76 preserves imported
+`give_way`, `stop` and `traffic_signals` intent and reports the absent authored-control API;
+it does not silently replace signalised control with an imported stop/yield claim.
+
+At a mixed-hierarchy junction the higher road has priority. Hierarchy is the ordered tuple
+(design speed in mm/s, original through-lane count, original carriageway width in mm).
+`EdgeClass` describes structures (surface/bridge/tunnel), not an OSM road class, so it does not
+set hierarchy. Turn pockets use their original cross-section and cannot promote a side road.
+Equal-hierarchy approaches use the Finnish right-hand rule; a left turn yields to conflicting
+oncoming straight/right movements. Where trajectories overlap without a statutory ordering,
+connector order breaks the tie. Default NET-07 U-turn legality is unchanged.
+
+Lesser approaches yield. A road at most 30 km/h joining a major road at least 60 km/h gets a
+stop control: its leading vehicle must be within 5 cm of its lane mouth and below 0.1 m/s in
+a completed occupancy snapshot before it can enter. This requires a full stopped tick, not
+an arbitrary dwell timer. B1/B5/B6 signing is derived from the identical policy through ROAD-60.
+These are explicit game defaults, not inferred import metadata.
+
+Lane rebuilding compiles local swept-trajectory conflicts and directed yielding relations.
+Opposing cars exclude each other only while occupying the same compiled conflict zone;
+a vehicle tail releases each interval separately, as specified under TRAFFIC-09. Waiting priority
+persists while that crossing is occupied, so another minor-road arrival cannot follow the
+crossing car ahead of a waiting major approach. A blocked outgoing road does not reserve
+precedence for a movement that cannot leave the junction.
+Admission also checks the outgoing road's entry slot to
+avoid deliberately entering a blocked exit. It reserves the existing connector lane, ordered paired zones and complete downstream
+body storage in the stable serial handoff phase.
+
+Before speed updates, immutable lane buckets supply leading approach requests. The lookahead
+covers braking distance, a 20 m approach zone and the current tick's travel.
+Strongly connected components in the active yielding graph identify a
+closed right-hand waiting cycle; its lowest agent index proceeds. A minor movement outside
+the cycle cannot acquire priority by the tie-break. Per-agent speed updates and ordinary
+movement remain parallel, and IDM brakes against denied admission at the lane mouth.
+
+The admission prepass visits nodes reached from occupied lane buckets and reuses retained
+scratch; the zone/vehicle wait-graph bounds and persistence contract are specified above.
+No new spatial index is introduced. Full/incremental rebuild and clear own the derived
+geometry cache lifecycle. Steady-state arbitration and agent loops allocate nothing.
+
+**Zebra boundary found during implementation.** Vehicle connectors start at the asphalt
+junction throat, but zebra centres are `CROSSWALK_INSET` (4 m) farther out on the physical
+road lanes. A connector-only pedestrian conflict check misses these crossings. Stage 1a
+therefore leaves pedestrian admission unchanged; it does not claim zebra priority. The next
+stage must put the stop point before the stripes and reserve the entire incoming/outgoing
+crossing portion, retain the existing turn shape, support degree-two direct continuations,
+and preserve full/incremental rebuild equivalence and agent/save references. Composed walk
+routes must obey the same crossing authority. Do not patch this with a late connector gate.
+
+The priority feature first shipped with road-chain format 91; its policy and scratch remain
+derived. The combined writer is format 109. Explicit upstream and road-chain readers preserve
+their separate histories, including road-chain v88–95; legacy loading is repaired. Compatible loads apply the derived priority policy
+without rewriting their source file; the feature's original captures used fresh blank worlds.
+
+### Roundabout entry priority — ROAD-62
+
+Circulating carriageways have an explicit persisted role, ahead of the existing automatic
+(speed, original lanes, original width) hierarchy. Every entering arm yields to conflicting
+circulating connectors, including an 80 km/h approach to a 20 km/h ring; circulation never
+acquires an obligation to yield to an entering arm. Circulating arms do not emit B1 road-priority
+signs. Entering arms emit the B5/D2 compound sign from the same policy. Existing connector
+conflicts, downstream entry-slot checks and stable handoff claims apply without a separate
+roundabout tick loop. Ordinary roads retain their original hierarchy and right-hand rules.
+
+No new agent fields or runtime allocations are introduced. All added classification occurs
+at local lane/sign rebuilding. The tangent-continuous single-lane road ring uses the existing
+connector path builder and NET-07 routing; no new U-turn exception is needed. A targeted test
+loads six uneven arms with 36 cars taking the long path around the ring and verifies drainage
+and bit-identical final edge/distance/speed results with one and four Rayon workers. This
+fixture has open exits; it does not promise flow through physically blocked downstream roads.
+
+The 2026-10-25 [player-pointer preview repair](roads.md#player-pointer-preview-repair--2026-10-25)
+changes only tool picking and preview status; circulation priority, trajectories, occupancy
+and tick complexity are unchanged.
+
+Geometry/tool contracts, first-slice limits and fresh acceptance evidence live in
+[ROAD-62](roads.md#single-lane-roundabout-authoring--road-62-first-slice). Two-lane destination
+lane choice, spiral exits and pedestrian crossing priority remain pending.
+
+#### Stage 1a acceptance — 2026-10-20/21
+
+Baseline is ROAD-68 checkpoint `7990a6d6`; candidate is the vehicle-priority working tree.
+Apple M2 Pro, Rust 1.98.1, macOS SDK 26.5 and Godot 4.7.2 (gdext 4.5 API).
+Preserved unprofiled release artifacts and individual logs live in `$ARTIFACTS`.
+
+| Artifact | Baseline SHA-256 | Candidate SHA-256 |
+| --- | --- | --- |
+| Library test executable | `d41b15c620baec9088fbaf87ce1a08f3ecca323c29b622b90cb4181246cda452` | `4972ab34cbe199b60cafed4a17f0c8235af3041cce1298cb65ba62d15b865195` |
+| GDExtension library | `fd3a90faa20e306e0e19bca47ac34376676f4a5efe8af0e7255d6037aed3d505` | `a52a5eb774b463a7456b502821c3fa56684f373d8b3c0df3256ba6f0c8af6338` |
+
+Fresh correctness commands, from the repository root:
+
+```bash
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+cargo test --manifest-path rust/Cargo.toml --lib
+cargo clippy --manifest-path rust/Cargo.toml --all-targets
+cargo test --manifest-path rust/Cargo.toml --release --lib --no-run
+"$TEST_BINARY" junction_control --nocapture --test-threads=1
+"$TEST_BINARY" automatic_priority_yield_and_stop_models_follow_approach_policy --nocapture --test-threads=1
+"$TEST_BINARY" test_junction_gate_prevents_stacking --nocapture --test-threads=1
+```
+
+The full debug library suite passed **2,611 tests, zero failures, 148 ignored**; all-target
+Clippy passed without warnings. Ten new admission tests cover hierarchy independent of agent
+storage order, equal-road right-hand yielding, oncoming left turns, cycle draining, priority
+retained during an occupied crossing, full stops, occupied/conflicting claims, incremental
+cache retirement and pocket hierarchy. The sign test
+checks B1/B5/B6 model policy. Existing junction-spacing regressions still check every tick and
+now allow up to 500 simulated seconds for the newly yielding queues to drain, stopping early
+on success.
+A fan-connector regression exposed and fixed braking against a denied representative instead
+of an admissible shorter routing candidate.
+
+Each bridge ran individually against the final native release library in a separate isolated
+Godot test profile; no player mods/saves were loaded:
+
+```bash
+for test in road_junction_control_test road_junction_preview_test road_preview_stream_test \
+    road_cross_section_test road_turn_lanes_test road_pockets_test road_pockets_legacy_test \
+    road_trajectory_test road_grade_separation_test junction_debug_overlay_test; do
+    METRUM_DEBUG=0 RAYON_NUM_THREADS=4 perl -e 'alarm 900; exec @ARGV' \
+        godot --headless --path "$ARTIFACTS/profile/project" --script "res://tests/$test.gd"
+done
+```
+
+All ten passed. The legacy bridge retains all four roadbed golden hashes from `6ec0b858`;
+paint and sign transforms are intentionally outside those geometry hashes. The new bridge
+builds a divided 2+2 major road, 1+1 minor road and median/kerb pockets through Rust tools,
+checks sign poses across the bridge, and runs a car through its pocket route.
+
+PERF-06: **15 alternating baseline/candidate process pairs**, eight Rayon workers,
+`METRUM_DEBUG=0`, no concurrent build/capture. Each executable ran:
+
+```bash
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+    simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+    --exact --ignored --nocapture --test-threads=1
+```
+
+| Workload | Agents | Baseline median ms | Candidate median ms | Paired median delta, 95% interval |
+| --- | ---: | ---: | ---: | --- |
+| Network | 10,000 | 0.519125 | 0.500292 | -4.93% [-10.99%, +4.37%] |
+| Network | 30,000 | 0.888083 | 0.906708 | +0.81% [-7.30%, +9.70%] |
+| Access egress | 10,000 | 0.652667 | 0.647625 | +1.80% [-1.64%, +3.08%] |
+| Access egress | 30,000 | 1.543791 | 1.569250 | +1.04% [-1.45%, +4.98%] |
+| Access ingress | 10,000 | 0.349916 | 0.344125 | -4.22% [-12.24%, +12.18%] |
+| Access ingress | 30,000 | 0.511083 | 0.585083 | -7.05% [-10.94%, +28.77%] |
+
+All work counters match, including linear agent counts and 16 fixed frontage lanes. Every
+interquartile range overlaps and every paired interval includes zero: no regression beyond
+noise is detected on the existing PERF-06 fixtures. Paired intervals use 10,000 bootstrap
+resamples (seed 606); the median of pair ratios differs from the ratio of independent medians.
+This establishes neither a speedup nor saturated signal/junction throughput. Road rebuild,
+locality and visual evidence belong to the [ROAD-60 acceptance](roads.md#road-signs-road-60).
+
+### Restricted ramp movement — ROAD-69 first slice
+
+Ramp stubs use the existing physical lanes, node-to-node routing states and target-lane
+reservations. Their explicit fork whitelist connects through lanes by rank, isolates the
+opposite carriageway, and dedicates the added outer lane to the one-way stub. The downstream
+acceleration taper merges that added lane into its adjacent through lane using the existing
+slice B fork/drop mapping and gap checks. `Ramp` nodes have no ordinary right-hand, stop or
+priority admission cache and no zebras; ordinary junctions at later ramp terminals keep their
+existing automatic controls. No new tick loop, agent field, hot-path allocation or U-turn
+exception is added. Source/target lane offsets are still rebuilt, never decided in GDScript.
+
+Fresh verification on the ROAD-69 release: the complete library suite passes 2,624 tests,
+including shared blocked-merge serialization. The native ramp bridge drives an exit or entry
+plus both through carriageways in all four direction/role combinations. Thirty alternating
+PERF-06 process pairs with eight Rayon workers retain identical work counters. The 30k network
+short-test paired ratio is 1.117 (95% interval 1.029–1.229), so its timing acceptance remains open.
+Three matched sustained production pairs measure 2.890→2.861 ms at 100k and 37.647→38.331 ms
+at 1M on-road agents; the latter is a +1.8% observed change within process-pair variation.
+Build identities, exact commands, timing tables and the populated-road locality check are recorded in the
+[road acceptance](roads.md#first-slice-release-verification--2026-10-21).
+
+The corresponding authoring scope and pending signs, islands, interchange presets and import
+mapping are recorded in [roads.md](roads.md#restricted-ramp-stubs--road-69-first-slice).
+
+ROAD-81 round four commits local clip storage and partial-rebuild fixes: motor spans retain
+2.7 m (`CAR_LENGTH + IDM_S_MIN`), and one dirty mouth respects the fixed opposite clip.
+The debug probe attaches only to car-accessible nodes. Neither change adds tick work or
+changes NET-07. Fresh focused imports pass Luola, university parking, east Niiralankatu,
+Bellanranta and three Saaristokatu deck/approach/lower-road trips. The east fixture still
+refuses its problematic path. Prisma recovers a route but car ID 0 stalls on a short
+left-only approach with insufficient distance for the existing 18 m lane change. These
+focused results do not establish the required full-map seven-trip acceptance; no v4 is
+installed. Causes, regressions, bridge failures and verification are recorded in
+[the round-four checkpoint](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete).
+
+ROAD-81 round five also replays endpoint zebra and authored lane-rule migration when
+adopting precomputed road splits, using the same helper as cold splitting. A crossing can
+no longer remain on the nonincident first half after a later path splits a native ring
+approach. Repeated-split parity has a targeted regression. The new tertiary fixture cold-loads
+and drives through its native ring. Final-runtime checks retain all seven v2 legacy trips
+and all seven round-four focused trip passes on their original saves. Local Tietoteknia
+circulation also passes, but its long ramp trip cannot create a route; west-ring/full-map
+acceptance remains open. There
+are no agent-tick, NET-07 or save-format changes. See the
+[round-five checkpoint](roads.md#round-five-ring-checkpoint--road-81-acceptance-incomplete).
+
+### Bus-only car exclusion — ROAD-72 lane-use slice
+
+Reserved physical ribbons remain in road geometry but are absent from the car `LaneSystem`.
+Existing car spawning, frontage, lane-change and connector queries therefore cannot select
+them. Default movement allocation uses the remaining general lanes. Car routing removes
+all-bus directional traversals and filters explicit whitelist pairs naming a reserved source
+or target; walking is retained. Legal right-turn connectors may cross a reserved ribbon, but
+longitudinal bus/right-turn sharing is pending. NET-07's dead-end-only U-turn rule is unchanged.
+There is no bus vehicle mode yet; `Edge::lane_use` exposes the saved class permission for its
+future lane graph. No agent layout, movement loop or tick allocation changes.
+
+Saved masks and transactional edit behavior are owned by
+[the road contract](roads.md#bus-only-lane-authoring--road-72-lane-use-slice).
+
+ROAD-81 (2026-10-26) maps explicit motor restrictions with `bus:lanes`/`psv:lanes`
+permission and dedicated bus/PSV carriageways through this existing API. Designation
+alone does not exclude cars: per-lane masks require an explicit motor restriction,
+and scalar access follows the more specific motorcar permission. This follows the
+[OSM bus-lane access contract](https://wiki.openstreetmap.org/wiki/Key%3Abus%3Alanes).
+A motor restriction with explicit PSV permission does not become a skipped private
+driveway. Source masks
+stop stroke joins at permission boundaries and follow retained carriageway direction.
+The KYS source has such a separately mapped one-way bus link; geometry acceptance
+and any missing endpoints remain separate from permission support. No bus vehicle
+simulation is added. Native roundabout replacement also preserves genuine one-way
+entry/exit arms (zero lanes in the unused direction), with vehicle lane rebuild tests
+covering both saved edge orientations. NET-07 and the agent tick are unchanged.
+
+### Imported road compiler completion — ROAD-73
+
+The ROAD-73 span-frame repair keeps successful existing section geometry and all lane
+identities unchanged. Rejected spans may receive a validated nonuniform knot frame; surface
+queries and node mouths share its exact retained sections. Overlapping connected junctions
+now use one source-constrained grade, with conforming internal span mouths and material
+boundaries. Nonroad composition gives connected carriageways consistent visible precedence.
+The full-width university rebuild retains 3+3 lanes and both bus lanes, passes exact
+preview/commit, drives traffic and survives save/reload. Bus lanes use ordinary Finnish
+asphalt with white BUS lettering; the inherited red fill is removed.
+
+No agent layout, movement loop, reservation policy, NET-07 behavior or tick-time allocation
+changes. Compiler and renderer measurements are not agent-tick performance claims. Source
+exceptions, legacy grade comparisons and fresh acceptance evidence are owned by
+[the ROAD-73 road contract](roads.md#imported-junction-geometry--road-73).
+
+### Player placement smoke check — ROAD-82
+
+The 2026-10-26 [player-tool check](roads.md#player-placement-pre-pr-check--road-82)
+creates the standard set on flat terrain and a 2% slope through player entry points. Final
+headless fixtures all accept a car route and show initial movement; all feature and bulldoze
+undos restore their tested state. This is a movement smoke check, not loaded-junction or
+reservation acceptance. The repaired ramp pointer shares the existing immutable cursor query;
+there is no change to circulation priority, turn rules, NET-07, agent ticks or allocation.
+The original native slope-ramp refusal, one dropped bulldoze click and remaining capture/QA
+limits are listed under ROAD-82. ROAD-81 continues to own import acceptance.
+
+### ROAD-72 release traffic verification — 2026-10-21
+
+Baseline is `c81d4477`; final source/build identities and road acceptance are in
+[roads.md](roads.md#lane-use-slice-verification--2026-10-21). The agent layout and tick loops
+are unchanged. All six PERF-06 mode/tier work dictionaries match exactly across builds and
+repeated fresh fixtures; agent work grows 3× from 10k to 30k and lane work remains constant.
+
+The first 15 alternating process pairs show +10.5% network and +5.8% egress at 10k (ratios of
+medians). A focused 30-pair repeat on the same binaries does not reproduce a stable positive
+increment. Short-test process timing is variable, so neither campaign establishes a speedup.
+The repeat below shows process medians in milliseconds and the median paired percent change
+with its deterministic 10,000-resample percentile bootstrap interval:
+
+| Mode / agents | Baseline ms | Candidate ms | Paired change %, 95% interval |
+|---|---:|---:|---:|
+| `network` / 10000 | 0.738 | 0.625 | -13.9 [-28.8, -2.3] |
+| `network` / 30000 | 1.417 | 1.335 | -7.8 [-13.6, +0.5] |
+| `access_egress` / 10000 | 0.700 | 0.737 | -0.5 [-6.2, +13.9] |
+| `access_egress` / 30000 | 1.703 | 1.723 | -1.4 [-8.5, +0.4] |
+| `access_ingress` / 10000 | 0.475 | 0.432 | -5.9 [-24.7, +19.4] |
+| `access_ingress` / 30000 | 0.887 | 0.830 | -4.4 [-17.3, +2.6] |
+
+To check production cost without test-only counters, the existing Criterion `agent_benchmark`
+was freshly built for both sources. Eight workers, 30 samples, 2 s warmup and an 8 s requested
+measurement window; construction is outside timed ticks. The first three inherited-policy
+process pairs are too variable for timing acceptance: paired ratios span 0.663–2.141 at 100k
+and 0.643–1.422 at 1M. One bounded follow-up applies macOS application resource policies
+(`taskpolicy -a`) equally to both builds, with three alternating process pairs and no global
+system-setting change:
+
+| Agents | Baseline median ms | Candidate median ms | Change | Observed paired ratio range |
+|---:|---:|---:|---:|---:|
+| 100000 | 3.611 | 3.609 | -0.1% | 0.900–1.001 |
+| 1000000 | 44.263 | 42.580 | -3.8% | 0.948–1.034 |
+
+Production benchmark SHA-256: baseline `61aa987b0049284569717a2dfcf484e3094243d64fce95eec3a5b2d1fdfd24ad`, candidate `7f6c801f7cd8c773252e417a576f8b21604b8718e3006bb72e8db49a91367658`.
+
+The controlled medians change −0.1%/−3.8%, within the observed process-pair variation.
+This detects no material added production tick cost on these fixtures and is not a speedup
+claim. The fixture is one long road, so these results do not establish routing-heavy whole-city
+or rendering-FPS acceptance. Earlier ROAD-69 short-test timing remains separately documented.
+
+```sh
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 CRITERION_HOME="$ARTIFACTS/criterion" \
+  "$BENCH_BINARY" --bench 'AgentSystem::tick/on_road/(100000|1000000)$' \
+  --noplot --save-baseline roads-bs-inherited-pair
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 CRITERION_HOME="$ARTIFACTS/application-criterion" \
+  taskpolicy -a "$BENCH_BINARY" --bench 'AgentSystem::tick/on_road/(100000|1000000)$' \
+  --noplot --save-baseline roads-bs-application-pair
+```
+
 ### Shared lane occupancy contract (TRAFFIC-02)
 
 All live lane acquisitions use `agents/lane_state.rs`: building egress and ingress rollback,
@@ -107,7 +960,7 @@ Supported live behavior:
 
 - car following with simplified IDM
 - road speed limits
-- junction connector lanes with smooth cubic geometry
+- junction connector lanes with tangent circular turns and cubic lateral transitions
 - curve-based junction turn speed caps
 - acceleration and braking limits
 - connector entry spacing so multiple cars can use a junction when safely separated
@@ -313,8 +1166,40 @@ curvature speed until it exits to the target road lane.
 
 ## Planned Lane Changes
 
-Planned lane changes solve a different problem from overtaking: a car may need to move to a sibling
-lane on the same edge to reach the exact `planned_detach_lane_id` for building access.
+Planned lane changes serve both the next junction movement (`ROAD-67`) and the exact
+`planned_detach_lane_id` for building access. Junction lane use and target pairing are owned by
+[`roads.md`](roads.md#default-junction-lane-use--road-67-slice-b-stages-12).
+
+Turn preparation starts within `70 m × (directional lane count − 1) + 30 m` of the road-lane end.
+The car reads its next path edge (or destination approach edge), finds the nearest same-direction
+sibling with an actual connector/direct continuation to it, and moves one adjacent lane at a
+time. Ties use centre-relative lane index then lane ID. The current lane wins if already legal,
+preventing discretionary return/overtake from undoing the preparation. Frontage preparation has
+priority on the destination road. Whitelists use the same actual-connector query.
+
+Turn changes use the existing speed-scaled S-curve, gap tests and deterministic lane reservation.
+The remaining approach distance is divided over the still-required adjacent steps, capping each
+maneuver while retaining its 18 m minimum and the existing 12 m road-end buffer. There is no extra
+per-agent state or allocation. Both claim classification and movement call the same selector.
+Per-tick additional work is O(A × (D + L × C)) in the preparation window, where D is the
+local node degree, L the same-direction lane count and C its successor count. A rebuild-derived per-lane byte skips
+approaches without lane-dependent movements; outside the window an O(1) guard also returns
+before reading path/access columns. No route query or graph-wide lookup occurs during ordinary
+lane choice.
+
+A blocked turn-lane gap suppresses discretionary changes but does not stop the car indefinitely.
+At the road end, if a sibling can make the desired turn but this lane cannot, the car takes its
+first legal onward movement in stable successor order. It keeps its physical connector and
+replans on the outgoing road before its next junction. This reuses the ordinary destination
+planner, and does not jump sideways, reverse on the approach, or relax a turn restriction.
+Freight border trips use the same outgoing-road replan boundary; debug cars without a destination stop
+at the end of the diversion road. A directed network without a legal recovery loop can still
+lose reachability after a missed turn. Genuine missing turns retain the existing failure report.
+
+A destination turn may enter a different same-direction lane on its road, then use frontage lane
+changes to reach the exact detach lane. Inspector route prediction includes these preparation
+moves and the same destination-edge connector fallback; occupied gaps can still change the
+future route and trigger a redraw.
 
 Ownership split:
 
@@ -348,6 +1233,163 @@ The car's authoritative longitudinal lane becomes the target lane when the maneu
 rendering blends from the source lane to the target lane over the S-curve. This keeps traffic gap
 checks and destination detach checks tied to the lane the car is entering, without creating a
 temporary lane object per car.
+
+ROAD-67 stages 3–5 use [split transition nodes](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35).
+Pocket lanes retain node-to-node identities and ordinary lane-local arc distances. The wider
+road's lane mouths sit at the full-width end of the taper; fork/merge connectors traverse the
+taper through existing junction gap checks and reservations. Transition nodes suppress zebras
+while retaining pedestrian continuity. This adds no agent state or per-tick allocation.
+The final 20 m of a movement-selective approach has solid divider paint. The existing cached
+approach flag bounds every planned/frontage/discretionary maneuver before that interval; no new
+agent fields or allocations are needed, and the added tick work is O(1). A blocked car continues
+legally and replans as described above. Rebuilds can reattach a car directly onto a new taper
+connector at its preserved position. Resize/removal/undo reproject moving lane stations, and
+save version 90 persists the sparse taper records while lane identities remain derived.
+H edits pockets, J/K toggle sides, U/I adjust body length and Shift+U/I taper length; both off
+removes it. See the linked road spec for constraints and preview publication.
+
+ROAD-61 tunnel pavement remains available to physical lane-height queries inside a covered bore,
+independently of exterior visibility and terrain support. The ordinary access flags create foot
+lanes only when walking is allowed. A native capture probe routes a car through both portals
+and checks its buried height; Rust coverage checks car-only and car/foot lane construction.
+There is no change to the agent tick, junction reservations, priority or NET-07 U-turn policy.
+See [short tunnels](roads.md#short-road-tunnels--road-61) for current verification and captures.
+
+ROAD-67 connector trajectories are constructed at lane rebuild time. A single turn uses
+the largest circular fillet fitting the entry/exit tangent intersection, with straight tangent
+leads for unequal mouth distances. Curvature stays zero or one signed reciprocal radius;
+it cannot reverse or spike above that required turn radius.
+Straight-through and parallel lane gain/drop paths use their actual mouth span, retaining the
+necessary lateral S without junction-wide overshoot. Continuous divided bends use tangent
+straight leads and one circular arc, with radius limited by lane-to-median clearance. They
+retain the median corridor without the old offset frame's endpoint/midpoint heading breaks.
+This adds O(1) construction work per connector and no tick-time work, agent state or allocation.
+Vehicle pose sampling remains unchanged; the driven lane geometry owns the correction.
+Explicitly connected straight splits inset only the physical vehicle lane mouths, retaining
+a real connector span instead of a backtracking loop at coincident endpoints. Insets are
+bounded by the remaining edge length; graph clips, roadbed and sidewalk geometry stay intact.
+
+### ROAD-67 trajectory follow-up acceptance (2026-10-20)
+
+Fresh default and release suites pass all 2,583 library tests; the default whole suite also
+passes all four growth integrations. Sixteen release headless road/traffic bridges and the
+windowed trajectory/traffic fixture pass. Sampled connectors reject reverse signed curvature
+for single turns, bound curvature by the available tangent-circle radius (including median
+clearance), and check endpoint tangency. Coverage includes divided/undivided T and cross
+junctions, skewed arms, 1–4 lanes, Prisma left/right pockets, lane gains/drops and 15–90°
+divided bends. Explicit straight whitelists must advance without a backtracking loop.
+
+Matched PERF-06 compares the completed stages 3–5 release with this follow-up, using 15
+alternating process pairs and eight Rayon workers. All six workloads have matching work counters across builds;
+30k agent work remains exactly 3× 10k with fixed lane work. Every paired bootstrap interval
+includes zero: no tick regression is detected. These noisy single-tick measurements establish
+neither a fixed equivalence bound nor a speedup. Build identities, commands and road/locality
+results are in the [road acceptance record](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35).
+
+| Mode | Agents | Before → after median, ms | Paired median change | Paired bootstrap 95% |
+| --- | --- | --- | --- | --- |
+| network | 10,000 | 0.499458 → 0.498083 | +2.04% | -5.38% … +6.28% |
+| network | 30,000 | 0.970750 → 0.927333 | +0.94% | -7.84% … +8.21% |
+| access_egress | 10,000 | 0.646500 → 0.641000 | +2.71% | -6.51% … +4.40% |
+| access_egress | 30,000 | 1.592000 → 1.575167 | +0.14% | -2.27% … +4.24% |
+| access_ingress | 10,000 | 0.352291 → 0.307708 | -9.41% | -17.34% … +6.43% |
+| access_ingress | 30,000 | 0.604625 → 0.556166 | +3.40% | -24.49% … +28.79% |
+
+The stages 3–5 acceptance below describes the earlier, pre-follow-up build.
+
+### ROAD-67 stages 3–5 acceptance (2026-10-19)
+
+Matched unprofiled release runs compare `6ec0b858` with the completed stages 3–5 build on
+Apple M2 Pro (12 logical CPUs), Rust 1.98.1, MacOSX26.5 SDK, release `opt-level=3`, `debug=1`.
+Fifteen alternating process pairs use eight Rayon workers and identical workloads/counters.
+All paired bootstrap intervals include zero; no agent-tick regression is detected. The noisy
+single-tick contract does not establish equivalence at a fixed percentage bound or a speedup.
+
+| Mode | Agents | Before → after median, ms | Paired median change | Paired bootstrap 95% |
+| --- | --- | --- | --- | --- |
+| network | 10,000 | 0.484250 → 0.465709 | -1.44% | -7.01% … +1.26% |
+| network | 30,000 | 0.907625 → 0.906542 | -0.63% | -4.25% … +11.95% |
+| access_egress | 10,000 | 0.665833 → 0.650125 | +0.16% | -3.69% … +5.19% |
+| access_egress | 30,000 | 1.580125 → 1.565625 | -1.76% | -4.17% … +2.80% |
+| access_ingress | 10,000 | 0.388417 → 0.330250 | -9.38% | -26.36% … +7.77% |
+| access_ingress | 30,000 | 0.614958 → 0.610000 | +0.40% | -8.52% … +20.22% |
+
+Test executable SHA-256: before
+`4bc39d10fbe01c7da5f8945dc2a781c4dc9144979a320cd4e99fcc66b914971f`, after
+`d3474f6396dc614f1c6671768d1667911ff1761529c7c7faff7ba15f722dc85f`.
+Exact command:
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" \
+  simulation::economy::agents::tick::contract::benchmark_agent_tick_contract \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Three matched pairs also cover lane transitions, claim preparation/reset, incremental lane
+rebuilds and lane reattachment. At 65,536 transition groups, clear/merge/blocked medians are
+4.805/5.923/5.217 → 4.550/5.536/4.637 ms; lateral is 4.740 → 4.850 ms and cruise
+3.233 → 3.226 ms. At 1,048,576 rows, idle/mixed claims are 0.256776/0.620568 →
+0.256755/0.640193 ms; lane reset is 0.301536 → 0.304688 ms. Counts/checksums match.
+Fresh default/release suites pass 2,579 library tests; all four growth integration tests pass.
+Road/traffic bridges, real windowed traffic, connector save/load and agent-safe edit/undo checks
+pass. The [road acceptance record](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35)
+owns complete commands, worker settings, auxiliary/road/locality tables, library identities,
+legacy geometry proof and capture comparisons. The following section retains stages 1–2 evidence.
+
+### ROAD-67 stages 1–2 acceptance (2026-10-19)
+
+Fresh matched, unprofiled release runs on Apple M2 Pro (12 logical CPUs), Rust 1.98.1,
+`opt-level=3`, `debug=1`, MacOSX26.5 SDK; inherited macOS scheduling. Baseline is `ff3f9882`;
+no builds, other tests or game captures ran during measurement. Test executable SHA-256:
+
+- baseline: `b8befab53b6b34332e4b66b8904f4c02526313ae01dd919ccf7563640c1bacd0`
+- candidate: `4bc39d10fbe01c7da5f8945dc2a781c4dc9144979a320cd4e99fcc66b914971f`
+
+An 11-pair screen had unstable ingress samples, so the final tick comparison uses 51 alternating
+process pairs and eight Rayon workers. The table reports medians of process samples; every paired
+bootstrap 95% interval includes zero. It establishes no tick regression beyond noise and no
+speedup claim. All deterministic work counts match; exercised agent rows grow exactly 3× and
+lane rows stay at 16.
+
+| Tick fixture | Agents | Before (ms) | After (ms) | Paired median change, 95% interval |
+| --- | ---: | ---: | ---: | --- |
+| Network | 10,000 | 0.476500 | 0.487084 | +1.12% [-2.12%, +4.35%] |
+| Network | 30,000 | 0.902000 | 0.903625 | -0.86% [-6.23%, +7.22%] |
+| Access egress | 10,000 | 0.643209 | 0.645042 | +1.53% [-2.31%, +3.15%] |
+| Access egress | 30,000 | 1.568250 | 1.557667 | -0.22% [-1.62%, +1.11%] |
+| Access ingress | 10,000 | 0.347042 | 0.342792 | -6.84% [-10.99%, +1.81%] |
+| Access ingress | 30,000 | 0.596209 | 0.589458 | -2.43% [-6.25%, +11.64%] |
+
+Five alternating transition pairs use four workers and identical transition counts. Largest tiers:
+
+| Movement case | Agents | Before (ms) | After (ms) |
+| --- | ---: | ---: | ---: |
+| clear | 131,072 | 4.824958 | 4.678500 |
+| merge | 131,072 | 5.986250 | 5.814000 |
+| blocked | 196,608 | 4.966208 | 5.142459 |
+| lateral | 196,608 | 4.623791 | 4.720750 |
+| cruise | 196,608 | 3.089333 | 3.189083 |
+
+The positive movement-only deltas are at most 0.177 ms at these large tiers; they are not claimed
+as zero cost. Three matched claim/reset pairs (four workers) retain identical classification
+checksums: at 1,048,576 agents idle is 0.256979→0.257073 ms and mixed 0.616021→0.619109 ms;
+resetting 1,048,576 empty lanes is 0.300651→0.299719 ms.
+
+The first implementation's 10–17% transition slowdown was rejected. The accepted build keeps
+rare route planning and frontage detach geometry outside the small movement loop, keeps the
+existing compact lane-change input, and gates the route query with the rebuild-derived lane byte.
+No new per-agent column, allocation or spatial index is introduced.
+
+Build each retained executable with `cargo test --release --lib --no-run`. The exact tick command
+is `METRUM_DEBUG=0 RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1`.
+The other commands use `METRUM_DEBUG=0 RAYON_NUM_THREADS=4 "$TEST_BINARY" <test> --exact --ignored --nocapture --test-threads=1`, with:
+
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_lane_transitions`
+- `simulation::economy::agents::tick::claims::tests::benchmark_claim_preparation`
+- `simulation::economy::agents::tick::movement_pass::tests::benchmark_empty_lane_claim_reset`
+
+Raw process rows, earlier rejected results and build identities remain local under `$ARTIFACTS`.
+Road/locality measurements and the windowed inspection are recorded in [`roads.md`](roads.md#default-junction-lane-use--road-67-slice-b-stages-12).
 
 ## Conservative Overtaking
 
@@ -595,6 +1637,18 @@ Traffic code is a hot path. New traffic behavior must preserve these rules:
 - keep route planning and traffic movement separate; local traffic behavior must not trigger
   per-tick CCH pathfinding
 
+### Unmarked pedestrian junction routes — ROAD-74
+
+Zebra authoring no longer gates legal crossing connectivity. Ordinary unmarked junction arms
+retain perpendicular pedestrian steps when the junction has no marked arm; marked arms remain
+the nearby crossing choice. Unmarked sidewalks reach the solved mouth without zebra inset.
+Coincident straight mouths use stationary connectors, and rebuild-only shortest-route trees
+never reparent settled mouths through zero-length cycles. LaneCrosswalk carries crossing identity
+without requiring paint. Ramp and transition continuity, continuous median barriers and NET-07
+vehicle U-turn rules are unchanged. Zebra/turning-vehicle priority and signals remain the pending
+TRAFFIC-08 stages; this slice changes route construction, not agent admission. See
+[road marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75).
+
 ### Short agent-tick contract (`PERF-06`)
 
 Routine traffic changes use the ignored release test
@@ -614,6 +1668,29 @@ the contract runs. Matched alternating process pairs remain reserved for milesto
 and claimed speedups. The short contract is run serially with no concurrent build or measurement;
 the 30-minute Criterion `agent_benchmark` is no longer a routine gate.
 
+ROAD-74/75 check (2026-10-22), versus queued predecessor `f70c6dbe`: fifteen alternating
+unprofiled release process pairs/eight workers match all six work dictionaries and deterministic
+scaling checks. Network medians at 10k/30k agents are 0.539/0.947 → 0.524/0.919 ms;
+egress 0.656/1.584 → 0.638/1.600 ms; ingress 0.359/0.615 → 0.323/0.607 ms. These mixed short
+measurements establish the contract check, not a tick speedup. Agent dispatch and tick-time
+allocation policy are unchanged. Exact binary identities and commands are in
+[marking-rule acceptance](roads.md#marking-rule-acceptance--2026-10-22).
+
+ROAD-68 completion check (2026-10-22), versus queued predecessor `1a4ea348`: fifteen alternating
+release process pairs/eight workers match all six work dictionaries and scaling bounds. All
+short timing intervals include zero (10,000 paired bootstrap resamples, seed 68); opposite
+10k/30k ingress shifts remain inconclusive. Three alternating sustained Criterion pairs give
+100k ticks 2.8647 → 2.8982 ms (+1.17%) and 1M ticks 37.8215 → 38.2545 ms (+1.14%). All three
+1M pairs are slightly higher, so this is recorded as a small measured increase, not dismissed
+as noise. No agent dispatch, hot Edge fields or per-agent allocation policy changes in this
+completion; structures live on compiled span owners. The earlier topology-stage comparison
+against `cce4554e` had conflicting short cohorts whose cause remains unknown; a later
+predecessor comparison cannot retrospectively resolve it. Commands, exact binary identities,
+fixture-setup failures and completed cohorts are recorded in
+[ROAD-68 performance acceptance](roads.md#completion-performance-and-perf-06-interpretation--2026-10-22).
+
+Earlier road-chain measurements below used fixed contiguous agent ranges. With the upstream
+integration, the dispatch keeps the same ownership guarantees while distributing those ranges:
 Movement now owns route-query scratch by shards that each take every shards-th chunk of 256
 agents (`SIM-02-K` part 4), retaining the existing
 small-city serial threshold and separate ordered dynamic movement. Scoped TLS access restores
@@ -785,8 +1862,8 @@ The measured ignored tests are
 - normal road bends do not yet use curvature speed limits
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
-- there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
-  (`TRAFFIC-06` plans junction priority, yield and stop control, and roundabout entry)
+- automatic vehicle priority/yield/stop control is implemented in TRAFFIC-08 stage 1a; zebra priority, fixed-time lights,
+  authored controls and importer hooks remain pending; explicit single-lane roundabout entry priority is implemented by ROAD-62
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild

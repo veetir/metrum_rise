@@ -5,8 +5,8 @@
 use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
-/// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 107;
+/// Current save format, including explicit cold road cross-section authority.
+pub const SAVE_VERSION: i64 = 110;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -17,6 +17,32 @@ CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,
     game_build TEXT NOT NULL
+);
+CREATE TABLE road_layouts(
+    layout_id INTEGER PRIMARY KEY,
+    format_version INTEGER NOT NULL,
+    layout_blob BLOB NOT NULL
+);
+CREATE TABLE road_layout_strips(
+    layout_id INTEGER NOT NULL,
+    side INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    strip_blob BLOB NOT NULL,
+    PRIMARY KEY(layout_id, side, ordinal)
+);
+CREATE TABLE road_section_details(
+    detail_id INTEGER PRIMARY KEY,
+    format_version INTEGER NOT NULL,
+    detail_blob BLOB NOT NULL
+);
+CREATE TABLE road_edge_sections(
+    edge_id INTEGER PRIMARY KEY,
+    layout_id INTEGER NOT NULL,
+    detail_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    class INTEGER NOT NULL,
+    access INTEGER NOT NULL,
+    overrides INTEGER NOT NULL
 );
 CREATE TABLE camera_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -226,6 +252,9 @@ CREATE TABLE network_nodes(
     z REAL NOT NULL,
     node_type INTEGER NOT NULL
 );
+CREATE TABLE road_crosswalks(node_id INTEGER NOT NULL, edge_id INTEGER NOT NULL, marked INTEGER NOT NULL CHECK(marked IN (0,1)), PRIMARY KEY(node_id,edge_id));
+CREATE TABLE road_bus_lanes(edge_id INTEGER PRIMARY KEY, forward_mask INTEGER NOT NULL, backward_mask INTEGER NOT NULL);
+CREATE TABLE road_lane_tapers(edge_id INTEGER NOT NULL, end_index INTEGER NOT NULL, length_m REAL NOT NULL, from_fwd INTEGER NOT NULL, from_bkw INTEGER NOT NULL, from_median REAL NOT NULL, left_pocket INTEGER NOT NULL, right_pocket INTEGER NOT NULL, PRIMARY KEY(edge_id, end_index));
 CREATE TABLE network_edges(
     edge_id INTEGER PRIMARY KEY,
     start_node INTEGER NOT NULL,
@@ -242,8 +271,14 @@ CREATE TABLE network_edges(
     start_clip REAL NOT NULL,
     end_clip REAL NOT NULL,
     no_building_spawn INTEGER NOT NULL DEFAULT 0,
-    vehicle_frontage_access INTEGER NOT NULL DEFAULT 1
+    vehicle_frontage_access INTEGER NOT NULL DEFAULT 1,
+    median_style INTEGER NOT NULL DEFAULT 0,
+    median_width REAL NOT NULL DEFAULT 0,
+    median_start_setback REAL NOT NULL DEFAULT 0,
+    median_end_setback REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE roundabout_edges(edge_id INTEGER PRIMARY KEY);
+CREATE TABLE road_crossing_levels(edge_id INTEGER PRIMARY KEY, level INTEGER NOT NULL);
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
     point_index INTEGER NOT NULL,
@@ -745,7 +780,8 @@ CREATE TABLE agents(
     overtake_blocked_time_s REAL NOT NULL,
     overtake_cooldown_s REAL NOT NULL,
     job_lock_until_day INTEGER NOT NULL,
-    consecutive_unpaid_days INTEGER NOT NULL
+    consecutive_unpaid_days INTEGER NOT NULL,
+    tail_connector_lane_id INTEGER NOT NULL
 );
 CREATE TABLE agent_path_nodes(
     agent_id INTEGER NOT NULL,
@@ -783,6 +819,8 @@ pub fn transit_type_from_i64(value: i64) -> Result<TransitType, SaveLoadError> {
 pub fn node_type_to_i64(value: NodeType) -> i64 {
     match value {
         NodeType::Junction => 0,
+        NodeType::LaneTransition => 6,
+        NodeType::Ramp => 7,
         NodeType::Station => 1,
         NodeType::Harbor => 2,
         NodeType::Airport => 3,
@@ -794,6 +832,8 @@ pub fn node_type_to_i64(value: NodeType) -> i64 {
 pub fn node_type_from_i64(value: i64) -> Result<NodeType, SaveLoadError> {
     match value {
         0 => Ok(NodeType::Junction),
+        6 => Ok(NodeType::LaneTransition),
+        7 => Ok(NodeType::Ramp),
         1 => Ok(NodeType::Station),
         2 => Ok(NodeType::Harbor),
         3 => Ok(NodeType::Airport),

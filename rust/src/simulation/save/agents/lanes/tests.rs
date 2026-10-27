@@ -25,6 +25,11 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     for i in 0..3 {
         let geometry = vec![points[i], points[i + 1]];
         graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: nodes[i],
             end_node: nodes[i + 1],
             primary_type: TransitType::Road,
@@ -51,6 +56,105 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     let mut network = TransitNetwork::new();
     network.lane_system.rebuild(&mut graph);
     (graph, network)
+}
+
+#[test]
+fn clipped_road_lane_and_its_connector_retire_but_invalid_references_refuse() {
+    let (mut graph, mut network) = fixture();
+    let old_lane = network.lane_system.edge_lanes[&1][0];
+    let mut agents = AgentSystem::new();
+    add_agent(&mut agents, old_lane, &graph, &network.lane_system);
+    agents.lane_change_from_lane_id[0] = old_lane as u32;
+    graph.edge_mut(1).start_clip = 1000.0;
+    network.lane_system.rebuild(&mut graph);
+    assert!(network.lane_system.edge_lanes[&1].is_empty());
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    conn.execute("INSERT INTO network_runtime_state VALUES (1, 0)", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (?1, 1, 1, 0, -1, -1, -1, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10000, 2, 1, 0, -1, -1, -1, 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10001, -1, 1, 0, 2, ?1, 10000, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    restore_lane_references(&conn, &mut agents, &graph, &mut network).unwrap();
+    assert_eq!(agents.current_lane_id[0], usize::MAX);
+    assert_eq!(agents.lane_change_from_lane_id[0], u32::MAX);
+    assert!(agents.current_path[0].is_empty());
+    // Endpoint corruption must not disappear along with a legitimate retired lane.
+    conn.execute(
+        "UPDATE saved_lanes SET node_id = 1 WHERE lane_id = 10001",
+        [],
+    )
+    .unwrap();
+    assert!(
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
+    );
+    conn.execute("DELETE FROM saved_lanes WHERE lane_id = 10001", [])
+        .unwrap();
+    // A connector cannot serve as another connector's physical road endpoint.
+    let from = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            lane.is_fwd && lane.lane_idx == 0
+        })
+        .unwrap();
+    let to = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            !lane.is_fwd && lane.lane_idx == -1
+        })
+        .unwrap();
+    assert!(
+        network.lane_system.lanes[from]
+            .next_lanes
+            .iter()
+            .any(|&id| {
+                let lane = &network.lane_system.lanes[id];
+                lane.edge_id == usize::MAX && lane.next_lanes.first() == Some(&to)
+            })
+    );
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10002, 2, 0, -1, -1, -1, -1, 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10003, -1, 1, 0, 3, 10000, 10002, 0, 0)",
+        [],
+    )
+    .unwrap();
+    restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network).unwrap();
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (10004, -1, 1, 0, 2, ?1, 10003, 0, 0)",
+        [old_lane as i64],
+    )
+    .unwrap();
+    assert!(
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
+    );
+    conn.execute("DELETE FROM saved_lanes WHERE lane_id >= 10002", [])
+        .unwrap();
+    conn.execute("UPDATE saved_lanes SET lane_idx = 7 WHERE edge_id = 1", [])
+        .unwrap();
+    assert!(
+        restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network,).is_err()
+    );
 }
 
 fn add_agent(
@@ -161,7 +265,15 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);
@@ -265,7 +377,15 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     conn.execute("UPDATE agents SET transit_mode = 0", [])
         .unwrap();
-    let mut loaded = load_agents(&conn, 0.0).unwrap();
+    let mut loaded = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     // Snapshot edges are compacted; restore against the corresponding compacted graph.
     let tx = conn.transaction().unwrap();
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
@@ -351,7 +471,15 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     )
     .unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -381,7 +509,15 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -506,3 +642,122 @@ fn departure_holds_survive_loaded_plan_repair() {
     assert!(agents.release_departure(i));
     assert!(!agents.departure_held(i));
 }
+
+#[test]
+fn obsolete_direct_through_connector_has_no_delay_target() {
+    let (graph, mut network) = fixture();
+    let from = network.lane_system.edge_lanes[&1]
+        .iter()
+        .copied()
+        .find(|&id| network.lane_system.lanes[id].is_fwd)
+        .unwrap();
+    let to = network.lane_system.edge_lanes[&2]
+        .iter()
+        .copied()
+        .find(|&id| network.lane_system.lanes[id].is_fwd)
+        .unwrap();
+    // The saved junction connector has become a direct road-lane link.
+    network.lane_system.lanes[from].next_lanes = vec![to].into();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    conn.execute("INSERT INTO network_runtime_state VALUES (1, 0.375)", [])
+        .unwrap();
+    for (old, edge, id) in [(10_i64, 1_i64, from), (20, 2, to)] {
+        let lane = &network.lane_system.lanes[id];
+        conn.execute(
+            "INSERT INTO saved_lanes VALUES (?1, ?2, ?3, ?4, -1, -1, -1, 2.5, 1.25)",
+            params![old, edge, lane.is_fwd, lane.lane_idx],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO saved_lanes VALUES (30, -1, 1, 0, 2, 10, 20, 9.0, 8.0)",
+        [],
+    )
+    .unwrap();
+    restore_lane_references(&conn, &mut AgentSystem::new(), &graph, &mut network).unwrap();
+    for id in [from, to] {
+        assert_eq!(network.lane_system.lanes[id].frontage_delay_penalty_s, 2.5);
+        assert_eq!(network.lane_system.lanes[id].live_frontage_delay_s, 1.25);
+    }
+    assert_eq!(network.frontage_delay_elapsed_s, 0.375);
+}
+
+#[test]
+fn older_open_node_connectors_retire_without_refusing_the_save() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    for point in [
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, -100.0),
+    ] {
+        let end = graph.add_node(point, NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: end,
+            end_node: center,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 14.0,
+            geometry: vec![point, Vector3::ZERO],
+            physical_geometry: vec![point, Vector3::ZERO],
+            physical_length: 100.0,
+            speed_limit: 10.0,
+            ..Default::default()
+        });
+    }
+    graph.rebuild_all_indices();
+    graph.rebuild_intersection_clips();
+    // Emulate a pre-ROAD-67 default connector: right incoming lane turns left.
+    graph.add_lane_connection(center, 0, 1, 2, -1);
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    let connector = network.lane_system.node_lanes[&(center as usize)][0];
+    graph.remove_lane_connection(center, (0, 1));
+    let mut agents = AgentSystem::new();
+    add_agent(&mut agents, connector, &graph, &network.lane_system);
+    let road = network.lane_system.edge_lanes[&0][0];
+    add_agent(&mut agents, road, &graph, &network.lane_system);
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
+    let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    let mut rebuilt = TransitNetwork::new();
+    rebuilt.lane_system.rebuild(&mut new_graph);
+    restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt).unwrap();
+    assert_eq!(restored.current_lane_id[0], usize::MAX);
+    assert_eq!(restored.current_lane_id[1], road);
+    assert!(restored.current_path[0].is_empty());
+    // The same missing identity under an authored whitelist remains an invalid save.
+    new_graph.add_lane_connection(center, 0, 0, 1, -1);
+    let mut restored = load_agents(
+        &conn,
+        0.0,
+        crate::simulation::save::format::SaveFormat {
+            version: crate::simulation::save::schema::SAVE_VERSION,
+            road: false,
+        },
+    )
+    .unwrap();
+    assert!(restore_lane_references(&conn, &mut restored, &new_graph, &mut rebuilt,).is_err());
+}
+
+mod tail;

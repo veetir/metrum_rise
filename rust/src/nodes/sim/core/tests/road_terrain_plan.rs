@@ -18,6 +18,9 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
 
     let outcome = core.commit_road(
         RoadCommitRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             points: vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -48,6 +51,9 @@ fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {
     let preview = super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: 7,
@@ -113,6 +119,9 @@ fn road_only_preview_rejects_visual_terrain_changes_before_click_reuse() {
     let road = RoadEditPlan::compile_road(
         &core,
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: 1,
@@ -160,6 +169,9 @@ fn prepare_with_lanes(
     let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: 1,
@@ -205,6 +217,103 @@ fn adopt(
 
 fn inputs(core: &mut SimCore) -> Vec<RefinedTerrainPatchBuildInput> {
     core.collect_refined_terrain_patch_build_inputs(2.0)
+}
+
+#[test]
+fn divided_roundabout_keeps_refined_terrain_at_the_inner_kerb() {
+    use crate::nodes::simulation_node::SimulationNode;
+    use crate::simulation::network::graph::RoadMedian;
+    use crate::simulation::network::roundabouts::{RoundaboutLayout, RoundaboutRequest};
+    let mut core = SimCore::new(WorldConfig {
+        width_m: 640.0,
+        height_m: 640.0,
+        terrain_cell_m: 4.0,
+        terrain_chunk_m: 128.0,
+        ..WorldConfig::default()
+    });
+    for (points, lanes, median) in [
+        (
+            vec![
+                Vector3::new(-180.0, 0.0, 0.0),
+                Vector3::new(180.0, 0.0, 0.0),
+            ],
+            2,
+            RoadMedian::from_tool(3, 2.0).unwrap(),
+        ),
+        (vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 180.0)], 1, None),
+    ] {
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let plan = RoadEditPlan::compile(
+            &core,
+            RoadPreviewRequest {
+                tunnel: false,
+                crossing_level: 0,
+                median,
+                enqueued_at: None,
+                include_terrain: true,
+                request_id: 1,
+                surface_generation: core.road_tool_surface_generation,
+                points: points.clone(),
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+            },
+        );
+        assert_eq!(plan.status(&core), "ready");
+        let result = core.commit_road(
+            RoadCommitRequest {
+                tunnel: false,
+                crossing_level: 0,
+                median,
+                points,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+                edit_plan: Some(Arc::new(plan)),
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(result.committed, "{}", result.rejection);
+    }
+    let center = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 3.0)
+        .unwrap();
+    let layout = RoundaboutLayout::prepare(
+        &core.region_graph,
+        RoundaboutRequest {
+            center: core.region_graph.node(center).pos,
+            diameter: 28.675,
+            angles: vec![],
+            replace: Some(center),
+        },
+    )
+    .unwrap();
+    let changed = layout.apply(&mut core.region_graph);
+    core.region_graph.rebuild_intersection_clips();
+    for edge in changed {
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, edge);
+    }
+    core.precompute_road_mesh_data();
+    let patches = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
+    assert!(!patches.is_empty());
+    for patch in patches {
+        assert_eq!(
+            SimulationNode::cached_refined_cdt_failure_label(&patch),
+            None,
+            "patch {:?}: {:?}",
+            patch.key,
+            patch.mesh_buffers.as_ref().map(|b| (
+                b.omitted_pathological_terrain_faces,
+                b.terrain_max_face_slope_ratio
+            ))
+        );
+    }
 }
 
 pub(super) fn commit_ready(core: &mut SimCore, points: Vec<Vector3>) -> Arc<RoadEditPlan> {
@@ -437,6 +546,9 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: 2,
@@ -558,6 +670,149 @@ fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
 }
 
 #[test]
+fn grounded_tunnel_profile_survives_quick_exact_commit_and_undo() {
+    use crate::simulation::network::surface::RoadSurfaceSystem;
+    use crate::simulation::network::types::EdgeClass;
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    core.precompute_road_mesh_data();
+    let points = vec![
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(-50.0, -6.0, 0.0),
+        Vector3::new(50.0, -6.0, 0.0),
+        Vector3::new(100.0, 0.0, 0.0),
+    ];
+    let surface = &core.transit_network.road_surface;
+    let legacy = RoadSurfaceSystem::prepare_road_input_for_tool_at_level(
+        &points,
+        &core.heightmap,
+        &core.region_graph,
+        surface,
+        false,
+        0,
+    );
+    assert_eq!(legacy.class, EdgeClass::Standard);
+    assert!(legacy.points.iter().all(|p| p.y == 0.0));
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
+        &points,
+        &core.heightmap,
+        &core.region_graph,
+        surface,
+        false,
+        0,
+        true,
+    );
+    assert_eq!(prepared.points, points);
+    let quick = surface.validate_prepared_road_candidate_fast(
+        &prepared,
+        1,
+        1,
+        &core.heightmap,
+        &core.region_graph,
+    );
+    assert!(quick.is_valid, "{quick:?}");
+    assert!((quick.max_grade - 0.12).abs() < 1e-6);
+    let request = |tunnel| RoadPreviewRequest {
+        tunnel,
+        crossing_level: 0,
+        median: None,
+        enqueued_at: None,
+        include_terrain: false,
+        request_id: 1,
+        surface_generation: core.road_tool_surface_generation,
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: false,
+    };
+    let plan = Arc::new(RoadEditPlan::compile(&core, request(true)));
+    assert_eq!(plan.status(&core), "ready");
+    assert_eq!(plan.validation().is_valid, quick.is_valid);
+    let ordinary = RoadEditPlan::compile(&core, request(false));
+    assert!(!ordinary.tunnel());
+    assert!(plan.tunnel());
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            tunnel: true,
+            crossing_level: 0,
+            median: None,
+            points: points.clone(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: false,
+            edit_plan: Some(plan),
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    assert!(core.last_road_edit_metrics.preview_plan_reused);
+    assert_eq!(core.region_graph.edge(0).class, EdgeClass::Tunnel);
+    assert!(
+        core.region_graph
+            .edge(0)
+            .physical_geometry
+            .iter()
+            .any(|p| p.y == -6.0)
+    );
+    assert!(core.undo_action_internal());
+    assert!(core.region_graph.edges().iter().all(|edge| edge.deleted));
+}
+
+#[test]
+fn fully_buried_tunnel_quick_exact_commit_and_undo_agree() {
+    let mut core = test_core();
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    let points = vec![
+        Vector3::new(-50.0, -6.0, 0.0),
+        Vector3::new(50.0, -6.0, 0.0),
+    ];
+    let prepared =
+        crate::simulation::network::surface::RoadSurfaceSystem::prepare_road_input_for_tool(
+            &points,
+            &core.heightmap,
+            &core.region_graph,
+            &core.transit_network.road_surface,
+            false,
+        );
+    let quick = core
+        .transit_network
+        .road_surface
+        .validate_prepared_road_candidate_fast(
+            &prepared,
+            1,
+            1,
+            &core.heightmap,
+            &core.region_graph,
+        );
+    assert!(quick.is_valid, "{quick:?}");
+    let plan = prepare_with_lanes(&mut core, points.clone(), 1, 1);
+    assert_eq!(plan.status(&core), "ready");
+    adopt(&mut core, points, 1, 1, &plan);
+    let edge = core.region_graph.edge(0);
+    assert_eq!(
+        edge.class,
+        crate::simulation::network::types::EdgeClass::Tunnel
+    );
+    assert!(edge.physical_geometry.iter().all(|p| p.y == -6.0));
+    let piece = &core
+        .transit_network
+        .road_surface
+        .compiled_visual_span_pieces()[&0];
+    assert!(
+        piece.road_surface_polygons().next().is_some(),
+        "buried pavement is a valid physical product"
+    );
+    assert!(
+        piece.terrain_clip_boundary_loops().is_empty(),
+        "the roof terrain remains closed"
+    );
+    assert!(core.undo_action_internal());
+    assert!(core.region_graph.edges().iter().all(|edge| edge.deleted));
+}
+
+#[test]
 fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
     for height in [-3.0, 10.0] {
         let mut core = test_core();
@@ -597,14 +852,14 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
 }
 
 #[test]
-fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
+fn kuopio_saved_reference_compiles_without_rewriting_source_profiles() {
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
     );
     let mut core = test_core();
     core.load_game_internal(fixture).unwrap();
-    // The rejected junction is a local repair, not permission to regrade the city.
+    // Material grading resolves this junction in the compiler without regrading its source.
     let connection =
         rusqlite::Connection::open_with_flags(fixture, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -640,8 +895,8 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
         }
     }
     assert!(
-        repaired_points > 0,
-        "fixture no longer exercises rejected-junction repair"
+        repaired_points == 0,
+        "junction compilation must preserve its saved physical profile"
     );
     core.precompute_road_mesh_data();
     assert!(
@@ -1465,6 +1720,9 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
             let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
                 &context,
                 RoadPreviewRequest {
+                    tunnel: false,
+                    crossing_level: 0,
+                    median: None,
                     enqueued_at: None,
                     include_terrain: false,
                     request_id: step + 1,

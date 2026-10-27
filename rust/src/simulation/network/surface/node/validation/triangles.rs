@@ -33,6 +33,17 @@ const NODE_TOP_SURFACE_MIN_BLOCKING_QUALITY_AREA_M2: f64 = 0.01;
 const NODE_TOP_SURFACE_MAX_PLANAR_ARTIFACT_RESIDUAL_M: f64 = 0.005;
 const TRIANGLE_QUALITY_EPS: f64 = 1.0e-12;
 
+/// Uses the unchanged blocking-area and aspect-ratio limits to request geometric refinement.
+pub(super) fn needs_aspect_refinement(points: [super::super::backend::RoadVec3; 3]) -> bool {
+    let area = triangle_xz_area_m2(points);
+    let longest = [0, 1, 2]
+        .into_iter()
+        .map(|i| xz_distance(points[i], points[(i + 1) % 3]))
+        .fold(0.0_f64, f64::max);
+    area >= NODE_TOP_SURFACE_MIN_BLOCKING_QUALITY_AREA_M2
+        && longest * longest > 2.0 * area * NODE_TOP_SURFACE_MAX_CARRIAGEWAY_ASPECT_RATIO
+}
+
 pub(super) fn validate_cross_region_triangle_edge_heights(
     solution: &NodeTriangulationSolution,
     diagnostics: &mut Vec<NodeGeometryDiagnostic>,

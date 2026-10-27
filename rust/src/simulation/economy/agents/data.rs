@@ -109,6 +109,8 @@ pub struct Agent {
     pub current_edge: usize,
     /// Currently traversed lane ID in `LaneSystem`. `usize::MAX` if off-network.
     pub current_lane_id: usize,
+    /// Last connector left by a car whose tail may still occupy it; `u32::MAX` is unknown.
+    pub tail_connector_lane_id: u32,
     /// Distance (in metres) travelled along the `current_lane_id`.
     pub lane_distance: f32,
     /// Source lane for an active lane-change maneuver. `u32::MAX` means no active lane change.
@@ -163,6 +165,8 @@ pub(crate) enum MovementClaimMode {
     Dynamic = 1,
     /// A fixed lateral candidate whose target already has a deterministic reservation owner.
     Lateral = 2,
+    /// Valid node-origin route whose first lane has no physical entry gap.
+    HeldEntry = 3,
 }
 
 /// Simulation-wide agent system.
@@ -221,6 +225,8 @@ pub struct AgentSystem {
     pub lane_claim_owner: Vec<AtomicUsize>,
     /// Prepared movement categories used to dispatch claims and skip redundant lateral decisions.
     pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
+    // Immutable snapshot grants shared by speed and connector entry.
+    pub(crate) junction_admission: super::tick::junction_control::JunctionAdmission,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
@@ -303,6 +309,7 @@ impl AgentSystem {
             lane_bucket_patched: false,
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
+            junction_admission: Default::default(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
             frontage_lanes: Vec::new(),

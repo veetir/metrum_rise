@@ -373,6 +373,17 @@ fn source_segment_provenance_for_point(
     ) {
         return Ok(Some(origin));
     }
+    // An owner/source can have mouth and side-join height domains. Before rejecting an
+    // unresolved ambiguity, discard segments explicitly declared only by another claim.
+    // Undeclared source/constraint rails retain the strict checks above. This cold path
+    // reuses the candidate buffer and existing contour membership, with no new allocation.
+    candidates.retain(|candidate| source_segment_matches_claim(*candidate, claim_priority, rails));
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    if candidates.len() == 1 {
+        return Ok(Some(source_segment_origin(candidates[0])));
+    }
     Err(
         NodeBooleanOwnershipError::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
             owner,
@@ -463,6 +474,30 @@ fn candidate_is_declared_generated_contour_segment(
             && generated_contour_matches_source(owner, source, contour)
             && generated_contour_contains_candidate_segment(contour, candidate)
     })
+}
+
+fn source_segment_matches_claim(
+    candidate: NodeSourceSegmentAuthorizationCandidate,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    rails: &NodeRailContourSet,
+) -> bool {
+    let source = (
+        candidate.source_kind,
+        candidate.source_mouth_order_index,
+        candidate.source_band_index,
+    );
+    let mut declared = false;
+    for contour in &rails.contours {
+        if generated_contour_matches_source(candidate.source_segment_id.owner, source, contour)
+            && generated_contour_contains_candidate_segment(contour, candidate)
+        {
+            declared = true;
+            if contour.claim_priority == claim_priority {
+                return true;
+            }
+        }
+    }
+    !declared
 }
 
 fn generated_contour_contains_candidate_segment(
@@ -557,7 +592,7 @@ fn generated_source_carrier_intersection_origin(
         || !candidates
             .iter()
             .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
-        || !source_carrier_intersection_heights_match(source, candidates, rails)
+        || !source_carrier_intersection_heights_match(source, point, candidates, rails)
     {
         return None;
     }
@@ -568,14 +603,27 @@ fn generated_source_carrier_intersection_origin(
 
 fn source_carrier_intersection_heights_match(
     source: NodeCarrierSourceKey,
+    point: NodeOwnershipPointKey,
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
     rails: &NodeRailContourSet,
 ) -> bool {
     let mut height_keys = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let Some(height_m) = source_segment_candidate_height(source, candidate, rails) else {
+        // The declared material level is constant within this source band. Its
+        // shared grade resolves the intersection once; separately extrapolated
+        // path chords no longer supply competing height authority there.
+        let height = rails
+            .material_grade
+            .as_ref()
+            .map(|grade| {
+                grade
+                    .height_at(super::super::keys::SurfaceXzKey::from_raw_tuple(point).to_road_xz())
+            })
+            .or_else(|| source_segment_candidate_height(source, candidate, rails));
+        let Some(height_m) = height else {
             return false;
         };
+
         height_keys.push(SurfaceHeightMmKey::from_m_f64(height_m));
     }
     let Some(reference) = height_keys.first().copied() else {

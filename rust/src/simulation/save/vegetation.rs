@@ -75,8 +75,26 @@ fn layer(value: i64) -> SaveLoadResult<VegetationLayer> {
 }
 
 /// Restores the authoritative delta with fresh runtime patch generations.
+#[cfg(test)]
 pub(super) fn load(conn: &Connection) -> SaveLoadResult<VegetationEdits> {
+    load_compatible(
+        conn,
+        super::format::SaveFormat {
+            version: super::SAVE_VERSION,
+            road: false,
+        },
+    )
+}
+
+/// Reads the historical authored delta, preserving pre-generator and unpinned defaults.
+pub(super) fn load_compatible(
+    conn: &Connection,
+    format: super::format::SaveFormat,
+) -> SaveLoadResult<VegetationEdits> {
     let mut edits = VegetationEdits::default();
+    if !format.since(62) {
+        return Ok(edits);
+    }
     let mut stmt = conn.prepare(
         "SELECT layer, cell_x, cell_z FROM vegetation_removals ORDER BY layer, cell_z, cell_x",
     )?;
@@ -91,10 +109,11 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<VegetationEdits> {
             true,
         );
     }
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format.query(
         "SELECT layer, cell_x, cell_z, x, z, yaw, scale, species, variant \
          FROM vegetation_additions ORDER BY layer, cell_z, cell_x, rowid",
-    )?;
+        &[(63, "variant", "0")],
+    ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let cell = VegetationCell {
@@ -121,10 +140,13 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<VegetationEdits> {
         }
         edits.add(cell, plant);
     }
-    for (table, planting) in [
-        ("yard_hedge_modules", false),
-        ("yard_planting_plants", true),
+    for (table, since, planting) in [
+        ("yard_hedge_modules", 68, false),
+        ("yard_planting_plants", 69, true),
     ] {
+        if !format.since(since) {
+            continue;
+        }
         let mut stmt = conn.prepare(&format!(
             "SELECT parcel_id, build_generation, layer, cell_x, cell_z, x, z, yaw, scale, species, \
              variant FROM {table} ORDER BY rowid"

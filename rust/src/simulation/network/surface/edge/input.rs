@@ -22,6 +22,10 @@ pub(in crate::simulation::network::surface::edge) const ROAD_PROFILE_MAX_GRADE: 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedRoadInput {
+    /// Authored crossing layer, captured in exact preview/commit identity.
+    pub(crate) crossing_level: i16,
+    /// Selected median, applied before intersection solving and exact surface compilation.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Physical geometry for the new edge that will be previewed or committed.
     pub(crate) points: Vec<Vector3>,
     /// Physical geometry used to validate the full vertical profile solve.
@@ -69,6 +73,45 @@ enum TerminalExtensionEndpoint {
 }
 
 impl RoadSurfaceSystem {
+    /// Conditions dense source alignments with the existing terrain/profile solver while
+    /// pinning both supplied endpoint heights. This runs before imported layer clearance;
+    /// nearby structural owners must not bypass terrain-noise smoothing or capture interior pins.
+    /// Fixed-pass work and scratch remain O(P), with no simulation-tick work.
+    pub(crate) fn prepare_source_road_profile(raw: &[Vector3]) -> Vec<Vector3> {
+        let Some(&first) = raw.first() else {
+            return Vec::new();
+        };
+        let mut samples = vec![RoadVerticalProfileSample {
+            x: first.x,
+            z: first.z,
+            target_y: first.y,
+            y: first.y,
+            pinned: true,
+        }];
+        for pair in raw.windows(2) {
+            let steps =
+                (Self::xz_distance(pair[0], pair[1]) / ROAD_PROFILE_SAMPLE_STEP_M).ceil() as usize;
+            for step in 1..=steps {
+                let point = pair[0].lerp(pair[1], step as f32 / steps as f32);
+                samples.push(RoadVerticalProfileSample {
+                    x: point.x,
+                    z: point.z,
+                    target_y: point.y,
+                    y: point.y,
+                    pinned: false,
+                });
+            }
+        }
+        if let Some(last) = samples.last_mut() {
+            last.pinned = true;
+        }
+        Self::solve_standard_road_profile(&mut samples);
+        samples
+            .into_iter()
+            .map(|p| Vector3::new(p.x, p.y, p.z))
+            .collect()
+    }
+
     /// Prepares road-tool input into the physical geometry used by preview and committed roads.
     ///
     /// Standard roads keep the authored XZ alignment, are densified against terrain samples, and
@@ -120,6 +163,8 @@ impl RoadSurfaceSystem {
 
         if class != EdgeClass::Standard || points.len() < 2 {
             return PreparedRoadInput {
+                crossing_level: 0,
+                median: None,
                 validation_points: points.clone(),
                 points,
                 class,
@@ -132,6 +177,8 @@ impl RoadSurfaceSystem {
             Self::prepare_terminal_road_extension(raw_points, &points, terrain, graph)
         {
             return PreparedRoadInput {
+                crossing_level: 0,
+                median: None,
                 points: extension.new_points,
                 validation_points: extension.validation_points,
                 class,
@@ -141,6 +188,8 @@ impl RoadSurfaceSystem {
         }
 
         PreparedRoadInput {
+            crossing_level: 0,
+            median: None,
             validation_points: points.clone(),
             points,
             class,
@@ -168,10 +217,215 @@ impl RoadSurfaceSystem {
 
         let (points, class) = Self::prepare_road_input_points(raw_points, terrain);
         PreparedRoadInput {
+            crossing_level: 0,
+            median: None,
             validation_points: points.clone(),
             points,
             class,
             endpoint_snap_enabled: false,
+            extension: None,
+        }
+    }
+
+    /// Explicit structural intent preserves every authored height, including grounded ends.
+    /// O(P) input work; ordinary road preparation retains its legacy solver unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_road_input_for_tool_with_tunnel(
+        raw: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        surface: &RoadSurfaceSystem,
+        snap: bool,
+        level: i16,
+        tunnel: bool,
+    ) -> PreparedRoadInput {
+        if tunnel {
+            let mut points = raw.to_vec();
+            points.dedup();
+            if snap && points.len() >= 2 {
+                for index in [0, points.len() - 1] {
+                    // Only an authored coincident joint may move a structural endpoint.
+                    if let Some(id) = graph.find_node_within(points[index], 0.05) {
+                        points[index] = graph.node(id).pos;
+                    }
+                }
+            }
+            return PreparedRoadInput {
+                crossing_level: level,
+                median: None,
+                validation_points: points.clone(),
+                points,
+                class: EdgeClass::Tunnel,
+                endpoint_snap_enabled: snap,
+                extension: None,
+            };
+        }
+        Self::prepare_road_input_for_tool_at_level(raw, terrain, graph, surface, snap, level)
+    }
+
+    /// Prepares authored grade-separated profiles without snapping their interior to the upper road.
+    /// Default-level neighborhoods retain the existing solver and exact legacy arithmetic.
+    pub(crate) fn prepare_road_input_for_tool_at_level(
+        raw: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        surface: &RoadSurfaceSystem,
+        snap: bool,
+        level: i16,
+    ) -> PreparedRoadInput {
+        // A surface branch may leave an already compiled open cut below the
+        // original DEM. That exact same-level joint is grounded road support,
+        // not an instruction to bore a tunnel through its approach.
+        let open_cut_joint = |point: Vector3| {
+            if point.y
+                >= terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+                    - PREVIEW_CLEARANCE_M
+            {
+                return false;
+            }
+            use crate::simulation::network::interaction::{
+                NetworkSnapTarget, get_closest_network_snap_xz_at_level,
+            };
+            let is_cut = |id| {
+                let edge = graph.edge(id);
+                !edge.deleted
+                    && edge.class == EdgeClass::Standard
+                    && edge.crossing_level == level
+                    && edge.no_building_spawn
+            };
+            let Some(hit) = get_closest_network_snap_xz_at_level(graph, point, 0.05, level) else {
+                return false;
+            };
+            if hit.position.distance_to(point) >= 0.05 {
+                return false;
+            }
+            match hit.target {
+                NetworkSnapTarget::Edge(id) => is_cut(id),
+                NetworkSnapTarget::Node(id) => {
+                    graph.node_adjacency(id).iter().any(|&id| is_cut(id))
+                }
+            }
+        };
+        if snap && raw.len() >= 2 {
+            let ends = [raw[0], *raw.last().unwrap()];
+            let cuts = ends.map(open_cut_joint);
+            if cuts.into_iter().any(|cut| cut)
+                && ends.iter().zip(cuts).all(|(point, cut)| {
+                    cut || (point.y
+                        - terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE)
+                        .abs()
+                        <= PREVIEW_CLEARANCE_M
+                })
+            {
+                let overlaps_upper_pavement = raw.windows(2).any(|pair| {
+                    let min = Vector3::new(pair[0].x.min(pair[1].x) - 24.0, 0.0, pair[0].z.min(pair[1].z) - 24.0);
+                    let max = Vector3::new(pair[0].x.max(pair[1].x) + 24.0, 0.0, pair[0].z.max(pair[1].z) + 24.0);
+                    graph.get_edges_near_aabb(min, max).into_iter().any(|id| {
+                        let edge = graph.edge(id);
+                        if edge.deleted || edge.crossing_level == level { return false; }
+                        let half = Self::visual_roadbed_half_width_m(edge);
+                        let xz = |p: Vector3| godot::prelude::Vector2::new(p.x, p.z);
+                        edge.geometry.windows(2).any(|other| {
+                            crate::simulation::network::lanes::geometry::segment_distance_squared_xz(
+                                xz(pair[0]), xz(pair[1]), xz(other[0]), xz(other[1]),
+                            ) <= half * half
+                        })
+                    })
+                });
+                if !overlaps_upper_pavement {
+                    let mut prepared =
+                        Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
+                    prepared.crossing_level = level;
+                    return prepared;
+                }
+                // An actual crossing already has authored clearance knots. Keep
+                // those samples instead of snapping its interior to the upper deck.
+            }
+        }
+        let different_layer = raw.windows(2).any(|pair| {
+            let min = Vector3::new(
+                pair[0].x.min(pair[1].x) - 24.0,
+                0.0,
+                pair[0].z.min(pair[1].z) - 24.0,
+            );
+            let max = Vector3::new(
+                pair[0].x.max(pair[1].x) + 24.0,
+                0.0,
+                pair[0].z.max(pair[1].z) + 24.0,
+            );
+            graph
+                .get_edges_near_aabb(min, max)
+                .into_iter()
+                .any(|id| !graph.edge(id).deleted && graph.edge(id).crossing_level != level)
+        });
+        if level == 0 && !different_layer {
+            return Self::prepare_road_input_for_tool(raw, terrain, graph, surface, snap);
+        }
+        // Structural constraint knots can be closer than the ordinary 0.5 m alignment
+        // simplifier permits. Dropping one can reduce the clearance at a plateau boundary.
+        let mut points = raw.to_vec();
+        points.dedup();
+        if snap && points.len() >= 2 {
+            for index in [0, points.len() - 1] {
+                if let Some(node) = graph.find_node_within(points[index], config::SNAP_TOLERANCE) {
+                    let matching_layer = graph.node_adjacency(node).iter().any(|&id| {
+                        !graph.edge(id).deleted && graph.edge(id).crossing_level == level
+                    });
+                    // A cross-layer endpoint connection must be authored at the same physical
+                    // point. A nearby lower node must not pull an underpass onto its surface.
+                    if matching_layer || points[index].distance_to(graph.node(node).pos) < 0.05 {
+                        points[index] = graph.node(node).pos;
+                    }
+                }
+            }
+        }
+        let grounded_ends = points.first().zip(points.last()).is_some_and(|(a, b)| {
+            [a, b].iter().all(|p| {
+                (p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE).abs()
+                    <= PREVIEW_CLEARANCE_M
+                    || (snap && open_cut_joint(**p))
+            })
+        });
+        let grounded_bridge_approach = snap
+            && Self::terminal_bridge_transition_endpoint(&points, terrain, graph).is_some_and(
+                |end| {
+                    let point = match end {
+                        TerminalExtensionEndpoint::Start => points[0],
+                        TerminalExtensionEndpoint::End => *points.last().unwrap(),
+                    };
+                    graph.find_node_within(point, 0.05).is_some_and(|node| {
+                        graph.node_adjacency(node).iter().any(|&id| {
+                            let edge = graph.edge(id);
+                            !edge.deleted && edge.class == EdgeClass::Bridge
+                        })
+                    })
+                },
+            );
+        let class = if (different_layer && grounded_ends) || grounded_bridge_approach {
+            // Ground-to-ground crossings own a mixed cut/fill corridor. The compiled
+            // opening supplies its structure; hills along the approaches are not tunnels.
+            // An exact deck terminal is also support for a ground approach. Its raised
+            // joint must not classify the entire terrain-following approach as a bridge.
+            EdgeClass::Standard
+        } else if points.iter().any(|p| {
+            p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE > PREVIEW_CLEARANCE_M
+        }) {
+            EdgeClass::Bridge
+        } else if points.iter().any(|p| {
+            p.y - terrain.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE
+                < -PREVIEW_CLEARANCE_M
+        }) {
+            EdgeClass::Tunnel
+        } else {
+            EdgeClass::Standard
+        };
+        PreparedRoadInput {
+            crossing_level: level,
+            median: None,
+            validation_points: points.clone(),
+            points,
+            class,
+            endpoint_snap_enabled: snap,
             extension: None,
         }
     }
@@ -758,6 +1012,32 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_conditioning_removes_dense_height_noise_and_preserves_structural_endpoint_pins() {
+        let mut raw: Vec<_> = (0..=15)
+            .map(|i| {
+                Vector3::new(
+                    -30.0 + i as f32 * 4.0,
+                    if i % 2 == 0 { 0.2 } else { -0.2 },
+                    0.0,
+                )
+            })
+            .collect();
+        raw[0].y = 1.0;
+        raw.last_mut().unwrap().y = 1.0;
+        let result = RoadSurfaceSystem::prepare_source_road_profile(&raw);
+        assert_eq!(result[0], raw[0]);
+        assert_eq!(result.last(), raw.last());
+        let variation = |points: &[Vector3]| {
+            points
+                .windows(2)
+                .map(|p| (p[1].y - p[0].y).abs())
+                .sum::<f32>()
+        };
+        assert!(variation(&result) < variation(&raw) * 0.75);
+        assert!(result.iter().all(|p| (-0.2..=1.0).contains(&p.y)));
+    }
 
     #[test]
     fn feasible_endpoints_do_not_flatten_an_interior_hill_or_valley() {

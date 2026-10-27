@@ -1074,6 +1074,9 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
+                    tunnel: false,
+                    crossing_level: 0,
+                    median: None,
                     enqueued_at: None,
                     include_terrain: false,
                     request_id: 0,
@@ -1159,6 +1162,7 @@ impl SimCore {
             bkw_lanes_u8,
             &self.watermap,
             fast_validation,
+            prepared_input.median,
         );
         let mut validation = fast_validation.clone();
         if validation.is_valid {
@@ -1195,6 +1199,7 @@ impl SimCore {
                     bkw_lanes_u8,
                     &self.watermap,
                     full_validation,
+                    prepared_input.median,
                 );
                 let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
                 if full_validation.is_valid != fast_validation.is_valid
@@ -1274,7 +1279,8 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
-        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
+        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH
+            + prepared_input.median.map_or(0.0, |median| median.width_m);
         let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
         if self
             .zoning
@@ -1872,8 +1878,29 @@ impl SimCore {
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
             let node_id = self.region_graph.get_valid_node(node_id as u32);
+            if self.region_graph.node_adjacency(node_id).iter().any(|&id| {
+                let e = self.region_graph.edge(id);
+                [e.start_node, e.end_node].into_iter().any(|n| {
+                    self.region_graph.node(n).node_type
+                        == crate::simulation::network::types::NodeType::Ramp
+                })
+            }) {
+                return self.refuse_cross_section("edit_ramp_controls");
+            }
             let old_pos = self.region_graph.node(node_id).pos;
             if old_pos == pos {
+                return false;
+            }
+            if let Some(refusal) = self
+                .transit_network
+                .road_surface
+                .node_move_crossing_refusal(&self.region_graph, node_id, pos)
+            {
+                self.last_road_rejection = Some(RoadRejection::from_validation(
+                    refusal.invalid_reason,
+                    &refusal,
+                    &[],
+                ));
                 return false;
             }
             if self.zoning.cells.has_reservations()
@@ -1966,6 +1993,14 @@ impl SimCore {
         to_edge: i32,
         to_lane: i32,
     ) {
+        if (node_id as usize) < self.region_graph.node_count()
+            && self.region_graph.node(node_id).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        {
+            self.refuse_cross_section("edit_ramp_controls");
+            return;
+        }
+
         traffic_log!(
             "[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}"
         );
@@ -2029,6 +2064,14 @@ impl SimCore {
 
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
+        if (node_id as usize) < self.region_graph.node_count()
+            && self.region_graph.node(node_id).node_type
+                == crate::simulation::network::types::NodeType::Ramp
+        {
+            self.refuse_cross_section("edit_ramp_controls");
+            return;
+        }
+
         if (node_id as usize) < self.region_graph.node_count() {
             self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
             let keys: Vec<_> = self
@@ -2112,40 +2155,52 @@ impl SimCore {
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
+        crate::thread_pools::install(|| {
+            self.set_crosswalk_override_in_pool(node_id, edge_id, enabled);
+        });
+    }
+
+    fn set_crosswalk_override_in_pool(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        if edge_id < 0
+            || !self
+                .region_graph
+                .crosswalk_arm_eligible(node_id, edge_id as usize)
+        {
+            self.refuse_cross_section("invalid_crosswalk_arm");
             return;
         }
-        self.push_network_undo_for_local_topology(
-            HashSet::from([edge_id as usize]),
-            HashSet::from([node_id]),
-        );
-        self.region_graph
-            .set_crosswalk_override(node_id, edge_id as usize, enabled);
-
-        let affected: HashSet<usize> = self
+        if self
+            .region_graph
+            .node(node_id)
+            .crosswalk_overrides
+            .get(&(edge_id as usize))
+            == Some(&enabled)
+        {
+            return;
+        }
+        let affected: HashSet<_> = self
             .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        self.agents.invalidate_lane_ids_for_edges(
-            &affected,
-            &self.transit_network.lane_system,
+        let nodes = affected
+            .iter()
+            .flat_map(|&id| {
+                let edge = self.region_graph.edge(id);
+                [edge.start_node, edge.end_node]
+            })
+            .collect();
+        self.transit_network.begin_road_edit();
+        self.push_network_undo_for_local_topology(affected.clone(), nodes);
+        self.transit_network.mark_surface_dirty_from_sets(
             &self.region_graph,
-        );
-        self.transit_network
-            .lane_system
-            .rebuild_edges_incremental(&mut self.region_graph, &affected);
-        self.agents.reattach_invalidated_lanes_for_edges(
             &affected,
-            &self.transit_network.lane_system,
-            &self.region_graph,
+            &HashSet::from([node_id]),
         );
-        self.rebuild_building_entrances_internal();
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
+        self.region_graph
+            .set_crosswalk_override(node_id, edge_id as usize, enabled);
+        self.finish_road_section_edit(affected);
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
@@ -2491,6 +2546,11 @@ mod tests {
         let start = graph.node(start_node).pos;
         let end = graph.node(end_node).pos;
         graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -2537,6 +2597,11 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -2706,6 +2771,11 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -3407,6 +3477,11 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -3460,6 +3535,11 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -4247,6 +4327,11 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(8.0, 0.0, 0.0), NodeType::Junction);
         let edge_idx = core.region_graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,

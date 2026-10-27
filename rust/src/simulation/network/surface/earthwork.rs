@@ -11,14 +11,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod boundary;
+mod filled_crossing;
 mod geometry;
 mod model;
 mod planning;
 mod ranges;
 mod stamping;
+mod tunnel;
 
+pub(crate) use filled_crossing::FilledCrossing;
 pub(crate) use planning::RoadEarthworkPlan;
 use stamping::{EarthworkChunkStampResult, EarthworkStampStats};
+pub(crate) use tunnel::ShortTunnel;
 
 pub(crate) use model::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
@@ -39,8 +43,6 @@ const EARTHWORK_CUT_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 
-// Structural end caps that constrain tunnel portal stamps.
-const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 const PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS: usize = 2;
 
 impl RoadSurfaceSystem {

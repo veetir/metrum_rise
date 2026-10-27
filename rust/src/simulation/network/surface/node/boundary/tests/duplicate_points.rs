@@ -232,6 +232,7 @@ fn same_height_boundary_point_with_distinct_source_identity_is_rejected() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -275,6 +276,7 @@ fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_e
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -346,6 +348,7 @@ fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -405,6 +408,7 @@ fn same_height_boundary_point_accepts_adjacent_interpolation_source_cluster() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -476,6 +480,7 @@ fn same_height_boundary_point_accepts_same_owner_interpolation_cluster() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };

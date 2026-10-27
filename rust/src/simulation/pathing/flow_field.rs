@@ -502,6 +502,11 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,

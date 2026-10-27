@@ -18,7 +18,11 @@ use super::super::{
 use super::access::{LocalAccessPath, local_access_path, local_access_target_segment};
 use super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
-    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, lane_origin_node, lane_terminal_node,
+    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, junction_approach_lane,
+    junction_approach_node, lane_origin_node, lane_terminal_node,
+};
+use super::traffic::{
+    lane_change_length_for_speed, lane_change_target_toward, turn_lane_change_length,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -127,8 +131,9 @@ fn walk_lanes(
     let detach_node = agents.planned_detach_node[i];
     let detaches = plan_valid && detach_lane != usize::MAX;
     let mut connectors = Vec::new();
-    // Each path node adds at most one road lane and one connector; the detach adds two more.
-    for _ in 0..2 * path.len() + 4 {
+    // Allow the supported four-lane approaches' adjacent preparation moves as well as
+    // road/connector pairs. This read-only inspector walk never runs in the agent tick.
+    for _ in 0..6 * path.len() + 12 {
         let Some(lane) = network.lane_system.lanes.get(lane_id) else {
             return;
         };
@@ -151,6 +156,58 @@ fn walk_lanes(
                 }
             }
             continue;
+        }
+        if mode == MODE_CAR {
+            let edge = graph.edge(lane.edge_id);
+            let count = if lane.is_fwd {
+                edge.fwd_lanes
+            } else {
+                edge.bkw_lanes
+            };
+            let prepare_d =
+                lane_d.max(lane.length - f32::from(count.saturating_sub(1)) * 70.0 - 30.0);
+            let frontage_target = detaches.then_some(detach_lane).and_then(|target| {
+                lane_change_target_toward(lane_id, target, network).filter(|_| lane_d < detach_d)
+            });
+            let turn_goal =
+                junction_approach_node(lane_id, prepare_d, network, graph).and_then(|node| {
+                    junction_approach_lane(
+                        lane_id,
+                        node,
+                        path,
+                        path_idx,
+                        agents.access_flags[i],
+                        detach_node,
+                        detach_lane,
+                        network,
+                        graph,
+                    )
+                });
+            let turn_target =
+                turn_goal.and_then(|target| lane_change_target_toward(lane_id, target, network));
+            if let Some(target) = frontage_target.or(turn_target) {
+                let start = if frontage_target.is_some() {
+                    lane_d
+                } else {
+                    prepare_d
+                };
+                let available = lane.length - start;
+                let length = if frontage_target.is_some() {
+                    Some(lane_change_length_for_speed(agents.speed[i]))
+                } else {
+                    let goal = &network.lane_system.lanes[turn_goal.unwrap()];
+                    let steps =
+                        (i16::from(goal.lane_idx) - i16::from(lane.lane_idx)).unsigned_abs();
+                    turn_lane_change_length(agents.speed[i], available, steps)
+                };
+                if let Some(length) = length
+                    && available > length + 12.0
+                {
+                    span(start + length);
+                    (lane_id, lane_d) = (target, start + length);
+                    continue;
+                }
+            }
         }
         // The detach lane itself, or a sibling the car changes from before the detach point.
         if detaches
@@ -211,11 +268,18 @@ fn walk_lanes(
             (lane_id, lane_d) = (detach_lane, 0.0);
             continue;
         }
+        let mut seed_target = detach_lane;
         if !collect_connector_lanes_to_lane(lane_id, detach_lane, network, &mut connectors) {
-            route.end = RouteEnd::NoConnection { node };
-            return;
+            let edge = network.lane_system.lanes[detach_lane].edge_id;
+            if mode != MODE_CAR
+                || !collect_connector_lanes_to_edge(lane_id, edge, network, &mut connectors)
+            {
+                route.end = RouteEnd::NoConnection { node };
+                return;
+            }
+            seed_target = edge;
         }
-        let seed = connector_choice_seed(i, lane_id, detach_lane, node, path_idx);
+        let seed = connector_choice_seed(i, lane_id, seed_target, node, path_idx);
         (lane_id, lane_d) = (connectors[stable_index(seed, connectors.len())], 0.0);
     }
 }

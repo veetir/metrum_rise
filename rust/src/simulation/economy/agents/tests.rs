@@ -22,5 +22,6 @@ mod route_preview;
 mod support;
 mod trip_failures;
 mod trips;
+mod turn_lanes;
 mod u_turns;
 mod vehicle_flow;

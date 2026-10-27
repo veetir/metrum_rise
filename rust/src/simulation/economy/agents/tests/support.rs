@@ -71,6 +71,11 @@ pub(super) fn register_test_asset(
 
 pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -294,6 +299,11 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
     let make = |s: u32, e: u32, x0: f32, x1: f32| Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -338,6 +348,11 @@ pub(super) fn build_4way_junction(
     let nn = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
     let ns = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
     let arm = |s: u32, e: u32, sx: f32, sz: f32, ex: f32, ez: f32| Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -485,7 +500,24 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
             for queue_idx in 0..5 {
-                let destination = arm_nodes[k ^ 1];
+                let lane_system = &network.lane_system;
+                let preferred = arm_edges[k ^ 1];
+                let outgoing = lane_system.lanes[lane_id]
+                    .next_lanes
+                    .iter()
+                    .copied()
+                    .map(|conn| lane_system.lanes[conn].next_lanes[0])
+                    .find(|&id| lane_system.lanes[id].edge_id == preferred)
+                    .unwrap_or_else(|| {
+                        lane_system.lanes[lane_system.lanes[lane_id].next_lanes[0]].next_lanes[0]
+                    });
+                let exit = &lane_system.lanes[outgoing];
+                let exit_edge = graph.edge(exit.edge_id);
+                let destination = if exit.is_fwd {
+                    exit_edge.end_node
+                } else {
+                    exit_edge.start_node
+                };
                 let idx = agents.spawn_border_arrival_agent(usize::MAX, arm_nodes[k], 0.0, 0.0);
                 agents.transit[idx] = TRANSIT_NETWORK;
                 agents.transit_mode[idx] = MODE_CAR;
@@ -496,17 +528,25 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
                 agents.speed[idx] = 14.0;
                 agents.current_path[idx] = vec![arm_nodes[k], nc, destination];
                 agents.current_path_index[idx] = 1;
-                expected_exits.push((idx, arm_edges[k ^ 1]));
+                expected_exits.push((idx, exit.edge_id));
             }
         }
     }
 
     let mut saw_connector = false;
     let mut connector_pairs = 0;
-    for tick in 0..200 {
+    // Right-of-way admission queues conflicting movements. Keep checking separation until
+    // every finite request drains, with a deterministic bound that also detects deadlock.
+    for tick in 0..5000 {
         agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
         saw_connector |= agents.transit.contains(&TRANSIT_INTERSECTION);
         connector_pairs += assert_vehicle_lane_spacing(&agents, &network, tick, label);
+        if expected_exits
+            .iter()
+            .all(|&(agent, edge)| agents.current_edge[agent] == edge)
+        {
+            break;
+        }
     }
     assert!(
         saw_connector,

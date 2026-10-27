@@ -13,6 +13,7 @@ mod smoothness;
 
 #[derive(Clone)]
 pub(crate) struct NodeCanonicalTopologyCache {
+    material_grade: Option<Arc<super::NodeMaterialGradeField>>,
     rail_topology: rails::NodeRailTopologyCache,
     ownership: Option<Arc<ownership::NodeBooleanOwnership>>,
     arrangement: Option<Arc<arrangement::NodeArrangement>>,

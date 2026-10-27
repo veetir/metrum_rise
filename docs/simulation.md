@@ -844,6 +844,9 @@ moves its entities between the tiers' phase buckets.
   its wait (`max_preempted_less_wait_ms`) are each at most 8 ms. `tools/sim02_gate.py perf07`
   checks it and fails a run that misses it or lacks the scheduler statistics. 100k at 32× is
   reported but not required: it is deferred to `PERF-08`.
+  A run must observe at least one thread's scheduler counters (`preemption_threads > 0`).
+  On hosts without those counters the benchmark still emits numeric wait fields; these do
+  not establish that frames were unpreempted, and the gate rejects them as unmeasured.
 - **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
   case: one
   complete 100k candidate run in `economy.md` averaged about 161 ms per hour and 328 ms per daily
@@ -938,6 +941,70 @@ the efficiency cores at the lowest CPU and I/O priority (`taskset -c 16-23 nice 
 and their p99 by 14% and 28%. A 100k 1× run that overlapped another build read 15% slower per
 frame. Builds and tests therefore never run during `PERF-07` or `PERF-01`; the envelope,
 determinism checks and `./run.sh --test` are not timing runs and may share the machine.
+
+### Road-chain integration check on macOS — 2026-10-24
+
+The later `cfcb2bd3` migration restores both save histories, with 2,848 passing library
+cases and 59/65 native suites (six existing Mac failures). Its matched-initial-world traffic
+experiment reproduces the jam on `0cc4a2ab` and identifies coarse connector conflict
+reservations as the throughput bottleneck; see [TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09)
+for the original controls and subsequent approved zone redesign. No scheduler,
+production movement rule or budget threshold was weakened. The six-tier frame-budget matrix
+below remains evidence of its original build; it was not repeated for the reader repair or
+the TRAFFIC-09 zone follow-up. Fresh full contracts and repeated PERF-06 results are recorded
+in the traffic specification. The bounded follow-up identifies the full-road storage cycle as
+saturation under fixed routes; it finds no further permanent reservation fault. Integration
+performance-contract agreement remains open.
+The actual migrated-city frame captures are recorded in [roads.md](roads.md#upstream-integration-checkpoint--2026-10-24).
+
+The earlier full-day, unprofiled release runs compare plain upstream `b75e03c9` with merged Rust
+source `88133881`, on Apple M2 Pro, Rust 1.98.1 / macOS SDK 26.5, eight Rayon workers and
+`METRUM_DEBUG=0`. Builds, correctness tests and Godot captures finish outside these timing
+runs. No CPU affinity or Linux scheduler counters are available on this host.
+
+| Tier | Speed | Max upstream | Max merged | p99 upstream | p99 merged | p99.9 upstream | p99.9 merged | Mean upstream | Mean merged |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10k | 1× | 3.46 | 98.42 | 1.43 | 5.97 | 1.63 | 7.89 | 0.87 | 5.15 |
+| 10k | 32× | 2.64 | 8.49 | 2.21 | 6.87 | 2.53 | 8.15 | 1.21 | 5.50 |
+| 30k | 1× | 5.82 | 76.29 | 2.38 | 5.43 | 2.80 | 8.36 | 1.65 | 4.48 |
+| 30k | 32× | 6.84 | 12.18 | 4.83 | 8.76 | 5.66 | 10.56 | 3.04 | 5.52 |
+| 100k | 1× | 80.16 | 129.18 | 9.27 | 14.83 | 12.66 | 20.75 | 7.18 | 12.51 |
+| 100k | 32× | 30.26 | 53.92 | 23.48 | 29.97 | 27.56 | 42.78 | 14.30 | 17.14 |
+
+All values are milliseconds. Each 1× run measures 86,376 frames and each 32× run 2,700;
+`METRUM_PERF07_MINUTES` is unset. Both full gates fail. Every merged max/p99 comparison exceeds
+the checker's tolerance; the required merged tiers also exceed the raw 8 ms p99.9 limit.
+At 100k 1×, frames over 8 ms increase from 9,326 to all 86,376. The city states differ
+substantially, so these are nominal-tier observations, not a comparison of identical work:
+see [TRAFFIC-09](traffic.md#upstream-integration-acceptance--traffic-09).
+
+Both binaries report `preemption_threads = 0`. The native JSON's numeric "unpreempted" fields
+cannot separate machine scheduling from simulation work here. The gate now requires watched
+threads and fails the run for unavailable monitoring; it no longer treats numeric zero wait as proof.
+Its identity collection also records unavailable CPU affinity as null on macOS. Twenty
+targeted contract/gate Python regressions pass. The existing published Linux acceptance rows
+remain unchanged; this run does not certify the preemption contract on macOS.
+
+Snapshot mean costs at 1× are 0.492 → 4.367 ms (10k), 0.582 → 2.578 ms (30k) and
+1.239 → 4.633 ms (100k). An earlier 10k diagnostic was sampled with Apple's `sample` because
+Samply is unavailable. Its pause-contaminated timing was discarded in full and the merged
+matrix above rerun without profiling. The sparse stack sample shows forward work in snapshot
+vehicle grounding, not a statistically established root cause.
+
+Commands, serially for the two preserved executables, using the same settings above:
+
+```bash
+./run.sh --perf-contract --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/perf-contract"
+python3 tools/sim02_gate.py perf07 --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/perf07"
+# Merged frame run also compares against the plain-upstream report:
+python3 tools/sim02_gate.py perf07 --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/perf07" --perf07-baseline "$ARTIFACTS/upstream-perf07/report.json"
+python3 -m unittest discover -s tools -p test_perf_contract.py
+```
+
+Full executable hashes/source identities are retained in `$ARTIFACTS/binary-identities.json`.
+Reports' `git_head` records the orchestration checkout; it is not the plain-upstream binary's
+source identity. The full economy work-limit failures and rejected old-road preparation are
+recorded in [`traffic.md`](traffic.md#upstream-integration-acceptance--traffic-09).
 
 ## GPU compute
 

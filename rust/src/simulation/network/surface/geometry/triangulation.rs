@@ -91,6 +91,28 @@ impl RoadSurfaceSystem {
         accepts: impl Fn([RoadVec3; 3]) -> bool,
         contains: impl Fn(RoadVec2) -> bool,
     ) -> Option<Vec<[usize; 3]>> {
+        // Spade merges coincident input positions, so its vertex handles are not
+        // indices into the original rings when two contours touch. Recover the
+        // source by position instead of indexing a shifted input array.
+        let position_key = |x: f64, z: f64| {
+            (
+                if x == 0.0 { 0 } else { x.to_bits() },
+                if z == 0.0 { 0 } else { z.to_bits() },
+            )
+        };
+        let mut source_indices = std::collections::BTreeMap::new();
+        for (index, point) in points_world.iter().enumerate() {
+            if let Some(&previous) = source_indices.get(&position_key(point.x, point.z)) {
+                let previous: usize = previous;
+                if super::super::keys::SurfaceHeightMmKey::from_m_f64(points_world[previous].y)
+                    != super::super::keys::SurfaceHeightMmKey::from_m_f64(point.y)
+                {
+                    return None;
+                }
+            } else {
+                source_indices.insert(position_key(point.x, point.z), index);
+            }
+        }
         let vertices = points_world
             .iter()
             .map(|point| Point2::new(point.x, point.z))
@@ -106,7 +128,9 @@ impl RoadSurfaceSystem {
 
         let mut triangles = Vec::new();
         for face in cdt.inner_faces() {
-            let indices = face.vertices().map(|vertex| vertex.fix().index());
+            let indices = face
+                .positions()
+                .map(|point| source_indices[&position_key(point.x, point.y)]);
             let triangle = indices.map(|point| points_world[point]);
             let centroid = RoadVec2::new(
                 (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
@@ -124,6 +148,32 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touching_rings_recover_coordinates_after_cdt_vertex_deduplication() {
+        let point = |x, z| RoadVec3::new(x, 2.0 + x * 0.1 + z * 0.2, z);
+        let rings = vec![
+            vec![
+                point(0.0, 0.0),
+                point(4.0, 0.0),
+                point(4.0, 4.0),
+                point(0.0, 4.0),
+            ],
+            vec![point(0.0, 0.0), point(1.0, 2.0), point(2.0, 1.0)],
+        ];
+        let triangles = RoadSurfaceSystem::triangulate_constrained_rings_xz(&rings).unwrap();
+        let area = triangles
+            .iter()
+            .map(|&triangle| RoadSurfaceSystem::road_triangle_double_area_xz_m2(triangle) * 0.5)
+            .sum::<f64>();
+        assert!(
+            (area - 14.5).abs() < 1e-12,
+            "touching hole must preserve area: {area}"
+        );
+        for point in triangles.into_iter().flatten() {
+            assert!((point.y - (2.0 + point.x * 0.1 + point.z * 0.2)).abs() < 1e-12);
+        }
+    }
 
     #[test]
     fn ground_infill_preserves_holes_and_subcentimetre_residuals() {

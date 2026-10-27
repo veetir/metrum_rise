@@ -685,6 +685,10 @@ fn moving_junction_bounds_reuse_resident_split_and_clip_only_approaches() {
             1,
             1,
         );
+        // This retention test needs actual paint; urban 1+1 approaches now have no arrows.
+        for edge in fixture.graph.edges_iter_mut() {
+            edge.speed_limit = 60.0 / 3.6;
+        }
         let scene_at = |fixture: &Fixture, x: f32| {
             let points = [fixture.point(x, -60.0), fixture.point(x, 0.0)];
             let (preview, _, input) = fixture
@@ -781,3 +785,249 @@ fn moving_junction_bounds_reuse_resident_split_and_clip_only_approaches() {
         assert!(moved, "the approach clips must follow the moved bounds");
     }
 }
+
+#[test]
+fn pocket_preview_add_resize_remove_matches_committed_chunk_geometry() {
+    use crate::simulation::network::graph::RoadMedian;
+    use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
+    let mut fixture = Fixture::new(false);
+    fixture.add(
+        &[fixture.point(-230.0, 0.0), fixture.point(230.0, 0.0)],
+        2,
+        2,
+    );
+    fixture
+        .graph
+        .set_edge_cross_section(0, 2, 2, RoadMedian::from_tool(2, 5.0).unwrap())
+        .unwrap();
+    fixture.add(
+        &[fixture.point(0.0, -150.0), fixture.point(0.0, 150.0)],
+        1,
+        1,
+    );
+    // A separate road in the same chunks must survive every replacement.
+    fixture.add(
+        &[fixture.point(-200.0, 70.0), fixture.point(-100.0, 70.0)],
+        1,
+        1,
+    );
+    for (left, right, length) in [
+        (true, true, 80.0),
+        (true, true, 100.0),
+        (false, false, 100.0),
+    ] {
+        let edge = fixture
+            .graph
+            .get_edges_near_point(fixture.point(-40.0, 0.0), 3.0)
+            .into_iter()
+            .find(|&id| !fixture.graph.edge(id).deleted)
+            .unwrap();
+        let request = PocketRequest {
+            edge,
+            at_start: false,
+            left,
+            right,
+            length,
+            taper: 35.0,
+        };
+        let mut scene = fixture
+            .network
+            .road_surface
+            .compile_pocket_preview(&fixture.graph, &fixture.terrain, request)
+            .unwrap()
+            .0;
+        let source = RoadRenderer.generate_mesh_chunks_with_surface(
+            &fixture.graph,
+            &mut fixture.network.lane_system,
+            &fixture.terrain,
+            &fixture.network.road_surface,
+            &scene.replacement_chunks,
+        );
+        let source = source
+            .into_iter()
+            .map(|(key, mesh)| (key, mesh.seal()))
+            .collect();
+        scene.retain_existing(&source);
+        let layout = PocketLayout::prepare(&fixture.graph, request).unwrap();
+        let originals: HashSet<_> = layout.originals.iter().map(|(id, _)| *id).collect();
+        let nodes = originals
+            .iter()
+            .flat_map(|&id| {
+                let edge = fixture.graph.edge(id);
+                [edge.start_node, edge.end_node]
+            })
+            .collect();
+        fixture
+            .network
+            .mark_surface_dirty_from_sets(&fixture.graph, &originals, &nodes);
+        let changed = layout.apply(&mut fixture.graph);
+        fixture.network.bulk_dirty_edges.extend(changed);
+        fixture.network.finalize_road_geometry(&mut fixture.graph);
+        fixture
+            .network
+            .road_surface
+            .compile_dirty(&fixture.graph, &fixture.terrain);
+        fixture.network.lane_system.rebuild(&mut fixture.graph);
+        let committed = RoadRenderer.generate_mesh_chunks_with_surface(
+            &fixture.graph,
+            &mut fixture.network.lane_system,
+            &fixture.terrain,
+            &fixture.network.road_surface,
+            &scene.replacement_chunks,
+        );
+        for (key, mesh) in &committed {
+            let pose = |p: Vector3, yaw: f32, kind: u8| {
+                (
+                    [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), yaw.to_bits()],
+                    kind,
+                )
+            };
+            let mut actual_lights = Vec::new();
+            let mut actual_signs = Vec::new();
+            for data in [
+                scene.planned.get(key),
+                scene.retained.get(key),
+                scene.approach.get(key),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                actual_lights.extend(
+                    data.street_lights
+                        .iter()
+                        .map(|light| pose(light.position, light.yaw, light.kind as u8)),
+                );
+                actual_signs.extend(
+                    data.road_signs
+                        .iter()
+                        .map(|sign| pose(sign.position, sign.yaw, sign.kind as u8)),
+                );
+            }
+            let mut expected_lights: Vec<_> = mesh
+                .street_lights
+                .iter()
+                .map(|light| pose(light.position, light.yaw, light.kind as u8))
+                .collect();
+            let mut expected_signs: Vec<_> = mesh
+                .road_signs
+                .iter()
+                .map(|sign| pose(sign.position, sign.yaw, sign.kind as u8))
+                .collect();
+            actual_lights.sort_unstable();
+            expected_lights.sort_unstable();
+            actual_signs.sort_unstable();
+            expected_signs.sort_unstable();
+            assert_eq!(actual_lights, expected_lights, "pocket lights at {key:?}");
+            assert_eq!(actual_signs, expected_signs, "pocket signs at {key:?}");
+            let mut displayed = existing_signature(&scene, key);
+            if let Some(planned) = scene.planned.get(key) {
+                for (layer, triangles) in displayed.iter_mut().zip(signature(planned)) {
+                    layer.extend(triangles);
+                }
+            }
+            let mut expected = signature(mesh);
+            for (index, (displayed, expected)) in
+                displayed.iter_mut().zip(expected.iter_mut()).enumerate()
+            {
+                displayed.sort_unstable();
+                expected.sort_unstable();
+                assert!(
+                    displayed == expected,
+                    "pocket {left}/{right}/{length} chunk {key:?} layer {index}: preview={} commit={}",
+                    displayed.len(),
+                    expected.len()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn zebra_preview_add_remove_matches_committed_neighborhood() {
+    use crate::simulation::network::graph::RoadMedian;
+    for median in [false, true] {
+        let mut fixture = Fixture::new(false);
+        fixture.add(
+            &[fixture.point(-180.0, 0.0), fixture.point(180.0, 0.0)],
+            1,
+            1,
+        );
+        if median {
+            fixture
+                .graph
+                .set_edge_cross_section(0, 1, 1, RoadMedian::from_tool(2, 5.0).unwrap())
+                .unwrap();
+        }
+        fixture.add(
+            &[fixture.point(0.0, -140.0), fixture.point(0.0, 140.0)],
+            1,
+            1,
+        );
+        let edge = fixture
+            .graph
+            .get_edges_near_point(fixture.point(-40.0, 0.0), 3.0)[0];
+        let node = fixture.graph.edge(edge).end_node;
+        for marked in [true, false] {
+            let before = fixture.graph.node(node).crosswalk_overrides.clone();
+            let mut scene = fixture
+                .network
+                .road_surface
+                .compile_crosswalk_preview(&fixture.graph, &fixture.terrain, node, edge, marked)
+                .unwrap()
+                .0;
+            assert_eq!(fixture.graph.node(node).crosswalk_overrides, before);
+            let source = RoadRenderer
+                .generate_mesh_chunks_with_surface(
+                    &fixture.graph,
+                    &mut fixture.network.lane_system,
+                    &fixture.terrain,
+                    &fixture.network.road_surface,
+                    &scene.replacement_chunks,
+                )
+                .into_iter()
+                .map(|(key, mesh)| (key, mesh.seal()))
+                .collect();
+            scene.retain_existing(&source);
+            let dirty: HashSet<_> = fixture.graph.node_adjacency(node).iter().copied().collect();
+            fixture.network.mark_surface_dirty_from_sets(
+                &fixture.graph,
+                &dirty,
+                &HashSet::from([node]),
+            );
+            fixture.graph.set_crosswalk_override(node, edge, marked);
+            fixture.network.bulk_dirty_edges.extend(dirty);
+            fixture.network.finalize_road_geometry(&mut fixture.graph);
+            fixture
+                .network
+                .road_surface
+                .compile_dirty(&fixture.graph, &fixture.terrain);
+            fixture.network.lane_system.rebuild(&mut fixture.graph);
+            let committed = RoadRenderer.generate_mesh_chunks_with_surface(
+                &fixture.graph,
+                &mut fixture.network.lane_system,
+                &fixture.terrain,
+                &fixture.network.road_surface,
+                &scene.replacement_chunks,
+            );
+            for (key, mesh) in committed {
+                let mut displayed = existing_signature(&scene, &key);
+                if let Some(planned) = scene.planned.get(&key) {
+                    for (layer, triangles) in displayed.iter_mut().zip(signature(planned)) {
+                        layer.extend(triangles);
+                    }
+                }
+                let mut expected = signature(&mesh);
+                for (displayed, expected) in displayed.iter_mut().zip(expected.iter_mut()) {
+                    displayed.sort_unstable();
+                    expected.sort_unstable();
+                    assert_eq!(
+                        displayed, expected,
+                        "median={median} marked={marked} key={key:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+mod legacy_baseline;

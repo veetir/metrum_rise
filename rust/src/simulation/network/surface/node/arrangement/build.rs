@@ -6,13 +6,13 @@ use super::super::backend::RoadVec2;
 use super::super::band_semantics::raised_step_band_rank;
 use super::super::height::{
     NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightCarrierProvenanceKey,
-    NodeHeightSolution,
+    NodeHeightSolution, NodeMaterialGradeField,
 };
 use super::super::keys::SurfaceHeightMmKey;
 use super::super::ownership::NodeCarrierProvenanceOrigin;
 use super::super::rails::{NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose};
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
-use super::edges::collect_pending_region_edge_support;
+use super::edges::{NodeGradeContactIndex, collect_pending_region_edge_support};
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
 use super::seams::{NodeRegionSeamConstraint, NodeSeamSource, owners_for_material_seam_constraint};
 use super::steps::{
@@ -182,13 +182,15 @@ impl NodeArrangement {
     pub(crate) fn from_height_solution(
         heights: &NodeHeightSolution,
     ) -> Result<Self, NodeArrangementError> {
-        Self::from_height_solution_with_profile(heights, false)
+        Self::from_height_solution_with_profile(heights, false, None)
             .map(|(arrangement, _, _)| arrangement)
     }
 
-    pub(crate) fn from_height_solution_with_profile(
+    /// Builds the arrangement while retaining shared-grade proofs at noded boundaries.
+    pub(in crate::simulation::network::surface) fn from_height_solution_with_profile(
         heights: &NodeHeightSolution,
         profile_enabled: bool,
+        material_grade: Option<&NodeMaterialGradeField>,
     ) -> Result<
         (
             Self,
@@ -217,7 +219,10 @@ impl NodeArrangement {
             .sum();
 
         let noding_start = profile_enabled.then(Instant::now);
-        arrangement.node_pending_region_edges(&mut pending_regions)?;
+        arrangement.node_pending_region_edges(
+            &mut pending_regions,
+            material_grade.filter(|g| g.cohort_nodes().is_some()),
+        )?;
         profile.noding_ms = elapsed_profile_ms(noding_start);
         profile.pending_edges_after = pending_regions
             .iter()
@@ -229,6 +234,22 @@ impl NodeArrangement {
             collect_pending_region_edge_support(&pending_regions, &arrangement.vertices);
         profile.edge_support_ms = elapsed_profile_ms(edge_support_start);
 
+        let grade_contacts = arrangement
+            .vertices
+            .iter()
+            .filter(|vertex| {
+                matches!(
+                    vertex.grade_authority.decision,
+                    NodeGradeCarrierDecision::DeclaredMaterialContact { .. }
+                )
+            })
+            .flat_map(|vertex| {
+                vertex
+                    .owners
+                    .iter()
+                    .map(move |&owner| ((vertex.key, owner), vertex.grade_authority))
+            })
+            .collect::<NodeGradeContactIndex>();
         for pending in pending_regions.iter().cloned() {
             let boundary_start = profile_enabled.then(Instant::now);
             let boundary_edges = arrangement.push_boundary_edges_for_pending_region(
@@ -236,6 +257,7 @@ impl NodeArrangement {
                 &pending_regions,
                 &edge_owners,
                 &edge_use_counts,
+                &grade_contacts,
             );
             profile.boundary_edges_ms += elapsed_profile_ms(boundary_start);
             let push_region_start = profile_enabled.then(Instant::now);
@@ -316,6 +338,12 @@ impl NodeArrangement {
                     let left = &self.vertices[vertex_ids[left_index].0];
                     let right = &self.vertices[vertex_ids[right_index].0];
                     if left.height_key == right.height_key {
+                        continue;
+                    }
+                    if left
+                        .grade_authority
+                        .shares_declared_material_base(right.grade_authority)
+                    {
                         continue;
                     }
                     let crosses_band_kind = !owners_share_band_kind(&left.owners, &right.owners);
@@ -496,7 +524,8 @@ impl MaterialHeightConflictIndex {
             }
             if edge.is_material_transition
                 && !edge.constrains_shared_height
-                && !edge.source_constraint_indices.is_empty()
+                && (!edge.source_constraint_indices.is_empty()
+                    || edge.has_declared_material_grade_contact)
                 && edge.has_applicable_material_source_constraint
                 && (arrangement.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
                     || !arrangement.edge_has_owner_pair_source_constraint(edge))
@@ -693,13 +722,13 @@ impl MaterialHeightConflictIndex {
     }
 }
 
-struct RelevantArrangementKeyIndex {
+pub(super) struct RelevantArrangementKeyIndex {
     by_x: Vec<NodeArrangementKey>,
     by_z: Vec<NodeArrangementKey>,
 }
 
 impl RelevantArrangementKeyIndex {
-    fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
+    pub(super) fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
         let mut by_x = keys.iter().copied().collect::<Vec<_>>();
         by_x.sort_unstable_by_key(|key| (key.x_key, key.z_key));
         let mut by_z = keys.iter().copied().collect::<Vec<_>>();
@@ -707,7 +736,7 @@ impl RelevantArrangementKeyIndex {
         Self { by_x, by_z }
     }
 
-    fn for_each_key_on_segment(
+    pub(super) fn for_each_key_on_segment(
         &self,
         start: NodeArrangementKey,
         end: NodeArrangementKey,
@@ -876,7 +905,8 @@ fn merged_node_grade_authority(
 
 pub(super) fn node_grade_decision_rank(decision: NodeGradeCarrierDecision) -> u8 {
     match decision {
-        NodeGradeCarrierDecision::ExplicitMaterialSeam => 0,
+        NodeGradeCarrierDecision::ExplicitMaterialSeam
+        | NodeGradeCarrierDecision::DeclaredMaterialContact { .. } => 0,
         NodeGradeCarrierDecision::SameMaterialSeam => 1,
         NodeGradeCarrierDecision::SameMaterialSharedEdge => 2,
         NodeGradeCarrierDecision::SameMaterialVertex => 3,

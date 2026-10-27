@@ -1,0 +1,657 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+## Applies an offline map plan using the player's road and zoning APIs, then saves a city.
+## Standalone SceneTree script, run only through maps/processed/run_apply.sh. See
+## tools/map_import/cli.py for command arguments. RoadCommit acknowledgements are awaited;
+## unknown completion stops the entire apply so a late road cannot race a subsequent stroke.
+## Source speeds and building footprints remain in neutral.json. Final save is paused.
+extends SceneTree
+
+const Features := preload("res://scripts/tools/map_import_features.gd")
+const Network := preload("res://scripts/tools/map_import_network.gd")
+var _output := ""
+var _results: Dictionary = {}
+var _fatal := false
+var _deferred: Array = []
+
+func _initialize() -> void:
+	call_deferred("_run")
+
+func _run() -> void:
+	var args := _arguments()
+	Engine.max_fps = 60
+	_output = _resolve_path(String(args.get("output", "../maps/processed/kuopio_sw")))
+	var plan_path := _resolve_path(String(args.get("plan", "../maps/processed/kuopio_sw/plan.json")))
+	var world_path := _resolve_path(String(args.get("world", "bootstrap/worlds/kuopio_324km2_10m.sqlite")))
+	# Restrict derived data and saves to the repository's local map output directory.
+	var local_maps := ProjectSettings.globalize_path("res://../maps/processed/").simplify_path() + "/"
+	_output = _output.simplify_path()
+	if not (_output + "/").begins_with(local_maps):
+		_fail("Output must be inside maps/processed")
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(plan_path))
+	if not parsed is Dictionary or int(parsed.get("schema_version", 0)) != 1:
+		_fail("Invalid map plan")
+		return
+	var plan: Dictionary = parsed
+	if FileAccess.get_sha256(world_path) != String(plan["world_sha256"]):
+		_fail("World definition hash differs from prepared plan")
+		return
+	var beds: Dictionary = plan["water_beds"]
+	var bed_world := plan_path.get_base_dir().path_join("water-world.sqlite")
+	if FileAccess.get_sha256(bed_world) != String(beds["world_sha256"]):
+		_fail("Water-bed world hash differs from prepared plan")
+		return
+	_results = {"schema_version": 1, "plan_sha256": FileAccess.get_sha256(plan_path),
+		"complete": false, "saved": false, "save_path": "", "roads": [], "zoning": [], "parcels": []}
+	var simulation := SimulationNode.new()
+	simulation.name = "SimulationNode"
+	root.add_child(simulation)
+	simulation.set_simulation_speed(0.0)
+	var warnings: String = simulation.load_all_asset_packs(_resolve_path(String(args.get("packs", "res://bootstrap/mods"))))
+	_results["asset_warnings"] = warnings
+	var resumed := args.has("resume")
+	if resumed:
+		if not _load_resume(simulation, _resolve_path(args["resume"]), plan_path):
+			return
+	elif not simulation.load_world_definition(bed_world):
+		_fail("World definition failed to load")
+		return
+	simulation.set_simulation_speed(0.0)
+	var world_size: Vector2 = simulation.get_terrain_world_size()
+	var transform: Dictionary = plan["world_transform"]
+	if absf(world_size.x - float(transform["max_e"]) + float(transform["min_e"])) > 0.01 or absf(world_size.y - float(transform["max_n"]) + float(transform["min_n"])) > 0.01:
+		_fail("Loaded world dimensions differ from plan")
+		return
+	if not resumed:
+		_results["water"] = _adjust_water(simulation, plan.get("water_edits", []))
+		_results["water_beds"] = beds
+		_results["forest"] = _clear_forest(simulation, plan["target_box_xz"])
+	var accepted := {}
+	var prior := {}
+	for record in _results["roads"]:
+		prior[record["id"]] = record
+		accepted[record["id"]] = record.get("accepted_length_m", 0.0) > 0.0
+	var roundabouts_applied := _results.has("roundabouts")
+	var roads_repaired := roundabouts_applied
+	for stroke in plan["strokes"]:
+		if prior.has(stroke["id"]):
+			var record: Dictionary = prior[stroke["id"]]
+			for failure in record["failed_pieces"]:
+				_deferred.append({"stroke": stroke, "record": record, "failure": failure})
+			continue
+		if stroke["kind"] == "footpath" and not roads_repaired:
+			await _retry_deferred(simulation, "motor")
+			_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
+			if not _roundabout_completion_known():
+				return
+			roundabouts_applied = true
+			roads_repaired = true
+		var record := {"id": stroke["id"], "attempts": [], "pieces": [], "failed_pieces": []}
+		_results["roads"].append(record)
+		await _place(simulation, stroke, stroke["points_xz"], record, 0, "original")
+		if _fatal:
+			return
+		var accepted_m := 0.0
+		for piece in record["pieces"]:
+			accepted_m += _length(piece)
+		record["accepted_length_m"] = accepted_m
+		record["status"] = "refused" if record["pieces"].is_empty() else ("partial" if not record["failed_pieces"].is_empty() else "accepted")
+		record["reason"] = String(record["attempts"][-1]["reason"]) if record["status"] == "refused" else ""
+		accepted[stroke["id"]] = accepted_m > 0.0
+		if _results["roads"].size() % 10 == 0:
+			_write_results()
+		if _results["roads"].size() % 20 == 0:
+			_checkpoint(simulation)
+	if not roads_repaired:
+		_checkpoint(simulation)
+		await _retry_deferred(simulation, "motor")
+	if not roundabouts_applied:
+		_results["roundabouts"] = await Features.roundabouts(simulation, self, plan.get("roundabouts", []))
+		if not _roundabout_completion_known():
+			return
+	# Later source junctions, paths or a resumed compiler can resolve earlier refusals.
+	# Retry exact remaining pieces only; accepted geometry is never replayed.
+	if not _results.get("settled_source_retry", false):
+		await _retry_deferred(simulation, "settled")
+		if _fatal:
+			return
+		_results["settled_source_retry"] = true
+		_checkpoint(simulation)
+	# A resumed import may use a corrected compiler. Retry only refused source rings,
+	# with the same measured product and normal acknowledged replacement API.
+	for i in _results.get("roundabouts", []).size():
+		var previous: Dictionary = _results["roundabouts"][i]
+		if previous.get("committed", false):
+			continue
+		var retry: Array = await Features.roundabouts(simulation, self, [plan["roundabouts"][i]])
+		retry[0]["previous_attempt"] = previous
+		_results["roundabouts"][i] = retry[0]
+		if not _roundabout_completion_known():
+			return
+	for record in _results["roads"]:
+		_finish_record(record)
+		accepted[record["id"]] = record["accepted_length_m"] > 0.0
+	_results["snapshot"] = JSON.parse_string(simulation.get_road_terrain_benchmark_snapshot())
+	_results["gateways"] = _create_gateway(simulation, plan["target_box_xz"])
+	_results["network"] = Network.inspect_network(simulation)
+	_results["car_components"] = _results["network"]["components"]
+	var profiles: Array = simulation.get_zone_profiles()
+	profiles.sort_custom(func(a, b): return String(a["id"]) < String(b["id"]))
+	var profile_ids := {}
+	var profile_types := {}
+	for profile in profiles:
+		var key := String(profile["zone_type"]) + "/" + String(profile["density"])
+		if not profile_ids.has(key):
+			profile_ids[key] = int(profile["runtime_id"])
+		profile_types[int(profile["runtime_id"])] = String(profile["zone_type"])
+	for zone in plan["zoning"]:
+		_results["zoning"].append(_apply_zone(simulation, zone, accepted, profile_ids))
+	# One final scan of the exported parcels, never one resident scan per intent.
+	for parcel in simulation.get_zoning_parcels_overlay():
+		var corners: PackedVector3Array = parcel["corners"]
+		var twice_area := 0.0
+		for i in corners.size():
+			var a := corners[i]
+			var b := corners[(i + 1) % corners.size()]
+			twice_area += a.x * b.z - a.z * b.x
+		_results["parcels"].append({"id": int(parcel["id"]),
+			"zone_type": profile_types.get(int(parcel["profile_runtime_id"]), "unknown"), "area_m2": absf(twice_area) / 2.0})
+	_results["parcels"].sort_custom(func(a, b): return int(a["id"]) < int(b["id"]))
+	_results["growth"] = await _grow(simulation, args)
+	if _fatal:
+		return
+	if DirAccess.make_dir_recursive_absolute(_output) != OK:
+		_fail("Cannot create save directory")
+		return
+	var save_path := _output.path_join("city.sqlite")
+	_results["saved"] = simulation.save_game(save_path)
+	_results["save_path"] = save_path if _results["saved"] else ""
+	_results["complete"] = true
+	if not _write_results():
+		quit(2)
+		return
+	quit(0 if _results["saved"] else 2)
+
+func _roundabout_completion_known() -> bool:
+	for record: Dictionary in _results.get("roundabouts", []):
+		if record.get("unknown_completion", false):
+			_fail("Unknown roundabout completion; stop before another topology request")
+			return false
+	return true
+
+func _load_resume(simulation: Node, folder: String, plan_path: String) -> bool:
+	var local_maps := ProjectSettings.globalize_path("res://../maps/processed/").simplify_path()+"/"
+	if not (folder+"/").begins_with(local_maps) or folder == _output:
+		_fail("Resume needs a distinct importer-owned checkpoint folder")
+		return false
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("checkpoint_results.json")))
+	if not parsed is Dictionary or not parsed.get("saved", false) or parsed.get("plan_sha256", "") != FileAccess.get_sha256(plan_path):
+		_fail("Resume checkpoint must match this exact plan")
+		return false
+	if not simulation.load_game(folder.path_join("checkpoint.sqlite")):
+		_fail("Resume checkpoint failed to load")
+		return false
+	_results = parsed
+	_results["complete"] = false
+	_results["saved"] = false
+	_results["resume_base"] = folder
+	return true
+
+func _adjust_water(simulation: Node, edits: Array) -> Array:
+	var results := []
+	for edit in edits:
+		var old: Variant = edit.get("seed_xz")
+		var removed := false
+		if old is Array:
+			var p := Vector2(old[0], old[1])
+			removed = simulation.remove_world_lake_fill_near(p, 1.0) if edit["kind"] == "lake" else simulation.remove_world_open_water_fill_near(p, 1.0)
+		var seed: Array = edit["new_seed_xz"]
+		var p := Vector2(seed[0], seed[1])
+		var preview: Dictionary = simulation.begin_world_lake_fill_preview(p, edit["new_surface_m"]) if edit["kind"] == "lake" else simulation.begin_world_open_water_fill_preview(p, edit["new_surface_m"])
+		if preview.get("status", "") == "below_seed":
+			var best := INF
+			var target := p
+			for dx in range(-250, 251, 10):
+				for dz in range(-250, 251, 10):
+					var q := p+Vector2(dx, dz)
+					var run := Vector2(dx,dz).length_squared()
+					if run < best and simulation.get_height_at(q) < float(edit["new_surface_m"])-0.005:
+						best = run
+						target = q
+			if best < INF:
+				p = target
+				preview = simulation.begin_world_open_water_fill_preview(p, edit["new_surface_m"])
+		var kind: String = edit["kind"]
+		if preview.get("status", "") == "not_edge_connected":
+			kind = "lake"
+			preview = simulation.begin_world_lake_fill_preview(p, edit["new_surface_m"])
+		elif preview.get("kind", "") == "open_water":
+			kind = "open"
+		var committed := false
+		if preview.get("valid", false):
+			committed = simulation.commit_world_lake_fill_preview() if kind == "lake" else simulation.commit_world_open_water_fill_preview()
+
+		results.append({"edit": edit, "removed": removed, "preview": preview, "committed": committed})
+	return results
+
+func _create_gateway(simulation: Node, box: Array) -> Array:
+	var snapshot: Dictionary = JSON.parse_string(simulation.get_road_terrain_benchmark_snapshot())
+	var degree := {}
+	for edge in snapshot["edges"]:
+		if int(edge["fwd_lanes"]) + int(edge["bkw_lanes"]) == 0:
+			continue
+		for field in ["start_node", "end_node"]:
+			var node := int(edge[field])
+			degree[node] = int(degree.get(node, 0)) + 1
+	var candidates := []
+	for node in degree:
+		if int(degree[node]) != 1:
+			continue
+		var p: Vector3 = simulation.get_node_pos(node)
+		var margin := minf(minf(absf(p.x-box[0]), absf(p.x-box[2])), minf(absf(p.z-box[1]), absf(p.z-box[3])))
+		if margin <= 15.0:
+			candidates.append({"node": node, "point_xz": [p.x, p.z], "margin_m": margin})
+	candidates.sort_custom(func(a, b): return float(a["margin_m"]) < float(b["margin_m"]) if not is_equal_approx(a["margin_m"], b["margin_m"]) else int(a["node"]) < int(b["node"]))
+	if candidates.is_empty():
+		return []
+	# The crop boundary represents the unmodelled city beyond this import. Use
+	# the existing outside-connection mutator, including its normal 10 m extension.
+	var gateway: Dictionary = candidates[0]
+	simulation.set_border_connection(int(gateway["node"]))
+	return [gateway]
+
+func _grow(simulation: Node, args: Dictionary) -> Dictionary:
+	var days := clampi(int(args.get("grow-days", "0")), 0, 30)
+	var limit_ms := clampi(int(args.get("grow-max-seconds", "180")), 1, 1800) * 1000
+	var frame_limit := clampi(int(args.get("grow-max-frames", "120000")), 1, 1000000)
+	var start_minutes: int = simulation.get_current_day()*1440 + simulation.get_current_minute_of_day()
+	var begin := Time.get_ticks_msec()
+	var frames := 0
+	var speed := 0.0
+	if days > 0:
+		var steps: PackedFloat32Array = SimulationNode.get_simulation_speed_steps()
+		speed = steps[-1]
+		if not simulation.set_simulation_speed(speed):
+			_fail("Cannot set growth speed")
+			return {}
+		while frames < frame_limit and Time.get_ticks_msec()-begin < limit_ms:
+			var minutes: int = simulation.get_current_day()*1440 + simulation.get_current_minute_of_day()
+			if minutes-start_minutes >= days*1440:
+				break
+			frames += 1
+			await process_frame
+	simulation.set_simulation_speed(0.0)
+	# The setter is queued. Confirm pause on the core before saving it.
+	var pause_deadline := Time.get_ticks_msec() + 5000
+	while float(simulation.get_road_benchmark_state()["simulation_speed"]) != 0.0:
+		if Time.get_ticks_msec() > pause_deadline:
+			_fail("Timed out waiting for final pause")
+			return {}
+		await process_frame
+	var finish_minutes: int = simulation.get_current_day()*1440 + simulation.get_current_minute_of_day()
+	var state: Dictionary = simulation.get_road_benchmark_state()
+	return {"requested_days": days, "elapsed_minutes": finish_minutes-start_minutes, "frames": frames,
+		"wall_seconds": (Time.get_ticks_msec()-begin)/1000.0, "speed": speed,
+		"target_reached": finish_minutes-start_minutes >= days*1440,
+		"agents": state["agents"], "buildings": state["buildings"], "paused": state["simulation_speed"] == 0.0}
+
+func _repair_network(simulation: Node) -> void:
+	if not _results.has("repairs"):
+		_results["repairs"] = []
+	var tried := {}
+	for sweep in 6:
+		var network := Network.inspect_network(simulation)
+		if int(network["components"]) <= 1:
+			break
+		var components := {}
+		for component in network["component_nodes"]:
+			components[component] = component
+		var successes := 0
+		for candidate in network["candidates"]:
+			var key := JSON.stringify(candidate["points_xz"])
+			var from_root: int = Network._root(components, int(candidate["from_component"]))
+			var to_root: int = Network._root(components, int(candidate["to_component"]))
+			if tried.has(key) or from_root == to_root:
+				continue
+			tried[key] = true
+			var record := {"id": "repair/%d/%d" % [sweep, _results["repairs"].size()], "attempts": [], "pieces": [], "failed_pieces": [], "candidate": candidate}
+			var stroke := {"fwd_lanes": 1, "bkw_lanes": 1, "id": record["id"]}
+			var reason := await _attempt(simulation, stroke, candidate["points_xz"], record, "near_miss_connection")
+			record["reason"] = reason
+			record["status"] = "accepted" if reason.is_empty() else "refused"
+			_results["repairs"].append(record)
+			if _fatal:
+				return
+			if reason.is_empty():
+				# Later validated links can join other branches to this same root.
+				components[maxi(from_root, to_root)] = mini(from_root, to_root)
+				successes += 1
+		_write_results()
+		_checkpoint(simulation)
+		if successes == 0:
+			break
+
+func _finish_record(record: Dictionary) -> void:
+	var total := 0.0
+	for piece in record["pieces"]:
+		total += _length(piece)
+	record["accepted_length_m"] = total
+	record["status"] = "refused" if record["pieces"].is_empty() else ("partial" if not record["failed_pieces"].is_empty() else "accepted")
+	record["reason"] = String(record["failed_pieces"][-1]["reason"]) if record["status"] == "refused" and not record["failed_pieces"].is_empty() else ""
+
+func _retry_deferred(simulation: Node, stage: String) -> void:
+	# Failed pieces retain a pass marker, so checkpoint resumes skip work already
+	# acknowledged in this sweep. Accepted pieces disappear from the pending set.
+	var stages: Dictionary = _results.get_or_add("source_retry_sweeps", {})
+	var state: Dictionary = stages.get_or_add(stage, {"sweep": 0, "recovered": false, "complete": false})
+	while not state["complete"]:
+		var pass_key := stage+"/"+str(int(state["sweep"]))
+		var pending: Array = _deferred
+		_deferred = []
+		var processed := 0
+		for entry in pending:
+			if entry["failure"].get("retry_pass", "") == pass_key:
+				_deferred.append(entry)
+				continue
+			var record: Dictionary = entry["record"]
+			var reason := await _attempt(simulation, entry["stroke"], entry["failure"]["points_xz"], record, "deferred_exact/%d" % int(state["sweep"]))
+			if reason.is_empty():
+				record["failed_pieces"].erase(entry["failure"])
+				record["pieces"].append(record["attempts"][-1]["points_xz"])
+				state["recovered"] = true
+			else:
+				entry["failure"]["reason"] = reason
+				entry["failure"]["retry_pass"] = pass_key
+				_deferred.append(entry)
+			_finish_record(record)
+			if _fatal:
+				return
+			processed += 1
+			if processed % 20 == 0:
+				_write_results()
+				_checkpoint(simulation)
+		state["sweep"] = int(state["sweep"])+1
+		state["complete"] = not state["recovered"] or int(state["sweep"]) >= 8
+		state["recovered"] = false
+		_write_results()
+		_checkpoint(simulation)
+
+func _clear_forest(simulation: Node, box: Array) -> Dictionary:
+	var removed := 0
+	var stamps := 0
+	# Overlapping brush discs cover every point in the target square. Boundary
+	# discs extend at most 42 m past the square; no global vegetation switch.
+	var x := float(box[0]) + 100.0
+	while x < float(box[2]):
+		var z := float(box[1]) + 100.0
+		while z < float(box[3]):
+			removed += simulation.remove_vegetation_at(Vector2(x, z), 142.0, 0)
+			stamps += 1
+			z += 200.0
+		x += 200.0
+	return {"removed": removed, "stamps": stamps, "radius_m": 142.0, "target_box_xz": box}
+
+func _length(points: Array) -> float:
+	var total := 0.0
+	for i in range(1, points.size()):
+		total += Vector2(points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]).length()
+	return total
+
+func _source_point(simulation: Node, _stroke: Dictionary, pos: Vector2) -> Vector3:
+	# A visible surface can be an existing bridge deck above this source road.
+	var world := Vector3(pos.x, simulation.get_height_at(pos), pos.y)
+	return world
+
+func _attempt(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, strategy: String) -> String:
+	var xyz := []
+	var placed := []
+	var source_heights := {}
+	for p: Array in stroke.get("points_xyz", []):
+		source_heights[Vector2(p[0], p[2])] = p[1]
+	for i in points.size():
+		var p: Array = points[i]
+		var pos := Vector2(float(p[0]), float(p[1]))
+		var world := _source_point(simulation, stroke, pos)
+		if source_heights.has(pos):
+			world.y = source_heights[pos]
+		elif not source_heights.is_empty():
+			# A bounded retry can bisect a source segment. Decode its prepared height
+			# from that segment; do not resample the terrain below the structural profile.
+			var profile: Array = stroke["points_xyz"]
+			for j in range(1, profile.size()):
+				var a := Vector2(profile[j-1][0], profile[j-1][2])
+				var b := Vector2(profile[j][0], profile[j][2])
+				var q := Geometry2D.get_closest_point_to_segment(pos, a, b)
+				if q.distance_to(pos) < 0.01 and a.distance_to(b) > 0.0:
+					world.y = lerpf(profile[j-1][1], profile[j][1], a.distance_to(q)/a.distance_to(b))
+					break
+		if i == 0 or i == points.size()-1:
+			var level := int(stroke.get("layer", 0))
+			if level == 0:
+				level = 1 if stroke.get("bridge", false) else (-1 if stroke.get("tunnel", false) else 0)
+			# Source junctions use their declared level and exact compiled height.
+			# A width-expanded cursor snap can attach to a neighbouring carriageway.
+			var snapped: Variant = simulation.get_closest_layered_network_point(world, 2.0, level)
+			# Adjacent source spans share this exact joint even across a structure boundary.
+			# Query only levels recorded at this source endpoint, within coordinate precision.
+			for source_end in 2:
+				var endpoint: Array = stroke["points_xz"][0 if source_end == 0 else -1]
+				if pos != Vector2(endpoint[0], endpoint[1]):
+					continue
+				for source_level: int in stroke.get("endpoint_levels", [[], []])[source_end]:
+					if source_level == level:
+						continue
+					var joint: Variant = simulation.get_closest_layered_network_point(world, 0.01, source_level)
+					if joint is Vector3:
+						snapped = joint
+			if snapped is Vector3 and strategy != "water_unsnapped":
+				world = snapped
+		xyz.append([world.x, world.y, world.z])
+		placed.append([world.x, world.z])
+	var compact := []
+	var compact_xz := []
+	for i in xyz.size():
+		var p := Vector3(xyz[i][0], xyz[i][1], xyz[i][2])
+		if not compact.is_empty():
+			var last: Array = compact[-1]
+			if p.distance_to(Vector3(last[0], last[1], last[2])) < 0.05:
+				continue
+		compact.append(xyz[i])
+		compact_xz.append(placed[i])
+	xyz = compact
+	placed = compact_xz
+	var degenerate := xyz.size() < 2 or _length(placed) < 2.0
+	if not degenerate:
+		degenerate = Vector2(placed[0][0], placed[0][1]).distance_to(Vector2(placed[-1][0], placed[-1][1])) < 0.05
+	for i in range(1, placed.size()-1):
+		var u := Vector2(placed[i][0]-placed[i-1][0], placed[i][1]-placed[i-1][1])
+		var v := Vector2(placed[i+1][0]-placed[i][0], placed[i+1][1]-placed[i][1])
+		if u.length_squared() > 0.0 and v.length_squared() > 0.0 and u.normalized().dot(v.normalized()) < -0.99999:
+			degenerate = true
+	var attempt: Dictionary = stroke.duplicate(true)
+	attempt["points"] = xyz
+	var outcome: Dictionary
+	if degenerate:
+		outcome = {"by": "importer", "reason": "degenerate_after_snap"}
+	else:
+		MetrumDebug.log("road", "map_import_attempt id=%s strategy=%s points=%d lanes=%d/%d" % [stroke["id"], strategy, xyz.size(), stroke["fwd_lanes"], stroke["bkw_lanes"]])
+		outcome = await _replay(simulation, attempt)
+	var reason := String(outcome.get("reason", ""))
+	record["attempts"].append({"strategy": strategy, "points_xz": placed, "reason": reason, "by": outcome["by"], "fwd_lanes": stroke["fwd_lanes"], "bkw_lanes": stroke["bkw_lanes"], "median_style": stroke.get("median_style", 0), "median_width_m": stroke.get("median_width_m", 0.0), "detail": outcome.get("detail", ""), "details": outcome.get("validation", {}), "metrics": outcome.get("metrics", {})})
+	if reason == "replay_timeout" or reason == "validation_unavailable":
+		_fatal = true
+		_fail("Unknown road completion for %s: %s" % [stroke["id"], reason])
+	return reason
+
+func _replay(simulation: Node, attempt: Dictionary) -> Dictionary:
+	Features.acknowledge_headless_render(simulation)
+	var points := PackedVector3Array()
+	for p in attempt["points"]:
+		points.append(Vector3(p[0], p[1], p[2]))
+	var median_reason: String = simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width_m", 0.0)))
+	if not median_reason.is_empty():
+		return {"by": "importer", "reason": median_reason}
+	var level := int(attempt.get("layer", 0))
+	if level == 0:
+		level = 1 if attempt.get("bridge", false) else (-1 if attempt.get("tunnel", false) else 0)
+	var level_reason: String = simulation.set_road_tool_crossing_level(level)
+	if not level_reason.is_empty():
+		return {"by": "importer", "reason": level_reason}
+	if not attempt.get("bridge", false):
+		points = simulation.prepare_source_road_profile(points)
+	for over in [true, false]:
+		var profile: Dictionary = simulation.prepare_layered_road_crossing(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), over)
+		if profile.get("is_valid", false):
+			points = profile.points
+			simulation.set_road_tool_crossing_level(profile.crossing_level)
+		elif profile.get("invalid_reason", "") != "crossing_not_found":
+			return {"by": "tool", "reason": profile.get("invalid_reason", "crossing_profile_failed")}
+	var deadline := Time.get_ticks_msec() + 600000
+	var validation: Dictionary = {}
+	while Time.get_ticks_msec() < deadline:
+		validation = simulation.validate_road_candidate_for_commit_with_snap(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), true)
+		if not validation.get("is_pending", false):
+			break
+		await process_frame
+	if not validation.get("is_valid", false):
+		return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable")), "validation": validation}
+	var request: int = simulation.add_road_with_snap(points, int(attempt["fwd_lanes"]), int(attempt["bkw_lanes"]), true)
+	# Wall-clock bound: headless frames can run much faster than the background
+	# compiler, so a frame-only timeout loses live request acknowledgements.
+	deadline = Time.get_ticks_msec() + 600000
+	while true:
+		var result: Variant = simulation.get_road_commit_result(request)
+		if result is Dictionary:
+			Features.acknowledge_headless_render(simulation)
+			return {"by": "commit", "reason": "" if result.get("committed", false) else String(result.get("reason", "commit_failed")), "detail": result.get("detail", ""), "metrics": simulation.get_road_benchmark_state()["command"]}
+		if Time.get_ticks_msec() >= deadline:
+			return {"by": "commit", "reason": "replay_timeout"}
+		await process_frame
+	return {}
+
+func _split(points: Array, junctions: Array) -> Array:
+	var pieces := []
+	var start := 0
+	for i in range(1, points.size()-1):
+		if points[i] in junctions:
+			pieces.append(points.slice(start, i+1))
+			start = i
+	if not pieces.is_empty():
+		pieces.append(points.slice(start))
+		return pieces
+	var half := _length(points) / 2.0
+	var station := 0.0
+	for i in range(1, points.size()):
+		var run := _length([points[i-1], points[i]])
+		if station + run >= half and run > 0.0:
+			var t := (half - station) / run
+			var middle := [lerpf(points[i-1][0], points[i][0], t), lerpf(points[i-1][1], points[i][1], t)]
+			var first: Array = points.slice(0, i)
+			first.append(middle)
+			var second: Array = [middle]
+			second.append_array(points.slice(i))
+			return [first, second]
+		station += run
+	return []
+
+func _place(simulation: Node, stroke: Dictionary, points: Array, record: Dictionary, depth: int, strategy: String) -> void:
+	if _fatal:
+		return
+	var reason := await _attempt(simulation, stroke, points, record, strategy)
+	if _fatal:
+		return
+	if reason.is_empty():
+		record["pieces"].append(record["attempts"][-1]["points_xz"])
+		return
+	if reason == "disconnected_candidate_deferred":
+		var failure := {"points_xz": points, "reason": reason}
+		record["failed_pieces"].append(failure)
+		_deferred.append({"stroke": stroke, "record": record, "failure": failure})
+		return
+	if reason == "water_requires_bridge":
+		reason = await _attempt(simulation, stroke, points, record, "water_unsnapped")
+		if reason.is_empty():
+			record["pieces"].append(record["attempts"][-1]["points_xz"])
+			return
+	# Split at known source junctions first; then bounded bisection isolates the
+	# bad part without sacrificing an entire street. Maximum depth is four.
+	if depth < 4 and _length(points) >= 35.0 and not stroke.get("bridge", false):
+		for part in _split(points, stroke.get("junctions_xz", [])):
+			await _place(simulation, stroke, part, record, depth+1, "split/%d" % (depth+1))
+		return
+	var failure := {"points_xz": points, "reason": reason}
+	record["failed_pieces"].append(failure)
+	if stroke.get("kind", "road") == "road":
+		_deferred.append({"stroke": stroke, "record": record, "failure": failure})
+
+func _apply_zone(simulation: Node, zone: Dictionary, accepted: Dictionary, profiles: Dictionary) -> Dictionary:
+	var result := {"id": zone["id"], "status": "skipped", "reason": "frontage_stroke_refused"}
+	if not accepted.get(zone["stroke_id"], false):
+		return result
+	var key := String(zone["zone_type"]) + "/" + String(zone["density"])
+	if not profiles.has(key):
+		result["reason"] = "zone_profile_unavailable"
+		return result
+	var p: Array = zone["point_xz"]
+	var runtime_id := int(profiles[key])
+	var width := int(zone["frontage_cells"])
+	var depth := int(zone["depth_cells"])
+	var preview: Dictionary = simulation.get_zoning_parcel_preview(float(p[0]), float(p[1]), runtime_id, width, depth)
+	if not preview.get("valid", false):
+		result["status"] = "refused"
+		# Empty preview has no exposed Rust reason; do not invent a game refusal.
+		result["reason"] = String(preview.get("reason", "zoning_preview_unavailable"))
+		return result
+	var committed: bool = simulation.apply_zoning_parcel_at(float(p[0]), float(p[1]), runtime_id, width, depth)
+	result["status"] = "accepted" if committed else "refused"
+	result["reason"] = "" if committed else "zoning_commit_false_no_exposed_reason"
+	return result
+
+func _checkpoint(simulation: Node) -> void:
+	if DirAccess.make_dir_recursive_absolute(_output) != OK:
+		return
+	var save_path := _output.path_join("checkpoint.sqlite")
+	if not simulation.save_game(save_path):
+		return
+	var record := _results.duplicate(true)
+	record["saved"] = true
+	record["save_path"] = save_path
+	var file := FileAccess.open(_output.path_join("checkpoint_results.json"), FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(record, "\t", true)+"\n")
+
+func _write_results() -> bool:
+	if DirAccess.make_dir_recursive_absolute(_output) != OK:
+		push_error("Cannot create map output directory")
+		return false
+	var file := FileAccess.open(_output.path_join("apply_results.json"), FileAccess.WRITE)
+	if file == null:
+		push_error("Cannot write map apply results")
+		return false
+	file.store_string(JSON.stringify(_results, "\t", true) + "\n")
+	file.close()
+	return true
+
+func _fail(message: String) -> void:
+	_fatal = true
+	push_error(message)
+	if not _results.is_empty():
+		_results["error"] = message
+		_write_results()
+	quit(2)
+
+func _arguments() -> Dictionary:
+	var result := {}
+	var args := OS.get_cmdline_user_args()
+	var index := 0
+	while index < args.size():
+		if not args[index].begins_with("--") or index + 1 >= args.size():
+			return {}
+		result[args[index].substr(2)] = args[index + 1]
+		index += 2
+	return result
+
+func _resolve_path(path: String) -> String:
+	var anchored := path if path.is_absolute_path() else "res://".path_join(path)
+	return ProjectSettings.globalize_path(anchored).simplify_path()

@@ -520,10 +520,12 @@ impl NodeBooleanOwnership {
         let arrangement_rebuild_ms = elapsed_profile_ms(arrangement_rebuild_start);
         let base_canonical_cleanup_ms = elapsed_profile_ms(canonical_cleanup_start);
         let sliver_promotion_start = road_debug.then(Instant::now);
+        let carrier_context = NodeCarrierProvenanceContext::new(rails, &rail_canonical_points);
         if promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
             &mut owned_regions,
             &owned_region_arrangement,
             &rails.constraints,
+            &carrier_context,
         ) {
             footprint_shapes = final_footprint_shapes_from_owned_regions(
                 rails.node_id,
@@ -549,7 +551,6 @@ impl NodeBooleanOwnership {
         // Per-point reuse keys cover source-local rail authority. Keep this pre-closure context
         // free of owned-region peer contexts; adding peers here also requires keying their exact
         // point/source authority before a cached support decision can remain valid.
-        let carrier_context = NodeCarrierProvenanceContext::new(rails, &rail_canonical_points);
         for _ in 0..8 {
             if !materialize_final_boundary_vertices_for_height(
                 rails.node_id,
@@ -687,6 +688,7 @@ fn promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
     owned_regions: &mut [NodeBooleanOwnedRegion],
     arrangement: &NodeOwnedRegionArrangement,
     rail_constraints: &[NodeRailConstraint],
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
 ) -> bool {
     let curb_region_sources = curb_region_sources_by_owner(owned_regions);
     let mut promotions = BTreeMap::<usize, (NodeBandOwner, usize, Option<usize>)>::new();
@@ -741,11 +743,31 @@ fn promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
         } else {
             continue;
         };
+        let original = (
+            region.kind,
+            region.owner,
+            region.source_mouth_order_index,
+            region.source_band_index,
+        );
         region.kind = RoadSurfaceBandKind::CurbOrShoulder;
         region.owner = curb_owner;
         region.source_mouth_order_index = source_mouth_order_index;
         region.source_band_index = source_band_index;
-        changed = true;
+        // Touching a kerb contact does not authorize reclassifying the whole sidewalk.
+        // Every point must still belong to the proposed kerb's source carrier closure.
+        if matches!(
+            carrier_context.region_has_missing_provenance(region),
+            Ok(false)
+        ) {
+            changed = true;
+        } else {
+            (
+                region.kind,
+                region.owner,
+                region.source_mouth_order_index,
+                region.source_band_index,
+            ) = original;
+        }
     }
     changed
 }

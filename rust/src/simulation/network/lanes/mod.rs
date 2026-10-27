@@ -14,9 +14,11 @@ use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 
 mod bounds;
+pub(crate) mod control;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
+mod lane_use;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -49,7 +51,7 @@ pub struct CrosswalkMarking {
     pub end: Vector3,
 }
 
-/// Street crossing walked by a pedestrian junction connector that is a single crosswalk.
+/// Street crossing walked by a single pedestrian connector, with optional zebra paint.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaneCrosswalk {
     /// Road edge crossed, in either travel direction.
@@ -109,6 +111,9 @@ impl Default for Lane {
     }
 }
 
+/// Last metres of a movement-selective approach where divider paint is solid.
+pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
+
 /// System for managing road and intersection lanes.
 pub struct LaneSystem {
     /// All active lanes.
@@ -119,6 +124,11 @@ pub struct LaneSystem {
     pub node_lanes: HashMap<usize, Vec<usize>>,
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
+    // Rebuild-derived: only approaches with different permitted movements need lane choice.
+    turn_preparation: Vec<bool>,
+    controlled: Vec<Option<control::ControlledMovement>>,
+    node_conflict_zones: HashMap<usize, Vec<control::ConflictZone>>,
+    conflict_zone_count: usize,
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
@@ -141,10 +151,25 @@ impl LaneSystem {
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
+            turn_preparation: Vec::new(),
+            controlled: Vec::new(),
+            node_conflict_zones: HashMap::new(),
+            conflict_zone_count: 0,
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
         }
+    }
+
+    /// Checks authored pocket movements from local junction geometry before changing topology.
+    pub(crate) fn approach_supports_pockets(
+        graph: &RegionGraph,
+        edge: usize,
+        node: u32,
+        left: bool,
+        right: bool,
+    ) -> bool {
+        lane_use::DefaultLaneUse::new(graph, edge, node).supports_pockets(left, right)
     }
 
     /// Clears all lanes and structural mappings.
@@ -154,7 +179,17 @@ impl LaneSystem {
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
+        self.turn_preparation.clear();
+        self.controlled.clear();
+        self.node_conflict_zones.clear();
+        self.conflict_zone_count = 0;
         self.surface_synced_len = 0;
+    }
+
+    /// Whether this road lane approaches a node with lane-dependent movement restrictions.
+    #[inline]
+    pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
+        self.turn_preparation.get(lane_id).copied().unwrap_or(false)
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when
@@ -182,6 +217,10 @@ impl LaneSystem {
         for lane in &mut self.lanes {
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
         }
+        let nodes: Vec<_> = self.node_lanes.keys().copied().collect();
+        for node in nodes {
+            self.refresh_zone_stations(node);
+        }
         self.surface_synced_len = self.lanes.len();
     }
 
@@ -204,6 +243,13 @@ impl LaneSystem {
         let start = self.surface_synced_len.min(self.lanes.len());
         for lane in &mut self.lanes[start..] {
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+        let nodes: BTreeSet<_> = self.lanes[start..]
+            .iter()
+            .filter_map(|lane| (lane.node_id != usize::MAX).then_some(lane.node_id))
+            .collect();
+        for node in nodes {
+            self.refresh_zone_stations(node);
         }
         self.surface_synced_len = self.lanes.len();
     }
@@ -260,6 +306,9 @@ impl LaneSystem {
                 continue;
             };
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+        for &node in node_ids {
+            self.refresh_zone_stations(node as usize);
         }
         if road_debug {
             crate::debug_log!(

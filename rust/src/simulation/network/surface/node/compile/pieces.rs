@@ -14,7 +14,7 @@ impl RoadSurfaceSystem {
     ) -> Option<RoadSurfaceVisualNodeCompileInput> {
         let valid = graph.get_valid_node(node_id);
         let incidents = self.sorted_incident_surface_edges(graph, valid);
-        match self.classify_visual_node_kind(&incidents) {
+        match self.classify_visual_node_kind(graph, &incidents) {
             CompiledNodeKind::Terminal => {
                 let incident = incidents.first()?;
                 let mouths = self.build_ordered_piece_mouths(graph, &[*incident])?;
@@ -100,6 +100,34 @@ impl RoadSurfaceSystem {
                     graph, terrain, node_id, input, None,
                 )
             })
+        })
+        .or_else(|| {
+            if input.kind == RoadSurfaceVisualNodePieceKind::Terminal
+                || !input
+                    .mouths
+                    .iter()
+                    .any(|mouth| mouth.uses_explicit_band_domain_paths)
+                || !self
+                    .visual_node_compile_input(graph, node_id)
+                    .is_some_and(|source| source.topology_eq_ignoring_edge_identity(input))
+                || input
+                    .mouths
+                    .iter()
+                    .any(|mouth| self.has_layered_span_overlap(graph, mouth.edge_idx))
+            {
+                return None;
+            }
+            let mut chord_input = input.clone();
+            for mouth in &mut chord_input.mouths {
+                mouth.uses_explicit_band_domain_paths = false;
+            }
+            self.compile_visual_node_piece_with_earthwork_boundaries_once(
+                graph,
+                terrain,
+                node_id,
+                &chord_input,
+                None,
+            )
         })
     }
 

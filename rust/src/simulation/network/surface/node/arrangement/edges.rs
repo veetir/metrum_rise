@@ -22,6 +22,10 @@ use super::{
 };
 use std::collections::BTreeMap;
 
+/// Node-local contacts whose grade and material levels share a declared source carrier.
+pub(super) type NodeGradeContactIndex =
+    BTreeMap<(NodeArrangementKey, NodeBandOwner), super::super::height::NodeGradeVertexAuthority>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct NodeArrangementEdgeOwner {
     pub(super) owner: NodeBandOwner,
@@ -129,6 +133,7 @@ impl NodeArrangement {
             constrains_shared_height,
             is_material_transition,
             has_applicable_material_source_constraint: false,
+            has_declared_material_grade_contact: false,
             seam_source,
             source_constraint_indices,
         });
@@ -141,6 +146,7 @@ impl NodeArrangement {
         all_pending_regions: &[PendingArrangementRegion],
         edge_owners: &BTreeMap<NodeArrangementEdgeKey, Vec<NodeArrangementEdgeOwner>>,
         edge_use_counts: &BTreeMap<NodeArrangementEdgeKey, usize>,
+        grade_contacts: &NodeGradeContactIndex,
     ) -> Vec<NodeArrangementEdgeId> {
         let mut boundary_edges = Vec::with_capacity(pending.edge_count());
         let prepared_seam_constraints =
@@ -156,6 +162,14 @@ impl NodeArrangement {
             });
             let opposite_owner = opposite.map(|owner| owner.owner);
             let opposite_height_field_id = opposite.map(|owner| owner.height_field_id);
+            let declared_grade_contact = opposite_owner.and_then(|opposite_owner| {
+                let a = grade_contacts.get(&(edge.key.start, pending.owner))?;
+                let b = grade_contacts.get(&(edge.key.start, opposite_owner))?;
+                let c = grade_contacts.get(&(edge.key.end, pending.owner))?;
+                let d = grade_contacts.get(&(edge.key.end, opposite_owner))?;
+                (a.shares_declared_material_base(*b) && c.shares_declared_material_base(*d))
+                    .then_some(a.height_key == b.height_key && c.height_key == d.height_key)
+            });
             source_constraints_for_edge_into(
                 edge,
                 &prepared_seam_constraints,
@@ -195,6 +209,7 @@ impl NodeArrangement {
                 if source_constraints.is_empty()
                     && endpoint_pair_source_constraint_indices.is_empty()
                     && !has_source_authorized_side_join_boundary
+                    && declared_grade_contact.is_none()
                 {
                     self.diagnostics
                         .push(NodeArrangementDiagnostic::MissingSeamConstraint {
@@ -229,14 +244,17 @@ impl NodeArrangement {
                         .then(|| NodeSeamSource::for_owner(pending.owner))
                 })
                 .unwrap_or_else(|| NodeSeamSource::for_owner(pending.owner));
-            let constrains_shared_height = selected_source_constraint
-                .is_some_and(|constraint| constraint.constrains_shared_height);
+            let constrains_shared_height = declared_grade_contact.unwrap_or_else(|| {
+                selected_source_constraint
+                    .is_some_and(|constraint| constraint.constrains_shared_height)
+            });
             let is_material_transition = selected_source_constraint
                 .is_some_and(|constraint| constraint.is_material_transition)
                 || !endpoint_pair_source_constraint_indices.is_empty()
-                || has_source_authorized_side_join_boundary;
-            let has_applicable_material_source_constraint =
-                opposite_owner.is_some_and(|opposite_owner| {
+                || has_source_authorized_side_join_boundary
+                || declared_grade_contact.is_some();
+            let has_applicable_material_source_constraint = declared_grade_contact.is_some()
+                || opposite_owner.is_some_and(|opposite_owner| {
                     source_constraints.iter().any(|constraint| {
                         constraint.is_material_transition
                             && seam_constraint_can_source_edge_owner_pair(
@@ -267,6 +285,8 @@ impl NodeArrangement {
             );
             self.edges[edge_id.0].has_applicable_material_source_constraint =
                 has_applicable_material_source_constraint;
+            self.edges[edge_id.0].has_declared_material_grade_contact =
+                declared_grade_contact.is_some();
             boundary_edges.push(edge_id);
         }
         boundary_edges

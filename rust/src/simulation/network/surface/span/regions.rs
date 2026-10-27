@@ -15,7 +15,14 @@ impl RoadSurfaceSystem {
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
         edge_class: EdgeClass,
+        subdivision: Option<(&[RoadSurfaceSpanOwnedRegion], &[usize])>,
     ) -> Option<SpanResolvedRegionSet> {
+        let allowed = subdivision.map(|(regions, _)| {
+            regions
+                .iter()
+                .map(|r| (r.start_section_index(), r.owner().source_band_index))
+                .collect::<std::collections::BTreeSet<_>>()
+        });
         let mut resolved = SpanResolvedRegionSet::default();
 
         for &(start_index, end_index) in ranges {
@@ -34,11 +41,25 @@ impl RoadSurfaceSystem {
                     if band_a.kind != band_b.kind {
                         return None;
                     }
+                    if let Some((_, parents)) = subdivision
+                        && !allowed
+                            .as_ref()?
+                            .contains(&(start_section_index, *parents.get(band_index)?))
+                    {
+                        continue;
+                    }
                     let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
                     let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
-                    if width_a <= SPAN_REGION_MIN_BAND_WIDTH_M
-                        && width_b <= SPAN_REGION_MIN_BAND_WIDTH_M
-                    {
+                    // A nose's kerbs start narrower than the ordinary strip cutoff. Keep
+                    // every nonzero separator strip so its tip cannot leave an unowned slit.
+                    let min_width = if subdivision.is_some() {
+                        0.0
+                    } else if pair[0].bands.len() > 6 {
+                        0.001
+                    } else {
+                        SPAN_REGION_MIN_BAND_WIDTH_M
+                    };
+                    if width_a <= min_width && width_b <= min_width {
                         continue;
                     }
 

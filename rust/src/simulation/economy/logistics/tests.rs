@@ -4047,6 +4047,11 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
     let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
     let e0 = graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -4068,6 +4073,11 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     let e1 = graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,

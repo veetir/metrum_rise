@@ -45,6 +45,8 @@ pub(crate) fn validate_lane_owner(
 pub(super) struct LaneStateMut<'a> {
     pub(super) agent: usize,
     pub(super) lane: &'a mut usize,
+    /// Tail source updated atomically with the lane handoff.
+    pub(super) tail_connector: &'a mut u32,
     pub(super) edge: &'a mut usize,
     pub(super) node: &'a mut u32,
     pub(super) distance: &'a mut f32,
@@ -85,6 +87,20 @@ impl LaneStateMut<'_> {
             self.agent,
             lane.node_id
         );
+        let previous = lanes.lanes.get(*self.lane);
+        *self.tail_connector = if mode == crate::simulation::economy::agents::MODE_CAR {
+            if previous.is_some_and(|old| old.edge_id == usize::MAX) && lane.edge_id != usize::MAX {
+                *self.lane as u32
+            } else if lane.edge_id != usize::MAX
+                && previous.is_some_and(|old| old.edge_id == lane.edge_id)
+            {
+                *self.tail_connector
+            } else {
+                u32::MAX
+            }
+        } else {
+            u32::MAX
+        };
         *self.lane = id;
         *self.edge = lane.edge_id;
         *self.node = node;
@@ -107,6 +123,7 @@ impl AgentVec {
         LaneStateMut {
             agent: i,
             lane: &mut self.current_lane_id[i],
+            tail_connector: &mut self.tail_connector_lane_id[i],
             edge: &mut self.current_edge[i],
             node: &mut self.current_node[i],
             distance: &mut self.lane_distance[i],

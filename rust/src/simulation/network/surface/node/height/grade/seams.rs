@@ -442,7 +442,10 @@ fn raised_step_shared_height_seam_point_key(
     else {
         return None;
     };
-    if !shared_height_raised_step_pair(owner, opposite_owner) {
+    if !shared_height_raised_step_pair(owner, opposite_owner)
+        && !(constraint.constrains_shared_height
+            && owners_form_sidewalk_footpath_contact(owner, opposite_owner))
+    {
         return None;
     }
     Some(RaisedStepSharedHeightSeamPointKey {
@@ -484,6 +487,15 @@ fn selected_shared_height_raised_step_height_for_pair(
     opposite_owner: NodeBandOwner,
     candidates: &[SameMaterialVertexHeightCandidate],
 ) -> Option<SameMaterialVertexHeightCandidate> {
+    // Noding can split the two sides of one sidewalk/path seam differently.
+    // Its existing sidewalk authority applies across those fragments as well.
+    if owners_form_sidewalk_footpath_contact(owner, opposite_owner) {
+        return candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.owner.kind() == RoadSurfaceBandKind::Sidewalk)
+            .min_by_key(|candidate| same_material_vertex_height_candidate_key(*candidate));
+    }
     if !shared_height_raised_step_pair(owner, opposite_owner) {
         return None;
     }

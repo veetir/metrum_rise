@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Routing regressions for road connectivity and endpoint handling.
+
 use super::*;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
@@ -9,6 +11,11 @@ use godot::prelude::Vector3;
 #[test]
 fn test_slope_cost_calculation() {
     let mut edge = Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: 0,
         end_node: 1,
         primary_type: TransitType::Road,
@@ -58,6 +65,11 @@ fn test_pathing_avoids_steep_slope() {
     // 1. Short but very steep road: A -> B
     // Slope = 50m height / 100m length = 50%.
     let mut edge_ab = Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n_a,
         end_node: n_b,
         primary_type: TransitType::Road,
@@ -94,6 +106,11 @@ fn test_pathing_avoids_steep_slope() {
     // 2. Long but flat detour: A -> C -> B
     // A -> C (111.8m)
     let mut edge_ac = Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n_a,
         end_node: n_c,
         primary_type: TransitType::Road,
@@ -121,6 +138,11 @@ fn test_pathing_avoids_steep_slope() {
 
     // C -> B (111.8m)
     let mut edge_cb = Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n_c,
         end_node: n_b,
         primary_type: TransitType::Road,
@@ -176,6 +198,11 @@ fn test_bidirectional_walkway_pathing() {
 
     // Create a bidirectional walkway (primary_type = Foot, allowed_types = 1, lanes = 0)
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Foot,
@@ -226,6 +253,11 @@ fn test_car_uturn_allowed() {
 
     // Create a bidirectional road (idx 0)
     let edge_idx = graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -281,6 +313,11 @@ fn test_border_spur_routes_to_connected_residential_branch() {
         let start_pos = node_positions[start_node as usize];
         let end_pos = node_positions[end_node as usize];
         Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -345,6 +382,11 @@ fn test_car_avoids_walkway_shortcut() {
 
     // Road path
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -366,6 +408,11 @@ fn test_car_avoids_walkway_shortcut() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -389,6 +436,11 @@ fn test_car_avoids_walkway_shortcut() {
 
     // Walkway shortcut n0 -> n2 directly
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n2,
         primary_type: TransitType::Foot,
@@ -464,6 +516,11 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
         let p1 = g.nodes()[e as usize].pos;
         let len = p0.distance_to(p1);
         g.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -577,6 +634,11 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
     let mut edge = |start_node: u32, end_node: u32, foot_only: bool| {
         let points = vec![graph.node(start_node).pos, graph.node(end_node).pos];
         let mut edge = Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node,
             end_node,
             primary_type: if foot_only {

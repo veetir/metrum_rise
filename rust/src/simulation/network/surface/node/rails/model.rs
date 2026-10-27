@@ -61,6 +61,9 @@ pub(crate) type HeightCarrierPointsBySource =
 
 #[derive(Clone, Debug)]
 pub(crate) struct NodeRailContourSet {
+    /// Shared height authority for ordinary source-material intersections.
+    pub(in crate::simulation::network::surface::node) material_grade:
+        Option<std::sync::Arc<super::super::NodeMaterialGradeField>>,
     pub(crate) node_id: u32,
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) contours: Vec<NodeGeneratedContour>,

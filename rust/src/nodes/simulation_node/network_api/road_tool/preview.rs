@@ -42,13 +42,16 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
+                self.road_tool_crossing_level,
+                self.road_tool_tunnel,
             );
+            prepared_input.median = self.road_tool_median;
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
                 &prepared_input,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
@@ -63,6 +66,7 @@ impl SimulationNode {
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 &query.water,
                 validation,
+                self.road_tool_median,
             );
             (prepared_input.points, validation, query.surface_generation)
         };
@@ -128,6 +132,7 @@ impl SimulationNode {
             fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
             bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
             &query.terrain,
+            self.road_tool_median,
         );
         let mut dict = VarDictionary::new();
         dict.set("surface_generation", surface_generation);
@@ -157,13 +162,16 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let mut prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
                 &points,
                 &query.terrain,
                 &query.region_graph,
                 &query.road_surface,
                 snap_to_existing_roads,
+                self.road_tool_crossing_level,
+                self.road_tool_tunnel,
             );
+            prepared_input.median = self.road_tool_median;
             let new_edge_validation = query.road_surface.validate_prepared_road_surface(
                 &prepared_input.points,
                 prepared_input.class,
@@ -189,6 +197,7 @@ impl SimulationNode {
                 bkw_lanes_u8,
                 &query.water,
                 validation,
+                self.road_tool_median,
             );
             (prepared_input.points, validation, query.surface_generation)
         };
@@ -273,6 +282,8 @@ impl SimulationNode {
         let attempt = rejection.report(
             RejectedBy::Tool,
             RoadAttempt {
+                tunnel: self.road_tool_tunnel,
+                crossing_level: self.road_tool_crossing_level,
                 points: &points,
                 fwd_lanes,
                 bkw_lanes,
@@ -351,6 +362,9 @@ impl SimulationNode {
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
         let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            tunnel: self.road_tool_tunnel,
+            crossing_level: self.road_tool_crossing_level,
+            median: self.road_tool_median,
             enqueued_at: None,
             include_terrain,
             request_id,
@@ -415,7 +429,10 @@ impl SimulationNode {
         let Some(preview) = preview_result.as_ref() else {
             return Variant::nil();
         };
-        if preview.request_id != request_id {
+        if preview.request_id != request_id
+            || preview.crossing_level != self.road_tool_crossing_level
+            || preview.tunnel != self.road_tool_tunnel
+        {
             return Variant::nil();
         }
 
@@ -459,6 +476,8 @@ impl SimulationNode {
         // are resolved after the exact click under the simulation lock.
         let mut terrain_patches = None;
         dict.set("include_terrain", preview.include_terrain);
+        dict.set("crossing_level", i32::from(preview.crossing_level));
+        dict.set("tunnel", preview.tunnel);
         let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
         dict.set("plan_state", if valid { "provisional" } else { "invalid" });
         // Present only for a plan whose stroke is still valid after the corridor checks.
@@ -477,44 +496,10 @@ impl SimulationNode {
         let readiness_ms = export_start.map(|t| t.elapsed().as_secs_f64() * 1000.0);
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
         if let Some(scene) = &preview.junction_preview {
-            let empty = BTreeSet::new();
-            let export = |meshes| {
-                SimCore::road_mesh_chunks_dict(
-                    meshes,
-                    &empty,
-                    true,
-                    preview.surface_generation,
-                    scene.chunk_span_m,
-                    scene.chunk_origin_x_m,
-                    scene.chunk_origin_z_m,
-                )
-            };
-            let mut replacement = export(&scene.planned);
-            // Approach clips follow the moving junction bounds, so they travel with every pose.
-            replacement.set(
-                "approach_chunks",
-                export(&scene.approach).get("chunks").unwrap(),
-            );
-            if scene.retained_revision != retained_revision || retained_revision == 0 {
-                let retained = export(scene.retained.as_ref());
-                replacement.set("retained_chunks", retained.get("chunks").unwrap());
-            }
-            replacement.set(
-                "retained_revision",
-                i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "source_mesh_generation",
-                i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "replacement_keys",
-                PackedInt32Array::from_iter(
-                    scene
-                        .replacement_chunks
-                        .iter()
-                        .flat_map(|key| [key.0, key.1]),
-                ),
+            let replacement = Self::road_junction_preview_dict(
+                scene,
+                preview.surface_generation,
+                retained_revision,
             );
             if let Some(patches) = terrain_patches {
                 let mut payloads = Array::<VarDictionary>::new();
@@ -581,7 +566,11 @@ impl SimulationNode {
         dict.to_variant()
     }
 
-    fn append_road_preview_visual_mesh(dict: &mut VarDictionary, mesh: &RoadPreviewVisualMesh) {
+    /// Exports material-tagged road preview triangles for drawing and endpoint edits.
+    pub(crate) fn append_road_preview_visual_mesh(
+        dict: &mut VarDictionary,
+        mesh: &RoadPreviewVisualMesh,
+    ) {
         dict.set(
             "surface_vertices",
             PackedVector3Array::from(mesh.vertices.as_slice()),
@@ -606,6 +595,7 @@ impl SimulationNode {
                 prepared_points,
                 fwd_lanes,
                 bkw_lanes,
+                self.road_tool_median,
             )
             .unwrap_or_else(|| {
                 let mut pending =
@@ -623,6 +613,7 @@ impl SimulationNode {
         prepared_points: &[Vector3],
         fwd_lanes: i32,
         bkw_lanes: i32,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Option<VarDictionary> {
         let mut dict = Self::road_candidate_validation_to_dictionary(validation, prepared_points);
         if validation.is_valid {
@@ -633,6 +624,7 @@ impl SimulationNode {
                 prepared_points,
                 fwd_lanes,
                 bkw_lanes,
+                median,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }
@@ -804,5 +796,55 @@ impl SimulationNode {
         dict.set("clearance_m", validation.clearance_m);
         dict.set("required_clearance_m", validation.required_clearance_m);
         dict
+    }
+}
+
+impl SimulationNode {
+    /// Exports the same reversible chunk protocol for drawing and endpoint editing.
+    pub(crate) fn road_junction_preview_dict(
+        scene: &crate::simulation::network::render::road::preview::RoadJunctionPreview,
+        surface_generation: u64,
+        retained_revision: u64,
+    ) -> VarDictionary {
+        let empty = BTreeSet::new();
+        let export = |meshes| {
+            SimCore::road_mesh_chunks_dict(
+                meshes,
+                &empty,
+                true,
+                surface_generation,
+                scene.chunk_span_m,
+                scene.chunk_origin_x_m,
+                scene.chunk_origin_z_m,
+            )
+        };
+        let mut replacement = export(&scene.planned);
+        // Approach clips follow the moving junction bounds, so they travel with every pose.
+        replacement.set(
+            "approach_chunks",
+            export(&scene.approach).get("chunks").unwrap(),
+        );
+        if scene.retained_revision != retained_revision || retained_revision == 0 {
+            let retained = export(scene.retained.as_ref());
+            replacement.set("retained_chunks", retained.get("chunks").unwrap());
+        }
+        replacement.set(
+            "retained_revision",
+            i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
+        );
+        replacement.set(
+            "source_mesh_generation",
+            i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
+        );
+        replacement.set(
+            "replacement_keys",
+            PackedInt32Array::from_iter(
+                scene
+                    .replacement_chunks
+                    .iter()
+                    .flat_map(|key| [key.0, key.1]),
+            ),
+        );
+        replacement
     }
 }

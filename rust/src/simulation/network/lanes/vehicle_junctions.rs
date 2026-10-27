@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Vehicle junction connectors, including continuous divided bend corridors.
+
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
+use super::lane_use::DefaultLaneUse;
 use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
@@ -23,6 +26,7 @@ pub fn build_vehicle_connections_at_node(
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
+    turn_preparation: &mut Vec<bool>,
 ) {
     let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
     let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
@@ -35,7 +39,7 @@ pub fn build_vehicle_connections_at_node(
         if edge.deleted {
             continue;
         }
-        if edge.fwd_lanes + edge.bkw_lanes > 0 {
+        if edge.car_lane_count(true) + edge.car_lane_count(false) > 0 {
             vehicle_deg += 1;
         }
 
@@ -71,40 +75,64 @@ pub fn build_vehicle_connections_at_node(
     let node_allows_direct_pass_through = vehicle_deg == 2 && !node_has_any_vehicle_conn;
     let node_uses_junction_span = vehicle_deg >= 3 || node_has_any_vehicle_conn;
 
+    turn_preparation.resize(lanes.len(), false);
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
-        let mut allowed: Option<Vec<(usize, i8)>> =
-            lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
-
-        // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
-        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
-        // Nodes with no user connections remain fully open (allow all non-U-turns).
-        if allowed.is_none() && !node_has_any_vehicle_conn {
-            // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
-            // The router reads the same rule.
-            let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
-            let mut defaults = Vec::new();
-            for &(out_edge_id, out_lane_idx, _) in &outbound {
-                if out_edge_id != in_edge_id || allows_u_turn {
-                    defaults.push((out_edge_id, out_lane_idx));
-                }
-            }
-            if !defaults.is_empty() {
-                allowed = Some(defaults);
-            }
-        }
-        // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
-        // None → no junction connection lanes created → turn is blocked.
-
-        let mut valid_outs = Vec::new();
+        let explicit = lane_conns.get(&(in_edge_id, in_lane_idx));
+        let defaults = (!node_has_any_vehicle_conn)
+            .then(|| DefaultLaneUse::new(graph, in_edge_id, node_id as u32));
+        turn_preparation[in_lane_id] = defaults.as_ref().map_or_else(
+            || {
+                let lane = &lanes[in_lane_id];
+                let edge = graph.edge(in_edge_id);
+                (if lane.is_fwd {
+                    edge.fwd_lanes
+                } else {
+                    edge.bkw_lanes
+                }) > 1
+            },
+            DefaultLaneUse::needs_lane_choice,
+        );
+        let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
         for &(out_edge_id, out_lane_idx, out_lid) in &outbound {
-            if let Some(rules) = &allowed
-                && rules.contains(&(out_edge_id, out_lane_idx))
-            {
-                valid_outs.push(out_lid);
+            let allowed = if let Some(defaults) = &defaults {
+                if out_edge_id == in_edge_id {
+                    allows_u_turn
+                } else {
+                    if graph.node(node_id as u32).node_type
+                        == crate::simulation::network::types::NodeType::LaneTransition
+                        && (graph.edge(in_edge_id).pocket_taper().is_some()
+                            || graph.edge(out_edge_id).pocket_taper().is_some())
+                    {
+                        let incoming = &lanes[in_lane_id];
+                        let outgoing = &lanes[out_lid];
+                        let rank = |index: i8| {
+                            if index >= 0 {
+                                index as usize
+                            } else {
+                                (-i16::from(index) - 1) as usize
+                            }
+                        };
+                        let a = graph.edge(in_edge_id);
+                        let b = graph.edge(out_edge_id);
+                        a.transition_rank(
+                            usize::from(a.end_node as usize == node_id),
+                            incoming.is_fwd,
+                            rank(in_lane_idx),
+                        ) == b.transition_rank(
+                            usize::from(b.end_node as usize == node_id),
+                            outgoing.is_fwd,
+                            rank(out_lane_idx),
+                        )
+                    } else {
+                        defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx)
+                    }
+                }
+            } else {
+                explicit.is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx)))
+            };
+            if !allowed {
+                continue;
             }
-        }
-
-        for out_lid in valid_outs {
             let p0 = *lanes[in_lane_id].geometry.last().unwrap();
             let p1_base = {
                 let g = &lanes[in_lane_id].geometry;
@@ -159,22 +187,44 @@ pub fn build_vehicle_connections_at_node(
             } else {
                 VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR
             };
-            let cd = distance_basis * control_factor;
+            let cd = if flat_direction_dot(p1_base, p2_base) > 0.98 {
+                dist * VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR
+            } else {
+                distance_basis * control_factor
+            };
             let p1 = p0 + p1_base * cd;
             let p2 = p3 - p2_base * cd;
-
-            let steps = vehicle_connection_steps_for_curve(
-                p0,
-                p1,
-                p2,
-                p3,
-                distance_basis.max(dist + cd * 2.0),
+            let median_bend = graph.node(node_id as u32).node_type
+                != crate::simulation::network::types::NodeType::LaneTransition
+                && graph.edge(in_edge_id).median.is_some()
+                && graph.median_continues_at_node(in_edge_id, node_id as u32);
+            let turn = VehicleTurn::try_new(
+                &lanes[in_lane_id],
+                &lanes[out_lid],
+                p1_base,
+                p2_base,
+                median_bend,
+            );
+            let steps = turn.as_ref().map_or_else(
+                || {
+                    vehicle_connection_steps_for_curve(
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        distance_basis.max(dist + cd * 2.0),
+                    )
+                },
+                |curve| vehicle_connection_steps(curve.sampling_span),
             );
             let mut conn_geom = Vec::with_capacity(steps + 1);
             let mut conn_len = 0.0;
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
-                let point = vehicle_connection_point(p0, p1, p2, p3, t);
+                let point = turn.as_ref().map_or_else(
+                    || vehicle_connection_point(p0, p1, p2, p3, t),
+                    |frame| frame.point(t),
+                );
                 conn_geom.push(point);
                 if k > 0 {
                     conn_len += conn_geom[k - 1].distance_to(point);
@@ -199,6 +249,118 @@ pub fn build_vehicle_connections_at_node(
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);
         }
+    }
+}
+
+// Intersect the entry and exit tangents, then fit the largest circular fillet between
+// them, with straight leads for unequal distances. Curvature is zero or +/-1/radius;
+// there is no counter-steer or anisotropic cubic curvature spike. Continuous medians
+// additionally limit the radius so the arc stays clear of their sharp outside corner.
+struct VehicleTurn {
+    start: Vector3,
+    end: Vector3,
+    incoming: Vector3,
+    outgoing: Vector3,
+    center: Vector3,
+    radial: Vector3,
+    arc_end: Vector3,
+    entry_length: f32,
+    arc_sampling_span: f32,
+    angle: f32,
+    sampling_span: f32,
+}
+
+impl VehicleTurn {
+    fn try_new(
+        inbound: &Lane,
+        outbound: &Lane,
+        incoming: Vector3,
+        outgoing: Vector3,
+        median_bend: bool,
+    ) -> Option<Self> {
+        let start = *inbound.geometry.last().unwrap();
+        let end = outbound.geometry[0];
+        let incoming = Vector3::new(incoming.x, 0.0, incoming.z).normalized();
+        let outgoing = Vector3::new(outgoing.x, 0.0, outgoing.z).normalized();
+        let cross = |a: Vector3, b: Vector3| a.x * b.z - a.z * b.x;
+        let determinant = cross(incoming, outgoing);
+        if determinant.abs() <= 1.0e-4 {
+            return None;
+        }
+        let delta = end - start;
+        let a = cross(delta, outgoing) / determinant;
+        let b = cross(incoming, delta) / determinant;
+        if a <= 0.0 || b <= 0.0 {
+            return None;
+        }
+        let angle = determinant.atan2(incoming.dot(outgoing));
+        let half_angle = angle.abs() * 0.5;
+        let clearance = |lane: &Lane| {
+            let rank = if lane.lane_idx >= 0 {
+                i16::from(lane.lane_idx)
+            } else {
+                -i16::from(lane.lane_idx) - 1
+            };
+            // Retain half the lane-centre clearance so the fillet does not graze the kerb.
+            (f32::from(rank) + 0.5) * config::LANE_WIDTH * 0.5
+        };
+        // At the bisector a fillet encroaches R * (1 - cos(theta/2)) into the
+        // sharp corner. Its encroachment must fit the lane-to-median clearance.
+        let mut radius = a.min(b) / half_angle.tan();
+        if median_bend {
+            radius =
+                radius.min(clearance(inbound).min(clearance(outbound)) / (1.0 - half_angle.cos()));
+        }
+        let setback = radius * half_angle.tan();
+        let entry_length = (a - setback).max(0.0);
+        let exit_length = (b - setback).max(0.0);
+        let arc_start = start + incoming * entry_length;
+        let arc_end = end - outgoing * exit_length;
+        let center =
+            arc_start + Vector3::new(-incoming.z, 0.0, incoming.x) * (radius * angle.signum());
+        let radial = arc_start - center;
+        // Give a short arc between long tangent leads enough angular samples too.
+        // This affects parameterization only; cum_dist retains actual path distance.
+        let arc_sampling_span = (radius * angle.abs()).max(angle.abs() / 0.15);
+        Some(Self {
+            start,
+            end,
+            incoming,
+            outgoing,
+            center,
+            radial,
+            arc_end,
+            entry_length,
+            arc_sampling_span,
+            angle,
+            sampling_span: entry_length + arc_sampling_span + exit_length,
+        })
+    }
+
+    fn point(&self, t: f32) -> Vector3 {
+        if t <= 0.0 {
+            return self.start;
+        }
+        if t >= 1.0 {
+            return self.end;
+        }
+        let distance = t * self.sampling_span;
+        let mut point = if distance <= self.entry_length {
+            self.start + self.incoming * distance
+        } else if distance >= self.entry_length + self.arc_sampling_span {
+            self.arc_end + self.outgoing * (distance - self.entry_length - self.arc_sampling_span)
+        } else {
+            let angle = self.angle * (distance - self.entry_length) / self.arc_sampling_span;
+            let (sine, cosine) = angle.sin_cos();
+            self.center
+                + Vector3::new(
+                    self.radial.x * cosine - self.radial.z * sine,
+                    0.0,
+                    self.radial.x * sine + self.radial.z * cosine,
+                )
+        };
+        point.y = self.start.y + (self.end.y - self.start.y) * t;
+        point
     }
 }
 

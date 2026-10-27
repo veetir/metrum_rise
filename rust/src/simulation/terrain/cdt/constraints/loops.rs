@@ -28,6 +28,14 @@ pub(in crate::simulation::terrain::cdt) fn push_road_loop_constraints(
         }
         if !edge_lies_on_patch_boundary(vertices[edge[0]], vertices[edge[1]], patch) {
             let Some(boundary_source) = edge_sources.get(index).copied().flatten() else {
+                crate::debug_log!(
+                    "road",
+                    "terrain_cdt_missing_constraint_source piece={} loop={} start={:?} end={:?}",
+                    identity.stable_piece_id,
+                    identity.local_loop_index,
+                    vertices[indices[index]],
+                    vertices[indices[(index + 1) % indices.len()]]
+                );
                 return Err(TerrainCdtError::MissingRoadBoundarySource);
             };
             road_constraint_edges.push(edge);

@@ -519,3 +519,46 @@ fn sidewalk_footpath_tie_in_uses_sidewalk_height_authority() {
     validate_explicit_material_seam_heights(&regions)
         .expect("normalized sidewalk-footpath seam should validate as shared-height");
 }
+
+#[test]
+fn fragmented_sidewalk_footpath_tie_in_keeps_one_sidewalk_authority() {
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let path = NodeBandOwner::new(RoadSurfaceBandKind::Footpath, 1);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 41,
+        seam_source: NodeSeamSource::SidewalkOuter { owner_index: 0 },
+        owner: Some(sidewalk),
+        opposite_owner: Some(path),
+        constrains_shared_height: true,
+        is_material_transition: true,
+        start_xz: RoadVec2::new(-1.0, 0.0),
+        end_xz: RoadVec2::new(0.0, 0.0),
+    };
+    let mut other = seam.clone();
+    other.start_xz = RoadVec2::new(0.0, 0.0);
+    other.end_xz = RoadVec2::new(1.0, 0.0);
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 84.547)],
+            vec![seam],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Footpath,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 84.526)],
+            vec![other],
+        ),
+    ];
+    apply_junctionn_height_authority_normalization(&mut regions).unwrap();
+    for region in &regions {
+        assert_eq!(
+            SurfaceHeightMmKey::from_m_f64(region.shape[0][0].height_m).as_i64(),
+            84547
+        );
+    }
+    validate_explicit_material_seam_heights(&regions).unwrap();
+}

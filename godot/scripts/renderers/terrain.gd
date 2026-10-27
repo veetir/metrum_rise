@@ -110,7 +110,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 14
+const TERRAIN_CDT_CONTRACT_REVISION := 15
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -4279,6 +4279,10 @@ func _road_geometry_cdt_support_policy_label(code: int) -> String:
 		return "bridge_endpoint_abutments"
 	if code == 2:
 		return "tunnel_visible_portals"
+	if code == 3:
+		return "tunnel_portal_roof"
+	if code == 4:
+		return "tunnel_open_cut"
 	return "unknown"
 
 func _road_geometry_cdt_owner_kind_label(code: int) -> String:

@@ -84,7 +84,9 @@ impl RoadSurfaceSystem {
         a: RoadVec3,
         b: RoadVec3,
     ) -> Option<RoadVec3> {
-        if !Self::overlay_heights_equal(a.y, b.y) {
+        // Boundary grade is certified in millimetres. A few micrometres of
+        // interpolation roundoff must not turn planar dust into a material wall.
+        if SurfaceHeightMmKey::from_m_f64(a.y) != SurfaceHeightMmKey::from_m_f64(b.y) {
             return None;
         }
         let dx = a.x - b.x;
@@ -304,6 +306,34 @@ pub(super) fn interpolate_overlay_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_dust_corner_uses_the_certified_millimetre_height_key() {
+        let a = RoadVec3::new(0.0, 102.73500092597239, 0.0);
+        let b = RoadVec3::new(0.000008, 102.73500396606076, 0.000016);
+        let shared = RoadSurfaceSystem::canonical_numeric_dust_boundary_point(a, b)
+            .expect("interpolated dust remains one grade key");
+        assert_eq!(
+            SurfaceHeightMmKey::from_m_f64(shared.y),
+            SurfaceHeightMmKey::from_m_f64(a.y)
+        );
+        assert!(
+            RoadSurfaceSystem::canonical_numeric_dust_boundary_point(
+                a,
+                RoadVec3::new(b.x, a.y + 0.12, b.z)
+            )
+            .is_none(),
+            "a declared kerb step remains distinct"
+        );
+        assert!(
+            RoadSurfaceSystem::canonical_numeric_dust_boundary_point(
+                a,
+                RoadVec3::new(0.01, b.y, b.z)
+            )
+            .is_none(),
+            "a finite planar edge remains distinct"
+        );
+    }
 
     #[test]
     fn compact_overlay_contour_rejects_large_repeated_point_cycle() {

@@ -4,6 +4,7 @@
 
 mod dust;
 mod geometry;
+mod grade;
 mod heights;
 mod model;
 mod output;

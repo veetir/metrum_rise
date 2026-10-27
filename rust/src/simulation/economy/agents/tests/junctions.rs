@@ -353,7 +353,7 @@ fn test_walking_zero_hop_reverses_on_stationary_sidewalk_connector() {
 }
 
 #[test]
-fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
+fn test_walking_missing_connector_waits_at_junction_mouth() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
     let center_node = 0_u32;
     for edge_id in 0..4 {
@@ -369,6 +369,8 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
     let east_edge = 1_usize;
     let west_lane = fwd_foot_lanes(&network, west_edge)[0];
     let west_lane_len = network.lane_system.lanes[west_lane].length;
+    // Missing paint permits unmarked crossing; simulate a missing connector explicitly.
+    network.lane_system.lanes[west_lane].next_lanes.clear();
     assert!(
         !network.lane_system.lanes[west_lane]
             .next_lanes

@@ -353,6 +353,11 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let na = graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction);
         let nb = graph.add_node(Vector3::new(x + 100.0, 0.0, 0.0), NodeType::Junction);
         let e = Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: na,
             end_node: nb,
             primary_type: TransitType::Road,

@@ -37,6 +37,12 @@ use crate::thread_pools::JoinedPool;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
+    /// Crossing layer pinned to this rendered result.
+    pub(crate) crossing_level: i16,
+    /// Explicit tunnel profile selection; independent of crossing topology.
+    pub(crate) tunnel: bool,
+    /// Selected median, pinned to this result even if the editor has since changed options.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Fixed-size worker stage measurements, present only in performance captures.
     pub(crate) timing: Option<RoadPreviewTiming>,
     pub(crate) include_terrain: bool,
@@ -85,6 +91,12 @@ pub(crate) struct RoadPreviewWorkerContext {
 
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
+    /// Authored crossing layer, captured in exact preview/commit identity.
+    pub(crate) crossing_level: i16,
+    /// Explicit tunnel profile selection; independent of crossing topology.
+    pub(crate) tunnel: bool,
+    /// Authored median selection captured with this input.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Diagnostic enqueue clock; absent outside performance captures.
     pub(crate) enqueued_at: Option<Instant>,
     pub(crate) include_terrain: bool,
@@ -432,13 +444,16 @@ fn prepare_road_preview_from_context(
     );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+    let mut prepared = RoadSurfaceSystem::prepare_road_input_for_tool_with_tunnel(
         &request.points,
         &context.terrain,
         &context.region_graph,
         &context.road_surface,
         request.snap_to_existing_roads,
+        request.crossing_level,
+        request.tunnel,
     );
+    prepared.median = request.median;
     let (mut preview, topology_reuse, render_input, topology_plan) = preview_surface
         .compile_prepared_preview_surface_with_topology_reuse(
             &prepared,
@@ -455,6 +470,7 @@ fn prepare_road_preview_from_context(
         bkw_lanes,
         context.water.as_ref(),
         preview.validation,
+        request.median,
     );
     preview.is_valid = preview.validation.is_valid;
     let generation_matches = request_surface_generation == context.surface_generation;
@@ -486,9 +502,13 @@ fn prepare_road_preview_from_context(
             fwd_lanes,
             bkw_lanes,
             context.terrain.as_ref(),
+            request.median,
         )
     };
     let request_id = request.request_id;
+    let median = request.median;
+    let crossing_level = request.crossing_level;
+    let tunnel = request.tunnel;
     let edit_plan = (preview.is_valid && generation_matches).then(|| {
         Arc::new(RoadEditPlan::new(
             request,
@@ -501,6 +521,9 @@ fn prepare_road_preview_from_context(
         ))
     });
     RoadPreviewSnapshot {
+        tunnel,
+        crossing_level,
+        median,
         timing: None,
         include_terrain,
         request_id,

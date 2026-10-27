@@ -36,6 +36,7 @@ pub(crate) use electricity::ElectricityProfiles;
 pub(crate) use employment::{WORKPLACE_QUOTE_PASSES, WagePayment};
 pub(crate) use job_board::{JobBoardRoll, SavedJobBoard, SavedJobBoardSweep};
 pub(crate) use removal::HouseholdExitPolicy;
+pub(crate) use replenishment::stable_replenishment_offset_hours;
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
     REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,

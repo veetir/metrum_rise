@@ -17,6 +17,10 @@ enum CellScenario {
     NodeMovement,
     Snapshot,
     Memory,
+    Pocket,
+    Crosswalk,
+    Roundabout,
+    Ramp,
 }
 
 #[test]
@@ -66,6 +70,30 @@ fn populated_cell_node_move_validation_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::NodeMovement);
 }
 
+#[test]
+#[ignore = "populated pocket preview locality; run release without competing work"]
+fn populated_pocket_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Pocket);
+}
+
+#[test]
+#[ignore = "populated per-arm zebra preview locality; run release without competing work"]
+fn populated_crosswalk_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Crosswalk);
+}
+
+#[test]
+#[ignore = "populated roundabout preview locality; run release without competing work"]
+fn populated_roundabout_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Roundabout);
+}
+
+#[test]
+#[ignore = "populated ramp preview locality; run release without competing work"]
+fn populated_ramp_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Ramp);
+}
+
 fn measure_populated_road_plan_scaling(
     paved: bool,
     zoning_only: bool,
@@ -77,7 +105,14 @@ fn measure_populated_road_plan_scaling(
     if scenario == CellScenario::Memory {
         memory::calibrate(&mut memory_phase);
     }
-    let cells = scenario != CellScenario::None;
+    let cells = !matches!(
+        scenario,
+        CellScenario::None
+            | CellScenario::Pocket
+            | CellScenario::Crosswalk
+            | CellScenario::Roundabout
+            | CellScenario::Ramp
+    );
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
@@ -128,6 +163,49 @@ fn measure_populated_road_plan_scaling(
         insert_populated_site(&mut core, building);
     }
     let edge_template = core.region_graph.edge(0).clone();
+    if matches!(scenario, CellScenario::Pocket | CellScenario::Crosswalk) {
+        let start = core.region_graph.edge(0).end_node;
+        for z in [-100.0, 100.0] {
+            let end = core
+                .region_graph
+                .add_node(Vector3::new(96.0, 0.0, z), NodeType::Junction);
+            let mut edge = edge_template.clone();
+            edge.start_node = start;
+            edge.end_node = end;
+            edge.geometry = vec![
+                core.region_graph.node(start).pos,
+                core.region_graph.node(end).pos,
+            ];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 100.0;
+            core.region_graph.add_edge(edge);
+        }
+        core.region_graph.rebuild_intersection_clips();
+    }
+    let ramp_edge = core.region_graph.edge_count();
+    if scenario == CellScenario::Ramp {
+        let a = Vector3::new(-600.0, 0.0, -400.0);
+        let b = Vector3::new(600.0, 0.0, -400.0);
+        let mut edge = edge_template.clone();
+        edge.start_node = core.region_graph.add_node(a, NodeType::Junction);
+        edge.end_node = core.region_graph.add_node(b, NodeType::Junction);
+        edge.geometry = vec![a, b];
+        edge.physical_geometry = edge.geometry.clone();
+        edge.physical_length = 1200.0;
+        edge.fwd_lanes = 2;
+        edge.bkw_lanes = 2;
+        edge.width = 19.0;
+        edge.median = crate::simulation::network::graph::RoadMedian::from_tool(2, 5.0).unwrap();
+        edge.allowed_types = TransitFlags::CAR;
+        edge.speed_limit = 100.0 / 3.6;
+        core.region_graph.add_edge(edge);
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, ramp_edge);
+    }
+    let first_background_edge = core.region_graph.edge_count();
+    let mut previous_pocket_mesh: Option<String> = None;
+
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
     let mut previous_road_meshes: Option<
@@ -210,7 +288,7 @@ fn measure_populated_road_plan_scaling(
             building.width_cells = 1;
             building.depth_cells = 1;
             building.facing_dir = Vector2::new(0.0, -1.0);
-            building.edge_idx = 1 + index / 256;
+            building.edge_idx = first_background_edge + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
             building.occupancy = 6;
             if fields {
@@ -252,6 +330,151 @@ fn measure_populated_road_plan_scaling(
                 .road_surface
                 .published_generation_matches_source()
         );
+        if matches!(
+            scenario,
+            CellScenario::Pocket
+                | CellScenario::Crosswalk
+                | CellScenario::Roundabout
+                | CellScenario::Ramp
+        ) {
+            use crate::simulation::network::pockets::{PocketLayout, PocketRequest};
+            let request = PocketRequest {
+                edge: 0,
+                at_start: false,
+                left: false,
+                right: true,
+                length: 80.0,
+                taper: 28.0,
+            };
+            let roundabout = crate::simulation::network::roundabouts::RoundaboutRequest {
+                center: Vector3::new(0.0, 0.0, -140.0),
+                diameter: 40.0,
+                angles: vec![0.0, 1.4, 3.0, 4.7],
+                replace: None,
+            };
+            let ramp = crate::simulation::network::ramps::RampRequest {
+                edge: ramp_edge,
+                station: 600.0,
+                forward: true,
+                exit: true,
+                points: vec![
+                    Vector3::new(0.0, 0.0, -400.0),
+                    Vector3::new(200.0, 0.0, -300.0),
+                ],
+                length: 80.0,
+                taper: 35.0,
+            };
+            let mut prepare = [0.0; 31];
+            let mut preview = [0.0; 31];
+            for iteration in 0..34 {
+                let start = Instant::now();
+                if scenario == CellScenario::Crosswalk {
+                    assert!(
+                        core.region_graph
+                            .crosswalk_arm_eligible(core.region_graph.edge(0).end_node, 0)
+                    );
+                } else if scenario == CellScenario::Ramp {
+                    let layout = crate::simulation::network::ramps::RampLayout::prepare(
+                        &core.region_graph,
+                        ramp.clone(),
+                    )
+                    .unwrap();
+                    assert!(
+                        core.road_layout_corridor_refusal(layout.corridors())
+                            .is_none()
+                    );
+                    std::hint::black_box(layout);
+                } else if scenario == CellScenario::Roundabout {
+                    let layout =
+                        crate::simulation::network::roundabouts::RoundaboutLayout::prepare(
+                            &core.region_graph,
+                            roundabout.clone(),
+                        )
+                        .unwrap();
+                    assert!(core.roundabout_layout_refusal(&layout).is_none());
+                    std::hint::black_box(layout);
+                } else {
+                    let layout = PocketLayout::prepare(&core.region_graph, request).unwrap();
+                    assert!(core.pocket_layout_refusal(&layout).is_none());
+                    std::hint::black_box(layout);
+                }
+                let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                let (mesh, roads) = if scenario == CellScenario::Crosswalk {
+                    core.transit_network
+                        .road_surface
+                        .compile_crosswalk_preview(
+                            &core.region_graph,
+                            &core.heightmap,
+                            core.region_graph.edge(0).end_node,
+                            0,
+                            true,
+                        )
+                        .unwrap()
+                } else if scenario == CellScenario::Ramp {
+                    core.transit_network
+                        .road_surface
+                        .compile_ramp_preview(&core.region_graph, &core.heightmap, ramp.clone())
+                        .unwrap()
+                } else if scenario == CellScenario::Roundabout {
+                    core.transit_network
+                        .road_surface
+                        .compile_roundabout_preview(
+                            &core.region_graph,
+                            &core.heightmap,
+                            roundabout.clone(),
+                        )
+                        .unwrap()
+                } else {
+                    core.transit_network
+                        .road_surface
+                        .compile_pocket_preview(&core.region_graph, &core.heightmap, request)
+                        .unwrap()
+                };
+                let terrain = core.compile_pocket_preview_terrain(&roads).unwrap();
+                assert!(terrain.preview_patches().is_some());
+                let preview_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let products = format!(
+                    "{:?}",
+                    mesh.planned
+                        .iter()
+                        .map(|(key, data)| (
+                            key,
+                            &data.road_vertices,
+                            &data.curb_vertices,
+                            &data.sidewalk_vertices,
+                            &data.marking_vertices,
+                            &data.road_uvs,
+                            &data.road_colors
+                        ))
+                        .collect::<Vec<_>>()
+                );
+                if let Some(previous) = &previous_pocket_mesh {
+                    assert_eq!(&products, previous);
+                }
+                previous_pocket_mesh = Some(products);
+                if iteration >= 3 {
+                    prepare[iteration - 3] = plan_ms;
+                    preview[iteration - 3] = preview_ms;
+                }
+            }
+            prepare.sort_by(f64::total_cmp);
+            preview.sort_by(f64::total_cmp);
+            eprintln!(
+                "{} {}",
+                if scenario == CellScenario::Crosswalk {
+                    "CROSSWALK_PLAN_SCALING"
+                } else if scenario == CellScenario::Ramp {
+                    "RAMP_PLAN_SCALING"
+                } else if scenario == CellScenario::Roundabout {
+                    "ROUNDABOUT_PLAN_SCALING"
+                } else {
+                    "POCKET_PLAN_SCALING"
+                },
+                serde_json::json!({"remote_buildings":remote_buildings,"remote_roads":background_roads,"parcels":core.zoning.parcels().len(),"agents":core.agents.len(),"samples":31,"setup_excluded":true,"prepare_p50_ms":prepare[15],"preview_p50_ms":preview[15],"identical_local_products":true})
+            );
+            continue;
+        }
         if scenario == CellScenario::Memory {
             let products = memory::measure(&mut core, remote_buildings, &mut memory_phase);
             if let Some(previous) = &previous_memory_products {
@@ -387,6 +610,9 @@ fn measure_populated_road_plan_scaling(
         let mut frame_checks_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: 1,

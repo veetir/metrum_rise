@@ -6,6 +6,217 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-91 crossing feedback is fixed: refused Over/Under strokes retain a red ribbon and
+player-facing reason, with saved-neighborhood/empty-world bridge coverage and inspected
+native captures. ROAD-92 also clears the median and stale refusal on Walkway selection,
+with N inert and a passing native regression/capture pair. Structure/water/crossing-tunnel
+bugs ROAD-88–90 remain open
+([acceptance](roads.md#crossing-refusal-feedback--road-91-2026-10-27)).
+
+ROAD-61 short tunnels are complete on `feat/road-structure-design`: explicit player intent,
+continuous buried pavement, shared quick/exact cover checks and concrete portal/terrain ownership.
+Fresh 2,915 library tests, clean Clippy, exact legacy geometry, 22 bridge assertion passes,
+four inspected native captures with traffic, and matched release compile/chunk/locality checks
+are recorded with baseline shutdown errors and the intermittent importer-ack observation
+([owning contract and acceptance](roads.md#short-road-tunnels--road-61)).
+
+ROAD-83/84 **slice A** is implemented on `feat/road-structure-design`: road-owned cold layout,
+detail/revision, class/access/override and extent tables; immutable interning and semantic queries;
+lockstep split/remap/excerpt/preview/undo; deterministic validated **v110** saves with historical
+migration. Existing tools and consumers keep legacy geometry and behavior. Exact compiled proof
+matches **10,530 owner/field records / 1,537,405 ordered words**; all 54 historical schemas and
+load→110→reload→resave pass. Fresh **2,910** library tests (168 ignored), clean Clippy, 15 isolated
+road bridges and matched release compile/chunk/locality checks pass. `Edge` remains 120 B;
+references plus extents cost 32 B/slot (3.2 MB at 100k reserved slots), base layouts 372 B each.
+Windowed pocket captures were inspected, but the required delayed retry also stalled before a
+fresh error-free traffic capture. Slice B adds class/speed/access/provenance policy; C–F convert
+consumers and expose new presets ([acceptance, deviations and measurements](roads.md#slice-a-implementation-and-acceptance--2026-10-26)).
+
+Upstream integration remains **unaccepted** on `feat/road-upstream-sync`. The approved
+TRAFFIC-09 redesign is implemented: junction-owned paired overlap zones, ordered per-vehicle
+claims released after tail clearance, complete downstream storage promises and border holds.
+Priority/full stops remain intact. The original 48-hour world improves from 8,225 network
+occupants / 0.098 m/s to 1,176 physical cars / 4.720 m/s plus 1,660 outside holds (2,836 raw
+occupants); plain upstream remains 944 / 9.112. A longer continuation still forms a six-road
+storage cycle of **344 cars**, with clear, unbooked crossings and no downstream space. The
+bounded audit finds no further permanent reservation fault: the loop is real storage saturation.
+A fixed offered stream supplies 240 cars in 120 movement seconds against 99 straight / 60
+left-turn completions; both finite queues drain when arrivals stop. Signals or bigger roads
+address excess demand; no clearance or collision check is bypassed
+([model, evidence and audit scope](traffic.md#upstream-integration-acceptance--traffic-09)).
+
+Fresh takeover coverage passes 2,863 library cases (168 ignored), the 162 agent and 64 save
+cases, the fresh matched-world regression and ten isolated road/traffic bridges, with clean
+all-target Clippy. The prior session passed all four growth integrations and 59 of 65 Godot
+suites, including every road bridge and the university legacy bridge;
+the same six Mac asset/rendering failures remain historical, not rerun here. Prior proofs
+for all five user-save copies preserve exact pre-merge road/topology fingerprints and round-trip
+in **v109**; real upstream v59/v107 copies round-trip too, with
+unchanged original hashes. The explicit history matrix now covers 54 historical schemas.
+Version 109 persists the tail's source connector instead of guessing it at shared exits.
+
+The final serial full-contract pair still fails work-scaling gates (upstream five in 78.98 s,
+model two in 99.44 s), while absolute limits pass. Baseline 10k/30k hour means are
+1.164/4.177 ms upstream versus 2.463/7.042 ms with zones. Warm-up employment/traffic diverges, so
+nominal-tier hour means do not establish equal-work performance. The final PERF-06 pair has
+identical work dictionaries but mixed timings; the 30k ingress row is 0.624→0.909 ms. Earlier five-pair medians remain historical. Road locality products
+remain identical, with a measured ramp-preview constant increase from 28.0 to 30.1 ms. The
+old PERF-07 matrix remains historical and unaccepted, not validation of this model
+([final performance checks](traffic.md#takeover-full-contract-rerun--2026-10-25)).
+
+Prior-session zoning-visible captures match the pre-merge harness: Prisma 81.97→81.72 fps, KYS
+39.86→38.02, sweep 33.22→32.17. Fresh KYS and saturated day-14 street/overhead captures are
+inspected against `kys-1.png`: moving KYS cars and stationary city queues, plus the existing
+vehicle mesh/body-length mismatch. Signals/gantries, mature trees and imported bridge/paint discrepancies remain.
+The [integration checkpoint](roads.md#upstream-integration-checkpoint--2026-10-24) records
+save proofs, captures, baseline decisions and preserved upstream IDs. Pocket frontage journals
+and owned-pool road/preview entry fixes remain in place. Earlier counts below describe their
+original road-chain builds.
+
+ROAD-73's compiler repairs are complete: full KYS/Bioteknia views settle, all four original
+pockets fault signatures are zero, and 3,496 production terrain windows pass. The university
+rebuild retains 3+3 lanes, bus lanes and a paved median. Shared source-constrained grades also
+resolve junctions 227/419/420 and the refined boundaries at 1150/1628. Fresh release validation
+passes 2,706 library tests and 23 native bridges. Matched locality products remain identical;
+full mesh emission at 1,024 chunks costs 42.0 ms versus 32.9 ms before. KYS road 138's unwelded
+terminal and ten steep retained input profiles remain under ROAD-73-IMPORT; the supplied KYS
+layout still needs that importer repair
+([design and acceptance](roads.md#imported-junction-geometry--road-73)).
+
+The light player-tool pre-PR check is complete; full placement QA is **ROAD-82**, separate
+from ROAD-81. A ramp click could jump to the origin during a busy surface query; it now uses
+the roundabout's immutable picker. The repaired flat/2% slope matrix passes 400 checks, and
+20 ROAD-73 fixture audits have zero fault signatures. One native window supplied 278 captures;
+a dropped bulldoze click and visual parity/detail follow-ups remain open. Fresh 2,897 Rust
+tests, 23 bridge suites and Clippy pass. [Evidence and handoff](roads.md#player-placement-pre-pr-check--road-82).
+
+The historical ROAD-76 importer is tracked as ROAD-81. Rebased onto upstream-sync
+`cc038ea8` including the t32 preview fix, it produces the new **diagnostic**
+`kuopio-sw-v3.sqlite` full OSM/DEM road/path import, with provenance and 31 matched view
+pairs. V2 and user saves remain unchanged. General source rules replace the Luola,
+university lower-road/path and Prisma layout overrides. It conditions bridge banks
+and approaches, separates service circulation, preserves bus permissions, caps wing
+tips and fixes Valkeinen water clipping.
+The fresh run processes 1,688 strokes: 1,207 complete, 349 partial, 132 refused.
+
+Round four commits fixes for median mouth hooks, straight source sampling, car probe
+endpoints, junction clip storage/partial rebuilds and exact bridge approach support.
+Focused Luola, parking, east-ring, Bellanranta and Saaristokatu movement checks pass;
+Prisma still stalls and the motorway interchange still has gaps/voids. No full v4 import
+or installation has run because the focused gate remains unmet. Fresh 2,895 Rust tests,
+101 importer tests, 25 native suites and Clippy pass
+([round-four evidence and open work](roads.md#round-four-focused-fixes--road-81-acceptance-incomplete)).
+
+Round five commits source-convergent ring-arm identity, planned split crossing/lane-rule
+migration and exact layered ring clearance. Fresh tertiary and Tietoteknia fixtures become
+native; both local ring trips pass, while Tietoteknia's long ramp route and west Niiralankatu
+remain unresolved. No full v5 import/install has run. Fresh 2,897 Rust tests, 102 importer
+tests, 25 native suites, clean Clippy and 24 matched locality processes pass. All prior
+round-four passing trip workloads are retained on their original saves
+([round-five checkpoint](roads.md#round-five-ring-checkpoint--road-81-acceptance-incomplete)).
+
+**Installed v3 acceptance still fails.** Three of six motor ring candidates are native;
+west Niiralankatu regresses from v2. The map cold-loads, but only 3/12 traffic trips pass,
+versus a fresh 7/7 v2 legacy check on the same runtime. The strict map audit retains
+one overlapping grade pair and 12 mouth discontinuities; steep motor profiles, bridge
+approach gaps, KYS/Bioteknia widths, angular structures and the Valkeinen path loop remain.
+The source structure inventory has 37 built / one partial / 51 refused road/path sources,
+plus ten unsupported railway structures. Separately, 2,892 Rust tests, 100 importer tests,
+25 native suites, Clippy and 24 matched locality benchmark processes pass. The save is
+not accepted as a completed upgrade; its renderer fixes require this branch's rebuilt
+library ([source rules, measurements and explicit acceptance failures](roads.md#general-source-inference-and-structural-profiles--road-81-2026-10-26)).
+
+
+ROAD-74/75 replaces automatic zebras on new road arms with explicit per-arm paint, saved edits,
+hover preview and undo; old saves preserve their zebra selection. Unmarked routes remain
+crossable beside ordinary junctions without zebra clearance. Arrows now require authored or
+lane-dependent turn use, pockets or ramps; plain 1+1 approaches re-render without them.
+ROAD-81 supplies source crossing and turn-lane actions after topology
+([marking rules](roads.md#authored-zebras-and-selective-lane-arrows--road-74--road-75)).
+
+Road cross-sections support painted, grass and paved medians plus in-place lane/median editing
+([ROAD-80](roads.md#central-medians-and-in-place-cross-section-changes--road-80)).
+Slice B is complete: default junction lane use and advance lane choice, median/kerb turn pockets,
+mid-road count tapers, white lane arrows and solid approach lines, with H/J/K and U/I endpoint
+controls and paired road/terrain/prop previews. Version-90 split transitions preserve node-to-node
+lane distances and existing reservations. Fresh whole-suite, matched release and real-game
+capture checks pass; existing-save roadbed hashes match and no agent-tick regression is detected
+([ROAD-67](roads.md#split-transition-nodes-and-turn-pockets--road-67-slice-b-stages-35)).
+Importer stress checks now preserve remote ordinary tapers through junction splits and pocket
+edits, and stabilize clustered span profile knots. Fresh 2,590-test Rust, Clippy, bridge and
+populated-map locality checks pass (see the ROAD-67 follow-up in `roads.md`).
+Single-turn connector paths now use tangent arcs, fixing initial counter-steer and divided-bend
+kinks while preserving roadbed geometry and the existing agent tick.
+The imported-save ridges are fixed: straight median transitions retain longitudinal grade
+without inventing crossfall ([ROAD-70](roads.md#straight-cross-section-transitions--road-70));
+bridge abutment cutouts retain ground beneath airborne sections
+([ROAD-71](roads.md#bridge-abutment-cutout-bounds--road-71)). Both broken saves and the full
+medians save have been checked numerically and in street-level/overhead captures.
+
+ROAD-72 has a bus-only lane-use slice: per-lane Road Properties controls, white BUS markings
+on ordinary asphalt, car lane/frontage/routing exclusion, undo and version-94 persistence. Bus vehicles are not yet
+simulated. Longitudinal right-turn sharing, stops/bays/shelters, median/verge planting, OSM tag
+mapping and complete Prisma bus-stop reconstruction remain pending
+([bus lane scope](roads.md#bus-only-lane-authoring--road-72-lane-use-slice)).
+Fresh 2,632-test Rust suite, clean Clippy, 21 native bridges, six version-93 save comparisons and
+three inspected windowed captures pass. Local products remain bounded as background populations
+grow; controlled production tick medians change −0.1% at 100k and −3.8% at 1M, with timing
+variation recorded in the owning acceptance notes.
+
+TRAFFIC-08 stage 1a adds automatic major/minor priority, equal-road right-hand yielding,
+full stops on low-speed approaches to faster roads and B1/B5/B6 poles.
+Local conflict admission uses existing lane reservations and resolves circular right-hand
+waits deterministically. Zebra priority, signals, authored controls/undo, importer hooks and the signalised
+Prisma reconstruction remain pending ([junction control](traffic.md#automatic-vehicle-junction-priority--traffic-08-stage-1a)).
+Fresh 2,611-test library, all-target Clippy and ten individual road/traffic bridges pass.
+Matched PERF-06 runs detect no regression beyond noise; lane rebuild and populated pocket
+planning remain local.
+
+ROAD-62 has a first single-lane authoring slice: O activates 3–6-arm presets or replacement of
+an ordinary junction, with paired geometry/terrain/prop previews, one-step undo and persisted
+circulating priority. The 2026-10-25 preview repair removes cursor jumps to the world origin
+under simulation-lock contention, retries transient results at a stationary pointer and
+explains permanent terrain refusals. Fresh repair validation: 2,863 library tests, Clippy and
+seven road/traffic bridges pass. Compact presets, splitter islands, yield paint, tree/art
+presets and two-lane spiral rules remain open. ROAD-81 adds source ring mapping and preserves median approaches up to 2+2 in replacement; wider and protected transition arms remain unsupported. Historical first-slice
+validation passed 2,619 release tests, Clippy and fourteen road bridges; populated planning
+retained identical local products through 100,000 background buildings. Synchronous previews still
+cost about 50 ms ([roundabout scope and acceptance](roads.md#single-lane-roundabout-authoring--road-62-first-slice)).
+
+ROAD-69 has a first restricted ramp-stub authoring slice: the road-menu Ramp tool snaps to a
+straight divided road, adds a directional deceleration/acceleration lane, retains the main
+separator and publishes an undoable one-way fork/merge with paired previews and version-93
+persistence. Gore paint/signs, right-turn islands, diamond/loop presets, curved grading and OSM
+link mapping remain open ([ramp scope](roads.md#restricted-ramp-stubs--road-69-first-slice)).
+Fresh 2,624-test release and fifteen native bridge checks pass; ten windowed captures were inspected. Sustained
+1M-agent tick medians change +1.8%; the instrumented short 30k network timing discrepancy
+remains open in the owning verification notes.
+
+ROAD-68 slice C is complete: Junction/Over/Under controls solve bounded-grade profiles with
+exact preview/commit and undo; layered roads compile solid grass fill/open cuts, box openings,
+abutments, tapered wings and low open parapets. The new `roads-c-uni-underpass.sqlite` keeps
+Yliopistonranta on the ground/low embankment and joins parking at grade with a refuge/zebra.
+ROAD-76 corrects that reconstruction's 1+1 downgrade to the surveyed 3+3 section with a median
+and bus lanes, and confines its nonzero level to the short opening.
+Fresh 2,644-test release and native/legacy checks pass; nine production captures were inspected
+against the Finnish photos ([design and acceptance](roads.md#filled-crossings-and-player-overunder--road-68-slice-c-completion)).
+The historical short PERF-06 timing uncertainty is explained separately from current sustained
+measurements: the completion adds a measured 1.1% at 1M agents and 4.4% in full network mesh
+emission, while local planning remains bounded with identical products. ROAD-73 subsequently
+repairs the refused sloping plain-to-median terrain boundary and validates the university
+rebuild at full 3+3 bus-lane width.
+The kerb-side pocket now uses centred road-space coordinates, removing its pale gravel-like
+strip without changing physical geometry. ROAD-61 now preserves authored buried profiles and
+publishes continuous tunnel pavement, with explicit player intent and validated concrete
+portal/terrain ownership
+([tunnel contract](roads.md#short-road-tunnels--road-61)).
+
+The importer water crop is fixed in data preparation ([WATER-05](terrain.md#complete-importer-lake-beds--water-05-2026-10-21)):
+complete edited lakes receive bathymetry while their measured levels and wet/dry masks stay
+fixed. New-copy audits preserve every other city table; importer/Rust/bridge checks and ten
+inspected windowed captures validate the repair. Matched idle frames cost `16.943 → 17.007 ms`;
+the improved pockets save is installed with the original backed up.
+
 The sky now has weather: volumetric clouds that drift on simulation time and are saved with the city, cloud shadows on every lit surface (terrain, water, trees, roads, buildings, cars and pedestrians) that darken the sun as fully as a tree's shadow down to sunset, and cloud reflections in the water ([RENDER-16](terrain.md)). At night, stars and a Milky Way turn with the clock behind the clouds ([RENDER-17](terrain.md)). The weather changes by itself on a seeded, saved schedule, and Tools > Weather holds a chosen scenario or Tools > Looks sets a time and weather in one click ([RENDER-20](roadmap.md)). Trees and water now share one wind that follows the weather and holds still while paused ([RENDER-18](terrain.md)), and on calm mornings mist gathers over the lakes and burns off by ten ([RENDER-19](terrain.md)). Storms come in gusts that bend whole stands of trees, roughen the lakes and roll wind waves across meadows and grain fields ([RENDER-22](terrain.md)); the first GPU grass draws near a low camera ([VEG-23](terrain.md#gpu-grass-prototype--veg-23)), and lakes reflect the stars and the Milky Way at night. The wind now wanders with each weather change, turning and changing speed, and a cirrus layer drifts above the cumulus on its own faster wind ([RENDER-25](roadmap.md)); the moon keeps a month, drifting east among the stars and waxing and waning ([RENDER-24](terrain.md)). Storms now rain: the deck darkens and the ground, roads and roofs go dark and wet; falling streaks and water rings were removed as fake until rain is done properly ([RENDER-23](terrain.md)).
 
 The asset editor's **Preview** button now shows a building's yard as the game would plant it: real hedge modules and the trees, shrubs and flowers its planting areas grow, from the same Rust planners as a spawned house; **Reroll** shows another layout and **Exit preview** returns to editing, all without touching the asset ([TOOLS-14](asset_editor.md#yard-planting)).
@@ -1094,14 +1305,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 - `TRAFFIC-03`: cars no longer turn around where a footpath joins a road; footpaths no longer count as junction arms for cars' connectors. A road ending in a footpath is still not a dead end, so cars do not turn around there (upstream's `NET-07` U-turn rule). See [`traffic.md`](traffic.md#junction-connectors).
 - `TRAFFIC-04`: walkers no longer cut across the lawn where curved roads meet; bends and Y junctions get sensible clips. Saved bends keep their old clips until redrawn. See [`roads.md`](roads.md#pedestrian-junction-crossings).
 - `ZONE-07`: on curved streets, driveways reach the road and neighbouring yards share one hedge across the wedge between their lots. See [`earthworks.md`](earthworks.md) and [`asset_editor.md`](asset_editor.md#yard-hedges).
-- `ROAD-54`: road placement now refuses hairpins tighter than the road, junction arms closer than 25° and junctions with more than six arms, and says why. Steep grades wait for the hill policy. See [`roads.md`](roads.md#road-geometry-validation-road-54).
+- `ROAD-76`: road placement now refuses hairpins tighter than the road, junction arms closer than 25° and junctions with more than six arms, and says why. Steep grades wait for the hill policy. See [`roads.md`](roads.md#road-geometry-validation-road-76).
 - `ROAD-60`: Finnish crossing signs stand at every zebra, at the near edge of the stripes, speed-limit signs where the limit changes or after the junction of a long street, and warning signs (steep hill with its percentage, bends, uneven road) on the awkward roads placement still accepts. Cosmetic for now. See [`roads.md`](roads.md#road-signs-road-60).
 - `TRAFFIC-05`: walking is priced at walking pace instead of the road's speed limit, so trips longer than about 280 m now drive. See [`entrance_and_exit.md`](entrance_and_exit.md#mode-policy). Lane heights now follow the road surface in the simulation itself, not only where a chunk is drawn, so a session continues identically after save and reload; see [`traffic.md`](traffic.md#current-scope).
 - `RENDER-26`: cars keep the Kenney models (generic Finnish models were withdrawn); at night their lamps glow and the nearest cars' headlights light the street. See [`traffic.md`](traffic.md#vehicle-models-and-lamps-render-26).
 - `ROAD-59`: street lights along every road and footpath, Finnish models placed in Rust along whole streets, poles of meeting streets kept 12 m apart; at night lit roads and lamps read from across the map, lamps past the 32 real lights are lit inside the materials with the real light's maths, so far streets keep their contrast and walls light up at any distance; past 500-700 m a coarse lamp light map keeps streets lit over 8 km around the view. See [`roads.md`](roads.md#street-lights-road-59).
-- `ROAD-56`: roads look Finnish: worn grey stone-mastic asphalt that fades light with age, long trench patches, manholes and drain grates, ruts only on busy roads, granite kerbs, sealed cracks and patches, and white lane lines with Traficom dash lengths (1 m / 3 m up to 50 km/h, 3 m / 9 m above) instead of the yellow centre line; two-lane residential streets are unmarked. See [`roads.md`](roads.md#finnish-road-surface-and-markings-road-56).
+- `ROAD-78`: roads look Finnish: worn grey stone-mastic asphalt that fades light with age, long trench patches, manholes and drain grates, ruts only on busy roads, granite kerbs, sealed cracks and patches, and white lane lines with Traficom dash lengths (1 m / 3 m up to 50 km/h, 3 m / 9 m above) instead of the yellow centre line; two-lane residential streets are unmarked. See [`roads.md`](roads.md#finnish-road-surface-and-markings-road-78).
 
-- `ROAD-55`: footpaths now connect to sidewalks and to each other at junctions, so walkers can route along them. Before, the junction builder skipped them and no walker could ever reach one. See [`roads.md`](roads.md#pedestrian-junction-crossings).
+- `ROAD-77`: footpaths now connect to sidewalks and to each other at junctions, so walkers can route along them. Before, the junction builder skipped them and no walker could ever reach one. See [`roads.md`](roads.md#pedestrian-junction-crossings).
 
 - `ROAD-65`: saves no longer break after a terrain-brush stroke or an undo while agents cross junctions. Both rebuild every lane, and agents now keep their lanes by identity instead of by the old lane number. See [`roads.md`](roads.md).
 - Trip failure log (2026-10-13, `DEBUG-06`): every trip failure in the movement tick logs a

@@ -391,6 +391,7 @@ fn load_checks_explicit_sites_and_compiled_roads_against_cell_reservations() {
             "DELETE FROM building_inventories; DELETE FROM buildings;
              DELETE FROM entity_handle_slots WHERE kind = 0;
              DELETE FROM zoning_cell_lots; DELETE FROM zoning_parcels;
+             UPDATE save_meta SET version=109;
              UPDATE network_edges SET width = width + 10",
             "saved road overlaps reserved zoning cells",
         ),

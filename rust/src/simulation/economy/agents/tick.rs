@@ -7,6 +7,7 @@ mod claims;
 #[cfg(test)]
 mod contract;
 mod frontage;
+pub(crate) mod junction_control;
 mod lane_buckets;
 mod lane_nav;
 mod movement;
@@ -76,6 +77,7 @@ impl AgentSystem {
         self.scrub_building_refs_if_revised(allocator, n);
         let (lane_count, live_lane_agent_count) =
             self.prepare_lane_buckets_for_tick(transit_network, n);
+        self.prepare_junction_admission(transit_network, graph, delta);
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
@@ -225,3 +227,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod junction_control_tests;

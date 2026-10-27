@@ -9,7 +9,7 @@ use super::geometry::{emit_surface_quad, section_boundary_world_point, triangle_
 use crate::config;
 use crate::simulation::network::surface::RoadSurfaceSection;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::{Color, Vector2, Vector3};
 
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
 const BRIDGE_PIER_GROUND_EMBED_M: f32 = 0.08;
@@ -17,6 +17,51 @@ const BRIDGE_PIER_HALF_DEPTH_M: f32 = 0.55;
 const BRIDGE_PIER_HALF_WIDTH_M: f32 = 0.55;
 const BRIDGE_PIER_MIN_CLEARANCE_M: f32 = 1.0;
 const BRIDGE_PIER_SPACING_M: f32 = 28.0;
+
+/// Emits the shared grass/concrete shell using the existing lit road mesh layers.
+pub(super) fn emit_filled_crossing(
+    mesh: &mut NetworkMeshData,
+    crossing: &crate::simulation::network::surface::FilledCrossing,
+) {
+    for (layer, faces, color) in [
+        (MeshLayer::MedianGrass, &crossing.fill, Color::WHITE),
+        (MeshLayer::Concrete, &crossing.concrete, concrete_color()),
+    ] {
+        emit_shell_faces(mesh, layer, faces, color);
+    }
+}
+
+pub(super) fn emit_shell_faces(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    faces: &[[crate::simulation::network::surface::RoadVec3; 4]],
+    color: Color,
+) {
+    for face in faces {
+        let vertices = face.map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+        let uvs = [
+            Vector2::ZERO,
+            Vector2::new(1.0, 0.0),
+            Vector2::ONE,
+            Vector2::new(0.0, 1.0),
+        ];
+        for ids in [[0, 1, 2], [0, 2, 3]] {
+            let triangle = ids.map(|i| vertices[i]);
+            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+                continue;
+            }
+            let normal = (triangle[2] - triangle[0]).cross(triangle[1] - triangle[0]);
+            push_triangle_preserving_winding_with_exact_normal(
+                mesh,
+                layer,
+                triangle,
+                ids.map(|i| uvs[i]),
+                color,
+                normal,
+            );
+        }
+    }
+}
 
 pub(super) fn emit_compiled_bridge_concrete(
     mesh: &mut NetworkMeshData,

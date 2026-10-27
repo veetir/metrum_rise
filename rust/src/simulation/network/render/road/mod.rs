@@ -16,6 +16,7 @@ use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 
 /// Intersection crosswalk markings.
 pub mod crosswalks;
+pub(in crate::simulation::network::render) mod material_partition;
 pub(crate) mod preview;
 /// Cosmetic Finnish crossing and speed-limit sign placement.
 pub(crate) mod road_signs;
@@ -35,6 +36,7 @@ pub(super) enum MeshLayer {
     Road,
     Marking,
     Concrete,
+    MedianGrass,
 }
 
 /// Top-surface road renderer built entirely from compiled roadbed ownership.
@@ -400,6 +402,11 @@ fn push_triangle_to_layer(
     color: Color,
     normal: Vector3,
 ) {
+    if !matches!(layer, MeshLayer::Marking)
+        && material_partition::emit_triangle(mesh, layer, vertices, uvs, color, normal)
+    {
+        return;
+    }
     if matches!(layer, MeshLayer::Road) {
         let triangle = std::array::from_fn(|i| super::ownership::Vertex {
             p: vertices[i],
@@ -482,52 +489,69 @@ fn push_triangle_to_layer_with_crossing(
             &mut mesh.earthwork_normals,
             &mut mesh.earthwork_uvs,
             &mut mesh.earthwork_colors,
+            &mut mesh.owner_ranges[0],
         ),
         MeshLayer::Curb => (
             &mut mesh.curb_vertices,
             &mut mesh.curb_normals,
             &mut mesh.curb_uvs,
             &mut mesh.curb_colors,
+            &mut mesh.owner_ranges[1],
         ),
         MeshLayer::RaisedStep => (
             &mut mesh.raised_step_vertices,
             &mut mesh.raised_step_normals,
             &mut mesh.raised_step_uvs,
             &mut mesh.raised_step_colors,
+            &mut mesh.owner_ranges[2],
         ),
         MeshLayer::Sidewalk => (
             &mut mesh.sidewalk_vertices,
             &mut mesh.sidewalk_normals,
             &mut mesh.sidewalk_uvs,
             &mut mesh.sidewalk_colors,
+            &mut mesh.owner_ranges[3],
         ),
         MeshLayer::Road => (
             &mut mesh.road_vertices,
             &mut mesh.road_normals,
             &mut mesh.road_uvs,
             &mut mesh.road_colors,
+            &mut mesh.owner_ranges[4],
         ),
         MeshLayer::Marking => (
             &mut mesh.marking_vertices,
             &mut mesh.marking_normals,
             &mut mesh.marking_uvs,
             &mut mesh.marking_colors,
+            &mut mesh.owner_ranges[5],
         ),
         MeshLayer::Concrete => (
             &mut mesh.concrete_vertices,
             &mut mesh.concrete_normals,
             &mut mesh.concrete_uvs,
             &mut mesh.concrete_colors,
+            &mut mesh.owner_ranges[6],
         ),
+        MeshLayer::MedianGrass => {
+            let grass = mesh.median_grass.get_or_insert_default();
+            (
+                &mut grass.vertices,
+                &mut grass.normals,
+                &mut grass.uvs,
+                &mut grass.colors,
+                &mut grass.owner_ranges,
+            )
+        }
     };
-    for index in 0..3 {
-        target.0.push(vertices[index]);
-        target.1.push(normal);
-        target.2.push(uvs[index]);
-        target.3.push(color);
-    }
+    // Append a whole triangle with one capacity check per attribute, keeping the legacy
+    // sink independent of the extra median material's dispatch cost.
+    target.0.extend_from_slice(&vertices);
+    target.1.extend_from_slice(&[normal; 3]);
+    target.2.extend_from_slice(&uvs);
+    target.3.extend_from_slice(&[color; 3]);
     let end = target.0.len();
-    mesh.record_owner_triangle(layer as usize, end);
+    super::ownership::record_owner_range(target.4, mesh.current_owner, end);
 }
 
 pub(super) fn earthwork_color() -> Color {

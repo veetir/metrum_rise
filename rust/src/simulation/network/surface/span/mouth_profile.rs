@@ -33,8 +33,16 @@ impl RoadSurfaceSystem {
         let mut boundary_points_world = Vec::with_capacity(section.bands.len() + 1);
         let mut bands = Vec::with_capacity(section.bands.len());
 
+        // A terminated median has three zero-width bands. Node mouths see the same plain
+        // carriageway profile as an undivided road; spans retain stable band indices for noses.
+        // Median profiles have three extra bands. Painted medians always collapse their
+        // kerbs, and noses collapse all three; none of those zero-area contours owns a node.
+        let median_profile = section.bands.len() > 6;
+        let visible = |band: &&super::super::RoadSurfaceBand| {
+            !median_profile || band.lateral_end_m - band.lateral_start_m > 0.001
+        };
         if side == IncidentEdgeSide::Start {
-            for band in &section.bands {
+            for band in section.bands.iter().filter(visible) {
                 let start_point_world = Self::section_boundary_world_point_static(
                     section,
                     band.lateral_start_m,
@@ -56,7 +64,7 @@ impl RoadSurfaceSystem {
                 });
             }
         } else {
-            for band in section.bands.iter().rev() {
+            for band in section.bands.iter().rev().filter(visible) {
                 let start_point_world = Self::section_boundary_world_point_static(
                     section,
                     band.lateral_end_m,

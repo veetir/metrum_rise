@@ -37,6 +37,10 @@ pub(crate) enum RoadSurfaceEarthworkSupportPolicy {
     StandardFullGroundedSpan,
     BridgeEndpointAbutments,
     TunnelVisiblePortals,
+    // Structural roof rail at a tunnel mouth; its height is not pavement authority.
+    TunnelPortalRoof,
+    // Open approach of a compiled shell; retention is classified by actual slope.
+    TunnelOpenCut,
 }
 
 impl RoadSurfaceEarthworkSupportPolicy {
@@ -53,6 +57,8 @@ impl RoadSurfaceEarthworkSupportPolicy {
             Self::StandardFullGroundedSpan => "standard_full_grounded_span",
             Self::BridgeEndpointAbutments => "bridge_endpoint_abutments",
             Self::TunnelVisiblePortals => "tunnel_visible_portals",
+            Self::TunnelPortalRoof => "tunnel_portal_roof",
+            Self::TunnelOpenCut => "tunnel_open_cut",
         }
     }
 
@@ -61,6 +67,8 @@ impl RoadSurfaceEarthworkSupportPolicy {
             Self::StandardFullGroundedSpan => 0,
             Self::BridgeEndpointAbutments => 1,
             Self::TunnelVisiblePortals => 2,
+            Self::TunnelPortalRoof => 3,
+            Self::TunnelOpenCut => 4,
         }
     }
 }

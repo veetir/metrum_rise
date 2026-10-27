@@ -223,10 +223,18 @@ fn a_long_street_repeats_the_uniform_limit_after_its_junction() {
 fn speed_changes_compare_mapped_live_road_limits() {
     let mut f = junction();
     f.0.edge_mut(0).speed_limit = 54.0 / 3.6;
-    assert!(generate(&f).road_signs.iter().all(|s| crossing(s.kind)));
+    assert!(generate(&f).road_signs.iter().all(|s| crossing(s.kind)
+        || matches!(
+            s.kind,
+            RoadSignKind::Priority | RoadSignKind::Yield | RoadSignKind::Stop
+        )));
     f.0.edge_mut(0).speed_limit = 30.0 / 3.6;
     f.0.edge_mut(2).deleted = true;
-    assert!(generate(&f).road_signs.iter().all(|s| crossing(s.kind)));
+    assert!(generate(&f).road_signs.iter().all(|s| crossing(s.kind)
+        || matches!(
+            s.kind,
+            RoadSignKind::Priority | RoadSignKind::Yield | RoadSignKind::Stop
+        )));
 }
 
 #[test]
@@ -926,4 +934,33 @@ fn spacing_crosses_reversed_edge_and_loop_seam_but_respects_facing() {
     };
     spacing.insert(&loop_span, 77.0, 1.0, 1.0);
     assert_eq!(spacing.advance(&loop_span, 3.0, 1.0, 1.0), 6.0);
+}
+
+#[test]
+fn automatic_priority_yield_and_stop_models_follow_approach_policy() {
+    let (mut graph, mut lanes, mut surface, terrain) = junction_with_lanes(2, 2);
+    graph.edge_mut(0).speed_limit = 60.0 / 3.6;
+    graph.edge_mut(1).speed_limit = 60.0 / 3.6;
+    graph.edge_mut(2).speed_limit = 30.0 / 3.6;
+    lanes.rebuild(&mut graph);
+    surface.mark_node_dirty(&graph, 0);
+    surface.compile_dirty(&graph, &terrain);
+    let mesh = RoadRenderer.generate_mesh_data_with_surface(&graph, &lanes, &terrain, &surface);
+    assert!(
+        mesh.road_signs
+            .iter()
+            .any(|s| s.kind == RoadSignKind::Priority)
+    );
+    assert!(
+        mesh.road_signs
+            .iter()
+            .any(|s| s.kind == RoadSignKind::Stop && s.owner_edge == 2)
+    );
+    graph.edge_mut(2).speed_limit = 40.0 / 3.6;
+    let mesh = RoadRenderer.generate_mesh_data_with_surface(&graph, &lanes, &terrain, &surface);
+    assert!(
+        mesh.road_signs
+            .iter()
+            .any(|s| s.kind == RoadSignKind::Yield && s.owner_edge == 2)
+    );
 }

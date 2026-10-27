@@ -12,6 +12,17 @@ class SimulationStub extends Node3D:
 	var rays := 0
 	var self_loop := false
 	var commands: Array = []
+	var preview_valid := true
+	var previews := 0
+	func get_road_tool_surface_generation() -> int:
+		return 0
+	func get_zoning_overlay_revision() -> int:
+		return 0
+	func get_agriculture_field_overlay_revision() -> int:
+		return 0
+	func preview_crosswalk(_node: int, _edge: int, _enabled: bool) -> Dictionary:
+		previews += 1
+		return {"is_valid": preview_valid}
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Variant:
 		rays += 1
 		return hit
@@ -49,6 +60,18 @@ class UiStub extends Node:
 	func hide_road_properties() -> void:
 		pass
 	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
+		pass
+
+class RoadToolStub extends Node3D:
+	var visible_preview := false
+	func has_local_edit_preview() -> bool:
+		return visible_preview
+	func show_local_edit_preview(preview: Dictionary) -> bool:
+		visible_preview = bool(preview.get("is_valid", false))
+		return visible_preview
+	func _clear_preview_visual() -> void:
+		visible_preview = false
+	func update_main_mesh() -> void:
 		pass
 
 class ReleaseConsumer extends Node:
@@ -90,6 +113,9 @@ func _run() -> void:
 	camera.position = Vector3(0, 30, 20)
 	camera.look_at(Vector3.ZERO)
 	camera.current = true
+	var roads := RoadToolStub.new()
+	roads.name = "RoadTool"
+	scene.add_child(roads)
 	var tool_script: Script = SelectTool
 	for argument in OS.get_cmdline_user_args():
 		if argument.begins_with("--tool-path="):
@@ -122,6 +148,14 @@ func _run() -> void:
 	_button(true)
 	_button(false)
 	_expect(sim.commands == [["crosswalk", 7, 10, true]], "Crosswalk controls retain precedence and toggle once")
+	_expect(sim.previews == 1, "Crosswalk commit first builds a read-only preview")
+	sim.commands.clear()
+	sim.preview_valid = false
+	sim.hit = tool.crosswalk_toggles[0].pos
+	_button(true)
+	_button(false)
+	_expect(sim.commands.is_empty(), "An invalid zebra preview cannot commit")
+	sim.preview_valid = true
 	sim.commands.clear()
 	# A self-loop can expose the same signed lane at two different road mouths.
 	sim.self_loop = true

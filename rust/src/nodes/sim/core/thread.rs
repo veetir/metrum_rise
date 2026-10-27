@@ -47,6 +47,12 @@ pub(crate) enum SimCommand {
     /// Place a new road segment.  Executed in the sim thread so the main thread
     /// never blocks on the expensive lane-rebuild and zoning-obstruction passes.
     AddRoad {
+        /// Authored crossing layer captured at submission.
+        crossing_level: i16,
+        /// Preserve the authored buried profile instead of following source terrain.
+        tunnel: bool,
+        /// Authored median selection captured at submission.
+        median: Option<crate::simulation::network::graph::RoadMedian>,
         /// World-space polyline points.
         points: Vec<godot::prelude::Vector3>,
         /// Forward lane count.
@@ -64,6 +70,53 @@ pub(crate) enum SimCommand {
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
+    /// Change one road's lane counts and separator through the road transaction gate.
+    ChangeRoadCrossSection {
+        /// Stable graph edge being edited.
+        edge: usize,
+        /// New directional lane counts.
+        lanes: (u8, u8),
+        /// Authored central separator.
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        /// Acceptance after dependent caches and query snapshots have been published.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
+    /// Change saved bus-only lane ribbons and rebuild all dependent car access.
+    ChangeRoadBusLanes {
+        /// Selected physical road.
+        edge: usize,
+        /// Forward/backward centre-outward bus-only bit masks.
+        masks: [u8; 2],
+        /// Completion after routing, lanes and rendering are published.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
+    /// Add a pocket using a hidden degree-two split and the standard road transaction.
+    ChangeRoadPocket {
+        /// Selected source road.
+        edge: usize,
+        /// Stored endpoint receiving the pocket.
+        at_start: bool,
+        /// Enable an inner left-turn pocket.
+        left: bool,
+        /// Enable an outer right-turn lane.
+        right: bool,
+        /// Full-width approach length.
+        pocket_m: f32,
+        /// Transition length.
+        taper_m: f32,
+        /// Completion after dependent publication.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
+    /// Author a ramp stub and auxiliary lane through the road transaction gate.
+    PlaceRamp {
+        request: crate::simulation::network::ramps::RampRequest,
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
+    /// Place a roundabout through the same dependent publication gate as road sections.
+    PlaceRoundabout {
+        request: crate::simulation::network::roundabouts::RoundaboutRequest,
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
     /// Delete one previously resolved building or road target on the simulation thread.
     Bulldoze {
         /// Immutable target token captured while the cursor still referenced the object.
@@ -83,6 +136,25 @@ fn finalize_network_render_products(
         core.precompute_road_mesh_data();
         core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         road_tool_snapshots_from_core(core)
+    })
+}
+
+// Keep the mutex guard on the simulation thread, lending only its Send core to the owned
+// pool. New road commands share the same edit/rejection/snapshot publication boundary.
+fn apply_road_edit_command(
+    core: &Mutex<SimCore>,
+    edit: impl FnOnce(&mut SimCore) -> bool + Send,
+) -> (
+    bool,
+    super::RoadRejection,
+    Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)>,
+) {
+    let mut guard = core.lock().expect("simulation core lock poisoned");
+    let core = &mut *guard;
+    crate::thread_pools::install(|| {
+        let committed = edit(core);
+        let rejection = core.last_road_rejection.take().unwrap_or_default();
+        (committed, rejection, road_tool_snapshots_from_core(core))
     })
 }
 
@@ -243,6 +315,9 @@ pub(crate) fn run_sim_thread(
                     }
                 }
                 Ok(SimCommand::AddRoad {
+                    tunnel,
+                    crossing_level,
+                    median,
                     points,
                     fwd_lanes,
                     bkw_lanes,
@@ -278,6 +353,9 @@ pub(crate) fn run_sim_thread(
                         );
                         c.commit_road(
                             RoadCommitRequest {
+                                tunnel,
+                                crossing_level,
+                                median,
                                 points,
                                 fwd_lanes,
                                 bkw_lanes,
@@ -314,6 +392,121 @@ pub(crate) fn run_sim_thread(
                         committed: outcome.committed,
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadCrossSection {
+                    edge,
+                    lanes,
+                    median,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) = apply_road_edit_command(&core, |c| {
+                        c.change_road_cross_section(edge, lanes.0, lanes.1, median)
+                    });
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadBusLanes {
+                    edge,
+                    masks,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.change_road_bus_lanes(edge, masks));
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::ChangeRoadPocket {
+                    edge,
+                    at_start,
+                    left,
+                    right,
+                    pocket_m,
+                    taper_m,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) = apply_road_edit_command(&core, |c| {
+                        c.change_road_pocket(edge, at_start, left, right, pocket_m, taper_m)
+                    });
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::PlaceRamp {
+                    request,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.place_ramp(request));
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
+                    });
+                }
+                Ok(SimCommand::PlaceRoundabout {
+                    request,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    let (committed, rejection, snapshots) =
+                        apply_road_edit_command(&core, |c| c.place_roundabout(request));
+                    if let Some((preview, query)) = snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview,
+                            query,
+                        );
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed,
+                        reason: rejection.reason,
+                        detail: rejection.detail,
                     });
                 }
                 Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -497,6 +690,21 @@ fn begin_due_sim_tick(next_tick: &mut Instant, now: Instant, interval: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn road_edit_commands_run_in_the_owned_pool_and_publish_their_rejection() {
+        let core = Mutex::new(SimCore::new(
+            crate::simulation::core::config::WorldConfig::new(128.0, 128.0, 16.0, 8.0),
+        ));
+        let (committed, rejection, _) = apply_road_edit_command(&core, |core| {
+            assert!(rayon::current_thread_index().is_some());
+            core.last_road_rejection = Some(super::super::RoadRejection::new("test", "owned pool"));
+            false
+        });
+        assert!(!committed);
+        assert_eq!(rejection.reason, "test");
+        assert!(core.lock().unwrap().last_road_rejection.is_none());
+    }
 
     #[test]
     fn command_wakes_neither_advance_nor_postpone_sim_ticks() {

@@ -14,6 +14,13 @@ pub(crate) enum NodeGradeCarrierDecision {
     SameMaterialVertex,
     SameMaterialSeam,
     ExplicitMaterialSeam,
+    /// A shared node grade with the exact material offset proved from its source cross section.
+    DeclaredMaterialContact {
+        /// Canonical grade below the source-declared material level, in millimetres.
+        base_height_mm: i64,
+        /// Source-declared offset above that grade, in millimetres.
+        level_mm: i64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -24,6 +31,33 @@ pub(crate) struct NodeGradeVertexAuthority {
     pub(crate) height_key: SurfaceHeightMmKey,
     pub(crate) source_provenance: Option<NodeHeightCarrierProvenanceKey>,
     pub(crate) decision: NodeGradeCarrierDecision,
+}
+
+impl NodeGradeVertexAuthority {
+    /// Proves a material step from two contacts on the same resolved node grade.
+    pub(crate) fn shares_declared_material_base(self, other: Self) -> bool {
+        let (
+            NodeGradeCarrierDecision::DeclaredMaterialContact {
+                base_height_mm: a,
+                level_mm: al,
+            },
+            NodeGradeCarrierDecision::DeclaredMaterialContact {
+                base_height_mm: b,
+                level_mm: bl,
+            },
+        ) = (self.decision, other.decision)
+        else {
+            return false;
+        };
+        let step = (f64::from(crate::simulation::network::surface::CURB_STEP_HEIGHT_M) * 1000.0)
+            .round() as i64;
+        self.key == other.key
+            && a == b
+            && self.owner.kind() != other.owner.kind()
+            && [al, bl].iter().all(|&level| level == 0 || level == step)
+            && self.height_key.as_i64() == a + al
+            && other.height_key.as_i64() == b + bl
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

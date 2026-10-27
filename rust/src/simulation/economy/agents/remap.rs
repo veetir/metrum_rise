@@ -131,6 +131,9 @@ impl AgentSystem {
         }
 
         for i in 0..self.agents.len() {
+            if affected_lane_ids.contains(&(self.agents.tail_connector_lane_id[i] as usize)) {
+                self.agents.tail_connector_lane_id[i] = u32::MAX;
+            }
             let lid = self.agents.current_lane_id[i];
             if lid == usize::MAX || lid >= lane_system.lanes.len() {
                 continue;
@@ -173,7 +176,15 @@ impl AgentSystem {
                     );
                 }
                 self.agents.current_edge[i] = reattach_edge_id;
+                if lane.edge_id == usize::MAX
+                    && lane.node_id < graph.node_count()
+                    && graph.node(lane.node_id as u32).node_type
+                        == crate::simulation::network::types::NodeType::LaneTransition
+                {
+                    self.agents.transit[i] = TRANSIT_NETWORK;
+                }
                 self.agents.current_lane_id[i] = usize::MAX;
+                self.agents.tail_connector_lane_id[i] = u32::MAX;
                 self.agents.lane_change_from_lane_id[i] = u32::MAX;
                 self.agents.lane_change_start_d[i] = 0.0;
                 self.agents.lane_change_length_m[i] = 0.0;
@@ -238,6 +249,7 @@ impl AgentSystem {
                 agent_pos,
                 desired_lane_type,
                 &affected_edges,
+                &affected_nodes,
                 lane_system,
                 graph,
                 max_dist_sq,
@@ -313,7 +325,22 @@ impl AgentSystem {
                 if traffic_debug {
                     log_agent_route_clear_after_road_edit(self, i);
                 }
-                self.clear_route_plan_after_road_edit(i, lane_system);
+                let current = self.agents.current_lane_id[i];
+                let preserve_transition = lane_system.lanes.get(current).is_some_and(|lane| {
+                    lane.edge_id == usize::MAX
+                        && lane.node_id < graph.node_count()
+                        && graph.node(lane.node_id as u32).node_type
+                            == crate::simulation::network::types::NodeType::LaneTransition
+                        && lane_system
+                            .node_lanes
+                            .get(&lane.node_id)
+                            .is_some_and(|ids| ids.contains(&current))
+                });
+                self.clear_route_plan_after_road_edit_with_connector(
+                    i,
+                    lane_system,
+                    preserve_transition,
+                );
             }
         }
         self.invalidate_lane_bucket_snapshot();
@@ -322,7 +349,7 @@ impl AgentSystem {
     /// Records the identity of every lane an agent references, before a full
     /// [`LaneSystem::rebuild`] renumbers all lane ids.
     ///
-    /// O(A), plus one O(L) pass when any agent is inside a junction connector.
+    /// O(A), plus one O(L) pass when any agent references a junction connector.
     pub(crate) fn capture_lane_identities(&self, lane_system: &LaneSystem) -> AgentLaneIdentities {
         let agents = &self.agents;
         let mut lane_ids = HashSet::new();
@@ -332,6 +359,7 @@ impl AgentSystem {
                 agents.planned_attach_lane_id[i],
                 agents.planned_detach_lane_id[i],
                 agents.lane_change_from_lane_id[i],
+                agents.tail_connector_lane_id[i],
             ] {
                 lane_ids.insert(if id == u32::MAX {
                     usize::MAX
@@ -378,6 +406,7 @@ impl AgentSystem {
                         self.agents.lane_distance[i].min(lane_system.lanes[id].length);
                 } else {
                     self.agents.current_lane_id[i] = usize::MAX;
+                    self.agents.tail_connector_lane_id[i] = u32::MAX;
                     lost = true;
                 }
             }
@@ -390,6 +419,8 @@ impl AgentSystem {
                     u32::MAX
                 });
             }
+            self.agents.tail_connector_lane_id[i] =
+                resolve_u32(self.agents.tail_connector_lane_id[i]).unwrap_or(u32::MAX);
             let from = resolve_u32(self.agents.lane_change_from_lane_id[i]).unwrap_or(u32::MAX);
             self.agents.lane_change_from_lane_id[i] = from;
             if from == u32::MAX {
@@ -473,10 +504,20 @@ impl AgentSystem {
     }
 
     fn clear_route_plan_after_road_edit(&mut self, i: usize, lane_system: &LaneSystem) {
+        self.clear_route_plan_after_road_edit_with_connector(i, lane_system, false);
+    }
+
+    fn clear_route_plan_after_road_edit_with_connector(
+        &mut self,
+        i: usize,
+        lane_system: &LaneSystem,
+        preserve_connector: bool,
+    ) {
         let freight_border_node = self.agents.freight_target_border_node[i];
         let preserve_freight_border = freight_border_node != u32::MAX
             && (self.agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION) != 0;
-        let should_drop_intersection_lane = self.agents.transit[i] == TRANSIT_INTERSECTION
+        let should_drop_intersection_lane = !preserve_connector
+            && self.agents.transit[i] == TRANSIT_INTERSECTION
             && match lane_system.lanes.get(self.agents.current_lane_id[i]) {
                 Some(lane) => lane.edge_id == usize::MAX,
                 None => true,
@@ -488,6 +529,7 @@ impl AgentSystem {
             self.agents.transit[i] = TRANSIT_NETWORK;
             self.agents.current_edge[i] = usize::MAX;
             self.agents.current_lane_id[i] = usize::MAX;
+            self.agents.tail_connector_lane_id[i] = u32::MAX;
             self.agents.lane_distance[i] = 0.0;
             self.agents.speed[i] = 0.0;
         }
@@ -712,11 +754,41 @@ fn best_reattach_lane(
     agent_pos: Vector2,
     desired_lane_type: LaneType,
     affected_edges: &HashSet<usize>,
+    affected_nodes: &HashSet<u32>,
     lane_system: &LaneSystem,
     graph: &RegionGraph,
     max_dist_sq: f32,
 ) -> Option<LaneReattachCandidate> {
     let mut best: Option<LaneReattachCandidate> = None;
+    let mut consider = |lane_id: usize, origin_node: u32| {
+        let Some(lane) = lane_system.lanes.get(lane_id) else {
+            return;
+        };
+        if lane.lane_type != desired_lane_type {
+            return;
+        }
+        let Some((lane_d, pos, dist_sq)) = project_point_to_lane(agent_pos, lane) else {
+            return;
+        };
+        if dist_sq > max_dist_sq {
+            return;
+        }
+        if best.as_ref().is_none_or(|old| {
+            dist_sq
+                .total_cmp(&old.dist_sq)
+                .then_with(|| lane_id.cmp(&old.lane_id))
+                .is_lt()
+        }) {
+            best = Some(LaneReattachCandidate {
+                lane_id,
+                edge_id: lane.edge_id,
+                origin_node,
+                lane_d,
+                pos,
+                dist_sq,
+            });
+        }
+    };
     for &edge_id in affected_edges {
         if graph
             .get_edge(edge_id)
@@ -724,40 +796,24 @@ fn best_reattach_lane(
         {
             continue;
         }
-        let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) else {
+        if let Some(ids) = lane_system.edge_lanes.get(&edge_id) {
+            for &id in ids {
+                if let Some(origin) = lane_origin_node_for(&lane_system.lanes[id], graph) {
+                    consider(id, origin);
+                }
+            }
+        }
+    }
+    // An added taper replaces part of a physical road with a connector. Rebind that span
+    // directly rather than snapping an existing car to either mouth. Discovery stays local.
+    for &node in affected_nodes {
+        if graph.node(node).node_type != crate::simulation::network::types::NodeType::LaneTransition
+        {
             continue;
-        };
-        for &lane_id in lane_ids {
-            let Some(lane) = lane_system.lanes.get(lane_id) else {
-                continue;
-            };
-            if lane.edge_id != edge_id || lane.lane_type != desired_lane_type {
-                continue;
-            }
-            let Some(origin_node) = lane_origin_node_for(lane, graph) else {
-                continue;
-            };
-            let Some((lane_d, pos, dist_sq)) = project_point_to_lane(agent_pos, lane) else {
-                continue;
-            };
-            if dist_sq > max_dist_sq {
-                continue;
-            }
-            let replace = best.as_ref().is_none_or(|best| {
-                dist_sq
-                    .total_cmp(&best.dist_sq)
-                    .then_with(|| lane_id.cmp(&best.lane_id))
-                    .is_lt()
-            });
-            if replace {
-                best = Some(LaneReattachCandidate {
-                    lane_id,
-                    edge_id,
-                    origin_node,
-                    lane_d,
-                    pos,
-                    dist_sq,
-                });
+        }
+        if let Some(ids) = lane_system.node_lanes.get(&(node as usize)) {
+            for &id in ids {
+                consider(id, node);
             }
         }
     }
@@ -896,6 +952,7 @@ mod tests {
                 Vector2::new(50.0, 0.0),
                 LaneType::Vehicle,
                 &affected,
+                &HashSet::new(),
                 &lanes,
                 &graph,
                 900.0,
@@ -925,6 +982,7 @@ mod tests {
                         black_box(position),
                         LaneType::Vehicle,
                         &affected,
+                        &HashSet::new(),
                         &lanes,
                         &graph,
                         900.0,
@@ -939,6 +997,7 @@ mod tests {
                     position,
                     LaneType::Vehicle,
                     &affected,
+                    &HashSet::new(),
                     &lanes,
                     &graph,
                     900.0,

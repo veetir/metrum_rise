@@ -47,6 +47,9 @@ fn stopping_the_workers_leaves_the_last_core_reference_to_the_caller() {
         })
     };
     assert!(road_preview.submit(RoadPreviewRequest {
+        tunnel: false,
+        crossing_level: 0,
+        median: None,
         enqueued_at: None,
         include_terrain: true,
         request_id: 1,
@@ -83,6 +86,9 @@ fn stopping_the_workers_leaves_the_last_core_reference_to_the_caller() {
     );
     assert_eq!(Arc::strong_count(&core), 1);
     assert!(!road_preview.submit(RoadPreviewRequest {
+        tunnel: false,
+        crossing_level: 0,
+        median: None,
         enqueued_at: None,
         include_terrain: false,
         request_id: 2,

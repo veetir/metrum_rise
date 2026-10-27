@@ -161,8 +161,14 @@ fn shared_height_raised_step_constraint(constraint: &NodeRegionSeamConstraint) -
     else {
         return false;
     };
-    raised_step_kinds_can_contact(owner.kind(), opposite_owner.kind())
-        && !raised_step_requires_exact_constraint_span(owner.kind(), opposite_owner.kind())
+    (raised_step_kinds_can_contact(owner.kind(), opposite_owner.kind())
+        && !raised_step_requires_exact_constraint_span(owner.kind(), opposite_owner.kind()))
+        || (constraint.constrains_shared_height
+            && matches!(
+                (owner.kind(), opposite_owner.kind()),
+                (RoadSurfaceBandKind::Sidewalk, RoadSurfaceBandKind::Footpath)
+                    | (RoadSurfaceBandKind::Footpath, RoadSurfaceBandKind::Sidewalk)
+            ))
 }
 
 impl NodeGradeExplicitSeamHeightKey {

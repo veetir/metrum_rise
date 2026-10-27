@@ -3,14 +3,10 @@
 //! Numeric-dust terrain-clip connector recovery.
 
 use super::super::backend::RoadVec3;
-use super::super::{
-    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSurfaceSystem,
-    keys::SurfaceHeightMmKey,
-};
+use super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSurfaceSystem};
 use super::geometry::{
     contour_area_delta_after_removing_vertex, interpolate_height_f64, overlay_segment_length_m,
 };
-use super::heights::TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM;
 use super::model::{
     TerrainClipDustConnectorRecovery, TerrainClipSegmentHeights, TerrainClipSourceEdge,
 };
@@ -47,18 +43,9 @@ impl RoadSurfaceSystem {
             ),
             Self::terrain_clip_segment_heights_from_source_edges(end, next, &next_sources),
         ) {
-            Self::validate_terrain_clip_dust_endpoint_height(
-                "start",
-                start,
-                previous_heights.end_y,
-                &source_edge_index.candidates_for_segment(start, start, source_edges),
-            )?;
-            Self::validate_terrain_clip_dust_endpoint_height(
-                "end",
-                end,
-                next_heights.start_y,
-                &source_edge_index.candidates_for_segment(end, end, source_edges),
-            )?;
+            // These are the already solved exterior top-envelope carriers. Sources
+            // touching only the corner may lie inside the union and do not own this cut.
+            // Output provenance is still validated for every recovered connector below.
             return Ok(Some(TerrainClipSegmentHeights {
                 start_y: previous_heights.end_y,
                 end_y: next_heights.start_y,
@@ -141,26 +128,6 @@ impl RoadSurfaceSystem {
         Ok(Some(interpolate_height_f64(previous_y, next_y, t)))
     }
 
-    fn validate_terrain_clip_dust_endpoint_height(
-        label: &'static str,
-        point: super::super::NodeOverlayPoint,
-        height: f64,
-        source_edges: &[TerrainClipSourceEdge],
-    ) -> Result<(), String> {
-        let Some(source_height) =
-            Self::terrain_clip_dust_overlay_point_height_from_source_edges(point, source_edges)?
-        else {
-            return Ok(());
-        };
-        if Self::terrain_clip_dust_heights_equal(source_height, height) {
-            Ok(())
-        } else {
-            Err(format!(
-                "dust_connector_{label}_height_disagrees source={source_height:.6} recovered={height:.6}"
-            ))
-        }
-    }
-
     pub(super) fn terrain_clip_dust_connector_points_from_source_edges(
         contour: &NodeOverlayContour,
         segment_index: usize,
@@ -224,12 +191,6 @@ impl RoadSurfaceSystem {
             .chain(remove_end_delta)
             .any(|delta| delta <= budget_m2)
     }
-
-    fn terrain_clip_dust_heights_equal(a: f64, b: f64) -> bool {
-        let a_mm = SurfaceHeightMmKey::from_m_f64(a).as_i64();
-        let b_mm = SurfaceHeightMmKey::from_m_f64(b).as_i64();
-        a_mm.abs_diff(b_mm) <= TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM
-    }
 }
 
 #[cfg(test)]
@@ -239,6 +200,49 @@ mod tests {
         RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceTerrainClipEdgeKind,
         RoadSurfaceVisualNodePieceKind,
     };
+
+    #[test]
+    fn dust_connector_uses_exterior_anchors_instead_of_a_buried_corner_edge() {
+        let contour = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.00005, 0.00005],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [0.0, 1.0],
+        ];
+        let source_edge = |a: [f64; 2], ay, b: [f64; 2], by| TerrainClipSourceEdge {
+            grade_authority: None,
+            start: RoadVec3::new(a[0], ay, a[1]),
+            end: RoadVec3::new(b[0], by, b[1]),
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: 0,
+                kind: RoadSurfaceVisualNodePieceKind::Bend,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 0,
+                boundary_source: None,
+            },
+            source_index: 0,
+            edge_index: 0,
+        };
+        for buried_height in [19.0, 21.0] {
+            let sources = vec![
+                source_edge(contour[0], 20.0, contour[1], 20.0),
+                source_edge(contour[2], 20.006, contour[3], 20.006),
+                source_edge(contour[1], buried_height, [0.5, 0.5], buried_height),
+            ];
+            let heights = RoadSurfaceSystem::terrain_clip_dust_connector_heights_from_source_edges(
+                &contour,
+                1,
+                &sources,
+                &TerrainClipSourceEdgeIndex::new(&sources),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!([heights.start_y, heights.end_y], [20.0, 20.006]);
+        }
+    }
 
     #[test]
     fn dust_run_recovery_ignores_a_remote_curb_step() {
@@ -254,6 +258,7 @@ mod tests {
             [0.0, 1.0],
         ];
         let source_edge = |start: [f64; 2], start_y, end: [f64; 2], end_y| TerrainClipSourceEdge {
+            grade_authority: None,
             start: RoadVec3::new(start[0], start_y, start[1]),
             end: RoadVec3::new(end[0], end_y, end[1]),
             kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,

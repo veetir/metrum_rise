@@ -224,6 +224,20 @@ func _build_ui():
 	spline_btn.toggle_mode = true
 	spline_btn.focus_mode = Control.FOCUS_NONE
 	mode_row.add_child(spline_btn)
+
+	var crossing_row := HBoxContainer.new()
+	var crossing_label := Label.new()
+	crossing_label.text = "Crossing"
+	crossing_label.custom_minimum_size.x = 92.0
+	crossing_row.add_child(crossing_label)
+	var crossing_choice := OptionButton.new()
+	for crossing_name in ["Junction", "Over", "Under", "Tunnel"]:
+		crossing_choice.add_item(crossing_name)
+	crossing_choice.focus_mode = Control.FOCUS_NONE
+	crossing_choice.tooltip_text = "Junction, Over and Under cross existing roads. Tunnel preserves the drawn elevation through a hill, with concrete portals. Place both ends outside the hill."
+	crossing_choice.item_selected.connect(road_tool.set_crossing_mode)
+	crossing_row.add_child(crossing_choice)
+	road_options_menu.add_child(crossing_row)
 	
 	var snap_row := HBoxContainer.new()
 	var snap_label := Label.new()
@@ -287,6 +301,18 @@ func _build_ui():
 	ow2_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(ow2_btn)
 	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
+
+	var ramp_btn := Button.new()
+	ramp_btn.text = "Ramp"
+	ramp_btn.focus_mode = Control.FOCUS_NONE
+	road_sub_menu.add_child(ramp_btn)
+	ramp_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.RAMP))
+
+	var roundabout_btn := Button.new()
+	roundabout_btn.text = "Roundabout (O)"
+	roundabout_btn.focus_mode = Control.FOCUS_NONE
+	road_sub_menu.add_child(roundabout_btn)
+	roundabout_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ROUNDABOUT))
 
 	var cul_de_sac_btn = Button.new()
 	cul_de_sac_btn.text = "Cul-De-Sac"

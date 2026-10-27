@@ -185,6 +185,11 @@ mod tests {
                 .map(|i| Vector3::new(-80.0 + 20.0 * i as f32, 0.0, z))
                 .collect();
             let edge = graph.add_edge(Edge {
+                crossing_level: 0,
+                median: None,
+                lane_tapers: None,
+                roundabout: false,
+                bus_lanes: [0; 2],
                 start_node: west,
                 end_node: east,
                 primary_type: TransitType::Road,

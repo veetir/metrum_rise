@@ -28,6 +28,12 @@ pub(super) unsafe fn update_network_pose(
         }
 
         let lane = &transit_network.lane_system.lanes[current_lane];
+        if *slices.tail_connector.get(i) != u32::MAX
+            && lane.edge_id != usize::MAX
+            && *s_lane_d.get(i) >= crate::config::CAR_LENGTH
+        {
+            *slices.tail_connector.get_mut(i) = u32::MAX;
+        }
         if let Some(pos) = agent_lane_position(
             lane,
             *s_lane_d.get(i),

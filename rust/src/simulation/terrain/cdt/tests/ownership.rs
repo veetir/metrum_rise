@@ -450,3 +450,67 @@ fn road_loop_endpoint_on_another_loop_edge_splits_the_roadbed_constraint() {
             && (vertex.height_m - 0.12).abs() <= 0.0001
     }));
 }
+
+#[test]
+fn near_coincident_kerb_rails_intersect_only_at_the_shared_endpoint() {
+    let a = TerrainCdtVertex::new(-666.099032, 102.288, 1666.876382);
+    let b = TerrainCdtVertex::new(-665.385927, 102.219, 1669.740489);
+    let c = TerrainCdtVertex::new(-666.099033, 102.408, 1666.876382);
+    assert_eq!(
+        segment_intersections(a, b, c, b)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        vec![TerrainCdtVertex::new(b.x, 0.0, b.z)]
+    );
+}
+
+#[test]
+fn micrometre_separated_kerb_return_does_not_fabricate_overlapping_constraints() {
+    let a = TerrainCdtVertex::new(-666.099032, 102.288, 1666.876382);
+    let b = TerrainCdtVertex::new(-665.385927, 102.219, 1669.740489);
+    let c = TerrainCdtVertex::new(-666.099033, 102.408, 1666.876382);
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-704.0, 1664.0, -640.0, 1710.0, [102.0; 4]),
+        vec![TerrainCdtRoadLoop::new(929, 0, vec![a, b, c])],
+        Vec::new(),
+    ))
+    .unwrap();
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    assert_eq!(mesh.stats.road_constraint_edges, 3);
+}
+
+#[test]
+fn terrain_exposure_probes_preserve_a_narrow_gap_between_roadbeds() {
+    let rectangle = |id, min_x, max_x| {
+        sourced_road_loop(
+            id,
+            0,
+            vec![
+                TerrainCdtVertex::new(min_x, 0.0, 2.0),
+                TerrainCdtVertex::new(max_x, 0.0, 2.0),
+                TerrainCdtVertex::new(max_x, 0.0, 28.0),
+                TerrainCdtVertex::new(min_x, 0.0, 28.0),
+            ],
+            test_span_boundary_source(id, TerrainCdtRoadBandKind::Sidewalk, 0),
+        )
+    };
+    let input = TerrainCdtInput::new(
+        TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]),
+        vec![rectangle(1, 2.0, 15.0), rectangle(2, 15.01, 28.0)],
+        Vec::new(),
+    );
+    let mesh = build_road_touched_terrain_patch(input).unwrap();
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    let area = mesh
+        .triangles
+        .iter()
+        .map(|t| signed_area(&t.map(|i| mesh.vertices[i])).abs())
+        .sum::<f64>();
+    assert!(
+        (area - (32.0 * 32.0 - (13.0 + 12.99) * 26.0)).abs() < 1e-8,
+        "the 1 cm terrain gap must remain exposed: {area}"
+    );
+}

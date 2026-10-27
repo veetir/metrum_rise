@@ -655,3 +655,69 @@ fn cdt_classifies_overbudget_road_seam_faces_as_retaining_walls() {
         "retaining walls are explicit terrain tie-ins, not emitted road-footprint faces"
     );
 }
+
+#[test]
+fn distinct_submillimetre_kerb_corners_do_not_share_a_height_identity() {
+    let corners = vec![
+        TerrainCdtVertex::new(1223.897949, 83.863, 3490.060059),
+        TerrainCdtVertex::new(1224.002163, 83.864, 3493.558507),
+        TerrainCdtVertex::new(1227.571595, 83.989, 3493.447720),
+        TerrainCdtVertex::new(1224.002175, 83.984, 3493.558912),
+        TerrainCdtVertex::new(1223.962025, 83.984, 3493.559472),
+    ];
+    let source = test_node_boundary_source(1439, TerrainCdtRoadBandKind::CurbOrShoulder, 16);
+    for reverse in [false, true] {
+        let mut points = corners.clone();
+        if reverse {
+            points.reverse();
+        }
+        let mut road_loop = sourced_road_loop(1439, 3, points, source);
+        for (i, edge) in road_loop.source_edges.iter_mut().enumerate() {
+            edge.source = test_node_boundary_source_with_direct_provenance(
+                1439,
+                TerrainCdtRoadBandKind::CurbOrShoulder,
+                16,
+                i as u64,
+                (i + 1) as u64,
+            );
+        }
+        let mut hole = road_loop.clone();
+        hole.is_hole = true;
+        let outer = sourced_road_loop(
+            1439,
+            0,
+            vec![
+                TerrainCdtVertex::new(1220.0, 84.0, 3488.0),
+                TerrainCdtVertex::new(1230.0, 84.0, 3488.0),
+                TerrainCdtVertex::new(1230.0, 84.0, 3496.0),
+                TerrainCdtVertex::new(1220.0, 84.0, 3496.0),
+            ],
+            source,
+        );
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            TerrainCdtPatch::new(1216.0, 3456.0, 1280.0, 3520.0, [84.0; 4]),
+            vec![outer, hole],
+            Vec::new(),
+        ))
+        .unwrap();
+        assert!(mesh.stats.retaining_wall_faces >= 2, "{:?}", mesh.stats);
+        assert!(mesh.stats.retaining_wall_max_y_delta_m < 0.13);
+        let canonical = canonicalize_input(TerrainCdtInput::new(
+            TerrainCdtPatch::new(1216.0, 3456.0, 1280.0, 3520.0, [84.0; 4]),
+            vec![road_loop],
+            Vec::new(),
+        ))
+        .unwrap();
+        for corner in [&corners[1], &corners[3]] {
+            assert!(
+                canonical
+                    .vertices
+                    .iter()
+                    .any(|p| same_xz(*p, *corner) && same_height(p.height_m, corner.height_m)),
+                "corner={corner:?} vertices={:?}",
+                canonical.vertices
+            );
+        }
+        assert_eq!(canonical.invalid_constraint_edges, 0);
+    }
+}

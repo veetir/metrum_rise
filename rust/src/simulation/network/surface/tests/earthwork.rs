@@ -7,5 +7,6 @@ use super::*;
 mod bridge_tunnel;
 mod coarse_hillside;
 mod dirty_chunks;
+mod filled_crossing;
 mod grounded;
 mod mixed_nodes;

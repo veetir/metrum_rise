@@ -44,7 +44,8 @@ impl RoadSurfaceSystem {
         kind: RoadSurfaceVisualNodePieceKind,
         mouths: &[OrderedIncidentPieceMouth],
     ) -> Option<String> {
-        let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
+        let mut input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths)
+        {
             Ok(input) => input,
             Err(error) => {
                 let error = serde_json::to_string(&format!("{error:?}"))
@@ -54,16 +55,33 @@ impl RoadSurfaceSystem {
                 ));
             }
         };
-        let (rails, _) = match Self::build_node_rail_contours_from_input_with_profile(&input, false)
+        if self
+            .node_material_grade_fields
+            .get(&node_id)
+            .is_some_and(|field| field.cohort_nodes().is_some())
         {
-            Ok(result) => result,
-            Err(error) => {
-                return Some(Self::node_compile_failure_debug_dump(
-                    "rail_generation",
-                    NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
-                ));
-            }
-        };
+            input.coalesce_grade_subdivisions();
+        }
+        if let Some(source) = self
+            .node_material_grade_fields
+            .get(&node_id)
+            .and_then(|field| field.source_plan(node_id))
+        {
+            // Geometry is a source product. Internal span conformance changes its
+            // height, not which approach knots or side-join contours define its plan.
+            input = source.clone();
+        }
+        let (mut rails, _) =
+            match Self::build_node_rail_contours_from_input_with_profile(&input, false) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Some(Self::node_compile_failure_debug_dump(
+                        "rail_generation",
+                        NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
+                    ));
+                }
+            };
+        rails.material_grade = self.node_material_grade_fields.get(&node_id).cloned();
         let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
@@ -81,19 +99,31 @@ impl RoadSurfaceSystem {
                 report,
             ));
         }
-        let heights =
-            match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
-                Ok(heights) => heights,
-                Err(error) => {
-                    return Some(Self::node_compile_failure_debug_dump(
-                        "height_solution",
-                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
-                            .with_height_failure_context(&rails, &ownership),
-                    ));
-                }
-            };
+        let heights = match Self::build_node_height_solution_from_ownership(
+            &input,
+            &rails,
+            &ownership,
+            self.node_material_grade_fields
+                .get(&node_id)
+                .map(AsRef::as_ref),
+        ) {
+            Ok(heights) => heights,
+            Err(error) => {
+                return Some(Self::node_compile_failure_debug_dump(
+                    "height_solution",
+                    NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                        .with_height_failure_context(&rails, &ownership),
+                ));
+            }
+        };
         let (mut arrangement, _, precomputed_explicit_steps) =
-            match NodeArrangement::from_height_solution_with_profile(&heights, false) {
+            match NodeArrangement::from_height_solution_with_profile(
+                &heights,
+                false,
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
+            ) {
                 Ok(result) => result,
                 Err(error) => {
                     return Some(Self::node_compile_failure_debug_dump(
@@ -108,15 +138,13 @@ impl RoadSurfaceSystem {
                 report,
             ));
         }
-        let triangulation = match precomputed_explicit_steps.as_deref() {
-            Some(explicit_steps) => {
-                Self::build_node_triangulation_from_arrangement_with_explicit_steps(
-                    &arrangement,
-                    explicit_steps,
-                )
-            }
-            None => Self::build_node_triangulation_from_arrangement(&arrangement),
-        };
+        let triangulation = Self::build_node_triangulation_from_arrangement_with_grade(
+            &arrangement,
+            self.node_material_grade_fields
+                .get(&node_id)
+                .map(AsRef::as_ref),
+            precomputed_explicit_steps.as_deref(),
+        );
         let triangulation = match triangulation {
             Ok(triangulation) => triangulation,
             Err(error) => {
@@ -126,6 +154,15 @@ impl RoadSurfaceSystem {
                 ));
             }
         };
+        let mut triangulation = triangulation;
+        if let Some(field) = self.node_material_grade_fields.get(&node_id)
+            && field.cohort_nodes().is_some()
+            && field
+                .refine_triangulation(&mut triangulation, &arrangement)
+                .is_none()
+        {
+            return Some("{\"failed_stage\":\"shared_grade_refinement\"}".to_owned());
+        }
         match Self::validate_node_triangulation_solution(&triangulation) {
             Ok(_) => {}
             Err(error) => {
@@ -177,17 +214,34 @@ impl RoadSurfaceSystem {
         let total_start = road_debug.then(Instant::now);
 
         let input_start = road_debug.then(Instant::now);
-        let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
+        let mut input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths)
+        {
             Ok(input) => input,
             Err(error) => {
                 self.log_node_input_extraction_error(node_id, kind, &error);
                 return None;
             }
         };
+        if self
+            .node_material_grade_fields
+            .get(&node_id)
+            .is_some_and(|field| field.cohort_nodes().is_some())
+        {
+            input.coalesce_grade_subdivisions();
+        }
+        if let Some(source) = self
+            .node_material_grade_fields
+            .get(&node_id)
+            .and_then(|field| field.source_plan(node_id))
+        {
+            // Geometry is a source product. Internal span conformance changes its
+            // height, not which approach knots or side-join contours define its plan.
+            input = source.clone();
+        }
         let input_ms = elapsed_ms(input_start);
 
         let rails_start = road_debug.then(Instant::now);
-        let (rails, rail_profile, reuse_status, rail_topology) =
+        let (mut rails, rail_profile, mut reuse_status, rail_topology) =
             match rails::NodeRailContourSet::from_input_with_profile_and_topology_reuse(
                 &input,
                 road_debug,
@@ -204,6 +258,27 @@ impl RoadSurfaceSystem {
                 }
             };
         let rails_ms = elapsed_ms(rails_start);
+        let grade = self.node_material_grade_fields.get(&node_id);
+        let same_grade = match (
+            grade,
+            previous_topology.and_then(|cache| cache.material_grade.as_ref()),
+        ) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => Arc::ptr_eq(current, previous),
+            _ => false,
+        };
+        if !same_grade {
+            // A shared grade proves carrier agreement independently of its heights.
+            // Raw rail reuse still certifies the source geometry and material levels.
+            // Its presence must agree; legacy independent carriers require a new check.
+            if grade.is_none()
+                || previous_topology.is_none_or(|cache| cache.material_grade.is_none())
+            {
+                reuse_status.ownership_reuse_safe = false;
+            }
+            reuse_status.arrangement_reuse_safe = false;
+        }
+        rails.material_grade = grade.cloned();
 
         let ownership_start = road_debug.then(Instant::now);
         let (ownership, ownership_incremental, ownership_reuse_stats) = if reuse_status
@@ -294,22 +369,34 @@ impl RoadSurfaceSystem {
             )
         } else {
             let heights_start = road_debug.then(Instant::now);
-            let heights =
-                match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
-                    Ok(heights) => heights,
-                    Err(error) => {
-                        let report =
-                            NodeValidationReport::from_height_field_error(node_id, kind, &error)
-                                .with_height_failure_context(&rails, &ownership);
-                        self.log_node_validation_report(&report);
-                        return None;
-                    }
-                };
+            let heights = match Self::build_node_height_solution_from_ownership(
+                &input,
+                &rails,
+                &ownership,
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
+            ) {
+                Ok(heights) => heights,
+                Err(error) => {
+                    let report =
+                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                            .with_height_failure_context(&rails, &ownership);
+                    self.log_node_validation_report(&report);
+                    return None;
+                }
+            };
             let heights_ms = elapsed_ms(heights_start);
 
             let arrangement_start = road_debug.then(Instant::now);
             let (mut arrangement, arrangement_profile, precomputed_explicit_steps) =
-                match NodeArrangement::from_height_solution_with_profile(&heights, road_debug) {
+                match NodeArrangement::from_height_solution_with_profile(
+                    &heights,
+                    road_debug,
+                    self.node_material_grade_fields
+                        .get(&node_id)
+                        .map(AsRef::as_ref),
+                ) {
                     Ok(result) => result,
                     Err(error) => {
                         self.log_node_validation_report(
@@ -328,15 +415,13 @@ impl RoadSurfaceSystem {
             let arrangement_diag_ms = elapsed_ms(arrangement_diag_start);
 
             let triangulation_start = road_debug.then(Instant::now);
-            let triangulation = match precomputed_explicit_steps.as_deref() {
-                Some(explicit_steps) => {
-                    Self::build_node_triangulation_from_arrangement_with_explicit_steps(
-                        &arrangement,
-                        explicit_steps,
-                    )
-                }
-                None => Self::build_node_triangulation_from_arrangement(&arrangement),
-            };
+            let triangulation = Self::build_node_triangulation_from_arrangement_with_grade(
+                &arrangement,
+                self.node_material_grade_fields
+                    .get(&node_id)
+                    .map(AsRef::as_ref),
+                precomputed_explicit_steps.as_deref(),
+            );
             let triangulation = match triangulation {
                 Ok(triangulation) => triangulation,
                 Err(error) => {
@@ -346,6 +431,20 @@ impl RoadSurfaceSystem {
                     return None;
                 }
             };
+            let mut triangulation = triangulation;
+            if let Some(field) = self.node_material_grade_fields.get(&node_id)
+                && field.cohort_nodes().is_some()
+                && field
+                    .refine_triangulation(&mut triangulation, &arrangement)
+                    .is_none()
+            {
+                crate::debug_log!(
+                    "road",
+                    "node_cohort_grade_refinement_failed node={}",
+                    node_id
+                );
+                return None;
+            }
             let triangulation_ms = elapsed_ms(triangulation_start);
 
             let triangulation_validation_start = road_debug.then(Instant::now);
@@ -615,6 +714,7 @@ impl RoadSurfaceSystem {
                 Some(super::NodeCanonicalSurfaceCompileResult {
                     regions,
                     topology_cache: Some(super::NodeCanonicalTopologyCache {
+                        material_grade: self.node_material_grade_fields.get(&node_id).cloned(),
                         rail_topology: if retain_whole_topology {
                             rail_topology
                         } else {

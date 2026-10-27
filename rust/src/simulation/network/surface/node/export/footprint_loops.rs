@@ -36,7 +36,8 @@ impl RoadSurfaceSystem {
         let top_supports = footprint_top_triangle_supports_from_regions(top_regions);
         for shape in footprint_shapes {
             for contour in shape {
-                let points = footprint_boundary_xz_point_loop_from_contour(contour);
+                let points =
+                    footprint_boundary_xz_point_loop_from_contour(contour, boundary_export_sources);
                 push_valid_footprint_boundary_point_loops(
                     points,
                     &top_supports,
@@ -115,18 +116,26 @@ fn push_valid_footprint_boundary_point_loops(
 
 fn footprint_boundary_xz_point_loop_from_contour(
     contour: &[[f64; 2]],
+    sources: &NodeFootprintBoundaryExportSources,
 ) -> Vec<NodeFootprintBoundaryPoint> {
-    contour
-        .iter()
-        .map(|point| {
-            let key = NodeArrangementKey::from_point(RoadVec2::new(point[0], point[1]));
-            NodeFootprintBoundaryPoint::new(ArrangementBoundaryPointKey {
-                x_key: key.x_key(),
-                z_key: key.z_key(),
-                y_mm: 0,
-            })
-        })
-        .collect()
+    let key = |point: [f64; 2]| NodeArrangementKey::from_point(RoadVec2::new(point[0], point[1]));
+    let mut points = Vec::new();
+    for i in 0..contour.len() {
+        let start = key(contour[i]);
+        let end = key(contour[(i + 1) % contour.len()]);
+        let mut keys = sources.final_boundary_keys_on_segment(start, end);
+        keys.retain(|p| *p != start && *p != end);
+        for p in std::iter::once(start).chain(keys) {
+            points.push(NodeFootprintBoundaryPoint::new(
+                ArrangementBoundaryPointKey {
+                    x_key: p.x_key(),
+                    z_key: p.z_key(),
+                    y_mm: 0,
+                },
+            ));
+        }
+    }
+    points
 }
 
 fn resolve_footprint_boundary_point_heights(
@@ -436,7 +445,7 @@ mod tests {
         let mut identities = BTreeSet::new();
         let mut loops = Vec::new();
         push_valid_footprint_boundary_point_loops(
-            footprint_boundary_xz_point_loop_from_contour(contour),
+            footprint_boundary_xz_point_loop_from_contour(contour, &sources),
             &[],
             &mut sources,
             &mut identities,

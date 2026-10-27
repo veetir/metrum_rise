@@ -285,9 +285,13 @@ def perf07_acceptance(rows):
         values = {key: row.get(key) for key in PERF07_ACCEPTANCE_KEYS}
         missing = [key for key, value in values.items() if value is None]
         over = [key for key, value in values.items() if value is not None and value > PERF07_ACCEPTANCE_MS]
+        watched = row.get("preemption_threads", 0)
         accepted.append({"residents": row["residents"], "speed": row["speed"], **values,
-                         "pass": not missing and not over})
+                         "preemption_threads": watched,
+                         "pass": bool(watched) and not missing and not over})
         label = f"PERF-07 acceptance {row['residents']} {row['speed']:g}x"
+        if not watched:
+            failures.append(f"{label} scheduler statistics not measured (no watched threads)")
         failures += [f"{label} {key} {values[key]:.2f} > {PERF07_ACCEPTANCE_MS:g}" for key in over]
         failures += [f"{label} {key} not measured" for key in missing]
     return accepted, failures
@@ -328,7 +332,7 @@ def identity(binary, command):
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "diff_sha256": hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=ROOT)).hexdigest(),
         "workers": os.environ.get("RAYON_NUM_THREADS", "8"),
-        "cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "command": command,
     }
 

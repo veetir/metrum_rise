@@ -28,6 +28,70 @@ struct NodeIntGridOrigin {
 }
 
 impl RoadSurfaceSystem {
+    /// Nodes all grade cuts and a material domain together on the common integer grid.
+    pub(super) fn overlay_slice_shape_by_segments(
+        shape: &NodeOverlayShape,
+        segments: &[[NodeOverlayPoint; 2]],
+    ) -> Option<NodeOverlayShapes> {
+        use crate::simulation::terrain::cdt::{
+            TerrainCdtPatch, TerrainCdtVertex, clip_terrain_cdt_segment_to_patch,
+        };
+        use i_overlay::string::{overlay::StringOverlay, rule::StringRule};
+        let origin = Self::int_grid_origin_for_contours(shape);
+        let subject = Self::int_shapes_from_overlay_shapes(std::slice::from_ref(shape), origin)?;
+        let bounds = shape.iter().flatten().fold(
+            [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            |b, p| {
+                [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ]
+            },
+        );
+        // Clip only the scratch cut lines. One overlay-grid unit leaves every
+        // source boundary strictly inside the clip box, including rounded cuts.
+        let unit = 1.0 / NODE_OVERLAY_SCALE;
+        let patch = TerrainCdtPatch::new(
+            bounds[0] - unit,
+            bounds[1] - unit,
+            bounds[2] + unit,
+            bounds[3] + unit,
+            [0.0; 4],
+        );
+        let mut lines = Vec::with_capacity(segments.len());
+        for &[a, b] in segments {
+            if let Some((a, b)) = clip_terrain_cdt_segment_to_patch(
+                TerrainCdtVertex::new(a[0], 0.0, a[1]),
+                TerrainCdtVertex::new(b[0], 0.0, b[1]),
+                patch,
+            ) {
+                let a = Self::int_point_from_overlay_point([a.x, a.z], origin)?;
+                let b = Self::int_point_from_overlay_point([b.x, b.z], origin)?;
+                if a != b {
+                    lines.push([a, b]);
+                }
+            }
+        }
+        let mut overlay = StringOverlay::with_options(
+            shape.iter().map(Vec::len).sum::<usize>() + lines.len(),
+            Self::int_overlay_options(),
+        );
+        overlay.add_shapes(&subject);
+        overlay.add_string_lines(&lines);
+        let graph = overlay.build_graph_view(FillRule::Positive)?;
+        Some(Self::overlay_shapes_from_int_shapes(
+            graph.extract_shapes_custom(StringRule::Slice, Self::int_overlay_options()),
+            origin,
+        ))
+    }
+
     pub(super) fn overlay_union_contours(
         contours: &[NodeOverlayContour],
     ) -> Option<NodeOverlayShapes> {
@@ -38,18 +102,36 @@ impl RoadSurfaceSystem {
         contours: &[NodeOverlayContour],
         fill_rule: FillRule,
     ) -> Option<NodeOverlayShapes> {
+        Self::overlay_union_contours_with_options(contours, fill_rule, Self::int_overlay_options())
+    }
+
+    /// Extracts simple terrain-cut rings, preserving point-touching components and real holes.
+    pub(super) fn overlay_union_terrain_contours(
+        contours: &[NodeOverlayContour],
+    ) -> Option<NodeOverlayShapes> {
+        Self::overlay_union_contours_with_options(
+            contours,
+            FillRule::NonZero,
+            IntOverlayOptions {
+                ogc: true,
+                ..Self::int_overlay_options()
+            },
+        )
+    }
+
+    fn overlay_union_contours_with_options(
+        contours: &[NodeOverlayContour],
+        fill_rule: FillRule,
+        options: IntOverlayOptions,
+    ) -> Option<NodeOverlayShapes> {
         if contours.is_empty() {
             return Some(Vec::new());
         }
         let origin = Self::int_grid_origin_for_contours(contours);
         let subject = Self::int_contours_from_overlay_contours(contours, origin)?;
         let clip = Vec::new();
-        let mut overlay = Overlay::with_contours_custom(
-            &subject,
-            &clip,
-            Self::int_overlay_options(),
-            Default::default(),
-        );
+        let mut overlay =
+            Overlay::with_contours_custom(&subject, &clip, options, Default::default());
         let shapes = overlay.overlay(OverlayRule::Union, fill_rule);
         Some(Self::filter_overlay_shapes_by_area(
             Self::overlay_shapes_from_int_shapes(shapes, origin),
@@ -406,5 +488,53 @@ mod tests {
 
         assert_eq!(RoadSurfaceSystem::overlay_contour_area_f64(&line), 0.0);
         assert_eq!(RoadSurfaceSystem::overlay_contour_area(&line), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod grade_slice_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn grade_slice_nodes_shared_cells_and_keeps_the_complete_material_boundary() {
+        let shape = vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]];
+        let cells = RoadSurfaceSystem::overlay_slice_shape_by_segments(
+            &shape,
+            &[
+                [[-10_000.0, -10_000.0], [10_000.0, 10_000.0]],
+                [[2.0, -10_000.0], [2.0, 10_000.0]],
+            ],
+        )
+        .unwrap();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(
+            cells
+                .iter()
+                .map(RoadSurfaceSystem::overlay_shape_area_m2)
+                .sum::<f32>(),
+            16.0
+        );
+        let mut uses = BTreeMap::new();
+        for cell in &cells {
+            for ring in cell {
+                for i in 0..ring.len() {
+                    let mut e = [ring[i], ring[(i + 1) % ring.len()]]
+                        .map(RoadSurfaceSystem::overlay_point_grid_key);
+                    e.sort_unstable();
+                    *uses.entry(e).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut degree = BTreeMap::new();
+        for (edge, count) in uses {
+            assert!(count <= 2);
+            if count == 1 {
+                for p in edge {
+                    *degree.entry(p).or_insert(0) += 1;
+                }
+            }
+        }
+        assert!(degree.values().all(|&d| d == 2));
     }
 }

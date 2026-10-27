@@ -28,6 +28,7 @@ fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -62,6 +63,7 @@ fn boundary_height_rejects_project_quantization_drift_from_source_edge() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -113,6 +115,7 @@ fn boundary_height_prefers_final_footprint_source_edge_over_internal_edge() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -146,6 +149,7 @@ fn final_footprint_height_edge_rejects_overlay_grid_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -195,6 +199,7 @@ fn final_footprint_height_accepts_same_owner_endpoint_dust_corner() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -233,6 +238,7 @@ fn final_footprint_height_accepts_contextual_single_endpoint_dust_corner() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -269,6 +275,7 @@ fn final_footprint_height_rejects_single_endpoint_dust_extension() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -312,6 +319,7 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -393,6 +401,7 @@ fn final_footprint_height_accepts_rank_gap_corner_with_raised_bridge_plateau() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -471,6 +480,7 @@ fn final_footprint_height_accepts_collapsed_rank_gap_side_join_corner() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance,
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -559,6 +569,7 @@ fn boundary_height_accepts_source_authorized_same_kind_vertical_step() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
@@ -607,6 +618,7 @@ fn boundary_height_rejects_same_owner_generated_edge_height_conflict() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -648,6 +660,7 @@ fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -692,6 +705,7 @@ fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -724,6 +738,7 @@ fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -754,6 +769,7 @@ fn numeric_cleanup_support_rejects_non_endpoint_boundary_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        declared_material_contacts: Vec::new(),
         grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
@@ -765,5 +781,52 @@ fn numeric_cleanup_support_rejects_non_endpoint_boundary_drift() {
     assert!(
         !sources.has_exact_final_owned_footprint_boundary_support_at_point(drifted_midpoint),
         "numeric cleanup and sub-budget interpolation require source-edge support"
+    );
+}
+
+#[test]
+fn recorded_final_endpoint_precedes_rounded_edge_interpolation() {
+    let mut sources = NodeFootprintBoundaryExportSources::from_owned_regions(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let a = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 10.0, 0.0));
+    let b = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 10.001, 0.0));
+    let c = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 10.003, 0.0));
+    let edge = |start_point_key, end_point_key| NodeFinalFootprintBoundaryHeightEdge {
+        start_point_key,
+        end_point_key,
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    sources.final_height_edges = vec![edge(a, b), edge(b, c), edge(a, c)];
+    let source = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+            x_key: b.x_key,
+            z_key: b.z_key,
+            y_mm: b.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    sources.direct_vertex_sources.insert(b, source);
+    sources.final_vertex_sources.insert(b, vec![source]);
+    assert_eq!(
+        sources
+            .boundary_height_mm_at_contour_key(b.xz_key(), a.xz_key(), c.xz_key())
+            .unwrap(),
+        Some(b.y_mm)
+    );
+    sources.final_vertex_sources.clear();
+    assert!(
+        sources
+            .boundary_height_mm_at_contour_key(b.xz_key(), a.xz_key(), c.xz_key())
+            .is_err(),
+        "an unrecorded canonical point must not override disagreeing edge interpolations"
     );
 }

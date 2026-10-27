@@ -11,6 +11,107 @@ use crate::simulation::network::surface::{
 use crate::simulation::zoning::ZoningSystem;
 
 #[test]
+fn roundabout_preview_retires_the_original_junction_footprint() {
+    use crate::simulation::network::roundabouts::RoundaboutRequest;
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    for p in [
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 100.0),
+    ] {
+        let end = graph.add_node(p, NodeType::Junction);
+        graph.add_edge(crate::simulation::network::build_surface_edge(
+            center,
+            end,
+            vec![Vector3::ZERO, p],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+    }
+    let mut network = TransitNetwork::new();
+    network.finalize_road_geometry(&mut graph);
+    let terrain = flat_terrain(300, 300);
+    let mut surface = RoadSurfaceSystem::new(128.0);
+    surface.compile_partial_for_geometry_audit(&graph, &terrain);
+    assert!(surface.compiled_visual_node_pieces.contains_key(&center));
+    let (_, planned) = surface
+        .compile_roundabout_preview(
+            &graph,
+            &terrain,
+            RoundaboutRequest {
+                center: Vector3::ZERO,
+                diameter: 30.0,
+                angles: vec![],
+                replace: Some(center),
+            },
+        )
+        .unwrap();
+    assert!(
+        planned.replaced_nodes.contains(&center),
+        "the old junction is a removed owner, not resident background"
+    );
+    assert!(
+        !planned
+            .surface
+            .compiled_visual_node_pieces
+            .values()
+            .any(|piece| piece.node_id == center)
+    );
+}
+
+#[test]
+fn roundabout_preview_allows_a_clear_deck_and_rejects_low_or_same_layer_overlap() {
+    use crate::simulation::network::{build_surface_edge, roundabouts::RoundaboutRequest};
+    for (height, level, expected) in [
+        (6.5, 1, None),
+        (2.0, 1, Some("grade_separation_clearance")),
+        (6.5, 0, Some("roundabout_overlaps_road")),
+    ] {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        for point in [
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 100.0),
+        ] {
+            let end = graph.add_node(point, NodeType::Junction);
+            graph.add_edge(build_surface_edge(
+                center,
+                end,
+                vec![Vector3::ZERO, point],
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+        }
+        let a = Vector3::new(-50.0, height, -15.0);
+        let b = Vector3::new(50.0, height, -15.0);
+        let start = graph.add_node(a, NodeType::Junction);
+        let end = graph.add_node(b, NodeType::Junction);
+        let mut deck = build_surface_edge(start, end, vec![a, b], 1, 1, EdgeClass::Bridge);
+        deck.crossing_level = level;
+        graph.add_edge(deck);
+        graph.rebuild_intersection_clips();
+        let terrain = flat_terrain(300, 300);
+        let mut surface = RoadSurfaceSystem::new(128.0);
+        surface.compile_partial_for_geometry_audit(&graph, &terrain);
+        let preview = surface.compile_roundabout_preview(
+            &graph,
+            &terrain,
+            RoundaboutRequest {
+                center: Vector3::ZERO,
+                diameter: 38.916,
+                angles: vec![],
+                replace: Some(center),
+            },
+        );
+        assert_eq!(preview.err(), expected, "height={height} level={level}");
+    }
+}
+
+#[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     let polygon = RoadSurfaceSystem::make_visual_polygon(vec![
         backend::RoadVec3::new(0.0, 0.0, 0.0),
@@ -812,6 +913,8 @@ fn logged_ordinary_terminal_continuation_remains_placeable() {
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
     let prepared_input = PreparedRoadInput {
+        crossing_level: 0,
+        median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,
         class: EdgeClass::Standard,
@@ -874,6 +977,8 @@ fn logged_orthogonal_t_junction_remains_placeable() {
 
     let surface = RoadSurfaceSystem::new(16.0);
     let candidate_input = PreparedRoadInput {
+        crossing_level: 0,
+        median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,
         class: EdgeClass::Standard,
@@ -910,6 +1015,8 @@ fn candidate_with_both_endpoints_snapped_to_one_node_stays_rejected() {
     graph.add_node(Vector3::ZERO, NodeType::Junction);
     let candidate_points = vec![Vector3::new(-1.5, 0.0, 0.0), Vector3::new(1.5, 0.0, 0.0)];
     let prepared_input = PreparedRoadInput {
+        crossing_level: 0,
+        median: None,
         points: candidate_points.clone(),
         validation_points: candidate_points,
         class: EdgeClass::Standard,

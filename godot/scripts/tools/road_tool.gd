@@ -25,7 +25,34 @@ var current_path: Path3D
 
 var fwd_lanes: int = 1
 var bkw_lanes: int = 1
+var median_style: int = 0
+var median_width: float = 3.0
+var edit_cross_section: bool = false
+var edit_pocket: bool = false
+var pocket_left := true
+var pocket_right := false
+var pocket_length := 80.0
+var pocket_taper := 35.0
+var _pocket_selection: Dictionary = {}
+var _pocket_preview_key: Array = []
+var _pocket_preview_valid := false
+var _local_edit_preview_active := false
+var _local_edit_zoning_revision := -1
+var _local_edit_field_revision := -1
+var _pocket_pending_patches: Dictionary = {}
+var _preview_prop_keys: Array[Vector2i] = []
+var _cross_section_label: Label
+var _edit_request_id: int = 0
+var _edit_message: String = ""
+var _candidate_cache_median_style: int = -1
+var _candidate_cache_median_width: float = -1.0
 var altitude_offset: float = 0.0
+var crossing_mode: int = 0 # Junction, Over, Under, Tunnel; Rust owns profiles and structure.
+var crossing_level: int = 0
+var _crossing_profile_key: Array = []
+var _crossing_profile: Dictionary = {}
+var _crossing_refusal: Dictionary = {}
+var _crossing_highlight = preload("res://scripts/renderers/road_crossing_highlight.gd").new()
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 var zoning_grid_snap_enabled: bool = false
@@ -116,8 +143,9 @@ func set_road_preview_mode(mode: int) -> void:
 	_preview_update_pending = true
 
 func _invalidate_terrain_preview() -> void:
+	_pocket_preview_key = []
 	_clear_preview_visual()
-	_preview_update_pending = true
+	_preview_update_pending = not edit_pocket
 
 func begin_preview_measurement() -> RefCounted:
 	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
@@ -153,18 +181,40 @@ func _ready():
 	_info_label.add_theme_constant_override("shadow_offset_y", 1)
 	_info_label.visible = false
 	_hud_canvas.add_child(_info_label)
+	_cross_section_label = Label.new()
+	_cross_section_label.position = Vector2(20.0, 90.0)
+	_cross_section_label.add_theme_font_size_override("font_size", 17)
+	_cross_section_label.add_theme_color_override("font_shadow_color", Color.BLACK)
+	_cross_section_label.add_theme_constant_override("shadow_offset_x", 1)
+	_cross_section_label.add_theme_constant_override("shadow_offset_y", 1)
+	_hud_canvas.add_child(_cross_section_label)
+	_refresh_cross_section_label()
 
 func _process(delta):
 	if preview_metrics != null and DisplayServer.get_name() == "headless":
 		preview_metrics.frame(_preview_drawn_request_id, false)
 	_poll_road_commit_result()
+	if _cross_section_label:
+		_cross_section_label.visible = active
+	if _edit_request_id > 0:
+		var result: Variant = simulation_node.get_road_commit_result(_edit_request_id)
+		if result is Dictionary:
+			_edit_request_id = 0
+			_edit_message = "Road updated" if result.get("committed", false) else _preview_invalid_text({"invalid_reason": result.get("reason", "")})
+			_refresh_cross_section_label()
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
+	if active and edit_pocket and _has_last_world_mouse_pos and _edit_request_id == 0:
+		_update_pocket_hover()
 	if _junction_preview.generation >= 0 and (
-		not active
+		(not active and not _local_edit_preview_active)
 		or _junction_preview.generation != simulation_node.get_road_tool_surface_generation()
-		or not _preview_zoning_revision_is_current(_preview_cache_surface)
+		or (not _local_edit_preview_active and not _preview_zoning_revision_is_current(_preview_cache_surface))
+		or (_local_edit_preview_active and (
+			_local_edit_zoning_revision != simulation_node.get_zoning_overlay_revision()
+			or _local_edit_field_revision != simulation_node.get_agriculture_field_overlay_revision()
+		))
 	):
 		_clear_preview_visual()
 		if current_path != null:
@@ -173,6 +223,7 @@ func _process(delta):
 	if current_path != null and _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos):
 		_queue_preview_update()
 	if not active:
+		_crossing_highlight.clear()
 		_clear_sticky_network_snap()
 		if _info_label:
 			_info_label.visible = false
@@ -206,7 +257,201 @@ func _snap_to_roads_enabled() -> bool:
 func _zoning_snap_enabled() -> bool:
 	return draw_mode == 0 and zoning_grid_snap_enabled
 
+func _refresh_cross_section_label() -> void:
+	if _cross_section_label == null:
+		return
+	var median_name: String = ["No median", "Painted", "Kerbed grass", "Kerbed paving"][median_style]
+	if median_style > 0:
+		median_name += " %.1f m" % median_width
+	if edit_pocket:
+		_cross_section_label.text = "Pocket at road end | J: left %s  K: right %s\nU/I: pocket %.0f m  Shift+U/I: taper %.0f m | H: draw\nClick highlighted end to apply (both off removes). %s" % ["on" if pocket_left else "off", "on" if pocket_right else "off", pocket_length, pocket_taper, _edit_message]
+		return
+	_cross_section_label.text = "%s  %d + %d lanes  |  %s\nN: median   ; / ': width   E: draw/edit  H: pockets\n%s" % ["Click road to update" if edit_cross_section else "Draw road", fwd_lanes, bkw_lanes, median_name, _edit_message]
+
+func set_lane_preset(forward: int, backward: int) -> void:
+	fwd_lanes = forward
+	bkw_lanes = backward
+	_edit_message = ""
+	if fwd_lanes == 0 and bkw_lanes == 0:
+		set_median(0, 0)
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_update_lanes_label()
+
+func cycle_median() -> void:
+	if fwd_lanes == 0 and bkw_lanes == 0:
+		return
+	set_median((median_style + 1) % 4, [3.0, 1.0, 5.0, 2.0][(median_style + 1) % 4])
+
+func set_crossing_mode(mode: int) -> void:
+	crossing_mode = clampi(mode, 0, 3)
+	crossing_level = 0
+	simulation_node.set_road_tool_crossing_level(0)
+	simulation_node.set_road_tool_tunnel(crossing_mode == 3)
+	_crossing_profile_key = []
+	_crossing_refusal = {}
+	_crossing_highlight.clear()
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_queue_preview_update()
+	_refresh_cross_section_label()
+
+func _prepare_crossing_points(points: PackedVector3Array) -> PackedVector3Array:
+	_crossing_refusal = {}
+	if crossing_mode == 0 or crossing_mode == 3 or points.size() < 2:
+		return points
+	var key: Array = [points, crossing_mode, fwd_lanes, bkw_lanes, median_style, median_width, simulation_node.get_road_tool_surface_generation()]
+	if key != _crossing_profile_key:
+		_crossing_profile_key = key
+		_crossing_profile = simulation_node.prepare_road_crossing(points, fwd_lanes, bkw_lanes, crossing_mode == 1)
+		_crossing_highlight.clear()
+		if _crossing_profile.get("is_valid", false):
+			_crossing_highlight.show_roads(self, simulation_node, _crossing_profile.crossed_edges)
+	if not _crossing_profile.get("is_valid", false):
+		_crossing_refusal = _crossing_profile
+		return points
+	crossing_level = int(_crossing_profile.crossing_level)
+	simulation_node.set_road_tool_crossing_level(crossing_level)
+	return _crossing_profile.points
+
+func set_median(style: int, width: float) -> void:
+	var reason: String = simulation_node.set_road_tool_median(style, width)
+	if not reason.is_empty():
+		_edit_message = reason
+		_refresh_cross_section_label()
+		return
+	median_style = style
+	median_width = width
+	_edit_message = ""
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_update_lanes_label()
+
+func adjust_median_width(delta: float) -> void:
+	if median_style == 0:
+		return
+	var limits: Vector2 = [Vector2.ZERO, Vector2(0.5, 2.0), Vector2(2.0, 12.0), Vector2(1.0, 3.0)][median_style]
+	set_median(median_style, clampf(median_width + delta, limits.x, limits.y))
+
+func toggle_cross_section_edit() -> void:
+	cancel_road()
+	edit_pocket = false
+	edit_cross_section = not edit_cross_section
+	_edit_message = ""
+	_refresh_cross_section_label()
+
+func toggle_pocket_edit() -> void:
+	cancel_road()
+	edit_pocket = not edit_pocket
+	edit_cross_section = false
+	_pocket_selection = {}
+	_pocket_preview_key = []
+	_refresh_cross_section_label()
+
+func toggle_pocket_side(left: bool) -> void:
+	if not edit_pocket:
+		return
+	if left:
+		pocket_left = not pocket_left
+	else:
+		pocket_right = not pocket_right
+	_pocket_preview_key = []
+	_refresh_cross_section_label()
+
+func adjust_pocket_length(delta: float, taper: bool) -> void:
+	if not edit_pocket:
+		return
+	if taper:
+		pocket_taper = clampf(pocket_taper + delta * 5.0, 12.0, 100.0)
+	else:
+		pocket_length = clampf(pocket_length + delta * 10.0, 12.0, 300.0)
+	_pocket_preview_key = []
+	_refresh_cross_section_label()
+
+func _update_pocket_hover() -> void:
+	var selected: Dictionary = simulation_node.get_road_pocket_selection(_last_world_mouse_pos.x, _last_world_mouse_pos.z)
+	if selected.is_empty():
+		_pocket_selection = {}
+		_pocket_preview_key = []
+		_clear_preview_visual()
+		return
+	if int(selected.edge) != int(_pocket_selection.get("edge", -1)) and (selected.left or selected.right):
+		pocket_left = bool(selected.left)
+		pocket_right = bool(selected.right)
+		pocket_length = float(selected.pocket_m)
+		pocket_taper = float(selected.taper_m)
+	_pocket_selection = selected
+	var key: Array = [selected.edge, selected.at_start, pocket_left, pocket_right, pocket_length, pocket_taper, simulation_node.get_road_tool_surface_generation(), simulation_node.get_zoning_overlay_revision(), simulation_node.get_agriculture_field_overlay_revision()]
+	if key == _pocket_preview_key:
+		return
+	_pocket_preview_key = key
+	var preview: Dictionary = simulation_node.preview_road_pocket(int(selected.edge), bool(selected.at_start), pocket_left, pocket_right, pocket_length, pocket_taper)
+	_pocket_preview_valid = bool(preview.get("is_valid", false))
+	_edit_message = "" if _pocket_preview_valid else _preview_invalid_text(preview)
+	show_local_edit_preview(preview)
+	_refresh_cross_section_label()
+
+## Shows an already compiled local edit using the road and terrain replacement renderers.
+func show_local_edit_preview(preview: Dictionary) -> bool:
+	var valid := bool(preview.get("is_valid", false))
+	var staged: Array = []
+	if valid:
+		# Streamed-out patches need no replacement; residency invalidation retries the hover.
+		var payloads: Array = preview.get("terrain_preview", {}).get("patches", [])
+		_pocket_pending_patches.clear()
+		for data: Dictionary in payloads:
+			var patch_key := Vector2i(data.patch_x, data.patch_z)
+			if not terrain_node.patches.has(patch_key):
+				_pocket_pending_patches[patch_key] = true
+		if not terrain_node.patch_render_will_change.is_connected(_pocket_patch_will_change):
+			terrain_node.patch_render_will_change.connect(_pocket_patch_will_change)
+		payloads = payloads.filter(func(data: Dictionary) -> bool: return terrain_node.patches.has(Vector2i(data.patch_x, data.patch_z)))
+		staged = _terrain_preview.stage(terrain_node, payloads, int(preview.surface_generation))
+	var installed := valid and not staged.is_empty() and _junction_preview.show_preview(self, preview.get("junction_preview", {}), int(preview.get("request_id", 0)))
+	if installed:
+		clear_road_prop_preview(_preview_prop_keys)
+		_preview_prop_keys = set_road_prop_preview(_junction_preview.prop_chunks(preview.junction_preview))
+		_terrain_preview.commit(terrain_node, staged, int(preview.request_id), _invalidate_terrain_preview)
+		_local_edit_preview_active = true
+		_local_edit_zoning_revision = simulation_node.get_zoning_overlay_revision()
+		_local_edit_field_revision = simulation_node.get_agriculture_field_overlay_revision()
+	else:
+		_terrain_preview.discard(staged)
+		_clear_preview_visual()
+		# Resident road/terrain chunks may still be uploading the current generation.
+		if valid or bool(preview.get("is_pending", false)):
+			_pocket_preview_key = []
+	return installed
+
+## Whether a local edit still owns a visible replacement, including while the road tool is inactive.
+func has_local_edit_preview() -> bool:
+	return _local_edit_preview_active and _junction_preview.generation >= 0
+
+func _pocket_patch_will_change(key: Vector2i) -> void:
+	if (edit_pocket or _local_edit_preview_active) and _pocket_pending_patches.has(key):
+		_pocket_preview_key = []
+		_clear_preview_visual()
+
+func apply_pocket_to_end(edge: int, at_start: bool) -> int:
+	if _edit_request_id > 0 or _commit_request_id > 0:
+		return 0
+	_edit_request_id = simulation_node.change_road_pocket(edge, at_start, pocket_left, pocket_right, pocket_length, pocket_taper)
+	_edit_message = "Updating pocket..."
+	_pocket_preview_key = []
+	_clear_preview_visual()
+	_refresh_cross_section_label()
+	return _edit_request_id
+
+func apply_cross_section_to_edge(edge: int) -> int:
+	if _edit_request_id > 0 or _commit_request_id > 0:
+		return 0
+	_edit_request_id = simulation_node.change_road_cross_section(edge, fwd_lanes, bkw_lanes)
+	_edit_message = "Updating road..."
+	_refresh_cross_section_label()
+	return _edit_request_id
+
 func _update_lanes_label():
+	_refresh_cross_section_label()
 	if active and current_path != null:
 		_queue_preview_update()
 
@@ -231,7 +476,7 @@ func _unhandled_input(event):
 
 
 func _handle_click():
-	if _scripted_pointer_enabled or _commit_request_id > 0:
+	if _scripted_pointer_enabled or _commit_request_id > 0 or _edit_request_id > 0:
 		return
 	var total_start_us := Time.get_ticks_usec()
 	var state_before: int = current_state
@@ -244,6 +489,14 @@ func _handle_click():
 	var tangent_ms := 0.0
 	var path_ms := 0.0
 	var commit_ms := 0.0
+	if edit_pocket and is_valid:
+		_update_pocket_hover()
+		if _pocket_preview_valid and not _pocket_selection.is_empty():
+			apply_pocket_to_end(int(_pocket_selection.edge), bool(_pocket_selection.at_start))
+		return
+	if edit_cross_section and is_valid:
+		apply_cross_section_to_edge(simulation_node.get_hovered_edge(pos.x, pos.z))
+		return
 	if not is_valid:
 		_log_click_detail(
 			state_before,
@@ -397,7 +650,7 @@ func _refresh_preview_curve() -> PackedVector3Array:
 					current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
 					_stroke_end_dir = Vector3(t_end.x, 0.0, t_end.z).normalized()
 
-	return _road_surface_points_from_curve(current_path.curve)
+	return _prepare_crossing_points(_road_surface_points_from_curve(current_path.curve))
 
 func _queue_preview_update() -> void:
 	if current_path == null:
@@ -408,6 +661,8 @@ func _queue_preview_update() -> void:
 	_preview_update_pending = true
 
 func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
+	if not _crossing_refusal.is_empty():
+		return _crossing_refusal
 	if points.size() < 2:
 		return {
 			"is_valid": false,
@@ -417,6 +672,8 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		not _candidate_cache_validation.is_empty()
 		and _candidate_cache_fwd_lanes == fwd_lanes
 		and _candidate_cache_bkw_lanes == bkw_lanes
+		and _candidate_cache_median_style == median_style
+		and _candidate_cache_median_width == median_width
 		and _candidate_cache_snap_to_roads == _snap_to_roads_enabled()
 		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
 		and _preview_zoning_revision_is_current(_candidate_cache_validation)
@@ -438,6 +695,8 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 	return validation
 
 func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
+	if not _crossing_refusal.is_empty():
+		return _crossing_refusal
 	if points.size() < 2:
 		return {
 			"is_valid": false,
@@ -473,6 +732,8 @@ func _remember_candidate_validation(points: PackedVector3Array, validation: Dict
 	_candidate_cache_validation = validation
 	_candidate_cache_fwd_lanes = fwd_lanes
 	_candidate_cache_bkw_lanes = bkw_lanes
+	_candidate_cache_median_style = median_style
+	_candidate_cache_median_width = median_width
 	_candidate_cache_snap_to_roads = _snap_to_roads_enabled()
 	_candidate_cache_surface_generation = int(validation.get("surface_generation", -1))
 
@@ -550,6 +811,9 @@ func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary)
 		_clear_preview_visual()
 
 func _clear_preview_visual() -> void:
+	_local_edit_preview_active = false
+	clear_road_prop_preview(_preview_prop_keys)
+	_preview_prop_keys.clear()
 	_terrain_preview.clear()
 	_junction_preview.clear()
 	_preview_display_request = null
@@ -611,6 +875,8 @@ func _draw_compiled_preview_surface(
 		if not _junction_preview.show_preview(self, scene, preview_request_id):
 			_terrain_preview.discard(staged)
 			return false
+		clear_road_prop_preview(_preview_prop_keys)
+		_preview_prop_keys = set_road_prop_preview(_junction_preview.prop_chunks(scene))
 		if full_terrain:
 			_terrain_preview.commit(terrain_node, staged, preview_request_id, _invalidate_terrain_preview)
 		else:
@@ -635,13 +901,15 @@ func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionar
 	var ribbon: Variant = preview
 	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	if vertices.is_empty():
-		# Reuse Rust's prepared profile. Building display-only geometry must not snap/revalidate.
+		# Reuse Rust's prepared profile, or the authored stroke when crossing preparation
+		# refused before producing one. The ribbon is display-only and never authorizes a click.
 		ribbon = simulation_node.build_road_preview_ribbon(
-			preview.get("prepared_points", PackedVector3Array()), fwd_lanes, bkw_lanes,
-			int(preview.get("surface_generation", -1))
+			preview.get("prepared_points", points), fwd_lanes, bkw_lanes,
+			int(preview.get("surface_generation", simulation_node.get_road_tool_surface_generation()))
 		)
 		if not ribbon is Dictionary or int(ribbon.get("surface_generation", -1)) != simulation_node.get_road_tool_surface_generation():
 			_clear_preview_visual()
+			_update_preview_measurement_label(points, preview)
 			_preview_update_pending = true
 			return false
 	if not _upload_road_preview_mesh(ribbon):
@@ -678,6 +946,8 @@ func _update_road_preview_material(preview: Dictionary) -> void:
 		return
 	_road_preview_material.set_shader_parameter("forward_lanes", fwd_lanes)
 	_road_preview_material.set_shader_parameter("backward_lanes", bkw_lanes)
+	_road_preview_material.set_shader_parameter("median_style", median_style)
+	_road_preview_material.set_shader_parameter("median_width_m", median_width if median_style > 0 else 0.0)
 	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
 	_road_preview_material.set_shader_parameter("placement_state", state)
 
@@ -745,6 +1015,45 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 func _preview_invalid_text(preview: Dictionary) -> String:
 	var reason := String(preview.get("invalid_reason", ""))
 	match reason:
+		"pocket_requires_wide_median":
+			return "A left pocket needs at least 3.8 m of median"
+		"pocket_lane_limit":
+			return "An approach can have at most four lanes"
+		"pocket_road_too_short":
+			return "Shorten the pocket or taper to fit this road"
+		"pocket_movement_missing":
+			return "This junction has no road for the selected turn"
+		"pocket_requires_surface_road":
+			return "Pockets need an ordinary surface road"
+		"remove_pocket_before_junction_edit", "pocket_transition_connected", "pocket_overlaps_transition":
+			return "Remove the lane transition before adding a junction here"
+		"edit_pocket_controls":
+			return "Remove the pocket with H before changing its base lanes"
+		"invalid_pocket_dimensions":
+			return "Pocket length: 60–300 m; taper: 12–100 m"
+
+		"median_requires_both_directions", "median_requires_vehicle_road":
+			return "A median needs vehicle lanes in both directions"
+		"median_width_out_of_range":
+			return "Median width is outside this style's range"
+		"cross_section_too_wide_for_curve":
+			return "This cross-section is too wide for the road's curve"
+		"invalid_road":
+			return "Click an existing road to update it"
+		"zoning_cell_overlap", "field_overlap":
+			return "Road widening overlaps reserved land"
+		"grade_separation_clearance":
+			return "Crossing clearance %.1f m / %.1f m (below deck)" % [float(preview.get("clearance_m", 0.0)), float(preview.get("required_clearance_m", 0.0))]
+		"grade_separation_grade":
+			return "Separated road exceeds the 16% grade limit"
+		"crossing_not_found":
+			return "%s needs a road to cross here" % ["Over" if crossing_mode == 1 else "Under"]
+		"crossing_level_out_of_range":
+			return "No crossing level is available above or below this road"
+		"invalid_cross_section":
+			return "Choose between zero and four lanes in each direction"
+		"crossing_approach_too_short":
+			return "Leave more room for the crossing approaches"
 		"bridge_clearance":
 			return "Bridge clearance %.1f m / %.1f m" % [
 				float(preview.get("clearance_m", 0.0)),
@@ -936,6 +1245,8 @@ func _commit_reaches_border() -> bool:
 	return false
 
 func cancel_road():
+	_crossing_highlight.clear()
+	_crossing_profile_key = []
 	current_state = State.IDLE
 	_start_dir = Vector3.ZERO
 	_has_road_tangent = false

@@ -377,6 +377,7 @@ fn source_authorized_side_join_region(
     points: Vec<RoadVec3>,
 ) -> NodeTriangulatedRegion {
     NodeTriangulatedRegion {
+        source_region_index: 0,
         kind,
         owner,
         height_field_id,

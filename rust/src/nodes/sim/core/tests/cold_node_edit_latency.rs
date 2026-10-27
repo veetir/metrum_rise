@@ -88,6 +88,9 @@ fn cold_node_edit_latency() {
                 .compile_invalidation_generation;
             let (context, _) = road_tool_snapshots_from_core(&core).unwrap();
             let request = RoadPreviewRequest {
+                tunnel: false,
+                crossing_level: 0,
+                median: None,
                 enqueued_at: None,
                 include_terrain: false,
                 request_id: repetition as u64,
@@ -109,6 +112,9 @@ fn cold_node_edit_latency() {
             let started = Instant::now();
             let outcome = core.commit_road(
                 RoadCommitRequest {
+                    tunnel: false,
+                    crossing_level: 0,
+                    median: None,
                     points: points.clone(),
                     fwd_lanes: 1,
                     bkw_lanes: 1,

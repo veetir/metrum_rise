@@ -129,6 +129,15 @@ impl RoadPreviewRenderInput {
         }
     }
 
+    /// Replaces complete compiled owners for an endpoint edit, including narrowing/removal.
+    /// The caller supplies every affected source node; the copied halo remains bounded.
+    pub(crate) fn replace_whole_neighborhood(mut self) -> Self {
+        self.replaced_nodes.extend(self.removed.iter().copied());
+        self.bounded.clear();
+        self.planned_whole.extend(self.planned_bounded.drain());
+        self
+    }
+
     /// Exports only the local compiled scene. Lane reconstruction is confined to this excerpt;
     /// it supplies the same crosswalks and lane-divider clipping as the committed renderer.
     pub(crate) fn render(
@@ -217,6 +226,13 @@ impl RoadJunctionPreview {
         &mut self,
         meshes: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     ) {
+        crate::thread_pools::install(|| self.retain_existing_in_pool(meshes));
+    }
+
+    fn retain_existing_in_pool(
+        &mut self,
+        meshes: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    ) {
         let edited: HashSet<_> = self.removed.union(&self.bounded).copied().collect();
         let none = HashSet::new();
         let split: Vec<_> = meshes
@@ -244,12 +260,16 @@ impl RoadJunctionPreview {
         }
         self.retained = Arc::new(retained);
         self.approach_sources = Arc::new(sources);
-        self.clip_approaches();
+        self.clip_approaches_in_pool();
     }
 
     /// Clips the bounded owners' source triangles to the current junction/approach bounds.
     /// This is the only per-request retained work: O(bounded-owner triangles × bounds).
     pub(crate) fn clip_approaches(&mut self) {
+        crate::thread_pools::install(|| self.clip_approaches_in_pool());
+    }
+
+    fn clip_approaches_in_pool(&mut self) {
         let none = HashSet::new();
         self.approach = self
             .approach_sources

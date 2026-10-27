@@ -6,7 +6,7 @@ use super::super::graph::{Edge, RegionGraph};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
 use super::pedestrian_junctions::{build_pedestrian_connections_at_node, footpath_end_insets};
-use super::vehicle_junctions::build_vehicle_connections_at_node;
+use super::vehicle_junctions::{build_vehicle_connections_at_node, node_whitelists_vehicle_turns};
 use super::{LaneSystem, LaneType};
 use crate::config;
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,7 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
+            &mut self.turn_preparation,
         );
         build_pedestrian_connections_at_node(
             &mut self.lanes,
@@ -52,6 +53,7 @@ impl LaneSystem {
             &mut self.node_lanes,
             &mut self.crosswalks,
         );
+        self.rebuild_node_control(graph, node_id);
         // Connectors are pushed one at a time; keep only the ids.
         if let Some(ids) = self.node_lanes.get_mut(&node_id) {
             ids.shrink_to_fit();
@@ -74,10 +76,40 @@ impl LaneSystem {
         } else {
             (0.0, 0.0)
         };
+        // Explicit straight splits keep connector/reservation semantics. Separate their lane
+        // mouths instead of manufacturing a backtracking loop at coincident road endpoints.
+        // This is lane-only trimming: the compiled roadbed and graph clips stay unchanged.
+        let vehicle_inset = |node, clip: f32| {
+            let desired = (config::LANE_WIDTH * 0.5 - clip).max(0.0);
+            if desired > 0.0 && node_whitelists_vehicle_turns(graph, node as usize) {
+                desired
+                    .min((edge.physical_length - edge.start_clip - edge.end_clip).max(0.0) * 0.25)
+            } else {
+                0.0
+            }
+        };
+        let vehicle_insets = (
+            vehicle_inset(edge.start_node, edge.start_clip),
+            vehicle_inset(edge.end_node, edge.end_clip),
+        );
 
         let mut edge_lane_indices = Vec::new();
 
         let mut build_lane = |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32| {
+            // Bus vehicles are not simulated yet. Their authored ribbon remains in the roadbed,
+            // but cannot enter any car lane, frontage, lane-change or connector query.
+            if l_type == LaneType::Vehicle
+                && edge.lane_use(
+                    is_fwd,
+                    if l_idx >= 0 {
+                        l_idx as u8
+                    } else {
+                        (-i16::from(l_idx) - 1) as u8
+                    },
+                ) == super::super::graph::LaneUse::BusOnly
+            {
+                return;
+            }
             build_one_lane(
                 &mut self.lanes,
                 lane_map,
@@ -88,26 +120,49 @@ impl LaneSystem {
                 l_idx,
                 l_type,
                 l_off,
-                end_insets,
+                if l_type == LaneType::Foot && edge.primary_type == TransitType::Road {
+                    let inset = |node, clip| {
+                        if graph.node(node).node_type
+                            == crate::simulation::network::types::NodeType::LaneTransition
+                        {
+                            1.0 - config::CROSSWALK_INSET - clip
+                        } else if graph.arm_has_zebra(node, edge_idx) {
+                            0.0
+                        } else {
+                            -config::CROSSWALK_INSET
+                        }
+                    };
+                    (
+                        inset(edge.start_node, edge.start_clip),
+                        inset(edge.end_node, edge.end_clip),
+                    )
+                } else if l_type == LaneType::Vehicle {
+                    vehicle_insets
+                } else {
+                    end_insets
+                },
             );
         };
 
         let lane_w = config::LANE_WIDTH;
         let sidewalk_w = config::SIDEWALK_WIDTH;
-        let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+        let asphalt_width =
+            (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w + edge.median_half_width() * 2.0;
         let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
 
         // 1. Forward Lanes
         for l in 0..edge.fwd_lanes {
             // Lane 0 is closest to center
-            let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
+            let lane_offset = edge.median_center_offset()
+                + (edge.median_half_width() + (l as f32 + 0.5) * lane_w) * side_mul;
             build_lane(true, l as i8, LaneType::Vehicle, lane_offset);
         }
 
         // 2. Backward Lanes
         for l in 0..edge.bkw_lanes {
             // Lane 0 is closest to center
-            let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
+            let lane_offset = edge.median_center_offset()
+                - (edge.median_half_width() + (l as f32 + 0.5) * lane_w) * side_mul;
             build_lane(false, -(l as i8) - 1, LaneType::Vehicle, lane_offset);
         }
 
@@ -119,12 +174,14 @@ impl LaneSystem {
                 build_lane(false, 0, LaneType::Foot, 0.0);
             } else {
                 // Left Sidewalk (idx 100)
-                let left_offset = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                let left_offset = edge.pocket_surface_shift()
+                    - (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
                 build_lane(true, 100, LaneType::Foot, left_offset);
                 build_lane(false, 100, LaneType::Foot, left_offset);
 
                 // Right Sidewalk (idx -100)
-                let right_offset = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                let right_offset = edge.pocket_surface_shift()
+                    + (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
                 build_lane(true, -100, LaneType::Foot, right_offset);
                 build_lane(false, -100, LaneType::Foot, right_offset);
             }
@@ -244,10 +301,14 @@ impl LaneSystem {
             if node_id < graph.node_count() {
                 // Tombstone old connection lanes at this node so the renderer skips them, and
                 // free their buffers: ids are never reused, so tombstones stay in `lanes`.
+                self.node_conflict_zones.remove(&node_id);
                 if let Some(old_ids) = self.node_lanes.remove(&node_id) {
                     for lid in old_ids {
                         if let Some(lane) = self.lanes.get_mut(lid) {
                             self.crosswalks.remove(&lid);
+                            if let Some(control) = self.controlled.get_mut(lid) {
+                                *control = None;
+                            }
                             lane.geometry = Vec::new();
                             lane.cum_dist = Vec::new();
                             lane.next_lanes.clear();

@@ -36,6 +36,10 @@ impl RejectedBy {
 /// The submitted stroke, exactly as the road tool sent it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RoadAttempt<'a> {
+    /// Explicit topology layer accompanying the submitted physical profile.
+    pub(crate) crossing_level: i16,
+    /// Explicit structural intent needed to replay a grounded-end tunnel.
+    pub(crate) tunnel: bool,
     pub(crate) points: &'a [Vector3],
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
@@ -122,6 +126,8 @@ impl RoadRejection {
             by: by.label(),
             reason: &self.reason,
             generation,
+            crossing_level: attempt.crossing_level,
+            tunnel: attempt.tunnel,
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
@@ -139,6 +145,8 @@ struct AttemptRecord<'a> {
     by: &'static str,
     reason: &'a str,
     generation: u64,
+    crossing_level: i16,
+    tunnel: bool,
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
@@ -151,6 +159,20 @@ fn validation_detail(
     prepared: &[Vector3],
 ) -> (String, Option<Vector3>) {
     match reason {
+        "grade_separation_clearance" => (
+            format!(
+                "crossing clearance {:.2} m below the reserved deck, needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "grade_separation_grade" => (
+            format!(
+                "grade-separated road grade {:.1}%, maximum 16%",
+                validation.max_grade * 100.0
+            ),
+            None,
+        ),
         "bridge_clearance" | "tunnel_clearance" if validation.required_clearance_m <= 0.0 => (
             format!(
                 "the bridge profile dips {:.2} m below the terrain",
@@ -300,6 +322,8 @@ mod tests {
         let rejection = RoadRejection::from_validation("bridge_clearance", &validation(), &points)
             .with_note("checked twice");
         let attempt = RoadAttempt {
+            crossing_level: -1,
+            tunnel: true,
             points: &points,
             fwd_lanes: 2,
             bkw_lanes: 1,
@@ -319,6 +343,8 @@ mod tests {
         assert_eq!(record["by"], "commit");
         assert_eq!(record["reason"], "bridge_clearance");
         assert_eq!(record["generation"], 42);
+        assert_eq!(record["crossing_level"], -1);
+        assert_eq!(record["tunnel"], true);
         assert_eq!(
             (record["fwd_lanes"].clone(), record["bkw_lanes"].clone()),
             (2.into(), 1.into())
@@ -374,6 +400,8 @@ mod tests {
             "the corridor overlaps painted zoning cells",
         );
         let attempt = RoadAttempt {
+            crossing_level: 0,
+            tunnel: false,
             points: &[],
             fwd_lanes: 1,
             bkw_lanes: 1,

@@ -84,6 +84,7 @@ pub(super) fn manual_rail_contours(
         &BTreeMap::new(),
     );
     NodeRailContourSet {
+        material_grade: None,
         node_id,
         piece_kind,
         contours,

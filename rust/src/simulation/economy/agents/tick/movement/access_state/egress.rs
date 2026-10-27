@@ -10,7 +10,7 @@ use super::super::super::access::{
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::{MovementSlices, enter_lane};
-use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
+use super::super::super::traffic::lane_attach_slot_clear;
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::reset_invalid_access_plan;
@@ -153,7 +153,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         .get(attach_lane_id)
                         .map(|bucket| lane_attach_slot_clear(bucket, attach_lane_d))
                         .unwrap_or(false)
-                        && claim_lane_entry(i, attach_lane_id, lane_claims)
+                        && lane_claims.claim_lane_at(i, attach_lane_id, attach_lane_d)
                 } else {
                     true
                 };

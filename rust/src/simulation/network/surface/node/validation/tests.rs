@@ -145,6 +145,7 @@ fn manual_region_with_constraints_and_triangles(
     area_m2: f32,
 ) -> NodeTriangulatedRegion {
     NodeTriangulatedRegion {
+        source_region_index: 0,
         kind,
         owner: NodeBandOwner::new(kind, owner_index),
         height_field_id,

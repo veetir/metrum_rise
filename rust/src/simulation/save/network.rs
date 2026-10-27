@@ -4,7 +4,7 @@
 
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadLaneTaper, RoadMedian};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
@@ -19,6 +19,7 @@ pub(super) fn save_network(
     graph: &RegionGraph,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
+    super::road_sections::save(tx, graph, maps)?;
     // 1. Nodes
     {
         let mut node_rows: Vec<(u32, u32)> = maps
@@ -42,9 +43,31 @@ pub(super) fn save_network(
         }
     }
 
+    {
+        let mut stmt = tx.prepare("INSERT INTO road_crossing_levels VALUES (?1,?2)")?;
+        for (id, edge) in graph.edges().iter().enumerate() {
+            if edge.crossing_level != 0
+                && let Some(saved) = maps.edge_old_to_new.get(&id)
+            {
+                stmt.execute(params![usize_to_i64(*saved)?, edge.crossing_level])?;
+            }
+        }
+    }
+
+    {
+        let mut stmt = tx.prepare("INSERT INTO roundabout_edges VALUES (?1)")?;
+        for (id, edge) in graph.edges().iter().enumerate() {
+            if edge.roundabout
+                && let Some(saved) = maps.edge_old_to_new.get(&id)
+            {
+                stmt.execute([usize_to_i64(*saved)?])?;
+            }
+        }
+    }
+
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, median_start_setback, median_end_setback) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -75,8 +98,70 @@ pub(super) fn save_network(
                 edge.start_clip,
                 edge.end_clip,
                 i64::from(edge.no_building_spawn),
-                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access)
+                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access),
+                edge.median.map_or(0, |median| median.style as i64),
+                edge.median.map_or(0.0, |median| median.width_m),
+                edge.median.map_or(0.0, |median| median.start_setback_m),
+                edge.median.map_or(0.0, |median| median.end_setback_m)
             ])?;
+        }
+    }
+
+    {
+        let mut stmt =
+            tx.prepare("INSERT INTO road_lane_tapers VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
+                continue;
+            };
+            if let Some(ends) = &edge.lane_tapers {
+                for (end, taper) in ends.iter().enumerate() {
+                    if let Some(taper) = taper {
+                        stmt.execute(params![
+                            usize_to_i64(saved_id)?,
+                            end as i64,
+                            taper.length_m,
+                            i64::from(taper.from_fwd),
+                            i64::from(taper.from_bkw),
+                            taper.from_median_m,
+                            i64::from(taper.left_pocket),
+                            i64::from(taper.right_pocket)
+                        ])?;
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let mut stmt = tx.prepare("INSERT INTO road_bus_lanes VALUES (?1,?2,?3)")?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            if edge.bus_lanes != [0; 2]
+                && let Some(&saved_id) = maps.edge_old_to_new.get(&old_id)
+            {
+                stmt.execute(params![
+                    usize_to_i64(saved_id)?,
+                    edge.bus_lanes[0],
+                    edge.bus_lanes[1]
+                ])?;
+            }
+        }
+    }
+
+    {
+        let mut stmt =
+            tx.prepare("INSERT INTO road_crosswalks(node_id,edge_id,marked) VALUES (?1,?2,?3)")?;
+        let mut rows = Vec::new();
+        for (&old, &saved) in &maps.node_old_to_new {
+            for (&edge, &marked) in &graph.node(old).crosswalk_overrides {
+                if let Some(&edge) = maps.edge_old_to_new.get(&edge) {
+                    rows.push((saved, edge, marked));
+                }
+            }
+        }
+        rows.sort_unstable();
+        for (node, edge, marked) in rows {
+            stmt.execute(params![node, usize_to_i64(edge)?, marked])?;
         }
     }
 
@@ -139,6 +224,7 @@ pub(super) fn save_network(
 
 pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
+    let explicit_sections = super::road_sections::is_current(conn)?;
     {
         let mut stmt =
             conn.prepare("SELECT node_id, x, y, z, node_type FROM network_nodes ORDER BY node_id")?;
@@ -179,7 +265,17 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges ORDER BY edge_id")?;
+        // Old schemas have no separator columns. Inspect once, never per edge.
+        let has_medians: bool = conn.query_row("SELECT count(*) != 0 FROM pragma_table_info('network_edges') WHERE name = 'median_style'", [], |row| row.get(0))?;
+        let median_columns = if has_medians {
+            "median_style, median_width, median_start_setback, median_end_setback"
+        } else {
+            "0, 0.0, 0.0, 0.0"
+        };
+        let sql = format!(
+            "SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, {median_columns} FROM network_edges ORDER BY edge_id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -191,15 +287,27 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 )));
             }
             let speed_limit = row.get(9)?;
-            let no_building_spawn =
-                row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+            let no_building_spawn = row.get::<_, i64>(14)? != 0
+                || (!explicit_sections && speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS);
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
             }
-            graph.add_edge(Edge {
+            let mut median =
+                RoadMedian::from_tool(row.get(16)?, row.get(17)?).map_err(SaveLoadError::custom)?;
+            if let Some(median) = &mut median {
+                median.start_setback_m = row.get(18)?;
+                median.end_setback_m = row.get(19)?;
+                median.validate().map_err(SaveLoadError::custom)?;
+            }
+            let edge = Edge {
+                crossing_level: 0,
+                roundabout: false,
+                lane_tapers: None,
+                bus_lanes: [0; 2],
+                median,
                 start_node,
                 end_node,
                 primary_type: transit_type_from_i64(row.get(3)?)?,
@@ -218,7 +326,123 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 deleted: false,
                 no_building_spawn,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
-            });
+            };
+            edge.validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, median)
+                .map_err(SaveLoadError::custom)?;
+            graph.add_edge(edge);
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='roundabout_edges'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt = conn.prepare("SELECT edge_id FROM roundabout_edges ORDER BY edge_id")?;
+            for row in stmt.query_map([], |row| row.get::<_, i64>(0))? {
+                let id = i64_to_usize(row?)?;
+                if id >= graph.edge_count() {
+                    return Err(SaveLoadError::custom("invalid roundabout edge"));
+                }
+                let edge = graph.edge_mut(id);
+                if edge.fwd_lanes != 1
+                    || edge.bkw_lanes != 0
+                    || edge.class != crate::simulation::network::types::EdgeClass::Standard
+                {
+                    return Err(SaveLoadError::custom("invalid roundabout carriageway"));
+                }
+                edge.roundabout = true;
+            }
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_crossing_levels'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt =
+                conn.prepare("SELECT edge_id,level FROM road_crossing_levels ORDER BY edge_id")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                if id >= graph.edge_count() {
+                    return Err(SaveLoadError::custom(
+                        "crossing level references missing road",
+                    ));
+                }
+                graph.edge_mut(id).crossing_level = row.get(1)?;
+            }
+        }
+    }
+    {
+        let exists: bool = conn.query_row("SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_lane_tapers'", [], |row| row.get(0))?;
+        if exists {
+            let mut stmt = conn.prepare("SELECT edge_id,end_index,length_m,from_fwd,from_bkw,from_median,left_pocket,right_pocket FROM road_lane_tapers ORDER BY edge_id,end_index")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                let end = i64_to_usize(row.get(1)?)?;
+                if id >= graph.edge_count() || end > 1 {
+                    return Err(SaveLoadError::custom("invalid lane taper owner"));
+                }
+                let taper = RoadLaneTaper {
+                    length_m: row.get(2)?,
+                    from_fwd: i64_to_u8(row.get(3)?)?,
+                    from_bkw: i64_to_u8(row.get(4)?)?,
+                    from_median_m: row.get(5)?,
+                    left_pocket: row.get(6)?,
+                    right_pocket: row.get(7)?,
+                };
+                let edge = graph.edge(id);
+                if !taper.length_m.is_finite()
+                    || taper.length_m < 2.0
+                    || taper.length_m > edge.physical_length
+                    || taper.from_fwd > 4
+                    || taper.from_bkw > 4
+                    || taper.from_fwd + taper.from_bkw == 0
+                    || !taper.from_median_m.is_finite()
+                    || !(0.0..=12.0).contains(&taper.from_median_m)
+                    || (taper.left_pocket
+                        && edge
+                            .median
+                            .is_none_or(|m| m.width_m < crate::config::LANE_WIDTH + 0.3))
+                {
+                    return Err(SaveLoadError::custom("invalid lane taper dimensions"));
+                }
+                let node = if end == 0 {
+                    edge.start_node
+                } else {
+                    edge.end_node
+                };
+                if graph.node(node).node_type
+                    != crate::simulation::network::types::NodeType::LaneTransition
+                {
+                    return Err(SaveLoadError::custom("lane taper requires transition node"));
+                }
+                graph
+                    .edge_mut(id)
+                    .lane_tapers
+                    .get_or_insert_with(|| Box::new([None, None]))[end] = Some(taper);
+            }
+        }
+    }
+
+    {
+        let exists: bool = conn.query_row(
+            "SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_bus_lanes'",
+            [],
+            |row| row.get(0),
+        )?;
+        if exists {
+            let mut stmt = conn.prepare(
+                "SELECT edge_id,forward_mask,backward_mask FROM road_bus_lanes ORDER BY edge_id",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id = i64_to_usize(row.get(0)?)?;
+                let masks = [i64_to_u8(row.get(1)?)?, i64_to_u8(row.get(2)?)?];
+                graph
+                    .validate_bus_lane_edit(id, masks)
+                    .map_err(SaveLoadError::custom)?;
+                graph.edge_mut(id).bus_lanes = masks;
+            }
         }
     }
 
@@ -242,9 +466,38 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             graph.add_lane_connection(nid, fe, fl, te, tl);
         }
     }
+    let has_crosswalks: bool = conn.query_row(
+        "SELECT count(*) != 0 FROM sqlite_master WHERE type='table' AND name='road_crosswalks'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_crosswalks {
+        let mut stmt = conn.prepare(
+            "SELECT node_id,edge_id,marked FROM road_crosswalks ORDER BY node_id,edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let node = i64_to_u32(row.get(0)?)?;
+            let edge = i64_to_usize(row.get(1)?)?;
+            let marked: i64 = row.get(2)?;
+            if node as usize >= graph.node_count()
+                || !graph
+                    .get_edge(edge)
+                    .is_some_and(|e| e.start_node == node || e.end_node == node)
+                || !(0..=1).contains(&marked)
+                || (marked == 1 && !graph.crosswalk_arm_eligible(node, edge))
+            {
+                return Err(SaveLoadError::custom("invalid crosswalk arm"));
+            }
+            graph.set_crosswalk_override(node, edge, marked != 0);
+        }
+    } else {
+        graph.preserve_legacy_zebras();
+    }
     if !geometry.is_empty() || !physical_geometry.is_empty() {
         return Err(SaveLoadError::custom("orphan edge geometry"));
     }
+    super::road_sections::load(conn, &mut graph)?;
     // add_node/add_edge already maintained adjacency and both spatial indices.
     Ok(graph)
 }

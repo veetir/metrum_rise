@@ -12,6 +12,7 @@ use super::vertices::{
     retain_constraint_vertices,
 };
 use super::*;
+use crate::simulation::network::surface::node::height::NodeMaterialGradeField;
 use crate::simulation::network::surface::segments;
 
 pub(super) fn triangulate_arrangement_region(
@@ -19,6 +20,7 @@ pub(super) fn triangulate_arrangement_region(
     region_index: usize,
     arrangement: &NodeArrangement,
     region: &NodeOwnedRegion,
+    material_grade: Option<&NodeMaterialGradeField>,
 ) -> Result<NodeTriangulatedRegion, NodeTriangulationError> {
     if region.outer_loop().is_empty() {
         return Err(NodeTriangulationError::EmptyRegionShape {
@@ -66,6 +68,7 @@ pub(super) fn triangulate_arrangement_region(
         height_field_id,
         &mut vertices,
         &mut vertex_lookup,
+        material_grade,
     )?;
     let spade_vertices = vertices
         .iter()
@@ -153,6 +156,7 @@ pub(super) fn triangulate_arrangement_region(
     canonicalize_boundary_constraint_numeric_dust_vertices(&mut constraints, &vertices);
 
     Ok(NodeTriangulatedRegion {
+        source_region_index: region_index,
         kind: owner.kind(),
         owner,
         height_field_id,
@@ -357,6 +361,7 @@ fn insert_carriageway_interior_guides(
     height_field_id: NodeBandHeightFieldId,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    material_grade: Option<&NodeMaterialGradeField>,
 ) -> Result<(), NodeTriangulationError> {
     if !matches!(
         arrangement.piece_kind(),
@@ -397,7 +402,12 @@ fn insert_carriageway_interior_guides(
         if !overlay_shape_contains_interior_point(owner_shape, overlay_point) {
             continue;
         }
-        let height_m = plane_height_m(plane, canonical_xz);
+        // The guide is derived geometry. A resolved non-affine grade owns its
+        // height; the fitted plane is only the ordinary no-grade fallback.
+        let height_m = material_grade.map_or_else(
+            || plane_height_m(plane, canonical_xz),
+            |grade| grade.height_at(canonical_xz),
+        );
         insert_carriageway_interior_guide_vertex(
             node_id,
             region_index,

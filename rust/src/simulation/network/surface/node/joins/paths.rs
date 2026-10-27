@@ -146,34 +146,52 @@ fn shared_endpoint_join_path_world(
         return None;
     }
     // All arm centerlines meet at the node too. Require their endpoint segments to
-    // continue on the same line in XYZ, including grade. Use the retained centerline
+    // continue on the same line in XZ. A vertical grade change still has one shared
+    // physical boundary; testing XYZ would invent another ribbon at that grade change.
+    // Use the retained centerline
     // rail: offset-curve sample chords do not describe the source endpoint tangent.
     let endpoint_axis = |mouth: &NodeInputMouth| {
-        mouth.boundary_rails.iter().find_map(|rail| {
-            if !matches!(
-                rail.role,
-                super::super::input::NodeInputBoundaryRailRole::InteriorBandBoundary {
-                    left_kind: RoadSurfaceBandKind::Carriageway,
-                    right_kind: RoadSurfaceBandKind::Carriageway,
+        mouth
+            .boundary_rails
+            .iter()
+            .find_map(|rail| {
+                if !matches!(
+                    rail.role,
+                    super::super::input::NodeInputBoundaryRailRole::InteriorBandBoundary {
+                        left_kind: RoadSurfaceBandKind::Carriageway,
+                        right_kind: RoadSurfaceBandKind::Carriageway,
+                    }
+                ) {
+                    return None;
                 }
-            ) {
-                return None;
-            }
-            let [.., previous, endpoint] = rail.path_world.as_slice() else {
-                return None;
-            };
-            let axis = *endpoint - *previous;
-            (axis.length_squared() > f64::EPSILON).then_some(axis)
-        })
+                let [.., previous, endpoint] = rail.path_world.as_slice() else {
+                    return None;
+                };
+                let axis = *endpoint - *previous;
+                (axis.length_squared() > f64::EPSILON).then_some(axis)
+            })
+            .or_else(|| {
+                // Continuing medians separate the carriageways, so there is no central
+                // carriageway/carriageway rail. Opposite outer rails share the section lattice.
+                let first = &mouth.boundary_rails.first()?.path_world;
+                let last = &mouth.boundary_rails.last()?.path_world;
+                let [.., a, b] = first.as_slice() else {
+                    return None;
+                };
+                let [.., c, d] = last.as_slice() else {
+                    return None;
+                };
+                Some((*b + *d - *a - *c) * 0.5)
+            })
     };
-    let from_axis = endpoint_axis(from_mouth)?;
-    let to_axis = endpoint_axis(to_mouth)?;
+    let from_axis = xz_from_road_vec3(endpoint_axis(from_mouth)?);
+    let to_axis = xz_from_road_vec3(endpoint_axis(to_mouth)?);
     let from_length = from_axis.length();
     let to_length = to_axis.length();
     if from_length <= f64::EPSILON
         || to_length <= f64::EPSILON
         || from_axis.dot(to_axis) >= 0.0
-        || from_axis.cross(to_axis).length() > source_roundoff_m * (from_length + to_length)
+        || from_axis.perp_dot(to_axis).abs() > source_roundoff_m * (from_length + to_length)
     {
         return None;
     }
@@ -873,6 +891,78 @@ mod tests {
     use crate::simulation::network::surface::node::input::{
         NodeInputBoundaryRail, NodeInputBoundaryRailRole,
     };
+
+    #[test]
+    fn shared_endpoint_join_accepts_a_vertical_grade_change_between_median_arms() {
+        use crate::simulation::network::surface::node::input::NodeInputBandInterval;
+        let mouth = |path: Vec<RoadVec3>, direction: RoadVec2| NodeInputMouth {
+            order_index: 0,
+            edge_idx: 0,
+            side: IncidentEdgeSide::Start,
+            direction_xz: direction,
+            direction_angle_ccw: direction.y.atan2(direction.x),
+            conflict_handoff_distance_m: 10.0,
+            mouth_rails: Vec::new(),
+            endpoint_rails: Vec::new(),
+            uses_explicit_band_domain_paths: true,
+            boundary_rails: vec![NodeInputBoundaryRail {
+                boundary_index: 0,
+                role: NodeInputBoundaryRailRole::OuterFootprint {
+                    adjacent_kind: RoadSurfaceBandKind::Sidewalk,
+                },
+                mouth_world: path[0],
+                endpoint_world: *path.last().unwrap(),
+                path_world: path.clone(),
+            }],
+            band_intervals: vec![NodeInputBandInterval {
+                band_index: 0,
+                band_kind: RoadSurfaceBandKind::Carriageway,
+                mouth_start_world: path[0],
+                mouth_end_world: path[0],
+                endpoint_start_world: *path.last().unwrap(),
+                endpoint_end_world: *path.last().unwrap(),
+                start_path_world: path.clone(),
+                end_path_world: path,
+            }],
+        };
+        let left = mouth(
+            vec![
+                RoadVec3::new(-10.0, 10.0, 0.0),
+                RoadVec3::new(-5.0, 10.2, 0.0),
+                RoadVec3::new(0.0, 11.0, 0.0),
+            ],
+            -RoadVec2::X,
+        );
+        let mut right = mouth(
+            vec![
+                RoadVec3::new(10.0, 12.0, 0.0),
+                RoadVec3::new(5.0, 11.5, 0.0),
+                RoadVec3::new(0.0, 11.0, 0.0),
+            ],
+            RoadVec2::X,
+        );
+        let start = left.band_intervals[0].mouth_start_world;
+        let end = right.band_intervals[0].mouth_start_world;
+        let path = shared_endpoint_join_path_world(&left, start, &right, end)
+            .expect("one shared XZ rail across a grade change");
+        for point in left.band_intervals[0]
+            .start_path_world
+            .iter()
+            .chain(&right.band_intervals[0].start_path_world)
+        {
+            assert!(path.contains(point));
+        }
+        right.band_intervals[0]
+            .start_path_world
+            .last_mut()
+            .unwrap()
+            .y += 0.2;
+        right.band_intervals[0].end_path_world.last_mut().unwrap().y += 0.2;
+        assert!(
+            shared_endpoint_join_path_world(&left, start, &right, end).is_none(),
+            "distinct 3D endpoints must remain distinct"
+        );
+    }
 
     #[test]
     fn straight_join_preserves_both_approaches_and_removes_extrapolated_miter() {

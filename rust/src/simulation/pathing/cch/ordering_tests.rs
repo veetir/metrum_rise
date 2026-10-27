@@ -30,6 +30,11 @@ fn grid(side: u32) -> RegionGraph {
             {
                 let geometry = vec![graph.node(a).pos, graph.node(b).pos];
                 graph.add_edge(Edge {
+                    roundabout: false,
+                    crossing_level: 0,
+                    lane_tapers: None,
+                    bus_lanes: [0; 2],
+                    median: None,
                     start_node: a,
                     end_node: b,
                     primary_type: TransitType::Road,

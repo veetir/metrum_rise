@@ -4,6 +4,8 @@
 
 #[cfg(test)]
 use self::boundary::{ArrangementSegmentParameter, arrangement_boundary_point_to_world};
+pub(super) use height::NodeMaterialGradeField;
+
 use self::{
     arrangement::{
         NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,

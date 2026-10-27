@@ -108,6 +108,9 @@ mod tests {
 
     fn request(id: u64) -> RoadPreviewRequest {
         RoadPreviewRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             enqueued_at: None,
             include_terrain: false,
             request_id: id,

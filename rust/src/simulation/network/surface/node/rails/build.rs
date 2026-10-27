@@ -270,6 +270,7 @@ impl NodeRailContourSet {
         profile.total_ms = elapsed_profile_ms(total_start);
         Ok((
             Self {
+                material_grade: None,
                 node_id: input.node_id,
                 piece_kind: input.piece_kind,
                 contours,
@@ -295,6 +296,7 @@ impl NodeRailContourSet {
     {
         let total_start = profile_enabled.then(Instant::now);
         let Self {
+            material_grade: _,
             node_id,
             piece_kind,
             mut contours,
@@ -484,6 +486,7 @@ impl NodeRailContourSet {
         profile.total_ms += elapsed_profile_ms(total_start);
         Ok((
             Self {
+                material_grade: None,
                 node_id,
                 piece_kind,
                 contours,

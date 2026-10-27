@@ -825,6 +825,64 @@ impl CensusInputs {
         }
     }
 
+    /// Transcodes the two historical building layouts in a saved census copy. Household,
+    /// fiscal and row-change bytes are unchanged. This runs once at load, O(copied rows).
+    pub(crate) fn migrate_saved_rows(
+        saved: &mut SavedCensusInputs,
+        from: i64,
+        to: i64,
+        ticks: u32,
+        slot: u64,
+    ) -> Result<(), String> {
+        fn rewrite(
+            bytes: &mut Vec<u8>,
+            prefix: usize,
+            from: i64,
+            to: i64,
+            ticks: u32,
+            slot: u64,
+        ) -> Result<(), String> {
+            let mut reader = Reader(
+                bytes
+                    .get(prefix..)
+                    .ok_or("truncated historical census header")?,
+            );
+            let count = reader.len(encoding::MIN_BUILDING_BYTES - 12)?;
+            let mut out = Writer(bytes[..prefix].to_vec());
+            out.len(count);
+            for dense in 0..count {
+                let building =
+                    encoding::read_building_version(&mut reader, from, dense, ticks, slot)?;
+                encoding::put_building_version(
+                    &mut out,
+                    &building,
+                    &|edge| edge as u64,
+                    to,
+                    ticks,
+                    slot,
+                );
+            }
+            out.0.extend_from_slice(reader.0);
+            *bytes = out.0;
+            Ok(())
+        }
+        if let Some(bytes) = &mut saved.front {
+            rewrite(bytes, 0, from, to, ticks, slot)?;
+        }
+        // next_chunk, total buildings, total households precede the back's rows.
+        if let Some(bytes) = &mut saved.back {
+            rewrite(bytes, 24, from, to, ticks, slot)?;
+        }
+        if let Some(bytes) = &mut saved.published {
+            match bytes.first() {
+                Some(1) => rewrite(bytes, 1, from, to, ticks, slot)?,
+                Some(0) => {}
+                _ => return Err("invalid historical published census flag".into()),
+            }
+        }
+        Ok(())
+    }
+
     /// Rebuilds a saved copy, rejecting malformed buffers. The production floors are not
     /// saved: the first census after a load rebuilds its production market.
     pub(crate) fn restore(saved: &SavedCensusInputs) -> Result<Self, String> {

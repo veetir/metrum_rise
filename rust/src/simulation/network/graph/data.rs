@@ -51,7 +51,7 @@ pub struct Node {
     /// Pedestrians bypass this table entirely.
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
     /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
-    /// If an edge ID is missing, default procedural generation decides.
+    /// Missing arms are unmarked; false removes paint without prohibiting legal crossing.
     pub crosswalk_overrides: HashMap<usize, bool>,
 }
 
@@ -68,12 +68,21 @@ pub struct Edge {
     pub allowed_types: u8,
     /// Classification (Standard, Bridge, Tunnel). Multi-modal foundation (Item 26).
     pub class: EdgeClass,
-    /// Total road width in metres (asphalt + sidewalks).
+    /// Carriageway and median width in metres, excluding the outer kerbs and sidewalks.
     pub width: f32,
     /// Number of forward (start->end) vehicle lanes.
     pub fwd_lanes: u8,
     /// Number of backward (end->start) vehicle lanes.
     pub bkw_lanes: u8,
+    /// Optional central separator, included in `width`; absent on legacy roads.
+    pub median: Option<super::RoadMedian>,
+    /// Authored lane transitions at the stored start and end; absent on legacy roads.
+    pub lane_tapers: Option<Box<[Option<super::RoadLaneTaper>; 2]>>,
+    /// Bus-only lane masks, forward then backward; bit zero is the innermost lane.
+    /// Zero preserves legacy general traffic. Set through the road lane-use transaction.
+    pub bus_lanes: [u8; 2],
+    /// Circulating carriageway; has precedence over entering arms regardless of road hierarchy.
+    pub roundabout: bool,
     /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
     /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.
@@ -92,6 +101,9 @@ pub struct Edge {
     pub physical_geometry: Vec<Vector3>,
     /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,
+    /// Authored crossing layer. Different layers never join at interior crossings.
+    /// Higher layers must clear lower roadbeds; zero is the default for older saves.
+    pub crossing_level: i16,
     /// When `true` the building allocator will not place buildings along this edge.
     /// Auto-set for roads at or above `HIGH_SPEED_ROAD_THRESHOLD_MS`; player-toggleable in the road inspector.
     pub no_building_spawn: bool,
@@ -109,7 +121,7 @@ impl Edge {
         } else {
             self.bkw_lanes
         };
-        if lanes > 0 {
+        if lanes > 0 && self.car_lane_count(is_fwd) > 0 {
             self.allowed_types
         } else {
             self.allowed_types & TransitFlags::FOOT
@@ -126,6 +138,9 @@ impl Edge {
 /// agent movement, and building placement operate on this graph.
 #[derive(Clone)]
 pub struct RegionGraph {
+    // Source ordinals for deterministic cosmetic ordering in bounded preview excerpts only.
+    placement_ids: Option<std::sync::Arc<(Vec<usize>, Vec<u32>)>>,
+    pub(in crate::simulation::network) road_sections: super::sections::RoadSections,
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
     pub(in crate::simulation::network) nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
@@ -151,10 +166,25 @@ pub(crate) struct RegionGraphUndoDelta {
     original_edge_count: usize,
     nodes: Vec<(u32, Node)>,
     edges: Vec<(usize, Edge)>,
+    sections: Vec<(usize, super::sections::RoadSectionSnapshot)>,
     aliases: Vec<(u32, Option<u32>)>,
 }
 
 impl RegionGraphUndoDelta {
+    /// Whether either side of this inverse contains authored lane stations that can move.
+    pub(crate) fn changes_lane_tapers(&self, graph: &RegionGraph) -> bool {
+        self.edges.iter().any(|(id, edge)| {
+            edge.lane_tapers.is_some()
+                || graph
+                    .get_edge(*id)
+                    .is_some_and(|edge| edge.lane_tapers.is_some())
+        }) || graph
+            .edges()
+            .iter()
+            .skip(self.original_edge_count)
+            .any(|edge| edge.lane_tapers.is_some())
+    }
+
     /// Returns every topology ID whose pre-edit record is stored by this inverse.
     pub(crate) fn stored_topology_ids(&self) -> (HashSet<usize>, HashSet<u32>) {
         let edge_ids = self
@@ -203,6 +233,8 @@ impl RegionGraph {
     /// Creates a new, empty road graph.
     pub fn new() -> Self {
         Self {
+            placement_ids: None,
+            road_sections: super::sections::RoadSections::default(),
             nodes: Vec::new(),
             edges: Vec::new(),
             node_aliases: std::collections::HashMap::new(),
@@ -211,6 +243,23 @@ impl RegionGraph {
             spatial_node_grid: HashMap::new(),
             node_role_revision: 0,
         }
+    }
+
+    /// Retains prospective live ordinals for cosmetic ordering without sparse global arrays.
+    pub(crate) fn set_placement_identities(&mut self, edges: Vec<usize>, nodes: Vec<u32>) {
+        self.placement_ids = Some(std::sync::Arc::new((edges, nodes)));
+    }
+
+    /// Stable cosmetic ordinal; graph/routing indices always remain local to this graph.
+    pub(crate) fn placement_edge_id(&self, edge: usize) -> usize {
+        self.placement_ids.as_ref().map_or(edge, |ids| ids.0[edge])
+    }
+
+    /// Stable cosmetic ordinal; absent on authoritative graphs and never serialized.
+    pub(crate) fn placement_node_id(&self, node: u32) -> u32 {
+        self.placement_ids
+            .as_ref()
+            .map_or(node, |ids| ids.1[node as usize])
     }
 
     /// Captures graph records that can be changed by a polyline edit and nearby junction solving.
@@ -304,6 +353,10 @@ impl RegionGraph {
             original_node_count: self.nodes.len(),
             original_edge_count: self.edges.len(),
             nodes,
+            sections: edges
+                .iter()
+                .map(|(id, _)| (*id, self.capture_road_section(*id)))
+                .collect(),
             edges,
             aliases,
         }
@@ -323,6 +376,12 @@ impl RegionGraph {
     pub(crate) fn restore_undo_delta(&mut self, delta: RegionGraphUndoDelta) {
         self.nodes.truncate(delta.original_node_count);
         self.edges.truncate(delta.original_edge_count);
+        self.road_sections
+            .references
+            .truncate(delta.original_edge_count);
+        self.road_sections
+            .extents
+            .truncate(delta.original_edge_count);
         for (node_id, node) in delta.nodes {
             if let Some(target) = self.nodes.get_mut(node_id as usize) {
                 *target = node;
@@ -332,6 +391,9 @@ impl RegionGraph {
             if let Some(target) = self.edges.get_mut(edge_idx) {
                 *target = edge;
             }
+        }
+        for (id, section) in delta.sections {
+            self.restore_road_section(id, section);
         }
         self.node_aliases
             .retain(|&node_id, _| (node_id as usize) < delta.original_node_count);
@@ -530,5 +592,9 @@ impl RegionGraph {
     pub fn set_nodes_edges_for_test(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) {
         self.nodes = nodes;
         self.edges = edges;
+        self.road_sections = super::sections::RoadSections::default();
+        for id in 0..self.edges.len() {
+            self.sync_legacy_section(id);
+        }
     }
 }

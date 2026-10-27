@@ -14,7 +14,8 @@ pub(super) const JUNCTION_PROFILE_SOLVE_SAMPLE_M: f32 = 12.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
 pub(super) const JUNCTION_PROFILE_MOUTH_MAX_GRADE: f32 = 0.16;
 const JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M: f32 = 0.5;
-const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
+/// Existing rejection bound for an unsupported derived grade.
+pub(crate) const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
 const JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M: f32 = 0.05;
@@ -68,6 +69,20 @@ impl JunctionEndpointProfilePlane {
     /// Evaluates the solved endpoint profile height at an arbitrary world XZ coordinate.
     pub(crate) fn height_at_xz(&self, x: f32, z: f32) -> f32 {
         self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
+    }
+
+    /// Interpolates solved heights and gradients at a common origin.
+    pub(crate) fn interpolate(self, other: Self, t: f32) -> Self {
+        Self {
+            origin: Vector3::new(
+                self.origin.x,
+                self.origin.y
+                    + (other.height_at_xz(self.origin.x, self.origin.z) - self.origin.y) * t,
+                self.origin.z,
+            ),
+            grade_x: self.grade_x + (other.grade_x - self.grade_x) * t,
+            grade_z: self.grade_z + (other.grade_z - self.grade_z) * t,
+        }
     }
 
     pub(super) fn grade(&self) -> f32 {
@@ -363,7 +378,10 @@ impl RegionGraph {
                 if !affected_nodes.contains(&node_id) {
                     continue;
                 }
-                if self.nodes[node_id as usize].node_type != NodeType::Junction {
+                if !matches!(
+                    self.nodes[node_id as usize].node_type,
+                    NodeType::Junction | NodeType::Ramp
+                ) {
                     continue;
                 }
                 incidents_by_node
@@ -409,20 +427,137 @@ impl RegionGraph {
         (away.z - origin.z).atan2(away.x - origin.x)
     }
 
+    /// Resolves a short junction link whose overlapping endpoint profiles exceed the
+    /// existing rejection grade. Returns its fixed start height and horizontal grade.
+    /// Source geometry and supported longer/steeper corridors remain unchanged.
+    pub(crate) fn resolved_short_junction_link_grade(&self, edge_idx: usize) -> Option<(f32, f32)> {
+        let edge = self.edges.get(edge_idx)?;
+        if edge.deleted
+            || edge.class != crate::simulation::network::types::EdgeClass::Standard
+            || edge.primary_type != TransitType::Road
+        {
+            return None;
+        }
+        let points = if edge.physical_geometry.len() >= 2 {
+            &edge.physical_geometry
+        } else {
+            &edge.geometry
+        };
+        if points.len() < 3 {
+            return None;
+        }
+        let connected = [edge.start_node, edge.end_node]
+            .into_iter()
+            .filter(|&node| {
+                self.node_adjacency(self.get_valid_node(node))
+                    .iter()
+                    .filter(|&&id| {
+                        !self.edges[id].deleted && self.edges[id].primary_type == TransitType::Road
+                    })
+                    .take(2)
+                    .count()
+                    == 2
+            })
+            .count();
+        if connected != 2 {
+            return None;
+        }
+        let (mut length, mut rejected) = (0.0_f32, false);
+        for pair in points.windows(2) {
+            let run = Self::edge_profile_point_distance_m(pair[0], pair[1]);
+            length += run;
+            rejected |= (pair[1].y - pair[0].y).abs() > JUNCTION_PROFILE_REJECT_MAX_GRADE * run;
+        }
+        if !rejected || length <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+            return None;
+        }
+        // Use the same overlap cores as endpoint finalization, including wide or
+        // oblique intersections. An uncovered authored interior remains authoritative.
+        let coverage = 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M
+            + self.junction_profile_crossing_core_m(edge_idx, true)
+            + self.junction_profile_crossing_core_m(edge_idx, false);
+        if length > coverage {
+            return None;
+        }
+        let start = self
+            .nodes
+            .get(self.get_valid_node(edge.start_node) as usize)?
+            .pos
+            .y;
+        let end = self
+            .nodes
+            .get(self.get_valid_node(edge.end_node) as usize)?
+            .pos
+            .y;
+        let grade = (end - start) / length;
+        (grade.abs() <= JUNCTION_PROFILE_MOUTH_MAX_GRADE).then_some((start, grade))
+    }
+
     /// Reconstructs crossfall from the final physical profiles at the shared crossing core.
     /// This reads the solved surface; it neither chooses a new grade target nor reblends heights.
     pub(crate) fn solved_junction_endpoint_profile_plane(
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
+        let physical = self.reconstruct_junction_endpoint_profile_plane(node_id, false, false)?;
+        let coupled_link = self
+            .node_adjacency(node_id)
+            .iter()
+            .any(|&edge| self.resolved_short_junction_link_grade(edge).is_some());
+        if physical.grade() > JUNCTION_PROFILE_REJECT_MAX_GRADE
+            && let Some(control) =
+                self.reconstruct_junction_endpoint_profile_plane(node_id, true, false)
+            && control.grade() <= JUNCTION_PROFILE_MOUTH_MAX_GRADE
+        {
+            // A legacy eased profile can contain a longitudinal spike that an ill-conditioned
+            // bend fit amplifies into crossfall. Canonical control pins supply independent
+            // evidence: only replace a rejected-grade fit with a design-grade control plane.
+            // Supported steep hills retain their physical plane, including grades above 50%.
+            return Some(control);
+        }
+        if coupled_link {
+            return self.reconstruct_junction_endpoint_profile_plane(node_id, false, true);
+        }
+        Some(physical)
+    }
+
+    fn reconstruct_junction_endpoint_profile_plane(
+        &self,
+        node_id: u32,
+        control_supports: bool,
+        resolve_longitudinal: bool,
+    ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
+        // Cross-section transitions can own a visual Bend on a straight alignment. The
+        // finalizer does not solve a crossing plane there: two longitudinal profiles cannot
+        // supply crossfall authority. Fitting their almost-collinear one-metre samples would
+        // amplify a mild grade change into a vertical roadbed. Use the same pass-through
+        // contract as finalization, without allocating an incident collection.
+        let mut incidents = self.node_adjacency(node_id).iter().filter_map(|&edge_idx| {
+            let edge = &self.edges[edge_idx];
+            (!edge.deleted && edge.primary_type == TransitType::Road && edge.geometry.len() >= 2)
+                .then(|| JunctionProfileIncident {
+                    edge_idx,
+                    at_start: self.get_valid_node(edge.start_node) == node_id,
+                })
+        });
+        let continuation_axis = if let (Some(a), Some(b), None) =
+            (incidents.next(), incidents.next(), incidents.next())
+            && self.junction_profile_incidents_form_pass_through(&[a, b])
+        {
+            let a = Self::edge_endpoint_direction_xz(&self.edges[a.edge_idx], a.at_start)?;
+            let b = Self::edge_endpoint_direction_xz(&self.edges[b.edge_idx], b.at_start)?;
+            Some((a - b).normalized())
+        } else {
+            None
+        };
         let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0_f64, 0.0, 0.0, 0.0, 0.0);
         for &edge_idx in self.node_adjacency(node_id) {
             let edge = &self.edges[edge_idx];
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
             }
-            let points = if edge.physical_geometry.len() >= 2 {
+            let points = if !control_supports && edge.physical_geometry.len() >= 2 {
                 &edge.physical_geometry
             } else {
                 &edge.geometry
@@ -446,9 +581,24 @@ impl RegionGraph {
                 }
                 distance += run;
             }
-            let Some(sample) = sample else {
+            let Some(mut sample) = sample else {
                 continue;
             };
+            if resolve_longitudinal
+                && let Some((start_height, grade)) =
+                    self.resolved_short_junction_link_grade(edge_idx)
+            {
+                let station = if at_start {
+                    1.0
+                } else {
+                    points
+                        .windows(2)
+                        .map(|pair| Self::edge_profile_point_distance_m(pair[0], pair[1]))
+                        .sum::<f32>()
+                        - 1.0
+                };
+                sample.y = start_height + grade * station;
+            }
             let dx = f64::from(sample.x - origin.x);
             let dz = f64::from(sample.z - origin.z);
             let dy = f64::from(sample.y - origin.y);
@@ -457,6 +607,23 @@ impl RegionGraph {
             zz += dz * dz;
             xy += dx * dy;
             zy += dz * dy;
+        }
+        if let Some(axis) = continuation_axis {
+            // Only the longitudinal grade is observable on a straight continuation. Solve
+            // that one-dimensional least-squares system, with zero transverse grade about
+            // the shared bisector. Keep an explicit plane so transition sampling is retained.
+            let ax = f64::from(axis.x);
+            let az = f64::from(axis.y);
+            let denom = ax * ax * xx + 2.0 * ax * az * xz + az * az * zz;
+            if denom <= f64::EPSILON {
+                return None;
+            }
+            let grade = (ax * xy + az * zy) / denom;
+            return grade.is_finite().then_some(JunctionEndpointProfilePlane {
+                origin,
+                grade_x: (grade * ax) as f32,
+                grade_z: (grade * az) as f32,
+            });
         }
         let det = xx * zz - xz * xz;
         if det.abs() <= f64::EPSILON * (xx * zz).max(1.0) {
@@ -477,7 +644,10 @@ impl RegionGraph {
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
-        if self.nodes.get(node_id as usize)?.node_type != NodeType::Junction {
+        if !matches!(
+            self.nodes.get(node_id as usize)?.node_type,
+            NodeType::Junction | NodeType::Ramp
+        ) {
             return None;
         }
         let affected_nodes = HashSet::from([node_id]);
@@ -910,9 +1080,7 @@ impl RegionGraph {
     /// Samples the existing physical profile at control stations without importing solver pins.
     /// Both polylines follow the same authored XZ alignment; materialized support knots can differ.
     /// A monotonic station walk costs O(control points + physical points), with one output buffer.
-    pub(in crate::simulation::network) fn physical_profile_on_control_alignment(
-        edge: &Edge,
-    ) -> Vec<Vector3> {
+    pub(crate) fn physical_profile_on_control_alignment(edge: &Edge) -> Vec<Vector3> {
         let source = &edge.physical_geometry;
         if source.len() < 2 {
             return source.clone();

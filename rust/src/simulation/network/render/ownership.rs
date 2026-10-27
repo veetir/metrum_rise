@@ -24,23 +24,34 @@ pub(super) struct OwnedVertexRange {
     end: usize,
 }
 
+/// Extends the current contiguous owner range without allocating for another triangle.
+pub(super) fn record_owner_range(
+    ranges: &mut Vec<OwnedVertexRange>,
+    owner: Option<NetworkMeshOwner>,
+    end: usize,
+) {
+    if let Some(last) = ranges.last_mut()
+        && last.owner == owner
+    {
+        last.end = end;
+    } else {
+        ranges.push(OwnedVertexRange { owner, end });
+    }
+}
+
 impl NetworkMeshData {
     pub(super) fn set_owner(&mut self, owner: NetworkMeshOwner) {
         self.current_owner = Some(owner);
     }
 
+    #[cfg(test)]
     pub(super) fn record_owner_triangle(&mut self, layer: usize, end: usize) {
-        let ranges = &mut self.owner_ranges[layer];
-        if let Some(last) = ranges.last_mut()
-            && last.owner == self.current_owner
-        {
-            last.end = end;
+        let ranges = if layer == 7 {
+            &mut self.median_grass.get_or_insert_default().owner_ranges
         } else {
-            ranges.push(OwnedVertexRange {
-                owner: self.current_owner,
-                end,
-            });
-        }
+            &mut self.owner_ranges[layer]
+        };
+        record_owner_range(ranges, self.current_owner, end);
     }
 
     /// Copies only unaffected owners, preserving every vertex attribute exactly.
@@ -49,38 +60,56 @@ impl NetworkMeshData {
     pub(crate) fn without_owners(&self, removed: &HashSet<NetworkMeshOwner>) -> Self {
         let mut result = Self::new();
         macro_rules! layer {
-            ($index:expr, $vertices:ident, $normals:ident, $uvs:ident, $colors:ident) => {{
+            ($index:expr, $vertices:ident, $normals:ident, $uvs:ident, $colors:ident) => {
+                layer!(
+                    self,
+                    result,
+                    self.owner_ranges[$index],
+                    $index,
+                    $vertices,
+                    $normals,
+                    $uvs,
+                    $colors
+                )
+            };
+            ($source:ident, $target:ident, $ranges:expr, $index:expr, $vertices:ident, $normals:ident, $uvs:ident, $colors:ident) => {{
                 let mut start = 0;
-                for range in &self.owner_ranges[$index] {
+                for range in &$ranges {
                     if !range.owner.is_some_and(|owner| removed.contains(&owner)) {
-                        result
+                        $target
                             .$vertices
-                            .extend_from_slice(&self.$vertices[start..range.end]);
-                        result
+                            .extend_from_slice(&$source.$vertices[start..range.end]);
+                        $target
                             .$normals
-                            .extend_from_slice(&self.$normals[start..range.end]);
-                        result.$uvs.extend_from_slice(&self.$uvs[start..range.end]);
+                            .extend_from_slice(&$source.$normals[start..range.end]);
+                        $target
+                            .$uvs
+                            .extend_from_slice(&$source.$uvs[start..range.end]);
                         if $index == 4 {
                             result
                                 .road_crossings
                                 .extend_from_slice(&self.road_crossings[start..range.end]);
                         }
-                        result
+                        $target
                             .$colors
-                            .extend_from_slice(&self.$colors[start..range.end]);
+                            .extend_from_slice(&$source.$colors[start..range.end]);
                     }
                     start = range.end;
                 }
                 // Diagnostic meshes may be filled directly instead of through the owned sink.
-                result.$vertices.extend_from_slice(&self.$vertices[start..]);
-                result.$normals.extend_from_slice(&self.$normals[start..]);
-                result.$uvs.extend_from_slice(&self.$uvs[start..]);
+                $target
+                    .$vertices
+                    .extend_from_slice(&$source.$vertices[start..]);
+                $target
+                    .$normals
+                    .extend_from_slice(&$source.$normals[start..]);
+                $target.$uvs.extend_from_slice(&$source.$uvs[start..]);
                 if $index == 4 {
                     result
                         .road_crossings
                         .extend_from_slice(&self.road_crossings[start..]);
                 }
-                result.$colors.extend_from_slice(&self.$colors[start..]);
+                $target.$colors.extend_from_slice(&$source.$colors[start..]);
             }};
         }
         layer!(
@@ -120,6 +149,19 @@ impl NetworkMeshData {
             concrete_uvs,
             concrete_colors
         );
+        if let Some(source) = self.median_grass.as_deref() {
+            let target = result.median_grass.get_or_insert_default();
+            layer!(
+                source,
+                target,
+                source.owner_ranges,
+                7,
+                vertices,
+                normals,
+                uvs,
+                colors
+            );
+        }
         result
     }
 }

@@ -705,6 +705,15 @@ impl SimulationNode {
         );
         let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
         let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        // Translate the f64 source before narrowing to the uploaded patch-local f32.
+        // World-space narrowing can weld distinct rails and manufacture vertical faces.
+        let local_point = |point: TerrainCdtVertex| {
+            Vector3::new(
+                (point.x - f64::from(center_x)) as f32,
+                point.height_m,
+                (point.z - f64::from(center_z)) as f32,
+            )
+        };
         let mut vertices = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
@@ -734,7 +743,7 @@ impl SimulationNode {
             {
                 debug_log!(
                     "road",
-                    "terrain_cdt_rejected_face points={source_points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} sources={:?}",
+                    "terrain_cdt_rejected_face patch_center=({center_x},{center_z}) points={source_points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} sources={:?}",
                     triangle_sources.get(triangle_index),
                 );
                 omitted_pathological_faces += 1;
@@ -756,13 +765,7 @@ impl SimulationNode {
                     let point = vertices_source[source_index];
                     export_index = vertices.len();
                     vertex_remap[source_index] = export_index;
-                    // Subtract in f64 before the GPU conversion. World-space f32 loses the
-                    // sub-millimetre separation retained by the CDT at kilometre-scale origins.
-                    vertices.push(Vector3::new(
-                        (point.x - f64::from(center_x)) as f32,
-                        point.height_m,
-                        (point.z - f64::from(center_z)) as f32,
-                    ));
+                    vertices.push(local_point(point));
                     normals.push(Vector3::new(0.0, 0.0, 0.0));
                     uvs.push(Vector2::new(
                         ((point.x - f64::from(patch.world_origin_x))

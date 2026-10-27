@@ -7,7 +7,7 @@ use super::*;
 
 // Finnish L3_2 at urban speeds: planar metres, preserved from the existing marking contract.
 pub(super) const CROSSWALK_STRIPE_WIDTH: f32 = 0.5;
-pub(super) const CROSSWALK_STRIPE_LEN: f32 = 2.5;
+pub(super) const CROSSWALK_STRIPE_LEN: f32 = crate::config::CROSSWALK_LENGTH_M;
 const CROSSWALK_STRIPE_GAP: f32 = 0.5;
 
 /// Local paint frame shared by the span and junction owning a crossing.

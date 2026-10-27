@@ -111,11 +111,46 @@ pub(crate) fn get_closest_network_snap_xz(
     world_pos: Vector3,
     max_dist: f32,
 ) -> Option<NetworkSnap> {
+    get_closest_network_snap_xz_filtered(graph, world_pos, max_dist, None)
+}
+
+/// Resolves a source endpoint at its declared topology level, using the existing indices.
+/// The radius is a strict XZ bound, independent of road width and DEM height error.
+pub(crate) fn get_closest_point_xz_at_level(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    level: i16,
+) -> Option<Vector3> {
+    get_closest_network_snap_xz_at_level(graph, world_pos, max_dist, level)
+        .map(|snap| snap.position)
+}
+
+/// Returns the same level-filtered source snap with its existing graph owner.
+pub(crate) fn get_closest_network_snap_xz_at_level(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    level: i16,
+) -> Option<NetworkSnap> {
+    get_closest_network_snap_xz_filtered(graph, world_pos, max_dist, Some(level))
+}
+
+fn get_closest_network_snap_xz_filtered(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    level: Option<i16>,
+) -> Option<NetworkSnap> {
     let mut closest_pos = None;
     let mut min_score = f32::MAX;
 
     // 1. Check nodes first (Higher priority/Sticky)
-    let node_snap_dist = max_dist * 2.5;
+    let node_snap_dist = if level.is_some() {
+        max_dist
+    } else {
+        max_dist * 2.5
+    };
     let mut closest_node_dist = f32::MAX;
 
     let min = Vector3::new(
@@ -129,7 +164,14 @@ pub(crate) fn get_closest_network_snap_xz(
         world_pos.z + node_snap_dist,
     );
     graph.visit_nodes_near_aabb(min, max, |node_id| {
-        if !graph.is_live_canonical_node(node_id) {
+        if !graph.is_live_canonical_node(node_id)
+            || level.is_some_and(|level| {
+                !graph.node_adjacency(node_id).iter().any(|&id| {
+                    let edge = graph.edge(id);
+                    !edge.deleted && edge.crossing_level == level
+                })
+            })
+        {
             return;
         }
         let node = graph.node(node_id);
@@ -168,12 +210,16 @@ pub(crate) fn get_closest_network_snap_xz(
 
     for edge_idx in nearby_edges {
         let edge = graph.edge(edge_idx);
-        if edge.deleted {
+        if edge.deleted || level.is_some_and(|level| edge.crossing_level != level) {
             continue;
         }
 
         let half_width = edge.width * 0.5;
-        let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
+        let edge_snap_dist = if level.is_some() {
+            max_dist
+        } else {
+            f32::max(max_dist, half_width + 1.0)
+        };
 
         for (index, segment) in edge.geometry.windows(2).enumerate() {
             let Some(pos) = get_edge_snap_point(
@@ -478,6 +524,43 @@ mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{EdgeClass, NodeType};
     use godot::prelude::Vector3;
+
+    #[test]
+    fn source_endpoint_snap_uses_level_and_strict_planar_radius() {
+        let mut graph = RegionGraph::new();
+        for (y, level) in [(80.0, 0), (86.0, 1)] {
+            let a = graph.add_node(Vector3::new(-50.0, y, 0.0), NodeType::Junction);
+            let b = graph.add_node(Vector3::new(50.0, y, 0.0), NodeType::Junction);
+            let mut edge = super::super::build_surface_edge(
+                a,
+                b,
+                vec![graph.node(a).pos, graph.node(b).pos],
+                3,
+                3,
+                EdgeClass::Standard,
+            );
+            edge.crossing_level = level;
+            graph.add_edge(edge);
+        }
+        let query = Vector3::new(0.0, 90.0, 0.5);
+        assert_eq!(
+            super::get_closest_point_xz_at_level(&graph, query, 2.0, 0)
+                .unwrap()
+                .y,
+            80.0
+        );
+        assert_eq!(
+            super::get_closest_point_xz_at_level(&graph, query, 2.0, 1)
+                .unwrap()
+                .y,
+            86.0
+        );
+        assert!(
+            super::get_closest_point_xz_at_level(&graph, Vector3::new(0.0, 80.0, 5.0), 2.0, 0)
+                .is_none()
+        );
+        assert!(super::get_closest_point_xz_at_level(&graph, query, 2.0, -1).is_none());
+    }
 
     #[test]
     fn hover_query_ignores_deleted_roads() {

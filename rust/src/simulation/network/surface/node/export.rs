@@ -235,10 +235,26 @@ impl RoadSurfaceSystem {
             .collect::<Vec<_>>();
         node_grade_authorities.sort();
         node_grade_authorities.dedup();
+        // Multiple original carriers can certify one point on the same solved material
+        // grade. Retain all their provenance records, but give their identical owner,
+        // field, XZ, height and declared base/level one boundary authority identity.
+        let mut declared_indices = BTreeMap::new();
         let authority_indices = node_grade_authorities
             .iter()
             .enumerate()
-            .map(|(index, authority)| (*authority, index))
+            .map(|(index, authority)| {
+                let index = if matches!(
+                    authority.decision,
+                    height::NodeGradeCarrierDecision::DeclaredMaterialContact { .. }
+                ) {
+                    let mut key = *authority;
+                    key.source_provenance = None;
+                    *declared_indices.entry(key).or_insert(index)
+                } else {
+                    index
+                };
+                (*authority, index)
+            })
             .collect::<BTreeMap<_, _>>();
         let top_height_context = NodeExportTopHeightContext::from_arrangement(
             arrangement,
@@ -548,6 +564,16 @@ fn candidate_height_split_conflicts_for_cohort(
             for left_owner in left.owners() {
                 for right_owner in right.owners() {
                     if left_owner == right_owner {
+                        continue;
+                    }
+                    // A source-declared kerb contact remains valid at a corner even
+                    // when the two materials do not share a complete arrangement edge.
+                    if left.grade_authority().owner == *left_owner
+                        && right.grade_authority().owner == *right_owner
+                        && left
+                            .grade_authority()
+                            .shares_declared_material_base(right.grade_authority())
+                    {
                         continue;
                     }
                     if left_owner.kind() == right_owner.kind()

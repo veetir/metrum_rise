@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod node_move;
+mod pocket;
 
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
@@ -501,6 +502,41 @@ impl RoadSurfaceSystem {
         Option<RoadPreviewRenderInput>,
         Option<RoadTopologyPlan>,
     ) {
+        let new_edge_validation = self.validate_prepared_crossing_clearance(
+            prepared_input,
+            fwd_lanes,
+            bkw_lanes,
+            existing_graph,
+            new_edge_validation,
+        );
+        if !new_edge_validation.is_valid {
+            return (new_edge_validation, None, None, None);
+        }
+        if crate::simulation::network::pockets::stroke_splits_pocket(
+            existing_graph,
+            &prepared_input.points,
+            prepared_input.crossing_level,
+        ) {
+            return (
+                new_edge_validation.with_invalid_reason("remove_pocket_before_junction_edit"),
+                None,
+                None,
+                None,
+            );
+        }
+        if let Some(median) = prepared_input.median {
+            let refusal = median.validate().err().or_else(|| {
+                (fwd_lanes == 0 || bkw_lanes == 0).then_some("median_requires_both_directions")
+            });
+            if let Some(reason) = refusal {
+                return (
+                    new_edge_validation.with_invalid_reason(reason),
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
         // Compiling a surface never measures the stroke, so apply the fast check's minimum here
         // too; every full check (click, exact preview, commit plan) passes through this point.
         if Self::preview_stroke_too_short(&prepared_input.validation_points) {
@@ -524,6 +560,8 @@ impl RoadSurfaceSystem {
                     prepared_input.extension.as_ref(),
                     prepared_input.endpoint_snap_enabled,
                     compile_reason,
+                    prepared_input.median,
+                    prepared_input.crossing_level,
                 );
         }
 
@@ -549,6 +587,8 @@ impl RoadSurfaceSystem {
             prepared_input.extension.as_ref(),
             prepared_input.endpoint_snap_enabled,
             compile_reason,
+            prepared_input.median,
+            prepared_input.crossing_level,
         )
     }
 
@@ -563,6 +603,21 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
     ) -> RoadPreviewValidation {
+        if crate::simulation::network::pockets::stroke_splits_pocket(
+            existing_graph,
+            &prepared_input.points,
+            prepared_input.crossing_level,
+        ) {
+            return RoadPreviewValidation::valid(0.0)
+                .with_invalid_reason("remove_pocket_before_junction_edit");
+        }
+        if let Some(median) = prepared_input.median
+            && let Some(reason) = median.validate().err().or_else(|| {
+                (_fwd_lanes == 0 || _bkw_lanes == 0).then_some("median_requires_both_directions")
+            })
+        {
+            return RoadPreviewValidation::valid(0.0).with_invalid_reason(reason);
+        }
         let mut validation = Self::fast_prepared_profile_validation(
             prepared_input.class,
             &prepared_input.validation_points,
@@ -584,7 +639,15 @@ impl RoadSurfaceSystem {
             return validation;
         }
 
-        self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation)
+        let validation =
+            self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation);
+        self.validate_prepared_crossing_clearance(
+            prepared_input,
+            _fwd_lanes,
+            _bkw_lanes,
+            existing_graph,
+            validation,
+        )
     }
 
     // The one road length rule: fewer than two points, or a horizontal length, ignoring
@@ -640,6 +703,9 @@ impl RoadSurfaceSystem {
         if Self::preview_stroke_too_short(prepared_points) {
             return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
         }
+        if edge_class == EdgeClass::Tunnel {
+            return Self::validate_tunnel_profile_clearance(validation, prepared_points, terrain);
+        }
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
         {
@@ -673,6 +739,31 @@ impl RoadSurfaceSystem {
             }
         }
 
+        validation
+    }
+
+    // One construction lattice for quick and exact checks, including two-point and
+    // off-centre hills. O(P + L / 4 m), allocation-free, only during road editing.
+    fn validate_tunnel_profile_clearance(
+        mut validation: RoadPreviewValidation,
+        points: &[Vector3],
+        terrain: &TerrainSystem,
+    ) -> RoadPreviewValidation {
+        let mut cover = f32::NEG_INFINITY;
+        for pair in points.windows(2) {
+            let steps = ((pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z) / 4.0)
+                .ceil()
+                .max(1.0) as usize;
+            for i in 0..=steps {
+                let p = pair[0].lerp(pair[1], i as f32 / steps as f32);
+                cover = cover.max(Self::preview_terrain_height_m(terrain, p.x, p.z) - p.y);
+            }
+        }
+        validation.clearance_m = cover;
+        validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+        if cover < PREVIEW_CLEARANCE_M {
+            return validation.with_invalid_reason(PREVIEW_TUNNEL_CLEARANCE_REASON);
+        }
         validation
     }
 
@@ -775,6 +866,9 @@ impl RoadSurfaceSystem {
                 validation.offending_span_end_support_delta_m =
                     pair[1].center_height_m - validation.offending_span_end_terrain_height_m;
             }
+        }
+        if edge_class == EdgeClass::Tunnel {
+            return Self::validate_tunnel_profile_clearance(validation, prepared_points, terrain);
         }
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
@@ -919,6 +1013,8 @@ impl RoadSurfaceSystem {
             extension,
             endpoint_snap_enabled,
             compile_reason,
+            None,
+            0,
         )
         .0
     }
@@ -936,6 +1032,8 @@ impl RoadSurfaceSystem {
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
         compile_reason: RoadSurfaceCompileReason,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        crossing_level: i16,
     ) -> (
         RoadPreviewValidation,
         Option<RoadPreviewTopologyReuse>,
@@ -964,7 +1062,7 @@ impl RoadSurfaceSystem {
         }
 
         let Some(SurfaceValidationGraph {
-            graph: validation_graph,
+            graph: mut validation_graph,
             new_edge_idx,
             required_edge_ids,
             required_node_ids,
@@ -980,6 +1078,8 @@ impl RoadSurfaceSystem {
             existing_graph,
             extension,
             endpoint_snap_enabled,
+            median,
+            crossing_level,
         )
         else {
             return (
@@ -999,6 +1099,40 @@ impl RoadSurfaceSystem {
                 None,
                 None,
             );
+        }
+        // The authored stroke and its splits share structural frontage policy as well as
+        // render ownership. Keep deep open cuts out of ordinary ground-level zoning.
+        let mut preview_edges = HashSet::from([new_edge_idx]);
+        for split in &splits {
+            if preview_edges.contains(&split.edge_id) {
+                preview_edges.insert(split.new_edge_id);
+            }
+        }
+        if edge_class == EdgeClass::Standard
+            && prepared_points.iter().any(|point| {
+                point.y
+                    < terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+                        - PREVIEW_CLEARANCE_M
+            })
+            && (crossing_level != 0
+                || !self
+                    .crossing_neighbors_in_source(
+                        existing_graph,
+                        validation_graph.edge(new_edge_idx),
+                    )
+                    .is_empty())
+        {
+            for &id in &preview_edges {
+                validation_graph.edge_mut(id).no_building_spawn = true;
+            }
+        }
+        for &id in &required_edge_ids {
+            let skip = HashSet::from([id]);
+            if let Some(refused) =
+                self.crossing_clearance_violation(&validation_graph, id, &validation_graph, &skip)
+            {
+                return (refused, None, None, None);
+            }
         }
         if let Some(refused) = Self::edit_geometry_violation(
             &validation_graph,
@@ -1030,9 +1164,30 @@ impl RoadSurfaceSystem {
         // Only immutable topology candidates cross into the transient compiler. Fresh local
         // mouths, exact rail/height keys and contributor checks still decide all reuse. O(N)
         // lookups over the copied neighborhood, independent of the resident network size.
+        let mut remapped_grades = HashMap::new();
         for (&source_node_id, &local_node_id) in &source_node_ids {
             if validation_graph.get_valid_node(local_node_id) != local_node_id {
                 continue;
+            }
+            if let Some(grade) = self.node_material_grade_fields.get(&source_node_id) {
+                let mapped = if grade.cohort_nodes().is_some() {
+                    let key = Arc::as_ptr(grade) as usize;
+                    remapped_grades
+                        .entry(key)
+                        .or_insert_with(|| {
+                            grade
+                                .with_remapped_cohort_nodes(&source_node_ids, &source_edge_ids)
+                                .map(Arc::new)
+                        })
+                        .clone()
+                } else {
+                    Some(Arc::clone(grade))
+                };
+                if let Some(mapped) = mapped {
+                    validation_surface
+                        .node_material_grade_fields
+                        .insert(local_node_id, mapped);
+                }
             }
             if let Some(topology) = self.compiled_visual_node_topologies.get(&source_node_id) {
                 validation_surface
@@ -1175,12 +1330,6 @@ impl RoadSurfaceSystem {
 
         // Split descendants of the authored stroke remain new preview geometry. Existing
         // approaches belong to the bounded visible junction edit, not the compiler's halo.
-        let mut preview_edges = HashSet::from([new_edge_idx]);
-        for split in &splits {
-            if preview_edges.contains(&split.edge_id) {
-                preview_edges.insert(split.new_edge_id);
-            }
-        }
         let preview_nodes: HashSet<_> = preview_edges
             .iter()
             .flat_map(|&id| {
@@ -1214,7 +1363,7 @@ impl RoadSurfaceSystem {
             .flatten();
 
         if let Some(plan) = &mut topology_plan {
-            plan.capture_road_queries(&validation_graph, &validation_surface, existing_graph);
+            plan.capture_road_queries(&mut validation_graph, &validation_surface, existing_graph);
         }
 
         // The authoritative dirty set also includes far endpoints of adjacent spans. Capture every
@@ -1508,6 +1657,8 @@ impl RoadSurfaceSystem {
             existing_graph,
             None,
             true,
+            None,
+            0,
         )
         .map(|validation| {
             (
@@ -1517,6 +1668,30 @@ impl RoadSurfaceSystem {
                 validation.required_node_ids,
             )
         })
+    }
+
+    /// Builds the exact planned crossing topology for median/level regressions.
+    #[cfg(test)]
+    pub(crate) fn build_crossing_validation_graph_for_test(
+        &self,
+        points: &[Vector3],
+        lanes: (u8, u8),
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        level: i16,
+        source: &RegionGraph,
+    ) -> Option<(RegionGraph, usize, Vec<usize>)> {
+        self.build_surface_validation_graph(
+            points,
+            EdgeClass::Standard,
+            lanes.0,
+            lanes.1,
+            source,
+            None,
+            true,
+            median,
+            level,
+        )
+        .map(|v| (v.graph, v.new_edge_idx, v.required_edge_ids))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1529,6 +1704,8 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
+        crossing_level: i16,
     ) -> Option<SurfaceValidationGraph> {
         if prepared_points.len() < 2 {
             return None;
@@ -1559,6 +1736,7 @@ impl RoadSurfaceSystem {
             extension,
             start_existing,
             end_existing,
+            median,
         );
         for edge_idx in existing_edge_ids {
             Self::copy_validation_graph_edge(
@@ -1599,6 +1777,14 @@ impl RoadSurfaceSystem {
         let new_edge_idx = validation_graph.add_edge(build_surface_edge(
             start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class,
         ));
+        {
+            let edge = validation_graph.edge_mut(new_edge_idx);
+            edge.crossing_level = crossing_level;
+            edge.validate_cross_section(fwd_lanes, bkw_lanes, median)
+                .ok()?;
+            edge.median = median;
+            edge.width += median.map_or(0.0, |median| median.width_m);
+        }
         let (base_cost, physical_length) =
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(
                 validation_graph.edge(new_edge_idx),
@@ -1652,7 +1838,7 @@ impl RoadSurfaceSystem {
         }) {
             return None;
         }
-        Self::complete_validation_surface_context(
+        self.complete_validation_surface_context(
             &mut validation_graph,
             existing_graph,
             &mut node_map,
@@ -1677,8 +1863,12 @@ impl RoadSurfaceSystem {
     // Mirror the compiler's explicit incidence frontier, then import read-only endpoint
     // context for its spans. A remote JunctionN must not become a terminal just because only
     // one of its approaches is recompiled. Halo edges are never added to the dirty ledger.
-    // Two fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    // Three fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    // The third supplies the far endpoint of each crossfall support link: its coupled
+    // longitudinal-grade certificate depends on both endpoints' crossing cores.
+    #[allow(clippy::too_many_arguments)]
     fn complete_validation_surface_context(
+        &self,
         local: &mut RegionGraph,
         source: &RegionGraph,
         nodes: &mut HashMap<u32, u32>,
@@ -1687,6 +1877,23 @@ impl RoadSurfaceSystem {
         required_nodes: &[u32],
         extension: Option<&RoadExtensionReprofile>,
     ) {
+        // Structural incidence is independent of graph adjacency and extends beyond the
+        // topology snap halo. Import the exact live R-tree candidates used by compile_dirty,
+        // then complete their endpoint incidence below. Otherwise commit dirties owners/chunks
+        // absent from a seemingly ready preview (notably long diagonal upper approaches).
+        let mut crossing_sources = Vec::new();
+        for &id in required_edges {
+            crossing_sources.extend(self.crossing_neighbors_in_source(source, local.edge(id)));
+        }
+        crossing_sources.sort_unstable();
+        crossing_sources.dedup();
+        let mut crossing_local = Vec::new();
+        for id in crossing_sources {
+            Self::copy_validation_graph_edge(local, source, nodes, edges, id, extension);
+            if let Some(&local_id) = edges.get(&id) {
+                crossing_local.push(local_id);
+            }
+        }
         let copy_incidence = |local: &mut RegionGraph,
                               nodes: &mut HashMap<u32, u32>,
                               edges: &mut HashMap<usize, usize>,
@@ -1704,6 +1911,7 @@ impl RoadSurfaceSystem {
             }
         };
         let mut dirty: HashSet<_> = required_edges.iter().copied().collect();
+        dirty.extend(crossing_local);
         for &node in required_nodes {
             dirty.extend(local.node_adjacency(node).iter().copied());
         }
@@ -1712,6 +1920,22 @@ impl RoadSurfaceSystem {
             let edge = local.edge(id);
             compile_nodes.insert(local.get_valid_node(edge.start_node));
             compile_nodes.insert(local.get_valid_node(edge.end_node));
+        }
+        let mut cohort_sources = nodes
+            .iter()
+            .filter_map(|(&source, &mapped)| {
+                compile_nodes
+                    .contains(&local.get_valid_node(mapped))
+                    .then_some(source)
+            })
+            .collect::<HashSet<_>>();
+        self.extend_grade_cohort_nodes(&mut cohort_sources);
+        let mut cohort_sources = cohort_sources.into_iter().collect::<Vec<_>>();
+        cohort_sources.sort_unstable();
+        for source_node in cohort_sources {
+            let mapped =
+                Self::copy_validation_graph_node(local, source, nodes, source_node, extension);
+            compile_nodes.insert(mapped);
         }
         copy_incidence(local, nodes, edges, &compile_nodes);
         for &node in &compile_nodes {
@@ -1724,6 +1948,15 @@ impl RoadSurfaceSystem {
             span_endpoints.insert(local.get_valid_node(edge.end_node));
         }
         copy_incidence(local, nodes, edges, &span_endpoints);
+        let mut profile_endpoints = HashSet::new();
+        for node in span_endpoints {
+            for &id in local.node_adjacency(node) {
+                let edge = local.edge(id);
+                profile_endpoints.insert(local.get_valid_node(edge.start_node));
+                profile_endpoints.insert(local.get_valid_node(edge.end_node));
+            }
+        }
+        copy_incidence(local, nodes, edges, &profile_endpoints);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1736,6 +1969,7 @@ impl RoadSurfaceSystem {
         extension: Option<&RoadExtensionReprofile>,
         start_existing: Option<u32>,
         end_existing: Option<u32>,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Vec<usize> {
         let mut min_x = f32::MAX;
         let mut max_x = f32::MIN;
@@ -1748,7 +1982,8 @@ impl RoadSurfaceSystem {
             max_z = max_z.max(point.z);
         }
 
-        let pad = config::SNAP_TOLERANCE
+        let pad = median.map_or(0.0, |median| median.width_m * 0.5)
+            + config::SNAP_TOLERANCE
             + config::INTERSECTION_TOLERANCE
             + Self::preview_candidate_roadbed_half_width_m(
                 prepared_points,
@@ -1975,7 +2210,17 @@ impl RoadSurfaceSystem {
             copied_edge.physical_length = length;
         }
         let local_edge = validation_graph.add_edge(copied_edge);
+        validation_graph.copy_road_section(local_edge, existing_graph, edge_idx);
         copied_edges.insert(edge_idx, local_edge);
+        for (source, local) in [(edge.start_node, start_node), (edge.end_node, end_node)] {
+            if let Some(&marked) = existing_graph
+                .node(source)
+                .crosswalk_overrides
+                .get(&edge_idx)
+            {
+                validation_graph.set_crosswalk_override(local, local_edge, marked);
+            }
+        }
     }
 
     fn validation_endpoint_existing_node(

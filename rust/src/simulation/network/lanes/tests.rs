@@ -11,6 +11,9 @@ use godot::prelude::*;
 use std::collections::HashSet;
 use std::f32::consts::PI;
 
+#[path = "trajectory_tests.rs"]
+mod trajectories;
+
 #[test]
 fn test_lane_geometry_and_length() {
     let mut graph = RegionGraph::new();
@@ -18,6 +21,11 @@ fn test_lane_geometry_and_length() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -79,6 +87,11 @@ fn lane_height_sync_matches_compiled_visible_surface() {
     let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -188,7 +201,12 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
     };
     let (live_geometry, live_length) = sidewalk(&lanes);
     let (loaded_geometry, loaded_length) = sidewalk(&loaded);
-    assert!(live_geometry.iter().all(|point| point.y != 0.0));
+    for point in &live_geometry {
+        let surface_y = road_surface
+            .sample_visible_surface_height(&graph, &terrain, point.x, point.z)
+            .unwrap();
+        assert!((point.y + CURB_STEP_HEIGHT_M - surface_y).abs() < 1e-4);
+    }
     assert_eq!(live_geometry, loaded_geometry);
     assert_eq!(live_length, loaded_length);
 }
@@ -200,6 +218,11 @@ fn test_highway_no_sidewalks() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -243,6 +266,11 @@ fn test_dedicated_footpath_centering() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Foot,
@@ -308,6 +336,11 @@ fn build_pedestrian_junction(
         let start = graph.node(center).pos;
         let end = graph.node(arm).pos;
         edge_ids.push(graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: center,
             end_node: arm,
             primary_type: TransitType::Road,
@@ -330,6 +363,7 @@ fn build_pedestrian_junction(
         }));
     }
     graph.rebuild_adjacency_list();
+    graph.preserve_legacy_zebras();
 
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
@@ -567,6 +601,11 @@ fn test_rht_lane_offsets() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -631,6 +670,11 @@ fn test_crosswalk_counts() {
     ];
     for (s, e) in edges {
         graph.add_edge(Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -653,6 +697,7 @@ fn test_crosswalk_counts() {
         });
     }
     graph.rebuild_adjacency_list();
+    graph.preserve_legacy_zebras();
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
 
@@ -929,6 +974,10 @@ fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
         max_polyline_segment_m(&conn.geometry) <= 1.0 + 1.0e-4,
         "explicit degree-two connector segment too long"
     );
+    assert!(
+        conn.geometry.windows(2).all(|p| p[1].x > p[0].x),
+        "explicit straight connector must advance instead of looping backwards"
+    );
 }
 
 #[test]
@@ -967,6 +1016,11 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
             let p0 = graph.nodes[start_node as usize].pos;
             let p1 = graph.nodes[end_node as usize].pos;
             graph.add_edge(Edge {
+                roundabout: false,
+                crossing_level: 0,
+                lane_tapers: None,
+                bus_lanes: [0; 2],
+                median: None,
                 start_node,
                 end_node,
                 primary_type: TransitType::Road,
@@ -1004,14 +1058,18 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
         "branch-to-arterial turn should create vehicle connector lanes"
     );
 
-    let min_len = conns
-        .iter()
-        .map(|&conn_id| lanes.lanes[conn_id].length)
-        .fold(f32::INFINITY, f32::min);
-    assert!(
-        min_len >= 12.0,
-        "asymmetric true-junction connector is too short: {min_len:.2} m"
-    );
+    for &id in &conns {
+        let conn = &lanes.lanes[id];
+        let chord = conn.geometry[0].distance_to(*conn.geometry.last().unwrap());
+        assert!(
+            chord >= crate::config::LANE_WIDTH,
+            "actual clipped lane mouths must span the junction"
+        );
+        assert!(
+            conn.length >= chord && conn.length <= chord * 1.6,
+            "connector must span its lane mouths without the old junction-wide loop"
+        );
+    }
 
     let max_segment = conns
         .iter()
@@ -1157,6 +1215,11 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
     let p0 = graph.nodes[s as usize].pos;
     let p1 = graph.nodes[e as usize].pos;
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,

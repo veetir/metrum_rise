@@ -3,8 +3,9 @@
 //! Snapshot lane identities and smoothed traffic state against the rebuilt lane graph.
 
 use super::*;
+use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::economy::agents::lane_state::lane_for_mode;
-use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::lanes::{LaneSystem, LaneType};
 
 #[cfg(test)]
 mod tests;
@@ -76,6 +77,8 @@ pub(in crate::simulation::save) fn restore_lane_references(
 ) -> SaveLoadResult<()> {
     let lanes = &network.lane_system;
     let mut remap = HashMap::new();
+    let mut retired_roads = HashMap::new();
+    let mut retired = std::collections::HashSet::new();
     let mut roads = conn.prepare("SELECT lane_id, edge_id, is_fwd, lane_idx FROM saved_lanes WHERE edge_id != -1 ORDER BY lane_id")?;
     let mut rows = roads.query([])?;
     while let Some(row) = rows.next()? {
@@ -83,18 +86,24 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let edge = i64_to_usize(row.get(1)?)?;
         let fwd: bool = row.get(2)?;
         let idx: i8 = row.get(3)?;
-        let id = lanes
-            .edge_lanes
-            .get(&edge)
-            .and_then(|ids| {
-                ids.iter().copied().find(|&id| {
-                    let lane = &lanes.lanes[id];
-                    lane.is_fwd == fwd && lane.lane_idx == idx
-                })
+        let id = lanes.edge_lanes.get(&edge).and_then(|ids| {
+            ids.iter().copied().find(|&id| {
+                let lane = &lanes.lanes[id];
+                lane.is_fwd == fwd && lane.lane_idx == idx
             })
-            .ok_or_else(|| {
-                SaveLoadError::custom(format!("saved lane {old} has no matching road lane"))
-            })?;
+        });
+        let Some(id) = id else {
+            // Junction clipping can consume a short offset lane when an older road is rebuilt.
+            // Only an authored physical slot may retire; nonexistent edges/slots still refuse.
+            if valid_road_lane_slot(graph, edge, fwd, idx) {
+                retired_roads.insert(old, (edge, fwd));
+                retired.insert(old);
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved lane {old} has no matching road lane"
+            )));
+        };
         remap.insert(old, id);
     }
     let mut connectors = conn.prepare("SELECT lane_id, node_id, from_lane_id, to_lane_id FROM saved_lanes WHERE edge_id = -1 ORDER BY lane_id")?;
@@ -104,6 +113,35 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let node = i64_to_usize(row.get(1)?)?;
         let from = i64_to_usize(row.get(2)?)?;
         let to = i64_to_usize(row.get(3)?)?;
+        if retired_roads.contains_key(&from) || retired_roads.contains_key(&to) {
+            // A connector to a clipped-away lane also disappears. Validate both directed
+            // endpoints before retiring it so corrupted references do not become loadable.
+            let endpoint = |old, incoming| {
+                let identity = retired_roads.get(&old).copied().or_else(|| {
+                    remap.get(&old).map(|&id| {
+                        let lane = &lanes.lanes[id];
+                        (lane.edge_id, lane.is_fwd)
+                    })
+                });
+                identity.is_some_and(|(edge, fwd)| {
+                    graph.get_edge(edge).is_some_and(|edge| {
+                        let terminal = if fwd == incoming {
+                            edge.end_node
+                        } else {
+                            edge.start_node
+                        };
+                        terminal as usize == node
+                    })
+                })
+            };
+            if endpoint(from, true) && endpoint(to, false) {
+                retired.insert(old);
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved connector {old} has invalid retired lane endpoints"
+            )));
+        }
         // Saves from before footpath arms stopped counting as vehicle junction arms hold a
         // connector where the road now links straight through. Agents on it replan below.
         if let (Some(&from), Some(&to)) = (remap.get(&from), remap.get(&to))
@@ -119,12 +157,24 @@ pub(in crate::simulation::save) fn restore_lane_references(
                     let lane = &lanes.lanes[id];
                     lane.node_id == node && lane.next_lanes.first() == Some(&to)
                 })
-            })
-            .ok_or_else(|| {
-                SaveLoadError::custom(format!(
-                    "saved connector {old} has no matching junction route"
-                ))
-            })?;
+            });
+        let Some(id) = id else {
+            if remap
+                .get(&from)
+                .zip(remap.get(&to))
+                .is_some_and(|(&from, &to)| {
+                    retired_default_vehicle_connector(lanes, graph, node, from, to)
+                })
+            {
+                // ROAD-67 rebuilds the open-node defaults on load. A car saved on a retired
+                // connector takes the existing stale-lane repair below; road-lane identities
+                // and edge-level routes remain valid. Whitelists and malformed refs still fail.
+                continue;
+            }
+            return Err(SaveLoadError::custom(format!(
+                "saved connector {old} has no matching junction route"
+            )));
+        };
         remap.insert(old, id);
     }
     // Saves written before ROAD-65 can hold lane ids a terrain edit or undo had renumbered:
@@ -133,6 +183,14 @@ pub(in crate::simulation::save) fn restore_lane_references(
     // whole save. A lane of the wrong mode still refuses it (TRAFFIC-02).
     let mut repaired = 0;
     for i in 0..agents.len() {
+        if retired.contains(&agents.current_lane_id[i])
+            || retired.contains(&(agents.lane_change_from_lane_id[i] as usize))
+        {
+            clear_agent_travel_state(agents, i);
+            agents.lane_change_from_lane_id[i] = u32::MAX;
+            repaired += 1;
+            continue;
+        }
         let old = agents.current_lane_id[i];
         if old != usize::MAX {
             let mode = agents.transit_mode[i];
@@ -149,6 +207,25 @@ pub(in crate::simulation::save) fn restore_lane_references(
                 }
             }
         }
+        let tail = agents.tail_connector_lane_id[i];
+        agents.tail_connector_lane_id[i] = if tail == u32::MAX {
+            u32::MAX
+        } else {
+            match remap.get(&(tail as usize)).copied() {
+                Some(id)
+                    if lanes.lanes[id].edge_id == usize::MAX
+                        && lanes.lanes[id].lane_type == LaneType::Vehicle =>
+                {
+                    id as u32
+                }
+                Some(_) => {
+                    return Err(SaveLoadError::custom(
+                        "tail source is not a vehicle connector",
+                    ));
+                }
+                None => u32::MAX,
+            }
+        };
         let changing_from = agents.lane_change_from_lane_id[i];
         if changing_from != u32::MAX {
             agents.lane_change_from_lane_id[i] = *remap
@@ -174,38 +251,109 @@ pub(in crate::simulation::save) fn restore_lane_references(
         );
     }
     validate_loaded_planned_lane_ids(agents, lanes.lanes.len());
-    network.frontage_delay_elapsed_s = conn.query_row(
-        "SELECT frontage_delay_elapsed_s FROM network_runtime_state WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    let mut delays = conn.prepare(
-        "SELECT lane_id, frontage_delay_penalty_s, live_frontage_delay_s FROM saved_lanes ORDER BY lane_id",
-    )?;
-    let mut rows = delays.query([])?;
-    while let Some(row) = rows.next()? {
-        let old = i64_to_usize(row.get(0)?)?;
-        let price: f32 = row.get(1)?;
-        let live: f32 = row.get(2)?;
-        if [price, live]
-            .iter()
-            .any(|delay| !delay.is_finite() || *delay < 0.0)
-        {
-            return Err(SaveLoadError::custom("invalid saved frontage delay"));
+    if super::super::sqlite_table_exists(conn, "network_runtime_state")? {
+        network.frontage_delay_elapsed_s = conn.query_row(
+            "SELECT frontage_delay_elapsed_s FROM network_runtime_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        // Older saves held one delay that both prices and agents read.
+        let has_live_delay: bool = conn.query_row(
+            "SELECT count(*) != 0 FROM pragma_table_info('saved_lanes') WHERE name = 'live_frontage_delay_s'",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut delays = conn.prepare(if has_live_delay {
+            "SELECT lane_id, frontage_delay_penalty_s, live_frontage_delay_s FROM saved_lanes ORDER BY lane_id"
+        } else {
+            "SELECT lane_id, frontage_delay_penalty_s, frontage_delay_penalty_s FROM saved_lanes ORDER BY lane_id"
+        })?;
+        let mut rows = delays.query([])?;
+        while let Some(row) = rows.next()? {
+            let old = i64_to_usize(row.get(0)?)?;
+            let price: f32 = row.get(1)?;
+            let live: f32 = row.get(2)?;
+            if [price, live]
+                .iter()
+                .any(|delay| !delay.is_finite() || *delay < 0.0)
+            {
+                return Err(SaveLoadError::custom("invalid saved frontage delay"));
+            }
+            // A connector replaced by a direct lane link was intentionally omitted above.
+            // It has no runtime lane on which to restore a delay.
+            let Some(&id) = remap.get(&old) else {
+                continue;
+            };
+            let lane = &mut network.lane_system.lanes[id];
+            lane.frontage_delay_penalty_s = price;
+            lane.live_frontage_delay_s = live;
         }
-        let Some(&id) = remap.get(&old) else {
-            // A connector deliberately omitted above has no live lane whose delay can be
-            // restored. Any agent that referenced it has already been moved to replanning.
-            continue;
-        };
-        let lane = &mut network.lane_system.lanes[id];
-        lane.frontage_delay_penalty_s = price;
-        lane.live_frontage_delay_s = live;
-    }
-    if !network.frontage_delay_elapsed_s.is_finite() || network.frontage_delay_elapsed_s < 0.0 {
-        return Err(SaveLoadError::custom("invalid saved frontage delay clock"));
+        if !network.frontage_delay_elapsed_s.is_finite() || network.frontage_delay_elapsed_s < 0.0 {
+            return Err(SaveLoadError::custom("invalid saved frontage delay clock"));
+        }
     }
     Ok(())
+}
+
+fn valid_road_lane_slot(graph: &RegionGraph, edge: usize, fwd: bool, idx: i8) -> bool {
+    use crate::simulation::network::types::{TransitFlags, TransitType};
+    if edge >= graph.edge_count() {
+        return false;
+    }
+    let edge = graph.edge(edge);
+    if edge.deleted || edge.physical_geometry.len() < 2 {
+        return false;
+    }
+    if edge.allowed_types & TransitFlags::FOOT != 0 {
+        if edge.primary_type == TransitType::Foot {
+            return idx == 0;
+        }
+        if idx == 100 || idx == -100 {
+            return true;
+        }
+    }
+    if fwd {
+        idx >= 0 && (idx as u8) < edge.fwd_lanes
+    } else {
+        idx < 0 && (-i16::from(idx) - 1) < i16::from(edge.bkw_lanes)
+    }
+}
+
+fn retired_default_vehicle_connector(
+    lanes: &LaneSystem,
+    graph: &RegionGraph,
+    node: usize,
+    from: usize,
+    to: usize,
+) -> bool {
+    let source = &lanes.lanes[from];
+    let target = &lanes.lanes[to];
+    if node >= graph.node_count()
+        || source.lane_type != LaneType::Vehicle
+        || target.lane_type != LaneType::Vehicle
+        || source.edge_id == usize::MAX
+        || target.edge_id == usize::MAX
+        || crate::simulation::network::lanes::vehicle_junctions::node_whitelists_vehicle_turns(
+            graph, node,
+        )
+    {
+        return false;
+    }
+    let incoming = graph.edge(source.edge_id);
+    let outgoing = graph.edge(target.edge_id);
+    let terminal = if source.is_fwd {
+        incoming.end_node
+    } else {
+        incoming.start_node
+    };
+    let origin = if target.is_fwd {
+        outgoing.start_node
+    } else {
+        outgoing.end_node
+    };
+    terminal as usize == node
+        && origin as usize == node
+        && (source.edge_id != target.edge_id || graph.open_node_allows_u_turn(node as u32))
 }
 
 /// Checks the shared mode/ownership contract for a snapshot lane.
@@ -238,4 +386,169 @@ pub(super) fn validate_current_lane(
             agents.transit[i]
         ))
     })
+}
+
+/// Reconstructs v57 signed lane indices from local lanes, entrances and saved poses.
+pub(in crate::simulation::save) fn restore_v57_lane_references(
+    agents: &mut AgentSystem,
+    graph: &RegionGraph,
+    network: &TransitNetwork,
+    allocator: &BuildingAllocator,
+) -> SaveLoadResult<()> {
+    let lanes = &network.lane_system;
+    for i in 0..agents.len() {
+        // v57 planned IDs referred to the pre-save (possibly incremental) lane array.
+        // Reconstruct the destination from its building side and directed graph node.
+        agents.planned_detach_lane_id[i] = entrance_lane(
+            agents.target_building[i],
+            agents.transit_mode[i],
+            agents.planned_detach_node[i],
+            false,
+            allocator,
+            graph,
+            lanes,
+        )
+        .map(|id| id as u32)
+        .unwrap_or(u32::MAX);
+        agents.planned_attach_lane_id[i] = entrance_lane(
+            agents.current_building[i],
+            agents.transit_mode[i],
+            agents.planned_attach_node[i],
+            true,
+            allocator,
+            graph,
+            lanes,
+        )
+        .map(|id| id as u32)
+        .unwrap_or(u32::MAX);
+
+        let saved_idx = agents.current_lane_id[i] as i64;
+        if matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION) {
+            if agents.current_edge[i] != usize::MAX {
+                // -1 is both the old missing-lane sentinel and the backward vehicle lane.
+                let ids = lanes.edge_lanes.get(&agents.current_edge[i]);
+                let desired = if agents.transit_mode[i] == MODE_WALK {
+                    LaneType::Foot
+                } else {
+                    LaneType::Vehicle
+                };
+                let id = ids.into_iter().flatten().copied().find(|&id| {
+                    let lane = &lanes.lanes[id];
+                    if lane.lane_type != desired || i64::from(lane.lane_idx) != saved_idx {
+                        return false;
+                    }
+                    if desired == LaneType::Vehicle {
+                        return true;
+                    }
+                    let edge = graph.edge(lane.edge_id);
+                    (if lane.is_fwd {
+                        edge.start_node
+                    } else {
+                        edge.end_node
+                    }) == agents.current_node[i]
+                });
+                agents.current_lane_id[i] = id.unwrap_or(usize::MAX);
+            } else if agents.transit[i] == TRANSIT_INTERSECTION {
+                agents.current_lane_id[i] = restore_v57_connector(agents, i, graph, lanes)?;
+            } else {
+                agents.current_lane_id[i] = usize::MAX;
+            }
+        } else {
+            agents.current_lane_id[i] = usize::MAX;
+        }
+    }
+    validate_loaded_planned_lane_ids(agents, lanes.lanes.len());
+    Ok(())
+}
+
+fn entrance_lane(
+    building: usize,
+    mode: u8,
+    node: u32,
+    attach: bool,
+    allocator: &BuildingAllocator,
+    graph: &RegionGraph,
+    lanes: &LaneSystem,
+) -> Option<usize> {
+    let entrance = allocator.entrances.get(building)?;
+    let ids = if mode == MODE_WALK {
+        [entrance.foot_lane_fwd, entrance.foot_lane_bkw]
+    } else {
+        [entrance.car_lane_fwd, entrance.car_lane_bkw]
+    };
+    ids.into_iter().find(|&id| {
+        lanes.lanes.get(id).is_some_and(|lane| {
+            let edge = graph.edge(lane.edge_id);
+            (if lane.is_fwd == attach {
+                edge.end_node
+            } else {
+                edge.start_node
+            }) == node
+        })
+    })
+}
+
+fn restore_v57_connector(
+    agents: &AgentSystem,
+    i: usize,
+    graph: &RegionGraph,
+    lanes: &LaneSystem,
+) -> SaveLoadResult<usize> {
+    let node = agents.current_node[i];
+    let path = &agents.current_path[i];
+    let idx = agents.current_path_index[i];
+    let to_edge = path
+        .get(idx)
+        .and_then(|&next| graph.get_edge_between_nodes(node, next));
+    let detach = agents.planned_detach_lane_id[i] as usize;
+    let desired = if agents.transit_mode[i] == MODE_WALK {
+        LaneType::Foot
+    } else {
+        LaneType::Vehicle
+    };
+    let id = lanes
+        .node_lanes
+        .get(&(node as usize))
+        .into_iter()
+        .flatten()
+        .copied()
+        .find_map(|id| {
+            let lane = &lanes.lanes[id];
+            if lane.lane_type != desired {
+                return None;
+            }
+            let &to = lane.next_lanes.first()?;
+            if to_edge.is_some_and(|edge| lanes.lanes[to].edge_id != edge)
+                || (to_edge.is_none() && to != detach)
+            {
+                return None;
+            }
+            if saved_pose_matches(agents, i, lane, agents.lane_distance[i]) {
+                return Some(id);
+            }
+            None
+        });
+    id.ok_or_else(|| {
+        SaveLoadError::custom(format!(
+            "cannot restore v57 junction lane for agent {i} at node {node}"
+        ))
+    })
+}
+
+fn saved_pose_matches(
+    agents: &AgentSystem,
+    i: usize,
+    lane: &crate::simulation::network::lanes::Lane,
+    distance: f32,
+) -> bool {
+    let Some(pos) = crate::simulation::network::lanes::geometry::agent_lane_position(
+        lane,
+        distance,
+        (agents.transit_mode[i] == MODE_WALK).then_some(i),
+    ) else {
+        return false;
+    };
+    // Eight f32 ULPs at the saved world scale cover interpolation/height-sync rounding.
+    let tolerance = 8.0 * f32::EPSILON * agents.pos_x[i].abs().max(agents.pos_y[i].abs()).max(1.0);
+    (pos.x - agents.pos_x[i]).abs() <= tolerance && (pos.z - agents.pos_y[i]).abs() <= tolerance
 }

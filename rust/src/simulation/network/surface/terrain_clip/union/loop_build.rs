@@ -2,6 +2,11 @@
 
 //! Terrain-clip sourced loop construction.
 
+use super::super::super::{
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M,
+    backend::{RoadVec2, RoadVec3},
+    keys::SurfaceHeightMmKey,
+};
 use super::*;
 
 impl RoadSurfaceSystem {
@@ -10,7 +15,7 @@ impl RoadSurfaceSystem {
         topology: RoadSurfaceTerrainClipLoopTopology,
         source_edges: &[TerrainClipSourceEdge],
         source_edge_index: &TerrainClipSourceEdgeIndex,
-    ) -> Result<RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipExportError> {
+    ) -> Result<Option<RoadSurfaceTerrainClipLoop>, RoadSurfaceTerrainClipExportError> {
         let contour = Self::compact_overlay_contour_by_key(outer_contour).map_err(|error| {
             RoadSurfaceTerrainClipExportError::RepeatedOverlayPointCycle {
                 shape_index: topology.shape_index,
@@ -23,6 +28,14 @@ impl RoadSurfaceSystem {
             }
         })?;
         if contour.len() < 3 {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_collapsed_contour shape={} contour={} raw={:?} compact={:?}",
+                topology.shape_index,
+                topology.contour_index,
+                outer_contour,
+                contour
+            );
             return Err(RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             });
@@ -46,10 +59,11 @@ impl RoadSurfaceSystem {
                 TerrainClipSegmentPointRecovery::Covered(points) => points,
                 TerrainClipSegmentPointRecovery::Partial => {
                     direct_coverage = false;
-                    match Self::terrain_clip_source_chain_points_from_source_edges(
-                        start,
-                        end,
+                    match Self::terrain_clip_partial_segment_points(
+                        &contour,
+                        index,
                         source_edges,
+                        source_edge_index,
                     ) {
                         TerrainClipSourceChainRecovery::Covered(points) => points,
                         TerrainClipSourceChainRecovery::Missing => {
@@ -84,7 +98,7 @@ impl RoadSurfaceSystem {
                         TerrainClipSourceChainRecovery::Ambiguous(context) => {
                             crate::debug_log!(
                                 "road",
-                                "terrain_clip_ambiguous_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) partial_coverage {}",
+                                "terrain_clip_ambiguous_boundary_owner shape={} contour={} start=({:.6},{:.6}) end=({:.6},{:.6}) partial_coverage {}",
                                 topology.shape_index,
                                 topology.contour_index,
                                 start[0],
@@ -235,6 +249,11 @@ impl RoadSurfaceSystem {
                         end,
                         context,
                     } => {
+                        let context = format!(
+                            "{context} contour_role={:?} contour_area_m2={:.12}",
+                            topology.role,
+                            Self::overlay_contour_area_f64(&contour).abs(),
+                        );
                         crate::debug_log!(
                             "road",
                             "terrain_clip_ambiguous_output_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
@@ -260,11 +279,47 @@ impl RoadSurfaceSystem {
         }
 
         Self::close_terrain_clip_source_edges(&mut output_edges);
+        // Source recovery already removes sub-resolution connector edges. A micron-wide
+        // overlay hole can consequently become two exactly reversed, height-matched edges.
+        // Drop only this proven zero-area result inside the existing numeric dust budget;
+        // real holes and unresolved source/height conflicts retain their normal checks.
+        if Self::terrain_clip_is_collapsed_numeric_loop(&contour, &output_edges) {
+            return Ok(None);
+        }
         if output_edges.len() < 3 {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_collapsed_output shape={} contour={} raw={:?} compact={:?} edges={:?}",
+                topology.shape_index,
+                topology.contour_index,
+                outer_contour,
+                contour,
+                output_edges
+            );
             return Err(RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             });
         }
+        let output_edges = Self::complete_terrain_clip_source_edge_chain(output_edges).map_err(
+            |(start, end)| RoadSurfaceTerrainClipExportError::UnclosedOutputBoundary {
+                shape_index: topology.shape_index,
+                start,
+                end,
+            },
+        )?;
+        let before = output_edges.len();
+        let output_edges = Self::remove_terrain_clip_numeric_spikes(output_edges);
+        let output_edges = if output_edges.len() != before {
+            Self::complete_terrain_clip_source_edge_chain(output_edges).map_err(
+                |(start, end)| RoadSurfaceTerrainClipExportError::UnclosedOutputBoundary {
+                    shape_index: topology.shape_index,
+                    start,
+                    end,
+                },
+            )?
+        } else {
+            output_edges
+        };
         let first_start = output_edges.first().map(|edge| edge.start).ok_or({
             RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
@@ -293,9 +348,241 @@ impl RoadSurfaceSystem {
             });
         }
         let points_world = output_edges.iter().map(|edge| edge.start).collect();
-        Ok(RoadSurfaceTerrainClipLoop {
+        Ok(Some(RoadSurfaceTerrainClipLoop {
             points_world,
             source_edges: output_edges,
-        })
+        }))
+    }
+
+    fn remove_terrain_clip_numeric_spikes(
+        edges: Vec<RoadSurfaceTerrainClipSourceEdge>,
+    ) -> Vec<RoadSurfaceTerrainClipSourceEdge> {
+        let area = |a: RoadSurfaceTerrainClipSourceEdge, b: RoadSurfaceTerrainClipSourceEdge| {
+            Self::world_points_same_for_boundary(a.end, b.start)
+                .then(|| Self::terrain_clip_numeric_spike_area([a.start, a.end, b.end]))
+                .flatten()
+        };
+        if !edges.windows(2).any(|p| area(p[0], p[1]).is_some())
+            && area(*edges.last().unwrap(), edges[0]).is_none()
+        {
+            return edges;
+        }
+        let perimeter = edges
+            .iter()
+            .map(|e| (e.end.x - e.start.x).hypot(e.end.z - e.start.z))
+            .sum::<f64>() as f32;
+        let budget = f64::from(Self::overlay_numeric_area_budget_m2(perimeter, edges.len()));
+        let mut removed = 0.0;
+        let mut compact = Vec::with_capacity(edges.len());
+        // Stack removals and the cyclic prefix each visit an edge at most twice.
+        for &edge in &edges {
+            compact.push(edge);
+            while compact.len() >= 2 {
+                let n = compact.len();
+                let Some(delta) = area(compact[n - 2], compact[n - 1]) else {
+                    break;
+                };
+                if removed + delta > budget {
+                    break;
+                }
+                removed += delta;
+                compact.truncate(n - 2);
+            }
+        }
+        let mut first = 0;
+        while compact.len().saturating_sub(first) > 4 {
+            let Some(delta) = area(*compact.last().unwrap(), compact[first]) else {
+                break;
+            };
+            if removed + delta > budget {
+                break;
+            }
+            removed += delta;
+            compact.pop();
+            first += 1;
+        }
+        if compact.len().saturating_sub(first) < 3 {
+            return edges;
+        }
+        compact.drain(..first);
+        compact
+    }
+
+    fn terrain_clip_numeric_spike_area([a, b, c]: [RoadVec3; 3]) -> Option<f64> {
+        let width = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        if (c.x - a.x).hypot(c.z - a.z) > width
+            || SurfaceHeightMmKey::from_m_f64(a.y) != SurfaceHeightMmKey::from_m_f64(b.y)
+            || SurfaceHeightMmKey::from_m_f64(a.y) != SurfaceHeightMmKey::from_m_f64(c.y)
+        {
+            return None;
+        }
+        let area = ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs() * 0.5;
+        (area <= f64::from(NODE_OVERLAY_MIN_AREA_M2)).then_some(area)
+    }
+
+    fn terrain_clip_is_collapsed_numeric_loop(
+        contour: &NodeOverlayContour,
+        edges: &[RoadSurfaceTerrainClipSourceEdge],
+    ) -> bool {
+        let [a, b] = edges else {
+            return false;
+        };
+        if !Self::world_points_same_for_boundary(a.start, b.end)
+            || !Self::world_points_same_for_boundary(a.end, b.start)
+            || !Self::overlay_heights_equal(a.start.y, b.end.y)
+            || !Self::overlay_heights_equal(a.end.y, b.start.y)
+        {
+            return false;
+        }
+        let budget = Self::overlay_numeric_area_budget_m2(
+            Self::overlay_contour_perimeter_m(contour),
+            contour.len(),
+        );
+        let width = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        Self::overlay_contour_area_f64(contour).abs() <= f64::from(budget)
+            && contour.iter().all(|p| {
+                Self::point_segment_distance_squared_xz(RoadVec2::new(p[0], p[1]), a.start, a.end)
+                    <= width * width
+            })
+    }
+}
+
+impl RoadSurfaceSystem {
+    fn terrain_clip_partial_segment_points(
+        contour: &NodeOverlayContour,
+        index: usize,
+        source_edges: &[TerrainClipSourceEdge],
+        source_edge_index: &TerrainClipSourceEdgeIndex,
+    ) -> TerrainClipSourceChainRecovery {
+        let recovery = Self::terrain_clip_source_chain_points_from_source_edges(
+            contour[index],
+            contour[(index + 1) % contour.len()],
+            source_edges,
+        );
+        if matches!(&recovery, TerrainClipSourceChainRecovery::Covered(_)) {
+            return recovery;
+        }
+        // Partial incidence is not a complete carrier. A bounded overlay corner
+        // still belongs to its solved exterior neighbours, exactly as when no
+        // source covers it. Never choose one of several competing source detours.
+        if let TerrainClipDustConnectorRecovery::Covered(points) =
+            Self::terrain_clip_dust_connector_points_from_source_edges(
+                contour,
+                index,
+                source_edges,
+                source_edge_index,
+            )
+        {
+            return TerrainClipSourceChainRecovery::Covered(points);
+        }
+        recovery
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceTerrainClipEdgeKind,
+        RoadSurfaceVisualNodePieceKind, RoadVec3,
+    };
+
+    #[test]
+    fn numeric_inner_kerb_spike_requires_subresolution_area_and_one_source_height() {
+        let points = [
+            RoadVec3::new(-0.000006, 0.24, 9.337499),
+            RoadVec3::new(0.0, 0.24, 9.3923675),
+            RoadVec3::new(0.000006, 0.24, 9.337499),
+        ];
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(points).is_some());
+        let mut step = points;
+        step[1].y += 0.12;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(step).is_none());
+        let mut corner = points;
+        corner[2].x = 0.0005;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(corner).is_none());
+        let mut island = points;
+        island[1].z += 1.0;
+        assert!(RoadSurfaceSystem::terrain_clip_numeric_spike_area(island).is_none());
+    }
+
+    #[test]
+    fn partially_covered_numeric_corner_uses_its_exterior_anchors() {
+        let p = |x, y, z| RoadVec3::new(x, y, z);
+        let contour = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0002, 0.0002],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [0.0, 1.0],
+        ];
+        let mut sources = Vec::new();
+        for (source_index, midpoint) in [p(1.0002, 9.06, 0.0), p(1.0, 9.08, 0.0002)]
+            .into_iter()
+            .enumerate()
+        {
+            let points = [
+                p(0.0, 9.0, 0.0),
+                p(1.0, 9.0, 0.0),
+                p(1.000048, 9.03, 0.000048),
+                midpoint,
+                p(1.0002, 9.12, 0.0002),
+                p(2.0, 9.12, 0.0),
+                p(2.0, 9.0, 1.0),
+                p(0.0, 9.0, 1.0),
+            ];
+            for (edge_index, (&start, &end)) in
+                points.iter().zip(points.iter().cycle().skip(1)).enumerate()
+            {
+                sources.push(TerrainClipSourceEdge {
+                    start,
+                    end,
+                    source_index,
+                    edge_index,
+                    grade_authority: None,
+                    kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+                    source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                        node_id: 7,
+                        kind: RoadSurfaceVisualNodePieceKind::Bend,
+                        owner_kind: RoadSurfaceBandKind::Sidewalk,
+                        owner_index: 0,
+                        boundary_source: None,
+                    },
+                });
+            }
+        }
+        // One collinear interval covers only the first quarter of the corner.
+        // Neither source detour owns the overlay's complete output interval.
+        let recovery = RoadSurfaceSystem::terrain_clip_segment_points_from_source_edges(
+            contour[1], contour[2], &sources,
+        );
+        assert!(
+            matches!(recovery, TerrainClipSegmentPointRecovery::Partial),
+            "{recovery:?}"
+        );
+        assert!(matches!(
+            RoadSurfaceSystem::terrain_clip_source_chain_points_from_source_edges(
+                contour[1], contour[2], &sources
+            ),
+            TerrainClipSourceChainRecovery::Ambiguous(_)
+        ));
+        let topology = RoadSurfaceTerrainClipLoopTopology {
+            shape_index: 0,
+            contour_index: 0,
+            role: RoadSurfaceTerrainClipContourRole::Outer,
+        };
+        let result =
+            RoadSurfaceSystem::terrain_clip_boundary_loop_from_overlay_contour_with_source_edges(
+                &contour,
+                topology,
+                &sources,
+                &TerrainClipSourceEdgeIndex::new(&sources),
+            )
+            .expect("a numeric corner uses solved exterior anchors, not an arbitrary source detour")
+            .unwrap();
+        assert_eq!(result.points_world.len(), result.source_edges.len());
+        assert!(result.points_world.iter().any(|p| p.y == 9.0));
+        assert!(result.points_world.iter().any(|p| p.y == 9.12));
     }
 }

@@ -124,27 +124,31 @@ pub(super) fn load_lot_queue(conn: &Connection, zoning: &mut ZoningSystem) -> Sa
 }
 
 /// Validates saved frames/paint and returns coverage for the subsequent parcel restoration pass.
-pub(super) fn load(
+pub(super) fn load_compatible(
     conn: &Connection,
     zoning: &mut ZoningSystem,
     graph: &RegionGraph,
+    format: super::format::SaveFormat,
 ) -> SaveLoadResult<BTreeMap<u64, CellLot>> {
-    let mut stmt = conn.prepare(
-        "SELECT edge_id, alignment_json FROM zoning_cell_road_alignments ORDER BY edge_id",
-    )?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let id = i64_to_usize(row.get(0)?)?;
-        let json: String = row.get(1)?;
-        let alignment: RoadCellAlignment = serde_json::from_str(&json)
-            .map_err(|err| SaveLoadError::custom(format!("invalid road grid alignment: {err}")))?;
-        if !zoning
-            .cells
-            .restore_road_alignment(id, alignment, graph, &zoning.config)
-        {
-            return Err(SaveLoadError::custom(
-                "invalid or duplicate road grid alignment",
-            ));
+    if format.since(67) {
+        let mut stmt = conn.prepare(
+            "SELECT edge_id, alignment_json FROM zoning_cell_road_alignments ORDER BY edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let id = i64_to_usize(row.get(0)?)?;
+            let json: String = row.get(1)?;
+            let alignment: RoadCellAlignment = serde_json::from_str(&json).map_err(|err| {
+                SaveLoadError::custom(format!("invalid road grid alignment: {err}"))
+            })?;
+            if !zoning
+                .cells
+                .restore_road_alignment(id, alignment, graph, &zoning.config)
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid or duplicate road grid alignment",
+                ));
+            }
         }
     }
     let mut stmt =
@@ -221,17 +225,20 @@ pub(super) fn load(
             "saved unpainted cell has no lot claim",
         ));
     }
-    let mut stmt =
-        conn.prepare("SELECT source_json FROM zoning_cell_curve_sources ORDER BY source_id")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let json: String = row.get(0)?;
-        let source: CellCurveSource = serde_json::from_str(&json)
-            .map_err(|err| SaveLoadError::custom(format!("invalid cell curve source: {err}")))?;
-        if !zoning.cells.restore_curve_source(source) {
-            return Err(SaveLoadError::custom(
-                "invalid or duplicate saved cell curve source",
-            ));
+    if format.since(66) {
+        let mut stmt =
+            conn.prepare("SELECT source_json FROM zoning_cell_curve_sources ORDER BY source_id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let json: String = row.get(0)?;
+            let source: CellCurveSource = serde_json::from_str(&json).map_err(|err| {
+                SaveLoadError::custom(format!("invalid cell curve source: {err}"))
+            })?;
+            if !zoning.cells.restore_curve_source(source) {
+                return Err(SaveLoadError::custom(
+                    "invalid or duplicate saved cell curve source",
+                ));
+            }
         }
     }
     Ok(lots)

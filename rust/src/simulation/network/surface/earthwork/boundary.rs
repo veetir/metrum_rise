@@ -3,7 +3,7 @@
 //! Earthwork boundary segment extraction, loop assembly, and winding orientation.
 
 use super::super::{
-    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem,
     backend::{RoadVec2, RoadVec3},
 };
 use super::model::{
@@ -174,13 +174,14 @@ impl RoadSurfaceSystem {
                 .map(|segment| segment.inner_start)
                 .collect::<Vec<_>>();
             if Self::earthwork_signed_polygon_area_xz(&point_loop).abs()
-                <= f64::from(SAMPLE_EPSILON_M)
+                <= f64::from(super::super::NODE_OVERLAY_MIN_AREA_M2)
             {
                 crate::debug_log!(
                     "road",
-                    "owned_boundary_loop_degenerate area={} points={:?}",
+                    "owned_boundary_loop_degenerate area={} points={:?} segments={:?}",
                     Self::earthwork_signed_polygon_area_xz(&point_loop),
-                    point_loop
+                    point_loop,
+                    loop_segments
                 );
                 return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                     point_count: point_loop.len(),
@@ -328,6 +329,18 @@ mod tests {
                 .build_closed_earthwork_geometry_from_boundary_segments(&loops, &terrain, None)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn earthwork_loop_assembly_uses_the_shared_polygon_area_floor() {
+        let loops = RoadSurfaceSystem::owned_region_boundary_segment_loops(vec![
+            boundary_segment(0.0, 0.0, 0.01, 0.0),
+            boundary_segment(0.01, 0.0, 0.0, 0.01),
+            boundary_segment(0.0, 0.01, 0.0, 0.0),
+        ])
+        .expect("a 50 mm² closed roadbed exceeds the 1 mm² overlay area floor");
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].len(), 3);
     }
 
     #[test]

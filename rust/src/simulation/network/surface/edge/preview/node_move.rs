@@ -5,6 +5,58 @@
 use super::*;
 
 impl RoadSurfaceSystem {
+    /// Validates deformed incident profiles against the unchanged local road network.
+    /// No live state is touched, so refusal cannot retire lanes or consume undo history.
+    pub(crate) fn node_move_crossing_refusal(
+        &self,
+        source: &RegionGraph,
+        node: u32,
+        position: Vector3,
+    ) -> Option<RoadPreviewValidation> {
+        let mut graph = RegionGraph::new();
+        let mut nodes = HashMap::new();
+        let mut edges = HashMap::new();
+        let mut incident = source.node_adjacency(node).to_vec();
+        incident.sort_unstable();
+        incident.dedup();
+        for &id in &incident {
+            Self::copy_validation_graph_edge(&mut graph, source, &mut nodes, &mut edges, id, None);
+        }
+        let required_edges: Vec<_> = edges.values().copied().collect();
+        let required_nodes: Vec<_> = nodes.values().copied().collect();
+        self.complete_validation_surface_context(
+            &mut graph,
+            source,
+            &mut nodes,
+            &mut edges,
+            &required_edges,
+            &required_nodes,
+            None,
+        );
+        let local = *nodes.get(&node)?;
+        graph.move_node(local, position);
+        graph.rebuild_intersection_clips_for_nodes(&required_nodes.iter().copied().collect());
+        // The excerpt now owns these junction/profile inputs; do not also validate their
+        // pre-move source copies, which can carry different clip-derived band geometry.
+        let ignored: HashSet<_> = edges.keys().copied().collect();
+        for id in incident {
+            let Some(&local) = edges.get(&id) else {
+                continue;
+            };
+            if let Some(refusal) =
+                self.crossing_clearance_violation(&graph, local, source, &ignored)
+            {
+                return Some(refusal);
+            }
+            if let Some(refusal) =
+                self.crossing_clearance_violation(&graph, local, &graph, &HashSet::from([local]))
+            {
+                return Some(refusal);
+            }
+        }
+        None
+    }
+
     /// Compiles the moved node's roads and junctions without changing live graph or caches.
     /// An exact span conflict returns an intentionally partial surface sufficient to reject
     /// the move; otherwise required junctions are compiled before the caller checks their shapes.
@@ -46,7 +98,7 @@ impl RoadSurfaceSystem {
         required_edges.sort_unstable();
         let mut required_nodes: Vec<_> = nodes.values().copied().collect();
         required_nodes.sort_unstable();
-        Self::complete_validation_surface_context(
+        self.complete_validation_surface_context(
             &mut graph,
             source,
             &mut nodes,
@@ -69,6 +121,7 @@ impl RoadSurfaceSystem {
             let overlaps = piece
                 .surface_polygons()
                 .any(|quad| zoning.cells_overlap_road_points_world(quad.points()));
+            surface.retain_span_sections(&piece);
             surface
                 .compiled_visual_span_pieces
                 .insert(edge, Arc::new(piece));

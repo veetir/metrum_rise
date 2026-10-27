@@ -10,7 +10,8 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 
 impl RoadSurfaceSystem {
-    pub(super) fn collect_spatial_query_contributors_for_bounds(
+    /// Collects stable local owner IDs through the existing 32 m query grid.
+    pub(in crate::simulation::network::surface) fn collect_spatial_query_contributors_for_bounds(
         &self,
         min_x: f64,
         min_z: f64,
@@ -67,6 +68,7 @@ impl RoadSurfaceSystem {
         (edge_indices, node_ids)
     }
 
+    #[cfg(test)]
     pub(super) fn visit_visible_span_piece_triangles<F>(
         &self,
         piece: &RoadSurfaceVisualSpanPiece,
@@ -74,7 +76,11 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for region in piece.span_owned_regions.iter() {
+        for region in piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| piece.region_is_exterior(region))
+        {
             Self::visit_surface_triangles(
                 piece.region_quad(region).triangles().iter().copied(),
                 visitor,
@@ -91,6 +97,9 @@ impl RoadSurfaceSystem {
     {
         for polygon in piece.earthwork_surface_polygons() {
             Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+        if let Some(crossing) = &piece.filled_crossing {
+            Self::visit_surface_triangles(crossing.fill_triangles(), visitor);
         }
     }
 
@@ -110,6 +119,7 @@ impl RoadSurfaceSystem {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn visit_visible_node_piece_triangles<F>(
         &self,
         graph: &RegionGraph,
@@ -153,6 +163,7 @@ impl RoadSurfaceSystem {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn visit_visible_top_surface_query_triangles<Edges, Nodes, F>(
         &self,
         graph: &RegionGraph,

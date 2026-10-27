@@ -457,6 +457,11 @@ mod tests {
 
     fn test_edge(start_node: u32, end_node: u32) -> Edge {
         Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,

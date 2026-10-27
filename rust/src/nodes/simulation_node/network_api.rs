@@ -4,10 +4,246 @@
 
 use super::*;
 
+mod crossings;
+mod ramps;
 mod road_tool;
+mod roundabouts;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Selects the separator for subsequent immutable tool requests: 0 none, 1 paint,
+    /// 2 kerbed grass, 3 kerbed paving. Returns an empty string on success, else a reason.
+    #[func]
+    pub fn set_road_tool_median(&mut self, style: i32, width_m: f32) -> GString {
+        match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
+            Ok(median) => {
+                self.road_tool_median = median;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
+    /// Selects a tunnel profile without using the crossing layer to infer structure.
+    /// Grounded endpoints retain the submitted interior heights in all validation paths.
+    #[func]
+    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
+        self.road_tool_tunnel = tunnel;
+    }
+
+    /// Selects an explicit crossing layer; higher layers must pass above lower layers.
+    #[func]
+    pub fn set_road_tool_crossing_level(&mut self, level: i32) -> GString {
+        let Ok(level) = i16::try_from(level) else {
+            return "crossing_level_out_of_range".into();
+        };
+        self.road_tool_crossing_level = level;
+        GString::new()
+    }
+
+    /// Queues an in-place lane/median edit using the current tool selection; poll the returned
+    /// identity with `get_road_commit_result`, exactly as for drawing a road.
+    #[func]
+    pub fn change_road_cross_section(&mut self, edge: i32, fwd: i32, bkw: i32) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if edge < 0 || !(0..=4).contains(&fwd) || !(0..=4).contains(&bkw) {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_cross_section".into(),
+                detail: "invalid_cross_section".into(),
+            });
+        } else {
+            let _ = self.cmd_tx.send(
+                crate::nodes::sim::core::SimCommand::ChangeRoadCrossSection {
+                    edge: edge as usize,
+                    lanes: (fwd as u8, bkw as u8),
+                    median: self.road_tool_median,
+                    completion,
+                },
+            );
+        }
+        self.road_commit_request_id
+    }
+
+    /// Queues bus-only lane masks (bit zero innermost, forward then backward).
+    /// Importers translate busway/lanes:bus tags to these physical lane permissions.
+    /// Cars may cross a reserved ribbon through legal right-turn junction connectors.
+    #[func]
+    pub fn change_road_bus_lanes(
+        &mut self,
+        edge: i32,
+        forward_mask: i32,
+        backward_mask: i32,
+    ) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if let (Ok(edge), Ok(fwd), Ok(bkw)) = (
+            usize::try_from(edge),
+            u8::try_from(forward_mask),
+            u8::try_from(backward_mask),
+        ) {
+            let _ = self
+                .cmd_tx
+                .send(crate::nodes::sim::core::SimCommand::ChangeRoadBusLanes {
+                    edge,
+                    masks: [fwd, bkw],
+                    completion,
+                });
+        } else {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_bus_lane_mask".into(),
+                detail: "invalid_bus_lane_mask".into(),
+            });
+        }
+        self.road_commit_request_id
+    }
+
+    /// Adds road-end turn lanes through a hidden transition node; poll normal road completion.
+    #[func]
+    pub fn change_road_pocket(
+        &mut self,
+        edge: i32,
+        at_start: bool,
+        left: bool,
+        right: bool,
+        pocket_m: f32,
+        taper_m: f32,
+    ) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        if let Ok(edge) = usize::try_from(edge) {
+            let _ = self
+                .cmd_tx
+                .send(crate::nodes::sim::core::SimCommand::ChangeRoadPocket {
+                    edge,
+                    at_start,
+                    left,
+                    right,
+                    pocket_m,
+                    taper_m,
+                    completion,
+                });
+        } else {
+            let _ = completion.try_send(crate::nodes::sim::core::RoadCommitAck {
+                committed: false,
+                reason: "invalid_road".into(),
+                detail: "invalid_road".into(),
+            });
+        }
+        self.road_commit_request_id
+    }
+
+    /// Resolves the nearest stored road end and reports its authored pocket dimensions.
+    #[func]
+    pub fn get_road_pocket_selection(&self, world_x: f32, world_z: f32) -> VarDictionary {
+        let core = self.lock_core();
+        let id = core.get_hovered_edge_internal(world_x, world_z);
+        let Some(edge) = usize::try_from(id)
+            .ok()
+            .and_then(|id| core.region_graph.get_edge(id))
+            .filter(|e| !e.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        let p = Vector2::new(world_x, world_z);
+        let start = core.region_graph.node(edge.start_node).pos;
+        let end = core.region_graph.node(edge.end_node).pos;
+        let mut at_start = p.distance_squared_to(Vector2::new(start.x, start.z))
+            < p.distance_squared_to(Vector2::new(end.x, end.z));
+        let mut left = false;
+        let mut right = false;
+        let mut length = 80.0;
+        let mut taper = 35.0;
+        if let Some((profile_end, profile)) = edge.pocket_taper() {
+            at_start = profile_end == 1;
+            left = profile.left_pocket;
+            right = profile.right_pocket;
+            taper = profile.length_m;
+            length = edge.physical_length
+                - profile.length_m
+                - if at_start {
+                    edge.start_clip
+                } else {
+                    edge.end_clip
+                };
+        }
+        vdict! {"edge":id,"at_start":at_start,"left":left,"right":right,"pocket_m":length,"taper_m":taper}
+    }
+
+    /// Returns a nonmutating compiled endpoint preview; dimensions use the same operation as commit.
+    #[func]
+    pub fn preview_road_pocket(
+        &mut self,
+        edge: i32,
+        at_start: bool,
+        left: bool,
+        right: bool,
+        pocket_m: f32,
+        taper_m: f32,
+    ) -> VarDictionary {
+        self.pocket_preview_revision = self.pocket_preview_revision.wrapping_add(1).max(1);
+        let core = self.lock_core();
+        let mut result = VarDictionary::new();
+        let request = crate::simulation::network::pockets::PocketRequest {
+            edge: usize::try_from(edge).unwrap_or(usize::MAX),
+            at_start,
+            left,
+            right,
+            length: pocket_m,
+            taper: taper_m,
+        };
+        if let Ok(layout) =
+            crate::simulation::network::pockets::PocketLayout::prepare(&core.region_graph, request)
+            && let Some(reason) = core.pocket_layout_refusal(&layout)
+        {
+            result.set("is_valid", false);
+            result.set("invalid_reason", reason);
+            return result;
+        }
+        match core.transit_network.road_surface.compile_pocket_preview(
+            &core.region_graph,
+            &core.heightmap,
+            request,
+        ) {
+            Ok((scene, roads)) => {
+                result = self.local_layout_preview_result(&core, scene, &roads);
+            }
+            Err(reason) => {
+                result.set("is_valid", false);
+                result.set("invalid_reason", reason);
+            }
+        }
+        result.set(
+            "surface_generation",
+            self.get_road_tool_surface_generation(),
+        );
+        result
+    }
+
+    /// Returns the authored lane/median selection of a live road for inspection.
+    #[func]
+    pub fn get_road_cross_section(&self, edge: i32) -> VarDictionary {
+        let core = self.lock_core();
+        let Some(edge) = usize::try_from(edge)
+            .ok()
+            .and_then(|id| core.region_graph.get_edge(id))
+            .filter(|edge| !edge.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        vdict! { "fwd_lanes": i32::from(edge.fwd_lanes), "bkw_lanes": i32::from(edge.bkw_lanes),
+        "bus_forward_mask": i32::from(edge.bus_lanes[0]),
+        "bus_backward_mask": i32::from(edge.bus_lanes[1]),
+        "crossing_level": edge.crossing_level,
+        "median_style": edge.median.map_or(0, |median| median.style as i32),
+        "median_width": edge.median.map_or(0.0, |median| median.width_m) }
+    }
+
     /// Returns the ID of the edge hovered by the mouse.
     #[func]
     pub fn get_hovered_edge(&self, world_x: f32, world_z: f32) -> i32 {
@@ -75,6 +311,9 @@ impl SimulationNode {
         let send_ok = self
             .cmd_tx
             .send(crate::nodes::sim::core::SimCommand::AddRoad {
+                tunnel: self.road_tool_tunnel,
+                crossing_level: self.road_tool_crossing_level,
+                median: self.road_tool_median,
                 points,
                 fwd_lanes,
                 bkw_lanes,
@@ -410,11 +649,45 @@ impl SimulationNode {
         self.lock_core().clear_lane_connections_internal(node_id);
     }
 
+    /// Builds an immutable per-arm zebra preview, including median and terrain replacement.
+    #[func]
+    pub fn preview_crosswalk(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> VarDictionary {
+        self.pocket_preview_revision = self.pocket_preview_revision.wrapping_add(1).max(1);
+        let core = self.lock_core();
+        let preview = usize::try_from(edge_id)
+            .map_err(|_| "invalid_crosswalk_arm")
+            .and_then(|edge| {
+                core.transit_network.road_surface.compile_crosswalk_preview(
+                    &core.region_graph,
+                    &core.heightmap,
+                    node_id,
+                    edge,
+                    enabled,
+                )
+            });
+        match preview {
+            Ok((scene, roads)) => self.local_layout_preview_result(&core, scene, &roads),
+            Err(reason) => vdict! { "is_valid": false, "invalid_reason": reason },
+        }
+    }
+
     /// Toggles a user override for a crosswalk at a specific road mouth.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        self.lock_core()
-            .set_crosswalk_override_internal(node_id, edge_id, enabled);
+        let surface_changed = {
+            let mut core = self.lock_core();
+            let generation = core.road_tool_surface_generation;
+            core.set_crosswalk_override_internal(node_id, edge_id, enabled);
+            core.road_tool_surface_generation != generation
+        };
+        if surface_changed {
+            self.refresh_snapshot_from_core();
+        }
     }
 
     /// Returns true if a crosswalk exists natively or by user override.
@@ -447,5 +720,92 @@ impl SimulationNode {
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
+    }
+}
+
+impl SimulationNode {
+    fn local_layout_preview_result(
+        &self,
+        core: &crate::nodes::sim::core::SimCore,
+        mut scene: crate::simulation::network::render::road::preview::RoadJunctionPreview,
+        roads: &Arc<crate::simulation::network::surface::PlannedRoadSurfaceQuery>,
+    ) -> VarDictionary {
+        let mut result = VarDictionary::new();
+        // Compilation is synchronous: a missing product is a refusal, never pending work.
+        let terrain = core.compile_pocket_preview_terrain(roads);
+        if let Some(reason) = terrain
+            .as_ref()
+            .and_then(|terrain| terrain.failure_reason())
+        {
+            result.set("is_valid", false);
+            result.set("invalid_reason", "surface_geometry_invalid");
+            result.set("detail", reason);
+            return result;
+        }
+        let Some(patches) = terrain
+            .as_ref()
+            .and_then(|terrain| terrain.preview_patches())
+        else {
+            result.set("is_valid", false);
+            result.set("is_pending", false);
+            result.set(
+                "invalid_reason",
+                terrain
+                    .as_ref()
+                    .and_then(|terrain| terrain.failure_reason())
+                    .unwrap_or("surface_preview_terrain_incomplete"),
+            );
+            return result;
+        };
+        let mut payloads = Array::<VarDictionary>::new();
+        for patch in patches {
+            let mut data = if patch.input_road_loops == 0 {
+                Self::terrain_patch_dict(&patch.patch, &[])
+            } else {
+                Self::cached_refined_terrain_patch_dict(&patch, false, &[])
+            };
+            data.set(
+                "terrain_revision",
+                i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+            );
+            data.set(
+                "surface_generation",
+                i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
+            );
+            data.set("render_step_mm", i64::from(patch.key.render_step_mm));
+            data.set(
+                "terrain_requires_engineered_refinement",
+                patch.input_road_loops > 0,
+            );
+            payloads.push(&data);
+        }
+        result.set("terrain_preview", vdict! { "patches": payloads });
+
+        scene.source_mesh_generation = core.cached_road_mesh_generation;
+        let meshes = scene
+            .replacement_chunks
+            .iter()
+            .filter_map(|key| {
+                core.cached_road_mesh_chunks
+                    .get(key)
+                    .map(|mesh| (*key, Arc::clone(mesh)))
+            })
+            .collect();
+        scene.retain_existing(&meshes);
+        scene.retained_revision = self.pocket_preview_revision;
+        result.set("is_valid", true);
+        result.set(
+            "junction_preview",
+            Self::road_junction_preview_dict(&scene, core.road_tool_surface_generation, 0),
+        );
+        result.set(
+            "request_id",
+            i64::try_from(self.pocket_preview_revision).unwrap_or(i64::MAX),
+        );
+        result.set(
+            "surface_generation",
+            i64::try_from(core.road_tool_surface_generation).unwrap_or(i64::MAX),
+        );
+        result
     }
 }

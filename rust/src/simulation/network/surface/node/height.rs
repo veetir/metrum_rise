@@ -31,11 +31,13 @@ use std::collections::{BTreeMap, BTreeSet};
 mod authority;
 mod build;
 mod carriers;
+mod cohort;
 mod evaluate;
 mod field;
 mod grade;
 mod handoff;
 mod model;
+mod mouth_conformity;
 mod patch;
 mod seams;
 mod source_edges;
@@ -45,6 +47,7 @@ mod vertices;
 #[cfg(test)]
 mod tests;
 
+pub(in crate::simulation::network::surface) use grade::NodeMaterialGradeField;
 pub(crate) use grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 pub(crate) use model::{
     NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey, NodeHeightFieldError,

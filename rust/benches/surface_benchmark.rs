@@ -95,11 +95,14 @@ fn bench_surface_system(c: &mut Criterion) {
                 let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
                 assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 let mut graph = setup.graph.clone();
-                // Isolated surface input mutation; x/z geometry and its spatial index stay fixed.
+                // Keep the cold section authority coherent; mutation/index setup is untimed.
+                graph.remove_from_spatial_index(setup.dirty_edge);
                 let edge = graph.edge_mut(setup.dirty_edge);
                 edge.fwd_lanes += 1;
                 edge.width += config::LANE_WIDTH;
                 assert_ne!(edge.width, setup.graph.edge(setup.dirty_edge).width);
+                graph.add_to_spatial_index(setup.dirty_edge);
+                graph.validate_road_sections().unwrap();
                 (surface, graph)
             },
             |(surface, graph)| {
@@ -249,6 +252,11 @@ fn bench_edge(start_node: u32, end_node: u32, x: usize, z: usize, horizontal: bo
         .sum();
 
     Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node,
         end_node,
         primary_type: TransitType::Road,

@@ -702,3 +702,25 @@ fn junction_n_footprint_loop_preserves_piece_owned_constraints() {
     );
     assert_eq!(first.stats, second.stats);
 }
+
+#[test]
+fn long_source_contour_is_bounded_before_integer_topology_clipping() {
+    let road = TerrainCdtRoadLoop::new(
+        96,
+        0,
+        vec![
+            TerrainCdtVertex::new(-10_000.0, 1.0, 3.0),
+            TerrainCdtVertex::new(10_000.0, 1.0, 3.0),
+            TerrainCdtVertex::new(10_000.0, 1.0, 7.0),
+            TerrainCdtVertex::new(-10_000.0, 1.0, 7.0),
+        ],
+    );
+    let patch = TerrainCdtPatch::new(-32.0, 0.0, 32.0, 64.0, [0.0; 4]);
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road, patch);
+    assert_eq!(clipped.len(), 1);
+    assert_eq!(clipped[0].source_edges.len(), 2);
+    let mesh =
+        build_road_touched_terrain_patch(TerrainCdtInput::new(patch, clipped, Vec::new())).unwrap();
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+}

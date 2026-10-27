@@ -22,8 +22,14 @@ impl RoadSurfaceSystem {
         input: &NodeArrangementInput,
         rails: &NodeRailContourSet,
         ownership: &NodeBooleanOwnership,
+        grade: Option<&super::NodeMaterialGradeField>,
     ) -> Result<NodeHeightSolution, NodeHeightFieldError> {
-        NodeHeightSolution::from_ownership_input_and_rails(input, Some(rails), ownership)
+        NodeHeightSolution::from_ownership_input_and_rails_with_grade(
+            input,
+            Some(rails),
+            ownership,
+            grade,
+        )
     }
 }
 
@@ -33,20 +39,91 @@ impl NodeHeightSolution {
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
-        Self::from_ownership_input_and_rails(input, None, ownership)
+        Self::from_ownership_input_and_rails_with_grade(input, None, ownership, None)
     }
 
+    #[cfg(test)]
     pub(super) fn from_ownership_input_and_rails(
         input: &NodeArrangementInput,
         rails: Option<&NodeRailContourSet>,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
+        Self::from_ownership_input_and_rails_with_grade(input, rails, ownership, None)
+    }
+
+    pub(super) fn from_ownership_input_and_rails_with_grade(
+        input: &NodeArrangementInput,
+        rails: Option<&NodeRailContourSet>,
+        ownership: &NodeBooleanOwnership,
+        grade: Option<&super::NodeMaterialGradeField>,
+    ) -> Result<Self, NodeHeightFieldError> {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         validate_input_ownership_pair(input, ownership)?;
 
+        if let Some(grade) = grade.filter(|field| field.cohort_nodes().is_some()) {
+            // The ownership closure certifies every carrier point. Interior mouths are
+            // derived from this same grade and cannot supply an independent 3D carrier.
+            let error = || NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "cohort_grade_missing_source_carrier",
+            };
+            let mut regions = grade.height_regions(input, ownership).ok_or_else(error)?;
+            if !super::grade::apply_source_material_contact_grades(input, &mut regions, Some(grade))
+            {
+                return Err(error());
+            }
+            validate_explicit_material_seam_heights(&regions)?;
+            validate_shared_source_height_agreement(&regions)?;
+            return Ok(Self {
+                node_id: ownership.node_id,
+                piece_kind: ownership.piece_kind,
+                regions,
+            });
+        }
         let fields_start = road_debug.then(Instant::now);
-        let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
+        let mut fields = match height_fields_by_source_for_ownership(input, rails, Some(ownership))
+        {
+            Ok(fields) => fields,
+            Err(error) => {
+                if !matches!(
+                    &error,
+                    NodeHeightFieldError::InvalidHeightCarrierContour {
+                        reason: "height_carrier_invalid_constraint",
+                        ..
+                    }
+                ) {
+                    return Err(error);
+                }
+                // A curved wide mouth can fold an independently extended band carrier.
+                // The existing common grade already proves every material boundary; use
+                // it only when ownership certifies all source points and full validation
+                // still accepts the reconstructed height solution.
+                let built = grade
+                    .is_none()
+                    .then(|| super::NodeMaterialGradeField::for_input(input))
+                    .flatten();
+                let Some(field) = grade.or(built.as_ref()) else {
+                    return Err(error);
+                };
+                let Some(mut regions) = field.height_regions(input, ownership) else {
+                    return Err(error);
+                };
+                if !super::grade::apply_source_material_contact_grades(
+                    input,
+                    &mut regions,
+                    Some(field),
+                ) {
+                    return Err(error);
+                }
+                validate_explicit_material_seam_heights(&regions)?;
+                validate_shared_source_height_agreement(&regions)?;
+                return Ok(Self {
+                    node_id: ownership.node_id,
+                    piece_kind: ownership.piece_kind,
+                    regions,
+                });
+            }
+        };
         let fields_ms = elapsed_profile_ms(fields_start);
         // Ownership regions are already canonical and immutable at this stage. Their completeness
         // points feed both support registration and authority resolution, so compute the sorted
@@ -80,14 +157,16 @@ impl NodeHeightSolution {
         }
         let regions_ms = elapsed_profile_ms(regions_start);
         let normalization_start = road_debug.then(Instant::now);
-        match ownership.piece_kind {
-            RoadSurfaceVisualNodePieceKind::JunctionN => {
-                apply_junctionn_height_authority_normalization(&mut regions)?;
+        if !super::grade::apply_source_material_contact_grades(input, &mut regions, grade) {
+            match ownership.piece_kind {
+                RoadSurfaceVisualNodePieceKind::JunctionN => {
+                    apply_junctionn_height_authority_normalization(&mut regions)?;
+                }
+                RoadSurfaceVisualNodePieceKind::Bend => {
+                    apply_bend_height_authority_normalization(&mut regions)?;
+                }
+                RoadSurfaceVisualNodePieceKind::Terminal => {}
             }
-            RoadSurfaceVisualNodePieceKind::Bend => {
-                apply_bend_height_authority_normalization(&mut regions)?;
-            }
-            RoadSurfaceVisualNodePieceKind::Terminal => {}
         }
         let normalization_ms = elapsed_profile_ms(normalization_start);
         let seam_validation_start = road_debug.then(Instant::now);

@@ -402,6 +402,11 @@ fn graph_with_connected_border() -> RegionGraph {
     let border = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Border);
     let junction = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
     graph.add_edge(Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: border,
         end_node: junction,
         primary_type: TransitType::Road,

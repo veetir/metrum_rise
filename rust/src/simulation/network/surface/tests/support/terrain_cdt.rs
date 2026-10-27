@@ -3,6 +3,7 @@
 //! Terrain CDT export and provenance helpers for road-surface tests.
 
 use super::*;
+use crate::simulation::network::surface::RoadVec2;
 
 pub(in crate::simulation::network::surface::tests) fn terrain_cdt_input_for_bounds(
     terrain: &TerrainSystem,
@@ -347,17 +348,14 @@ pub(in crate::simulation::network::surface::tests) fn assert_cdt_mesh_stays_outs
             let a = mesh.vertices[triangle[0]];
             let b = mesh.vertices[triangle[1]];
             let c = mesh.vertices[triangle[2]];
-            Vector2::new(
-                ((a.x + b.x + c.x) / 3.0) as f32,
-                ((a.z + b.z + c.z) / 3.0) as f32,
-            )
+            RoadVec2::new((a.x + b.x + c.x) / 3.0, (a.z + b.z + c.z) / 3.0)
         };
         if let Some((loop_index, road_loop)) = road_loops
             .iter()
             .enumerate()
             .filter(|(_, road_loop)| !road_loop.is_hole)
             .find(|(_, road_loop)| {
-                road_loop_contains_road_owned_point_xz(road_loops, road_loop, center)
+                road_loop_contains_road_owned_point_xz_f64(road_loops, road_loop, center)
             })
         {
             panic!(
@@ -373,19 +371,31 @@ pub(in crate::simulation::network::surface::tests) fn road_loop_contains_road_ow
     outer_loop: &TerrainCdtRoadLoop,
     point: Vector2,
 ) -> bool {
-    if !terrain_cdt_loop_strictly_contains_point_xz(outer_loop, point) {
+    road_loop_contains_road_owned_point_xz_f64(
+        road_loops,
+        outer_loop,
+        RoadVec2::new(f64::from(point.x), f64::from(point.y)),
+    )
+}
+
+fn road_loop_contains_road_owned_point_xz_f64(
+    road_loops: &[TerrainCdtRoadLoop],
+    outer_loop: &TerrainCdtRoadLoop,
+    point: RoadVec2,
+) -> bool {
+    if !terrain_cdt_loop_strictly_contains_point_xz_f64(outer_loop, point) {
         return false;
     }
     !road_loops.iter().any(|candidate| {
         candidate.is_hole
             && candidate.footprint_group_id == outer_loop.footprint_group_id
-            && terrain_cdt_loop_strictly_contains_point_xz(candidate, point)
+            && terrain_cdt_loop_strictly_contains_point_xz_f64(candidate, point)
     })
 }
 
-pub(in crate::simulation::network::surface::tests) fn terrain_cdt_loop_strictly_contains_point_xz(
+fn terrain_cdt_loop_strictly_contains_point_xz_f64(
     road_loop: &TerrainCdtRoadLoop,
-    point: Vector2,
+    point: RoadVec2,
 ) -> bool {
     if road_loop.vertices.len() < 3 {
         return false;
@@ -394,14 +404,37 @@ pub(in crate::simulation::network::surface::tests) fn terrain_cdt_loop_strictly_
     for index in 0..road_loop.vertices.len() {
         let start = road_loop.vertices[index];
         let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
-        if (start.z as f32 > point.y) != (end.z as f32 > point.y) {
-            let edge_x_at_point_z = ((end.x - start.x) as f32) * (point.y - start.z as f32)
-                / ((end.z - start.z) as f32)
-                + start.x as f32;
+        if (start.z > point.y) != (end.z > point.y) {
+            let edge_x_at_point_z =
+                (end.x - start.x) * (point.y - start.z) / (end.z - start.z) + start.x;
             if point.x < edge_x_at_point_z {
                 inside = !inside;
             }
         }
     }
     inside
+}
+
+#[test]
+fn roadbed_ownership_assertions_keep_f64_precision_at_large_coordinates() {
+    let road = TerrainCdtRoadLoop::new(
+        1,
+        0,
+        vec![
+            TerrainCdtVertex::new(10000.0, 0.0, 10000.0),
+            TerrainCdtVertex::new(10000.0004, 0.0, 10000.0),
+            TerrainCdtVertex::new(10000.0004, 0.0, 10001.0),
+            TerrainCdtVertex::new(10000.0, 0.0, 10001.0),
+        ],
+    );
+    assert!(terrain_cdt_loop_strictly_contains_point_xz_f64(
+        &road,
+        RoadVec2::new(10000.0002, 10000.5)
+    ));
+    for x in [9999.9998, 10000.0006] {
+        assert!(!terrain_cdt_loop_strictly_contains_point_xz_f64(
+            &road,
+            RoadVec2::new(x, 10000.5)
+        ));
+    }
 }

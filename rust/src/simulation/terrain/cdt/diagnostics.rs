@@ -33,6 +33,99 @@ struct TerrainFaceMetrics {
     longest_edge_m: f32,
 }
 
+#[derive(Clone, Copy, Default)]
+struct RoadConstraintVertex {
+    boundary: bool,
+    materials: RoadBoundaryMaterials,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RoadBoundaryMaterials {
+    node: Option<(u32, TerrainCdtNodePieceKind)>,
+    owners: [bool; 4],
+    span: Option<u64>,
+    span_owners: [bool; 4],
+    span_handoff: bool,
+    incompatible: bool,
+}
+
+impl RoadBoundaryMaterials {
+    fn add_source(&mut self, source: TerrainCdtRoadBoundarySource) {
+        let mut other = Self::default();
+        let (kind, span_owner) = match source {
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id,
+                node_kind,
+                owner_kind,
+                boundary_source: Some(_),
+                ..
+            } => {
+                other.node = Some((node_id, node_kind));
+                (owner_kind, false)
+            }
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx,
+                edge_class: TerrainCdtEdgeClass::Standard,
+                support_policy: TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan,
+                band_kind,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+                ..
+            } => {
+                other.span = Some(edge_idx);
+                other.span_handoff =
+                    start_section_index == end_section_index && start_s_m == end_s_m;
+                (band_kind, true)
+            }
+            _ => {
+                self.incompatible = true;
+                return;
+            }
+        };
+        let slot = match kind {
+            TerrainCdtRoadBandKind::Carriageway => 0,
+            TerrainCdtRoadBandKind::CurbOrShoulder => 1,
+            TerrainCdtRoadBandKind::Sidewalk => 2,
+            TerrainCdtRoadBandKind::Median => 3,
+            _ => {
+                self.incompatible = true;
+                return;
+            }
+        };
+        if span_owner {
+            other.span_owners[slot] = true;
+        } else {
+            other.owners[slot] = true;
+        }
+        self.merge(other);
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.incompatible |= other.incompatible;
+        if let Some(node) = other.node {
+            self.incompatible |= self.node.is_some_and(|current| current != node);
+            self.node = Some(node);
+        }
+        if let Some(span) = other.span {
+            self.incompatible |= self.span.is_some_and(|current| current != span);
+            self.span = Some(span);
+        }
+        self.span_handoff |= other.span_handoff;
+        // Opposite carriageways are distinct band owners of the same span material.
+        for (owner, incoming) in self.span_owners.iter_mut().zip(other.span_owners) {
+            *owner |= incoming;
+        }
+        // A junction's material boundary changes band owner at each approach and
+        // corner. All incident rails still certify the same node's kerb return;
+        // an owner index is not a distinct terrain grade or a foreign junction.
+        for (owner, incoming) in self.owners.iter_mut().zip(other.owners) {
+            *owner |= incoming;
+        }
+    }
+}
+
 pub(super) fn terrain_face_diagnostics(
     vertices: &[TerrainCdtVertex],
     triangles: &[[usize; 3]],
@@ -58,10 +151,14 @@ pub(super) fn terrain_face_diagnostics(
         road_seam_face_samples: Vec::new(),
         retaining_wall_face_samples: Vec::new(),
     };
-    let mut road_constraint_vertices = vec![false; vertices.len()];
-    for edge in road_constraint_sources.keys() {
-        road_constraint_vertices[edge[0]] = true;
-        road_constraint_vertices[edge[1]] = true;
+    let mut road_constraint_vertices = vec![RoadConstraintVertex::default(); vertices.len()];
+    for (edge, source) in road_constraint_sources {
+        for &index in edge {
+            road_constraint_vertices[index].boundary = true;
+            road_constraint_vertices[index]
+                .materials
+                .add_source(source.boundary_source);
+        }
     }
 
     for triangle in triangles {
@@ -77,11 +174,27 @@ pub(super) fn terrain_face_diagnostics(
         );
         let touches_road_seam = !sources.is_empty();
         let metrics = terrain_face_metrics(points);
-        let kind = classify_terrain_tie_in_face(
-            &sources,
-            retaining_wall_required_sources,
-            metrics.max_slope_ratio,
-        );
+        let kerb_return = triangle
+            .iter()
+            .all(|&i| road_constraint_vertices[i].boundary)
+            && {
+                let mut materials = RoadBoundaryMaterials::default();
+                for &index in triangle {
+                    materials.merge(road_constraint_vertices[index].materials);
+                }
+                source_owned_kerb_return(points, &materials)
+            };
+        let kind = if kerb_return {
+            // The concrete bucket also owns finite-width returns at normal kerb corners.
+            // Their 120 mm step is not a slope of the surrounding source terrain.
+            TerrainCdtTieInKind::RetainingWall
+        } else {
+            classify_terrain_tie_in_face(
+                &sources,
+                retaining_wall_required_sources,
+                metrics.max_slope_ratio,
+            )
+        };
         #[cfg(test)]
         diagnostics.emitted_faces.push(TerrainCdtEmittedFace {
             triangle: *triangle,
@@ -144,12 +257,11 @@ pub(super) fn terrain_face_diagnostics(
 fn terrain_triangle_road_sources(
     triangle: &[usize; 3],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
-    road_constraint_vertices: &[bool],
+    road_constraint_vertices: &[RoadConstraintVertex],
 ) -> Vec<TerrainCdtRoadBoundarySource> {
-    if !triangle_edges(triangle)
-        .iter()
-        .any(|edge| road_constraint_vertices[edge.0] && road_constraint_vertices[edge.1])
-    {
+    if !triangle_edges(triangle).iter().any(|edge| {
+        road_constraint_vertices[edge.0].boundary && road_constraint_vertices[edge.1].boundary
+    }) {
         return Vec::new();
     }
     let mut sources = triangle_edges(triangle)
@@ -162,6 +274,111 @@ fn terrain_triangle_road_sources(
         .collect::<Vec<_>>();
     sort_dedup_terrain_cdt_boundary_sources(&mut sources);
     sources
+}
+
+fn source_owned_kerb_return(
+    points: [TerrainCdtVertex; 3],
+    materials: &RoadBoundaryMaterials,
+) -> bool {
+    if materials.incompatible
+        || materials.node.is_none()
+        || materials.span.is_some() && !materials.span_handoff
+        || (materials.owners[1..].iter().all(|&present| !present)
+            && materials.span_owners[1..].iter().all(|&present| !present))
+    {
+        return false;
+    }
+    let ax = points[1].x - points[0].x;
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let bz = points[2].z - points[0].z;
+    let longest_edge = (0..3)
+        .map(|i| edge_length_xz_m(points[i], points[(i + 1) % 3]))
+        .fold(0.0_f64, f64::max);
+    // Opposite rails need not use the same longitudinal station. The return's
+    // perpendicular thickness, not its endpoint separation, bounds the kerb face.
+    if longest_edge == 0.0
+        || (ax * bz - az * bx).abs() / longest_edge > CDT_EPSILON_M
+        || terrain_face_plane_slope_ratio(points) <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO
+    {
+        return false;
+    }
+    let step_key = quantized_coord(f64::from(
+        crate::simulation::network::surface::CURB_STEP_HEIGHT_M,
+    ));
+    let height_keys = points.map(|point| quantized_coord(f64::from(point.height_m)));
+    // Test all nonuniform assignments of the source-declared 0/120 mm levels.
+    // Longitudinal grade can make either material's sampled station higher;
+    // raw endpoint height order does not identify the material level.
+    for raised in 1_usize..7 {
+        let base = std::array::from_fn(|i| {
+            height_keys[i]
+                - if raised & (1_usize << i) != 0 {
+                    step_key
+                } else {
+                    0
+                }
+        });
+        if height_keys_admit_ground_grade(points, base) {
+            return true;
+        }
+    }
+    false
+}
+
+fn height_keys_admit_ground_grade(points: [TerrainCdtVertex; 3], heights: [i64; 3]) -> bool {
+    let min = heights[0].min(heights[1]).min(heights[2]);
+    let max = heights[0].max(heights[1]).max(heights[2]);
+    if max.abs_diff(min) <= 1 {
+        return true;
+    }
+    let ax = points[1].x - points[0].x;
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let bz = points[2].z - points[0].z;
+    let determinant = ax * bz - az * bx;
+    if determinant == 0.0 {
+        return false;
+    }
+    // Each source key represents one millimetre rounding cell. The eight corners
+    // of their height box map linearly to a convex polygon of plane gradients.
+    // A flat plane is possible exactly when all three height cells intersect
+    // (handled above). Otherwise the least slope is on this polygon's boundary;
+    // its edges are among the 28 segments joining projected box corners.
+    let gradients: [[f64; 2]; 8] = std::array::from_fn(|bits| {
+        let offset = |i: usize| {
+            if bits & (1_usize << i) == 0_usize {
+                -0.5
+            } else {
+                0.5
+            }
+        };
+        let ay = (heights[1] as f64 - heights[0] as f64 + offset(1) - offset(0)) * CDT_EPSILON_M;
+        let by = (heights[2] as f64 - heights[0] as f64 + offset(2) - offset(0)) * CDT_EPSILON_M;
+        [
+            (ay * bz - by * az) / determinant,
+            (ax * by - bx * ay) / determinant,
+        ]
+    });
+    let limit_squared = f64::from(MAX_TERRAIN_TIE_IN_SLOPE_RATIO).powi(2);
+    let norm_squared = |g: [f64; 2]| g[0] * g[0] + g[1] * g[1];
+    for (i, &start) in gradients.iter().enumerate() {
+        if norm_squared(start) <= limit_squared {
+            return true;
+        }
+        for &end in &gradients[i + 1..] {
+            let delta = [end[0] - start[0], end[1] - start[1]];
+            let length_squared = norm_squared(delta);
+            if length_squared == 0.0 {
+                continue;
+            }
+            let t = (-(start[0] * delta[0] + start[1] * delta[1]) / length_squared).clamp(0.0, 1.0);
+            if norm_squared([start[0] + t * delta[0], start[1] + t * delta[1]]) <= limit_squared {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn classify_terrain_tie_in_face(
@@ -204,8 +421,11 @@ pub(super) fn terrain_cdt_boundary_source_allows_retaining_wall(
             support_policy,
             ..
         } => {
-            edge_class != TerrainCdtEdgeClass::Standard
-                || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+            // The concrete tunnel shell owns retention along this roof/wing rail.
+            // Its neighboring terrain faces are ground, not a second retaining mesh.
+            support_policy != TerrainCdtEarthworkSupportPolicy::TunnelPortalRoof
+                && (edge_class != TerrainCdtEdgeClass::Standard
+                    || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan)
         }
         TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
         | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. } => false,
@@ -615,4 +835,170 @@ pub(super) fn sort_dedup_terrain_cdt_boundary_sources(
 ) {
     sources.sort_by(|a, b| terrain_cdt_boundary_source_cmp(*a, *b));
     sources.dedup_by(|a, b| terrain_cdt_boundary_source_cmp(*a, *b).is_eq());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kerb_returns_require_one_source_node_and_the_declared_step() {
+        let points = [
+            TerrainCdtVertex::new(0.0, 20.0, 0.0),
+            TerrainCdtVertex::new(0.0004, 20.12, 0.0),
+            TerrainCdtVertex::new(0.0, 20.125, 3.5),
+        ];
+        let source = TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            node_id: 3,
+            node_kind: TerrainCdtNodePieceKind::JunctionN,
+            owner_kind: TerrainCdtRoadBandKind::CurbOrShoulder,
+            owner_index: 4,
+            boundary_source: Some(TerrainCdtNodeFootprintBoundarySegmentSource {
+                start: TerrainCdtNodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: 0,
+                    z_key: 0,
+                    y_mm: 20_000,
+                },
+                end: TerrainCdtNodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: 400,
+                    z_key: 0,
+                    y_mm: 20_120,
+                },
+            }),
+        };
+        let materials = |sources: &[TerrainCdtRoadBoundarySource]| {
+            let mut materials = RoadBoundaryMaterials::default();
+            for &source in sources {
+                materials.add_source(source);
+            }
+            materials
+        };
+        assert!(source_owned_kerb_return(points, &materials(&[source])));
+        let elevated = [
+            TerrainCdtVertex::new(-666.099032, 102.288, 1666.876382),
+            TerrainCdtVertex::new(-666.099033, 102.408, 1666.876382),
+            TerrainCdtVertex::new(-665.385927, 102.219, 1669.740489),
+        ];
+        assert!(
+            source_owned_kerb_return(elevated, &materials(&[source])),
+            "material-step proof must be invariant under the source elevation"
+        );
+        let span = |edge_idx, source_band_index, handoff| {
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx,
+                edge_class: TerrainCdtEdgeClass::Standard,
+                support_policy: TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan,
+                source_band_index,
+                band_kind: TerrainCdtRoadBandKind::Carriageway,
+                role: TerrainCdtSpanRegionRole::Asphalt,
+                start_section_index: 5,
+                end_section_index: if handoff { 5 } else { 6 },
+                start_s_m: 11.0,
+                end_s_m: if handoff { 11.0 } else { 12.0 },
+            }
+        };
+        assert!(source_owned_kerb_return(
+            elevated,
+            &materials(&[source, span(929, 2, true), span(929, 3, true)])
+        ));
+        assert!(!source_owned_kerb_return(
+            elevated,
+            &materials(&[source, span(929, 2, false)])
+        ));
+        assert!(!source_owned_kerb_return(
+            elevated,
+            &materials(&[source, span(929, 2, true), span(930, 2, true)])
+        ));
+        let mut adjacent_owner = source;
+        if let TerrainCdtRoadBoundarySource::NodeFootprintBoundary { owner_index, .. } =
+            &mut adjacent_owner
+        {
+            *owner_index += 1;
+        }
+        assert!(source_owned_kerb_return(
+            points,
+            &materials(&[source, adjacent_owner]),
+        ));
+        // Exact source corners from the four imported-map tiles that exposed this.
+        for points in [
+            [
+                TerrainCdtVertex::new(-1044.675267, 99.575, 2134.690785),
+                TerrainCdtVertex::new(-1044.675360, 99.455, 2134.690743),
+                TerrainCdtVertex::new(-1044.674984, 99.575, 2134.690173),
+            ],
+            [
+                TerrainCdtVertex::new(-836.277558, 95.774, 2734.670418),
+                TerrainCdtVertex::new(-836.277557, 95.654, 2734.670417),
+                TerrainCdtVertex::new(-836.253684, 95.774, 2734.694337),
+            ],
+            [
+                TerrainCdtVertex::new(898.785735, 105.121, 1286.329947),
+                TerrainCdtVertex::new(898.791567, 105.241, 1286.374503),
+                TerrainCdtVertex::new(898.785734, 105.241, 1286.329946),
+            ],
+            [
+                TerrainCdtVertex::new(-71.956634, 94.768, 1137.966879),
+                TerrainCdtVertex::new(-71.945855, 94.768, 1137.978493),
+                TerrainCdtVertex::new(-71.956635, 94.648, 1137.966880),
+            ],
+        ] {
+            assert!(source_owned_kerb_return(
+                points,
+                &materials(&[source, adjacent_owner]),
+            ));
+        }
+        let mut cliff = points;
+        cliff[1].height_m += 0.5;
+        assert!(!source_owned_kerb_return(cliff, &materials(&[source])));
+        let mut gap = points;
+        gap[1].x = 0.002;
+        assert!(!source_owned_kerb_return(gap, &materials(&[source])));
+        let mut unrelated = source;
+        if let TerrainCdtRoadBoundarySource::NodeFootprintBoundary { node_id, .. } = &mut unrelated
+        {
+            *node_id += 1;
+        }
+        assert!(!source_owned_kerb_return(
+            points,
+            &materials(&[source, unrelated])
+        ));
+        let mut unsourced = source;
+        if let TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            boundary_source, ..
+        } = &mut unsourced
+        {
+            *boundary_source = None;
+        }
+        assert!(!source_owned_kerb_return(points, &materials(&[unsourced])));
+    }
+    #[test]
+    fn kerb_return_uses_normal_thickness_and_quantized_ground_grade() {
+        // Exact node-131 return from the university full-width reconstruction.
+        let points = [
+            TerrainCdtVertex::new(-445.934807, 88.122, 2141.990994),
+            TerrainCdtVertex::new(-445.938171, 88.001, 2141.990471),
+            TerrainCdtVertex::new(-434.499753, 88.367, 2143.136390),
+        ];
+        let materials = RoadBoundaryMaterials {
+            node: Some((131, TerrainCdtNodePieceKind::JunctionN)),
+            owners: [true, true, false, false],
+            ..RoadBoundaryMaterials::default()
+        };
+        assert!(source_owned_kerb_return(points, &materials));
+        let graded_stations = [
+            TerrainCdtVertex::new(0.0, 20.0, 0.0),
+            TerrainCdtVertex::new(0.02, 20.122, 0.0002),
+            TerrainCdtVertex::new(10.0, 21.12, 0.0),
+        ];
+        assert!(source_owned_kerb_return(graded_stations, &materials));
+        let mut unsupported_step = points;
+        unsupported_step[0].height_m += 0.005;
+        assert!(!source_owned_kerb_return(unsupported_step, &materials));
+        let mut wide_gap = points;
+        wide_gap[0].z += 0.01;
+        assert!(!source_owned_kerb_return(wide_gap, &materials));
+        let mut impossible_ground = points;
+        impossible_ground[2].height_m += 100.0;
+        assert!(!source_owned_kerb_return(impossible_ground, &materials));
+    }
 }

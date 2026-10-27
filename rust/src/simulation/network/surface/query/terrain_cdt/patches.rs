@@ -388,71 +388,94 @@ impl RoadSurfaceSystem {
         max_x: f32,
         max_z: f32,
     ) -> Vec<Cow<'a, RoadSurfaceTerrainClipLoop>> {
-        let mut boundary_loops = Vec::new();
-        let (edge_indices, node_ids) = self.collect_spatial_query_contributors_for_bounds(
-            f64::from(min_x),
-            f64::from(min_z),
-            f64::from(max_x),
-            f64::from(max_z),
-        );
-
-        for edge_idx in edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            // Span loops are stored compactly; rebuild only those overlapping the query.
-            for clip_loop in &piece.terrain_clip_loops {
-                if Self::visual_points_overlap_bounds_xz(
-                    clip_loop.points().iter().copied(),
-                    min_x,
-                    min_z,
-                    max_x,
-                    max_z,
-                ) {
-                    boundary_loops.push(Cow::Owned(piece.terrain_clip_boundary_loop(clip_loop)));
+        let mut span_loops = BTreeSet::new();
+        let mut node_loops = BTreeSet::new();
+        let mut queries = vec![(min_x, min_z, max_x, max_z)];
+        let mut cursor = 0;
+        // Node cutouts are exported whole. Complete their overlapping footprint
+        // cohort so an omitted neighbour cannot expose a buried exterior outside
+        // the requested window. Each loop expands once through the existing index.
+        // Span loops never expand: their owner may extend across the entire city.
+        while cursor < queries.len() {
+            let (min_x, min_z, max_x, max_z) = queries[cursor];
+            cursor += 1;
+            let (edges, nodes) = self.collect_spatial_query_contributors_for_bounds(
+                f64::from(min_x),
+                f64::from(min_z),
+                f64::from(max_x),
+                f64::from(max_z),
+            );
+            for edge in edges {
+                let Some(piece) = self.compiled_visual_span_pieces.get(&edge) else {
+                    continue;
+                };
+                for (index, clip_loop) in piece.terrain_clip_loops.iter().enumerate() {
+                    if !span_loops.contains(&(edge, index))
+                        && Self::visual_points_overlap_bounds_xz(
+                            clip_loop.points().iter().copied(),
+                            min_x,
+                            min_z,
+                            max_x,
+                            max_z,
+                        )
+                    {
+                        span_loops.insert((edge, index));
+                    }
+                }
+            }
+            for node in nodes {
+                let Some(piece) = self.compiled_visual_node_pieces.get(&node) else {
+                    continue;
+                };
+                if !self.node_has_terrain_clip_surface_edges(graph, node) {
+                    continue;
+                }
+                for (index, boundary) in piece.terrain_clip_boundary_loops.iter().enumerate() {
+                    if node_loops.contains(&(node, index))
+                        || !Self::visual_points_overlap_bounds_xz(
+                            boundary.points_world.iter().copied(),
+                            min_x,
+                            min_z,
+                            max_x,
+                            max_z,
+                        )
+                    {
+                        continue;
+                    }
+                    node_loops.insert((node, index));
+                    let Some((x0, z0, x1, z1)) =
+                        Self::terrain_clip_points_bounds_xz(&boundary.points_world)
+                    else {
+                        continue;
+                    };
+                    if x0 < f64::from(min_x)
+                        || z0 < f64::from(min_z)
+                        || x1 > f64::from(max_x)
+                        || z1 > f64::from(max_z)
+                    {
+                        queries.push((
+                            (x0 as f32).next_down(),
+                            (z0 as f32).next_down(),
+                            (x1 as f32).next_up(),
+                            (z1 as f32).next_up(),
+                        ));
+                    }
                 }
             }
         }
-
-        for node_id in node_ids {
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
-                continue;
-            }
-            Self::collect_terrain_clip_boundary_loops_from_piece(
-                &piece.terrain_clip_boundary_loops,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-                &mut boundary_loops,
-            );
+        let mut boundary_loops = Vec::with_capacity(span_loops.len() + node_loops.len());
+        for (edge, index) in span_loops {
+            let piece = &self.compiled_visual_span_pieces[&edge];
+            boundary_loops.push(Cow::Owned(
+                piece.terrain_clip_boundary_loop(&piece.terrain_clip_loops[index]),
+            ));
         }
-
+        for (node, index) in node_loops {
+            boundary_loops.push(Cow::Borrowed(
+                &self.compiled_visual_node_pieces[&node].terrain_clip_boundary_loops[index],
+            ));
+        }
         boundary_loops
-    }
-
-    fn collect_terrain_clip_boundary_loops_from_piece<'a>(
-        source: &'a [RoadSurfaceTerrainClipLoop],
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-        out: &mut Vec<Cow<'a, RoadSurfaceTerrainClipLoop>>,
-    ) {
-        for boundary_loop in source {
-            if Self::visual_points_overlap_bounds_xz(
-                boundary_loop.points_world.iter().copied(),
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            ) {
-                out.push(Cow::Borrowed(boundary_loop));
-            }
-        }
     }
 
     fn visual_points_overlap_bounds_xz(

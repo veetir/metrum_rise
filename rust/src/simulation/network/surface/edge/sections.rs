@@ -10,7 +10,7 @@ use super::polyline::SpanTangentFrame;
 use super::{EdgeMouthPolicy, EdgeProfilePlaneBlend};
 use crate::config;
 use crate::simulation::network::graph::rebuild::{
-    JUNCTION_PROFILE_BLEND_ZONE_M, JunctionEndpointProfilePlane,
+    JUNCTION_PROFILE_BLEND_ZONE_M, JUNCTION_PROFILE_REJECT_MAX_GRADE, JunctionEndpointProfilePlane,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
@@ -20,7 +20,7 @@ const STANDARD_SECTION_STEP_M: f32 = 8.0;
 const BRIDGE_SECTION_STEP_M: f32 = 12.0;
 const TUNNEL_SECTION_STEP_M: f32 = 10.0;
 const PROFILE_TRANSITION_SECTION_STEP_M: f32 = 2.0;
-const PROTECTED_SECTION_SAMPLE_CLEARANCE_M: f32 = 0.125;
+pub(super) const PROTECTED_SECTION_SAMPLE_CLEARANCE_M: f32 = 0.125;
 const WIDTH_CHANGE_TAPER_MIN_M: f32 = 12.0;
 const WIDTH_CHANGE_TAPER_MAX_M: f32 = 28.0;
 const WIDTH_CHANGE_TAPER_WIDTH_FACTOR: f32 = 3.0;
@@ -49,8 +49,41 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         edge_idx: usize,
     ) -> Vec<RoadSurfaceSection> {
+        // Divided approaches expose their median noses at the actual offset-rail
+        // conflict. Sample the derivative on the real nonuniform knot spacing from
+        // the outset, including for independently rebuilt layered-crossing shells.
+        // A later frame retry cannot safely disagree with those structural producers.
+        let nonuniform = graph.edge(edge_idx).median.is_some();
+        self.compile_edge_sections_with_tangent_frame(graph, edge_idx, nonuniform, false)
+    }
+
+    /// Rebuilds span-knot frames while retaining the exact source mouths and center stations.
+    pub(in crate::simulation::network::surface) fn compile_edge_sections_with_tangent_frame(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        nonuniform_knots: bool,
+        endpoint_loft: bool,
+    ) -> Vec<RoadSurfaceSection> {
+        self.compile_edge_sections_with_profile(
+            graph,
+            edge_idx,
+            nonuniform_knots,
+            endpoint_loft,
+            false,
+        )
+    }
+
+    fn compile_edge_sections_with_profile(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        nonuniform_knots: bool,
+        endpoint_loft: bool,
+        reconcile_crossfall: bool,
+    ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
-        let points: Vec<RoadVec3> = self
+        let mut points: Vec<RoadVec3> = self
             .edge_points(edge)
             .iter()
             .copied()
@@ -71,11 +104,31 @@ impl RoadSurfaceSystem {
                 center_height_m,
                 tangent_xz,
                 lateral_xz,
-                bands: self.build_lateral_bands(edge, center, lateral_xz, None, None),
+                bands: self.build_lateral_bands(
+                    edge,
+                    center,
+                    lateral_xz,
+                    None,
+                    None,
+                    1.0,
+                    Some(0.0),
+                ),
             }];
         }
 
         let cumulative = self.build_cumulative_distances(&points);
+        if let Some((start_height, grade)) = graph.resolved_short_junction_link_grade(edge_idx) {
+            // Retain the source station lattice and XZ alignment. Both endpoint planes
+            // sample this same coupled grade, rather than pinning incompatible windows.
+            let mut station = 0.0_f32;
+            let mut previous = points[0];
+            for point in &mut points {
+                station +=
+                    RoadVec2::new(point.x - previous.x, point.z - previous.z).length() as f32;
+                previous = *point;
+                point.y = f64::from(start_height + grade * station);
+            }
+        }
         let total_length_m = *cumulative.last().unwrap_or(&0.0);
         let (start_kind, start_pass_through_tangent) =
             self.section_endpoint_kind_and_tangent(graph, edge_idx, edge, true);
@@ -113,14 +166,37 @@ impl RoadSurfaceSystem {
         );
         let width_tapers =
             self.edge_width_tapers_for_width_change_node(graph, edge_idx, edge, total_length_m);
-        let sample_distances = self.build_section_sample_distances(
+        let median_ends = super::median::MedianEnds::for_edge(
+            graph,
+            edge_idx,
+            total_length_m,
+            mouth_policy.ownership_range,
+        );
+        let mut sample_distances = self.build_section_sample_distances(
             edge,
             &cumulative,
             mouth_policy,
-            start_profile_plane.is_some(),
-            end_profile_plane.is_some(),
+            (start_profile_plane.is_some(), end_profile_plane.is_some()),
             width_tapers,
+            median_ends,
         );
+        if let Some(ends) = &edge.lane_tapers {
+            for (end, taper) in ends.iter().enumerate() {
+                if let Some(taper) = taper {
+                    let steps = (taper.length_m / 2.0).ceil() as usize;
+                    for step in 0..=steps {
+                        let distance = taper.length_m * step as f32 / steps as f32;
+                        sample_distances.push(if end == 0 {
+                            distance
+                        } else {
+                            total_length_m - distance
+                        });
+                    }
+                }
+            }
+            sample_distances.sort_by(f32::total_cmp);
+            sample_distances.dedup_by(|a, b| (*a - *b).abs() < 0.125);
+        }
         let span_frame = mouth_policy.ownership_range.map(|(start_s_m, end_s_m)| {
             let mut start_tangent = self
                 .sample_polyline(&points, &cumulative, start_s_m, None)
@@ -133,28 +209,73 @@ impl RoadSurfaceSystem {
                 end_tangent = end_pass_through_tangent.unwrap_or(end_tangent);
             }
             SpanTangentFrame {
+                nonuniform_knots,
                 start_s_m,
                 end_s_m,
                 start_tangent,
                 end_tangent,
             }
         });
-        sample_distances
+        let transport_axis = if endpoint_loft {
+            let delta = points[points.len() - 1] - points[0];
+            let axis = RoadVec2::new(delta.x, delta.z).normalize_or_zero();
+            if axis.length_squared() == 0.0
+                || !points.windows(2).all(|pair| {
+                    let delta = pair[1] - pair[0];
+                    RoadVec2::new(delta.x, delta.z).dot(axis) > 0.0
+                })
+            {
+                return Vec::new();
+            }
+            let start = start_pass_through_tangent
+                .unwrap_or_else(|| self.sample_polyline(&points, &cumulative, 0.0, None).1);
+            let end = end_pass_through_tangent.unwrap_or_else(|| {
+                self.sample_polyline(&points, &cumulative, total_length_m, None)
+                    .1
+            });
+            Some((start, end))
+        } else {
+            None
+        };
+        let sections: Vec<RoadSurfaceSection> = sample_distances
             .into_iter()
             .map(|s_m| {
                 let (center, sampled_tangent_xz) =
                     self.sample_polyline(&points, &cumulative, s_m, span_frame.as_ref());
-                let tangent_xz = if s_m <= SAMPLE_EPSILON_M {
+                let sampled_tangent_xz = transport_axis
+                    .map_or(sampled_tangent_xz, |(start, end)| {
+                        start.lerp(end, f64::from(s_m / total_length_m)).normalize()
+                    });
+                let mut tangent_xz = if s_m <= SAMPLE_EPSILON_M {
                     start_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else if total_length_m - s_m <= SAMPLE_EPSILON_M {
                     end_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else {
                     sampled_tangent_xz
                 };
+                if edge.median.is_some()
+                    && let Some((start_s, end_s)) = mouth_policy.ownership_range
+                {
+                    if let Some(tangent) = start_pass_through_tangent.filter(|_| s_m < start_s) {
+                        tangent_xz = tangent
+                            .lerp(sampled_tangent_xz, f64::from(s_m / start_s))
+                            .normalize();
+                    }
+                    if let Some(tangent) = end_pass_through_tangent.filter(|_| s_m > end_s) {
+                        tangent_xz = tangent
+                            .lerp(
+                                sampled_tangent_xz,
+                                f64::from((total_length_m - s_m) / (total_length_m - end_s)),
+                            )
+                            .normalize();
+                    }
+                }
                 let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x).normalize();
                 let profile_blend = mouth_policy.profile_range.and_then(|profile| {
                     Self::edge_profile_blend_for_section(
                         s_m,
+                        (edge.class == EdgeClass::Standard && reconcile_crossfall)
+                            .then_some(total_length_m),
                         profile,
                         start_profile_plane,
                         end_profile_plane,
@@ -191,10 +312,30 @@ impl RoadSurfaceSystem {
                             s_m,
                             width_tapers,
                         )),
+                        median_ends.scale(s_m),
+                        Some(s_m),
                     ),
                 }
             })
-            .collect()
+            .collect();
+        if !reconcile_crossfall
+            && edge.class == EdgeClass::Standard
+            && start_profile_plane.is_some()
+            && end_profile_plane.is_some()
+            && mouth_policy
+                .profile_range
+                .is_some_and(|(start, end)| end - start < 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M)
+            && crossfall_transition_exceeds_grade_bound(&sections)
+        {
+            return self.compile_edge_sections_with_profile(
+                graph,
+                edge_idx,
+                nonuniform_knots,
+                endpoint_loft,
+                true,
+            );
+        }
+        sections
     }
 
     fn section_endpoint_kind_and_tangent(
@@ -213,8 +354,13 @@ impl RoadSurfaceSystem {
         if incidents.is_empty() {
             return (None, None);
         }
-        let kind = self.classify_visual_node_kind(&incidents);
-        if kind != CompiledNodeKind::PassThrough {
+        let kind = self.classify_visual_node_kind(graph, &incidents);
+        // Continuing medians need one shared endpoint cross-section through a bend. Without
+        // the bisector frame, the two inner kerbs overlap at the node's distinct road axes.
+        let median_bend = kind == CompiledNodeKind::Bend
+            && edge.median.is_some()
+            && graph.median_continues_at_node(edge_idx, node_id);
+        if kind != CompiledNodeKind::PassThrough && !median_bend {
             return (Some(kind), None);
         }
 
@@ -254,12 +400,22 @@ impl RoadSurfaceSystem {
 
     fn edge_profile_blend_for_section(
         s_m: f32,
+        grounded_length_m: Option<f32>,
         profile_range: (f32, f32),
         start_profile_plane: Option<JunctionEndpointProfilePlane>,
         end_profile_plane: Option<JunctionEndpointProfilePlane>,
     ) -> Option<EdgeProfilePlaneBlend> {
         let (start_profile_s_m, end_profile_s_m) = profile_range;
         let span_m = (end_profile_s_m - start_profile_s_m).max(0.0);
+        if span_m < 2.0 * JUNCTION_PROFILE_BLEND_ZONE_M
+            && let Some(length) = grounded_length_m.filter(|&length| length > SAMPLE_EPSILON_M)
+            && let (Some(start), Some(end)) = (start_profile_plane, end_profile_plane)
+        {
+            // Ownership may reserve all but half a metre for neighboring junctions.
+            // Crossfall is a physical profile: do not squeeze two fades into that sliver.
+            let t = Self::smootherstep((s_m / length).clamp(0.0, 1.0));
+            return EdgeProfilePlaneBlend::new(start.interpolate(end, t), 1.0);
+        }
         let fade_m = JUNCTION_PROFILE_BLEND_ZONE_M.min(span_m * 0.5);
 
         let start_blend = start_profile_plane.and_then(|plane| {
@@ -408,6 +564,8 @@ impl RoadSurfaceSystem {
 
     fn edge_supports_width_change_taper(edge: &Edge) -> bool {
         !edge.deleted
+            && edge.lane_tapers.is_none()
+            && edge.median.is_none()
             && edge.class == EdgeClass::Standard
             && edge.primary_type == TransitType::Road
             && edge.allowed_types & TransitFlags::CAR != 0
@@ -488,10 +646,11 @@ impl RoadSurfaceSystem {
         edge: &Edge,
         cumulative: &[f32],
         mouth_policy: EdgeMouthPolicy,
-        has_start_profile: bool,
-        has_end_profile: bool,
+        profile_ends: (bool, bool),
         width_tapers: EdgeWidthTapers,
+        median_ends: super::median::MedianEnds,
     ) -> Vec<f32> {
+        let (has_start_profile, has_end_profile) = profile_ends;
         let Some(&total_length) = cumulative.last() else {
             return vec![0.0];
         };
@@ -602,6 +761,9 @@ impl RoadSurfaceSystem {
             }
         }
 
+        if edge.median.is_some() {
+            median_ends.add_samples(&mut samples, total_length, &protected_samples);
+        }
         samples.sort_by(f32::total_cmp);
         samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
         samples
@@ -724,6 +886,44 @@ impl RoadSurfaceSystem {
     }
 }
 
+// Longitudinal source grades remain authoritative. This certifies only the extra
+// rendered edge grade when the longitudinal source itself remains inside the bound.
+fn crossfall_transition_exceeds_grade_bound(sections: &[RoadSurfaceSection]) -> bool {
+    sections.windows(2).any(|pair| {
+        let source_run = (pair[1].center_xz - pair[0].center_xz).length();
+        let source_rise = f64::from((pair[1].center_height_m - pair[0].center_height_m).abs());
+        if source_rise > source_run * f64::from(JUNCTION_PROFILE_REJECT_MAX_GRADE) + 0.001 {
+            return false;
+        }
+        pair[0].bands.iter().zip(&pair[1].bands).any(|(a, b)| {
+            if a.kind != super::super::RoadSurfaceBandKind::Carriageway {
+                return false;
+            }
+            [
+                (
+                    a.lateral_start_m,
+                    a.height_start_m,
+                    b.lateral_start_m,
+                    b.height_start_m,
+                ),
+                (
+                    a.lateral_end_m,
+                    a.height_end_m,
+                    b.lateral_end_m,
+                    b.height_end_m,
+                ),
+            ]
+            .into_iter()
+            .any(|(la, ya, lb, yb)| {
+                let rise = f64::from((yb - ya).abs());
+                let xz_a = pair[0].center_xz + pair[0].lateral_xz * f64::from(la);
+                let xz_b = pair[1].center_xz + pair[1].lateral_xz * f64::from(lb);
+                rise > (xz_b - xz_a).length() * f64::from(JUNCTION_PROFILE_REJECT_MAX_GRADE) + 0.001
+            })
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,6 +936,11 @@ mod tests {
             .map(|segment| segment[0].distance_to(segment[1]))
             .sum();
         Edge {
+            roundabout: false,
+            crossing_level: 0,
+            lane_tapers: None,
+            bus_lanes: [0; 2],
+            median: None,
             start_node,
             end_node,
             primary_type: TransitType::Road,

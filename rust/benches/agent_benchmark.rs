@@ -71,6 +71,11 @@ fn build_shared() -> SharedSetup {
     let physical_length = 1_000_000.0;
     let speed_ms = 20.0_f32;
     let edge = Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: node_a,
         end_node: node_b,
         primary_type: TransitType::Road,
@@ -179,6 +184,11 @@ fn register_test_asset(
 
 fn create_access_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -470,6 +480,7 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         next_replan_time: 0.0,
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
+        tail_connector_lane_id: u32::MAX,
         lane_distance: 0.0,
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,
@@ -533,6 +544,7 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         next_replan_time: 0.0,
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
+        tail_connector_lane_id: u32::MAX,
         lane_distance: 0.0,
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,
@@ -635,6 +647,7 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         next_replan_time: 0.0,
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
+        tail_connector_lane_id: u32::MAX,
         lane_distance: 0.0,
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,
@@ -702,6 +715,7 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         next_replan_time: 0.0,
         current_edge: shared.edge_ab,
         current_lane_id: usize::MAX,
+        tail_connector_lane_id: u32::MAX,
         lane_distance: progression,
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,

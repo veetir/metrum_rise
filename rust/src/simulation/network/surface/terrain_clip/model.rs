@@ -141,6 +141,8 @@ pub(super) struct TerrainClipSourceEdge {
     pub(super) source: RoadSurfaceEarthworkFaceSource,
     pub(super) source_index: usize,
     pub(super) edge_index: usize,
+    // Canonical grade-solve node and source-declared material level in millimetres.
+    pub(super) grade_authority: Option<(u32, i64)>,
 }
 
 #[derive(Clone, Copy)]

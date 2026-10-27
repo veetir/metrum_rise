@@ -118,13 +118,25 @@ pub fn build_one_lane(
     };
     let start_clip = edge.start_clip + junction_inset + end_insets.0;
     let end_clip = edge.end_clip + junction_inset + end_insets.1;
-    if start_clip > 0.0 {
-        geometry = trim_from_front(&geometry, start_clip);
-    }
-    if end_clip > 0.0 {
-        geometry.reverse();
-        geometry = trim_from_front(&geometry, end_clip);
-        geometry.reverse();
+    if edge.lane_tapers.is_some() {
+        geometry = taper_lane_geometry(
+            edge,
+            &geometry,
+            is_fwd,
+            lane_idx,
+            lane_type,
+            lane_offset,
+            (start_clip, end_clip),
+        );
+    } else {
+        if start_clip > 0.0 {
+            geometry = trim_from_front(&geometry, start_clip);
+        }
+        if end_clip > 0.0 {
+            geometry.reverse();
+            geometry = trim_from_front(&geometry, end_clip);
+            geometry.reverse();
+        }
     }
 
     if geometry.len() < 2 {
@@ -161,7 +173,7 @@ pub fn build_one_lane(
 
 /// Returns the half-width of the road asphalt based on the number of lanes.
 pub fn road_half_width(edge: &Edge) -> f32 {
-    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5 + edge.median_half_width()
 }
 
 /// Samples the authoritative agent position, including the deterministic pedestrian offset.
@@ -201,4 +213,101 @@ pub(crate) fn agent_lane_position(
         out += normal * jitter;
     }
     Some(out)
+}
+
+// Geometry is rebuilt only for authored transitions. Keep ordinary lane arithmetic untouched.
+fn taper_lane_geometry(
+    edge: &Edge,
+    full_geometry: &[Vector3],
+    is_fwd: bool,
+    lane_idx: i8,
+    lane_type: LaneType,
+    full_offset: f32,
+    clips: (f32, f32),
+) -> Vec<Vector3> {
+    let points = &edge.physical_geometry;
+    let cumulative = build_cum_dist(points);
+    let total = *cumulative.last().unwrap_or(&0.0);
+    let mut stations = cumulative.clone();
+    if let Some(ends) = &edge.lane_tapers {
+        for (end, taper) in ends.iter().enumerate() {
+            if let Some(taper) = taper {
+                let steps = (taper.length_m / 2.0).ceil() as usize;
+                for step in 0..=steps {
+                    let d = taper.length_m * step as f32 / steps as f32;
+                    stations.push(if end == 0 { d } else { total - d });
+                }
+            }
+        }
+    }
+    // Clip at shared edge stations, not at arc lengths along offset curves. Runtime lane
+    // distances still begin at zero at the resulting mouth, exactly as on ordinary roads.
+    let start = clips.0.max(0.0).min(total);
+    let end = (total - clips.1.max(0.0)).clamp(start, total);
+    stations.retain(|&s| s > start + 0.01 && s < end - 0.01);
+    stations.extend([start, end]);
+    stations.sort_by(f32::total_cmp);
+    stations.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    let mut geometry = Vec::with_capacity(stations.len());
+    for s in stations {
+        let segment = cumulative
+            .partition_point(|&d| d <= s)
+            .saturating_sub(1)
+            .min(points.len() - 2);
+        let t = ((s - cumulative[segment])
+            / (cumulative[segment + 1] - cumulative[segment]).max(1e-5))
+        .clamp(0.0, 1.0);
+        let center = points[segment].lerp(points[segment + 1], t);
+        let normal = if full_offset.abs() > 1e-5 {
+            (full_geometry[segment].lerp(full_geometry[segment + 1], t) - center) / full_offset
+        } else {
+            let d = points[segment + 1] - points[segment];
+            Vector3::new(-d.z, 0.0, d.x).normalized()
+        };
+        let offset = if lane_type == LaneType::Vehicle {
+            let rank = if lane_idx >= 0 {
+                lane_idx as usize
+            } else {
+                (-i16::from(lane_idx) - 1) as usize
+            };
+            edge.tapered_lane_offset(is_fwd, rank, s, full_offset)
+        } else {
+            let section = edge.lane_section_at(s);
+            if full_offset < edge.pocket_surface_shift() {
+                section.left - config::SIDEWALK_WIDTH * 0.5
+            } else {
+                section.right + config::SIDEWALK_WIDTH * 0.5
+            }
+        };
+        geometry.push(center + normal * offset);
+    }
+    geometry
+}
+
+fn point_segment(p: Vector2, a: Vector2, b: Vector2) -> f32 {
+    let v = b - a;
+    let t = if v.length_squared() > 0.0 {
+        ((p - a).dot(v) / v.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance_squared_to(a + v * t)
+}
+/// Squared separation of two planar segments, including crossing and degenerate segments.
+pub(crate) fn segment_distance_squared_xz(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> f32 {
+    let cross = |a: Vector2, b: Vector2| a.x * b.y - a.y * b.x;
+    let ab = b - a;
+    let cd = d - c;
+    let det = cross(ab, cd);
+    if det.abs() > 1.0e-8 {
+        let u = cross(c - a, cd) / det;
+        let v = cross(c - a, ab) / det;
+        if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
+            return 0.0;
+        }
+    }
+    point_segment(a, c, d)
+        .min(point_segment(b, c, d))
+        .min(point_segment(c, a, b))
+        .min(point_segment(d, a, b))
 }

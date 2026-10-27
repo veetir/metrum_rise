@@ -7,11 +7,15 @@ pub mod asset_export;
 pub mod benchmark;
 pub mod bridge;
 pub mod core;
+mod cross_section;
 pub mod editing;
 pub mod query;
+mod ramps;
 /// Rendering bridge sub-modules for Godot-Rust interaction.
 pub mod render;
+mod road_pockets;
 pub mod road_tool;
+mod roundabouts;
 pub mod save_load;
 pub mod undo;
 pub mod world_definition;

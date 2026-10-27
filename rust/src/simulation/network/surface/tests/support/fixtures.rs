@@ -18,6 +18,11 @@ pub(in crate::simulation::network::surface::tests) fn test_edge(
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     Edge {
+        roundabout: false,
+        crossing_level: 0,
+        lane_tapers: None,
+        bus_lanes: [0; 2],
+        median: None,
         start_node,
         end_node,
         primary_type,

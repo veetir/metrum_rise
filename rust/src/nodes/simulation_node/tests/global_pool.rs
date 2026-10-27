@@ -80,6 +80,7 @@ fn bridge_entry_points_in_a_process_without_a_global_pool() {
     running_the_node_threads(&mut entries, town);
     new_worlds(&mut entries);
     a_benchmark_city(&mut entries);
+    local_road_layout_preview(&mut entries);
     assert!(
         entries.failed.is_empty(),
         "entry points that panicked (\"The global thread pool has not been initialized\" above \
@@ -123,6 +124,9 @@ fn assets_installed(core: &mut SimCore) {
 fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
     let outcome = core.commit_road(
         RoadCommitRequest {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             points: vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -400,6 +404,9 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         Vector3::new(-300.0, 0.0, 400.0),
     ];
     assert!(road_preview.submit(RoadPreviewRequest {
+        tunnel: false,
+        crossing_level: 0,
+        median: None,
         enqueued_at: None,
         include_terrain: true,
         request_id: 1,
@@ -421,6 +428,9 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
             completion: cell_done,
         },
         SimCommand::AddRoad {
+            tunnel: false,
+            crossing_level: 0,
+            median: None,
             points,
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -461,6 +471,94 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         road_preview_worker.join().unwrap()
     });
     jobs.wait();
+}
+
+// Synchronous topology-tool previews enter from the main thread just like terrain payloads.
+fn local_road_layout_preview(e: &mut Entries) {
+    let mut core = new_core();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    e.run("roundabout surface and terrain preview", || {
+        let (_, roads) = core
+            .transit_network
+            .road_surface
+            .compile_roundabout_preview(
+                &core.region_graph,
+                &core.heightmap,
+                crate::simulation::network::roundabouts::RoundaboutRequest {
+                    center: Vector3::ZERO,
+                    diameter: 50.0,
+                    angles: vec![0.0, 1.4, 3.0, 4.7],
+                    replace: None,
+                },
+            )
+            .unwrap();
+        let terrain = core.compile_pocket_preview_terrain(&roads).unwrap();
+        assert!(terrain.preview_patches().is_some());
+    });
+    e.run("authored zebra publication", || {
+        committed(&mut core, (-200.0, -200.0), (200.0, -200.0));
+        committed(&mut core, (0.0, -200.0), (0.0, 200.0));
+        let node = (0..core.region_graph.node_count() as u32)
+            .find(|&node| core.region_graph.node(node).pos == Vector3::new(0.0, 0.0, -200.0))
+            .unwrap();
+        let edge = core.region_graph.node_adjacency(node)[0];
+        let (mut scene, _) = core
+            .transit_network
+            .road_surface
+            .compile_crosswalk_preview(&core.region_graph, &core.heightmap, node, edge, true)
+            .unwrap();
+        let meshes: std::collections::BTreeMap<_, _> = scene
+            .replacement_chunks
+            .iter()
+            .filter_map(|key| {
+                core.cached_road_mesh_chunks
+                    .get(key)
+                    .map(|mesh| (*key, Arc::clone(mesh)))
+            })
+            .collect();
+        assert!(!meshes.is_empty());
+        scene.retain_existing(&meshes);
+        scene.clip_approaches();
+        core.set_crosswalk_override_internal(node, edge as i32, true);
+        assert!(core.has_crosswalk_internal(node, edge as i32));
+    });
+    e.run("ramp fork-mouth prediction", || {
+        use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+        use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(-600.0, 0.0, 0.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(600.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![graph.node(start).pos, graph.node(end).pos];
+        let edge = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            width: 19.0,
+            median: RoadMedian::from_tool(2, 5.0).unwrap(),
+            physical_length: 1200.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        });
+        crate::simulation::network::ramps::RampLayout::prepare(
+            &graph,
+            crate::simulation::network::ramps::RampRequest {
+                edge,
+                station: 600.0,
+                forward: true,
+                exit: true,
+                points: vec![Vector3::ZERO, Vector3::new(200.0, 0.0, 100.0)],
+                length: 80.0,
+                taper: 35.0,
+            },
+        )
+        .unwrap();
+    });
 }
 
 // New game and world-editor resets: a blank world, then a saved world definition loaded back.

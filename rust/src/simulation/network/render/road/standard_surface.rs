@@ -3,10 +3,12 @@
 //! Compiled roadbed rendering split by ownership and visual layer.
 
 mod bridge;
+mod bus;
 mod coverage;
 mod earthwork;
 mod geometry;
 mod markings;
+mod median;
 mod top_surface;
 
 pub(super) use coverage::{

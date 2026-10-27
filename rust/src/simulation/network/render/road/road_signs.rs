@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Deterministic cosmetic crossing, changed-limit and geometry warning signs.
+//! Deterministic crossing, priority, changed-limit and geometry warning signs.
 //!
 //! Only degree-two streets touching coverage are visited. Each chain is measured with the road
-//! validator and spaced in three priority passes. Work is O(E + P W + C S + L + N),
+//! validator and spaced in four priority passes. Work is O(E + P W + C S + L + N),
 //! for touched edges E, physical points P, radius-window segments W, crossings C, edge sections S,
 //! light poles L and signs N. Pole and sign queries read bounded local buckets; final pose order
 //! uses fixed-width radix sorting. Topology-dependent rebuilds are sequential, outside tick/agent
@@ -24,7 +24,7 @@ use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use std::collections::HashMap;
 
-/// Sign models in the renderer's model order; priority signs are deliberately absent.
+/// Sign models in the renderer's model order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum RoadSignKind {
@@ -76,11 +76,21 @@ pub(crate) enum RoadSignKind {
     Ascent18,
     /// A9, uneven road.
     Uneven,
+    /// B1, priority road.
+    Priority,
+    /// B5, give way.
+    Yield,
+    /// B6, stop.
+    Stop,
+    /// B5 over D2: give way and mandatory counterclockwise circulation.
+    RoundaboutEntry,
 }
 
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RoadSign {
+    /// Exact source edge for reversible preview filtering; omitted from the Godot pose payload.
+    pub(crate) owner_edge: usize,
     /// Pole base in the owning mesh's coordinate system.
     pub(crate) position: Vector3,
     /// Rotation about +Y, in radians.
@@ -585,19 +595,32 @@ fn chain_warnings(
     stations: &mut HashMap<usize, ChainSpan>,
     edges: &mut Vec<usize>,
 ) {
-    let chain_id = *chain.iter().min().unwrap();
+    let chain_id = *chain
+        .iter()
+        .min_by_key(|&&id| graph.placement_edge_id(id))
+        .unwrap();
     let mut endpoint = None;
     for &id in chain {
         let edge = graph.edge(id);
         for node in [edge.start_node, edge.end_node] {
             if continuation(graph, node, id, degrees).is_none() {
-                endpoint =
-                    Some(endpoint.map_or((node, id), |old: (u32, usize)| old.min((node, id))));
+                let key =
+                    |(node, edge)| (graph.placement_node_id(node), graph.placement_edge_id(edge));
+                endpoint = Some(endpoint.map_or((node, id), |old| {
+                    if key(old) <= key((node, id)) {
+                        old
+                    } else {
+                        (node, id)
+                    }
+                }));
             }
         }
     }
     let (mut node, mut id) = endpoint.unwrap_or_else(|| {
-        let id = *chain.iter().min().unwrap();
+        let id = *chain
+            .iter()
+            .min_by_key(|&&id| graph.placement_edge_id(id))
+            .unwrap();
         (graph.edge(id).start_node, id)
     });
     points.clear();
@@ -859,6 +882,7 @@ fn pose(
     let tangent = RoadVec2::new(lateral.y, -lateral.x);
     let face = -tangent * f64::from(direction);
     Some(RoadSign {
+        owner_edge: usize::MAX,
         position: Vector3::new(ground.x as f32, height, ground.y as f32),
         yaw: face.x.atan2(face.y) as f32,
         kind,
@@ -1135,12 +1159,56 @@ pub(super) fn emit_road_signs(
             visible_edges.push((edge_id, start, end));
         }
     }
-    for priority in 0..3 {
+    for priority in 0..4 {
         for &(edge_id, start, end) in &visible_edges {
             let edge = graph.edge(edge_id);
             let sections = &surface.compiled_sections()[&edge_id];
             let visible = &sections[start..=end];
             let span = &stations[&edge_id];
+            if priority == 0 {
+                use crate::simulation::network::lanes::control::{
+                    ApproachControl, approach_control,
+                };
+                for (node, at_start, count) in [
+                    (edge.start_node, true, edge.bkw_lanes),
+                    (edge.end_node, false, edge.fwd_lanes),
+                ] {
+                    if count == 0 {
+                        continue;
+                    }
+                    let roundabout = graph
+                        .node_adjacency(node)
+                        .iter()
+                        .any(|&id| !graph.edge(id).deleted && graph.edge(id).roundabout);
+                    let kind = match approach_control(graph, node, edge_id) {
+                        ApproachControl::Priority => RoadSignKind::Priority,
+                        ApproachControl::Yield if roundabout => RoadSignKind::RoundaboutEntry,
+                        ApproachControl::Yield => RoadSignKind::Yield,
+                        ApproachControl::Stop => RoadSignKind::Stop,
+                        ApproachControl::Uncontrolled => continue,
+                    };
+                    let away = if at_start { 1.0 } else { -1.0 };
+                    let direction = -away;
+                    let setback = if roundabout { 2.0 } else { 16.0 };
+                    let station = if at_start {
+                        visible[0].s_m + setback
+                    } else {
+                        visible.last().unwrap().s_m - setback
+                    };
+                    if let Some((sign, placed)) = place(
+                        sections, terrain, &poles, station, away, direction, direction, kind,
+                    ) && spacing.advance(span, placed, direction, direction) == 0.0
+                    {
+                        if covered.contains(&edge_id) {
+                            signs.push(RoadSign {
+                                owner_edge: edge_id,
+                                ..sign
+                            });
+                        }
+                        spacing.insert(span, placed, direction, direction);
+                    }
+                }
+            }
             let mut starts = [visible[0].s_m + 2.0, visible.last().unwrap().s_m - 2.0];
             let mut speed_starts = starts;
             for node in [edge.start_node, edge.end_node] {
@@ -1193,11 +1261,14 @@ pub(super) fn emit_road_signs(
                                     speed_starts[slot].min(placed_s - SPEED_AFTER_CROSSING_M)
                                 };
                             }
-                            if priority == 0
+                            if priority == 1
                                 && spacing.advance(span, placed_s, side, direction) == 0.0
                             {
                                 if covered.contains(&edge_id) {
-                                    signs.push(sign);
+                                    signs.push(RoadSign {
+                                        owner_edge: edge_id,
+                                        ..sign
+                                    });
                                 }
                                 spacing.insert(span, placed_s, side, direction);
                             }
@@ -1205,7 +1276,7 @@ pub(super) fn emit_road_signs(
                     }
                 }
             }
-            if priority == 1
+            if priority == 2
                 && lengths[&edge_id] >= 40.0
                 && let Some(kind) = speed_kind(edge.speed_limit)
             {
@@ -1250,13 +1321,16 @@ pub(super) fn emit_road_signs(
                         )
                     {
                         if covered.contains(&edge_id) {
-                            signs.push(sign);
+                            signs.push(RoadSign {
+                                owner_edge: edge_id,
+                                ..sign
+                            });
                         }
                         spacing.insert(span, s, direction, direction);
                     }
                 }
             }
-            if priority == 2
+            if priority == 3
                 && let Some(warnings) = warnings.get(&edge_id)
             {
                 for (slot, direction) in [(0, 1.0), (1, -1.0)] {
@@ -1292,7 +1366,10 @@ pub(super) fn emit_road_signs(
                             visible, terrain, &poles, s, direction, kind, &spacing, span,
                         ) {
                             if covered.contains(&edge_id) {
-                                signs.push(sign);
+                                signs.push(RoadSign {
+                                    owner_edge: edge_id,
+                                    ..sign
+                                });
                             }
                             spacing.insert(span, s, direction, direction);
                         }

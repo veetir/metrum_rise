@@ -90,7 +90,35 @@ impl PlannedRoadSurfaceQuery {
                 let Some(actual) = surface.compiled_visual_span_pieces.get(&live) else {
                     return false;
                 };
-                if **actual != expected.clone_with_edge_identity(live) {
+                let mut expected = expected.clone_with_edge_identity(live);
+                if let Some(crossing) = &mut expected.filled_crossing {
+                    for owner in &mut crossing.lower_edges {
+                        *owner = self.edge_ids[*owner];
+                    }
+                    crossing.lower_edges.sort_unstable();
+                }
+                if **actual != expected {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_span_mismatch local={} live={} sections_match={} expected_sections={} actual_sections={}",
+                        local,
+                        live,
+                        actual.sections == expected.sections,
+                        expected.sections.len(),
+                        actual.sections.len(),
+                    );
+                    if crate::debug::Channel::Road.enabled()
+                        && let Some((expected, actual)) = expected
+                            .sections
+                            .iter()
+                            .zip(actual.sections.iter())
+                            .find(|(a, b)| a != b)
+                    {
+                        crate::debug_log!(
+                            "road",
+                            "road_plan_section_mismatch expected={expected:?} actual={actual:?}"
+                        );
+                    }
                     return false;
                 }
             }
@@ -104,6 +132,12 @@ impl PlannedRoadSurfaceQuery {
                 if !self.surface.compiled_visual_node_inputs[&local]
                     .topology_eq_ignoring_edge_identity(input)
                 {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_node_input_mismatch local={} live={}",
+                        local,
+                        live
+                    );
                     return false;
                 }
                 let expected = surface.replay_exact_preview_node_piece(
@@ -124,6 +158,12 @@ impl PlannedRoadSurfaceQuery {
                 );
                 let expected = surface.published_node_piece(expected.piece);
                 if surface.compiled_visual_node_pieces.get(&live) != Some(&expected) {
+                    crate::debug_log!(
+                        "road",
+                        "road_plan_published_node_piece_mismatch local={} live={}",
+                        local,
+                        live
+                    );
                     return false;
                 }
             }
@@ -278,7 +318,8 @@ impl RoadSurfaceSystem {
         let bounds = CellBounds::from_points(*cell);
         let bounds = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y];
         piece.surface_query.items_in_bounds(bounds).any(|item| {
-            Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
+            piece.query_item_is_exterior(item)
+                && Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
         })
     }
 

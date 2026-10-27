@@ -74,6 +74,7 @@ struct RoadSurfaceEdgeTopologyUndo {
 }
 
 struct RoadSurfaceNodeTopologyUndo {
+    material_grade: Option<Arc<super::node::NodeMaterialGradeField>>,
     node_id: u32,
     piece: Option<Arc<RoadSurfaceVisualNodePiece>>,
     input: Option<Arc<RoadSurfaceVisualNodeCompileInput>>,

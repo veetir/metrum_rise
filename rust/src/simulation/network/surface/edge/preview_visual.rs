@@ -41,18 +41,25 @@ impl RoadSurfaceSystem {
         fwd_lanes: u8,
         bkw_lanes: u8,
         terrain: &TerrainSystem,
+
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> RoadPreviewVisualMesh {
         let mut mesh = RoadPreviewVisualMesh::default();
         if points.len() < 2 {
             return mesh;
         }
         let step = (terrain.cell_size_m() * 0.25).clamp(0.25, 2.0);
-        let edge = build_surface_edge(0, 1, Vec::new(), fwd_lanes, bkw_lanes, EdgeClass::Standard);
+        let mut edge =
+            build_surface_edge(0, 1, Vec::new(), fwd_lanes, bkw_lanes, EdgeClass::Standard);
+        edge.median = median;
+        edge.width += median.map_or(0.0, |median| median.width_m);
         let bands = self.build_lateral_bands(
             &edge,
             super::super::RoadVec3::ZERO,
             super::super::RoadVec2::Y,
             None,
+            None,
+            1.0,
             None,
         );
         // Reserve once for the stroke, not inside the per-quad emission loop. Sequential emission
@@ -147,6 +154,7 @@ fn append_span(
         let tag = match band_a.kind {
             RoadSurfaceBandKind::Carriageway => 0.0,
             RoadSurfaceBandKind::CurbOrShoulder => 1.0,
+            RoadSurfaceBandKind::Median => 0.75,
             _ => 0.5,
         };
         let color = Color::from_rgba(tag, 0.0, 0.0, 1.0);
@@ -238,7 +246,7 @@ mod tests {
         }
         let points = [Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)];
         let surface = RoadSurfaceSystem::new(128.0);
-        let mesh = surface.build_preview_visual_mesh(&points, &[], 2, 1, &terrain);
+        let mesh = surface.build_preview_visual_mesh(&points, &[], 2, 1, &terrain, None);
         assert!(!mesh.vertices.is_empty());
         assert_eq!(mesh.vertices.len(), mesh.uvs.len());
         assert_eq!(mesh.vertices.len(), mesh.colors.len());
@@ -271,7 +279,7 @@ mod tests {
             Vector3::new(-20.0, 12.0, 0.0),
             Vector3::new(20.0, 12.0, 0.0),
         ];
-        let mesh = surface.build_preview_visual_mesh(&points, &[], 0, 0, &terrain);
+        let mesh = surface.build_preview_visual_mesh(&points, &[], 0, 0, &terrain, None);
         assert!(!mesh.vertices.is_empty());
         for ((point, uv), color) in mesh.vertices.iter().zip(&mesh.uvs).zip(&mesh.colors) {
             assert!((point.y - 12.0 - DISPLAY_LIFT_M).abs() < 0.0001);
@@ -279,7 +287,7 @@ mod tests {
             assert_eq!(color.r, 0.5);
         }
         for (fwd, bkw) in [(1, 0), (0, 1), (1, 1), (3, 1), (4, 4)] {
-            let mesh = surface.build_preview_visual_mesh(&points, &[], fwd, bkw, &terrain);
+            let mesh = surface.build_preview_visual_mesh(&points, &[], fwd, bkw, &terrain, None);
             let expected = f32::from(fwd + bkw) * crate::config::LANE_WIDTH * 0.5
                 + crate::config::SIDEWALK_WIDTH;
             let width = mesh.uvs.iter().map(|uv| uv.y.abs()).fold(0.0_f32, f32::max);
@@ -308,6 +316,7 @@ mod tests {
             2,
             1,
             &terrain,
+            None,
         );
         assert!(!mesh.vertices.is_empty());
         assert_eq!(mesh.vertices.len() % 3, 0);

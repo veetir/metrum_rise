@@ -19,6 +19,8 @@ extends Node
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
+var ramp_tool: Node3D
+var roundabout_tool: Node3D
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
@@ -33,7 +35,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT, RAMP }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -53,6 +55,16 @@ var _alt_orbit := false
 var _last_gesture := ""
 
 func _ready():
+	ramp_tool = Node3D.new()
+	ramp_tool.name = "RampTool"
+	ramp_tool.set_script(load("res://scripts/tools/ramp_tool.gd"))
+	get_parent().call_deferred("add_child", ramp_tool)
+
+	roundabout_tool = Node3D.new()
+	roundabout_tool.name = "RoundaboutTool"
+	roundabout_tool.set_script(load("res://scripts/tools/roundabout_tool.gd"))
+	get_parent().call_deferred("add_child", roundabout_tool)
+
 	if not has_node("../CulDeSacTool"):
 		var rt = Node3D.new()
 		rt.name = "CulDeSacTool"
@@ -213,12 +225,27 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
+			KEY_O: _toggle_tool(Tool.ROUNDABOUT)
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_E:
-				if current_tool == Tool.VEGETATION:
+				if current_tool == Tool.ROAD:
+					road_tool.toggle_cross_section_edit()
+					get_viewport().set_input_as_handled()
+				elif current_tool == Tool.VEGETATION:
 					vegetation_tool.toggle_mode()
 					get_viewport().set_input_as_handled()
+			KEY_H:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_edit()
+			KEY_J:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_side(true)
+			KEY_K:
+				if current_tool == Tool.ROAD: road_tool.toggle_pocket_side(false)
+			KEY_U:
+				if current_tool == Tool.ROAD: road_tool.adjust_pocket_length(-1.0, event.shift_pressed)
+			KEY_I:
+				if current_tool == Tool.ROAD: road_tool.adjust_pocket_length(1.0, event.shift_pressed)
+
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
@@ -238,6 +265,13 @@ func _unhandled_input(event):
 			KEY_F12:
 				_handle_money_and_demand_cheat()
 			
+			KEY_N:
+				if current_tool == Tool.ROAD: road_tool.cycle_median()
+			KEY_SEMICOLON:
+				if current_tool == Tool.ROAD: road_tool.adjust_median_width(-0.5)
+			KEY_APOSTROPHE:
+				if current_tool == Tool.ROAD: road_tool.adjust_median_width(0.5)
+
 			# Lane Adjustments (Forward)
 			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
 			KEY_BRACKETLEFT, KEY_DOWN: _handle_lane_adjust(-1, 0)
@@ -364,9 +398,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 1
-					road_tool.bkw_lanes = 1
-					road_tool._update_lanes_label()
+					road_tool.set_lane_preset(1, 1)
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
@@ -375,9 +407,13 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 0
-					road_tool.bkw_lanes = 0
-					road_tool._update_lanes_label()
+					road_tool.set_lane_preset(0, 0)
+		Tool.RAMP:
+			if ramp_tool:
+				ramp_tool.active = enabled
+				if not enabled: ramp_tool.cancel()
+		Tool.ROUNDABOUT:
+			if roundabout_tool: roundabout_tool.active = enabled
 		Tool.CUL_DE_SAC:
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled

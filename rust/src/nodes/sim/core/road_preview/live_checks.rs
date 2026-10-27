@@ -37,10 +37,12 @@ impl RoadCorridorClearance {
         points: &[Vector3],
         fwd_lanes: i32,
         bkw_lanes: i32,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Self {
         let lanes = fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
         let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
-            + crate::config::SIDEWALK_WIDTH;
+            + crate::config::SIDEWALK_WIDTH
+            + median.map_or(0.0, |median| median.width_m * 0.5);
         let parcels = core
             .zoning
             .parcel_ids_overlapping_road_corridor(points, half_width);
@@ -89,6 +91,7 @@ impl RoadPreviewLiveChecks {
                 &preview.prepared_points,
                 i32::from(preview.fwd_lanes),
                 i32::from(preview.bkw_lanes),
+                preview.median,
             )
         });
         let plan = preview

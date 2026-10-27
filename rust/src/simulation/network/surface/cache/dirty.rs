@@ -5,6 +5,38 @@
 use super::*;
 
 impl RoadSurfaceSystem {
+    /// Finds old-position upper dependents through the existing owner grid after a lower
+    /// road moves or leaves the R-tree, without a city-wide scan or another spatial index.
+    pub(in crate::simulation::network::surface) fn filled_crossing_dependents(
+        &self,
+        edges: &HashSet<usize>,
+    ) -> HashSet<usize> {
+        let mut dependents = HashSet::new();
+        for edge in edges {
+            let Some(chunks) = self.surface_span_chunks.get(edge) else {
+                continue;
+            };
+            for chunk in chunks.iter() {
+                let Some(owners) = self.surface_chunk_spans.get(chunk) else {
+                    continue;
+                };
+                for owner in owners.iter() {
+                    if self
+                        .compiled_visual_span_pieces
+                        .get(owner)
+                        .and_then(|piece| piece.filled_crossing.as_ref())
+                        .is_some_and(|crossing| {
+                            crossing.lower_edges.iter().any(|id| edges.contains(id))
+                        })
+                    {
+                        dependents.insert(*owner);
+                    }
+                }
+            }
+        }
+        dependents
+    }
+
     /// Clears compiled caches and dirty tracking without changing the configured render grid.
     pub fn clear(&mut self) {
         self.note_compile_invalidation();
@@ -13,6 +45,7 @@ impl RoadSurfaceSystem {
         self.compiled_visual_span_pieces.clear();
         self.compiled_visual_node_pieces.clear();
         self.compiled_visual_node_inputs.clear();
+        self.node_material_grade_fields.clear();
         self.compiled_visual_node_earthwork_boundaries.clear();
         self.compiled_visual_node_topologies.clear();
         self.node_topology_recency.clear();
@@ -185,6 +218,7 @@ impl RoadSurfaceSystem {
         self.remove_node_piece_coverage(node_id);
         self.compiled_visual_node_pieces.remove(&node_id);
         self.compiled_visual_node_inputs.remove(&node_id);
+        self.node_material_grade_fields.remove(&node_id);
         self.compiled_visual_node_earthwork_boundaries
             .remove(&node_id);
         self.compiled_visual_node_topologies.remove(&node_id);

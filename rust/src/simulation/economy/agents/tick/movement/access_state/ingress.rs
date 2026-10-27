@@ -225,6 +225,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             *s_cur_n.get_mut(i) = *s_plan_detach_n.get(i);
             *s_cur_e.get_mut(i) = usize::MAX;
             *s_lane_id.get_mut(i) = usize::MAX;
+            *slices.tail_connector.get_mut(i) = u32::MAX;
             *s_lane_d.get_mut(i) = 0.0;
             *s_speed.get_mut(i) = 0.0;
             s_path.get_mut(i).clear();

@@ -120,6 +120,7 @@ pub(super) unsafe fn handle_lane_end(
                 );
                 s_path.get_mut(i).clear();
                 *s_lane_id.get_mut(i) = usize::MAX;
+                *slices.tail_connector.get_mut(i) = u32::MAX;
                 return LaneEndAction::Break;
             };
 
@@ -159,6 +160,7 @@ pub(super) unsafe fn handle_lane_end(
 
         s_path.get_mut(i).clear();
         *s_lane_id.get_mut(i) = usize::MAX;
+        *slices.tail_connector.get_mut(i) = u32::MAX;
         if access_plan_valid {
             if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
                 let border_node = *s_freight_target_border_node.get(i);

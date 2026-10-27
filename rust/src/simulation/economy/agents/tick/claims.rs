@@ -7,9 +7,10 @@ use super::super::{
     TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use super::access::planned_detach_is_legal;
+use super::lane_nav::{junction_approach_lane, junction_approach_node};
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
-    lane_change_finished, planned_lane_change_target,
+    lane_change_finished, lane_entry_slot_clear, planned_lane_change_target,
 };
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -27,6 +28,10 @@ const CLAIM_CLASSIFICATION_CHUNK: usize = 4_096;
 pub(in crate::simulation::economy::agents::tick) struct LaneClaimContext<'a> {
     owners: &'a [AtomicUsize],
     modes: &'a [MovementClaimMode],
+    junctions: Option<(
+        &'a super::junction_control::JunctionAdmission,
+        &'a TransitNetwork,
+    )>,
 }
 
 impl<'a> LaneClaimContext<'a> {
@@ -35,7 +40,54 @@ impl<'a> LaneClaimContext<'a> {
         owners: &'a [AtomicUsize],
         modes: &'a [MovementClaimMode],
     ) -> Self {
-        Self { owners, modes }
+        Self {
+            owners,
+            modes,
+            junctions: None,
+        }
+    }
+
+    /// Attaches immutable right-of-way decisions to the existing lane reservations.
+    pub(super) fn with_junctions(
+        mut self,
+        admission: &'a super::junction_control::JunctionAdmission,
+        network: &'a TransitNetwork,
+    ) -> Self {
+        self.junctions = Some((admission, network));
+        self
+    }
+
+    /// Applies right of way, booked exit space and registered stepwise zone claims.
+    pub(super) fn connector_allowed(&self, agent: usize, connector: usize) -> bool {
+        let Some((admission, network)) = self.junctions else {
+            return true;
+        };
+        if (!admission.entry_allows(agent, connector, network)
+            && !admission.batch_allows(agent, connector))
+            || !admission.storage_and_zones_clear(connector, network)
+            || network.lane_system.lanes[connector]
+                .next_lanes
+                .first()
+                .is_some_and(|&out| {
+                    self.owners.get(out).is_some_and(|owner| {
+                        let owner = owner.load(Ordering::Relaxed);
+                        owner != usize::MAX && owner != agent
+                    })
+                })
+        {
+            return false;
+        }
+        network
+            .lane_system
+            .reservation_movement(connector)
+            .is_none_or(|control| {
+                control.conflicts.iter().all(|&other| {
+                    self.owners.get(other).is_none_or(|owner| {
+                        let owner = owner.load(Ordering::Relaxed);
+                        owner == usize::MAX || owner == agent || admission.has_entry_claim(other)
+                    })
+                })
+            })
     }
 
     /// Returns whether an agent may acquire an unreserved lane during movement.
@@ -65,6 +117,56 @@ impl<'a> LaneClaimContext<'a> {
         agent_idx: usize,
         lane_id: usize,
     ) -> bool {
+        self.claim_lane_at(agent_idx, lane_id, 0.0)
+    }
+
+    /// Claims a handoff at its actual station without consuming reserved exit storage.
+    pub(super) fn claim_lane_at(&self, agent_idx: usize, lane_id: usize, distance: f32) -> bool {
+        if self
+            .junctions
+            .is_some_and(|(a, _)| !a.external_entry_clear(lane_id, distance))
+        {
+            return false;
+        }
+        self.try_lane_owner(agent_idx, lane_id)
+    }
+
+    /// Claims a departure from an already occupied road slot, freeing rather than using storage.
+    pub(super) fn claim_lane_departure(&self, agent: usize, lane: usize) -> bool {
+        self.try_lane_owner(agent, lane)
+    }
+
+    /// Uses previously reserved exit space; ordinary gap and claim checks still apply.
+    pub(super) fn claim_connector_exit(&self, agent: usize, connector: usize, out: usize) -> bool {
+        if !self.try_lane_owner(agent, out) {
+            return false;
+        }
+        if let Some((admission, network)) = self.junctions {
+            admission.release_exit(agent, connector, out, network);
+        }
+        true
+    }
+
+    /// Reserves zones only for the connector actually chosen by the routing candidate loop.
+    pub(super) fn reserve_connector(&self, agent: usize, connector: usize) {
+        if let Some((admission, network)) = self.junctions {
+            admission.reserve_path(agent, connector, network);
+        }
+    }
+
+    /// Prevents any connector step from crossing an unowned zone boundary.
+    pub(super) fn connector_travel_limit(
+        &self,
+        agent: usize,
+        connector: usize,
+        distance: f32,
+    ) -> f32 {
+        self.junctions.map_or(f32::MAX, |(a, n)| {
+            a.connector_travel_limit(agent, connector, distance, n)
+        })
+    }
+
+    fn try_lane_owner(&self, agent_idx: usize, lane_id: usize) -> bool {
         let Some(owner) = self.owners.get(lane_id) else {
             return false;
         };
@@ -157,6 +259,38 @@ fn classify_agent_claims(
     }
 }
 
+// The same local first-edge candidates as lane_entry: a full entry needs no serial
+// handoff or route retry. Empty/invalid routes still use ordinary deterministic repair.
+fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) -> bool {
+    if agents.transit_mode[i] != MODE_CAR {
+        return false;
+    }
+    let path = &agents.current_path[i];
+    let Some(&next) = path.get(agents.current_path_index[i]) else {
+        return false;
+    };
+    let Some(edge_id) = p.graph.get_edge_between_nodes(agents.current_node[i], next) else {
+        return false;
+    };
+    let forward = p.graph.edge(edge_id).start_node == agents.current_node[i];
+    let Some(ids) = p.network.lane_system.edge_lanes.get(&edge_id) else {
+        return false;
+    };
+    let mut any = false;
+    for &id in ids {
+        let lane = &p.network.lane_system.lanes[id];
+        if lane.is_fwd == forward
+            && lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+        {
+            any = true;
+            if lane_entry_slot_clear(id, p.lane_buckets) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 #[inline(always)]
 fn classify_network_claims(
     agents: &AgentVec,
@@ -166,7 +300,11 @@ fn classify_network_claims(
     let network = preparation.network;
     let lane_id = agents.current_lane_id[i];
     if lane_id == usize::MAX || lane_id >= network.lane_system.lanes.len() {
-        return MovementClaimMode::Dynamic;
+        return if lane_id == usize::MAX && first_entry_is_held(agents, i, preparation) {
+            MovementClaimMode::HeldEntry
+        } else {
+            MovementClaimMode::Dynamic
+        };
     }
     let remaining = agent_network_claim_distance(agents, i, network) * preparation.delta;
     if remaining <= 0.0 {
@@ -257,8 +395,46 @@ fn agent_lane_change_target(
         },
         preparation.network,
         preparation.lane_buckets,
+        if preparation
+            .network
+            .lane_system
+            .needs_turn_preparation(agents.current_lane_id[i])
+        {
+            agent_turn_lane_target(agents, i, preparation)
+        } else {
+            usize::MAX
+        },
     )
     .map(|choice| choice.target_lane_id)
+}
+
+// Keep route/access column reads and the rare successor query outside ordinary classification.
+#[inline(never)]
+fn agent_turn_lane_target(
+    agents: &AgentVec,
+    i: usize,
+    preparation: &ClaimPreparation<'_>,
+) -> usize {
+    junction_approach_node(
+        agents.current_lane_id[i],
+        agents.lane_distance[i],
+        preparation.network,
+        preparation.graph,
+    )
+    .and_then(|node| {
+        junction_approach_lane(
+            agents.current_lane_id[i],
+            node,
+            &agents.current_path[i],
+            agents.current_path_index[i],
+            agents.access_flags[i],
+            agents.planned_detach_node[i],
+            agents.planned_detach_lane_id[i] as usize,
+            preparation.network,
+            preparation.graph,
+        )
+    })
+    .unwrap_or(usize::MAX)
 }
 
 fn agent_network_claim_distance(
