@@ -398,9 +398,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 1
-					road_tool.bkw_lanes = 1
-					road_tool._update_lanes_label()
+					road_tool.set_lane_preset(1, 1)
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
@@ -409,9 +407,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 0
-					road_tool.bkw_lanes = 0
-					road_tool._update_lanes_label()
+					road_tool.set_lane_preset(0, 0)
 		Tool.RAMP:
 			if ramp_tool:
 				ramp_tool.active = enabled

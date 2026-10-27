@@ -268,7 +268,19 @@ func _refresh_cross_section_label() -> void:
 		return
 	_cross_section_label.text = "%s  %d + %d lanes  |  %s\nN: median   ; / ': width   E: draw/edit  H: pockets\n%s" % ["Click road to update" if edit_cross_section else "Draw road", fwd_lanes, bkw_lanes, median_name, _edit_message]
 
+func set_lane_preset(forward: int, backward: int) -> void:
+	fwd_lanes = forward
+	bkw_lanes = backward
+	_edit_message = ""
+	if fwd_lanes == 0 and bkw_lanes == 0:
+		set_median(0, 0)
+	_clear_preview_cache()
+	_clear_preview_visual()
+	_update_lanes_label()
+
 func cycle_median() -> void:
+	if fwd_lanes == 0 and bkw_lanes == 0:
+		return
 	set_median((median_style + 1) % 4, [3.0, 1.0, 5.0, 2.0][(median_style + 1) % 4])
 
 func set_crossing_mode(mode: int) -> void:

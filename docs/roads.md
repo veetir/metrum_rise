@@ -3869,6 +3869,23 @@ METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_STRUCTURE_SAVE_DIR="$ARTIFACTS/copies"
 No Rust, road compile/edit-cost or per-agent path changes; no benchmark is required.
 The existing ribbon remains O(profile samples × bounded lateral strips), only on fallback.
 
+### Walkway preset state — ROAD-92 (2026-10-27)
+
+Road and Walkway activation use `RoadTool.set_lane_preset`. Selection clears stale edit
+feedback; a preset with no vehicle lanes also resets both tool and native median selection.
+Median cycling returns immediately without vehicle lanes (including a road manually reduced
+to 0+0), so N cannot reintroduce an incompatible separator. Existing road cross-section
+validation remains authoritative.
+
+`road_walkway_preset_test.gd` produces the actual median edit refusal, switches to Walkway,
+checks the cleared median/message, sends N, calls the shared cycling handler and validates
+a fresh walkway preview. The native baseline fails three assertions; the fixed run exits 0.
+Inspected `captures/road88_92/road92-{before,after}/walkway_preset.png` show the refused
+red walkway with a carried median, then a valid no-median walkway with ordinary measurements.
+Run the same isolated native command as ROAD-91 with
+`--script res://tests/road_walkway_preset_test.gd`. This is UI state only: O(1) preset work,
+no Rust, compiled geometry or simulation cost changes, and no benchmark required.
+
 ### Short road tunnels — ROAD-61
 
 Fresh blank-world authoring probes on 2026-10-20 reproduce two failures through
