@@ -889,13 +889,15 @@ func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionar
 	var ribbon: Variant = preview
 	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	if vertices.is_empty():
-		# Reuse Rust's prepared profile. Building display-only geometry must not snap/revalidate.
+		# Reuse Rust's prepared profile, or the authored stroke when crossing preparation
+		# refused before producing one. The ribbon is display-only and never authorizes a click.
 		ribbon = simulation_node.build_road_preview_ribbon(
-			preview.get("prepared_points", PackedVector3Array()), fwd_lanes, bkw_lanes,
-			int(preview.get("surface_generation", -1))
+			preview.get("prepared_points", points), fwd_lanes, bkw_lanes,
+			int(preview.get("surface_generation", simulation_node.get_road_tool_surface_generation()))
 		)
 		if not ribbon is Dictionary or int(ribbon.get("surface_generation", -1)) != simulation_node.get_road_tool_surface_generation():
 			_clear_preview_visual()
+			_update_preview_measurement_label(points, preview)
 			_preview_update_pending = true
 			return false
 	if not _upload_road_preview_mesh(ribbon):
@@ -1033,7 +1035,11 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 		"grade_separation_grade":
 			return "Separated road exceeds the 16% grade limit"
 		"crossing_not_found":
-			return "Draw across an existing road"
+			return "%s needs a road to cross here" % ["Over" if crossing_mode == 1 else "Under"]
+		"crossing_level_out_of_range":
+			return "No crossing level is available above or below this road"
+		"invalid_cross_section":
+			return "Choose between zero and four lanes in each direction"
 		"crossing_approach_too_short":
 			return "Leave more room for the crossing approaches"
 		"bridge_clearance":

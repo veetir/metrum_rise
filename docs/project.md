@@ -6,6 +6,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+ROAD-91 crossing feedback is fixed: refused Over/Under strokes retain a red ribbon and
+player-facing reason, with saved-neighborhood/empty-world bridge coverage and inspected
+native captures. ROAD-92 and structure/water/crossing-tunnel bugs ROAD-88–90 remain open
+([acceptance](roads.md#crossing-refusal-feedback--road-91-2026-10-27)).
+
 ROAD-61 short tunnels are complete on `feat/road-structure-design`: explicit player intent,
 continuous buried pavement, shared quick/exact cover checks and concrete portal/terrain ownership.
 Fresh 2,915 library tests, clean Clippy, exact legacy geometry, 22 bridge assertion passes,

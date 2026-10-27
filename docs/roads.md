@@ -3836,6 +3836,39 @@ unchanged work, inconclusive short timings and a small sustained +1.1% at 1M for
 increment. They do not establish a universal absence of runtime regression. The feature is
 accepted with the measured emission/tick costs and this explicit historical uncertainty.
 
+### Crossing refusal feedback — ROAD-91 (2026-10-27)
+
+Crossing preparation may refuse before it has a prepared profile or surface revision.
+The coarse preview now uses the authored stroke and current query revision in that case,
+through the existing Rust display-only ribbon builder. It retains the red material and
+HUD refusal; a revision race keeps the message visible while requesting fresh geometry.
+This does not authorize placement or alter crossing planning, compiled products or saves.
+Preparation refusals (missing crossing, short approaches, unavailable level, invalid lane
+counts and short input) all have player-facing messages. Tunnel cover refusals retain the
+same red-preview path.
+
+`road_crossing_feedback_test.gd` freshly failed 18 assertions before the fix and passes
+afterwards. It loads a task-owned `tunnel-over.sqlite` copy, exercises Over/Under/Tunnel
+at three positions across the saved neighborhood, then tests all four modes without an
+existing road and checks every preparation reason. The area-wide blank preview was the
+same missing fallback-payload contract on every refused stroke, not a persistent tunnel
+lock. Native `before` and `road91-after` captures in `captures/road88_92/` include the
+saved view, overhead/street pairs and the empty-world mode matrix. Inspected before/after
+Over images show blank versus red ribbon plus “Over needs a road to cross here”; Under
+and invalid Tunnel captures also show red ribbons and reasons. The saved structure fins
+remain ROAD-88. No visual structure design changes or Finnish reference differences are
+introduced by this UI fix.
+
+```bash
+METRUM_DEBUG=0 RAYON_NUM_THREADS=4 METRUM_STRUCTURE_SAVE_DIR="$ARTIFACTS/copies" \
+  METRUM_STRUCTURE_PHASE=road91-after METRUM_STRUCTURE_CAPTURE=1 \
+  perl -e 'alarm 900; exec @ARGV' godot --path "$ISOLATED_PROJECT" \
+  --script res://tests/road_crossing_feedback_test.gd
+```
+
+No Rust, road compile/edit-cost or per-agent path changes; no benchmark is required.
+The existing ribbon remains O(profile samples × bounded lateral strips), only on fallback.
+
 ### Short road tunnels — ROAD-61
 
 Fresh blank-world authoring probes on 2026-10-20 reproduce two failures through
