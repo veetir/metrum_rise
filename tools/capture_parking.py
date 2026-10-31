@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Run the parked-fleet capture in a uniquely named, isolated Godot profile."""
+"""Run the resident parking capture in a uniquely named, isolated Godot profile."""
 
 import argparse
 import json
@@ -59,7 +59,9 @@ def main():
         text = manifest.read_text()
         text = text.replace('placement_mode = "zoned_private"', 'placement_mode = "explicit"\nservice_class = "parking_capture"')
         text = re.sub(r"^(?:zone_type|density|economy_profile)\s*=.*\n", "", text, flags=re.M)
-        text = re.sub(r"^(?:worker_capacity|household_capacity)\s*=.*$", "household_capacity = 0", text, flags=re.M)
+        text = re.sub(r"^worker_capacity\s*=.*\n", "", text, flags=re.M)
+        if not re.search(r"^household_capacity\s*=", text, flags=re.M):
+            text = text.replace('[building]', '[building]\nhousehold_capacity = 8')
         manifest.write_text(text)
     (user / "active_packs.cfg").write_text('[packs]\nenabled=["parking", "neukku", "kuopio"]\n')
     env = os.environ.copy()
