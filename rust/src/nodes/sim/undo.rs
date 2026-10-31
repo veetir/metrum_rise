@@ -616,10 +616,11 @@ impl SimCore {
             self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
         }
-        self.transit_network
-            .roadbed
-            .compile_dirty(&self.region_graph);
-        self.refresh_parking_roads(&edge_ids.iter().copied().collect());
+        // A cached surface restore can reconcile now. A dirty owner fallback keeps its
+        // existing deferred compile contract; the road-tool publication reconciles its bays.
+        if self.transit_network.roadbed.is_current() {
+            self.refresh_parking_roads(&edge_ids.iter().copied().collect());
+        }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
     }
