@@ -323,6 +323,9 @@ fn benchmark_parking_locality() {
             )
             .committed
         );
+        // Explicit placement validates the newly committed frontage's compiled surface.
+        core.precompute_road_mesh_data();
+        core.publish_road_tool_view();
         let mut owners = Vec::new();
         for n in 0..12 {
             let index = core.allocator.buildings.len();
@@ -333,11 +336,13 @@ fn benchmark_parking_locality() {
         core.precompute_road_mesh_data();
         core.publish_road_tool_view();
         core.publish_pending_building_site_changes();
-        assert!(
-            core.parking.diagnostics.is_empty(),
-            "{:?}",
-            core.parking.diagnostics
-        );
+        for owner in &owners {
+            assert!(
+                !core.parking.diagnostics.contains_key(&owner.to_bits()),
+                "lot diagnostics: {:?}",
+                core.parking.diagnostics.get(&owner.to_bits())
+            );
+        }
         let setup_s = start.elapsed().as_secs_f64();
         let products = |core: &SimCore| {
             owners

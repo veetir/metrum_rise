@@ -8,7 +8,7 @@ This document is now intended to be a deterministic implementation spec for the 
 
 ## Parking rounds
 
-[`PARK-01`](traffic.md#physical-parking-foundation-park-01) owns physical kerb/anchor supply,
+[`PARK-01`](traffic.md#physical-parking-foundation-park-01) owns public building-anchor supply,
 persistent parked cars, edit towing and the standalone lot. Round 1 leaves every existing agent
 trip unchanged. `PARK-02` will wire ownership, custody and `WalkToCar → PullOut → Drive →
 PullIn → WalkToDoor`, including freight, immigration and removal, into the existing access FSM.
