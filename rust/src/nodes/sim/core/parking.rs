@@ -285,9 +285,7 @@ impl SimCore {
                 .par_iter_mut()
                 .zip(self.agents.agents.parking_trip.par_iter())
                 .for_each(|(path, trip)| {
-                    if path.capacity() < trip.route_capacity {
-                        path.reserve(trip.route_capacity - path.len());
-                    }
+                    trip.prepare_route_buffer(path);
                 });
         });
     }
@@ -405,8 +403,8 @@ impl SimCore {
                 1 => walk * 0.5,
                 2 => walk + out * 0.5,
                 3 => walk + out + (drive.seconds() - out - ingress).max(0.0) * 0.5,
-                4 => walk + drive.seconds() - ingress * 0.5,
-                _ => walk + drive.seconds() + candidate.walk_s * 0.5,
+                4 => walk + drive.seconds() + 8.0,
+                _ => walk + drive.seconds() + 4.0,
             };
             if !self.agents.request_parking_fixture_trip(i, target) {
                 continue;

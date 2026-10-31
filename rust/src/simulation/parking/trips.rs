@@ -46,6 +46,14 @@ pub struct ParkingTrip {
 }
 
 impl ParkingTrip {
+    /// Reconstructs derived route storage after a saved/cloned record is restored.
+    /// O(prepared nodes) allocation at load/undo only; no work when capacity is sufficient.
+    pub(crate) fn prepare_route_buffer(&self, route: &mut Vec<u32>) {
+        if route.capacity() < self.route_capacity {
+            route.reserve(self.route_capacity - route.len());
+        }
+    }
+
     /// Keeps the saved preparation budget within a replacement route's guaranteed storage.
     /// O(1), independent of allocator spare capacity, so edits and load make identical retries.
     pub(crate) fn route_replaced(&mut self, nodes: usize) {

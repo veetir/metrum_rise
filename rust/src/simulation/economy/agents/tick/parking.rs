@@ -85,6 +85,10 @@ impl AgentSystem {
                     continue;
                 }
                 if trip.phase == ParkingTripPhase::None {
+                    if trip.ready {
+                        self.finish_parking_custody_at_home(i, parking, allocator);
+                        self.agents.parking_trip[i].ready = false;
+                    }
                     if self.agents.freight_shipment_id[i] == u64::MAX
                         && self.agents.pending_household_size[i] == 0
                         && self.agents.transit[i] == TRANSIT_IN_BUILDING
@@ -101,19 +105,7 @@ impl AgentSystem {
                 if trip.phase == ParkingTripPhase::WalkToDoor
                     && self.agents.transit[i] == TRANSIT_IN_BUILDING
                 {
-                    let home = self.agents.home_building[i];
-                    if self.agents.current_building[i] == home
-                        && parking.vehicle_place(trip.vehicle).is_some_and(|place| {
-                            parking
-                                .walk_to_car_seconds(
-                                    allocator.building_handles.handle(home).to_bits(),
-                                    place,
-                                )
-                                .is_some()
-                        })
-                    {
-                        parking.finish_outing(trip.vehicle, self.handles.handle(i));
-                    }
+                    self.finish_parking_custody_at_home(i, parking, allocator);
                     parking.clear_retired_places(trip.vehicle);
                     self.agents.parking_trip[i] = ParkingTrip {
                         vehicle: trip.vehicle,
@@ -211,6 +203,32 @@ impl AgentSystem {
             }
         });
         self.movement_serial_query = scratch;
+    }
+
+    // O(k) only on an actual home-arrival event, never a sleeping borrower poll.
+    fn finish_parking_custody_at_home(
+        &mut self,
+        i: usize,
+        parking: &mut ParkingSystem,
+        allocator: &BuildingAllocator,
+    ) {
+        let home = self.agents.home_building[i];
+        if self.agents.current_building[i] != home || home >= allocator.buildings.len() {
+            return;
+        }
+        let car = self.agents.parking_trip[i].vehicle;
+        let borrower = self.handles.handle(i);
+        if parking.borrowed_by(car) != Some(borrower) {
+            return;
+        }
+        if parking.vehicle_place(car).is_none_or(|place| {
+            parking
+                .walk_to_car_seconds(allocator.building_handles.handle(home).to_bits(), place)
+                .is_some()
+        }) {
+            parking.finish_outing(car, borrower);
+            parking.clear_retired_places(car);
+        }
     }
 
     fn materialize_parking_leg(

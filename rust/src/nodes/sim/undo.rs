@@ -864,7 +864,8 @@ impl SimCore {
         // Each carrier returns to its old dense slot with a new handle; the agent it displaces
         // keeps its handle at the end of the store.
         let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
-        for (carrier_idx, carrier) in undo.removed_carriers {
+        for (carrier_idx, mut carrier) in undo.removed_carriers {
+            carrier.parking_trip.prepare_route_buffer(&mut carrier.current_path);
             let current_len = self.agents.agents.len();
             let handle = self
                 .agents
@@ -875,16 +876,18 @@ impl SimCore {
                 self.agents.agents.push(carrier);
                 continue;
             }
-            let moved = self
+            let mut moved = self
                 .agents
                 .agents
                 .get(carrier_idx)
                 .expect("restored carrier slot")
                 .to_owned();
+            moved.parking_trip.prepare_route_buffer(&mut moved.current_path);
             self.agents.agents.push(moved);
             self.agents.agents.replace(carrier_idx, carrier);
         }
-        for (agent_idx, agent) in undo.agents {
+        for (agent_idx, mut agent) in undo.agents {
+            agent.parking_trip.prepare_route_buffer(&mut agent.current_path);
             self.agents.agents.replace(agent_idx, agent);
         }
         // Restored records and the agents they displaced changed slots directly.

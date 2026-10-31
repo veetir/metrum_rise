@@ -472,3 +472,48 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
         Some(walk)
     );
 }
+
+#[test]
+fn a_walking_return_releases_custody_of_a_car_towed_home() {
+    let (mut agents, mut parking, allocator, mut network, mut graph) = fixture();
+    agents.planned_target_building[1] = usize::MAX;
+    let clock = test_clock(0, 0);
+    for _ in 0..8000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.current_building[0] == 1 && agents.transit[0] == TRANSIT_IN_BUILDING {
+            break;
+        }
+    }
+    assert_eq!(agents.current_building[0], 1);
+    let car = agents.parking_trip[0].vehicle;
+    assert_eq!(parking.borrowed_by(car), Some(agents.agent_handle(0)));
+    parking.remove_place(parking.vehicle_place(car).unwrap());
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+    assert!(parking.vehicle_place(car).is_some());
+    agents.planned_target_building[0] = 0;
+    agents.planned_activity[0] = 0;
+    for _ in 0..8000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.current_building[0] == 0 && agents.transit[0] == TRANSIT_IN_BUILDING {
+            break;
+        }
+    }
+    assert_eq!(agents.current_building[0], 0);
+    assert_eq!(agents.transit_mode[0], MODE_WALK);
+    assert!(parking.borrowed_by(car).is_none());
+    assert!(parking.available_to(car, agents.agent_handle(1)));
+}
