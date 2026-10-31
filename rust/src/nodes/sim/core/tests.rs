@@ -9,6 +9,7 @@ mod construction_throughput;
 pub(super) mod fields;
 mod graded_edits;
 mod graded_queries;
+mod junction_connector_sweep;
 pub(super) mod graded_stage;
 mod parking;
 mod road_edit_order;

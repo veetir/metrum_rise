@@ -38,8 +38,8 @@ On the `road` branch:
   Clippy warnings and passes its own tests
 - save compatibility is not maintained; no road-surface geometry is saved, and load rebuilds every
   piece from the graph
-- the legacy compiler stays available for visual comparison at tag `road-legacy` (`d6c80f91`,
-  created in `ROAD-68-A`); `main` dropped it on 2026-10-30
+- the legacy compiler stays available for visual comparison at `d6c80f91`, the last commit before
+  `ROAD-68-A` removed it (tagged `road-legacy` until 2026-10-30)
 
 ### Why junctions can be constructed
 
@@ -337,8 +337,10 @@ above 6.
   stations, kerb points)
 - per sector: its kind, `R`, `C` and sampled boundary curves
 
-Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement and
-pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
+Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement,
+pedestrian corner routes and vehicle lane ends all read the layout: a vehicle lane ends on its arm's
+mouth section line at the clip (`MouthFrame`, `walkways.rs`), and junction connectors leave and
+join along that section's direction ([`TRAFFIC-12`](traffic.md#junction-connectors)). `graph/rebuild/clips.rs` and
 `junction_profile_crossing_core_m` no longer compute setbacks of their own, and pedestrian lanes
 compute no crossing or corner geometry of their own
 ([Pedestrian Junction Crossings](#pedestrian-junction-crossings)).

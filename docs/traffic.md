@@ -469,14 +469,129 @@ connection lane with:
 - `lane_type = LaneType::Vehicle`
 - `node_id = junction node`
 - `next_lanes = [target road lane]`
-- cubic Bezier geometry from the inbound lane neck to the outbound lane neck
-- at most `1 m` chord sampling, clamped to `8..64` steps
+- geometry from the inbound lane's end to the outbound lane's start, as below
+- samples at most `1 m` apart along the path and at most `0.15 rad` apart along an arc
 
-At true junctions (three or more vehicle arms) and user-authored vehicle connection nodes, connector control
-distance and sampling use the junction footprint span: the larger of the lane-mouth chord, the two
-mouth distances through the node center, and the widest incident roadbed span. This prevents
-two-lane to four-lane T-junctions and explicit connection nodes from degenerating into tiny lateral
-connector shims that cars traverse almost instantly.
+**Lane ends come from the roadbed's mouth frames (`TRAFFIC-12`).** Every vehicle lane ends at a
+node on its arm's `MouthFrame` (`roadbed/walkways.rs`): the arm's cross-section line at the edge's
+clip there (`start_clip` / `end_clip`, the station every system that maps edge stations to lanes
+reads), built from the arm's own knots exactly as the junction layout collects them
+(`NodeArms::single`, `ArmInput::section_line`). The graph sets the clip to the layout's mouth
+station at a bend or junction, where the node piece ends and the span begins (rounded to `f32`, so
+a lane end lies within a micrometre of the mouth row), and to zero at a terminal, a pass-through
+node and a node whose layout fails. A lane's end point is its lateral offset on that line, at the
+centreline height there; the lane polyline ends exactly on it (`LaneEnd::Mouth`), keeping only
+the points more than `1 mm` beyond the station, since the roadbed profile puts a knot at every
+mouth station that would otherwise stay as a zero-length end piece. The connector leaves and joins
+along the frame's direction, square to the line, and never reads a lane polyline's end piece:
+those pieces were zero-length, millimetres long or reversed at mouths and sharp bends, and a
+zero-length one sent the old connector off along `+x`. Building a frame is `O(edge points)`, once
+per edge end in the lane rebuild and once per incident edge end in the connector builder.
+
+**Curve.** One construction that always exists (`vehicle_junctions/turn.rs`, `VehicleTurn`), of
+straights and circular arcs only, so the heading is continuous and the curvature piecewise constant:
+
+- **Tangent arc**, where the entry direction and the exit direction meet ahead of both ends: a
+  straight along the entry, one arc and a straight along the exit, a fillet of the two tangent
+  lines. Its radius is the largest that fits between the ends, reduced by bisection (24 halvings)
+  until the arc keeps half a lane from every kerb corner of the layout (the fitted carriageway-edge
+  circles of its concave sectors): at a right-angle kerb-lane turn that is the arc concentric with
+  the kerb, and a large fillet no longer cuts a skewed junction's obtuse corner. The longer lead
+  keeps its straight. The arc never reaches past the tangent lines' intersection, so it neither
+  overshoots nor counter-steers. Construction and kerb bound from Veeti's road-chain branch
+  (`1ae3b22f`).
+- **Biarc** otherwise: straight on, a lateral shift, directions that meet behind an end, a U-turn,
+  or a tangent arc that no radius keeps off the kerbs (none on the swept maps). Two arcs with a
+  common tangent at their joint; the joint is the equal-tangent choice: both ends' tangent lines
+  are cut at the same distance `d > 0`, the joint is the midpoint of the two cut points and its
+  tangent runs between them. `d` exists for every pair of ends except parallel directions with the
+  exit level with or behind the entry, which no junction produces; coincident ends (a user
+  connection through a degree-two node) give a zero-length connector.
+
+There is no cubic and no fallback; the old junction-span cubic, whose handles (`0.55` of the
+footprint span) overshot short turns, is gone. Building a connector is `O(c)` for `c` kerb corners at
+the node, `O(24 c)` when the radius is reduced, only on a lane rebuild, and allocates nothing but
+its polyline.
+
+**Check.** Each connector is checked once per lane rebuild against the node's kerb corners
+(`NodeWalkways::collect_with_kerbs`, from the same layout as the walkways): the
+smallest distance from a corner's centre to the connector's straights and arcs, less the corner's
+radius, must not be negative (`O(c)`). A violation is logged on the `traffic` debug channel with the
+node and both lane ids and is counted by the save sweep; nothing clamps or repairs the curve.
+
+Acceptance record (`TRAFFIC-12`, 2026-10-31; commands and results; the artifact folders stay
+local):
+
+- Save sweep: `junction_connector_save_sweep` (ignored; `METRUM_SWEEP_SAVE=<save> $TEST_BINARY
+  nodes::sim::core::tests::junction_connector_sweep --ignored --nocapture`, optional
+  `METRUM_SWEEP_OUT=<file>` for one line per failing connector and the node layouts) loads a save,
+  whose load rebuilds every lane, and measures every vehicle connector at every node with
+  `lanes::trajectory_tests::measure_connectors`: the farthest probe (every `0.25 m`) outside the
+  compiled carriageway, a step heading against the chord (against both lane directions in turns
+  sharper than a right angle, whose exit heads against the chord), a counter-steer where the arm
+  directions meet ahead of both ends (beyond `1 mrad` and the f32 resolution of the two steps: the
+  demo save lies `8.5 km` from the origin, where f32 rounds points by `0.5 mm`), and a kink (a turn
+  over `0.2 rad` between steps or against a lane's end piece); and every lane end against its mouth
+  frame. `dev` against the fix (failing connectors, then outside / backward / counter-steer / kinks):
+
+  | Map | `dev` | Fix |
+  | --- | --- | --- |
+  | Demo save copy (39 nodes) | 117 of 156: 44 (max 4.75 m) / 31 / 89 / 103 | 0 of 161 |
+  | Kuopio reference save (80 nodes) | 335 of 440: 80 (max 5.65 m) / 65 / 206 / 288 | 0 of 440 |
+  | Saved 100k city (2,220 nodes) | 8,282 of 24,834: 0 / 0 / 8,272 / 8,282 | 0 of 24,834 |
+
+  Causes on `dev` (first match): a lane end piece under `3.2 mm`, so the builder used `+x` as its
+  direction (82 demo, 179 Kuopio; the knot the profile puts at every mouth station, cut on exactly);
+  an end piece off its arm by more than `0.05 rad` (4 demo); a lane end more than `1 cm` off its mouth
+  line, the trim by 3D lane length on curved and sloped arms (14 demo, 62 Kuopio; up to `0.71 m`);
+  and the junction-span cubic with good lane ends (17 demo, 94 Kuopio, every failure of the 100k city:
+  its right turns counter-steer and kink by `0.24 rad`). With the fix every lane end lies on its mouth
+  line, measured against the compiled roadbed's own mouth station (largest distance `0.0000 m`,
+  tolerance `1 cm`), its end piece within
+  `0.0077 rad` of the arm (tolerance `0.05 rad`) and at least `9.5 mm` long; no kerb violation is
+  logged; the largest step is `0.150 rad`; the tightest non-U-turn is a `1.73 m` tangent arc across a
+  pass-through node's slight kink (demo node 33) and the tightest junction turn a `3.58 m` biarc at a
+  50-degree bend (Kuopio node 29). RJ's six fixtures (`trajectory_tests`) are clean. The 45-degree
+  bend now gets two connectors: `dev`'s `+x` end directions made its inner lanes look collinear and
+  overlapping, so they were linked straight across the node piece. Span lanes (the mitred offset
+  inside a span): no vehicle lane of the demo or Kuopio save turns more than `0.014 rad` between steps
+  of at least `1 cm`, so no mitre spike or reversal was found inside a span.
+- Product probes: only the lanes component changes (20 of 20 reference entries, 133 of 141 roadbed
+  fixture entries); graph, nodes, layouts, spans, walkways and queries hashes stay bitwise equal.
+- Rendered top-down shots (`road_junction_reference_test.gd` with `METRUM_ROAD_JUNCTION_CONNECTORS=1`
+  and `METRUM_ROAD_JUNCTION_SAVE` / `METRUM_ROAD_JUNCTION_SAVE_FOCI` on a copy of the demo save,
+  gamescope headless, isolated profile) of a 90-degree bend with a zebra on one arm (node 19), the
+  skewed X (node 5) and a T (node 7): on `dev` connectors hook over the zebras and the sidewalk and
+  loop at both acute corners; with the fix every connector stays inside the carriageway between
+  the zebras' outer edges.
+- Gates: `cargo clippy --all-targets` warning set identical to `dev`; `./run.sh --test` exit 0 with
+  the debug library suite at 1,851 passed, 0 failed, 179 ignored, no Godot script skipped.
+- Road-edit preview: the connector build does not run in the preview path (lanes rebuild on
+  commit). `benchmark_road_preview_stages` (`RAYON_NUM_THREADS=4`, cores `0,2,..,14`, `dev`, fix,
+  fix, `dev` in one session): identical vertex counts; total p50 `sloped_t` 2.920, 2.770 ms (`dev`)
+  against 2.973, 2.891 ms, `sloped_branch` 2.787, 2.520 against 2.556, 2.603 ms.
+- `PERF-06` (`tools/perf_contract.py --agents`, 8 workers, one run each in the same session; its
+  fixture has no junction): identical work counts; network 10k 0.271 against 0.245 ms, 30k 0.861
+  against 0.631 ms; egress 0.729 / 1.436 against 0.567 / 1.474 ms; ingress 0.307 / 0.272 against
+  0.313 / 0.290 ms; single runs at a load average near 2 (another round shared the machine), so
+  within noise and not a speed claim.
+- 100k lane audit (`traffic07_lane_entry_audit`, day 12 at 32×, 8 workers, each engine its own
+  city): `dev` reproduces the `TRAFFIC-11` record exactly (0 lanes over capacity and 0 stacked cars
+  at every sample; 2,579 and 3,385 trucks held at nodes, 96 and 234 vehicles at attach points at
+  00:00 and 24:00). The fix: 0 lanes over capacity and 0 stacked cars at every sample; 2,682 and
+  3,664 held at nodes, 140 and 192 at attach points (a different city, so the holds are not
+  attributed). This city was prepared with the fix's first build, whose lane ends took the layout's
+  `f64` mouth station instead of the edge's `f32` clip (at most a micrometre apart).
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, both engines in one session): both PASS,
+  determinism identical (repeat, 1 and 3 threads, reload). Both raise the same 13 notes of the stale
+  baseline; the fix moves them by at most 2.6% apart from tiny rates (`dev` against fix): 10k
+  baseline out-of-stock 0.1944 / 0.1943; 10k fiscal stress deliveries 8.89 / 8.69, employment
+  0.07446 / 0.07450, final employment 0.00602 / 0.00592, net income 27.31 / 27.28, out-of-stock
+  0.8062 / 0.8080; 30k baseline bankruptcies 1.610 / 1.652, deliveries 128.5 / 129.4, employment
+  0.6004 / 0.6021, final employment 0.5418 / 0.5436, net income 8.53 / 8.58; 30k fiscal stress
+  employment 0.07682 / 0.07686, final employment 0.00624 / 0.00684. The 30k arrivals workload
+  moves by at most 3% on its main metrics (out-of-stock 0.218 / 0.225).
 
 Allowed turns are derived from `Node::lane_connections`:
 
@@ -507,6 +622,152 @@ road lanes, so multiple cars may occupy the same connector when they respect sep
 entry also uses a per-tick claim to avoid two cars grabbing the same zero-distance entry slot.
 Car exits check outgoing-lane occupancy and acquire the same reservation (`AUDIT-01-A11`). A
 blocked car waits at the connector end with its route intact until the outgoing entry clears.
+
+A car that starts at a node (border-origin freight, an arrival carrier, a replan at a node, or a
+zero-hop route onto its planned detach lane) enters its first lane under the same two checks
+(`TRAFFIC-07`): `lane_entry_slot_clear` on the candidate lanes of the first edge, starting at
+the stable choice and wrapping, then `claim_lane_entry` on the first clear one. A car that finds
+no lane it may enter holds at its node with its path, access plan, freight shipment, target and
+scheduler state untouched, and stays in the raw network counts. The claim classification marks a
+car with a valid plan, no lane and no clear first lane `HeldEntry`: it skips the serial handoff
+pass and is not processed at all that tick (speed 0), so a queue at a border costs one gap test per
+lane of the first edge, per held car and tick (O(node degree + lanes on the first edge) lookups
+and one O(log bucket) test per lane, no allocation), done in the parallel classification. The
+first tick the slot is clear it classifies `Dynamic` again and takes the entry in the serial
+phase. An occupancy snapshot taken at the start of the tick decides both the hold and the entry,
+so the result does not depend on the worker count. Pedestrians keep entering unchecked.
+
+Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact folders stay local):
+
+- Regression: `movement_pass::tests::node_origin_cars_wait_for_an_entry_gap` puts 64 trucks at the
+  start node of each of 80 one-lane roads (the 5,120 agents cross the parallel classification
+  chunk) and ticks 24 times with 1 and 8 workers. On `dev` all 64 trucks of a road stack at
+  distance 0; with the hold none do, the waiting trucks keep path, plan, shipment id and speed 0,
+  and the lane state is bit-identical for 1 and 8 workers. Debug `cargo test --lib`: 1,847 passed,
+  178 ignored, 0 failed.
+- Lane audit: `frame_budget::lane_entry_audit::traffic07_lane_entry_audit` (ignored, release)
+  loads a prepared snapshot, runs one game day and counts, every `METRUM_AUDIT_EVERY_MINUTES`
+  (default 240), the lanes holding more cars than fit (`floor(length / 2.7) + 1`), the cars within
+  0.5 m of a lane's start, and the trucks held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
+  steps onto a lane that was already full in the previous frame, with its previous state. Each engine
+  builds its own 100k city (`perf_contract_prepare`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`), day
+  12 at 32×. `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
+  197 fit, then 925), 685 and 754 cars within 0.5 m of one lane start, 2,872 and 3,708 cars
+  stacked on 14 and 15 lanes, 12 and 5 trucks held. With the hold: 0 lanes over capacity and 0
+  stacked cars at 00:00, 2 lanes over at 24:00 (200 cars where 140 fit; 81 cars stacked), 2,636 and
+  3,463 trucks held at nodes. None of the 81 entries that took a lane above capacity came from node
+  entry (on `dev` 255 of the first 400 entries onto a full lane did, within 40 game minutes); all
+  81 were trucks that left the access-egress state onto one lane in one tick (22 and 59 trucks at
+  a single attach point), tracked as `TRAFFIC-11`.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 3 alternating `dev`/fix pairs, cores
+  `0,2,..,14`, 8 workers): identical work counts; 10k network tick 0.255, 0.238, 0.255 ms
+  (`dev`) against 0.239, 0.240, 0.235 ms; 30k network 0.718, 0.533, 0.468 against 0.663, 0.462,
+  0.545 ms. Same fix-built 100k city, first two game hours at 1×, 3 alternating pairs: mean agent
+  tick 5.065–5.091 ms with `HeldEntry` against 5.300–5.315 ms with held cars left on the serial
+  pass (the earlier prototype's approach), 0.22 ms less. Each engine's own city at 1×: 4.925 and
+  4.948 ms (`dev`, 12 held trucks) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
+  differ, so that pair does not isolate the hold.
+- `./run.sh --test`: Rust suite plus the headless and rendered Godot scripts.
+- Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
+  `RAYON_NUM_THREADS=6`, fresh cities): PASS with no failures; determinism identical (repeat, 1
+  and 3 threads, reload). The committed baseline is stale on `dev`: the unmodified `dev` tip raises
+  13 notes of its own (10k baseline out-of-stock 0.173 against a band of 0.055–0.114; 30k baseline
+  employment 0.600, net income 8.45 and deliveries 127 against 0.65–0.69, 12.2–13.6 and
+  164–177), so the comparison is fix against `dev` in one session. At 30k the main metrics move
+  by 1.5% or less in the baseline workload apart from out-of-stock (+3.8%), by at most 5.1% in
+  fiscal stress and by at most 2.2% in the arrivals workload; at 10k the fix raises the
+  out-of-stock rate in all three city sizes (0.97×, 1.00×, 1.03×) by +0.021, +0.021, +0.017 in the
+  baseline workload (0.173 to 0.194 at 1.00×) and by +0.024, +0.020, +0.018 in fiscal stress (0.786
+  to 0.806 at 1.00×, which crosses its band edge at 0.787): the two 10k out-of-stock notes of the
+  earlier prototype. Cause: the hold shows the border's real throughput. One single-lane trunk per
+  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 trucks waiting at its
+  border at 00:00 of day 12 and 1,919 at 24:00 (the road holds 1,100–2,600 vehicles), which the
+  stacking used to hide. Border throughput stays a fixture question (`TRAFFIC-07` does not change
+  it).
+
+A vehicle placed on the road outside the movement pass waits at its attach point the same way
+(`TRAFFIC-11`). `AgentVec::hold_for_lane_attach` leaves it off every lane (`TRANSIT_NETWORK`, no
+lane, edge and origin node of the attach lane) with the attach lane and distance in
+`planned_attach_lane_id` / `planned_attach_lane_d` and `ACCESS_LANE_ATTACH_PENDING` set. The claim
+classification marks it `HeldEntry` while `lane_attach_slot_clear` fails at that distance (one
+O(log bucket) test per held car and tick, no allocation, off the serial pass) and `Dynamic` once
+the slot is clear; the serial phase then claims the lane with `claim_lane_entry` and attaches at
+the driveway speed, exactly as egress does, so at most one car takes a lane per tick. Three
+placements use it: a building removal's evacuation (`start_building_origin_plan_on_network`), a
+road edit's reattachment when a rebuilt lane's spot is already taken by a car reattached earlier
+in the same pass (every car on the edit's lanes is detached, so those cars are the lane's whole
+occupancy; O(reattached × log) per edit), and a car whose ingress plan turns invalid on its
+driveway (it returns to its detach point). Walkers keep entering at once. Trip-plan clears and
+replans keep the hold with its attach point; a hold whose lane no longer exists, or no longer
+belongs to the car's edge, is dropped and the car repairs from the lane's origin node.
+
+Diagnosis (`TRAFFIC-11`, 2026-10-30). On the `TRAFFIC-07` branch (`3532b612`) the traced 100k
+audit (`METRUM_AUDIT_TRACE=1`, which now also records the buildings removed in the frame and each
+car's previous building) shows both bulk entries in a frame in which the economy removed buildings:
+at game minute 16,024, 14 removals, 22 trucks step onto lane 13,362 (edge 2,227, 380 m, 141 cars
+where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 trucks onto lane 13,357 (edge
+2,226) at 343.02 m. Every truck of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
+(57,760 and 57,711) the frame before, has its home as its new target and the driveway speed 3 m/s.
+That is the evacuation of a removed building: `remove_evacuated_building`
+(`buildings/allocator/lifecycle.rs:870`) calls `evacuate_referencing`
+(`agents/building_refs.rs:415`), which plans each occupant's trip home and calls
+`start_building_origin_plan_on_network` (`building_refs.rs:481`, `:509`, defined at `:601`). Its
+`enter_lane` (`building_refs.rs:644`) put every occupant on the building's attach lane at the
+attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The trucks were the egress
+queue waiting at that full attach slot, so a business failing beside a jammed road dumps its whole
+queue onto one point. The same unchecked placement existed in the road-edit reattachment
+(`agents/remap.rs:331`) and the invalid-ingress rollback (`movement/access_state/ingress.rs:168`);
+the audit day has no road edit and showed no ingress rollback.
+
+Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
+
+- Regression: `building_refs::tests::evacuated_egress_queue_waits_for_attach_gaps` puts 64 egress
+  trucks at an origin building on each of 80 one-way 1 km roads (5,120 agents, across the parallel
+  classification chunk), evacuates every origin and ticks 40 times with 1 and 8 workers. With
+  `TRAFFIC-07` alone all 64 trucks of a road stand on the attach point after the evacuation
+  ("cars stacked at 50 and 50 (64 on it)"); with the hold none does, the held trucks keep target,
+  shipment id and speed 0, every lane keeps the static gap at every tick, and 1 and 8 workers give
+  bit-identical lane state. `remap::tests::reattach_holds_a_car_whose_spot_is_taken` covers the
+  road-edit hold.
+- Save and load: `save::agents::lanes::tests::loaded_cars_held_at_an_attach_point_keep_waiting`.
+  Load validation used to clear any access plan with a flag bit in `0xE0` and the plan fields of
+  plan-less network cars; the first 100k prepare with the hold failed its exact save/load
+  continuation check (`employed` 47,618 against 47,619 one hour after the reload) until load kept
+  the hold like the running game does.
+- Lane audit, same command as `TRAFFIC-07` (`perf_contract_prepare` then
+  `traffic07_lane_entry_audit`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, day 12 at 32×, the
+  fix-built city): 0 lanes over capacity and 0 cars stacked at a lane start at 00:00, 06:00,
+  12:00, 18:00 and 24:00; 2,579 trucks held at nodes at 00:00 and 3,385 at 24:00; 96 vehicles
+  held at an attach point at 00:00 and 234 at 24:00. The trace lists 51 entries onto a lane that
+  was full in the previous frame, all onto lanes of at most 100 m (connectors), at most 2 per lane
+  and frame, none leaving a lane over capacity. On the `TRAFFIC-07` branch's own city the same
+  binary ends the day with 0 lanes over capacity and 0 stacked cars (`TRAFFIC-07` alone: 2 lanes,
+  81 stacked) and 136 vehicles held at attach points. The committed tree gives the same counts on
+  the fix-built city; its held vehicles wait on 20 lanes at 00:00 and 27 at 24:00, only one of
+  which holds as many cars as fit, so they mostly wait for a gap at the attach point itself (a
+  queue standing through it) rather than for lane capacity. Whether any of them waits
+  indefinitely is not established.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 5 alternating pairs, cores
+  `0,2,..,14`, 8 workers; control: release test binary of `3532b612` built in the same session,
+  SHA-256 `b17c717a…`; fix `506daff0…`): identical work counts in all ten runs. The timings are
+  not comparable this session: another round's runs shared the machine (load average 4-7) and the
+  samples scatter 2-5× above the quiet `TRAFFIC-07` session in both binaries (10k network
+  0.33-1.22 ms control, 0.40-1.12 ms fix; medians 0.62 against 0.55 ms at 10k and 1.06 against
+  0.97 ms at 30k network, 0.67 against 0.80 and 1.39 against 1.92 ms egress, 0.30 against 0.48
+  and 0.49 against 0.38 ms ingress). The contract's fixture holds no car at an attach point; the
+  added per-tick work is one lane test per network car in `handle_network_movement` and a flag
+  test per lane-less network car in the classification. Same `TRAFFIC-07` 100k city, first two
+  game hours at 1×, 2 alternating pairs: mean agent tick 5.038 and 5.054 ms (control) against
+  5.078 and 5.097 ms (fix), +0.04 ms (0.8%) in both pairs. The two runs diverge at the window's
+  first evacuation, so the pair mixes the check's cost with different traffic.
+- Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
+  `RAYON_NUM_THREADS=6`, fresh cities): PASS, determinism identical (repeat, 1 and 3 threads,
+  reload). The same 13 notes as `TRAFFIC-07`'s run; the 10k and 30k fiscal-stress values are
+  unchanged, and 30k baseline moves by at most 1.1% (bankruptcies 1.593 to 1.610 per 1,000
+  buildings and day, deliveries 129.15 to 128.52, employment 0.6013 to 0.6004, net income 8.57
+  to 8.53).
+- `./run.sh --test` (headless, isolated profile): exit code 0; debug library suite 1,850 passed,
+  0 failed, 178 ignored; no Godot script skipped and no script error.
 
 ## Junction Speeds
 
@@ -1019,5 +1280,6 @@ The measured ignored tests are
 - resident parking trips, curb queues and building entrance reservations are not yet modeled; physical supply and parked test cars are described above
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
-- network entry at a node does not claim the entry slot (`TRAFFIC-07`)
+- a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
+  single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
 - walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction
