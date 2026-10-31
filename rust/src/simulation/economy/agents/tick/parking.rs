@@ -194,11 +194,13 @@ impl AgentSystem {
                 };
                 if next == ParkingTripPhase::PullOut {
                     if !parking.trip_reserved(trip.vehicle, trip.destination) {
+                        self.agents.current_path[i] = plan.current_path;
                         continue;
                     }
                     parking.set_moving(trip.vehicle, true);
                 } else {
                     if !parking.occupy(trip.vehicle, trip.destination) {
+                        self.agents.current_path[i] = plan.current_path;
                         continue;
                     }
                     parking.set_moving(trip.vehicle, false);

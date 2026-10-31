@@ -15,6 +15,8 @@ mod planning;
 mod parking;
 pub(crate) use access::LocalAccessPath as ParkingAccessPath;
 pub(crate) use planning::quote_parking_leg;
+#[cfg(test)]
+pub(crate) use planning::{quote_parking_trip, estimate_parking_trip_seconds};
 pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 mod route_preview;
 mod runtime;

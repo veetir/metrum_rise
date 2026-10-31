@@ -45,6 +45,14 @@ pub struct ParkingTrip {
     pub(crate) ready: bool,
 }
 
+impl ParkingTrip {
+    /// Keeps the saved preparation budget within a replacement route's guaranteed storage.
+    /// O(1), independent of allocator spare capacity, so edits and load make identical retries.
+    pub(crate) fn route_replaced(&mut self, nodes: usize) {
+        self.route_capacity = self.route_capacity.min(nodes);
+    }
+}
+
 impl ParkingSystem {
     /// Assigns ownership once from the saved seed and stable household identity. Density is
     /// the zoning registry's classification of `Building::zone_profile_runtime_id`.

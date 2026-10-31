@@ -273,3 +273,38 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
     assert!(arrived);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
+    let id = register_lot(&mut c);
+    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().household_capacity = Some(4);
+    c.allocator
+        .registry
+        .register("parking", manifest, String::new());
+    c.place_service_building_internal(&id, -450.0, -30.0)
+        .unwrap();
+    c.place_service_building_internal(&id, 450.0, -30.0)
+        .unwrap();
+    c.publish_pending_building_site_changes();
+    let (home, target) = if c.allocator.entrances[0].side == -1 {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let agent = c.debug_add_parking_commuter(home, target).unwrap();
+    c.agents.has_car[agent] = true;
+    assert!(!c.agents.parking_trip[agent].vehicle.is_none());
+    assert!(c.bulldoze_building(home));
+    assert_eq!(
+        c.agents.transit_mode[agent],
+        crate::simulation::economy::agents::MODE_WALK
+    );
+}

@@ -389,3 +389,86 @@ fn children_cannot_borrow_a_free_household_car() {
             .is_none()
     );
 }
+
+#[test]
+fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
+    use crate::simulation::economy::agents::tick::{
+        estimate_parking_trip_seconds, quote_parking_trip,
+    };
+    let (mut agents, mut parking, allocator, network, graph) = fixture();
+    let car = agents.parking_trip[0].vehicle;
+    let quote = quote_parking_trip(
+        car,
+        agents.agent_handle(0),
+        true,
+        0,
+        1,
+        &parking,
+        &allocator,
+        &network,
+        &graph,
+        &agents.pathfind_count,
+    )
+    .unwrap();
+    let estimate = estimate_parking_trip_seconds(
+        0,
+        1,
+        car,
+        true,
+        &parking,
+        &allocator,
+        &network,
+        &graph,
+        &agents.pathfind_count,
+    )
+    .unwrap();
+    assert_eq!(estimate, quote.seconds.ceil() as u16);
+    assert!(parking.borrowed_by(car).is_none());
+    assert!(
+        parking
+            .first_free_candidate(allocator.building_handles.handle(1).to_bits())
+            .is_some()
+    );
+    parking.fill_test_fleet();
+    assert!(
+        quote_parking_trip(
+            car,
+            agents.agent_handle(0),
+            true,
+            0,
+            1,
+            &parking,
+            &allocator,
+            &network,
+            &graph,
+            &agents.pathfind_count
+        )
+        .is_none()
+    );
+    let walk = estimate_parking_trip_seconds(
+        0,
+        1,
+        car,
+        false,
+        &parking,
+        &allocator,
+        &network,
+        &graph,
+        &agents.pathfind_count,
+    )
+    .unwrap();
+    assert_eq!(
+        estimate_parking_trip_seconds(
+            0,
+            1,
+            car,
+            true,
+            &parking,
+            &allocator,
+            &network,
+            &graph,
+            &agents.pathfind_count
+        ),
+        Some(walk)
+    );
+}

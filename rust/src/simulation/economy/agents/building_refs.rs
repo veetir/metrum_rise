@@ -472,7 +472,9 @@ impl AgentSystem {
                         building_id,
                         home_after_removal,
                         ACTIVITY_HOME,
-                        self.agents.has_car[agent_idx],
+                        // A displaced resident walks; its persistent car remains at its bay.
+                        // Freight/immigration keep the legacy carrier path until round 2b.
+                        self.agents.has_car[agent_idx] && self.agents.parking_trip[agent_idx].vehicle.is_none(),
                         allocator,
                         transit_network,
                         graph,
@@ -665,6 +667,7 @@ impl AgentSystem {
         self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
         self.agents.speed[agent_idx] = 0.0;
+        self.agents.parking_trip[agent_idx].route_replaced(plan.current_path.len());
         self.agents.current_path[agent_idx] = plan.current_path;
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {

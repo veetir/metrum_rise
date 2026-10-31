@@ -261,7 +261,7 @@ func update_swarm(delta: float = 0.0):
 	# Cars (grouped by vehicle type and color variant). Rust moves each drawn pose toward its
 	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
 	var parked_renderer: Node = get_node_or_null("../ParkedCars")
-	var full := parked_renderer.needs_full_publication() if parked_renderer != null else false
+	var full: bool = parked_renderer.needs_full_publication() if parked_renderer != null else false
 	var vehicle_frame: Dictionary = simulation_node.get_vehicle_frame(full)
 	if vehicle_frame.get("busy", true):
 		return

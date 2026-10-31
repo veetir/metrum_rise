@@ -373,6 +373,7 @@ unsafe fn apply_immigration_trip(
         *s_lane_id.get_mut(i) = usize::MAX;
         *s_lane_d.get_mut(i) = 0.0;
         *s_speed.get_mut(i) = 0.0;
+        slices.parking_trip.get_mut(i).route_replaced(plan.current_path.len());
         *s_path.get_mut(i) = plan.current_path;
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_transit.get_mut(i) = TRANSIT_NETWORK;
@@ -397,6 +398,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
 
+        slices.parking_trip.get_mut(i).route_replaced(replan.current_path.len());
         *s_path.get_mut(i) = replan.current_path;
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
