@@ -240,7 +240,7 @@ impl SimCore {
         } else {
             // Off-lane footprints are grounded per bucket after bucketing.
             let render_id = self.agents.render_id[i];
-            let (v_type, variant_id, render_id) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
+            let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
                 .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
             let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
                 (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
@@ -461,7 +461,7 @@ impl SimCore {
                 buffer.push(0.0);
             } else {
                 let render_id = self.agents.render_id[i];
-                let (v_type, variant_id, render_id) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
+                let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
                     .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
                 let model_key = (v_type * 10) + variant_id;
                 snapshot

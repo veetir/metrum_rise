@@ -13,12 +13,36 @@ impl ParkingSystem {
         };
         let car = self.places.occupant[p];
         let reservation = self.places.reservation[p];
-        if !reservation.is_none() {
-            self.cancel_reservation(reservation);
+        if self.places.active[p] {
+            self.places.active[p] = false;
+            self.usable_places -= 1;
+            let retiring_car = if !reservation.is_none() {
+                reservation
+            } else {
+                car
+            };
+            self.remember_retired_place(handle, retiring_car);
+            if !reservation.is_none() {
+                self.cancel_reservation(reservation);
+            }
+            if !car.is_none() {
+                self.cancel_reservation(car);
+                self.release(car);
+            }
+            if let Some(v) = self.vehicle_handles.resolve(car)
+                && !self.vehicles.moving[v]
+            {
+                let home = self.vehicles.home[v];
+                if let Some(destination) = self.home_place(v) {
+                    self.occupy(car, destination);
+                } else {
+                    self.stored.entry(chunk_at(home)).or_default().push(car);
+                }
+            }
         }
-        if !car.is_none() {
-            self.cancel_reservation(car);
-            self.release(car);
+        // Only geometry needed by the live borrower remains. It is not supply or occupancy.
+        if !self.places.retired_for[p].is_none() {
+            return;
         }
         let pos = self.places.position[p];
         let key = chunk_at([pos[0], pos[2]]);
@@ -42,14 +66,6 @@ impl ParkingSystem {
         self.place_handles.swap_remove(p, self.places.len());
         self.places.swap_remove(p);
         self.mark_dirty(key);
-        if let Some(v) = self.vehicle_handles.resolve(car) {
-            let home = self.vehicles.home[v];
-            if let Some(destination) = self.home_place(v) {
-                self.occupy(car, destination);
-            } else {
-                self.stored.entry(chunk_at(home)).or_default().push(car);
-            }
-        }
     }
 
     /// Reconciles one owner's geometry, keeping identical poses and live custody. O(old log old + new)
@@ -68,6 +84,10 @@ impl ParkingSystem {
         for bay in bays {
             if let Some(h) = retained.remove(&pose_key(bay.position, bay.heading)) {
                 let p = self.place_handles.resolve(h).expect("retained bay");
+                if !self.places.active[p] {
+                    self.places.active[p] = true;
+                    self.usable_places += 1;
+                }
                 self.places.width[p] = bay.width;
                 self.places.length[p] = bay.length;
                 self.places.path[p] = bay.path;
@@ -130,9 +150,7 @@ impl ParkingSystem {
         }
         for &(anchor, bay) in bays {
             let source = PlaceSource::Building { building, anchor };
-            if !self.sources.contains_key(&source) {
-                self.add_place(source, bay);
-            }
+            self.replace_source(source, &[bay]);
         }
         let sources: Vec<_> = bays
             .iter()
@@ -146,5 +164,25 @@ impl ParkingSystem {
         for (_, bay) in bays {
             self.rehouse_near([bay.position[0], bay.position[2]]);
         }
+    }
+}
+
+impl ParkingSystem {
+    /// Consumes deduplicated supply-release events in chunk order. O(E log E + local waiting
+    /// cars × candidate scan), E released chunks. Sleeping cars are never polled. The queue is
+    /// prepared with supply; local waiting storage is reused by the existing event handler.
+    pub(crate) fn apply_supply_events(&mut self) {
+        let mut events = std::mem::take(&mut self.release_events);
+        events.sort_unstable();
+        for &(x, z) in &events {
+            self.chunks
+                .get_mut(&(x, z))
+                .expect("released chunk")
+                .release_pending = false;
+            let size = crate::simulation::network::graph::RegionGraph::CHUNK_SIZE;
+            self.rehouse_near([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size]);
+        }
+        events.clear();
+        self.release_events = events;
     }
 }

@@ -843,6 +843,54 @@ pub(super) fn best_trip_candidate_for_mode(
     best
 }
 
+// Parking endpoints price only free-flow lane costs and the retained swept maneuver.
+// Kept beside TripEnd so its private geometry and connector rules remain authoritative.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parking_candidate(
+    mode: u8,
+    origin: &BuildingEntrance,
+    destination: &BuildingEntrance,
+    maneuver_s: [f32; 2],
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    count: &AtomicU32,
+    origin_lane: Option<(usize,f32)>,
+) -> Option<PlannedTripCandidate> {
+    let mut best = None;
+    for (from, to) in NODE_RANK_PAIRS {
+        let Some(mut a) = TripEnd::new(mode, from, origin, true, network, graph) else { continue; };
+        let Some(mut b) = TripEnd::new(mode, to, destination, false, network, graph) else { continue; };
+        if mode == MODE_CAR {
+            for (end, departing, seconds) in [(&mut a, true, maneuver_s[0]), (&mut b, false, maneuver_s[1])] {
+                let lane = &network.lane_system.lanes[end.lane_id];
+                let distance = if departing { lane.length - end.lane_d } else { end.lane_d };
+                end.frontage_time_s = Some(distance.max(0.0) / graph.edge(lane.edge_id).speed_limit);
+                let entrance = if departing { origin } else { destination };
+                let point = BuildingAllocator::sample_pos_on_lane(lane, end.lane_d);
+                end.local_time_s = seconds + point.distance_to(entrance.curb_pos) / crate::config::AGENT_DRIVEWAY_SPEED_MS;
+            }
+        }
+        if let Some((lane_id,distance)) = origin_lane {
+            if a.lane_id != lane_id { continue; }
+            a.lane_d = distance;
+            a.local_time_s = 0.0;
+            let lane = &network.lane_system.lanes[lane_id];
+            let speed = if mode == MODE_CAR { graph.edge(lane.edge_id).speed_limit } else { crate::config::AGENT_WALK_SPEED_MS };
+            a.frontage_time_s = Some((lane.length-distance).max(0.0) / speed);
+        }
+        let candidate = if mode == MODE_CAR && shares_direct_frontage(&a, &b) {
+            let lane = &network.lane_system.lanes[a.lane_id];
+            finish_candidate(mode, from, to, &a, &b, a.local_time_s + b.local_time_s + (b.lane_d-a.lane_d).max(0.0) / graph.edge(lane.edge_id).speed_limit)
+        } else {
+            combine_trip_ends(mode, from, to, &a, &b, network, graph, count)
+        };
+        if let Some(candidate) = candidate && best.as_ref().is_none_or(|old| candidate_better(&candidate, old)) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,42 +1027,4 @@ mod tests {
             "the flow field must still reject the disconnected sidewalk"
         );
     }
-}
-
-// Parking endpoints price only free-flow lane costs and the retained swept maneuver.
-// Kept beside TripEnd so its private geometry and connector rules remain authoritative.
-pub(super) fn parking_candidate(
-    mode: u8,
-    origin: &BuildingEntrance,
-    destination: &BuildingEntrance,
-    maneuver_s: [f32; 2],
-    network: &TransitNetwork,
-    graph: &RegionGraph,
-    count: &AtomicU32,
-) -> Option<PlannedTripCandidate> {
-    let mut best = None;
-    for (from, to) in NODE_RANK_PAIRS {
-        let Some(mut a) = TripEnd::new(mode, from, origin, true, network, graph) else { continue; };
-        let Some(mut b) = TripEnd::new(mode, to, destination, false, network, graph) else { continue; };
-        if mode == MODE_CAR {
-            for (end, departing, seconds) in [(&mut a, true, maneuver_s[0]), (&mut b, false, maneuver_s[1])] {
-                let lane = &network.lane_system.lanes[end.lane_id];
-                let distance = if departing { lane.length - end.lane_d } else { end.lane_d };
-                end.frontage_time_s = Some(distance.max(0.0) / graph.edge(lane.edge_id).speed_limit);
-                let entrance = if departing { origin } else { destination };
-                let point = BuildingAllocator::sample_pos_on_lane(lane, end.lane_d);
-                end.local_time_s = seconds + point.distance_to(entrance.curb_pos) / crate::config::AGENT_DRIVEWAY_SPEED_MS;
-            }
-        }
-        let candidate = if mode == MODE_CAR && shares_direct_frontage(&a, &b) {
-            let lane = &network.lane_system.lanes[a.lane_id];
-            finish_candidate(mode, from, to, &a, &b, a.local_time_s + b.local_time_s + (b.lane_d-a.lane_d).max(0.0) / graph.edge(lane.edge_id).speed_limit)
-        } else {
-            combine_trip_ends(mode, from, to, &a, &b, network, graph, count)
-        };
-        if let Some(candidate) = candidate && best.as_ref().is_none_or(|old| candidate_better(&candidate, old)) {
-            best = Some(candidate);
-        }
-    }
-    best
 }

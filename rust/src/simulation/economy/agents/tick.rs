@@ -14,6 +14,8 @@ mod movement_pass;
 mod planning;
 mod parking;
 pub(crate) use access::LocalAccessPath as ParkingAccessPath;
+pub(crate) use planning::quote_parking_leg;
+pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 mod route_preview;
 mod runtime;
 mod schedule;
@@ -97,7 +99,7 @@ impl AgentSystem {
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         if let Some(parking) = parking.as_deref_mut() {
-            self.prepare_parking_movement(parking);
+            self.prepare_parking_movement(parking,transit_network);
         }
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n, parking.as_deref());
         if let Some(parking) = parking {

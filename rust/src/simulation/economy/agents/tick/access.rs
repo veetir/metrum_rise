@@ -11,10 +11,10 @@ pub(super) use geometry::{
     local_access_point, local_access_side_label, projected_lane_distance_for_entrance,
 };
 pub(super) use legality::{planned_attach_is_legal, planned_detach_is_legal};
-pub(crate) use path::LocalAccessPath;
+pub(crate) use path::{LocalAccessPath, local_access_target_segment};
 pub(super) use path::{
     advance_along_local_access_path, local_access_path, local_access_should_log_step,
-    local_access_target_segment,
+
 };
 pub(super) use timing::{
     direct_frontage_segment_time_s, frontage_time_s, local_access_distance, local_access_time_s,

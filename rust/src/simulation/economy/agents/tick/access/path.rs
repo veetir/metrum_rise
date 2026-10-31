@@ -88,7 +88,7 @@ fn point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> bool {
 }
 
 /// Returns the next segment endpoint index the agent should move toward.
-pub(in crate::simulation::economy::agents::tick) fn local_access_target_segment(
+pub(crate) fn local_access_target_segment(
     current: Vector2,
     path: &LocalAccessPath,
 ) -> Option<usize> {

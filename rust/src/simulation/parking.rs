@@ -11,8 +11,10 @@ pub(crate) mod lots;
 #[cfg(test)]
 mod query;
 mod render;
+mod retired;
 mod trips;
-pub(crate) use trips::{ParkingTrip, ParkingTripPhase};
+pub use trips::ParkingTrip;
+pub(crate) use trips::ParkingTripPhase;
 pub(crate) mod saved;
 #[cfg(test)]
 mod tests;
@@ -35,6 +37,9 @@ pub(crate) struct ParkingSystem {
     sources: HashMap<PlaceSource, Vec<Handle<Place>>>,
     // At most one dirty entry per prepared chunk. Capacity grows only with supply edits/load.
     dirty: Vec<(i32, i32)>,
+    release_events: Vec<(i32, i32)>,
+    retired_dirty: Vec<Handle<Place>>,
+    usable_places: usize,
     pending: std::collections::BTreeMap<(i32, i32), Arc<ParkedChunk>>,
     published: std::collections::BTreeMap<(i32, i32), Arc<ParkedChunk>>,
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
@@ -43,6 +48,7 @@ pub(crate) struct ParkingSystem {
     stored: HashMap<(i32, i32), Vec<Handle<Vehicle>>>,
     owners: HashMap<u64, Handle<Vehicle>>,
     mobility_seed: u64,
+    pub(crate) pending_households: Vec<u64>,
     publication_epoch: u64,
     candidates: HashMap<u64, candidates::DestinationCandidates>,
 }
@@ -63,9 +69,13 @@ impl ParkingSystem {
         let source_list = self.sources.entry(source).or_default();
         self.places.push(Place {
             source,
+            active: true,
+            retired_for: Handle::NONE,
+            road_point: [0.0; 2],
             identity: bay.identity,
             position: bay.position,
             path: bay.path,
+            access: Default::default(),
             heading: bay.heading,
             width: bay.width,
             length: bay.length,
@@ -74,6 +84,7 @@ impl ParkingSystem {
             chunk_slot: chunk.places.len(),
             source_slot: source_list.len(),
         });
+        self.usable_places += 1;
         self.place_handles.register_appended(self.places.len());
         let handle = self.place_handles.handle(self.places.len() - 1);
         chunk.places.push(handle);
@@ -81,6 +92,10 @@ impl ParkingSystem {
         let capacity = self.chunks.len();
         if self.dirty.capacity() < capacity {
             self.dirty.reserve(capacity - self.dirty.len());
+        }
+        if self.release_events.capacity() < capacity {
+            self.release_events
+                .reserve(capacity - self.release_events.len());
         }
         self.mark_dirty(key);
         handle
@@ -103,7 +118,8 @@ impl ParkingSystem {
                 };
                 for &handle in &chunk.places {
                     let p = self.place_handles.resolve(handle)?;
-                    if !self.places.occupant[p].is_none()
+                    if !self.places.active[p]
+                        || !self.places.occupant[p].is_none()
                         || !self.places.reservation[p].is_none()
                         || self.places.width[p] < 1.8
                         || self.places.length[p] < 4.5
@@ -164,7 +180,8 @@ impl ParkingSystem {
         ) else {
             return false;
         };
-        if !self.vehicles.reserved[v].is_none()
+        if !self.places.active[p]
+            || !self.vehicles.reserved[v].is_none()
             || !self.places.occupant[p].is_none()
             || !self.places.reservation[p].is_none()
         {
@@ -184,7 +201,8 @@ impl ParkingSystem {
         ) else {
             return false;
         };
-        if !self.vehicles.place[v].is_none()
+        if !self.places.active[p]
+            || !self.vehicles.place[v].is_none()
             || !self.places.occupant[p].is_none()
             || (!self.places.reservation[p].is_none() && self.places.reservation[p] != car)
             || (!self.vehicles.reserved[v].is_none() && self.vehicles.reserved[v] != place)
@@ -210,6 +228,12 @@ impl ParkingSystem {
         let pos = self.places.position[p];
         self.places.occupant[p] = Handle::NONE;
         self.vehicles.place[v] = Handle::NONE;
+        let key = chunk_at([pos[0], pos[2]]);
+        let chunk = self.chunks.get_mut(&key).expect("occupied parking chunk");
+        if !chunk.release_pending {
+            chunk.release_pending = true;
+            self.release_events.push(key);
+        }
         self.mark_dirty(chunk_at([pos[0], pos[2]]));
         Some([pos[0], pos[2]])
     }
@@ -239,7 +263,10 @@ impl ParkingSystem {
     pub(crate) fn fill_test_fleet(&mut self) -> usize {
         let mut count = 0;
         for p in 0..self.places.len() {
-            if !self.places.occupant[p].is_none() || !self.places.reservation[p].is_none() {
+            if !self.places.active[p]
+                || !self.places.occupant[p].is_none()
+                || !self.places.reservation[p].is_none()
+            {
                 continue;
             }
             let pos = self.places.position[p];
@@ -250,6 +277,7 @@ impl ParkingSystem {
                 owner: u64::MAX,
                 borrower: Handle::NONE,
                 moving: false,
+                retired_places: [Handle::NONE; 3],
                 place: Handle::NONE,
                 reserved: Handle::NONE,
                 model: (v % 4) as u8,

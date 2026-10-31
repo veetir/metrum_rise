@@ -137,7 +137,7 @@ pub struct Agent {
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
     /// Persistent private vehicle itinerary; the car remains independent of this agent.
-    pub(crate) parking_trip: crate::simulation::parking::ParkingTrip,
+    pub parking_trip: super::ParkingTrip,
     /// Remaining days the agent is locked to their current job after a voluntary switch.
     /// Settlement day from which the agent may look for a new job
     /// ([`AgentSystem::settlement_days`]); a passive deadline, never decremented.

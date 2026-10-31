@@ -356,6 +356,7 @@ pub(super) struct SnapshotMaps {
 /// Entry point to save the live simulation state to a SQLite database.
 pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadResult<()> {
     view.config.validate()?;
+    view.parking.validate_custody(view.agents,view.households)?;
     validate_time_state(view.time, view.agents.sim_time)?;
     if let Some(camera) = view.camera {
         camera.validate()?;
@@ -478,7 +479,7 @@ fn write_snapshot(
         maps,
     )?;
     network::save_network(tx, view.graph, maps)?;
-    let parking = view.parking.save_json(|source| source)?;
+    let parking = view.parking.save_json_with_households(|source| source, &view.households.parking_changes)?;
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
@@ -801,8 +802,10 @@ pub(crate) fn load_from_sqlite(
         [],
         |r| r.get(0),
     )?;
-    let parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
+    let mut parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
+    households.parking_changes = std::mem::take(&mut parking.pending_households).into_iter().map(crate::simulation::core::handles::Handle::from_bits).collect();
     parking.validate_sources(&allocator)?;
+    parking.validate_custody(&agents,&households)?;
     Ok(LoadedSimulation {
         vegetation,
         vegetation_edits,

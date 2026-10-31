@@ -59,6 +59,13 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
     unsafe {
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
+        if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
+            let trip = slices.parking_trip.get_mut(i);
+            trip.ready = true;
+            trip.replan_needed = true;
+            *slices.speed.get_mut(i) = 0.0;
+            return;
+        }
         clear_failed_replan_attempt(i, slices);
 
         let failures = slices.network_replan_failures.get(i).saturating_add(1);

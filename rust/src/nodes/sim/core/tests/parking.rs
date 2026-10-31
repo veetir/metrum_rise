@@ -156,3 +156,120 @@ fn parking_road_demolition_also_retires_its_lot_driveway_supply() {
     assert_eq!(c.parking.counts(), (0, cars, cars));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
+    use crate::simulation::parking::ParkingTripPhase;
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
+    let id = register_lot(&mut c);
+    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().household_capacity = Some(4);
+    c.allocator
+        .registry
+        .register("parking", manifest, String::new());
+    c.place_service_building_internal(&id, -450.0, -30.0)
+        .unwrap();
+    c.place_service_building_internal(&id, 450.0, -30.0)
+        .unwrap();
+    c.publish_pending_building_site_changes();
+    // Travel along the lot's legal driving side; loop/end-detach regressions belong to TRAFFIC-13/15.
+    let eastbound = c.allocator.entrances[0].side == -1;
+    let (home, target) = if eastbound { (0, 1) } else { (1, 0) };
+    let agent = c.debug_add_parking_commuter(home, target).unwrap();
+    assert!(
+        c.parking
+            .vehicle_place(c.agents.parking_trip[agent].vehicle)
+            .is_some(),
+        "new resident car must be parked"
+    );
+    assert!(
+        c.parking
+            .first_free_candidate(c.allocator.building_handles.handle(target).to_bits())
+            .is_some(),
+        "destination catchment must be published on placement"
+    );
+    c.agents.release_departure(agent);
+    let mut seen = [false; 5];
+    let path = temp_save_path("parking-resident-mid-trip");
+    let mut arrived = false;
+    for _ in 0..12000 {
+        crate::thread_pools::install(|| {
+            c.agents.tick_with_parking(
+                &c.allocator,
+                &mut c.transit_network,
+                &mut c.region_graph,
+                0.1,
+                &c.time,
+                &mut c.parking,
+            )
+        });
+        c.schedule_parking_retries();
+        c.parking.apply_supply_events();
+        let phase = c.agents.parking_trip[agent].phase;
+        let slot = match phase {
+            ParkingTripPhase::WalkToCar => Some(0),
+            ParkingTripPhase::PullOut => Some(1),
+            ParkingTripPhase::Drive => Some(2),
+            ParkingTripPhase::PullIn => Some(3),
+            ParkingTripPhase::WalkToDoor => Some(4),
+            _ => None,
+        };
+        if let Some(slot) = slot
+            && !seen[slot]
+        {
+            seen[slot] = true;
+            let before = serde_json::to_value(c.agents.parking_trip[agent]).unwrap();
+            let position = (
+                c.agents.pos_x[agent].to_bits(),
+                c.agents.pos_y[agent].to_bits(),
+            );
+            c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+                .unwrap();
+            c.load_game_internal(path.to_str().unwrap()).unwrap();
+            assert_eq!(
+                serde_json::to_value(c.agents.parking_trip[agent]).unwrap(),
+                before
+            );
+            assert_eq!(
+                (
+                    c.agents.pos_x[agent].to_bits(),
+                    c.agents.pos_y[agent].to_bits()
+                ),
+                position
+            );
+            let snapshot = c.build_snapshot();
+            c.build_parked_chunks();
+            let moving = snapshot
+                .car_transforms
+                .values()
+                .map(|v| v.len() / 12)
+                .sum::<usize>();
+            let parked = c
+                .parking
+                .publications(true)
+                .iter()
+                .map(|(_, chunk)| chunk.identities.values().map(Vec::len).sum::<usize>())
+                .sum::<usize>();
+            assert_eq!(
+                moving + parked,
+                1,
+                "handoff drew a car twice or omitted it at {phase:?}"
+            );
+        }
+        if c.agents.current_building[agent] == target
+            && c.agents.transit[agent] == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+        {
+            arrived = true;
+            break;
+        }
+    }
+    assert_eq!(seen, [true; 5]);
+    assert!(arrived);
+    std::fs::remove_file(path).unwrap();
+}

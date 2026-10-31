@@ -61,6 +61,8 @@ pub(super) unsafe fn arrive_in_building(
     slices: &MovementSlices,
 ) {
     unsafe {
+        debug_assert!(*slices.tmode.get(i) != crate::simulation::economy::agents::MODE_CAR
+            || slices.parking_trip.get(i).vehicle.is_none(), "resident car leg must end at parking, never a door");
         *slices.pos_x.get_mut(i) = pos.x;
         *slices.pos_y.get_mut(i) = pos.y;
         *slices.cur_b.get_mut(i) = building_id;

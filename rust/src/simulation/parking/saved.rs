@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 struct SavedPlace {
     source: PlaceSource,
+    active: bool,
+    retired_for: u64,
+    road_point: [f32; 2],
+    access_side: i8,
     bay: SavedBay,
     occupant: u64,
     reservation: u64,
@@ -30,6 +34,7 @@ struct SavedVehicle {
     owner: u64,
     borrower: u64,
     moving: bool,
+    retired_places: [u64; 3],
     place: u64,
     reserved: u64,
     model: u8,
@@ -42,6 +47,8 @@ struct SavedTable {
 }
 #[derive(Serialize, Deserialize)]
 struct SavedParking {
+    pending_households: Vec<u64>,
+    release_events: Vec<(i32, i32)>,
     mobility_seed: u64,
     owners: Vec<(u64, u64)>,
     places: Vec<SavedPlace>,
@@ -68,15 +75,32 @@ impl SavedTable {
 
 impl ParkingSystem {
     /// O(places + vehicles), save boundary only. Source remapping belongs to the save graph map.
+    #[cfg(test)]
     pub(crate) fn save_json(
         &self,
         map: impl Fn(PlaceSource) -> PlaceSource + Sync,
+    ) -> Result<String, String> {
+        self.save_json_with_households(map, &[])
+    }
+
+    /// Also persists ownership lifecycle events not yet consumed at the next frame boundary.
+    /// O(places + vehicles + pending household events), save boundary only.
+    pub(crate) fn save_json_with_households(
+        &self,
+        map: impl Fn(PlaceSource) -> PlaceSource + Sync,
+        pending: &[crate::simulation::core::handles::Handle<
+            crate::simulation::economy::households::Household,
+        >],
     ) -> Result<String, String> {
         let places = crate::thread_pools::install(|| {
             (0..self.places.len())
                 .into_par_iter()
                 .map(|p| SavedPlace {
                     source: map(self.places.source[p]),
+                    active: self.places.active[p],
+                    retired_for: self.places.retired_for[p].to_bits(),
+                    road_point: self.places.road_point[p],
+                    access_side: self.places.access[p].side,
                     bay: SavedBay {
                         identity: self.places.identity[p],
                         position: self.places.position[p],
@@ -99,6 +123,7 @@ impl ParkingSystem {
                     owner: self.vehicles.owner[v],
                     borrower: self.vehicles.borrower[v].to_bits(),
                     moving: self.vehicles.moving[v],
+                    retired_places: self.vehicles.retired_places[v].map(Handle::to_bits),
                     place: self.vehicles.place[v].to_bits(),
                     reserved: self.vehicles.reserved[v].to_bits(),
                     model: self.vehicles.model[v],
@@ -114,6 +139,8 @@ impl ParkingSystem {
             .collect();
         owners.sort_unstable();
         serde_json::to_string(&SavedParking {
+            pending_households: pending.iter().map(|h| h.to_bits()).collect(),
+            release_events: self.release_events.clone(),
             mobility_seed: self.mobility_seed,
             owners,
             places,
@@ -129,6 +156,7 @@ impl ParkingSystem {
     pub(crate) fn load_json(json: &str) -> Result<Self, String> {
         let saved: SavedParking = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let mut system = Self {
+            pending_households: saved.pending_households,
             mobility_seed: saved.mobility_seed,
             owners: saved
                 .owners
@@ -165,9 +193,16 @@ impl ParkingSystem {
             let list = system.sources.entry(place.source).or_default();
             system.places.push(Place {
                 source: place.source,
+                active: place.active,
+                retired_for: Handle::from_bits(place.retired_for),
+                road_point: place.road_point,
                 identity: bay.identity,
                 position: bay.position,
                 path: bay.path,
+                access: crate::simulation::buildings::allocator::BuildingEntrance {
+                    side: place.access_side,
+                    ..Default::default()
+                },
                 heading: bay.heading,
                 width: bay.width,
                 length: bay.length,
@@ -176,6 +211,11 @@ impl ParkingSystem {
                 chunk_slot: chunk.places.len(),
                 source_slot: list.len(),
             });
+            if place.active {
+                system.usable_places += 1;
+            } else {
+                system.retired_dirty.push(handle);
+            }
             chunk.places.push(handle);
             list.push(handle);
         }
@@ -189,6 +229,7 @@ impl ParkingSystem {
                 owner: car.owner,
                 borrower: Handle::from_bits(car.borrower),
                 moving: car.moving,
+                retired_places: car.retired_places.map(Handle::from_bits),
                 place: Handle::from_bits(car.place),
                 reserved: Handle::from_bits(car.reserved),
                 model: car.model,
@@ -254,6 +295,9 @@ impl ParkingSystem {
                     .push(car);
             }
         }
+        system.release_events = saved.release_events;
+        for key in &system.release_events { system.chunks.entry(*key).or_default().release_pending = true; }
+        system.release_events.reserve(system.chunks.len().saturating_sub(system.release_events.len()));
         system.dirty.reserve(system.chunks.len());
         let mut keys: Vec<_> = system.chunks.keys().copied().collect();
         keys.sort_unstable();
@@ -271,7 +315,10 @@ impl ParkingSystem {
         &self,
         allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> Result<(), String> {
-        for source in &self.places.source {
+        for (p, source) in self.places.source.iter().enumerate() {
+            if !self.places.active[p] {
+                continue;
+            }
             let valid = match *source {
                 PlaceSource::Building { building, .. } => allocator
                     .building_handles
@@ -280,6 +327,88 @@ impl ParkingSystem {
             };
             if !valid {
                 return Err(format!("parking place has a missing source: {source:?}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ParkingSystem {
+    /// Validates persistent ownership, exclusive borrowers and live itineraries in
+    /// O(households + vehicles + agents + pending lifecycle events). Save/load only.
+    /// A queued household deletion is preserved until its ordinary publication event runs.
+    pub(crate) fn validate_custody(
+        &self,
+        agents: &crate::simulation::economy::agents::AgentSystem,
+        households: &crate::simulation::economy::households::HouseholdSystem,
+    ) -> Result<(), String> {
+        use crate::simulation::economy::agents::AGE_CHILD;
+        let pending: std::collections::HashSet<_> = households
+            .parking_changes
+            .iter()
+            .map(|h| h.to_bits())
+            .collect();
+        for (&owner, &car) in &self.owners {
+            if households
+                .handles
+                .resolve(Handle::from_bits(owner))
+                .is_none()
+                && !pending.contains(&owner)
+            {
+                return Err("parking owner is missing".into());
+            }
+            if !car.is_none() {
+                let v = self
+                    .vehicle_handles
+                    .resolve(car)
+                    .ok_or("household car is stale")?;
+                if self.vehicles.owner[v] != owner {
+                    return Err("household car ownership is not reciprocal".into());
+                }
+            }
+        }
+        for v in 0..self.vehicles.len() {
+            let car = self.vehicle_handles.handle(v);
+            let owner = self.vehicles.owner[v];
+            if owner != u64::MAX && self.owners.get(&owner) != Some(&car) {
+                return Err("vehicle ownership is not reciprocal".into());
+            }
+            let borrower = self.vehicles.borrower[v];
+            if !borrower.is_none() && !pending.contains(&owner) {
+                let i = agents
+                    .resolve_agent(borrower)
+                    .ok_or("parking borrower is missing")?;
+                if agents.age_group[i] == AGE_CHILD
+                    || agents.parking_trip[i].vehicle != car
+                    || households.handles.handle(agents.household_id[i]).to_bits() != owner
+                {
+                    return Err("invalid parking custody".into());
+                }
+            }
+            for &place in &self.vehicles.retired_places[v] {
+                if place.is_none() {
+                    continue;
+                }
+                let p = self
+                    .place_handles
+                    .resolve(place)
+                    .ok_or("retained parking endpoint is stale")?;
+                if self.places.retired_for[p] != car {
+                    return Err("retained parking endpoint is not reciprocal".into());
+                }
+            }
+        }
+        for i in 0..agents.len() {
+            let trip = agents.parking_trip[i];
+            if trip.phase == ParkingTripPhase::None {
+                continue;
+            }
+            let v = self
+                .vehicle_handles
+                .resolve(trip.vehicle)
+                .ok_or("trip car is stale")?;
+            if self.vehicles.borrower[v] != agents.handles.handle(i) {
+                return Err("trip has no exclusive custody".into());
             }
         }
         Ok(())

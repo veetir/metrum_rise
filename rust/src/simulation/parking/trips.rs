@@ -27,19 +27,22 @@ pub(crate) enum ParkingTripPhase {
 /// Persistent per-agent itinerary, stored as one column in the agent SoA.
 /// O(1) leg state, with no separate route vectors; ordinary movement remains O(1) per agent.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct ParkingTrip {
+pub struct ParkingTrip {
     #[serde(with = "saved_handle")]
-    pub vehicle: Handle<Vehicle>,
-    /// Route capacity requested at a phase boundary, prepared before the next movement pass.
-    pub route_capacity: usize,
-    pub retry_pending: bool,
+    pub(crate) vehicle: Handle<Vehicle>,
+    /// Saved node budget prepared by an explicit event; independent of allocator spare capacity.
+    pub(crate) route_capacity: usize,
+    pub(crate) retry_pending: bool,
+    pub(crate) replan_needed: bool,
     #[serde(with = "saved_handle")]
-    pub source: Handle<Place>,
+    pub(crate) walk_origin: Handle<Place>,
     #[serde(with = "saved_handle")]
-    pub destination: Handle<Place>,
-    pub target: u64,
-    pub phase: ParkingTripPhase,
-    pub ready: bool,
+    pub(crate) source: Handle<Place>,
+    #[serde(with = "saved_handle")]
+    pub(crate) destination: Handle<Place>,
+    pub(crate) target: u64,
+    pub(crate) phase: ParkingTripPhase,
+    pub(crate) ready: bool,
 }
 
 impl ParkingSystem {
@@ -51,12 +54,11 @@ impl ParkingSystem {
         owner: u64,
         density: crate::simulation::zoning::profiles::ZoneDensity,
         home: [f32; 2],
-        eligible: bool,
     ) -> Handle<Vehicle> {
         if let Some(&car) = self.owners.get(&owner) {
             return car;
         }
-        let owns = eligible && owns_car(self.mobility_seed, owner, density);
+        let owns = owns_car(self.mobility_seed, owner, density);
         let car = if owns {
             let v = self.vehicles.len();
             let hash = crate::simulation::core::stable_hash64(self.mobility_seed ^ owner);
@@ -66,6 +68,7 @@ impl ParkingSystem {
                 owner,
                 borrower: Handle::NONE,
                 moving: false,
+                retired_places: [Handle::NONE; 3],
                 place: Handle::NONE,
                 reserved: Handle::NONE,
                 model: (hash % 4) as u8,
@@ -126,7 +129,7 @@ impl ParkingSystem {
         }
     }
 
-    /// Household lifecycle deletion; O(1) plus local wake events at the freed bay.
+    /// Household lifecycle deletion; O(local off-map waiting cars) plus local wake events.
     pub(crate) fn remove_household_car(&mut self, owner: u64) {
         let Some(car) = self.owners.remove(&owner) else {
             return;
@@ -134,6 +137,14 @@ impl ParkingSystem {
         let Some(v) = self.vehicle_handles.resolve(car) else {
             return;
         };
+        let home_chunk = chunk_at(self.vehicles.home[v]);
+        if let Some(waiting) = self.stored.get_mut(&home_chunk) {
+            waiting.retain(|&handle| handle != car);
+            if waiting.is_empty() {
+                self.stored.remove(&home_chunk);
+            }
+        }
+        self.clear_retired_places(car);
         self.cancel_reservation(car);
         let released = self.release(car);
         self.vehicle_handles.swap_remove(v, self.vehicles.len());
@@ -238,8 +249,9 @@ impl ParkingSystem {
     ) -> Option<crate::simulation::buildings::allocator::BuildingEntrance> {
         use ParkingTripPhase::*;
         let place = match (origin, trip.phase) {
+            (true, WalkToCar) if !trip.walk_origin.is_none() => trip.walk_origin,
             (true, PullOut) | (false, WalkToCar) => trip.source,
-            (true, WalkToDoor) | (false, Drive | PullIn) => trip.destination,
+            (true, WalkToDoor) | (false, PullOut | Drive | PullIn) => trip.destination,
             _ => return Option::None,
         };
         self.place_entrance(place, allocator, network, graph)
@@ -393,5 +405,15 @@ impl ParkingSystem {
         } else {
             self.first_free_candidate(home).map(|c| c.place)
         }
+    }
+}
+
+impl ParkingSystem {
+    /// O(1) stable borrower lookup; absent when the household car is free or unavailable.
+    pub(crate) fn borrowed_by(&self, car: Handle<Vehicle>) -> Option<AgentHandle> {
+        self.vehicle_handles
+            .resolve(car)
+            .map(|v| self.vehicles.borrower[v])
+            .filter(|h| !h.is_none())
     }
 }

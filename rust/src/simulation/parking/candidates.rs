@@ -13,8 +13,9 @@ use std::collections::{BinaryHeap, HashMap};
 
 const WALK_LIMIT_S: f32 = 400.0 / AGENT_WALK_SPEED_MS;
 
-/// One 16-byte per-destination entry; 100k buildings cost 1.6 MB per average candidate,
-/// plus 2.4 MB of Vec headers and the destination handle/hash index. No route vectors.
+/// One 16-byte per-destination entry. At 100k nonempty destination buildings the cache uses
+/// approximately 3.8 MB of hash slots/Vec headers plus 1.6 MB per mean retained candidate
+/// capacity (for example 23 MB at mean capacity 12). Empty lists are not retained. No routes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParkingCandidate {
     pub place: Handle<Place>,
@@ -29,7 +30,7 @@ pub(super) struct DestinationCandidates {
 
 impl ParkingSystem {
     /// Rebuilds specified door catchments at publication time. O(Bₗ × ((Lₗ + Cₗ) log Lₗ
-    /// + Pₗ log Pₗ)), visiting only lanes within 400 m walking time and at most nine supply
+    /// plus Pₗ log Pₗ)), visiting only lanes within 400 m walking time and at most nine supply
     /// chunks per door; independent doors use Rayon. Occupancy changes never rebuild lists.
     pub(crate) fn rebuild_candidates(
         &mut self,
@@ -38,6 +39,57 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
+        crate::thread_pools::install(|| {
+            self.rebuild_candidates_in_pool(buildings, allocator, network, graph)
+        });
+    }
+
+    fn rebuild_candidates_in_pool(
+        &mut self,
+        buildings: &[usize],
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let mut places = Vec::new();
+        for &b in buildings {
+            let Some(door) = allocator.entrances.get(b) else {
+                continue;
+            };
+            let (cx, cz) = chunk_at([door.door_pos.x, door.door_pos.y]);
+            for z in cz - 1..=cz + 1 {
+                for x in cx - 1..=cx + 1 {
+                    if let Some(chunk) = self.chunks.get(&(x, z)) {
+                        places.extend_from_slice(&chunk.places);
+                    }
+                }
+            }
+        }
+        places.sort_unstable();
+        places.dedup();
+        for place in places {
+            if self
+                .place_handles
+                .resolve(place)
+                .is_none_or(|p| !self.places.active[p])
+            {
+                continue;
+            }
+            let access = self
+                .derive_place_entrance(place, allocator, network, graph)
+                .unwrap_or_default();
+            if let Some(p) = self.place_handles.resolve(place) {
+                if let Some(edge) = graph.get_edge(access.edge_idx) {
+                    let point = BuildingAllocator::sample_pos_on_edge(
+                        graph,
+                        access.edge_idx,
+                        access.entrance_s_m / edge.physical_length,
+                    );
+                    self.places.road_point[p] = [point.x, point.y];
+                }
+                self.places.access[p] = access;
+            }
+        }
         let built: Vec<_> = buildings
             .par_iter()
             .filter_map(|&b| {
@@ -46,10 +98,19 @@ impl ParkingSystem {
                 if handle.is_none() {
                     return None;
                 }
+                let (cx, cz) = chunk_at([entrance.door_pos.x, entrance.door_pos.y]);
+                if !(cz - 1..=cz + 1).any(|z| {
+                    (cx - 1..=cx + 1).any(|x| {
+                        self.chunks
+                            .get(&(x, z))
+                            .is_some_and(|c| !c.places.is_empty())
+                    })
+                }) {
+                    return Some((handle.to_bits(), DestinationCandidates::default()));
+                }
                 let forward = WalkField::build(entrance, false, network, graph);
                 let reverse = WalkField::build(entrance, true, network, graph);
                 let mut entries = Vec::new();
-                let (cx, cz) = chunk_at([entrance.door_pos.x, entrance.door_pos.y]);
                 for z in cz - 1..=cz + 1 {
                     for x in cx - 1..=cx + 1 {
                         let Some(chunk) = self.chunks.get(&(x, z)) else {
@@ -59,6 +120,9 @@ impl ParkingSystem {
                             let Some(p) = self.place_handles.resolve(place) else {
                                 continue;
                             };
+                            if !self.places.active[p] {
+                                continue;
+                            }
                             let pos = self.places.position[p];
                             if (pos[0] - entrance.door_pos.x).hypot(pos[2] - entrance.door_pos.y)
                                 > 400.0
@@ -96,8 +160,33 @@ impl ParkingSystem {
             })
             .collect();
         for (handle, entries) in built {
-            self.candidates.insert(handle, entries);
+            if entries.entries.is_empty() {
+                self.candidates.remove(&handle);
+            } else {
+                self.candidates.insert(handle, entries);
+            }
         }
+    }
+
+    /// Edit-time locality oracle, comparing geometry/time rather than handles remapped by setup.
+    #[cfg(test)]
+    pub(crate) fn candidate_products(&self, building: u64) -> Vec<([u32; 3], u32, u32)> {
+        self.candidates
+            .get(&building)
+            .into_iter()
+            .flat_map(|c| &c.entries)
+            .map(|c| {
+                let p = self
+                    .place_handles
+                    .resolve(c.place)
+                    .expect("published candidate");
+                (
+                    self.places.position[p].map(f32::to_bits),
+                    c.walk_s.to_bits(),
+                    c.from_door_s.to_bits(),
+                )
+            })
+            .collect()
     }
 
     /// O(k) scan to the first free fitting candidate; no route query, allocation or cap.
@@ -109,7 +198,8 @@ impl ParkingSystem {
             .copied()
             .find(|c| {
                 self.place_handles.resolve(c.place).is_some_and(|p| {
-                    self.places.occupant[p].is_none()
+                    self.places.active[p]
+                        && self.places.occupant[p].is_none()
                         && self.places.reservation[p].is_none()
                         && self.places.width[p] >= 1.8
                         && self.places.length[p] >= 4.5
@@ -128,9 +218,22 @@ impl ParkingSystem {
             .filter(|&s| s <= WALK_LIMIT_S)
     }
 
+    /// O(1), allocation-free copy of the driveway access prepared with the local publication.
+    pub(crate) fn place_entrance(
+        &self,
+        place: Handle<Place>,
+        _allocator: &BuildingAllocator,
+        _network: &TransitNetwork,
+        _graph: &RegionGraph,
+    ) -> Option<BuildingEntrance> {
+        let p = self.place_handles.resolve(place)?;
+        let access = &self.places.access[p];
+        (access.edge_idx != usize::MAX).then(|| access.clone())
+    }
+
     /// Uses the validated driveway station and the host's existing lane identities.
     /// O(host entrance copy + frontage lane projection), allocation-free.
-    pub(crate) fn place_entrance(
+    fn derive_place_entrance(
         &self,
         place: Handle<Place>,
         allocator: &BuildingAllocator,
@@ -153,14 +256,12 @@ impl ParkingSystem {
         entrance.door_pos = Vector2::new(pos[0], pos[2]);
         entrance.vehicle_frontage_access =
             crate::simulation::network::types::VehicleFrontageAccess::SameSideOnly;
-        if network
-            .lane_system
-            .edge_lanes
-            .get(&entrance.edge_idx)
-            .is_none()
-        {
-            return None;
+        if entrance.side == -1 {
+            entrance.car_lane_bkw = usize::MAX;
+        } else {
+            entrance.car_lane_fwd = usize::MAX;
         }
+        network.lane_system.edge_lanes.get(&entrance.edge_idx)?;
         Some(entrance)
     }
 

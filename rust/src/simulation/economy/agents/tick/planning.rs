@@ -6,7 +6,7 @@ mod candidate;
 mod immigration;
 mod network;
 mod parking;
-pub(crate) use parking::{quote_parking_leg, ParkingLegQuote};
+pub(crate) use parking::{quote_parking_leg, quote_parking_leg_from_lane, quote_parking_trip, estimate_parking_trip_seconds, ParkingLegQuote};
 mod reachability;
 mod trip;
 mod types;

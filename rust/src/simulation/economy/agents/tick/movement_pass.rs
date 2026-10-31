@@ -39,6 +39,7 @@ impl AgentSystem {
     }
 
     /// Dispatches the parallel per-agent movement state machine.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_movement_pass(
         &mut self,
         allocator: &BuildingAllocator,

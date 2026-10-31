@@ -162,7 +162,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     slices.parking_trip.get_mut(i).ready = true;
                     *s_speed.get_mut(i) = 0.0;
                 } else {
-                    debug_assert!(*s_tmode.get(i) != MODE_CAR || slices.parking.is_none() || *slices.freight_shipment_id.get(i) != u64::MAX || (*s_access_flags.get(i) & super::super::super::super::ACCESS_IMMIGRATION_ORIGIN) != 0, "private car leg must end at parking, never a door");
+
                     arrive_in_building(i, b_id, ingress_target, sim_time, slices);
                 }
             }

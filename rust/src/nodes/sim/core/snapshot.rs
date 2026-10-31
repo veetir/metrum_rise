@@ -36,6 +36,16 @@ pub(crate) fn access_phase_target(
     agent_idx: usize,
     egress: bool,
 ) -> Option<Vector3> {
+    let trip = core.agents.parking_trip[agent_idx];
+    if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn) {
+        let (place, lane, distance) = if egress {
+            (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])
+        } else { (trip.destination,core.agents.planned_detach_lane_id[agent_idx],core.agents.planned_detach_lane_d[agent_idx]) };
+        let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress)?;
+        let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);
+        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,&path).map(|i| path.points[i])?;
+        return Some(Vector3::new(target.x,0.0,target.y));
+    }
     let building_id = if egress {
         core.agents.current_building[agent_idx]
     } else {

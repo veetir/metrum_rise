@@ -6,6 +6,34 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Isolated capture/test command: creates one real resident household and an ordinary trip.
+    #[func]
+    pub fn debug_add_parking_commuter(&mut self, home: i32, target: i32) -> i32 {
+        self.lock_core()
+            .debug_add_parking_commuter(home as usize, target as usize)
+            .map_or(-1, |i| i as i32)
+    }
+
+    /// Isolated fixture clock reset, allowed only before any resident exists.
+    #[func]
+    pub fn debug_reset_parking_capture_clock(&mut self) {
+        self.lock_core().debug_reset_parking_capture_clock();
+    }
+
+    /// Schedules capture departures through the existing saved timing wheel.
+    #[func]
+    pub fn debug_schedule_parking_capture(&mut self, minute: i32, returning: bool) -> i32 {
+        self.lock_core()
+            .debug_schedule_parking_capture(minute.clamp(0, 1439) as u16, returning) as i32
+    }
+
+    /// Advances a deliberately constructed isolated fixture through the ordinary simulation.
+    #[func]
+    pub fn debug_advance_parking_capture(&mut self, minute: i32) {
+        self.lock_core()
+            .debug_advance_parking_capture(minute.clamp(0, 1439) as u16);
+    }
+
     /// Explicit debug/test command, O(places), never part of ordinary gameplay initialization.
     #[func]
     pub fn debug_fill_parking(&mut self) -> i32 {
@@ -25,6 +53,29 @@ impl SimulationNode {
         result.set("places", places as i64);
         result.set("vehicles", vehicles as i64);
         result.set("stored", stored as i64);
+        let mut phases = VarDictionary::new();
+        for trip in &core.agents.parking_trip {
+            let name = format!("{:?}", trip.phase);
+            let previous = phases
+                .get(name.as_str())
+                .and_then(|v| v.try_to::<i64>().ok())
+                .unwrap_or(0);
+            phases.set(name.as_str(), previous + 1);
+        }
+        result.set("phases", phases);
+        let indoor = core
+            .agents
+            .parking_trip
+            .iter()
+            .enumerate()
+            .filter(|&(i, trip)| {
+                !trip.vehicle.is_none()
+                    && core.agents.transit_mode[i] == crate::simulation::economy::agents::MODE_CAR
+                    && core.agents.transit[i]
+                        == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+            })
+            .count();
+        result.set("resident_cars_in_buildings", indoor as i64);
         result.set(
             "diagnostics",
             PackedStringArray::from_iter(

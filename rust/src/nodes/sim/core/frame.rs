@@ -304,7 +304,6 @@ impl SimCore {
         record_crash_phase_for_core(self, "agent tick");
         run_sim_phase("agent tick", || {
             self.publish_parking_households();
-            self.prepare_parking_route_capacity();
             self.agents.tick_with_parking(
                 &self.allocator,
                 &mut self.transit_network,
@@ -314,6 +313,7 @@ impl SimCore {
                 &mut self.parking,
             );
             self.schedule_parking_retries();
+            self.parking.apply_supply_events();
         });
         self.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
         report.agent_ms = self.last_agent_tick_us as f64 / 1000.0;

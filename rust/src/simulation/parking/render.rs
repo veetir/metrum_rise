@@ -103,7 +103,7 @@ impl ParkingSystem {
     /// O(off-map home chunks) inspection; never visits sleeping parked cars or supply.
     pub(crate) fn counts(&self) -> (usize, usize, usize) {
         (
-            self.places.len(),
+            self.usable_places,
             self.vehicles.len(),
             self.stored.values().map(Vec::len).sum(),
         )

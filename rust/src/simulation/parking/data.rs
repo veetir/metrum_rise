@@ -19,9 +19,13 @@ pub(crate) enum PlaceSource {
 #[soa_derive(Debug, Clone)]
 pub(crate) struct Place {
     pub source: PlaceSource,
+    pub active: bool,
+    pub retired_for: Handle<Vehicle>,
+    pub road_point: [f32; 2],
     pub identity: [u64; 2],
     pub position: [f32; 3],
     pub path: [[f32; 2]; 4],
+    pub access: crate::simulation::buildings::allocator::BuildingEntrance,
     pub heading: f32,
     pub width: f32,
     pub length: f32,
@@ -40,6 +44,7 @@ pub(crate) struct Vehicle {
     pub owner: u64,
     pub borrower: crate::simulation::economy::agents::AgentHandle,
     pub moving: bool,
+    pub retired_places: [Handle<Place>; 3],
     pub place: Handle<Place>,
     pub reserved: Handle<Place>,
     pub model: u8,
@@ -50,6 +55,7 @@ pub(crate) struct Vehicle {
 pub(super) struct Chunk {
     pub places: Vec<Handle<Place>>,
     pub dirty: bool,
+    pub release_pending: bool,
     pub version: u64,
 }
 

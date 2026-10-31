@@ -297,6 +297,7 @@ fn benchmark_parking_locality() {
         .map(|s| s.parse().unwrap())
         .collect();
     let mut reference = None;
+    let mut candidate_reference = None;
     for background in tiers {
         let start = Instant::now();
         let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
@@ -370,10 +371,26 @@ fn benchmark_parking_locality() {
         } else {
             reference = Some(geometry);
         }
+        let candidate_products = |core: &SimCore| owners.iter().map(|owner|
+            core.parking.candidate_products(owner.to_bits())
+        ).collect::<Vec<_>>();
+        let expected_candidates = candidate_products(&core);
+        assert!(expected_candidates.iter().all(|c| !c.is_empty()));
+        if let Some(reference) = &candidate_reference {
+            assert_eq!(reference, &expected_candidates);
+        } else {
+            candidate_reference = Some(expected_candidates.clone());
+        }
+        let indices: Vec<_> = owners.iter().map(|&owner| core.allocator.building_handles.resolve(owner).unwrap()).collect();
+        let mut candidate_samples = Vec::new();
         let mut road_samples = Vec::new();
         let mut site_samples = Vec::new();
         let mut lot_samples = Vec::new();
         for _ in 0..9 {
+            let start = Instant::now();
+            core.parking.rebuild_candidates(&indices, &core.allocator, &core.transit_network, &core.region_graph);
+            candidate_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(candidate_products(&core), expected_candidates);
             let start = Instant::now();
             core.reconcile_parking_frontages(&BTreeSet::from([edge]));
             road_samples.push(start.elapsed().as_secs_f64() * 1000.0);
@@ -399,6 +416,7 @@ fn benchmark_parking_locality() {
                 assert!(result.1.is_empty());
             }
         }
+        candidate_samples.sort_by(f64::total_cmp);
         road_samples.sort_by(f64::total_cmp);
         site_samples.sort_by(f64::total_cmp);
         lot_samples.sort_by(f64::total_cmp);
@@ -408,6 +426,7 @@ fn benchmark_parking_locality() {
                 "background":background, "buildings":core.allocator.buildings.len(),
                 "parcels":core.zoning.parcels().len(), "agents":core.agents.len(),
                 "roads":core.region_graph.edge_count(), "lots":owners.len(), "places":72,
+                "candidate_rebuild_ms":candidate_samples[4], "candidate_entries":expected_candidates.iter().map(Vec::len).sum::<usize>(),
                 "setup_s":setup_s, "road_rebuild_ms":road_samples[4], "site_publication_ms":site_samples[4],
                 "per_lot_ms":lot_samples[lot_samples.len()/2], "max_lot_ms":lot_samples.last(), "products":"identical"
             })

@@ -476,6 +476,20 @@ impl BuildingAllocator {
         Some(center + basis_x * anchor.position[0] + basis_z * anchor.position[2])
     }
 
+    /// Reuses ordinary lane derivation for a retained parking endpoint at its exact driveway.
+    /// O(edge geometry + local lanes), edit/load only; no building owner is required after removal.
+    pub(crate) fn parking_access_at(door: Vector2, curb: Vector2, edge_idx: usize, side: i8, graph: &RegionGraph, lanes: &LaneSystem) -> BuildingEntrance {
+        let mut entrance = Self::derive_door_entrance(Some(door),edge_idx,side,graph,lanes);
+        if let Some(edge) = graph.get_edge(edge_idx) {
+            entrance.entrance_s_m = Self::project_point_to_polyline_s(&edge.physical_geometry,curb);
+            entrance.curb_pos = curb;
+            entrance.vehicle_frontage_access = VehicleFrontageAccess::SameSideOnly;
+            derive_car_lanes(&mut entrance,edge,side,lanes);
+            derive_flags(&mut entrance);
+        }
+        entrance
+    }
+
     fn derive_door_entrance(
         door: Option<Vector2>,
         edge_idx: usize,

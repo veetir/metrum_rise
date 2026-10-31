@@ -61,8 +61,9 @@ impl SimCore {
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
-                let e = &self.allocator.entrances[b];
-                points.push([e.door_pos.x, e.door_pos.y]);
+                if let Some(e) = self.allocator.entrances.get(b) {
+                    points.push([e.door_pos.x, e.door_pos.y]);
+                }
             } else {
                 self.parking.remove_destination_candidates(handle.to_bits());
             }
@@ -125,8 +126,9 @@ impl SimCore {
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
-                let e = &self.allocator.entrances[b];
-                points.push([e.door_pos.x, e.door_pos.y]);
+                if let Some(e) = self.allocator.entrances.get(b) {
+                    points.push([e.door_pos.x, e.door_pos.y]);
+                }
             } else {
                 self.parking.remove_destination_candidates(handle.to_bits());
             }
@@ -194,12 +196,8 @@ impl SimCore {
             let density = profiles
                 .density_for_runtime_id(home.zone_profile_runtime_id)
                 .unwrap_or(ZoneDensity::Low);
-            self.parking.assign_household(
-                owner,
-                density,
-                [home.center_x, home.center_y],
-                household.adult_count + household.elder_count > 0,
-            );
+            self.parking
+                .assign_household(owner, density, [home.center_x, home.center_y]);
             let car = self.parking.household_car(owner);
             self.parking.park_new_car(car, home_handle);
             let members: Vec<_> = self.agents.household_members(h).collect();
@@ -211,25 +209,28 @@ impl SimCore {
         self.households.parking_changes = events;
     }
 
-    /// Rebuilds only door catchments in the existing 512 m building chunks around changed
+    /// Rebuilds only door catchments through the maintained site-cell index around changed
     /// supply/doors. O(local chunk buildings + local bounded searches), independent of background.
     pub(crate) fn rebuild_parking_candidates_near(&mut self, points: &[[f32; 2]]) {
+        self.parking
+            .refresh_retired_access(&self.transit_network, &self.region_graph);
         let mut buildings = Vec::new();
         for &point in points {
-            let (cx, cz) = crate::simulation::network::graph::RegionGraph::get_chunk_coords(
-                godot::prelude::Vector3::new(point[0], 0.0, point[1]),
-            );
-            for z in cz - 2..=cz + 2 {
-                for x in cx - 2..=cx + 2 {
-                    if let Some(rows) = self.allocator.building_chunks.get(&(x, z)) {
-                        buildings.extend(rows.iter().copied().filter(|&b| {
-                            self.allocator.entrances.get(b).is_some_and(|e| {
-                                (e.door_pos.x - point[0]).hypot(e.door_pos.y - point[1]) <= 512.0
-                            })
-                        }));
+            self.allocator.site_cells.visit(
+                [
+                    point[0] - 512.0,
+                    point[1] - 512.0,
+                    point[0] + 512.0,
+                    point[1] + 512.0,
+                ],
+                |b| {
+                    if self.allocator.entrances.get(b).is_some_and(|e| {
+                        (e.door_pos.x - point[0]).hypot(e.door_pos.y - point[1]) <= 512.0
+                    }) {
+                        buildings.push(b);
                     }
-                }
-            }
+                },
+            );
         }
         buildings.sort_unstable();
         buildings.dedup();
@@ -246,31 +247,19 @@ impl SimCore {
 }
 
 impl SimCore {
-    /// Prepares only requested route capacity at the frame boundary, before agent movement.
-    /// O(requested route storage); this is not part of a routing or movement loop.
-    pub(crate) fn prepare_parking_route_capacity(&mut self) {
-        use rayon::prelude::*;
-        self.agents
-            .agents
-            .parking_trip
-            .par_iter_mut()
-            .zip(self.agents.agents.current_path.par_iter_mut())
-            .for_each(|(trip, route)| {
-                if trip.route_capacity > route.capacity() {
-                    route.reserve(trip.route_capacity - route.len());
-                }
-                trip.route_capacity = 0;
-            });
-    }
-}
-
-impl SimCore {
     /// Drains explicit retry requests into the saved timing wheel; no polling timer.
     /// 30 s for unavailable routes, next eligible slot for requested route-buffer preparation.
     /// O(retries × log scheduled events), outside agent movement.
     pub(crate) fn schedule_parking_retries(&mut self) {
         let mut requests = std::mem::take(&mut self.agents.parking_retries);
         for (agent, seconds) in requests.drain(..) {
+            if let Some(i) = self.agents.resolve_agent(agent) {
+                let needed = self.agents.agents.parking_trip[i].route_capacity;
+                let route = &mut self.agents.agents.current_path[i];
+                if needed > route.capacity() {
+                    route.reserve(needed - route.len());
+                }
+            }
             let slots = (f64::from(seconds)
                 * crate::simulation::core::scheduler::SLOTS_PER_MINUTE as f64
                 / self.time.seconds_per_minute())
@@ -282,5 +271,177 @@ impl SimCore {
             );
         }
         self.agents.parking_retries = requests;
+    }
+}
+
+impl SimCore {
+    /// Rebuilds physical route-buffer capacity from the saved deterministic preparation budget.
+    /// O(agents + prepared nodes), load only. Allocator spare capacity cannot alter departures.
+    pub(crate) fn prepare_loaded_parking_routes(&mut self) {
+        crate::thread_pools::install(|| {
+            self.agents
+                .agents
+                .current_path
+                .par_iter_mut()
+                .zip(self.agents.agents.parking_trip.par_iter())
+                .for_each(|(path, trip)| {
+                    if path.capacity() < trip.route_capacity {
+                        path.reserve(trip.route_capacity - path.len());
+                    }
+                });
+        });
+    }
+}
+
+impl SimCore {
+    /// Explicit capture/test command: admits one adult at an authored fixture home using
+    /// household, membership and occupancy mutators. O(local candidate scan + one household).
+    /// Ordinary gameplay never calls this constructor.
+    pub(crate) fn debug_add_parking_commuter(
+        &mut self,
+        home: usize,
+        target: usize,
+    ) -> Option<usize> {
+        use crate::simulation::economy::agents::HouseholdAgeComposition;
+        use crate::simulation::economy::definitions::{
+            load_runtime_economy_catalog, load_runtime_economy_tuning,
+        };
+        if home >= self.allocator.buildings.len()
+            || target >= self.allocator.buildings.len()
+            || self.allocator.buildings[home].occupancy >= self.allocator.household_capacity(home)
+        {
+            return None;
+        }
+        let door = self.allocator.entrances.get(home)?.door_pos;
+        let catalog = load_runtime_economy_catalog().ok()?;
+        let tuning = load_runtime_economy_tuning().ok()?;
+        self.allocator.claim_vacancy(home);
+        let household = self.households.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            home,
+            1,
+            HouseholdAgeComposition {
+                adult_count: 1,
+                ..Default::default()
+            },
+        );
+        let agent = self.agents.spawn_housed_agent(home, door.x, door.y);
+        self.agents.assign_household_id(agent, household);
+        self.publish_parking_households();
+        self.agents.request_parking_fixture_trip(agent, target);
+        Some(agent)
+    }
+}
+
+impl SimCore {
+    /// Schedules explicit fixture commutes so different ordinary itinerary legs can be
+    /// inspected at one clock. O(fixture agents × Q), command-only; no gameplay mode override.
+    pub(crate) fn debug_schedule_parking_capture(&mut self, minute: u16, returning: bool) -> usize {
+        use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
+        use crate::simulation::economy::agents::tick::quote_parking_leg;
+        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_IN_BUILDING};
+        let until = (f64::from(minute.saturating_sub(self.time.minute_of_day))
+            * self.time.seconds_per_minute()
+            - self.time.time_elapsed)
+            .max(0.0) as f32;
+        let mut count = 0;
+        for i in 0..self.agents.len() {
+            if self.agents.transit[i] != TRANSIT_IN_BUILDING {
+                continue;
+            }
+            let target = if returning {
+                self.agents.home_building[i]
+            } else {
+                self.agents.planned_target_building[i]
+            };
+            let origin = self.agents.current_building[i];
+            if origin == target || target >= self.allocator.buildings.len() {
+                continue;
+            }
+            let trip = self.agents.parking_trip[i];
+            let Some(source) = self.parking.vehicle_place(trip.vehicle) else {
+                continue;
+            };
+            let origin_handle = self.allocator.building_handles.handle(origin).to_bits();
+            let target_handle = self.allocator.building_handles.handle(target).to_bits();
+            let Some(walk) = self.parking.walk_to_car_seconds(origin_handle, source) else {
+                continue;
+            };
+            let Some(candidate) = self.parking.first_free_candidate(target_handle) else {
+                continue;
+            };
+            let Some(a) = self.parking.place_entrance(
+                source,
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+            ) else {
+                continue;
+            };
+            let Some(b) = self.parking.place_entrance(
+                candidate.place,
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+            ) else {
+                continue;
+            };
+            let out = self.parking.maneuver_seconds(source);
+            let ingress = self.parking.maneuver_seconds(candidate.place);
+            let Some(drive) = quote_parking_leg(
+                MODE_CAR,
+                &a,
+                &b,
+                [out, ingress],
+                &self.transit_network,
+                &self.region_graph,
+                &self.agents.pathfind_count,
+            ) else {
+                continue;
+            };
+            let age = match i % 6 {
+                0 => walk + drive.seconds() + candidate.walk_s + 20.0,
+                1 => walk * 0.5,
+                2 => walk + out * 0.5,
+                3 => walk + out + (drive.seconds() - out - ingress).max(0.0) * 0.5,
+                4 => walk + drive.seconds() - ingress * 0.5,
+                _ => walk + drive.seconds() + candidate.walk_s * 0.5,
+            };
+            if !self.agents.request_parking_fixture_trip(i, target) {
+                continue;
+            }
+            let slots = ((until - age).max(0.0) as f64 / self.time.seconds_per_minute()
+                * SLOTS_PER_MINUTE as f64)
+                .ceil() as u64;
+            let agent = self.agents.agent_handle(i);
+            self.schedule_trip(
+                self.time.absolute_slot() + slots.max(1),
+                super::trips::TripEvent::ParkingRetry { agent },
+            );
+            count += 1;
+        }
+        count
+    }
+
+    /// Advances only an explicit isolated capture fixture through the normal simulation.
+    /// Work is proportional to requested simulated time; never used by ordinary UI flows.
+    pub(crate) fn debug_advance_parking_capture(&mut self, minute: u16) {
+        self.time.speed_multiplier = 32.0;
+        while self.time.minute_of_day < minute {
+            self.step_frame(1.0 / 60.0);
+        }
+        self.time.speed_multiplier = 0.0;
+    }
+}
+
+impl SimCore {
+    /// Resets the clock only for an empty, explicitly requested capture fixture.
+    pub(crate) fn debug_reset_parking_capture_clock(&mut self) {
+        if self.agents.is_empty() {
+            self.time.minute_of_day = 0;
+            self.time.time_elapsed = 0.0;
+            self.align_events_to_clock();
+        }
     }
 }
