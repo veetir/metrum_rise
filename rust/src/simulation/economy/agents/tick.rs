@@ -128,6 +128,9 @@ impl AgentSystem {
         if n == 0 {
             return;
         }
+        if self.parking_retries.capacity() < n {
+            self.parking_retries.reserve(n - self.parking_retries.len());
+        }
         self.scrub_building_refs_if_revised(allocator, n);
         self.prepare_lane_buckets_for_tick(transit_network, n);
     }

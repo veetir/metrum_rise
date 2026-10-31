@@ -212,6 +212,26 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
         c.schedule_parking_retries();
         c.parking.apply_supply_events();
         let phase = c.agents.parking_trip[agent].phase;
+        if phase == ParkingTripPhase::WalkToCar
+            && c.agents.transit[agent] == crate::simulation::economy::agents::TRANSIT_ACCESS_INGRESS
+        {
+            let bay = c
+                .parking
+                .place_entrance(
+                    c.agents.parking_trip[agent].source,
+                    &c.allocator,
+                    &c.transit_network,
+                    &c.region_graph,
+                )
+                .unwrap();
+            let target =
+                crate::nodes::sim::core::snapshot::access_phase_target(&c, agent, false).unwrap();
+            assert_eq!(
+                (target.x, target.z),
+                (bay.door_pos.x, bay.door_pos.y),
+                "walking pose must aim at the actual bay"
+            );
+        }
         let slot = match phase {
             ParkingTripPhase::WalkToCar => Some(0),
             ParkingTripPhase::PullOut => Some(1),
@@ -232,6 +252,10 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
             c.save_game_settled_at(path.to_str().unwrap(), None, 0)
                 .unwrap();
             c.load_game_internal(path.to_str().unwrap()).unwrap();
+            assert!(
+                c.agents.parking_retries.capacity() >= c.agents.len(),
+                "load must prepare retry storage before any movement"
+            );
             assert_eq!(
                 serde_json::to_value(c.agents.parking_trip[agent]).unwrap(),
                 before

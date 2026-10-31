@@ -46,6 +46,11 @@ pub(crate) fn access_phase_target(
         let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,&path).map(|i| path.points[i])?;
         return Some(Vector3::new(target.x,0.0,target.y));
     }
+    if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::WalkToDoor) {
+        let entrance = core.parking.trip_entrance(trip, egress, &core.allocator, &core.transit_network, &core.region_graph)?;
+        let point = if egress { entrance.curb_pos } else { entrance.door_pos };
+        return Some(Vector3::new(point.x, 0.0, point.y));
+    }
     let building_id = if egress {
         core.agents.current_building[agent_idx]
     } else {
