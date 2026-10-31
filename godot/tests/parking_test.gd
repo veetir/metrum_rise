@@ -68,6 +68,8 @@ func _run() -> void:
 	_expect(sim.get_parking_info()["places"] == 0, "roads alone create no parking")
 	var warnings := sim.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["parking"]))
 	_expect(warnings.is_empty(), "lot pack loads: " + warnings)
+	var preview: Dictionary = sim.get_service_building_placement_preview("parking:building.parking.small_lot", 0.0, -30.0)
+	_expect(preview.get("valid", false), "lot preview is valid")
 	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, -30.0).is_empty(), "standalone lot places")
 	var filled := sim.debug_fill_parking()
 	_expect(filled > 0, "explicit debug fleet fills supply")
@@ -76,8 +78,13 @@ func _run() -> void:
 		sim.acknowledge_parked_car_chunk(full["epoch"], update["chunk"], update["version"])
 	var unchanged: Dictionary = sim.get_parked_car_chunks(false)
 	_expect(unchanged.get("chunks", []).is_empty(), "unchanged chunks send nothing")
-	var target: Dictionary = sim.bulldoze_at(0.0, -30.0)
-	_expect(not target.is_empty(), "lot demolition queued")
+	# Placement snaps to its frontage; target the published centre, and retry a busy bridge.
+	var target: Dictionary = {}
+	deadline = Time.get_ticks_msec() + 20000
+	while not target.get("queued", false) and Time.get_ticks_msec() < deadline:
+		target = sim.bulldoze_at(preview["center_x"], preview["center_z"])
+		await process_frame
+	_expect(target.get("queued", false), "lot demolition queued: " + str(target))
 	deadline = Time.get_ticks_msec() + 20000
 	while sim.get_parking_info()["places"] > 0 and Time.get_ticks_msec() < deadline:
 		await process_frame
