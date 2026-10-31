@@ -10,9 +10,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 cars, local towing, saves and parked chunk rendering on `dev`. Kerbside waits for the widening
 roadbed parking band after the median profile work. Lot rebuilds stay below 0.223 ms at 100k
 background; targeted/bridge checks pass, with the two known base probe failures in the full suite.
-`PARK-02` resident ownership, custody and walking–parking–driving trips are in implementation
-and verification, after `TRAFFIC-15/13/16` and before `TRAFFIC-14`
-([design and acceptance](traffic.md#physical-parking-foundation-park-01)).
+`PARK-02` round 2a implements resident ownership/custody and walking–parking–driving trips,
+including exact economy quotes, departure reservations, save/load and coherent moving/parked
+rendering. Fresh parking/bridge checks pass; the full Rust suite has only the two known probes.
+Agent work scales 3× and candidate rebuilding stays about 0.75 ms through 100k background.
+Five existing economy counter limits and the external-review approval remain open; freight and
+immigration remain for round 2b. `TRAFFIC-13/15` remain shared detach dependencies
+([design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a)).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

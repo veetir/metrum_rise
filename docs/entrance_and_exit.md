@@ -10,8 +10,28 @@ This document is now intended to be a deterministic implementation spec for the 
 
 [`PARK-01`](traffic.md#physical-parking-foundation-park-01) owns public building-anchor supply,
 persistent parked cars, edit towing and the standalone lot. Round 1 leaves every existing agent
-trip unchanged. `PARK-02` will wire ownership, custody and `WalkToCar → PullOut → Drive →
-PullIn → WalkToDoor`, including freight, immigration and removal, into the existing access FSM.
+trip unchanged. `PARK-02` round 2a implements resident ownership/custody and
+`WalkToCar → PullOut → Drive → PullIn → WalkToDoor` in the existing access FSM. The two
+pedestrian legs end at the actual bay and door respectively. The drive joins/leaves at the lot's
+driveway curb; pull-out uses the ordinary lane-entry claim/hold and pull-in uses
+`try_network_detach`. Retained swept-path interpolation connects each bay and driveway outside
+the network. Only `WalkToDoor` enters the destination building; a debug assertion rejects a
+resident car arrival at a door.
+
+Destination reservations commit at departure in deterministic agent order. Origin occupancy
+is released after lane entry, and pull-in converts destination reservation to occupancy in the
+same resource phase. Edits cancel removed reservations and recover from actual positions.
+Ownership, borrower, phase, reservations and scheduled retries survive save/load (version 110,
+no migration). Moving and parked buffers share a custody publication epoch. Economy commute,
+shopping and service quotes use the same itinerary and actual custody; a proposed shopping
+return starts at the proposed parked bay. Destination parking is within 400 m walking time;
+the walk to the actual car has no additional distance cap. Returning home releases custody
+while retaining the car's last bay.
+
+The [trip design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a) records bounds,
+cache memory and outstanding acceptance. Freight and immigration keep their previous access
+behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
+function; parking does not add an alternate detach path.
 
 ## Current System
 
