@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! Ordered supply reconciliation and towing; undo never copies vehicle state.
+
+use super::*;
+
+impl ParkingSystem {
+    /// Removes one bay and its claims; O(1) index work, plus a bounded local tow query.
+    /// Never refuses an edit. Off-map cars remain persistent and are indexed by home chunk.
+    pub(crate) fn remove_place(&mut self, handle: Handle<Place>) {
+        let Some(p) = self.place_handles.resolve(handle) else {
+            return;
+        };
+        let car = self.places.occupant[p];
+        let reservation = self.places.reservation[p];
+        if !reservation.is_none() {
+            self.cancel_reservation(reservation);
+        }
+        if !car.is_none() {
+            self.release(car);
+        }
+        let pos = self.places.position[p];
+        let key = chunk_at([pos[0], pos[2]]);
+        let slot = self.places.chunk_slot[p];
+        let chunk = self.chunks.get_mut(&key).expect("indexed bay");
+        chunk.places.swap_remove(slot);
+        if let Some(&moved) = chunk.places.get(slot) {
+            self.places.chunk_slot[self.place_handles.resolve(moved).expect("live bay")] = slot;
+        }
+        let source = self.places.source[p];
+        let slot = self.places.source_slot[p];
+        let list = self.sources.get_mut(&source).expect("indexed source");
+        list.swap_remove(slot);
+        if let Some(&moved) = list.get(slot) {
+            self.places.source_slot[self.place_handles.resolve(moved).expect("live source bay")] =
+                slot;
+        }
+        if list.is_empty() {
+            self.sources.remove(&source);
+        }
+        self.place_handles.swap_remove(p, self.places.len());
+        self.places.swap_remove(p);
+        self.mark_dirty(key);
+        if let Some(v) = self.vehicle_handles.resolve(car) {
+            let home = self.vehicles.home[v];
+            if let Some(destination) = self.nearest(home) {
+                self.occupy(car, destination);
+            } else {
+                self.stored.entry(chunk_at(home)).or_default().push(car);
+            }
+        }
+    }
+
+    /// Reconciles one owner's geometry, keeping identical poses and live custody. O(old + new)
+    /// expected map work plus local towing. Called only at topology/asset boundaries.
+    pub(crate) fn replace_source(&mut self, source: PlaceSource, bays: &[Bay]) {
+        let old = self.sources.get(&source).cloned().unwrap_or_default();
+        let pose_key = |pos: [f32; 3], heading: f32| (pos.map(f32::to_bits), heading.to_bits());
+        let mut retained: HashMap<_, _> = old
+            .iter()
+            .map(|&h| {
+                let p = self.place_handles.resolve(h).expect("source bay");
+                (pose_key(self.places.position[p], self.places.heading[p]), h)
+            })
+            .collect();
+        for bay in bays {
+            if let Some(h) = retained.remove(&pose_key(bay.position, bay.heading)) {
+                let p = self.place_handles.resolve(h).expect("retained bay");
+                self.places.width[p] = bay.width;
+                self.places.length[p] = bay.length;
+            } else {
+                self.add_place(source, *bay);
+            }
+        }
+        // Source-list order, not hash iteration, fixes all competing tow decisions.
+        for h in old {
+            let Some(p) = self.place_handles.resolve(h) else {
+                continue;
+            };
+            if retained.contains_key(&pose_key(self.places.position[p], self.places.heading[p])) {
+                self.remove_place(h);
+            }
+        }
+        for bay in bays {
+            self.rehouse_near([bay.position[0], bay.position[2]]);
+        }
+    }
+
+    /// Wakes off-map cars only in the nine home chunks near newly freed supply, in handle
+    /// order; O(local waiting cars × local places). An edit/release transition, never a tick scan.
+    pub(crate) fn rehouse_near(&mut self, point: [f32; 2]) {
+        let (cx, cz) = chunk_at(point);
+        let mut waiting = Vec::new();
+        for z in cz - 1..=cz + 1 {
+            for x in cx - 1..=cx + 1 {
+                if let Some(cars) = self.stored.remove(&(x, z)) {
+                    waiting.extend(cars);
+                }
+            }
+        }
+        waiting.sort_unstable();
+        for car in waiting {
+            let Some(v) = self.vehicle_handles.resolve(car) else {
+                continue;
+            };
+            let home = self.vehicles.home[v];
+            if let Some(place) = self.nearest(home) {
+                self.occupy(car, place);
+            } else {
+                self.stored.entry(chunk_at(home)).or_default().push(car);
+            }
+        }
+    }
+}
+
+impl ParkingSystem {
+    /// Replaces the edited building's anchor sources only; O(old + new anchor places + local towing).
+    pub(crate) fn replace_building(&mut self, building: u64, bays: &[(u32, Bay)]) {
+        let old = self.building_sources.remove(&building).unwrap_or_default();
+        for source in old {
+            if let PlaceSource::Building { anchor, .. } = source {
+                let bay = bays.iter().find(|(i, _)| *i == anchor).map(|(_, b)| *b);
+                self.replace_source(source, bay.as_slice());
+            }
+        }
+        for &(anchor, bay) in bays {
+            let source = PlaceSource::Building { building, anchor };
+            if !self.sources.contains_key(&source) {
+                self.add_place(source, bay);
+            }
+        }
+        let sources: Vec<_> = bays
+            .iter()
+            .map(|&(anchor, _)| PlaceSource::Building { building, anchor })
+            .collect();
+        if !sources.is_empty() {
+            self.building_sources.insert(building, sources);
+        }
+    }
+}
+
+impl ParkingSystem {
+    /// Rebinds physically surviving six-metre bays across split/merge source changes before
+    /// deleting obsolete supply. O(old + new) expected map work plus bounded local towing.
+    /// Exact pose equality is required; a moved footprint is removed and its car towed.
+    pub(crate) fn replace_kerbs(&mut self, products: Vec<(PlaceSource, Vec<Bay>)>) {
+        let mut old = Vec::new();
+        let mut surviving = HashMap::new();
+        for (source, _) in &products {
+            for &handle in self.sources.get(source).into_iter().flatten() {
+                let p = self.place_handles.resolve(handle).expect("source bay");
+                let side = match source {
+                    PlaceSource::Edge { side, .. } => *side,
+                    _ => unreachable!(),
+                };
+                surviving.insert((self.places.identity[p], side), handle);
+                old.push(handle);
+            }
+        }
+        for (source, bays) in products {
+            let side = match source {
+                PlaceSource::Edge { side, .. } => side,
+                _ => unreachable!(),
+            };
+            for bay in bays {
+                let retained = surviving
+                    .get(&(bay.identity, side))
+                    .copied()
+                    .filter(|&handle| {
+                        let p = self.place_handles.resolve(handle).expect("surviving bay");
+                        self.places.position[p] == bay.position
+                            && self.places.heading[p] == bay.heading
+                            && self.places.width[p] == bay.width
+                            && self.places.length[p] == bay.length
+                    });
+                if let Some(handle) = retained {
+                    surviving.remove(&(bay.identity, side));
+                    let p = self.place_handles.resolve(handle).expect("surviving bay");
+                    let previous = self.places.source[p];
+                    if previous != source {
+                        let slot = self.places.source_slot[p];
+                        let list = self.sources.get_mut(&previous).expect("old source");
+                        list.swap_remove(slot);
+                        if let Some(&moved) = list.get(slot) {
+                            self.places.source_slot
+                                [self.place_handles.resolve(moved).expect("moved bay")] = slot;
+                        }
+                        if list.is_empty() {
+                            self.sources.remove(&previous);
+                        }
+                        let list = self.sources.entry(source).or_default();
+                        self.places.source[p] = source;
+                        self.places.source_slot[p] = list.len();
+                        list.push(handle);
+                    }
+                } else {
+                    self.add_place(source, bay);
+                }
+            }
+        }
+        for handle in old {
+            let Some(p) = self.place_handles.resolve(handle) else {
+                continue;
+            };
+            let side = match self.places.source[p] {
+                PlaceSource::Edge { side, .. } => side,
+                _ => unreachable!(),
+            };
+            if surviving.get(&(self.places.identity[p], side)) == Some(&handle) {
+                self.remove_place(handle);
+            }
+        }
+        // Added supply can satisfy cars stored by previous edits. Walk only the edited chunks.
+        let changed = self.dirty.clone();
+        for (x, z) in changed {
+            let size = crate::simulation::network::graph::RegionGraph::CHUNK_SIZE;
+            self.rehouse_near([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size]);
+        }
+    }
+}

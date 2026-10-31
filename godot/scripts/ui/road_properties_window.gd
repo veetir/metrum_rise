@@ -15,6 +15,7 @@ var _select_tool: Node
 var _window: Window
 var _warning_label: Label
 var _no_build_check: CheckBox
+var _parking_sides: Array[OptionButton] = []
 var _class_buttons: Array[Button] = []
 var _selected_edges: Array[int] = []
 var _last_screen_pos := Vector2.ZERO
@@ -81,6 +82,19 @@ func _build_window() -> void:
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	root_vbox.add_child(_no_build_check)
 
+	for side in range(2):
+		var row := HBoxContainer.new()
+		var label := Label.new()
+		label.text = ["Parking: right", "Parking: left"][side]
+		row.add_child(label)
+		var choice := OptionButton.new()
+		for text in ["None", "Unmarked", "Marked"]:
+			choice.add_item(text)
+		choice.item_selected.connect(_on_parking_selected.bind(side))
+		row.add_child(choice)
+		root_vbox.add_child(row)
+		_parking_sides.append(choice)
+
 	add_child(_window)
 	WindowResizeHandles.install(_window)
 	_window.hide()
@@ -112,6 +126,10 @@ func _place_window_near_cursor(screen_pos: Vector2) -> void:
 func _refresh() -> void:
 	if _selected_edges.is_empty() or _simulation_node == null:
 		return
+
+	for side in range(_parking_sides.size()):
+		var current: int = _simulation_node.get_parking_side(_selected_edges[0], side)
+		_parking_sides[side].select(current)
 
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
@@ -156,3 +174,8 @@ func _on_class_button_pressed(class_index: int) -> void:
 func _on_no_build_toggled(enabled: bool) -> void:
 	if _select_tool and _select_tool.has_method("set_selected_edge_no_building_spawn"):
 		_select_tool.set_selected_edge_no_building_spawn(enabled)
+
+func _on_parking_selected(value: int, side: int) -> void:
+	for edge in _selected_edges:
+		_simulation_node.set_parking_side(edge, side, value)
+	_refresh()

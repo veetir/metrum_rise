@@ -102,7 +102,10 @@ impl SimCore {
         &mut self,
     ) -> (Arc<RegionGraph>, Option<RoadToolPublication>) {
         match self.publish_road_tool_view_with(true) {
-            Some(publication) => (Arc::clone(&publication.view.region_graph), Some(publication)),
+            Some(publication) => (
+                Arc::clone(&publication.view.region_graph),
+                Some(publication),
+            ),
             None => (Arc::new(self.region_graph.clone()), None),
         }
     }
@@ -120,6 +123,12 @@ impl SimCore {
             assert_replica_matches(graph, &self.region_graph);
         }
         let rebuilt = self.transit_network.roadbed.take_rebuilt_owners();
+        let parking_edges = if rebuilt.all {
+            (0..self.region_graph.edge_count()).collect()
+        } else {
+            rebuilt.edges.clone()
+        };
+        self.refresh_parking_roads(&parking_edges);
         let terrain_generations = (
             self.heightmap.source_generation(),
             self.heightmap.source_generation(),
@@ -168,7 +177,13 @@ impl SimCore {
                     } else {
                         Arc::clone(&previous.view.water)
                     };
-                    (replica, region_graph, Arc::new(roadbed.snapshot()), terrain, water)
+                    (
+                        replica,
+                        region_graph,
+                        Arc::new(roadbed.snapshot()),
+                        terrain,
+                        water,
+                    )
                 };
                 // The view's cell copy follows the live store's journal.
                 let mut cells = previous.view.cells.clone();

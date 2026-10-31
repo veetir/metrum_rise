@@ -909,6 +909,10 @@ impl SimCore {
         self.allocator.bump_building_ref_revision();
         self.allocator.entrance_ref_revision = self.allocator.entrance_ref_revision.wrapping_add(1);
         self.rebuild_building_entrances_internal();
+        self.allocator
+            .parking_site_changes
+            .push(self.allocator.building_handles.handle(building_idx));
+        self.publish_parking_sites();
         if let Some(bounds) = undo.dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }

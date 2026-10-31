@@ -65,6 +65,7 @@ struct PlannedNode {
 struct PlannedEdge {
     source: Option<usize>,
     split_parent: Option<usize>,
+    parking_origin_m: f32,
     // Unchanged frontier edges need only an ID mapping, not another profile allocation.
     geometry: Option<Edge>,
 }
@@ -180,6 +181,7 @@ impl RoadTopologyPlan {
                 PlannedEdge {
                     source: source_id,
                     split_parent: parents[id],
+                    parking_origin_m: local.parking_rule(id).origin_m,
                     geometry: changed.then(|| edge.clone()),
                 }
             })
@@ -444,7 +446,23 @@ impl RoadTopologyPlan {
             }
             edge.start_node = node_ids[geometry.start_node as usize];
             edge.end_node = node_ids[geometry.end_node as usize];
+            let parking = if let Some(source) = runtime_source {
+                let mut rule = graph.parking_rule(source);
+                if planned.source.is_none()
+                    && let Some(parent) = planned.split_parent
+                {
+                    rule.origin_m += planned.parking_origin_m - self.edges[parent].parking_origin_m;
+                }
+                rule
+            } else {
+                let mut rule = crate::simulation::parking::ParkingRule::default_for(&edge);
+                rule.lineage = graph.parking_next_lineage;
+                graph.parking_next_lineage += 1;
+                rule.origin_m = planned.parking_origin_m;
+                rule
+            };
             graph.edges[id] = edge;
+            graph.set_parking_rule(id, parking);
             if !graph.edge(id).deleted {
                 let edge = &graph.edges[id];
                 graph.adjacency[edge.start_node as usize].push(id);

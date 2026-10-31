@@ -35,9 +35,9 @@ pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
+pub(crate) use site::BuildingSiteSurfaceClient;
 #[cfg(test)]
 pub(crate) use site::SiteRoads;
-pub(crate) use site::BuildingSiteSurfaceClient;
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
@@ -531,6 +531,8 @@ pub struct BuildingAllocator {
     /// The graded terrain's site-change outbox (`TERRAIN-07-C`), filled with the legacy one
     /// above: one record per site before or after each change, with its support height.
     pub(crate) graded_site_changes: Vec<SiteChange>,
+    /// Stable owners changed by the site journal; consumed by physical parking publication.
+    pub(crate) parking_site_changes: Vec<Handle<Building>>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
@@ -546,9 +548,9 @@ pub struct BuildingAllocator {
     pub registry: AssetRegistry,
 }
 
-pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, SiteSnapshot};
 pub use site::SiteChange;
 pub(crate) use site::site_footprint_contains;
+pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, SiteSnapshot};
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]
@@ -924,6 +926,7 @@ impl BuildingAllocator {
             site_cells: site::SiteCells::default(),
             building_site_dirty_bounds: Vec::new(),
             graded_site_changes: Vec::new(),
+            parking_site_changes: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             border_arrival: Default::default(),
@@ -1179,6 +1182,7 @@ impl BuildingAllocator {
         self.max_site_radius_count = 0;
         self.building_site_dirty_bounds.clear();
         self.graded_site_changes.clear();
+        self.parking_site_changes.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;

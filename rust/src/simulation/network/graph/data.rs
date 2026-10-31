@@ -146,6 +146,8 @@ pub struct RegionGraph {
     // Bumped by `set_node_type`, which changes a node's role without a topology edit (and so
     // without a CCH rebuild); caches of node roles key on it.
     node_role_revision: u64,
+    pub(crate) parking_rules: HashMap<usize, crate::simulation::parking::ParkingRule>,
+    pub(crate) parking_next_lineage: u64,
 }
 
 impl RegionGraph {
@@ -164,6 +166,8 @@ impl RegionGraph {
             adjacency,
             spatial_node_grid,
             node_role_revision,
+            parking_rules,
+            parking_next_lineage,
         } = self;
         let ((nodes, edges), ((spatial_edge_rt, adjacency), (node_aliases, spatial_node_grid))) =
             rayon::join(
@@ -193,6 +197,8 @@ impl RegionGraph {
             adjacency,
             spatial_node_grid,
             node_role_revision: *node_role_revision,
+            parking_rules: parking_rules.clone(),
+            parking_next_lineage: *parking_next_lineage,
         }
     }
 }
@@ -204,6 +210,8 @@ pub(crate) struct RegionGraphUndoDelta {
     nodes: Vec<(u32, Node)>,
     edges: Vec<(usize, Edge)>,
     aliases: Vec<(u32, Option<u32>)>,
+    parking: Vec<(usize, Option<crate::simulation::parking::ParkingRule>)>,
+    parking_next_lineage: u64,
 }
 
 impl RegionGraphUndoDelta {
@@ -262,6 +270,8 @@ impl RegionGraph {
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
             node_role_revision: 0,
+            parking_rules: HashMap::new(),
+            parking_next_lineage: 1,
         }
     }
 
@@ -352,12 +362,18 @@ impl RegionGraph {
             .collect::<Vec<_>>();
         aliases.sort_by_key(|(node_id, _)| *node_id);
 
+        let parking = edges
+            .iter()
+            .map(|(id, _)| (*id, self.parking_rules.get(id).copied()))
+            .collect();
         RegionGraphUndoDelta {
             original_node_count: self.nodes.len(),
             original_edge_count: self.edges.len(),
             nodes,
             edges,
             aliases,
+            parking,
+            parking_next_lineage: self.parking_next_lineage,
         }
     }
 
@@ -405,6 +421,15 @@ impl RegionGraph {
         for node_id in detached_nodes {
             let pos = self.nodes[node_id].pos;
             self.remove_node_from_spatial_index(node_id as u32, pos);
+        }
+        self.parking_next_lineage = self.parking_next_lineage.max(delta.parking_next_lineage);
+        self.parking_rules.retain(|id, _| *id < edge_count);
+        for &(id, rule) in &delta.parking {
+            if let Some(rule) = rule {
+                self.parking_rules.insert(id, rule);
+            } else {
+                self.parking_rules.remove(&id);
+            }
         }
         self.edges.resize_with(edge_count, Edge::default);
         let placeholder = || Node {

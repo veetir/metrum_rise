@@ -940,6 +940,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         save_to_sqlite(
             &path,
             SaveGameView {
+                parking: &Default::default(),
                 camera: Some(camera),
                 saved_at_unix: 0,
                 config: &config,
@@ -1724,6 +1725,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     save_to_sqlite(
         &path,
         SaveGameView {
+            parking: &Default::default(),
             camera: None,
             saved_at_unix: 0,
             config: &config,
@@ -2037,8 +2039,7 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
 fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     use crate::simulation::network::roadbed::fixtures::bend;
     let graph = bend(15.0, 120.0, true);
-    let maps =
-        build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     let tx = conn.transaction().unwrap();
@@ -2133,7 +2134,9 @@ fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
         let mut transit = TransitNetwork::new();
         let result = network::rebuild_loaded_graph_runtime(&loaded, &mut transit);
         if refused {
-            let error = result.expect_err("the steep road fails the load").to_string();
+            let error = result
+                .expect_err("the steep road fails the load")
+                .to_string();
             assert!(
                 error.contains("edge 1 climbs at 40.0%") && error.contains("(road_too_steep)"),
                 "{error}"

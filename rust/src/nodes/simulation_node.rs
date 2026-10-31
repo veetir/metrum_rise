@@ -113,13 +113,13 @@ use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
 
 use crate::config;
+#[cfg(test)]
+use crate::nodes::sim::core::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::{
     DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RenderSnapshot, RoadPreviewRequest,
     RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
     run_sim_thread,
 };
-#[cfg(test)]
-use crate::nodes::sim::core::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
 };
@@ -150,6 +150,7 @@ mod economy_api;
 mod graded_tiles_api;
 mod junction_debug_api;
 mod network_api;
+mod parking_api;
 mod system_api;
 mod terrain_api;
 #[cfg(test)]
@@ -167,10 +168,10 @@ use async_terrain::{
     WaterPatchPayloadRequestState,
 };
 use variant_export::{
-    budget_ledger_entry_dict, prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,
-    zoning_parcel_cell_dimensions, zoning_parcel_color, zoning_parcel_geometries_array,
-    zoning_parcel_geometries_packed_dict, zoning_parcel_geometry_dict,
-    zoning_parcel_surface_corners,
+    budget_ledger_entry_dict, prepare_zoning_site_queries, zoning_buildable_geometries,
+    zoning_geometry_feasibility, zoning_parcel_cell_dimensions, zoning_parcel_color,
+    zoning_parcel_geometries_array, zoning_parcel_geometries_packed_dict,
+    zoning_parcel_geometry_dict, zoning_parcel_surface_corners,
 };
 
 const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;

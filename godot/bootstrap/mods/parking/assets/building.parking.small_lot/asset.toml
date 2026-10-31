@@ -1,0 +1,86 @@
+asset_id = "building.parking.small_lot"
+display_name = "Small asphalt parking lot (6 bays)"
+
+[building]
+placement_mode = "explicit"
+service_class = "parking"
+lot_width_cells = 4
+lot_depth_cells = 4
+frontage_forward = [0, 0, 1]
+worker_capacity = 0
+household_capacity = 0
+window_brightness = 0
+
+[[mesh_parts]]
+name = "rear_wheel_stop"
+position = [0, 0, -17.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "wheel_stop.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0, 0, 20]
+forward = [0, 0, 1]
+
+[[anchors]]
+type = "driveway"
+position = [0, 0, 20]
+forward = [0, 0, -1]
+width_m = 6
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-19.5, -19.5], [19.5, -19.5], [19.5, 20], [-19.5, 20]]
+
+[[anchors]]
+type = "parking"
+position = [-12.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-7.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-2.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [2.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [7.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [12.5, 0, -11]
+forward = [0, 0, -1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"

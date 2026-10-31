@@ -21,6 +21,99 @@ Implementation lives mainly in:
 - `rust/src/nodes/sim/render/agents.rs`
 - `godot/scripts/renderers/agents.gd`
 
+## Physical parking foundation (PARK-01)
+
+Round 1 adds persistent places and parked vehicles, independent of the resident travel FSM.
+Household ownership, resident/freight/immigration itineraries, lane acquisition, passing poses
+and parking demand are later rounds. The deterministic fleet is created only by the explicit
+`debug_fill_parking()` bridge command; ordinary gameplay does not populate it.
+
+`simulation/parking.rs` owns SoA place/vehicle rows with the existing generational handle
+tables, source lists and the existing signed, floor-divided 512 m world-chunk convention.
+Each place has one occupant and one mutually exclusive reservation. Vehicles retain their
+model, one of five palette colours, occupied/reserved handles and a home point. The home point
+belongs to the test fleet in this round; resident ownership is `PARK-02`.
+
+| Operation | Cost and boundary |
+| --- | --- |
+| Resolve, reserve, occupy, release | O(1), allocation-free; dirty-list capacity prepared with supply |
+| Candidate query | O(9 + local candidates × quote cost), allocation-free, no candidate cap |
+| Source reconciliation | O(old + new places) expected map work, plus local geometry and tow queries |
+| Off-map retry | O(local waiting cars × local candidates), on supply/release events |
+| Parked publication | O(dirty chunk places + parked cars × existing support solve), parallel by chunk |
+| Sleeping parked cars | No simulation-tick iteration |
+
+The query rejects straight-line distances over 400 m before quoting and rejects quoted walking
+distances over 400 m. It ranks walking seconds, driving seconds, then the stable place handle.
+`nearest_frontage` uses `CostCalculator::walk_cost_s` for the projected same-edge, same-side walk,
+including the existing slope penalty, plus lateral walking access. Other foundation candidates
+use Euclidean metres at the existing walking speed. Full connected walking/driving itinerary
+quotes belong at departure in `PARK-02`, through the existing allocation-free `nearest_with`
+callback; round 1 does not launch CCH searches or claim that its fallback is a routed walk.
+
+### Kerb permissions and geometry
+
+Each edge has saved right/left `None | Unmarked | Marked` values in the graph's edge-property
+sidecar. This keeps roadbed-owned edge constructors untouched. Splits, local plan adoption,
+replica updates, undo and SQLite carry the permissions and six-metre station lineage together.
+The default ordinary surface 1+1 local street has one `Unmarked` side: fewer driveway/junction
+mouths wins, and ties select the edge's forward left side. Wider roads, higher-speed presets,
+bridges, tunnels and border connections default to neither side. There is no separate main-road
+classification in this base; a low-speed 1+1 main road uses the explicit inspector override.
+The Road Properties window exposes one selector per side. `Marked` is saved permission here;
+paint and signs are `PARK-04`.
+
+Six-metre bays read the existing span's carriageway edges and sections. A nominal 1.8 m vehicle
+stands 0.25 m inside the kerb, without a band, roadbed modification or footprint widening.
+One-sided supply requires 5.5 m of carriageway; both sides require 7.5 m. Whole bay footprints
+must fit the span's carriageway triangles and avoid indexed structure footprints. Node pieces
+(including width transitions/tapers) never supply bays. Variable-width span sections are also
+excluded. Authoritative crossing strips receive 5 m clearance; node crossings conservatively
+clear the mouth by 5 m. Authored driveways exclude their half-width plus 1 m on each side.
+There is no invented bus-stop source.
+
+### Anchor lots, edits and rendering
+
+Every fitting `parking` anchor is public supply. The existing building transform, paved site
+polygons, structure bounds and validated frontage driveway are reused. A fixed
+driveway–aisle–bay path checks full translated 1.8 × 4.5 m vehicle rectangles and conservative
+4.85 m turning envelopes against support, structures and other bays. Unsupported layouts
+produce per-building asset diagnostics and no place. `loading_bay` anchors are excluded.
+The bundled `parking` pack contains one explicitly placed six-bay asphalt lot, with zero
+workers/households and no economy profile. Existing site surfaces render its asphalt; a small
+base-content GLB supplies its rear wheel stop. Fresh profiles enable the pack; existing profiles
+can enable it through the pack manager. Capture scenery uses private copies of the requested
+residential packs, placed through the same explicit site pipeline while simulation is paused.
+
+Road and building edits reconcile only affected source lists. Exact surviving bay identities and
+poses rebind across topology splits. Removed claims are cancelled; removed occupied places tow
+cars in deterministic order to the nearest free place near home, or store them off-map. Supply
+or release events retry only nearby waiting-home chunks. Undo restores geometry/permissions
+and reconciles the live cars; it never restores an occupancy snapshot or refuses an edit because
+of a parked car. Building source keys use stable handles, including across allocator swaps.
+
+Parked cars publish immutable chunk/version payloads, model/colour buckets, stable vehicle IDs
+and 12-float MultiMesh transforms. The existing contact solver grounds each dirty publication;
+unchanged chunks send nothing. Exact-version/world acknowledgements retain updates through
+skipped frames. `vehicle_resources.gd` shares mesh and palette/material loading with the moving
+renderer; `parked_cars.gd` omits lamp/glow/beam surfaces and creates no headlights. There is no
+moving/parked identity handoff until trips are implemented in `PARK-02`.
+
+Save format **109** persists rules, station lineage, both handle tables, places, cars, occupancy
+and reservations. Load rejects inconsistent reciprocal custody or dangling source identities and
+rebuilds source/chunk/waiting indices and render buffers. There is no migration from 108.
+
+### PARK-01 acceptance
+
+Targeted regressions cover deterministic whole-footprint generation, width/driveway/crossing/
+structure/node/taper exclusions, side selection, query ordering/bounds, occupancy conservation,
+split/delete/undo towing, invalid lot diagnostics, building/asset edits, save round-trip and
+version-specific render acknowledgement. `godot/tests/parking_test.gd` exercises the bridge and
+can compare all 25 vehicle variants bit-for-bit against a retained pre-extraction `agents.gd`.
+`tools/capture_parking.py` creates an isolated profile, copies only the requested residential
+packs, and records street/overhead/lot views at 09:00 and 18:00 under `captures/parking/`.
+Timing and final validation results are recorded below when acceptance completes.
+
 ## Current Scope
 
 ### Shared lane occupancy contract (TRAFFIC-02)

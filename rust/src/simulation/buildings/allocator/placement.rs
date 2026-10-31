@@ -1611,7 +1611,7 @@ impl BuildingAllocator {
         road_surface.height_at(pos.x, pos.y)
     }
 
-    fn claimed_road_side_connection_pos(
+    pub(crate) fn claimed_road_side_connection_pos(
         graph: &RegionGraph,
         edge_idx: usize,
         side: i8,

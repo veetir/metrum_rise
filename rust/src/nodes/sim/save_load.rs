@@ -120,6 +120,7 @@ impl SimCore {
                 resource_extraction: &self.resource_extraction,
                 agriculture: &self.agriculture,
                 agents: &self.agents,
+                parking: &self.parking,
                 network: &self.transit_network,
                 treasury: &self.treasury,
                 service_policy: &self.service_policy,
@@ -175,6 +176,7 @@ impl SimCore {
         self.watermap = loaded.water;
         self.resource_deposits = loaded.resource_deposits;
         self.region_graph = loaded.graph;
+        self.parking = loaded.parking;
         self.transit_network = loaded.transit_network;
         self.zoning = loaded.zoning;
         self.pollution = loaded.pollution;

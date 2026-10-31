@@ -218,6 +218,10 @@ impl RegionGraph {
         let start = edge.start_node;
         let end = edge.end_node;
         let id = self.edge_count();
+        let mut parking = crate::simulation::parking::ParkingRule::default_for(&edge);
+        parking.lineage = self.parking_next_lineage;
+        self.parking_next_lineage += 1;
+        self.parking_rules.insert(id, parking);
         self.edges.push(edge);
         self.add_to_spatial_index(id);
 
@@ -1016,7 +1020,15 @@ pub fn split_edge(
     new_edge.base_cost = cost_new;
     new_edge.physical_length = length_new;
 
+    let mut parking_rule = graph.parking_rule(edge_id);
+    parking_rule.origin_m += graph
+        .edge(edge_id)
+        .physical_geometry
+        .windows(2)
+        .map(|w| w[0].distance_to(w[1]))
+        .sum::<f32>();
     let new_edge_id = graph.add_edge(new_edge);
+    graph.set_parking_rule(new_edge_id, parking_rule);
 
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;

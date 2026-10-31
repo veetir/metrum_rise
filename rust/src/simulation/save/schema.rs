@@ -6,13 +6,16 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 108;
+pub const SAVE_VERSION: i64 = 109;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
 
 /// The SQL schema string.
 pub const SCHEMA: &str = r#"
+CREATE TABLE parking_state(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), data TEXT NOT NULL);
+CREATE TABLE parking_network_meta(next_lineage INTEGER NOT NULL);
+CREATE TABLE parking_edge_rules(edge_id INTEGER PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,

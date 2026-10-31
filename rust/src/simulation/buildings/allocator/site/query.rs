@@ -2,17 +2,17 @@
 
 //! Spatial lookup and ray-query operations for derived building sites.
 
-use super::geometry::{point_in_polygon_slice, site_lot_center};
 #[cfg(test)]
 use super::geometry::update_site_plane_ray_hit;
+use super::geometry::{point_in_polygon_slice, site_lot_center};
 use super::model::{
     BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot, SiteChange,
     site_surface_bounds,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
 use godot::prelude::Vector2;
 #[cfg(test)]
 use godot::prelude::Vector3;
@@ -502,6 +502,10 @@ impl BuildingAllocator {
             let [min_x, min_z, max_x, max_z] = change.bounds;
             (min_x, min_z, max_x, max_z)
         });
+        let handle = self.building_handles.handle(building_idx);
+        if !handle.is_none() {
+            self.parking_site_changes.push(handle);
+        }
         self.graded_site_changes.extend(change);
         self.accumulate_pending_site_dirty_bounds(bounds);
         if self.buildings.get(building_idx).is_some_and(|building| {

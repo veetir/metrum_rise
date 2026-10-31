@@ -6,6 +6,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+`PARK-01` is in progress: physical kerb/anchor parking, the standalone lot, persistent test cars,
+local towing and parked chunk rendering are implemented; performance and capture acceptance is
+being completed. Resident trips remain unchanged until `PARK-02`
+([parking contract](traffic.md#physical-parking-foundation-park-01)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup
