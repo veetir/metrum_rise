@@ -47,6 +47,7 @@ impl AgentSystem {
         delta: f32,
         time: &TimeSystem,
         n: usize,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) {
         self.prepare_lane_claims(allocator, transit_network, graph, delta, n);
         // Before the movement slices borrow the agent columns.
@@ -58,6 +59,7 @@ impl AgentSystem {
         }
 
         let mut slices = MovementSlices::new(&mut self.agents);
+        slices.parking = parking;
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;

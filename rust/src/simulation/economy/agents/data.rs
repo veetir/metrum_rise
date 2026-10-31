@@ -136,6 +136,8 @@ pub struct Agent {
 
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
+    /// Persistent private vehicle itinerary; the car remains independent of this agent.
+    pub(crate) parking_trip: crate::simulation::parking::ParkingTrip,
     /// Remaining days the agent is locked to their current job after a voluntary switch.
     /// Settlement day from which the agent may look for a new job
     /// ([`AgentSystem::settlement_days`]); a passive deadline, never decremented.
@@ -258,6 +260,8 @@ pub struct AgentSystem {
     /// Route-query scratch for serial movement, including dynamic handoffs and small populations.
     /// This is separate from the parallel shards so the caller thread cannot change its cache.
     pub(crate) movement_serial_query: TripQueryScratch,
+    /// Ordered requests for scheduled parking retries, drained by SimCore after movement.
+    pub(crate) parking_retries: Vec<(AgentHandle, u16)>,
 }
 
 impl Deref for AgentSystem {
@@ -320,6 +324,7 @@ impl AgentSystem {
             trip_failures: TripFailureLog::default(),
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
+            parking_retries: Vec::new(),
         }
     }
 

@@ -44,7 +44,7 @@ impl ParkingSystem {
         self.mark_dirty(key);
         if let Some(v) = self.vehicle_handles.resolve(car) {
             let home = self.vehicles.home[v];
-            if let Some(destination) = self.nearest(home) {
+            if let Some(destination) = self.home_place(v) {
                 self.occupy(car, destination);
             } else {
                 self.stored.entry(chunk_at(home)).or_default().push(car);
@@ -70,6 +70,7 @@ impl ParkingSystem {
                 let p = self.place_handles.resolve(h).expect("retained bay");
                 self.places.width[p] = bay.width;
                 self.places.length[p] = bay.length;
+                self.places.path[p] = bay.path;
             } else {
                 self.add_place(source, *bay);
             }
@@ -107,7 +108,7 @@ impl ParkingSystem {
                 continue;
             };
             let home = self.vehicles.home[v];
-            if let Some(place) = self.nearest(home) {
+            if let Some(place) = self.home_place(v) {
                 self.occupy(car, place);
             } else {
                 self.stored.entry(chunk_at(home)).or_default().push(car);

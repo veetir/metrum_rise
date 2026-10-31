@@ -76,7 +76,7 @@ fn pedestrian_connector_cannot_publish_a_vehicle_lane_exit() {
     let n = agents.len();
     agents.prepare_lane_buckets_for_tick(&network, n);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n);
+        agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n, None);
     }));
     let error = result.expect_err("cross-mode connector exit must be rejected");
     let message = error.downcast_ref::<String>().expect("contract diagnostic");
@@ -136,6 +136,7 @@ fn move_fixture(agents: &mut AgentSystem, network: &TransitNetwork) {
         0.25,
         &TimeSystem::new(),
         n,
+        None,
     );
 }
 
@@ -265,7 +266,7 @@ fn benchmark_lane_transitions() {
                 agents.invalidate_lane_bucket_snapshot();
                 agents.prepare_lane_buckets_for_tick(&network, n);
                 let start = Instant::now();
-                agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n);
+                agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n, None);
                 if sample >= 3 {
                     samples[sample - 3] = start.elapsed().as_secs_f64() * 1_000.0;
                 }

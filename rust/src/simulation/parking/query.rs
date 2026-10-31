@@ -19,6 +19,7 @@ impl ParkingSystem {
                     Bay {
                         identity: self.places.identity[p],
                         position: self.places.position[p],
+                        path: self.places.path[p],
                         heading: self.places.heading[p],
                         width: self.places.width[p],
                         length: self.places.length[p],

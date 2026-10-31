@@ -12,6 +12,8 @@ mod lane_nav;
 mod movement;
 mod movement_pass;
 mod planning;
+mod parking;
+pub(crate) use access::LocalAccessPath as ParkingAccessPath;
 mod route_preview;
 mod runtime;
 mod schedule;
@@ -63,6 +65,22 @@ impl AgentSystem {
         delta: f32,
         time: &TimeSystem,
     ) {
+        self.tick_internal(allocator, transit_network, graph, delta, time, None);
+    }
+
+    /// Advances residents with persistent parking; O(agents + transitions × route query work).
+    /// Shared parking mutations commit in stable agent order after parallel movement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn tick_with_parking(
+        &mut self, allocator: &BuildingAllocator, transit_network: &mut TransitNetwork, graph: &mut RegionGraph, delta: f32, time: &TimeSystem, parking: &mut crate::simulation::parking::ParkingSystem,
+    ) {
+        self.tick_internal(allocator, transit_network, graph, delta, time, Some(parking));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tick_internal(
+        &mut self, allocator: &BuildingAllocator, transit_network: &mut TransitNetwork, graph: &mut RegionGraph, delta: f32, time: &TimeSystem, mut parking: Option<&mut crate::simulation::parking::ParkingSystem>,
+    ) {
         self.sim_time += delta;
         let n = self.agents.len();
         if n == 0 {
@@ -78,7 +96,13 @@ impl AgentSystem {
             self.prepare_lane_buckets_for_tick(transit_network, n);
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
-        self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
+        if let Some(parking) = parking.as_deref_mut() {
+            self.prepare_parking_movement(parking);
+        }
+        self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n, parking.as_deref());
+        if let Some(parking) = parking {
+            self.commit_parking_transitions(parking, allocator, transit_network, graph);
+        }
         self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);
 

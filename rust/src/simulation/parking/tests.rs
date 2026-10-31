@@ -7,6 +7,7 @@ fn bay(x: f32, z: f32) -> Bay {
     Bay {
         identity: [0, 0],
         position: [x, 0.0, z],
+        path: [[x, z]; 4],
         heading: 0.0,
         width: 2.5,
         length: 6.0,

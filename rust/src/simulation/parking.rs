@@ -3,6 +3,7 @@
 //! Persistent physical parking supply. Sleeping vehicles have no simulation tick pass.
 //! Mutations run in deterministic command/transition order, independent geometry uses Rayon.
 
+mod candidates;
 mod data;
 mod edits;
 mod geometry;
@@ -10,6 +11,8 @@ pub(crate) mod lots;
 #[cfg(test)]
 mod query;
 mod render;
+mod trips;
+pub(crate) use trips::{ParkingTrip, ParkingTripPhase};
 pub(crate) mod saved;
 #[cfg(test)]
 mod tests;
@@ -38,6 +41,10 @@ pub(crate) struct ParkingSystem {
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
     stored: HashMap<(i32, i32), Vec<Handle<Vehicle>>>,
+    owners: HashMap<u64, Handle<Vehicle>>,
+    mobility_seed: u64,
+    publication_epoch: u64,
+    candidates: HashMap<u64, candidates::DestinationCandidates>,
 }
 
 impl ParkingSystem {
@@ -58,6 +65,7 @@ impl ParkingSystem {
             source,
             identity: bay.identity,
             position: bay.position,
+            path: bay.path,
             heading: bay.heading,
             width: bay.width,
             length: bay.length,
@@ -218,6 +226,7 @@ impl ParkingSystem {
     }
 
     fn mark_dirty(&mut self, key: (i32, i32)) {
+        self.publication_epoch = self.publication_epoch.wrapping_add(1);
         let chunk = self.chunks.get_mut(&key).expect("place prepares its chunk");
         if !chunk.dirty {
             chunk.dirty = true;
@@ -237,6 +246,10 @@ impl ParkingSystem {
             let v = self.vehicles.len();
             self.vehicles.push(Vehicle {
                 home: [pos[0], pos[2]],
+                home_building: u64::MAX,
+                owner: u64::MAX,
+                borrower: Handle::NONE,
+                moving: false,
                 place: Handle::NONE,
                 reserved: Handle::NONE,
                 model: (v % 4) as u8,

@@ -43,6 +43,7 @@ impl SimCore {
         self.publish_road_tool_view();
         self.publish_pending_building_site_changes();
         self.transit_network.settle_cch();
+        self.publish_parking_households();
         self.save_game_at(path, camera, saved_at_unix)
     }
 
@@ -267,6 +268,9 @@ impl SimCore {
         // And what the first planning slot would prepare on the live books (`SIM-02-K`).
         self.warm_loaded_planning();
         // And the first agent tick's scrub and lane buckets.
+        self.agents.parking_retries.reserve(self.agents.len());
+        let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
+        self.parking.rebuild_candidates(&buildings, &self.allocator, &self.transit_network, &self.region_graph);
         self.agents
             .prepare_loaded_tick(&self.allocator, &self.transit_network);
     }

@@ -101,6 +101,7 @@ pub(crate) fn lot_bays(
             ));
             continue;
         }
+        let mut swept_path = [[0.0; 2]; 4];
         let valid = anchors
             .iter()
             .filter(|a| a.anchor_type == AnchorType::Driveway)
@@ -168,6 +169,7 @@ pub(crate) fn lot_bays(
                         return false;
                     }
                 }
+                swept_path = path.map(|p| [p.x, p.y]);
                 true
             });
         if valid {
@@ -176,6 +178,7 @@ pub(crate) fn lot_bays(
                 Bay {
                     identity: [0, u64::from(anchor)],
                     position: [pos.x, site.support_height_m + 0.02, pos.y],
+                    path: swept_path,
                     heading: (-forward.x).atan2(-forward.y),
                     width,
                     length,

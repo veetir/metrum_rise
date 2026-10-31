@@ -51,29 +51,35 @@ impl SimulationNode {
         let epoch = core.world_epoch;
         let chunks = core.parking.publications(full);
         drop(core);
-        result.set("busy", false);
-        result.set("epoch", epoch as i64);
-        let mut updates = VarArray::new();
-        for (key, chunk) in chunks {
-            let mut update = VarDictionary::new();
-            update.set("chunk", Vector2i::new(key.0, key.1));
-            update.set("version", chunk.version as i64);
-            let mut buckets = VarDictionary::new();
-            let mut identities = VarDictionary::new();
-            for (&bucket, buffer) in &chunk.buckets {
-                buckets.set(bucket as i32, PackedFloat32Array::from(buffer.as_slice()));
-            }
-            for (&bucket, ids) in &chunk.identities {
-                identities.set(
-                    bucket as i32,
-                    PackedInt64Array::from_iter(ids.iter().map(|&id| id as i64)),
-                );
-            }
-            update.set("buckets", buckets);
-            update.set("identities", identities);
-            updates.push(&update.to_variant());
+        pack_parked(epoch, chunks)
+    }
+
+    /// Returns moving and parked payloads from the same custody publication. If a newer
+    /// parking transition has overtaken the moving snapshot, both renderers retain their
+    /// previous frame. O(visible cars + dirty parked chunks), nonblocking on the simulation.
+    #[func]
+    pub fn get_vehicle_frame(&self, full: bool) -> VarDictionary {
+        let mut result = VarDictionary::new();
+        result.set("busy", true);
+        let snapshot = self.snapshot.read().unwrap();
+        let Some(mut core) = self.try_lock_core() else {
+            return result;
+        };
+        if snapshot.parking_epoch != core.parking.publication_epoch()
+            || snapshot.vehicle_world_epoch != core.world_epoch
+        {
+            return result;
         }
-        result.set("chunks", updates);
+        core.build_parked_chunks();
+        let chunks = core.parking.publications(full);
+        let epoch = core.world_epoch;
+        drop(core);
+        result.set(
+            "cars",
+            crate::nodes::sim::bridge::agents::get_car_render_data(&snapshot),
+        );
+        result.set("parked", pack_parked(epoch, chunks));
+        result.set("busy", false);
         result
     }
 
@@ -87,4 +93,38 @@ impl SimulationNode {
             core.parking.acknowledge((key.x, key.y), version as u64);
         }
     }
+}
+
+fn pack_parked(
+    epoch: u64,
+    chunks: Vec<(
+        (i32, i32),
+        std::sync::Arc<crate::simulation::parking::ParkedChunk>,
+    )>,
+) -> VarDictionary {
+    let mut result = VarDictionary::new();
+    result.set("busy", false);
+    result.set("epoch", epoch as i64);
+    let mut updates = VarArray::new();
+    for (key, chunk) in chunks {
+        let mut update = VarDictionary::new();
+        update.set("chunk", Vector2i::new(key.0, key.1));
+        update.set("version", chunk.version as i64);
+        let mut buckets = VarDictionary::new();
+        let mut identities = VarDictionary::new();
+        for (&bucket, buffer) in &chunk.buckets {
+            buckets.set(bucket as i32, PackedFloat32Array::from(buffer.as_slice()));
+        }
+        for (&bucket, ids) in &chunk.identities {
+            identities.set(
+                bucket as i32,
+                PackedInt64Array::from_iter(ids.iter().map(|&id| id as i64)),
+            );
+        }
+        update.set("buckets", buckets);
+        update.set("identities", identities);
+        updates.push(&update.to_variant());
+    }
+    result.set("chunks", updates);
+    result
 }

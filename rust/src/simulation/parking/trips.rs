@@ -1,0 +1,397 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! Resident ownership and exclusive custody, committed in stable transition order.
+
+use super::*;
+use crate::simulation::economy::agents::AgentHandle;
+use serde::{Deserialize, Serialize};
+
+/// Current private-car itinerary leg. Only the last pedestrian leg enters a building.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ParkingTripPhase {
+    /// No car-backed trip; the vehicle field still records household access.
+    #[default]
+    None,
+    /// Pedestrian travel from the origin door to the car's actual bay.
+    WalkToCar,
+    /// The validated bay–aisle–driveway maneuver followed by ordinary lane entry.
+    PullOut,
+    /// Ordinary network driving between driveway lane endpoints.
+    Drive,
+    /// Ordinary detach followed by the validated driveway–aisle–bay maneuver.
+    PullIn,
+    /// Pedestrian travel from the occupied bay to the destination door.
+    WalkToDoor,
+}
+
+/// Persistent per-agent itinerary, stored as one column in the agent SoA.
+/// O(1) leg state, with no separate route vectors; ordinary movement remains O(1) per agent.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ParkingTrip {
+    #[serde(with = "saved_handle")]
+    pub vehicle: Handle<Vehicle>,
+    /// Route capacity requested at a phase boundary, prepared before the next movement pass.
+    pub route_capacity: usize,
+    pub retry_pending: bool,
+    #[serde(with = "saved_handle")]
+    pub source: Handle<Place>,
+    #[serde(with = "saved_handle")]
+    pub destination: Handle<Place>,
+    pub target: u64,
+    pub phase: ParkingTripPhase,
+    pub ready: bool,
+}
+
+impl ParkingSystem {
+    /// Assigns ownership once from the saved seed and stable household identity. Density is
+    /// the zoning registry's classification of `Building::zone_profile_runtime_id`.
+    /// O(1) decision; insertion is a household lifecycle boundary and may allocate.
+    pub(crate) fn assign_household(
+        &mut self,
+        owner: u64,
+        density: crate::simulation::zoning::profiles::ZoneDensity,
+        home: [f32; 2],
+        eligible: bool,
+    ) -> Handle<Vehicle> {
+        if let Some(&car) = self.owners.get(&owner) {
+            return car;
+        }
+        let owns = eligible && owns_car(self.mobility_seed, owner, density);
+        let car = if owns {
+            let v = self.vehicles.len();
+            let hash = crate::simulation::core::stable_hash64(self.mobility_seed ^ owner);
+            self.vehicles.push(Vehicle {
+                home,
+                home_building: u64::MAX,
+                owner,
+                borrower: Handle::NONE,
+                moving: false,
+                place: Handle::NONE,
+                reserved: Handle::NONE,
+                model: (hash % 4) as u8,
+                colour: ((hash >> 8) % 5) as u8,
+            });
+            self.vehicle_handles.register_appended(self.vehicles.len());
+            self.vehicle_handles.handle(v)
+        } else {
+            Handle::NONE
+        };
+        self.owners.insert(owner, car);
+        car
+    }
+
+    /// O(1), allocation-free lookup of the persistent household car.
+    pub(crate) fn household_car(&self, owner: u64) -> Handle<Vehicle> {
+        self.owners.get(&owner).copied().unwrap_or(Handle::NONE)
+    }
+
+    /// O(1), allocation-free eligibility; custody belongs to one stable agent throughout an outing.
+    pub(crate) fn available_to(&self, car: Handle<Vehicle>, borrower: AgentHandle) -> bool {
+        self.vehicle_handles.resolve(car).is_some_and(|v| {
+            !self.vehicles.place[v].is_none()
+                && !self.vehicles.moving[v]
+                && self.vehicles.reserved[v].is_none()
+                && (self.vehicles.borrower[v].is_none() || self.vehicles.borrower[v] == borrower)
+        })
+    }
+
+    /// Atomically borrows and reserves at actual departure. O(1), allocation-free.
+    pub(crate) fn reserve_trip(
+        &mut self,
+        car: Handle<Vehicle>,
+        borrower: AgentHandle,
+        destination: Handle<Place>,
+    ) -> bool {
+        if !self.available_to(car, borrower) || !self.reserve(car, destination) {
+            return false;
+        }
+        let v = self.vehicle_handles.resolve(car).expect("reserved vehicle");
+        self.vehicles.borrower[v] = borrower;
+        true
+    }
+
+    /// O(1), marks the same publication's parked/moving ownership switch. Occupancy remains
+    /// until the pull-out clears the bay; dirty chunks and moving snapshots use this state.
+    pub(crate) fn set_moving(&mut self, car: Handle<Vehicle>, moving: bool) {
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return;
+        };
+        if self.vehicles.moving[v] == moving {
+            return;
+        }
+        self.vehicles.moving[v] = moving;
+        if let Some(p) = self.place_handles.resolve(self.vehicles.place[v]) {
+            let pos = self.places.position[p];
+            self.mark_dirty(chunk_at([pos[0], pos[2]]));
+        }
+    }
+
+    /// Household lifecycle deletion; O(1) plus local wake events at the freed bay.
+    pub(crate) fn remove_household_car(&mut self, owner: u64) {
+        let Some(car) = self.owners.remove(&owner) else {
+            return;
+        };
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return;
+        };
+        self.cancel_reservation(car);
+        let released = self.release(car);
+        self.vehicle_handles.swap_remove(v, self.vehicles.len());
+        self.vehicles.swap_remove(v);
+        if let Some(point) = released {
+            self.rehouse_near(point);
+        }
+    }
+}
+
+fn owns_car(
+    seed: u64,
+    owner: u64,
+    density: crate::simulation::zoning::profiles::ZoneDensity,
+) -> bool {
+    use crate::simulation::zoning::profiles::ZoneDensity;
+    let bucket = crate::simulation::core::stable_hash64(seed ^ owner) >> 62;
+    match density {
+        ZoneDensity::Low => true,
+        ZoneDensity::Medium => bucket < 3,
+        ZoneDensity::High => bucket < 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::zoning::profiles::ZoneDensity;
+
+    #[test]
+    fn ownership_ratios_and_stable_identity() {
+        for (density, expected) in [
+            (ZoneDensity::Low, 1.0),
+            (ZoneDensity::Medium, 0.75),
+            (ZoneDensity::High, 0.5),
+        ] {
+            let count = (0..100_000)
+                .filter(|&id| owns_car(317, id, density))
+                .count();
+            assert!((count as f64 / 100_000.0 - expected).abs() < 0.005);
+            assert_eq!(owns_car(317, 52, density), owns_car(317, 52, density));
+        }
+    }
+}
+
+mod saved_handle {
+    use super::*;
+    pub(super) fn serialize<S: serde::Serializer, K>(
+        handle: &Handle<K>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(handle.to_bits())
+    }
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, K>(
+        deserializer: D,
+    ) -> Result<Handle<K>, D::Error> {
+        u64::deserialize(deserializer).map(Handle::from_bits)
+    }
+}
+
+impl ParkingSystem {
+    /// Places an assigned car through the prepared home walking catchment. O(k), lifecycle
+    /// boundary only; with no free place the persistent car joins the off-map home event index.
+    pub(crate) fn park_new_car(&mut self, car: Handle<Vehicle>, home: u64) {
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return;
+        };
+        self.vehicles.home_building[v] = home;
+        if !self.vehicles.place[v].is_none() || self.vehicles.moving[v] {
+            return;
+        }
+        if let Some(candidate) = self.first_free_candidate(home) {
+            self.occupy(car, candidate.place);
+        } else {
+            let list = self
+                .stored
+                .entry(chunk_at(self.vehicles.home[v]))
+                .or_default();
+            if !list.contains(&car) {
+                list.push(car);
+            }
+        }
+    }
+}
+
+impl ParkingSystem {
+    /// O(1) curb lookup, shared by exact pedestrian detach and the validated lot maneuver.
+    pub(crate) fn place_curb(&self, place: Handle<Place>) -> Option<godot::prelude::Vector2> {
+        let p = self.place_handles.resolve(place)?;
+        let [x, z] = self.places.path[p][0];
+        Some(godot::prelude::Vector2::new(x, z))
+    }
+
+    /// O(1) phase endpoint selection plus the host's existing frontage projection.
+    pub(crate) fn trip_entrance(
+        &self,
+        trip: ParkingTrip,
+        origin: bool,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        network: &crate::simulation::network::TransitNetwork,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Option<crate::simulation::buildings::allocator::BuildingEntrance> {
+        use ParkingTripPhase::*;
+        let place = match (origin, trip.phase) {
+            (true, PullOut) | (false, WalkToCar) => trip.source,
+            (true, WalkToDoor) | (false, Drive | PullIn) => trip.destination,
+            _ => return Option::None,
+        };
+        self.place_entrance(place, allocator, network, graph)
+    }
+
+    /// O(1) fixed swept-path pose product, with the exact adjacent lane point at the driveway.
+    pub(crate) fn maneuver_path(
+        &self,
+        place: Handle<Place>,
+        lane: usize,
+        distance: f32,
+        network: &crate::simulation::network::TransitNetwork,
+        ingress: bool,
+    ) -> Option<crate::simulation::economy::agents::tick::ParkingAccessPath> {
+        use godot::prelude::Vector2;
+        let p = self.place_handles.resolve(place)?;
+        let lane = network.lane_system.lanes.get(lane)?;
+        let point = crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_lane(
+            lane, distance,
+        );
+        let swept = self.places.path[p].map(|[x, z]| Vector2::new(x, z));
+        let mut points = [point, swept[0], swept[1], swept[2], swept[3]];
+        if !ingress {
+            points.reverse();
+        }
+        Some(crate::simulation::economy::agents::tick::ParkingAccessPath { points, count: 5 })
+    }
+
+    /// O(1) inspection of the independent car's current place.
+    pub(crate) fn vehicle_place(&self, car: Handle<Vehicle>) -> Option<Handle<Place>> {
+        self.vehicle_handles
+            .resolve(car)
+            .map(|v| self.vehicles.place[v])
+            .filter(|p| !p.is_none())
+    }
+
+    /// O(1), releases custody only after the borrower gets home with a car parked nearby.
+    pub(crate) fn finish_outing(&mut self, car: Handle<Vehicle>, borrower: AgentHandle) {
+        if let Some(v) = self.vehicle_handles.resolve(car)
+            && self.vehicles.borrower[v] == borrower
+        {
+            self.vehicles.borrower[v] = Handle::NONE;
+        }
+    }
+
+    /// O(1) reservation proof; a removed destination invalidates the saved itinerary.
+    pub(crate) fn trip_reserved(&self, car: Handle<Vehicle>, place: Handle<Place>) -> bool {
+        self.vehicle_handles
+            .resolve(car)
+            .is_some_and(|v| self.vehicles.reserved[v] == place && !place.is_none())
+    }
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+
+    #[test]
+    fn one_borrower_reservation_conservation_and_handoff() {
+        let mut parking = ParkingSystem::default();
+        let bay = |x| Bay {
+            identity: [0, 0],
+            position: [x, 0.0, 0.0],
+            path: [[x, 0.0]; 4],
+            heading: 0.0,
+            width: 2.5,
+            length: 5.0,
+        };
+        let source = parking.add_place(
+            PlaceSource::Building {
+                building: 0,
+                anchor: 0,
+            },
+            bay(0.0),
+        );
+        parking.fill_test_fleet();
+        let car = parking.vehicle_handles.handle(0);
+        let destination = parking.add_place(
+            PlaceSource::Building {
+                building: 0,
+                anchor: 1,
+            },
+            bay(20.0),
+        );
+        let a = AgentHandle::from_parts(1, 0);
+        let b = AgentHandle::from_parts(2, 0);
+        assert!(parking.reserve_trip(car, a, destination));
+        assert!(!parking.reserve_trip(car, b, destination));
+        assert_eq!(parking.vehicle_place(car), Some(source));
+        parking.build_dirty_chunks();
+        let parked_count = |p: &ParkingSystem| {
+            p.publications(true)
+                .iter()
+                .map(|(_, c)| c.identities.values().map(Vec::len).sum::<usize>())
+                .sum::<usize>()
+        };
+        assert_eq!(parked_count(&parking), 1);
+        parking.set_moving(car, true);
+        parking.build_dirty_chunks();
+        assert_eq!(
+            parked_count(&parking) + usize::from(parking.vehicles.moving[0]),
+            1
+        );
+        parking.release(car);
+        assert!(parking.trip_reserved(car, destination));
+        assert!(parking.occupy(car, destination));
+        parking.set_moving(car, false);
+        parking.build_dirty_chunks();
+        assert_eq!(
+            parked_count(&parking) + usize::from(parking.vehicles.moving[0]),
+            1
+        );
+        assert!(!parking.available_to(car, b));
+        let restored = ParkingSystem::load_json(&parking.save_json(|s| s).unwrap()).unwrap();
+        assert_eq!(restored.vehicles.borrower[0], a);
+        parking.finish_outing(car, a);
+        assert!(parking.available_to(car, b));
+    }
+}
+
+impl ParkingSystem {
+    /// O(1) endpoint selection plus frontage projection; a deleted parking endpoint returns
+    /// an invalid entrance so ordinary replan failure cannot fall back to a car-to-door leg.
+    pub(crate) fn replan_entrance(
+        &self,
+        trip: ParkingTrip,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        network: &crate::simulation::network::TransitNetwork,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Option<crate::simulation::buildings::allocator::BuildingEntrance> {
+        match trip.phase {
+            ParkingTripPhase::WalkToCar
+            | ParkingTripPhase::PullOut
+            | ParkingTripPhase::Drive
+            | ParkingTripPhase::PullIn => Some(
+                self.trip_entrance(trip, false, allocator, network, graph)
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        }
+    }
+}
+
+impl ParkingSystem {
+    // Resident recovery uses the published walking catchment. The explicit foundation fleet
+    // has no home building and retains its existing test-only Euclidean recovery policy.
+    pub(super) fn home_place(&self, v: usize) -> Option<Handle<Place>> {
+        let home = self.vehicles.home_building[v];
+        if home == u64::MAX {
+            self.nearest(self.vehicles.home[v])
+        } else {
+            self.first_free_candidate(home).map(|c| c.place)
+        }
+    }
+}

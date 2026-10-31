@@ -17,8 +17,10 @@ var _full := true
 func _ready() -> void:
 	_resources.lamps_enabled = false
 
-func _process(_delta: float) -> void:
-	var payload: Dictionary = simulation_node.get_parked_car_chunks(_full)
+func needs_full_publication() -> bool:
+	return _full
+
+func apply_publication(payload: Dictionary) -> void:
 	if payload.get("busy", true):
 		return
 	var epoch: int = payload["epoch"]
@@ -28,9 +30,6 @@ func _process(_delta: float) -> void:
 		_chunks.clear()
 		_versions.clear()
 		_epoch = epoch
-		if not _full:
-			_full = true
-			return
 	_full = false
 	for update: Dictionary in payload.get("chunks", []):
 		var key: Vector2i = update["chunk"]

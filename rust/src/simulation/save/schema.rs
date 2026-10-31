@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 109;
+pub const SAVE_VERSION: i64 = 110;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -751,7 +751,8 @@ CREATE TABLE agents(
     overtake_blocked_time_s REAL NOT NULL,
     overtake_cooldown_s REAL NOT NULL,
     job_lock_until_day INTEGER NOT NULL,
-    consecutive_unpaid_days INTEGER NOT NULL
+    consecutive_unpaid_days INTEGER NOT NULL,
+    parking_trip TEXT NOT NULL
 );
 CREATE TABLE agent_path_nodes(
     agent_id INTEGER NOT NULL,

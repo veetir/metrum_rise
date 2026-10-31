@@ -18,6 +18,7 @@ struct SavedPlace {
 struct SavedBay {
     identity: [u64; 2],
     position: [f32; 3],
+    path: [[f32; 2]; 4],
     heading: f32,
     width: f32,
     length: f32,
@@ -25,6 +26,10 @@ struct SavedBay {
 #[derive(Serialize, Deserialize)]
 struct SavedVehicle {
     home: [f32; 2],
+    home_building: u64,
+    owner: u64,
+    borrower: u64,
+    moving: bool,
     place: u64,
     reserved: u64,
     model: u8,
@@ -37,6 +42,8 @@ struct SavedTable {
 }
 #[derive(Serialize, Deserialize)]
 struct SavedParking {
+    mobility_seed: u64,
+    owners: Vec<(u64, u64)>,
     places: Vec<SavedPlace>,
     vehicles: Vec<SavedVehicle>,
     place_handles: SavedTable,
@@ -73,6 +80,7 @@ impl ParkingSystem {
                     bay: SavedBay {
                         identity: self.places.identity[p],
                         position: self.places.position[p],
+                        path: self.places.path[p],
                         heading: self.places.heading[p],
                         width: self.places.width[p],
                         length: self.places.length[p],
@@ -87,6 +95,10 @@ impl ParkingSystem {
                 .into_par_iter()
                 .map(|v| SavedVehicle {
                     home: self.vehicles.home[v],
+                    home_building: self.vehicles.home_building[v],
+                    owner: self.vehicles.owner[v],
+                    borrower: self.vehicles.borrower[v].to_bits(),
+                    moving: self.vehicles.moving[v],
                     place: self.vehicles.place[v].to_bits(),
                     reserved: self.vehicles.reserved[v].to_bits(),
                     model: self.vehicles.model[v],
@@ -95,7 +107,15 @@ impl ParkingSystem {
                 .collect()
         });
         // JSON emission and handle-table capture retain their single-writer saved order.
+        let mut owners: Vec<_> = self
+            .owners
+            .iter()
+            .map(|(&h, &v)| (h, v.to_bits()))
+            .collect();
+        owners.sort_unstable();
         serde_json::to_string(&SavedParking {
+            mobility_seed: self.mobility_seed,
+            owners,
             places,
             vehicles,
             place_handles: SavedTable::capture(&self.place_handles),
@@ -109,6 +129,12 @@ impl ParkingSystem {
     pub(crate) fn load_json(json: &str) -> Result<Self, String> {
         let saved: SavedParking = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let mut system = Self {
+            mobility_seed: saved.mobility_seed,
+            owners: saved
+                .owners
+                .into_iter()
+                .map(|(h, v)| (h, Handle::from_bits(v)))
+                .collect(),
             place_handles: saved.place_handles.restore(saved.places.len())?,
             vehicle_handles: saved.vehicle_handles.restore(saved.vehicles.len())?,
             ..Self::default()
@@ -124,7 +150,8 @@ impl ParkingSystem {
             let p = system.places.len();
             let handle = system.place_handles.handle(p);
             let bay = place.bay;
-            if !bay.position.into_iter().all(f32::is_finite)
+            if !bay.path.into_iter().flatten().all(f32::is_finite)
+                || !bay.position.into_iter().all(f32::is_finite)
                 || !bay.heading.is_finite()
                 || !bay.width.is_finite()
                 || !bay.length.is_finite()
@@ -140,6 +167,7 @@ impl ParkingSystem {
                 source: place.source,
                 identity: bay.identity,
                 position: bay.position,
+                path: bay.path,
                 heading: bay.heading,
                 width: bay.width,
                 length: bay.length,
@@ -157,6 +185,10 @@ impl ParkingSystem {
             }
             system.vehicles.push(Vehicle {
                 home: car.home,
+                home_building: car.home_building,
+                owner: car.owner,
+                borrower: Handle::from_bits(car.borrower),
+                moving: car.moving,
                 place: Handle::from_bits(car.place),
                 reserved: Handle::from_bits(car.reserved),
                 model: car.model,
@@ -211,7 +243,10 @@ impl ParkingSystem {
                     return Err("nonreciprocal parked vehicle".into());
                 }
             }
-            if system.vehicles.place[v].is_none() && system.vehicles.reserved[v].is_none() {
+            if !system.vehicles.moving[v]
+                && system.vehicles.place[v].is_none()
+                && system.vehicles.reserved[v].is_none()
+            {
                 system
                     .stored
                     .entry(chunk_at(system.vehicles.home[v]))

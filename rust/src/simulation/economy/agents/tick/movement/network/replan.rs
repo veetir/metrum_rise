@@ -176,6 +176,7 @@ unsafe fn ensure_exact_access_plan(
             graph,
             pathfind_count,
             Some((i, "exact-access-replan")),
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -225,11 +226,14 @@ unsafe fn repair_stale_detach_plan(
 
         let target_building = *s_tgt_b.get(i);
         let planned_detach_lane_id = *s_plan_detach_lane.get(i) as usize;
-        let detach_still_legal = target_building < allocator.entrances.len()
+        let trip = *slices.parking_trip.get(i);
+        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
+        let target_entrance = parking_entrance.as_ref().or_else(|| allocator.entrances.get(target_building));
+        let detach_still_legal = target_entrance.is_some()
             && planned_detach_lane_id != usize::MAX
             && planned_detach_is_legal(
                 *s_tmode.get(i),
-                &allocator.entrances[target_building],
+                target_entrance.expect("validated destination"),
                 planned_detach_lane_id,
                 *s_plan_detach_lane_d.get(i),
                 *s_plan_detach_n.get(i),
@@ -276,6 +280,7 @@ unsafe fn repair_stale_detach_plan(
             graph,
             pathfind_count,
             Some((i, "stale-detach-replan")),
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);

@@ -225,6 +225,8 @@ pub struct HouseholdSystem {
     pub households: Vec<Household>,
     /// Stable handles of the dense households; saved with the store.
     pub(crate) handles: HandleTable<Household>,
+    /// Admission/removal events for persistent parking ownership, drained at publication.
+    pub(crate) parking_changes: Vec<Handle<Household>>,
     /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
     pub(crate) pending_arrivals: PendingHouseholdArrivals,
     /// Households whose shopper was reserved and held since SimCore last paced departures.
@@ -350,6 +352,7 @@ impl HouseholdSystem {
         Self {
             households: Vec::new(),
             handles: HandleTable::default(),
+            parking_changes: Vec::new(),
             pending_arrivals: PendingHouseholdArrivals::default(),
             held_shoppers: Vec::new(),
             held_visitors: Vec::new(),

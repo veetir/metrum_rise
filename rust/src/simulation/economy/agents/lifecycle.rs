@@ -456,7 +456,8 @@ impl AgentSystem {
             planned_activity: 0,
             current_path: Vec::new(),
             current_path_index: 0,
-            has_car: true,
+            has_car: false,
+            parking_trip: Default::default(),
             vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
             pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
             walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
@@ -468,6 +469,7 @@ impl AgentSystem {
     fn insert_agent(&mut self, agent: Agent) -> usize {
         let index = self.agents.len();
         self.agents.push(agent);
+        if self.parking_retries.capacity() < self.agents.len() { self.parking_retries.reserve(self.agents.len() - self.parking_retries.len()); }
         self.handles.register_appended(self.agents.len());
         self.register_appended_household_members();
         // The lane-bucket snapshot reads appended agents at the next tick (`SIM-02-K`).

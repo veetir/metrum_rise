@@ -21,6 +21,7 @@ pub(crate) struct Place {
     pub source: PlaceSource,
     pub identity: [u64; 2],
     pub position: [f32; 3],
+    pub path: [[f32; 2]; 4],
     pub heading: f32,
     pub width: f32,
     pub length: f32,
@@ -35,6 +36,10 @@ pub(crate) struct Place {
 #[soa_derive(Debug, Clone)]
 pub(crate) struct Vehicle {
     pub home: [f32; 2],
+    pub home_building: u64,
+    pub owner: u64,
+    pub borrower: crate::simulation::economy::agents::AgentHandle,
+    pub moving: bool,
     pub place: Handle<Place>,
     pub reserved: Handle<Place>,
     pub model: u8,
@@ -53,6 +58,7 @@ pub(super) struct Chunk {
 pub(crate) struct Bay {
     pub identity: [u64; 2],
     pub position: [f32; 3],
+    pub path: [[f32; 2]; 4],
     pub heading: f32,
     pub width: f32,
     pub length: f32,

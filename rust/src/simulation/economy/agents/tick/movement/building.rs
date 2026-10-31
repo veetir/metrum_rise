@@ -126,6 +126,8 @@ pub(super) unsafe fn handle_in_building(
             *s_next_replan_time.get_mut(i) = 0.0;
         } else if sim_time < *s_next_replan_time.get(i) {
             // Cooldown gate blocks replanning this tick.
+        } else if slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX && *slices.pending_household_size.get(i) == 0 {
+            // Private departures reserve in the ordered parking transition phase.
         } else if let Some(plan) = plan_building_origin_trip(
             curr_bldg,
             next_bldg,

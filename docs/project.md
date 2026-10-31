@@ -10,8 +10,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 cars, local towing, saves and parked chunk rendering on `dev`. Kerbside waits for the widening
 roadbed parking band after the median profile work. Lot rebuilds stay below 0.223 ms at 100k
 background; targeted/bridge checks pass, with the two known base probe failures in the full suite.
-Resident travel remains unchanged until
-`PARK-02`, after `TRAFFIC-15/13/16` and before `TRAFFIC-14`
+`PARK-02` resident ownership, custody and walking–parking–driving trips are in implementation
+and verification, after `TRAFFIC-15/13/16` and before `TRAFFIC-14`
 ([design and acceptance](traffic.md#physical-parking-foundation-park-01)).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):

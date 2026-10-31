@@ -52,6 +52,9 @@ impl ParkingSystem {
                         let Some(v) = self.vehicle_handles.resolve(self.places.occupant[p]) else {
                             continue;
                         };
+                        if self.vehicles.moving[v] {
+                            continue;
+                        }
                         let bucket = self.vehicles.model[v] * 10 + self.vehicles.colour[v];
                         let buffer = payload.buckets.entry(bucket).or_default();
                         buffer.extend_from_slice(&pose(
@@ -63,7 +66,7 @@ impl ParkingSystem {
                             .identities
                             .entry(bucket)
                             .or_default()
-                            .push(self.places.occupant[p].to_bits());
+                            .push(self.places.occupant[p].to_bits() | (1_u64 << 62));
                     }
                     (key, Arc::new(payload))
                 })
@@ -104,5 +107,22 @@ impl ParkingSystem {
             self.vehicles.len(),
             self.stored.values().map(Vec::len).sum(),
         )
+    }
+}
+
+impl ParkingSystem {
+    /// O(1) moving/parked custody revision, used to reject mixed publication frames.
+    pub(crate) fn publication_epoch(&self) -> u64 {
+        self.publication_epoch
+    }
+
+    /// O(1) persisted model, palette and stable identity for moving/parked handoff.
+    pub(crate) fn vehicle_visual(&self, car: Handle<Vehicle>) -> Option<(u8, u8, u64)> {
+        let v = self.vehicle_handles.resolve(car)?;
+        Some((
+            self.vehicles.model[v],
+            self.vehicles.colour[v],
+            car.to_bits() | (1_u64 << 62),
+        ))
     }
 }
