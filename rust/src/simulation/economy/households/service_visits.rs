@@ -421,7 +421,10 @@ impl HouseholdSystem {
         let plans: Vec<_> = batch
             .par_iter()
             .map_init(
-                || Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES),
+                || {
+                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                    Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES)
+                },
                 |candidates, &household_id| {
                     let mut diagnostics = ServiceVisitDiagnostics::default();
                     let visitor = first_eligible_shopper(

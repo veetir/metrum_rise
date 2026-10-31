@@ -811,7 +811,10 @@ impl HouseholdSystem {
         let plans: Vec<_> = batch
             .par_iter()
             .map_init(
-                || Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
+                || {
+                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                    Vec::with_capacity(GROCERY_SEARCH_CANDIDATES)
+                },
                 |candidates, &(queued_slot, hid)| {
                     let household = &households[hid];
                     let mut diagnostics = ReplenishmentDiagnostics::default();

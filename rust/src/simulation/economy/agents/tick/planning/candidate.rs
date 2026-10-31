@@ -885,9 +885,16 @@ pub(super) fn parking_candidate(
         } else {
             match price_trip_without_network(mode, from, to, &a, &b, network, graph, f32::INFINITY) {
                 TripLeg::Priced(candidate) => candidate,
-                TripLeg::Network { .. } => TripQueryScratch::with(network, graph, |scratch| {
-                    scratch.combine(mode, from, to, &a, &b, network, graph, count, shared)
-                }),
+                TripLeg::Network { .. } => {
+                    let combine = |scratch: &mut TripQueryScratch| {
+                        scratch.combine(mode, from, to, &a, &b, network, graph, count, shared)
+                    };
+                    if shared.is_some() {
+                        TripQueryScratch::with_shared_quotes(network, graph, combine)
+                    } else {
+                        TripQueryScratch::with(network, graph, combine)
+                    }
+                },
             }
         };
         if let Some(candidate) = candidate && best.as_ref().is_none_or(|old| candidate_better(&candidate, old)) {
