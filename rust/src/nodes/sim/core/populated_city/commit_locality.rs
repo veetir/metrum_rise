@@ -284,3 +284,82 @@ fn local_products(core: &mut SimCore, samples: &serde_json::Value) -> serde_json
         "buildings": buildings.len(), "buildings_digest": hash(&buildings),
     })
 }
+
+#[test]
+#[ignore = "PARK-01 matched release locality; setup excluded, run alone with eight workers"]
+fn benchmark_parking_locality() {
+    use crate::simulation::parking::PlaceSource;
+    use std::collections::BTreeSet;
+    super::contract::timing_mode();
+    let tiers: Vec<usize> = std::env::var("METRUM_LOCALITY_TIERS")
+        .unwrap_or_else(|_| "0,1000,10000".to_owned())
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let mut reference = None;
+    for background in tiers {
+        let start = Instant::now();
+        let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
+        add_background(&mut core, background);
+        core.precompute_road_mesh_data();
+        core.publish_road_tool_view();
+        let setup_s = start.elapsed().as_secs_f64();
+        let edges: BTreeSet<_> = core
+            .region_graph
+            .edges()
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| !edge.deleted && edge.geometry.iter().all(|p| p.x < LOCAL_MAX_X))
+            .map(|(id, _)| id)
+            .collect();
+        let products = |core: &SimCore| {
+            edges
+                .iter()
+                .flat_map(|&edge| [-1, 1].into_iter().map(move |side| (edge, side)))
+                .map(|(edge, side)| {
+                    (
+                        edge,
+                        side,
+                        core.parking.source_bays(PlaceSource::Edge { edge, side }),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = products(&core);
+        let places = expected
+            .iter()
+            .map(|(_, _, bays)| bays.len())
+            .sum::<usize>();
+        assert!(places > 0);
+        if let Some(reference) = &reference {
+            assert_eq!(
+                reference, &expected,
+                "local parking product changed with background"
+            );
+        } else {
+            reference = Some(expected.clone());
+        }
+        let mut samples = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            core.refresh_parking_roads(&edges);
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(products(&core), expected);
+        }
+        samples.sort_by(f64::total_cmp);
+        let edge = *edges.first().unwrap();
+        let point = core.region_graph.edge(edge).geometry[0];
+        let query_start = Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(core.parking.nearest_frontage(
+                [point.x, point.z],
+                edge,
+                &core.region_graph,
+            ));
+        }
+        eprintln!(
+            "PARKING_LOCALITY {}",
+            serde_json::json!({"background":background,"buildings":core.allocator.buildings.len(),"parcels":core.zoning.parcels().len(),"agents":core.agents.len(),"roads":core.region_graph.edge_count(),"local_edges":edges.len(),"local_places":places,"setup_s":setup_s,"rebuild_median_ms":samples[4],"query_mean_us":query_start.elapsed().as_secs_f64()*1000.0,"products":"identical"})
+        );
+    }
+}

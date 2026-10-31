@@ -6,10 +6,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-`PARK-01` is in progress: physical kerb/anchor parking, the standalone lot, persistent test cars,
-local towing and parked chunk rendering are implemented; performance and capture acceptance is
-being completed. Resident trips remain unchanged until `PARK-02`
-([parking contract](traffic.md#physical-parking-foundation-park-01)).
+`PARK-01` round 1 is complete: physical kerb/anchor parking, the standalone lot, persistent test
+cars, local towing, saves and parked chunk rendering are validated with locality, PERF-06 and
+inspected captures. The full suite retains two baseline-confirmed Mac probe failures. Resident
+travel remains unchanged until `PARK-02`; the foundation is not merged alone
+([design and acceptance](traffic.md#physical-parking-foundation-park-01)).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
