@@ -5,6 +5,9 @@
 use super::*;
 use crate::config::AGENT_WALK_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
+use crate::simulation::economy::accessibility::ModeComponentIndex;
+use crate::simulation::economy::agents::{MODE_CAR, tick::BuildingTripEnds};
+use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph, lanes::LaneType};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -13,9 +16,12 @@ use std::collections::{BinaryHeap, HashMap};
 
 const WALK_LIMIT_S: f32 = 400.0 / AGENT_WALK_SPEED_MS;
 
-/// One 16-byte per-destination entry. At 100k nonempty destination buildings the cache uses
-/// approximately 3.8 MB of hash slots/Vec headers plus 1.6 MB per mean retained candidate
-/// capacity (for example 23 MB at mean capacity 12). Empty lists are not retained. No routes.
+/// One 16-byte per-destination entry, without a retained route. At 100k nonempty doors,
+/// candidate and economy metadata use about 9.6 MB of map/header storage, plus 1.6 MB per mean
+/// candidate capacity, 0.4 MB per mean component count and 1.6 MB per mean target count.
+/// Arc headers add up to 1.6 MB. Mean capacities/counts 12/2/4 use about 38 MB total.
+/// Empty lists are not retained. Rolling economy fronts share components, adding 16 bytes
+/// per retained destination entry instead of copying the component array.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParkingCandidate {
     pub place: Handle<Place>,
@@ -26,6 +32,19 @@ pub(crate) struct ParkingCandidate {
 #[derive(Default, Debug)]
 pub(super) struct DestinationCandidates {
     pub entries: Vec<ParkingCandidate>,
+    pub economy: ParkingEconomyEnds,
+}
+
+/// Publication-time superset of the road components/arrival contexts a destination's bays
+/// can use. Occupancy only selects among them; no candidate routes are queried per departure.
+#[derive(Default, Debug)]
+pub(crate) struct ParkingEconomyEnds {
+    /// Sorted distinct existing economy component labels, not a separate connectivity index.
+    pub components: std::sync::Arc<[u32]>,
+    /// Sorted distinct CCH target-node/frontage pairs for shared exact commute quotes.
+    pub targets: Box<[(u32, usize)]>,
+    /// Maximum distance from the destination centre to any possible bay arrival node.
+    pub node_slack_m: f32,
 }
 
 impl ParkingSystem {
@@ -38,9 +57,10 @@ impl ParkingSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        car_components: Option<&ModeComponentIndex>,
     ) {
         crate::thread_pools::install(|| {
-            self.rebuild_candidates_in_pool(buildings, allocator, network, graph)
+            self.rebuild_candidates_in_pool(buildings, allocator, network, graph, car_components)
         });
     }
 
@@ -50,6 +70,7 @@ impl ParkingSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        car_components: Option<&ModeComponentIndex>,
     ) {
         let mut places = Vec::new();
         for &b in buildings {
@@ -156,15 +177,124 @@ impl ParkingSystem {
                         )
                         .then(a.place.cmp(&b.place))
                 });
-                Some((handle.to_bits(), DestinationCandidates { entries }))
+                let economy =
+                    car_components.map_or_else(ParkingEconomyEnds::default, |components| {
+                        self.build_economy_ends(&entries, b, allocator, network, graph, components)
+                    });
+                Some((handle.to_bits(), DestinationCandidates { entries, economy }))
             })
             .collect();
+        if !built.is_empty() {
+            self.candidate_revision = self.candidate_revision.wrapping_add(1);
+        }
         for (handle, entries) in built {
+            if !entries.entries.is_empty() && car_components.is_none() {
+                self.pending_economy.push(handle);
+            }
             if entries.entries.is_empty() {
                 self.candidates.remove(&handle);
             } else {
                 self.candidates.insert(handle, entries);
             }
+        }
+    }
+
+    /// O(1), version of published catchments and their economy reachability metadata.
+    pub(crate) fn candidate_revision(&self) -> u64 {
+        self.candidate_revision
+    }
+
+    /// O(1), read-only publication metadata; missing means no parking-backed driving option.
+    pub(crate) fn economy_ends(&self, building: u64) -> Option<&ParkingEconomyEnds> {
+        self.candidates.get(&building).map(|c| &c.economy)
+    }
+
+    /// O(1); deferred local metadata waits for the existing routing publication, never polls cars.
+    pub(crate) fn economy_refresh_pending(&self) -> bool {
+        !self.pending_economy.is_empty()
+    }
+
+    /// Completes only pending doors after CCH adoption. O(sum(local candidates log candidates));
+    /// no walking search or city-wide candidate scan. The caller supplies the existing car index.
+    pub(crate) fn refresh_economy_metadata(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+    ) {
+        let mut pending = std::mem::take(&mut self.pending_economy);
+        pending.sort_unstable();
+        pending.dedup();
+        let built: Vec<_> = crate::thread_pools::install(|| {
+            pending
+                .par_iter()
+                .filter_map(|&building| {
+                    let b = allocator
+                        .building_handles
+                        .resolve(Handle::from_bits(building))?;
+                    let entries = &self.candidates.get(&building)?.entries;
+                    Some((
+                        building,
+                        self.build_economy_ends(entries, b, allocator, network, graph, components),
+                    ))
+                })
+                .collect()
+        });
+        if !built.is_empty() {
+            self.candidate_revision = self.candidate_revision.wrapping_add(1);
+        }
+        for (building, economy) in built {
+            if let Some(candidates) = self.candidates.get_mut(&building) {
+                candidates.economy = economy;
+            }
+        }
+        pending.clear();
+        self.pending_economy = pending;
+    }
+
+    fn build_economy_ends(
+        &self,
+        entries: &[ParkingCandidate],
+        building: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        car_components: &ModeComponentIndex,
+    ) -> ParkingEconomyEnds {
+        let centre = &allocator.buildings[building];
+        let mut components = Vec::new();
+        let mut targets = Vec::new();
+        for candidate in entries {
+            let Some(access) = self.place_entrance(candidate.place, allocator, network, graph)
+            else {
+                continue;
+            };
+            components.extend_from_slice(
+                car_components
+                    .entrance_components(&access, graph, TransitFlags::CAR)
+                    .as_slice(),
+            );
+            targets.extend(
+                BuildingTripEnds::at_entrance(&access, false, network, graph)
+                    .network_targets(MODE_CAR)
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+        components.sort_unstable();
+        components.dedup();
+        targets.sort_unstable();
+        targets.dedup();
+        let node_slack_m = targets
+            .iter()
+            .filter_map(|&(node, _)| graph.nodes().get(node as usize))
+            .map(|node| (node.pos.x - centre.center_x).hypot(node.pos.z - centre.center_y))
+            .fold(0.0, f32::max);
+        ParkingEconomyEnds {
+            components: components.into(),
+            targets: targets.into_boxed_slice(),
+            node_slack_m,
         }
     }
 
@@ -191,6 +321,15 @@ impl ParkingSystem {
 
     /// O(k) scan to the first free fitting candidate; no route query, allocation or cap.
     pub(crate) fn first_free_candidate(&self, building: u64) -> Option<ParkingCandidate> {
+        self.first_free_candidate_after_departure(building, Handle::NONE)
+    }
+
+    /// O(k) hypothetical return scan; only the caller's actual departure bay may be released.
+    pub(crate) fn first_free_candidate_after_departure(
+        &self,
+        building: u64,
+        freed: Handle<Place>,
+    ) -> Option<ParkingCandidate> {
         self.candidates
             .get(&building)?
             .entries
@@ -199,7 +338,7 @@ impl ParkingSystem {
             .find(|c| {
                 self.place_handles.resolve(c.place).is_some_and(|p| {
                     self.places.active[p]
-                        && self.places.occupant[p].is_none()
+                        && (self.places.occupant[p].is_none() || c.place == freed)
                         && self.places.reservation[p].is_none()
                         && self.places.width[p] >= 1.8
                         && self.places.length[p] >= 4.5
@@ -216,6 +355,35 @@ impl ParkingSystem {
             .find(|c| c.place == place)
             .map(|c| c.from_door_s)
             .filter(|&s| s <= WALK_LIMIT_S)
+    }
+
+    /// Bitwise geometry stamp for an economy endpoint, O(1), allocation-free. Topology and
+    /// door revisions invalidate route caches separately; local bay moves/manoeuvres need this
+    /// stamp even when the stable place handle survives an edit. Derived identically on load.
+    pub(crate) fn quote_geometry(&self, place: Handle<Place>) -> u64 {
+        let Some(p) = self.place_handles.resolve(place) else {
+            return 0;
+        };
+        let entrance = &self.places.access[p];
+        let mut stamp = place.to_bits();
+        for value in [
+            entrance.edge_idx as u64,
+            entrance.side as u64,
+            entrance.flags as u64,
+            entrance.entrance_s_m.to_bits() as u64,
+            entrance.door_pos.x.to_bits() as u64,
+            entrance.door_pos.y.to_bits() as u64,
+            entrance.curb_pos.x.to_bits() as u64,
+            entrance.curb_pos.y.to_bits() as u64,
+            entrance.foot_lane_fwd as u64,
+            entrance.foot_lane_bkw as u64,
+            entrance.car_lane_fwd as u64,
+            entrance.car_lane_bkw as u64,
+            self.maneuver_seconds(place).to_bits() as u64,
+        ] {
+            stamp = crate::simulation::core::stable_hash64(stamp ^ value);
+        }
+        stamp
     }
 
     /// O(1), allocation-free copy of the driveway access prepared with the local publication.
@@ -470,6 +638,8 @@ impl ParkingSystem {
 
     /// O(1) expected, removes a destroyed destination's derived catchment.
     pub(crate) fn remove_destination_candidates(&mut self, building: u64) {
-        self.candidates.remove(&building);
+        if self.candidates.remove(&building).is_some() {
+            self.candidate_revision = self.candidate_revision.wrapping_add(1);
+        }
     }
 }

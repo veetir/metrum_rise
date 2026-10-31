@@ -57,7 +57,7 @@ fn fixture() -> (
             },
         );
     }
-    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
     let home = allocator.building_handles.handle(0).to_bits();
     let car = parking.assign_household(
         0,
@@ -185,7 +185,7 @@ fn removing_reserved_supply_replans_at_the_actual_position() {
                 length: 5.0,
             },
         );
-        parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+        parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
         let clock = test_clock(0, 0);
         for _ in 0..8000 {
             agents.tick_with_parking(
@@ -204,7 +204,7 @@ fn removing_reserved_supply_replans_at_the_actual_position() {
         let removed = agents.parking_trip[0].destination;
         assert_ne!(removed, replacement);
         parking.remove_place(removed);
-        parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+        parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
         let car = agents.parking_trip[0].vehicle;
         let mut reached = false;
         for _ in 0..10000 {
@@ -261,7 +261,7 @@ fn towing_before_borrowing_walks_to_the_cars_actual_new_place() {
             length: 5.0,
         },
     );
-    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
     let clock = test_clock(0, 0);
     agents.tick_with_parking(
         &allocator,
@@ -276,7 +276,7 @@ fn towing_before_borrowing_walks_to_the_cars_actual_new_place() {
     let old = agents.parking_trip[0].source;
     parking.remove_place(old);
     assert_eq!(parking.vehicle_place(car), Some(replacement));
-    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
     let mut retrieved = false;
     for _ in 0..10000 {
         let before = Vector2::new(agents.pos_x[0], agents.pos_y[0]);
@@ -334,7 +334,7 @@ fn candidate_walk_bound_uses_network_time_and_publication_rebuilds_it() {
             .distance_to(Vector2::new(300.0, -100.0))
             < 400.0
     );
-    parking.rebuild_candidates(&[0], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0], &allocator, &network, &graph, None);
     assert!(
         parking.walk_to_car_seconds(home, remote).is_none(),
         "straight-line bound admitted a walk over 400 m at walking pace"
@@ -354,10 +354,10 @@ fn candidate_walk_bound_uses_network_time_and_publication_rebuilds_it() {
         },
     );
     assert!(parking.first_free_candidate(home).is_none());
-    parking.rebuild_candidates(&[0], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0], &allocator, &network, &graph, None);
     assert_eq!(parking.first_free_candidate(home).unwrap().place, near);
     parking.remove_place(near);
-    parking.rebuild_candidates(&[0], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0], &allocator, &network, &graph, None);
     assert!(parking.first_free_candidate(home).is_none());
     assert!(
         parking
@@ -408,6 +408,7 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
         &network,
         &graph,
         &agents.pathfind_count,
+        None,
     )
     .unwrap();
     let estimate = estimate_parking_trip_seconds(
@@ -441,7 +442,8 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
             &allocator,
             &network,
             &graph,
-            &agents.pathfind_count
+            &agents.pathfind_count,
+            None
         )
         .is_none()
     );
@@ -495,7 +497,7 @@ fn a_walking_return_releases_custody_of_a_car_towed_home() {
     let car = agents.parking_trip[0].vehicle;
     assert_eq!(parking.borrowed_by(car), Some(agents.agent_handle(0)));
     parking.remove_place(parking.vehicle_place(car).unwrap());
-    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
     assert!(parking.vehicle_place(car).is_some());
     agents.planned_target_building[0] = 0;
     agents.planned_activity[0] = 0;
@@ -516,4 +518,81 @@ fn a_walking_return_releases_custody_of_a_car_towed_home() {
     assert_eq!(agents.transit_mode[0], MODE_WALK);
     assert!(parking.borrowed_by(car).is_none());
     assert!(parking.available_to(car, agents.agent_handle(1)));
+}
+
+#[test]
+fn a_resident_can_walk_farther_than_the_destination_catchment_to_the_actual_car() {
+    use crate::simulation::economy::agents::tick::{ResidentMobility, quote_parking_trip};
+    let (mut agents, mut parking, allocator, network, graph) = fixture();
+    let car = agents.parking_trip[0].vehicle;
+    let source = parking.vehicle_place(car).unwrap();
+    let home = allocator.building_handles.handle(0).to_bits();
+    let work = allocator.building_handles.handle(1).to_bits();
+    let away = parking.first_free_candidate(work).unwrap().place;
+    assert!(parking.reserve(car, away));
+    parking.release(car);
+    assert!(parking.occupy(car, away));
+    assert!(parking.walk_to_car_seconds(home, away).is_none());
+    let quote = quote_parking_trip(
+        car,
+        agents.agent_handle(0),
+        true,
+        0,
+        0,
+        &parking,
+        &allocator,
+        &network,
+        &graph,
+        &agents.pathfind_count,
+        None,
+    )
+    .unwrap();
+    assert_eq!(quote.source, away);
+    assert_eq!(quote.destination, source);
+    assert!(quote.to_car.seconds() > 400.0 / crate::config::AGENT_WALK_SPEED_MS);
+    let mobility = ResidentMobility::for_agent(&parking, &agents, 0);
+    assert!(mobility.round_trip(0, 1, &allocator, &network, &graph, &agents.pathfind_count));
+    assert!(
+        parking.borrowed_by(car).is_none(),
+        "estimates must not claim custody"
+    );
+}
+
+#[test]
+fn shared_economy_quotes_match_resident_mode_choice_and_respect_custody() {
+    use crate::simulation::economy::agents::tick::{
+        ResidentMobility, SharedNetworkQuotes, TripEstimate, TripQueryScratch,
+        estimate_parking_trip_seconds_within,
+    };
+    let (mut agents, mut parking, allocator, network, graph) = fixture();
+    let car = agents.parking_trip[0].vehicle;
+    let mobility = ResidentMobility::for_agent(&parking, &agents, 0);
+    let expected = mobility.seconds(0, 1, &allocator, &network, &graph, &agents.pathfind_count);
+    let mut shared = SharedNetworkQuotes::default();
+    shared.sync(&network);
+    let mut query = TripQueryScratch::default();
+    query.prepare_deferred_quotes(&network, &graph, &shared);
+    let actual = TripQueryScratch::with_owned(&mut query, || {
+        estimate_parking_trip_seconds_within(
+            0,
+            1,
+            car,
+            true,
+            &parking,
+            &allocator,
+            &network,
+            &graph,
+            &agents.pathfind_count,
+            f32::INFINITY,
+            Some(&shared),
+        )
+    });
+    assert!(matches!(actual, TripEstimate::Seconds(seconds) if seconds == expected));
+    assert!(mobility.round_trip(0, 1, &allocator, &network, &graph, &agents.pathfind_count));
+    let target = parking
+        .first_free_candidate(allocator.building_handles.handle(1).to_bits())
+        .unwrap()
+        .place;
+    assert!(parking.reserve_trip(car, agents.agent_handle(0), target));
+    assert!(!ResidentMobility::for_agent(&parking, &agents, 1).eligible);
 }

@@ -855,6 +855,7 @@ pub(super) fn parking_candidate(
     graph: &RegionGraph,
     count: &AtomicU32,
     origin_lane: Option<(usize,f32)>,
+    shared: Option<&SharedNetworkQuotes>,
 ) -> Option<PlannedTripCandidate> {
     let mut best = None;
     for (from, to) in NODE_RANK_PAIRS {
@@ -882,7 +883,12 @@ pub(super) fn parking_candidate(
             let lane = &network.lane_system.lanes[a.lane_id];
             finish_candidate(mode, from, to, &a, &b, a.local_time_s + b.local_time_s + (b.lane_d-a.lane_d).max(0.0) / graph.edge(lane.edge_id).speed_limit)
         } else {
-            combine_trip_ends(mode, from, to, &a, &b, network, graph, count)
+            match price_trip_without_network(mode, from, to, &a, &b, network, graph, f32::INFINITY) {
+                TripLeg::Priced(candidate) => candidate,
+                TripLeg::Network { .. } => TripQueryScratch::with(network, graph, |scratch| {
+                    scratch.combine(mode, from, to, &a, &b, network, graph, count, shared)
+                }),
+            }
         };
         if let Some(candidate) = candidate && best.as_ref().is_none_or(|old| candidate_better(&candidate, old)) {
             best = Some(candidate);

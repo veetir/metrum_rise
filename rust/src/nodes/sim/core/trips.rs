@@ -298,6 +298,7 @@ impl SimCore {
                     &self.transit_network,
                     &self.region_graph,
                     self.fiscal_policy.household_vat_rate,
+                    Some(&self.parking),
                 );
                 if household_vat != 0.0 {
                     self.collect_fiscal_revenue(FiscalRevenue {

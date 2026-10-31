@@ -16,7 +16,10 @@ mod parking;
 pub(crate) use access::LocalAccessPath as ParkingAccessPath;
 pub(crate) use planning::quote_parking_leg;
 #[cfg(test)]
-pub(crate) use planning::{quote_parking_trip, estimate_parking_trip_seconds};
+pub(crate) use planning::quote_parking_trip;
+pub(crate) use planning::{ResidentMobility, estimate_parking_trip_seconds_within};
+#[cfg(test)]
+pub(crate) use planning::estimate_parking_trip_seconds;
 pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 mod route_preview;
 mod runtime;
@@ -127,9 +130,6 @@ impl AgentSystem {
         let n = self.agents.len();
         if n == 0 {
             return;
-        }
-        if self.parking_retries.capacity() < n {
-            self.parking_retries.reserve(n - self.parking_retries.len());
         }
         self.scrub_building_refs_if_revised(allocator, n);
         self.prepare_lane_buckets_for_tick(transit_network, n);

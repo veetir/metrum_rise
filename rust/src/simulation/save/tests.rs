@@ -621,15 +621,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         front: Some((
             7,
             [
-                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2))],
-                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1))],
+                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2), vec![2, 5, 9])],
+                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1), vec![]) ],
             ],
         )),
         sweep: Some(SavedDestinationSweep {
             building_handles: 2,
             hour: 8,
             next_chunk: 300,
-            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0))], Vec::new()],
+            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0), vec![6])], Vec::new()],
         }),
     };
     households.destinations = DestinationRoll::restore(destinations.clone()).unwrap();

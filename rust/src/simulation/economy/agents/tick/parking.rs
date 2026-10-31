@@ -170,6 +170,7 @@ impl AgentSystem {
                     network,
                     graph,
                     &self.pathfind_count,
+                    None,
                 ) else {
                     self.queue_parking_retry(i, 30);
                     continue;
@@ -205,7 +206,7 @@ impl AgentSystem {
         self.movement_serial_query = scratch;
     }
 
-    // O(k) only on an actual home-arrival event, never a sleeping borrower poll.
+    // O(1) only on an actual home-arrival event, never a sleeping borrower poll.
     fn finish_parking_custody_at_home(
         &mut self,
         i: usize,
@@ -221,14 +222,8 @@ impl AgentSystem {
         if parking.borrowed_by(car) != Some(borrower) {
             return;
         }
-        if parking.vehicle_place(car).is_none_or(|place| {
-            parking
-                .walk_to_car_seconds(allocator.building_handles.handle(home).to_bits(), place)
-                .is_some()
-        }) {
-            parking.finish_outing(car, borrower);
-            parking.clear_retired_places(car);
-        }
+        parking.finish_outing(car, borrower);
+        parking.clear_retired_places(car);
     }
 
     fn materialize_parking_leg(
@@ -292,6 +287,7 @@ impl AgentSystem {
             network,
             graph,
             &self.pathfind_count,
+            None,
         );
         let trip = self.agents.parking_trip[i];
         let borrower = self.handles.handle(i);
@@ -307,6 +303,7 @@ impl AgentSystem {
             network,
             graph,
             &self.pathfind_count,
+            None,
         ) && walk
             .as_ref()
             .is_none_or(|walk| walk.seconds() > quote.mode_choice_seconds)

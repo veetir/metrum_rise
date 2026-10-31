@@ -344,6 +344,8 @@ fn benchmark_parking_locality() {
                 core.parking.diagnostics.get(&owner.to_bits())
             );
         }
+        core.transit_network.settle_cch();
+        core.complete_parking_economy_publication();
         let setup_s = start.elapsed().as_secs_f64();
         let products = |core: &SimCore| {
             owners
@@ -388,7 +390,7 @@ fn benchmark_parking_locality() {
         let mut lot_samples = Vec::new();
         for _ in 0..9 {
             let start = Instant::now();
-            core.parking.rebuild_candidates(&indices, &core.allocator, &core.transit_network, &core.region_graph);
+            core.publish_parking_catchments(&indices);
             candidate_samples.push(start.elapsed().as_secs_f64() * 1000.0);
             assert_eq!(candidate_products(&core), expected_candidates);
             let start = Instant::now();

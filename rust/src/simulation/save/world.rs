@@ -703,7 +703,7 @@ pub(super) fn save_household_queue_state(
             generation
         ])?;
     }
-    let mut stmt = tx.prepare("INSERT INTO household_destinations(buffer, kind, position, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
+    let mut stmt = tx.prepare("INSERT INTO household_destinations(buffer, kind, position, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b, parking_components) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
     let front = roll.front.as_ref().map(|(_, entries)| entries);
     let back = roll.sweep.as_ref().map(|sweep| &sweep.entries);
     for (buffer, entries) in [(0_i64, front), (1, back)] {
@@ -711,23 +711,24 @@ pub(super) fn save_household_queue_state(
             continue;
         };
         for (kind, entries) in entries.iter().enumerate() {
-            for (position, &(building, x, y, (foot, foot_count), (car, car_count))) in
+            for (position, (building, x, y, (foot, foot_count), (car, car_count), parking_car)) in
                 entries.iter().enumerate()
             {
                 stmt.execute(params![
                     buffer,
                     usize_to_i64(kind)?,
                     usize_to_i64(position)?,
-                    i64::from((building >> 32) as u32),
-                    i64::from(building as u32),
-                    i64::from(x),
-                    i64::from(y),
-                    usize_to_i64(foot_count)?,
+                    i64::from((*building >> 32) as u32),
+                    i64::from(*building as u32),
+                    i64::from(*x),
+                    i64::from(*y),
+                    usize_to_i64(*foot_count)?,
                     i64::from(foot[0]),
                     i64::from(foot[1]),
-                    usize_to_i64(car_count)?,
+                    usize_to_i64(*car_count)?,
                     i64::from(car[0]),
                     i64::from(car[1]),
+                    serde_json::to_vec(parking_car).map_err(|err| SaveLoadError::custom(err.to_string()))?,
                 ])?;
             }
         }
@@ -833,7 +834,7 @@ fn load_household_queue_state(
     households.shopper_departures = MinuteLeveler::restore(i64_to_u64(first_minute)?, &counts)
         .ok_or_else(|| SaveLoadError::custom("invalid shopper departure counts"))?;
     let mut buffers: [[Vec<SavedDestination>; 2]; 2] = Default::default();
-    let mut stmt = conn.prepare("SELECT buffer, kind, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b FROM household_destinations ORDER BY buffer, kind, position")?;
+    let mut stmt = conn.prepare("SELECT buffer, kind, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b, parking_components FROM household_destinations ORDER BY buffer, kind, position")?;
     let mut rows = stmt.query([])?;
     let chunk = |value: i64| {
         i32::try_from(value).map_err(|_| SaveLoadError::custom("destination chunk out of range"))
@@ -856,6 +857,7 @@ fn load_household_queue_state(
                 [i64_to_u32(row.get(10)?)?, i64_to_u32(row.get(11)?)?],
                 i64_to_usize(row.get(9)?)?,
             ),
+            serde_json::from_slice(&row.get::<_, Vec<u8>>(12)?).map_err(|err| SaveLoadError::custom(err.to_string()))?,
         ));
     }
     let [front, back] = buffers;

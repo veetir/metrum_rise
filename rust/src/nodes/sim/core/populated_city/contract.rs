@@ -414,7 +414,7 @@ fn perf_contract_phase() {
 #[test]
 #[ignore = "PARK-02 matched dense-district employment and bounded job reach diagnostic"]
 fn parking_employment_reach() {
-    use crate::simulation::economy::agents::{age_group_can_work, tick::estimate_building_origin_trip_seconds};
+    use crate::simulation::economy::agents::{age_group_can_work, tick::ResidentMobility};
     timing_mode();
     let city = snapshot::load_snapshot(10_000, &cache_dir());
     let c = &city.core;
@@ -424,9 +424,10 @@ fn parking_employment_reach() {
     let mut available = 0;
     let mut pairs = 0;
     for &worker in &workers {
-        available += usize::from(c.agents.has_car[worker]);
+        let mobility = ResidentMobility::for_agent(&c.parking, &c.agents, worker);
+        available += usize::from(mobility.eligible);
         for &work in &jobs {
-            let seconds = estimate_building_origin_trip_seconds(c.agents.home_building[worker], work, c.agents.has_car[worker], &c.allocator, &c.transit_network, &c.region_graph, &c.agents.pathfind_count, None);
+            let seconds = mobility.seconds(c.agents.home_building[worker], work, &c.allocator, &c.transit_network, &c.region_graph, &c.agents.pathfind_count);
             // One fixed real-time budget for both builds, independent of job-score saturation.
             if seconds.is_some_and(|s| s <= 900) { reachable += 1; }
             pairs += 1;

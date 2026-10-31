@@ -511,6 +511,7 @@ CREATE TABLE household_destinations(
     car_count INTEGER NOT NULL,
     car_a INTEGER NOT NULL,
     car_b INTEGER NOT NULL,
+    parking_components BLOB NOT NULL,
     PRIMARY KEY(buffer, kind, position)
 );
 CREATE TABLE households(

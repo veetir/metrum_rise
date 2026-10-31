@@ -494,7 +494,7 @@ impl HouseholdSystem {
     /// save serialization.
     pub(crate) fn workplace_route_cache_entries(
         &self,
-    ) -> impl Iterator<Item = ((usize, usize, bool), Option<u16>, u32)> + '_ {
+    ) -> impl Iterator<Item = ((usize, usize, bool), super::employment::WorkplaceCommute, u32)> + '_ {
         self.workplace_route_cache_order
             .iter()
             .map(|&(pass, key)| (key, self.workplace_route_cache[&key], pass))
@@ -511,7 +511,7 @@ impl HouseholdSystem {
         building_revision: u64,
         entrance_revision: u64,
         cch_generation: u32,
-        mut entries: Vec<(super::employment::WorkplaceRouteCacheKey, Option<u16>, u32)>,
+        mut entries: Vec<(super::employment::WorkplaceRouteCacheKey, super::employment::WorkplaceCommute, u32)>,
         pass: u32,
     ) {
         // Quotes of one pass expire together, so their order within it is immaterial.

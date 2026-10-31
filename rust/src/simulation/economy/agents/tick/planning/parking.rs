@@ -3,7 +3,9 @@
 //! Parking endpoint quotes and reusable-route materialization using ordinary exact routing.
 
 use super::super::super::{ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_CAR};
-use super::candidate::{PlannedTripCandidate, RouteStart, TripQueryScratch, parking_candidate};
+use super::candidate::{
+    PlannedTripCandidate, RouteStart, SharedNetworkQuotes, TripQueryScratch, parking_candidate,
+};
 use super::types::BuiltTripPlan;
 use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
@@ -20,6 +22,7 @@ pub(crate) fn quote_parking_leg(
     network: &TransitNetwork,
     graph: &RegionGraph,
     count: &AtomicU32,
+    shared: Option<&SharedNetworkQuotes>,
 ) -> Option<ParkingLegQuote> {
     parking_candidate(
         mode,
@@ -30,6 +33,7 @@ pub(crate) fn quote_parking_leg(
         graph,
         count,
         None,
+        shared,
     )
     .map(ParkingLegQuote)
 }
@@ -166,6 +170,7 @@ pub(crate) fn quote_parking_leg_from_lane(
         graph,
         count,
         Some((lane_id, distance)),
+        None,
     )
     .map(ParkingLegQuote)
 }
@@ -201,28 +206,56 @@ pub(crate) fn quote_parking_trip(
     network: &TransitNetwork,
     graph: &RegionGraph,
     count: &AtomicU32,
+    shared: Option<&SharedNetworkQuotes>,
 ) -> Option<ParkingQuote> {
-    use super::super::super::MODE_WALK;
     if !eligible || !parking.available_to(car, borrower) {
         return None;
     }
     let source = parking.vehicle_place(car)?;
-    parking.walk_to_car_seconds(allocator.building_handles.handle(origin).to_bits(), source)?;
     let candidate =
         parking.first_free_candidate(allocator.building_handles.handle(destination).to_bits())?;
+    quote_parking_between_places(
+        source,
+        candidate.place,
+        origin,
+        destination,
+        parking,
+        allocator,
+        network,
+        graph,
+        count,
+        shared,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quote_parking_between_places(
+    source: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>,
+    target: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>,
+    origin: usize,
+    destination: usize,
+    parking: &crate::simulation::parking::ParkingSystem,
+    allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    count: &AtomicU32,
+    shared: Option<&SharedNetworkQuotes>,
+) -> Option<ParkingQuote> {
+    use super::super::super::MODE_WALK;
     let from = parking.place_entrance(source, allocator, network, graph)?;
-    let to = parking.place_entrance(candidate.place, allocator, network, graph)?;
+    let to = parking.place_entrance(target, allocator, network, graph)?;
     let drive = quote_parking_leg(
         MODE_CAR,
         &from,
         &to,
         [
             parking.maneuver_seconds(source),
-            parking.maneuver_seconds(candidate.place),
+            parking.maneuver_seconds(target),
         ],
         network,
         graph,
         count,
+        shared,
     )?;
     let to_car = quote_parking_leg(
         MODE_WALK,
@@ -232,6 +265,7 @@ pub(crate) fn quote_parking_trip(
         network,
         graph,
         count,
+        shared,
     )?;
     let to_door = quote_parking_leg(
         MODE_WALK,
@@ -241,36 +275,260 @@ pub(crate) fn quote_parking_trip(
         network,
         graph,
         count,
+        shared,
     )?;
     let walking = to_car.seconds() + to_door.seconds();
     Some(ParkingQuote {
         source,
-        destination: candidate.place,
+        destination: target,
         seconds: walking + drive.seconds(),
         mode_choice_seconds: walking + drive.mode_choice_seconds(),
         to_car,
     })
 }
 
-
 /// Estimates the same complete itinerary offered at departure, without claiming supply.
 /// O(k + Q), with walking winning a mode-cost tie; physical seconds exclude preference overhead.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn estimate_parking_trip_seconds(
-    origin: usize, destination: usize,
+    origin: usize,
+    destination: usize,
     car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
-    eligible: bool, parking: &crate::simulation::parking::ParkingSystem,
+    eligible: bool,
+    parking: &crate::simulation::parking::ParkingSystem,
     allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
-    network: &TransitNetwork, graph: &RegionGraph, count: &AtomicU32,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    count: &AtomicU32,
 ) -> Option<u16> {
-    let walk = quote_parking_leg(super::super::super::MODE_WALK, allocator.entrances.get(origin)?, allocator.entrances.get(destination)?, [0.0;2], network, graph, count);
-    let borrower = parking.borrowed_by(car).unwrap_or(crate::simulation::core::handles::Handle::NONE);
-    let car = quote_parking_trip(car, borrower, eligible, origin, destination, parking, allocator, network, graph, count);
+    match estimate_parking_trip_seconds_within(
+        origin,
+        destination,
+        car,
+        eligible,
+        parking,
+        allocator,
+        network,
+        graph,
+        count,
+        f32::INFINITY,
+        None,
+    ) {
+        super::trip::TripEstimate::Seconds(seconds) => seconds,
+        super::trip::TripEstimate::OverBudget => None,
+    }
+}
+
+/// Exact resident mode choice, bounded by physical travel time; O(k + Q), no claims or allocation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn estimate_parking_trip_seconds_within(
+    origin: usize,
+    destination: usize,
+    car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
+    eligible: bool,
+    parking: &crate::simulation::parking::ParkingSystem,
+    allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    count: &AtomicU32,
+    budget_s: f32,
+    shared: Option<&SharedNetworkQuotes>,
+) -> super::trip::TripEstimate {
+    use super::trip::TripEstimate;
+    let Some(from) = allocator.entrances.get(origin) else {
+        return TripEstimate::Seconds(None);
+    };
+    let Some(to) = allocator.entrances.get(destination) else {
+        return TripEstimate::Seconds(None);
+    };
+    let walk = quote_parking_leg(
+        super::super::super::MODE_WALK,
+        from,
+        to,
+        [0.0; 2],
+        network,
+        graph,
+        count,
+        shared,
+    );
+    let borrower = parking
+        .borrowed_by(car)
+        .unwrap_or(crate::simulation::core::handles::Handle::NONE);
+    let car = quote_parking_trip(
+        car,
+        borrower,
+        eligible,
+        origin,
+        destination,
+        parking,
+        allocator,
+        network,
+        graph,
+        count,
+        shared,
+    );
     let seconds = match (walk, car) {
         (Some(walk), Some(car)) if walk.seconds() > car.mode_choice_seconds => car.seconds,
         (Some(walk), _) => walk.seconds(),
         (None, Some(car)) => car.seconds,
-        _ => return None,
+        _ => return TripEstimate::Seconds(None),
     };
-    Some(seconds.ceil().min(f32::from(u16::MAX)) as u16)
+    if seconds > budget_s {
+        return TripEstimate::OverBudget;
+    }
+    TripEstimate::Seconds(Some(seconds.ceil().min(f32::from(u16::MAX)) as u16))
+}
+
+/// Immutable actor context for resident economy quotes. O(1) construction; no custody mutation.
+#[derive(Clone, Copy)]
+pub(crate) struct ResidentMobility<'a> {
+    /// Live parking supply and custody.
+    pub(crate) parking: &'a crate::simulation::parking::ParkingSystem,
+    /// The household's unique vehicle, including NONE for a carless household.
+    pub(crate) car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
+    /// Adult borrower eligibility at this planning boundary.
+    pub(crate) eligible: bool,
+}
+
+impl<'a> ResidentMobility<'a> {
+    /// Derives availability from the adult's actual household car and stable identity, O(1).
+    pub(crate) fn for_agent(
+        parking: &'a crate::simulation::parking::ParkingSystem,
+        agents: &crate::simulation::economy::agents::AgentSystem,
+        agent: usize,
+    ) -> Self {
+        let car = agents.parking_trip[agent].vehicle;
+        let eligible = agents.age_group[agent] != crate::simulation::economy::agents::AGE_CHILD
+            && parking.available_to(car, agents.handles.handle(agent));
+        Self {
+            parking,
+            car,
+            eligible,
+        }
+    }
+
+    /// Actual bay's road components, or the empty set when the car cannot be borrowed.
+    /// O(1) entrance/component lookup; the exact quote proves the origin walk.
+    pub(crate) fn components(
+        &self,
+        _origin: usize,
+        index: &crate::simulation::economy::accessibility::ModeComponentIndex,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> crate::simulation::economy::accessibility::BuildingModeComponents {
+        let source = self
+            .eligible
+            .then(|| self.parking.vehicle_place(self.car))
+            .flatten();
+        source
+            .and_then(|source| {
+                self.parking
+                    .place_entrance(source, allocator, network, graph)
+            })
+            .map_or_default(|entrance| {
+                index.entrance_components(
+                    &entrance,
+                    graph,
+                    crate::simulation::network::types::TransitFlags::CAR,
+                )
+            })
+    }
+
+    /// Exact preferred physical time for a resident leg, O(k + Q), without claiming a bay.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn seconds(
+        &self,
+        origin: usize,
+        destination: usize,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        count: &AtomicU32,
+    ) -> Option<u16> {
+        estimate_parking_trip_seconds(
+            origin,
+            destination,
+            self.car,
+            self.eligible,
+            self.parking,
+            allocator,
+            network,
+            graph,
+            count,
+        )
+    }
+
+    /// Proves outward and return feasibility using the proposed parked bay on the return.
+    /// O(k_origin + k_destination + Q), constant route queries, no claims or allocations.
+    /// If the outward mode walks, the car remains at its original bay. The departure bay is
+    /// free for the hypothetical return; all other occupancy is read from live supply.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn round_trip(
+        &self,
+        origin: usize,
+        destination: usize,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        count: &AtomicU32,
+    ) -> bool {
+        use super::super::super::MODE_WALK;
+        let (Some(from), Some(to)) = (
+            allocator.entrances.get(origin),
+            allocator.entrances.get(destination),
+        ) else {
+            return false;
+        };
+        let walk = quote_parking_leg(MODE_WALK, from, to, [0.0; 2], network, graph, count, None);
+        let car = quote_parking_trip(
+            self.car,
+            self.parking
+                .borrowed_by(self.car)
+                .unwrap_or(crate::simulation::core::handles::Handle::NONE),
+            self.eligible,
+            origin,
+            destination,
+            self.parking,
+            allocator,
+            network,
+            graph,
+            count,
+            None,
+        );
+        let driving = car.as_ref().filter(|car| {
+            walk.as_ref()
+                .is_none_or(|walk| walk.seconds() > car.mode_choice_seconds)
+        });
+        if walk.is_none() && driving.is_none() {
+            return false;
+        }
+        if quote_parking_leg(MODE_WALK, to, from, [0.0; 2], network, graph, count, None).is_some() {
+            return true;
+        }
+        if let Some(car) = driving {
+            let Some(target) = self.parking.first_free_candidate_after_departure(
+                allocator.building_handles.handle(origin).to_bits(),
+                car.source,
+            ) else {
+                return false;
+            };
+            quote_parking_between_places(
+                car.destination,
+                target.place,
+                destination,
+                origin,
+                self.parking,
+                allocator,
+                network,
+                graph,
+                count,
+                None,
+            )
+            .is_some()
+        } else {
+            self.seconds(destination, origin, allocator, network, graph, count)
+                .is_some()
+        }
+    }
 }

@@ -43,6 +43,7 @@ impl SimCore {
         self.publish_road_tool_view();
         self.publish_pending_building_site_changes();
         self.transit_network.settle_cch();
+        self.complete_parking_economy_publication();
         self.save_game_at(path, camera, saved_at_unix)
     }
 
@@ -271,7 +272,8 @@ impl SimCore {
         self.prepare_loaded_parking_routes();
         let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
         self.parking.refresh_retired_access(&self.transit_network,&self.region_graph);
-        self.parking.rebuild_candidates(&buildings, &self.allocator, &self.transit_network, &self.region_graph);
+        self.publish_parking_catchments(&buildings);
+        self.complete_parking_economy_publication();
         self.agents
             .prepare_loaded_tick(&self.allocator, &self.transit_network);
     }

@@ -304,7 +304,7 @@ impl ParkingSystem {
             .filter(|p| !p.is_none())
     }
 
-    /// O(1), releases custody only after the borrower gets home with a car parked nearby.
+    /// O(1), releases custody after the borrower gets home; the car keeps its actual bay.
     pub(crate) fn finish_outing(&mut self, car: Handle<Vehicle>, borrower: AgentHandle) {
         if let Some(v) = self.vehicle_handles.resolve(car)
             && self.vehicles.borrower[v] == borrower

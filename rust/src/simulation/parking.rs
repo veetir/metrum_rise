@@ -51,6 +51,8 @@ pub(crate) struct ParkingSystem {
     pub(crate) pending_households: Vec<u64>,
     publication_epoch: u64,
     candidates: HashMap<u64, candidates::DestinationCandidates>,
+    candidate_revision: u64,
+    pending_economy: Vec<u64>,
 }
 
 impl ParkingSystem {

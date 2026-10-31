@@ -46,6 +46,7 @@ impl AgentSystem {
                     network,
                     graph,
                     &self.pathfind_count,
+                    None,
                 ) else {
                     self.queue_parking_retry(i, 30);
                     return;
@@ -90,6 +91,7 @@ impl AgentSystem {
                 network,
                 graph,
                 &self.pathfind_count,
+                None,
             ) else {
                 self.queue_parking_retry(i, 30);
                 return;
@@ -160,6 +162,7 @@ impl AgentSystem {
                 network,
                 graph,
                 &self.pathfind_count,
+                None,
             ) else {
                 self.queue_parking_retry(i, 30);
                 return;

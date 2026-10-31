@@ -234,12 +234,7 @@ impl SimCore {
         }
         buildings.sort_unstable();
         buildings.dedup();
-        self.parking.rebuild_candidates(
-            &buildings,
-            &self.allocator,
-            &self.transit_network,
-            &self.region_graph,
-        );
+        self.publish_parking_catchments(&buildings);
         for &point in points {
             self.parking.rehouse_near(point);
         }
@@ -395,6 +390,7 @@ impl SimCore {
                 &self.transit_network,
                 &self.region_graph,
                 &self.agents.pathfind_count,
+                None,
             ) else {
                 continue;
             };
@@ -441,5 +437,45 @@ impl SimCore {
             self.time.time_elapsed = 0.0;
             self.align_events_to_clock();
         }
+    }
+}
+
+impl SimCore {
+    /// Publishes specified door catchments with the existing economy component index when
+    /// routing is current. O(local searches), plus the shared topology's existing one-time
+    /// O(nodes + edges) refresh after routing adoption; no new connectivity/spatial index.
+    pub(crate) fn publish_parking_catchments(&mut self, buildings: &[usize]) {
+        let car_components = if self.transit_network.cch_current() {
+            self.households
+                .destination_topology
+                .refresh(&self.transit_network, &self.region_graph);
+            Some(self.households.destination_topology.car())
+        } else {
+            None
+        };
+        self.parking.rebuild_candidates(
+            buildings,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+            car_components,
+        );
+    }
+
+    /// Finishes only deferred local metadata at routing publication. O(1) without pending
+    /// edits; otherwise O(local candidates log candidates), plus the shared topology refresh.
+    pub(crate) fn complete_parking_economy_publication(&mut self) {
+        if !self.parking.economy_refresh_pending() || !self.transit_network.cch_current() {
+            return;
+        }
+        self.households
+            .destination_topology
+            .refresh(&self.transit_network, &self.region_graph);
+        self.parking.refresh_economy_metadata(
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+            self.households.destination_topology.car(),
+        );
     }
 }
