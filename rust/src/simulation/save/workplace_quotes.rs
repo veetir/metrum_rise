@@ -252,8 +252,12 @@ mod tests {
     use crate::simulation::network::TransitNetwork;
     use rusqlite::Connection;
 
-    fn legacy_entries(entries: &[((usize, usize, bool), Option<u16>, u32)]) -> Vec<QuoteEntry> {
-        entries.iter().map(|&(key, seconds, pass)| (key, WorkplaceCommute::legacy(seconds), pass)).collect()
+    type LegacyQuoteEntry = ((usize, usize, bool), Option<u16>, u32);
+
+    fn legacy_entries(entries: &[LegacyQuoteEntry]) -> Vec<QuoteEntry> {
+        entries.iter()
+            .map(|&(key, seconds, pass)| (key, WorkplaceCommute::legacy(seconds), pass))
+            .collect()
     }
 
     #[test]

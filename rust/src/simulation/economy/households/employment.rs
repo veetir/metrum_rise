@@ -1406,7 +1406,8 @@ fn job_search_due(
 impl JobSupplySnapshot {
     // The network side of board `members` for `key`: each live member's door, components,
     // chunk and arrival ends, in handle order, and its buckets, with the top walking and car
-    // commute speeds `speeds`. O(members) on Rayon.
+    // commute speeds `speeds`. O(members + distinct bay component memberships) on Rayon.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         key: JobSupplyKey,
         members: &[Handle<Building>],
@@ -1415,8 +1416,8 @@ impl JobSupplySnapshot {
         graph: &RegionGraph,
         topology: &super::destinations::HouseholdTopology,
         [max_walk_commute_speed, max_car_commute_speed]: [f32; 2],
-            parking: Option<&ParkingSystem>,
-        ) -> Self {
+        parking: Option<&ParkingSystem>,
+    ) -> Self {
         let entries: Vec<_> = members
             .par_iter()
             .filter_map(|&building| {
@@ -2088,15 +2089,29 @@ fn home_job_option_order(left: HomeJobOption, right: HomeJobOption) -> CmpOrderi
 
 // O(k) for the first free destination; O(1) endpoint stamps. Occupancy replaces the bounded
 // pair/mode cache value, while local geometry changes refresh only affected endpoint quotes.
-fn commute_endpoints(parking: Option<&ParkingSystem>, car: Handle<Vehicle>, has_car: bool,
-    work: usize, allocator: &BuildingAllocator,
+fn commute_endpoints(
+    parking: Option<&ParkingSystem>,
+    car: Handle<Vehicle>,
+    has_car: bool,
+    work: usize,
+    allocator: &BuildingAllocator,
 ) -> (u64, u64, u64) {
-    let Some(parking) = parking else { return (u64::MAX, u64::MAX, 0); };
+    let Some(parking) = parking else {
+        return (u64::MAX, u64::MAX, 0);
+    };
     let source = has_car.then(|| parking.vehicle_place(car)).flatten();
-    let destination = source.and_then(|_| parking.first_free_candidate(allocator.building_handles.handle(work).to_bits()));
+    let destination = source.and_then(|_| {
+        parking.first_free_candidate(allocator.building_handles.handle(work).to_bits())
+    });
     let geometry = source.map_or(0, |source| parking.quote_geometry(source))
-        ^ destination.map_or(0, |candidate| parking.quote_geometry(candidate.place).rotate_left(1));
-    (source.map_or(u64::MAX, |p| p.to_bits()), destination.map_or(u64::MAX, |c| c.place.to_bits()), geometry)
+        ^ destination.map_or(0, |candidate| {
+            parking.quote_geometry(candidate.place).rotate_left(1)
+        });
+    (
+        source.map_or(u64::MAX, |p| p.to_bits()),
+        destination.map_or(u64::MAX, |c| c.place.to_bits()),
+        geometry,
+    )
 }
 
 // A commute over `budget_s` cannot enter the ranked options; it is neither returned nor cached.
@@ -2128,14 +2143,22 @@ fn cached_commute_seconds_within(
     let key = (home_idx, work_idx, has_car);
     let (source, destination, geometry) = commute_endpoints(parking, car, has_car, work_idx, allocator);
     if let Some(result) = route_cache.get(&key)
-        && result.source == source && result.destination == destination && result.geometry == geometry {
+        && result.source == source
+        && result.destination == destination
+        && result.geometry == geometry
+    {
         return result.seconds;
     }
     if !exact_entrance_cache_available {
         return None;
     }
     let estimate = if let Some(parking) = parking {
-        TripQueryScratch::with_owned(query, || estimate_parking_trip_seconds_within(home_idx, work_idx, car, has_car, parking, allocator, transit_network, graph, pathfind_count, budget_s, Some(network_quotes)))
+        TripQueryScratch::with_owned(query, || {
+            estimate_parking_trip_seconds_within(
+                home_idx, work_idx, car, has_car, parking, allocator,
+                transit_network, graph, pathfind_count, budget_s, Some(network_quotes),
+            )
+        })
     } else { estimate_trip_seconds_with_scratch(
         home_trip_ends,
         work_trip_ends,
@@ -2182,14 +2205,22 @@ fn cached_commute_seconds(
     let key = (home_idx, work_idx, has_car);
     let (source, destination, geometry) = commute_endpoints(parking, car, has_car, work_idx, allocator);
     if let Some(result) = route_cache.get(&key)
-        && result.source == source && result.destination == destination && result.geometry == geometry {
+        && result.source == source
+        && result.destination == destination
+        && result.geometry == geometry
+    {
         return result.seconds;
     }
     if !exact_entrance_cache_available {
         return None;
     }
     let result = if let Some(parking) = parking {
-        match TripQueryScratch::with_owned(query, || estimate_parking_trip_seconds_within(home_idx, work_idx, car, has_car, parking, allocator, transit_network, graph, pathfind_count, f32::INFINITY, Some(network_quotes))) {
+        match TripQueryScratch::with_owned(query, || {
+            estimate_parking_trip_seconds_within(
+                home_idx, work_idx, car, has_car, parking, allocator,
+                transit_network, graph, pathfind_count, f32::INFINITY, Some(network_quotes),
+            )
+        }) {
             TripEstimate::Seconds(result) => result,
             TripEstimate::OverBudget => None,
         }
