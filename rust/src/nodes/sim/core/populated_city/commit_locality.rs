@@ -289,6 +289,8 @@ fn local_products(core: &mut SimCore, samples: &serde_json::Value) -> serde_json
 #[ignore = "PARK-01 matched release locality; setup excluded, run alone with eight workers"]
 fn benchmark_parking_locality() {
     use crate::simulation::parking::{PlaceSource, lots::lot_bays};
+    use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
+    use crate::nodes::sim::core::RoadCommitRequest;
     use std::collections::BTreeSet;
     super::contract::timing_mode();
     let tiers: Vec<usize> = std::env::var("METRUM_LOCALITY_TIERS")
@@ -314,15 +316,20 @@ fn benchmark_parking_locality() {
             .register("parking", manifest, String::new());
         let edge = core.region_graph.edge_count();
         assert!(
-            core.add_road_internal(
-                vec![
-                    Vector3::new(-300.0, 0.0, -700.0),
-                    Vector3::new(300.0, 0.0, -700.0)
-                ],
-                1,
-                1
-            )
-            .committed
+            core.commit_road(
+                RoadCommitRequest {
+                    points: vec![
+                        Vector3::new(-300.0, 0.0, -700.0),
+                        Vector3::new(300.0, 0.0, -700.0),
+                    ],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    snap_to_existing_roads: true,
+                    preview: None,
+                },
+                Instant::now(),
+                RoadEditMetrics::default(),
+            ).committed
         );
         // Explicit placement validates the newly committed frontage's compiled surface.
         core.precompute_road_mesh_data();
@@ -345,6 +352,11 @@ fn benchmark_parking_locality() {
             );
         }
         core.transit_network.settle_cch();
+        // The fixture publishes compiled road geometry without running a simulation frame.
+        // Publish its final entrance/catchment inputs before taking the timed local control.
+        core.rebuild_building_entrances_internal();
+        let indices: Vec<_> = owners.iter().map(|&owner| core.allocator.building_handles.resolve(owner).unwrap()).collect();
+        core.publish_parking_catchments(&indices);
         core.complete_parking_economy_publication();
         let setup_s = start.elapsed().as_secs_f64();
         let products = |core: &SimCore| {
@@ -377,13 +389,13 @@ fn benchmark_parking_locality() {
             core.parking.candidate_products(owner.to_bits())
         ).collect::<Vec<_>>();
         let expected_candidates = candidate_products(&core);
-        assert!(expected_candidates.iter().all(|c| !c.is_empty()));
+        assert!(expected_candidates.iter().all(|c| !c.is_empty()),
+            "local destination entrances: {:?}", indices.iter().map(|&i| &core.allocator.entrances[i]).collect::<Vec<_>>());
         if let Some(reference) = &candidate_reference {
             assert_eq!(reference, &expected_candidates);
         } else {
             candidate_reference = Some(expected_candidates.clone());
         }
-        let indices: Vec<_> = owners.iter().map(|&owner| core.allocator.building_handles.resolve(owner).unwrap()).collect();
         let mut candidate_samples = Vec::new();
         let mut road_samples = Vec::new();
         let mut site_samples = Vec::new();
