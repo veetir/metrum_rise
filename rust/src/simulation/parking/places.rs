@@ -30,7 +30,6 @@ pub(crate) fn kerb_context(
     };
     for (node, at_start) in [(edge.start_node, true), (edge.end_node, false)] {
         let node = graph.get_valid_node(node);
-        let endpoint = graph.node(node).pos;
         let points = &edge.physical_geometry;
         if points.len() < 2 {
             continue;
@@ -45,12 +44,17 @@ pub(crate) fn kerb_context(
                 continue;
             }
             let other = graph.edge(other);
-            let opposite = if graph.get_valid_node(other.start_node) == node {
-                other.end_node
+            // Count the actual mouth direction. A curved arm's far endpoint can lie
+            // on the opposite side of this street from its junction approach.
+            let points = &other.physical_geometry;
+            if points.len() < 2 {
+                continue;
+            }
+            let toward = if graph.get_valid_node(other.start_node) == node {
+                points[1] - points[0]
             } else {
-                other.start_node
+                points[points.len() - 2] - points[points.len() - 1]
             };
-            let toward = graph.node(graph.get_valid_node(opposite)).pos - endpoint;
             let cross = along.x * toward.z - along.z * toward.x;
             if cross != 0.0 {
                 result.mouths[usize::from(cross < 0.0)] += 1;

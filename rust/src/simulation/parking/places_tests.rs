@@ -293,3 +293,21 @@ fn merging_nodes_and_undo_keep_rules_and_reconcile_live_occupancy() {
     assert_eq!(parking.counts().1, cars);
     ParkingSystem::load_json(&parking.save_json(|s| s).unwrap()).unwrap();
 }
+
+#[test]
+fn curved_junction_mouth_uses_its_approach_not_its_far_endpoint() {
+    let (mut graph, _, allocator) = street(7.0);
+    let end = graph.add_node(Vector3::new(180.0, 0.0, -40.0), NodeType::Junction);
+    let arm = fixtures::road_edge(
+        1,
+        end,
+        vec![
+            Vector3::new(120.0, 0.0, 0.0),
+            Vector3::new(120.0, 0.0, 20.0),
+            Vector3::new(180.0, 0.0, -40.0),
+        ],
+        7.0,
+    );
+    graph.add_edge(arm);
+    assert_eq!(kerb_context(&graph, &allocator, 0).mouths, [1, 0]);
+}
