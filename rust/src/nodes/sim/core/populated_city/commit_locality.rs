@@ -288,7 +288,7 @@ fn local_products(core: &mut SimCore, samples: &serde_json::Value) -> serde_json
 #[test]
 #[ignore = "PARK-01 matched release locality; setup excluded, run alone with eight workers"]
 fn benchmark_parking_locality() {
-    use crate::simulation::parking::PlaceSource;
+    use crate::simulation::parking::{PlaceSource, lots::lot_bays};
     use std::collections::BTreeSet;
     super::contract::timing_mode();
     let tiers: Vec<usize> = std::env::var("METRUM_LOCALITY_TIERS")
@@ -301,65 +301,111 @@ fn benchmark_parking_locality() {
         let start = Instant::now();
         let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
         add_background(&mut core, background);
+        let mut manifest = crate::assets::AssetManifest::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+        )))
+        .unwrap();
+        manifest.mesh_parts[0].imported_bounds = Some([[-0.8, 0.0, -0.12], [0.8, 0.16, 0.12]]);
+        let id = manifest.qualified_id("parking");
+        core.allocator
+            .registry
+            .register("parking", manifest, String::new());
+        let edge = core.region_graph.edge_count();
+        assert!(
+            core.add_road_internal(
+                vec![
+                    Vector3::new(-300.0, 0.0, -700.0),
+                    Vector3::new(300.0, 0.0, -700.0)
+                ],
+                1,
+                1
+            )
+            .committed
+        );
+        let mut owners = Vec::new();
+        for n in 0..12 {
+            let index = core.allocator.buildings.len();
+            core.place_service_building_internal(&id, -240.0 + n as f32 * 40.0, -730.0)
+                .unwrap();
+            owners.push(core.allocator.building_handles.handle(index));
+        }
         core.precompute_road_mesh_data();
         core.publish_road_tool_view();
+        core.publish_pending_building_site_changes();
+        assert!(
+            core.parking.diagnostics.is_empty(),
+            "{:?}",
+            core.parking.diagnostics
+        );
         let setup_s = start.elapsed().as_secs_f64();
-        let edges: BTreeSet<_> = core
-            .region_graph
-            .edges()
-            .iter()
-            .enumerate()
-            .filter(|(_, edge)| !edge.deleted && edge.geometry.iter().all(|p| p.x < LOCAL_MAX_X))
-            .map(|(id, _)| id)
-            .collect();
         let products = |core: &SimCore| {
-            edges
+            owners
                 .iter()
-                .flat_map(|&edge| [-1, 1].into_iter().map(move |side| (edge, side)))
-                .map(|(edge, side)| {
-                    (
-                        edge,
-                        side,
-                        core.parking.source_bays(PlaceSource::Edge { edge, side }),
-                    )
+                .map(|owner| {
+                    (2..8)
+                        .flat_map(|anchor| {
+                            core.parking.source_bays(PlaceSource::Building {
+                                building: owner.to_bits(),
+                                anchor,
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>()
         };
         let expected = products(&core);
-        let places = expected
+        let geometry: Vec<_> = expected
             .iter()
-            .map(|(_, _, bays)| bays.len())
-            .sum::<usize>();
-        assert!(places > 0);
+            .map(|bays| bays.iter().map(|(_, bay)| *bay).collect::<Vec<_>>())
+            .collect();
+        assert!(geometry.iter().all(|bays| bays.len() == 6));
         if let Some(reference) = &reference {
-            assert_eq!(
-                reference, &expected,
-                "local parking product changed with background"
-            );
+            assert_eq!(reference, &geometry);
         } else {
-            reference = Some(expected.clone());
+            reference = Some(geometry);
         }
-        let mut samples = Vec::new();
+        let mut road_samples = Vec::new();
+        let mut site_samples = Vec::new();
+        let mut lot_samples = Vec::new();
         for _ in 0..9 {
             let start = Instant::now();
-            core.refresh_parking_roads(&edges);
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            core.reconcile_parking_frontages(&BTreeSet::from([edge]));
+            road_samples.push(start.elapsed().as_secs_f64() * 1000.0);
             assert_eq!(products(&core), expected);
+            core.allocator
+                .parking_site_changes
+                .extend_from_slice(&owners);
+            let start = Instant::now();
+            core.publish_parking_sites();
+            site_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(products(&core), expected);
+            for &owner in &owners {
+                let index = core.allocator.building_handles.resolve(owner).unwrap();
+                let start = Instant::now();
+                let result = lot_bays(
+                    &core.allocator,
+                    index,
+                    &core.region_graph,
+                    &core.transit_network.roadbed,
+                );
+                lot_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(result.0.len(), 6);
+                assert!(result.1.is_empty());
+            }
         }
-        samples.sort_by(f64::total_cmp);
-        let edge = *edges.first().unwrap();
-        let point = core.region_graph.edge(edge).geometry[0];
-        let query_start = Instant::now();
-        for _ in 0..1000 {
-            std::hint::black_box(core.parking.nearest_frontage(
-                [point.x, point.z],
-                edge,
-                &core.region_graph,
-            ));
-        }
+        road_samples.sort_by(f64::total_cmp);
+        site_samples.sort_by(f64::total_cmp);
+        lot_samples.sort_by(f64::total_cmp);
         eprintln!(
             "PARKING_LOCALITY {}",
-            serde_json::json!({"background":background,"buildings":core.allocator.buildings.len(),"parcels":core.zoning.parcels().len(),"agents":core.agents.len(),"roads":core.region_graph.edge_count(),"local_edges":edges.len(),"local_places":places,"setup_s":setup_s,"rebuild_median_ms":samples[4],"query_mean_us":query_start.elapsed().as_secs_f64()*1000.0,"products":"identical"})
+            serde_json::json!({
+                "background":background, "buildings":core.allocator.buildings.len(),
+                "parcels":core.zoning.parcels().len(), "agents":core.agents.len(),
+                "roads":core.region_graph.edge_count(), "lots":owners.len(), "places":72,
+                "setup_s":setup_s, "road_rebuild_ms":road_samples[4], "site_publication_ms":site_samples[4],
+                "per_lot_ms":lot_samples[lot_samples.len()/2], "max_lot_ms":lot_samples.last(), "products":"identical"
+            })
         );
     }
 }

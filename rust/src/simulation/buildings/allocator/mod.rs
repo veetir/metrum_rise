@@ -35,9 +35,9 @@ pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
-pub(crate) use site::BuildingSiteSurfaceClient;
 #[cfg(test)]
 pub(crate) use site::SiteRoads;
+pub(crate) use site::BuildingSiteSurfaceClient;
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
@@ -548,9 +548,9 @@ pub struct BuildingAllocator {
     pub registry: AssetRegistry,
 }
 
+pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, SiteSnapshot};
 pub use site::SiteChange;
 pub(crate) use site::site_footprint_contains;
-pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, SiteSnapshot};
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]

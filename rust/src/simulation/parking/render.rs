@@ -19,7 +19,7 @@ impl ParkingSystem {
     /// unchanged; publications survive skipped snapshots until version-specific acknowledgement.
     #[cfg(test)]
     pub(crate) fn build_dirty_chunks(&mut self) {
-        self.build_dirty_chunks_with(|_, [x, y, z], heading, _| {
+        self.build_dirty_chunks_with(|_, [x, y, z], heading| {
             let (s, c) = heading.sin_cos();
             [c, 0.0, s, x, 0.0, 1.0, 0.0, y, -s, 0.0, c, z]
         });
@@ -30,7 +30,7 @@ impl ParkingSystem {
     /// in each chunk. Sorting fixes payload order; no steady-state iteration.
     pub(crate) fn build_dirty_chunks_with(
         &mut self,
-        pose: impl Fn(u8, [f32; 3], f32, bool) -> [f32; 12] + Sync,
+        pose: impl Fn(u8, [f32; 3], f32) -> [f32; 12] + Sync,
     ) {
         if self.dirty.is_empty() {
             return;
@@ -58,7 +58,6 @@ impl ParkingSystem {
                             self.vehicles.model[v],
                             self.places.position[p],
                             self.places.heading[p],
-                            matches!(self.places.source[p], PlaceSource::Edge { .. }),
                         ));
                         payload
                             .identities

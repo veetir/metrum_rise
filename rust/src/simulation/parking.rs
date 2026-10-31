@@ -7,12 +7,9 @@ mod data;
 mod edits;
 mod geometry;
 pub(crate) mod lots;
-pub(crate) mod places;
 #[cfg(test)]
-mod places_tests;
 mod query;
 mod render;
-mod rules;
 pub(crate) mod saved;
 #[cfg(test)]
 mod tests;
@@ -21,7 +18,6 @@ use crate::simulation::core::handles::{Handle, HandleTable};
 pub(crate) use data::{Bay, ParkingCost, Place, PlaceSource, Vehicle};
 use data::{Chunk, chunk_at};
 pub(crate) use render::ParkedChunk;
-pub(crate) use rules::{ParkingRule, SideRule};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -45,10 +41,11 @@ pub(crate) struct ParkingSystem {
 }
 
 impl ParkingSystem {
-    /// Adds supply at an edit/spawn boundary; O(1) amortized for an edge source,
-    /// O(building anchor sources) for a lot source; may allocate, never a tick operation.
+    /// Adds supply at an edit/spawn boundary; O(building anchor sources); may allocate,
+    /// never a tick operation.
     pub(crate) fn add_place(&mut self, source: PlaceSource, bay: Bay) -> Handle<Place> {
-        if let PlaceSource::Building { building, .. } = source {
+        let PlaceSource::Building { building, .. } = source;
+        {
             let sources = self.building_sources.entry(building).or_default();
             if !sources.contains(&source) {
                 sources.push(source);

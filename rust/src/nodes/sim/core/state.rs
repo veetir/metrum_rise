@@ -13,6 +13,7 @@ use super::budget::{
 use super::frame::EconomyObserver;
 use super::schedule::{SimEvent, SimSystem, event_slot, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
+use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use super::trips::TripEvent;
 use super::water_preview::{AuthoredWaterPatchFillDebug, WorldLakeFillPreview};
 use crate::debug_log;
@@ -48,7 +49,6 @@ use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::simulation::resources::ResourceDepositSystem;
-use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::simulation::terrain::{TerrainSystem, terrain_local_sample_margin_m};
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use crate::simulation::water::WaterSystem;

@@ -619,7 +619,7 @@ impl SimCore {
         // A cached surface restore can reconcile now. A dirty owner fallback keeps its
         // existing deferred compile contract; the road-tool publication reconciles its bays.
         if self.transit_network.roadbed.is_current() {
-            self.refresh_parking_roads(&edge_ids.iter().copied().collect());
+            self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
         }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();

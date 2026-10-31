@@ -114,7 +114,8 @@ impl ParkingSystem {
             ..Self::default()
         };
         for place in saved.places {
-            if let PlaceSource::Building { building, .. } = place.source {
+            let PlaceSource::Building { building, .. } = place.source;
+            {
                 let sources = system.building_sources.entry(building).or_default();
                 if !sources.contains(&place.source) {
                     sources.push(place.source);
@@ -233,14 +234,10 @@ impl ParkingSystem {
     /// Load validation is O(places), never a tick path; dangling geometry owners reject the save.
     pub(crate) fn validate_sources(
         &self,
-        graph: &crate::simulation::network::graph::RegionGraph,
         allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> Result<(), String> {
         for source in &self.places.source {
             let valid = match *source {
-                PlaceSource::Edge { edge, side } => {
-                    matches!(side, -1 | 1) && graph.get_edge(edge).is_some_and(|e| !e.deleted)
-                }
                 PlaceSource::Building { building, .. } => allocator
                     .building_handles
                     .resolve(Handle::from_bits(building))

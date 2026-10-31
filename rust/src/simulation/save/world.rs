@@ -1664,7 +1664,7 @@ pub(super) fn load_buildings(
         });
     }
     {
-        let mut stmt=conn.prepare("SELECT building_id,center_x,center_z,facing_x,facing_z,side_offset,gap_left,gap_center,gap_right FROM building_detached_poses ORDER BY building_id")?;
+        let mut stmt = conn.prepare("SELECT building_id,center_x,center_z,facing_x,facing_z,side_offset,gap_left,gap_center,gap_right FROM building_detached_poses ORDER BY building_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let index = i64_to_usize(row.get(0)?)?;

@@ -21,10 +21,6 @@ pub(super) fn save_network(
     graph: &RegionGraph,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
-    tx.execute(
-        "INSERT INTO parking_network_meta VALUES (?1)",
-        [graph.parking_next_lineage as i64],
-    )?;
     // 1. Nodes
     {
         let mut node_rows: Vec<(u32, u32)> = maps
@@ -83,18 +79,6 @@ pub(super) fn save_network(
                 i64::from(edge.no_building_spawn),
                 vehicle_frontage_access_to_i64(edge.vehicle_frontage_access)
             ])?;
-        }
-    }
-
-    {
-        let mut stmt =
-            tx.prepare("INSERT INTO parking_edge_rules(edge_id, data) VALUES (?1, ?2)")?;
-        for (old, _) in graph.edges().iter().enumerate() {
-            if let Some(&saved) = maps.edge_old_to_new.get(&old) {
-                let data = serde_json::to_string(&graph.parking_rule(old))
-                    .map_err(|e| SaveLoadError::custom(e.to_string()))?;
-                stmt.execute(params![usize_to_i64(saved)?, data])?;
-            }
         }
     }
 
@@ -271,36 +255,6 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         return Err(SaveLoadError::custom("orphan edge geometry"));
     }
     // add_node/add_edge already maintained adjacency and both spatial indices.
-    {
-        let mut stmt =
-            conn.prepare("SELECT edge_id,data FROM parking_edge_rules ORDER BY edge_id")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let edge = i64_to_usize(row.get(0)?)?;
-            if edge >= graph.edge_count() {
-                return Err(SaveLoadError::custom("orphan parking rule"));
-            }
-            let rule: crate::simulation::parking::ParkingRule =
-                serde_json::from_str(&row.get::<_, String>(1)?)
-                    .map_err(|e| SaveLoadError::custom(e.to_string()))?;
-            if !rule.origin_m.is_finite() {
-                return Err(SaveLoadError::custom("invalid parking station origin"));
-            }
-            graph.set_parking_rule(edge, rule);
-        }
-    }
-    graph.parking_next_lineage =
-        conn.query_row("SELECT next_lineage FROM parking_network_meta", [], |r| {
-            r.get::<_, i64>(0)
-        })? as u64;
-    if graph.parking_next_lineage == 0
-        || graph
-            .parking_rules
-            .values()
-            .any(|r| r.lineage >= graph.parking_next_lineage)
-    {
-        return Err(SaveLoadError::custom("invalid parking lineage counter"));
-    }
     Ok(graph)
 }
 

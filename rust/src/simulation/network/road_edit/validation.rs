@@ -12,12 +12,12 @@ use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
     LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
+use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, grade_violation,
 };
@@ -490,8 +490,11 @@ fn build_validation_graph(
     let mut validation_graph = RegionGraph::new();
     let mut node_map = HashMap::new();
     let mut copied_edges = HashMap::new();
-    let start_existing =
-        endpoint_existing_node(prepared_points[0], existing_graph, endpoint_snap_enabled);
+    let start_existing = endpoint_existing_node(
+        prepared_points[0],
+        existing_graph,
+        endpoint_snap_enabled,
+    );
     let end_existing = endpoint_existing_node(
         *prepared_points.last().unwrap(),
         existing_graph,
@@ -757,9 +760,12 @@ fn validation_graph_endpoint_node(
     fallback_pos: Vector3,
 ) -> u32 {
     match existing_node {
-        Some(node_id) => {
-            copy_validation_graph_node(validation_graph, existing_graph, node_map, node_id)
-        }
+        Some(node_id) => copy_validation_graph_node(
+            validation_graph,
+            existing_graph,
+            node_map,
+            node_id,
+        ),
         None => validation_graph.add_node(fallback_pos, NodeType::Junction),
     }
 }
@@ -796,10 +802,18 @@ fn copy_validation_graph_edge(
         return;
     }
 
-    let start_node =
-        copy_validation_graph_node(validation_graph, existing_graph, node_map, edge.start_node);
-    let end_node =
-        copy_validation_graph_node(validation_graph, existing_graph, node_map, edge.end_node);
+    let start_node = copy_validation_graph_node(
+        validation_graph,
+        existing_graph,
+        node_map,
+        edge.start_node,
+    );
+    let end_node = copy_validation_graph_node(
+        validation_graph,
+        existing_graph,
+        node_map,
+        edge.end_node,
+    );
     if start_node == end_node {
         return;
     }
@@ -808,7 +822,6 @@ fn copy_validation_graph_edge(
     copied_edge.start_node = start_node;
     copied_edge.end_node = end_node;
     let local_edge = validation_graph.add_edge(copied_edge);
-    validation_graph.set_parking_rule(local_edge, existing_graph.parking_rule(edge_idx));
     copied_edges.insert(edge_idx, local_edge);
 }
 
@@ -926,12 +939,7 @@ fn record_edit_grade(
     let Some((id, grade)) = steepest else {
         return;
     };
-    record_steepest_span(
-        validation,
-        centreline(validation_graph.edge(id)),
-        grade,
-        terrain,
-    );
+    record_steepest_span(validation, centreline(validation_graph.edge(id)), grade, terrain);
     if let Some(RoadGeometryViolation::Grade {
         limit,
         tier: RoadGeometryTier::Design,

@@ -6,18 +6,18 @@ mod building_lod_fixture;
 mod building_site_terrain;
 mod commute_bounds;
 mod construction_throughput;
-pub(super) mod fields;
 mod graded_edits;
 mod graded_queries;
 mod junction_connector_sweep;
+pub(super) mod fields;
 pub(super) mod graded_stage;
 mod parking;
 mod road_edit_order;
 mod road_families;
 mod road_mesh_seams;
+mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;
-mod road_reference_probe;
 mod road_terrain_plan;
 mod routing_adoption;
 mod zoning_buildability;
@@ -643,11 +643,12 @@ fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
         edge.geometry = points.clone();
         edge.physical_geometry = points;
     }
-    core.region_graph.finalize_junction_endpoint_profiles(
-        &HashSet::from([center]),
-        Some(&core.heightmap),
-        &mut HashSet::new(),
-    );
+    core.region_graph
+        .finalize_junction_endpoint_profiles(
+            &HashSet::from([center]),
+            Some(&core.heightmap),
+            &mut HashSet::new(),
+        );
     // Steep planar roads alone are not a contradiction. Break the actual shared seam.
     core.region_graph
         .edge_mut(edge_ids[0])

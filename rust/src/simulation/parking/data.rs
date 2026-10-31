@@ -10,7 +10,7 @@ use soa_derive::StructOfArray;
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub(crate) enum PlaceSource {
-    Edge { edge: usize, side: i8 },
+    /// Stable building handle and the anchor's manifest index, independent of dense row swaps.
     Building { building: u64, anchor: u32 },
 }
 

@@ -1611,6 +1611,8 @@ impl BuildingAllocator {
         road_surface.height_at(pos.x, pos.y)
     }
 
+    /// Frontage's claimed road-side point, shared by placement and parking sweep validation.
+    /// O(edge polyline knots); missing, deleted or degenerate frontage returns no connection.
     pub(crate) fn claimed_road_side_connection_pos(
         graph: &RegionGraph,
         edge_idx: usize,

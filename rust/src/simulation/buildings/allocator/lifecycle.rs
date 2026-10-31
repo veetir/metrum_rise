@@ -1158,10 +1158,7 @@ impl BuildingAllocator {
             })
             .count();
         self.finish_attachment_repair(repaired);
-        tested
-            .into_iter()
-            .map(|(building_idx, _)| building_idx)
-            .collect()
+        tested.into_iter().map(|(building_idx, _)| building_idx).collect()
     }
 
     // The read-only pass of `repair_road_attachments_that_may_act`: each admitted building of
@@ -1178,10 +1175,7 @@ impl BuildingAllocator {
             (visit || also(&self.buildings[building_idx])).then_some((building_idx, visit))
         };
         crate::thread_pools::install(|| match candidates {
-            Some(candidates) => candidates
-                .par_iter()
-                .filter_map(|&idx| admit(idx))
-                .collect(),
+            Some(candidates) => candidates.par_iter().filter_map(|&idx| admit(idx)).collect(),
             None => (0..self.buildings.len())
                 .into_par_iter()
                 .filter_map(admit)
@@ -1213,8 +1207,7 @@ impl BuildingAllocator {
         let largest_lot_m = self.max_lot_radius_cells * zone_cell_m;
         // `closest_repair_frontage`'s radius for the largest lot: width / 2 + depth is at most
         // sqrt(5) times the half-diagonal.
-        let search_m = (largest_lot_m * 5.0_f32.sqrt()
-            + FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M)
+        let search_m = (largest_lot_m * 5.0_f32.sqrt() + FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M)
             .max(FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M);
         let tolerance_m = (zone_cell_m * 2.0).max(FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M);
         let mut chunks = Vec::new();
@@ -1230,10 +1223,7 @@ impl BuildingAllocator {
             let points = if edge.physical_geometry.len() >= 2 {
                 edge.physical_geometry.as_slice()
             } else {
-                ends = [
-                    graph.node(edge.start_node).pos,
-                    graph.node(edge.end_node).pos,
-                ];
+                ends = [graph.node(edge.start_node).pos, graph.node(edge.end_node).pos];
                 ends.as_slice()
             };
             for pair in points.windows(2) {

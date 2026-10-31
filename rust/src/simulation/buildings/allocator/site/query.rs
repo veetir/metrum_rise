@@ -2,17 +2,17 @@
 
 //! Spatial lookup and ray-query operations for derived building sites.
 
+use super::geometry::{point_in_polygon_slice, site_lot_center};
 #[cfg(test)]
 use super::geometry::update_site_plane_ray_hit;
-use super::geometry::{point_in_polygon_slice, site_lot_center};
 use super::model::{
     BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot, SiteChange,
     site_surface_bounds,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector2;
 #[cfg(test)]
 use godot::prelude::Vector3;

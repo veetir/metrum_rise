@@ -478,15 +478,7 @@ fn write_snapshot(
         maps,
     )?;
     network::save_network(tx, view.graph, maps)?;
-    let parking = view.parking.save_json(|source| match source {
-        crate::simulation::parking::PlaceSource::Edge { edge, side } => {
-            crate::simulation::parking::PlaceSource::Edge {
-                edge: maps.edge_old_to_new[&edge],
-                side,
-            }
-        }
-        building => building,
-    })?;
+    let parking = view.parking.save_json(|source| source)?;
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
@@ -810,7 +802,7 @@ pub(crate) fn load_from_sqlite(
         |r| r.get(0),
     )?;
     let parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
-    parking.validate_sources(&graph, &allocator)?;
+    parking.validate_sources(&allocator)?;
     Ok(LoadedSimulation {
         vegetation,
         vegetation_edits,

@@ -51,76 +51,43 @@ fn register_lot(core: &mut SimCore) -> String {
 }
 
 #[test]
-fn parking_split_delete_and_undo_conserve_live_fleet() {
+fn parking_lot_frontage_split_and_undo_reconcile_live_cars() {
+    use crate::simulation::parking::PlaceSource;
     let mut c = core();
-    let places = c.parking.counts().0;
-    assert!(places > 8);
-    c.set_parking_side(0, 0, crate::simulation::parking::SideRule::Marked);
-    c.set_parking_side(0, 1, crate::simulation::parking::SideRule::None);
-    c.parking.fill_test_fleet();
-    let cars = c.parking.counts().1;
-    let original = c
-        .parking
-        .source_bays(crate::simulation::parking::PlaceSource::Edge { edge: 0, side: -1 });
-    commit(&mut c, (0.0, 0.0), (0.0, 80.0));
-    let after: Vec<_> = (0..c.region_graph.edge_count())
-        .flat_map(|edge| {
-            c.parking
-                .source_bays(crate::simulation::parking::PlaceSource::Edge { edge, side: -1 })
-        })
-        .collect();
-    let mut retained = 0;
-    for (handle, bay) in &original {
-        if let Some((current, _)) = after
-            .iter()
-            .find(|(_, b)| b.identity == bay.identity && b.position == bay.position)
-        {
-            assert_eq!(current, handle, "surviving split bay changed identity");
-            retained += 1;
-        }
-    }
-    assert!(retained > 10);
-
-    assert_eq!(c.parking.counts().1, cars);
-    for (id, edge) in c
-        .region_graph
-        .edges()
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| !e.deleted && e.geometry.iter().all(|p| p.z == 0.0))
-    {
-        assert_eq!(
-            c.region_graph.parking_rule(id).sides,
-            [
-                crate::simulation::parking::SideRule::Marked,
-                crate::simulation::parking::SideRule::None
-            ],
-            "split rule on {:?}",
-            edge.geometry
-        );
-    }
-    c.parking
-        .validate_sources(&c.region_graph, &c.allocator)
+    let id = register_lot(&mut c);
+    c.place_service_building_internal(&id, -60.0, -30.0)
         .unwrap();
+    c.publish_pending_building_site_changes();
+    c.parking.fill_test_fleet();
+    let owner = c.allocator.building_handles.handle(0).to_bits();
+    let product = |c: &SimCore| {
+        (2..8)
+            .flat_map(|anchor| {
+                c.parking.source_bays(PlaceSource::Building {
+                    building: owner,
+                    anchor,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = product(&c);
+    assert_eq!(before.len(), 6);
+    commit(&mut c, (30.0, 0.0), (30.0, 80.0));
+    c.precompute_road_mesh_data();
+    c.publish_road_tool_view();
+    c.publish_pending_building_site_changes();
+    assert_eq!(product(&c), before);
+    assert_eq!(c.parking.counts(), (6, 6, 0));
     assert!(c.undo_action_internal());
     c.precompute_road_mesh_data();
     c.publish_road_tool_view();
-    assert_eq!(c.parking.counts().1, cars);
-    assert!(c.bulldoze_road_edge_for_test(0));
-    c.precompute_road_mesh_data();
-    c.publish_road_tool_view();
-    assert_eq!(c.parking.counts().1, cars);
-    assert!(c.parking.counts().2 > 0);
-    assert!(c.undo_action_internal());
-    c.precompute_road_mesh_data();
-    c.publish_road_tool_view();
-    assert_eq!(c.parking.counts(), (places, cars, 0));
-    let state = c.parking.save_json(|s| s).unwrap();
-    crate::simulation::parking::ParkingSystem::load_json(&state).unwrap();
+    c.publish_pending_building_site_changes();
+    assert_eq!(product(&c), before);
+    assert_eq!(c.parking.counts(), (6, 6, 0));
 }
 
 #[test]
-fn parking_lot_is_public_neutral_and_round_trips_with_rules_and_cars() {
+fn parking_lot_is_public_neutral_and_round_trips_with_cars() {
     let mut c = core();
     let id = register_lot(&mut c);
     let before = c.parking.counts().0;
@@ -136,23 +103,18 @@ fn parking_lot_is_public_neutral_and_round_trips_with_rules_and_cars() {
     assert_eq!(c.allocator.household_capacity(0), 0);
     assert_eq!(c.allocator.registry.worker_capacity(&id), 0);
     c.parking.fill_test_fleet();
-    c.set_parking_side(0, 0, crate::simulation::parking::SideRule::Marked);
     let count = c.parking.counts().1;
     let path = temp_save_path("parking");
     c.save_game_settled_at(path.to_str().unwrap(), None, 0)
         .unwrap();
     c.load_game_internal(path.to_str().unwrap()).unwrap();
     assert_eq!(c.parking.counts().1, count);
-    assert_eq!(
-        c.region_graph.parking_rule(0).sides[0],
-        crate::simulation::parking::SideRule::Marked
-    );
     assert!(c.bulldoze_building(0));
     c.publish_pending_building_site_changes();
-    assert_eq!(c.parking.counts().1, count);
+    assert_eq!(c.parking.counts(), (0, count, count));
     assert!(c.undo_action_internal());
     c.publish_pending_building_site_changes();
-    assert_eq!(c.parking.counts().1, count);
+    assert_eq!(c.parking.counts(), (6, count, 0));
     std::fs::remove_file(path).unwrap();
 }
 
@@ -193,21 +155,4 @@ fn parking_road_demolition_also_retires_its_lot_driveway_supply() {
     c.load_game_internal(path.to_str().unwrap()).unwrap();
     assert_eq!(c.parking.counts(), (0, cars, cars));
     std::fs::remove_file(path).unwrap();
-}
-
-#[test]
-fn parking_border_conversion_tows_the_existing_test_fleet() {
-    let mut c = core();
-    c.parking.fill_test_fleet();
-    let cars = c.parking.counts().1;
-    c.set_border_connection_internal(0);
-    assert_eq!(c.parking.counts(), (0, cars, cars));
-}
-
-#[test]
-fn parked_model_inset_keeps_its_edge_a_quarter_metre_from_the_kerb() {
-    use crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport;
-    let support = VehicleGroundSupport::new([-0.5, -2.0, 0.5, 2.0], &[]).unwrap();
-    assert!((1.15 - support.parking_kerb_offset_m() - 0.5 - 0.25).abs() < 0.00001);
-    assert_eq!(VehicleGroundSupport::default().parking_kerb_offset_m(), 0.0);
 }

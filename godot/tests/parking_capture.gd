@@ -43,7 +43,7 @@ func _run() -> void:
 	main.get_node("Buildings").reload_asset_packs()
 	await _road(PackedVector3Array([Vector3(-240, 0, 0), Vector3(240, 0, 0)]))
 	await _road(PackedVector3Array([Vector3(75, 0, 0), Vector3(75, 0, 125)]))
-	# Junction and crossing remain in the overhead view. Both roads keep the ordinary width.
+	# The roadbed is unchanged; only authored building anchors supply parking.
 	var placements := [
 		["neukku:building.residential.lamelli_8", -160.0, -24.0],
 		["neukku:building.residential.pistetalo_12", -85.0, -24.0],
@@ -89,11 +89,9 @@ func _run() -> void:
 	DisplayServer.window_set_size(Vector2i(1600, 900))
 	Engine.max_fps = 30
 	var views := {
-		"street": [Vector3(-215, 3.2, -0.4), Vector3(-80, 2, 0)],
-		"overhead": [Vector3(-15, 200, 170), Vector3(-15, 0, 0)],
 		"lot": [Vector3(155, 31, 40), Vector3(145, 0, -20)],
 	}
-	for hour in [9.0, 18.0]:
+	for hour in [9.0]:
 		main.get_node("SceneLighting").pin_hour_of_day(hour)
 		for view: String in views:
 			camera.global_position = views[view][0]

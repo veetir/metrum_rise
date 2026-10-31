@@ -1776,16 +1776,6 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             [],
         )
         .expect("insert crossing edge");
-        // This test inserts a complete current-format edge, including its parking identity.
-        let mut parking_rule = graph.parking_rule(edge_id);
-        parking_rule.lineage = 2;
-        conn.execute(
-            "INSERT INTO parking_edge_rules VALUES (1,?1)",
-            [serde_json::to_string(&parking_rule).unwrap()],
-        )
-        .unwrap();
-        conn.execute("UPDATE parking_network_meta SET next_lineage=3", [])
-            .unwrap();
         for physical in [0_i64, 1_i64] {
             conn.execute(
                 "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -2049,7 +2039,8 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
 fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     use crate::simulation::network::roadbed::fixtures::bend;
     let graph = bend(15.0, 120.0, true);
-    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let maps =
+        build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     let tx = conn.transaction().unwrap();
@@ -2144,9 +2135,7 @@ fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
         let mut transit = TransitNetwork::new();
         let result = network::rebuild_loaded_graph_runtime(&loaded, &mut transit);
         if refused {
-            let error = result
-                .expect_err("the steep road fails the load")
-                .to_string();
+            let error = result.expect_err("the steep road fails the load").to_string();
             assert!(
                 error.contains("edge 1 climbs at 40.0%") && error.contains("(road_too_steep)"),
                 "{error}"

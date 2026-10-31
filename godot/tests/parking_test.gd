@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## PARK-01 bridge regression: shared mesh equivalence, side control, immutable chunks and towing.
+## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing.
 ## METRUM_PARKING_AGENT_CONTROL optionally points to the pre-extraction agents.gd source.
 extends SceneTree
 
@@ -65,8 +65,10 @@ func _run() -> void:
 	var deadline := Time.get_ticks_msec() + 20000
 	while sim.get_network_render_generation() <= generation and Time.get_ticks_msec() < deadline:
 		await process_frame
-	_expect(sim.get_parking_info()["places"] > 0, "ordinary road creates parking without widening")
-	_expect(sim.get_parking_side(0, 0) + sim.get_parking_side(0, 1) == 1, "one unmarked side by default")
+	_expect(sim.get_parking_info()["places"] == 0, "roads alone create no parking")
+	var warnings := sim.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["parking"]))
+	_expect(warnings.is_empty(), "lot pack loads: " + warnings)
+	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, -30.0).is_empty(), "standalone lot places")
 	var filled := sim.debug_fill_parking()
 	_expect(filled > 0, "explicit debug fleet fills supply")
 	var full: Dictionary = sim.get_parked_car_chunks(true)
@@ -74,11 +76,17 @@ func _run() -> void:
 		sim.acknowledge_parked_car_chunk(full["epoch"], update["chunk"], update["version"])
 	var unchanged: Dictionary = sim.get_parked_car_chunks(false)
 	_expect(unchanged.get("chunks", []).is_empty(), "unchanged chunks send nothing")
-	sim.set_parking_side(0, 0, 0)
-	sim.set_parking_side(0, 1, 0)
+	var target: Dictionary = sim.bulldoze_at(0.0, -30.0)
+	_expect(not target.is_empty(), "lot demolition queued")
+	deadline = Time.get_ticks_msec() + 20000
+	while sim.get_parking_info()["places"] > 0 and Time.get_ticks_msec() < deadline:
+		await process_frame
 	var info: Dictionary = sim.get_parking_info()
 	_expect(info["vehicles"] == filled and info["stored"] == filled, "supply removal stores every car exactly once")
-	sim.set_parking_side(0, 1, 1)
+	_expect(sim.undo_action(), "lot undo queued")
+	deadline = Time.get_ticks_msec() + 20000
+	while sim.get_parking_info()["stored"] > 0 and Time.get_ticks_msec() < deadline:
+		await process_frame
 	info = sim.get_parking_info()
 	_expect(info["vehicles"] == filled and info["stored"] == 0, "restored supply rehouses the live fleet")
 	sim.queue_free()

@@ -3,39 +3,9 @@
 //! Thin parking inspector, debug fleet and versioned parked-render bridge.
 
 use super::*;
-use crate::simulation::parking::SideRule;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Sets one edge side: side 0 = right, 1 = left; value 0/1/2 = none/unmarked/marked.
-    /// O(local geometry); edits tow, never reject because of vehicle custody.
-    #[func]
-    pub fn set_parking_side(&mut self, edge: i32, side: i32, value: i32) {
-        if edge < 0 || !(0..=1).contains(&side) {
-            return;
-        }
-        let rule = match value {
-            0 => SideRule::None,
-            1 => SideRule::Unmarked,
-            2 => SideRule::Marked,
-            _ => return,
-        };
-        self.lock_core()
-            .set_parking_side(edge as usize, side as usize, rule);
-    }
-
-    /// Saved permission in O(1), using the same side/value codes as set_parking_side.
-    #[func]
-    pub fn get_parking_side(&self, edge: i32, side: i32) -> i32 {
-        if edge < 0 || !(0..=1).contains(&side) {
-            return 0;
-        }
-        self.lock_core()
-            .region_graph
-            .parking_rule(edge as usize)
-            .sides[side as usize] as i32
-    }
-
     /// Explicit debug/test command, O(places), never part of ordinary gameplay initialization.
     #[func]
     pub fn debug_fill_parking(&mut self) -> i32 {
@@ -66,20 +36,6 @@ impl SimulationNode {
             ),
         );
         result
-    }
-
-    /// Quotes foundation supply near a known frontage, without reserving or changing agent trips.
-    #[func]
-    pub fn find_parking_near_frontage(&self, point: Vector2, edge: i32) -> Variant {
-        if edge < 0 {
-            return Variant::nil();
-        }
-        let core = self.lock_core();
-        core.parking
-            .nearest_frontage(point.to_array(), edge as usize, &core.region_graph)
-            .and_then(|place| core.parking.position(place))
-            .map(|pos| Vector3::from_array(pos).to_variant())
-            .unwrap_or_else(Variant::nil)
     }
 
     /// Nonblocking O(pending dirty payload); unchanged chunks send nothing. Full reconnects

@@ -15,8 +15,6 @@ pub const NONE_REF: i64 = -1;
 pub const SCHEMA: &str = r#"
 CREATE TABLE building_detached_poses(building_id INTEGER PRIMARY KEY, center_x REAL NOT NULL, center_z REAL NOT NULL, facing_x REAL NOT NULL, facing_z REAL NOT NULL, side_offset REAL NOT NULL, gap_left REAL NOT NULL, gap_center REAL NOT NULL, gap_right REAL NOT NULL);
 CREATE TABLE parking_state(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), data TEXT NOT NULL);
-CREATE TABLE parking_network_meta(next_lineage INTEGER NOT NULL);
-CREATE TABLE parking_edge_rules(edge_id INTEGER PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,

@@ -12,8 +12,11 @@ fn bay(x: f32, z: f32) -> Bay {
         length: 6.0,
     }
 }
-fn source(edge: usize) -> PlaceSource {
-    PlaceSource::Edge { edge, side: 1 }
+fn source(building: usize) -> PlaceSource {
+    PlaceSource::Building {
+        building: building as u64,
+        anchor: 0,
+    }
 }
 
 #[test]

@@ -123,10 +123,9 @@ impl ParkingSystem {
         let mut old = self.building_sources.remove(&building).unwrap_or_default();
         old.sort_unstable();
         for source in old {
-            if let PlaceSource::Building { anchor, .. } = source {
-                let bay = bays.iter().find(|(i, _)| *i == anchor).map(|(_, b)| *b);
-                self.replace_source(source, bay.as_slice());
-            }
+            let PlaceSource::Building { anchor, .. } = source;
+            let bay = bays.iter().find(|(i, _)| *i == anchor).map(|(_, b)| *b);
+            self.replace_source(source, bay.as_slice());
         }
         for &(anchor, bay) in bays {
             let source = PlaceSource::Building { building, anchor };
@@ -141,86 +140,10 @@ impl ParkingSystem {
         if !sources.is_empty() {
             self.building_sources.insert(building, sources);
         }
-    }
-}
-
-impl ParkingSystem {
-    /// Rebinds physically surviving six-metre bays across split/merge source changes before
-    /// deleting obsolete supply. O(old log old + new) expected map/sort work plus local towing.
-    /// Exact pose equality is required; a moved footprint is removed and its car towed.
-    pub(crate) fn replace_kerbs(&mut self, products: Vec<(PlaceSource, Vec<Bay>)>) {
-        let mut old = Vec::new();
-        let mut surviving = HashMap::new();
-        for (source, _) in &products {
-            for &handle in self.sources.get(source).into_iter().flatten() {
-                let p = self.place_handles.resolve(handle).expect("source bay");
-                let side = match source {
-                    PlaceSource::Edge { side, .. } => *side,
-                    _ => unreachable!(),
-                };
-                surviving.insert((self.places.identity[p], side), handle);
-                old.push(handle);
-            }
-        }
-        for (source, bays) in products {
-            let side = match source {
-                PlaceSource::Edge { side, .. } => side,
-                _ => unreachable!(),
-            };
-            for bay in bays {
-                let retained = surviving
-                    .get(&(bay.identity, side))
-                    .copied()
-                    .filter(|&handle| {
-                        let p = self.place_handles.resolve(handle).expect("surviving bay");
-                        self.places.position[p] == bay.position
-                            && self.places.heading[p] == bay.heading
-                            && self.places.width[p] == bay.width
-                            && self.places.length[p] == bay.length
-                    });
-                if let Some(handle) = retained {
-                    surviving.remove(&(bay.identity, side));
-                    let p = self.place_handles.resolve(handle).expect("surviving bay");
-                    let previous = self.places.source[p];
-                    if previous != source {
-                        let slot = self.places.source_slot[p];
-                        let list = self.sources.get_mut(&previous).expect("old source");
-                        list.swap_remove(slot);
-                        if let Some(&moved) = list.get(slot) {
-                            self.places.source_slot
-                                [self.place_handles.resolve(moved).expect("moved bay")] = slot;
-                        }
-                        if list.is_empty() {
-                            self.sources.remove(&previous);
-                        }
-                        let list = self.sources.entry(source).or_default();
-                        self.places.source[p] = source;
-                        self.places.source_slot[p] = list.len();
-                        list.push(handle);
-                    }
-                } else {
-                    self.add_place(source, bay);
-                }
-            }
-        }
-        old.sort_unstable();
-        for handle in old {
-            let Some(p) = self.place_handles.resolve(handle) else {
-                continue;
-            };
-            let side = match self.places.source[p] {
-                PlaceSource::Edge { side, .. } => side,
-                _ => unreachable!(),
-            };
-            if surviving.get(&(self.places.identity[p], side)) == Some(&handle) {
-                self.remove_place(handle);
-            }
-        }
-        // Added supply can satisfy cars stored by previous edits. Walk only the edited chunks.
-        let changed = self.dirty.clone();
-        for (x, z) in changed {
-            let size = crate::simulation::network::graph::RegionGraph::CHUNK_SIZE;
-            self.rehouse_near([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size]);
+        // Newly restored owners have no old source list to run replace_source's wake-up.
+        // Reconcile waiting cars only after all of this building's supply is available.
+        for (_, bay) in bays {
+            self.rehouse_near([bay.position[0], bay.position[2]]);
         }
     }
 }

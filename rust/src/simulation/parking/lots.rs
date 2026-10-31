@@ -12,8 +12,11 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use godot::prelude::Vector2;
 
-/// One place per valid parking anchor. O(anchors² + local structure checks + paving overlays),
-/// asset/edit boundary only. Unsupported sweeps return diagnostics and publish no bay.
+/// One place per valid parking anchor, at asset/edit boundaries only. For A bays, D driveways,
+/// S support vertices and L local structure vertices: O(A² D + A D (S + L + K overlay cost)),
+/// K only AABB-overlapping support/structure contours per tested footprint. Bay, sweep and
+/// turn checks share this filter; disjoint support never runs an overlay. Unsupported sweeps
+/// return diagnostics and publish no bay. No work depends on the city's total building count.
 pub(crate) fn lot_bays(
     allocator: &BuildingAllocator,
     index: usize,
