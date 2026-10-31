@@ -1776,6 +1776,16 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             [],
         )
         .expect("insert crossing edge");
+        // This test inserts a complete current-format edge, including its parking identity.
+        let mut parking_rule = graph.parking_rule(edge_id);
+        parking_rule.lineage = 2;
+        conn.execute(
+            "INSERT INTO parking_edge_rules VALUES (1,?1)",
+            [serde_json::to_string(&parking_rule).unwrap()],
+        )
+        .unwrap();
+        conn.execute("UPDATE parking_network_meta SET next_lineage=3", [])
+            .unwrap();
         for physical in [0_i64, 1_i64] {
             conn.execute(
                 "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

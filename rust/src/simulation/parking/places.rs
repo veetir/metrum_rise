@@ -8,7 +8,7 @@ use crate::assets::AnchorType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{ArmKey, BandKind, EdgeEnd, RoadSection, RoadbedSystem};
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
 use godot::prelude::Vector2;
 
 /// Local geometry inputs reused for both side choice and exclusions.
@@ -157,6 +157,9 @@ pub(crate) fn kerb_bays(
         || edge.class != EdgeClass::Standard
         || edge.primary_type != TransitType::Road
         || rule.sides[side] == SideRule::None
+        || [edge.start_node, edge.end_node]
+            .into_iter()
+            .any(|n| graph.node(graph.get_valid_node(n)).node_type == NodeType::Border)
     {
         return Vec::new();
     }

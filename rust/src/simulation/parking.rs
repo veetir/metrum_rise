@@ -45,7 +45,8 @@ pub(crate) struct ParkingSystem {
 }
 
 impl ParkingSystem {
-    /// Adds supply at an edit/spawn boundary; O(1) amortized, may allocate.
+    /// Adds supply at an edit/spawn boundary; O(1) amortized for an edge source,
+    /// O(building anchor sources) for a lot source; may allocate, never a tick operation.
     pub(crate) fn add_place(&mut self, source: PlaceSource, bay: Bay) -> Handle<Place> {
         if let PlaceSource::Building { building, .. } = source {
             let sources = self.building_sources.entry(building).or_default();
@@ -196,11 +197,10 @@ impl ParkingSystem {
         true
     }
 
-    /// Clears reciprocal occupancy and reservation; O(1), allocation-free. The ordered
-    /// release boundary calls rehouse_near afterwards to wake only local off-map cars.
+    /// Clears reciprocal occupancy, preserving an independent destination reservation; O(1),
+    /// allocation-free. The ordered release boundary then wakes only local off-map cars.
     pub(crate) fn release(&mut self, car: Handle<Vehicle>) -> Option<[f32; 2]> {
         let v = self.vehicle_handles.resolve(car)?;
-        self.cancel_reservation(car);
         let p = self.place_handles.resolve(self.vehicles.place[v])?;
         let pos = self.places.position[p];
         self.places.occupant[p] = Handle::NONE;
@@ -209,7 +209,8 @@ impl ParkingSystem {
         Some([pos[0], pos[2]])
     }
 
-    fn cancel_reservation(&mut self, car: Handle<Vehicle>) {
+    /// Cancels the vehicle's reciprocal destination claim in O(1), allocation-free.
+    pub(crate) fn cancel_reservation(&mut self, car: Handle<Vehicle>) {
         let Some(v) = self.vehicle_handles.resolve(car) else {
             return;
         };

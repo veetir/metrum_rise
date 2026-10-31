@@ -39,6 +39,9 @@ impl SimCore {
         saved_at_unix: i64,
     ) -> Result<(), String> {
         self.adopt_pending_cell_lots();
+        self.precompute_road_mesh_data();
+        self.publish_road_tool_view();
+        self.publish_pending_building_site_changes();
         self.transit_network.settle_cch();
         self.save_game_at(path, camera, saved_at_unix)
     }

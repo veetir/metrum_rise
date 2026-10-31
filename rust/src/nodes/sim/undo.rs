@@ -616,6 +616,10 @@ impl SimCore {
             self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
         }
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.refresh_parking_roads(&edge_ids.iter().copied().collect());
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
     }

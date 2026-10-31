@@ -200,6 +200,12 @@ impl Default for VehicleGroundSupport {
 }
 
 impl VehicleGroundSupport {
+    /// O(1) shift inside a nominal 1.8 m kerb bay, so this model's right edge remains 0.25 m
+    /// from the kerb. Used once on parked publication, never by moving agents.
+    pub(crate) fn parking_kerb_offset_m(&self) -> f32 {
+        (0.9 - self.bounds[2]).max(0.0)
+    }
+
     /// Contact set retained for independent geometric assertions in local regressions.
     #[cfg(test)]
     pub(crate) fn contacts(&self) -> &[Vector3] {

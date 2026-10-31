@@ -4,11 +4,11 @@
 
 use crate::config;
 use crate::debug_log;
+use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection, ReservedOverlap,
+    ROAD_BUILD_COST_PER_METER, ReservedOverlap, RoadEditPlan, RoadRejection,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
-use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
 use crate::simulation::buildings::allocator::{
@@ -19,8 +19,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::road_edit::{
-    FinalizedRoadGeometry, plan_road_edit,
-    validate_road_candidate_fast, validate_road_edit,
+    FinalizedRoadGeometry, plan_road_edit, validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
@@ -236,7 +235,13 @@ impl SimCore {
     fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
         let radius = radius.max(0.0) + self.heightmap.render_patch_border_margin_m();
         self.record_graded_base_edit(
-            [pos.x - radius, pos.y - radius, pos.x + radius, pos.y + radius].map(f64::from),
+            [
+                pos.x - radius,
+                pos.y - radius,
+                pos.x + radius,
+                pos.y + radius,
+            ]
+            .map(f64::from),
         );
         self.zoning
             .mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
@@ -688,8 +693,7 @@ impl SimCore {
             }
             return false;
         }
-        self.publish_pending_production_site_removals();
-        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
+        self.publish_pending_building_site_changes();
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }
@@ -816,6 +820,10 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.refresh_parking_roads(&affected_edges.iter().copied().collect());
         // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
         // copy (`ROAD-68-E`).
         let routing_graph = self.schedule_cch_rebuild_of_live_graph();
@@ -2295,20 +2303,20 @@ impl SimCore {
             );
             changed
         };
-        let checkpoint =
-            match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {
-                Ok(checkpoint) => checkpoint,
-                Err(rejection) => {
-                    debug_log!(
-                        "road",
-                        "crosswalk_override_rejected node={} edge={} reason={}",
-                        node,
-                        edge_id,
-                        rejection.reason
-                    );
-                    return;
-                }
-            };
+        let checkpoint = match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle)
+        {
+            Ok(checkpoint) => checkpoint,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "crosswalk_override_rejected node={} edge={} reason={}",
+                    node,
+                    edge_id,
+                    rejection.reason
+                );
+                return;
+            }
+        };
         self.push_network_undo_delta(checkpoint, None);
         let changed = toggle(self);
         let nodes = HashSet::from([node]);
@@ -2603,6 +2611,10 @@ impl SimCore {
                 new_pos.z
             );
         }
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.refresh_parking_roads(&adj.into_iter().collect());
     }
 }
 

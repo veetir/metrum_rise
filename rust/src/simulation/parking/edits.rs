@@ -17,6 +17,7 @@ impl ParkingSystem {
             self.cancel_reservation(reservation);
         }
         if !car.is_none() {
+            self.cancel_reservation(car);
             self.release(car);
         }
         let pos = self.places.position[p];
@@ -51,10 +52,11 @@ impl ParkingSystem {
         }
     }
 
-    /// Reconciles one owner's geometry, keeping identical poses and live custody. O(old + new)
-    /// expected map work plus local towing. Called only at topology/asset boundaries.
+    /// Reconciles one owner's geometry, keeping identical poses and live custody. O(old log old + new)
+    /// expected map/sort work plus local towing. Called only at topology/asset boundaries.
     pub(crate) fn replace_source(&mut self, source: PlaceSource, bays: &[Bay]) {
-        let old = self.sources.get(&source).cloned().unwrap_or_default();
+        let mut old = self.sources.get(&source).cloned().unwrap_or_default();
+        old.sort_unstable();
         let pose_key = |pos: [f32; 3], heading: f32| (pos.map(f32::to_bits), heading.to_bits());
         let mut retained: HashMap<_, _> = old
             .iter()
@@ -72,7 +74,7 @@ impl ParkingSystem {
                 self.add_place(source, *bay);
             }
         }
-        // Source-list order, not hash iteration, fixes all competing tow decisions.
+        // Stable handles fix tow order even when load rebuilt different swap-remove lists.
         for h in old {
             let Some(p) = self.place_handles.resolve(h) else {
                 continue;
@@ -87,7 +89,8 @@ impl ParkingSystem {
     }
 
     /// Wakes off-map cars only in the nine home chunks near newly freed supply, in handle
-    /// order; O(local waiting cars × local places). An edit/release transition, never a tick scan.
+    /// order; O(W log W + W × local places), W local waiting cars. Allocates only at this
+    /// edit/release boundary; never called from the round-1 simulation tick.
     pub(crate) fn rehouse_near(&mut self, point: [f32; 2]) {
         let (cx, cz) = chunk_at(point);
         let mut waiting = Vec::new();
@@ -114,9 +117,11 @@ impl ParkingSystem {
 }
 
 impl ParkingSystem {
-    /// Replaces the edited building's anchor sources only; O(old + new anchor places + local towing).
+    /// Replaces only this building: O(old log old + old × new anchors + local towing),
+    /// bounded by its asset-local swept-path validation, never city size.
     pub(crate) fn replace_building(&mut self, building: u64, bays: &[(u32, Bay)]) {
-        let old = self.building_sources.remove(&building).unwrap_or_default();
+        let mut old = self.building_sources.remove(&building).unwrap_or_default();
+        old.sort_unstable();
         for source in old {
             if let PlaceSource::Building { anchor, .. } = source {
                 let bay = bays.iter().find(|(i, _)| *i == anchor).map(|(_, b)| *b);
@@ -141,7 +146,7 @@ impl ParkingSystem {
 
 impl ParkingSystem {
     /// Rebinds physically surviving six-metre bays across split/merge source changes before
-    /// deleting obsolete supply. O(old + new) expected map work plus bounded local towing.
+    /// deleting obsolete supply. O(old log old + new) expected map/sort work plus local towing.
     /// Exact pose equality is required; a moved footprint is removed and its car towed.
     pub(crate) fn replace_kerbs(&mut self, products: Vec<(PlaceSource, Vec<Bay>)>) {
         let mut old = Vec::new();
@@ -198,6 +203,7 @@ impl ParkingSystem {
                 }
             }
         }
+        old.sort_unstable();
         for handle in old {
             let Some(p) = self.place_handles.resolve(handle) else {
                 continue;

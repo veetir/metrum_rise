@@ -294,6 +294,8 @@ pub(super) fn save_world(
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
+    let mut detached_stmt =
+        tx.prepare("INSERT INTO building_detached_poses VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
     for (saved_bid, b) in buildings.buildings.iter().enumerate() {
         if !b.daily_city_funded_input_cost.is_finite() {
             return Err(SaveLoadError::custom("invalid city input cost"));
@@ -311,12 +313,46 @@ pub(super) fn save_world(
             .edge_old_to_new
             .get(&b.edge_idx)
             .copied()
-            .ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
+            .map(usize_to_i64)
+            .transpose()?;
+        if saved_eid.is_none() {
+            if b.parcel_id != 0
+                || b.zone_type != ZoneType::None
+                || ![
+                    b.center_x,
+                    b.center_y,
+                    b.facing_dir.x,
+                    b.facing_dir.y,
+                    b.side_offset,
+                    b.front_gap_m[0],
+                    b.front_gap_m[1],
+                    b.front_gap_m[2],
+                ]
+                .into_iter()
+                .all(f32::is_finite)
+                || (b.facing_dir.length_squared() - 1.0).abs() > 0.001
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid detached explicit building pose",
+                ));
+            }
+            detached_stmt.execute(params![
+                saved_bid_db,
+                b.center_x,
+                b.center_y,
+                b.facing_dir.x,
+                b.facing_dir.y,
+                b.side_offset,
+                b.front_gap_m[0],
+                b.front_gap_m[1],
+                b.front_gap_m[2]
+            ])?;
+        }
         bld_stmt.execute(params![
             saved_bid_db,
             i64::try_from(b.parcel_id)
                 .map_err(|_| SaveLoadError::custom("building parcel id overflow"))?,
-            usize_to_i64(saved_eid)?,
+            saved_eid.unwrap_or(NONE_REF),
             b.frontage_t,
             i64::from(b.side),
             usize_to_i64(b.cell_x)?,
@@ -1577,7 +1613,7 @@ pub(super) fn load_buildings(
             front_gap_m: [0.0; 3],
             is_deserted: row.get::<_, i64>(25)? != 0,
             budget_distress: row.get::<_, i64>(26)? != 0,
-            edge_idx: i64_to_usize(row.get(2)?)?,
+            edge_idx: db_to_optional_usize(row.get(2)?)?,
             side: i64_to_i8(row.get(4)?)?,
             cell_x: i64_to_usize(row.get(5)?)?,
             cell_y: i64_to_u16(row.get(6)?)?,
@@ -1626,6 +1662,49 @@ pub(super) fn load_buildings(
             pending_redevelopment: row.get::<_, i64>(23)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(24)?)?,
         });
+    }
+    {
+        let mut stmt=conn.prepare("SELECT building_id,center_x,center_z,facing_x,facing_z,side_offset,gap_left,gap_center,gap_right FROM building_detached_poses ORDER BY building_id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let index = i64_to_usize(row.get(0)?)?;
+            let b = allocator
+                .buildings
+                .get_mut(index)
+                .ok_or_else(|| SaveLoadError::custom("orphan detached building pose"))?;
+            let values: [f32; 8] = [
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ];
+            if b.edge_idx != usize::MAX
+                || b.parcel_id != 0
+                || b.zone_type != ZoneType::None
+                || !values.into_iter().all(f32::is_finite)
+                || (values[2] * values[2] + values[3] * values[3] - 1.0).abs() > 0.001
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid detached explicit building pose",
+                ));
+            }
+            b.center_x = values[0];
+            b.center_y = values[1];
+            b.facing_dir = Vector2::new(values[2], values[3]);
+            b.side_offset = values[4];
+            b.front_gap_m = [values[5], values[6], values[7]];
+        }
+        if allocator
+            .buildings
+            .iter()
+            .any(|b| b.edge_idx == usize::MAX && b.facing_dir.length_squared() < 0.99)
+        {
+            return Err(SaveLoadError::custom("detached building has no saved pose"));
+        }
     }
     let mut stmt = conn.prepare(
         "SELECT building_id, resource_runtime_id, amount FROM building_inventories ORDER BY building_id, resource_runtime_id",

@@ -95,3 +95,46 @@ fn save_round_trip_and_chunk_acknowledgements() {
     let broken = json.replace("\"occupant\":0", "\"occupant\":4294967296");
     assert!(ParkingSystem::load_json(&broken).is_err());
 }
+
+#[test]
+fn a_destination_reservation_survives_vacating_the_origin() {
+    let mut s = ParkingSystem::default();
+    s.add_place(source(0), bay(0.0, 0.0));
+    s.fill_test_fleet();
+    let car = s.vehicle_handles.handle(0);
+    let destination = s.add_place(source(1), bay(12.0, 0.0));
+    assert!(s.reserve(car, destination));
+    s.release(car);
+    assert_eq!(s.vehicles.reserved[0], destination);
+    assert!(s.occupy(car, destination));
+    assert!(s.vehicles.reserved[0].is_none());
+    ParkingSystem::load_json(&s.save_json(|s| s).unwrap()).unwrap();
+}
+
+#[test]
+fn edit_towing_is_identical_after_loading_rebuilt_source_lists() {
+    let mut s = ParkingSystem::default();
+    let mut home = Vec::new();
+    for x in [0.0, 6.0, 12.0, 18.0] {
+        home.push(s.add_place(source(0), bay(x, 0.0)));
+    }
+    for x in [24.0, 30.0] {
+        s.add_place(source(1), bay(x, 0.0));
+    }
+    s.fill_test_fleet();
+    s.remove_place(home[1]);
+    for x in [40.0, 46.0, 52.0] {
+        s.add_place(source(2), bay(x, 0.0));
+    }
+    s.rehouse_near([0.0, 0.0]);
+    let json = s.save_json(|s| s).unwrap();
+    let mut loaded = ParkingSystem::load_json(&json).unwrap();
+    // Dense rows survive the save, but the derived per-source swap-remove lists need not.
+    assert_ne!(s.sources[&source(0)], loaded.sources[&source(0)]);
+    s.replace_source(source(0), &[]);
+    loaded.replace_source(source(0), &[]);
+    assert_eq!(
+        s.save_json(|s| s).unwrap(),
+        loaded.save_json(|s| s).unwrap()
+    );
+}

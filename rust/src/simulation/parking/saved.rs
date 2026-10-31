@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::core::handles::SavedHandleTable;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -62,31 +63,38 @@ impl ParkingSystem {
     /// O(places + vehicles), save boundary only. Source remapping belongs to the save graph map.
     pub(crate) fn save_json(
         &self,
-        mut map: impl FnMut(PlaceSource) -> PlaceSource,
+        map: impl Fn(PlaceSource) -> PlaceSource + Sync,
     ) -> Result<String, String> {
-        let places = (0..self.places.len())
-            .map(|p| SavedPlace {
-                source: map(self.places.source[p]),
-                bay: SavedBay {
-                    identity: self.places.identity[p],
-                    position: self.places.position[p],
-                    heading: self.places.heading[p],
-                    width: self.places.width[p],
-                    length: self.places.length[p],
-                },
-                occupant: self.places.occupant[p].to_bits(),
-                reservation: self.places.reservation[p].to_bits(),
-            })
-            .collect();
-        let vehicles = (0..self.vehicles.len())
-            .map(|v| SavedVehicle {
-                home: self.vehicles.home[v],
-                place: self.vehicles.place[v].to_bits(),
-                reserved: self.vehicles.reserved[v].to_bits(),
-                model: self.vehicles.model[v],
-                colour: self.vehicles.colour[v],
-            })
-            .collect();
+        let places = crate::thread_pools::install(|| {
+            (0..self.places.len())
+                .into_par_iter()
+                .map(|p| SavedPlace {
+                    source: map(self.places.source[p]),
+                    bay: SavedBay {
+                        identity: self.places.identity[p],
+                        position: self.places.position[p],
+                        heading: self.places.heading[p],
+                        width: self.places.width[p],
+                        length: self.places.length[p],
+                    },
+                    occupant: self.places.occupant[p].to_bits(),
+                    reservation: self.places.reservation[p].to_bits(),
+                })
+                .collect()
+        });
+        let vehicles = crate::thread_pools::install(|| {
+            (0..self.vehicles.len())
+                .into_par_iter()
+                .map(|v| SavedVehicle {
+                    home: self.vehicles.home[v],
+                    place: self.vehicles.place[v].to_bits(),
+                    reserved: self.vehicles.reserved[v].to_bits(),
+                    model: self.vehicles.model[v],
+                    colour: self.vehicles.colour[v],
+                })
+                .collect()
+        });
+        // JSON emission and handle-table capture retain their single-writer saved order.
         serde_json::to_string(&SavedParking {
             places,
             vehicles,
@@ -239,7 +247,7 @@ impl ParkingSystem {
                     .is_some(),
             };
             if !valid {
-                return Err("parking place has a missing source".into());
+                return Err(format!("parking place has a missing source: {source:?}"));
             }
         }
         Ok(())

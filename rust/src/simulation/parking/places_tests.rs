@@ -218,3 +218,78 @@ fn width_taper_sections_never_supply_bays() {
         }
     }
 }
+
+#[test]
+fn merging_nodes_and_undo_keep_rules_and_reconcile_live_occupancy() {
+    let (mut graph, mut roads, allocator) = street(7.0);
+    let a = graph.add_node(Vector3::new(120.1, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(240.1, 0.0, 0.0), NodeType::Junction);
+    let mut edge = fixtures::road_edge(a, b, vec![graph.node(a).pos, graph.node(b).pos], 7.0);
+    edge.fwd_lanes = 1;
+    edge.bkw_lanes = 1;
+    edge.speed_limit = crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
+    graph.add_edge(edge);
+    graph.rebuild_intersection_clips();
+    for edge in [0, 1] {
+        let mut rule = graph.parking_rule(edge);
+        rule.automatic = false;
+        rule.sides = [SideRule::None, SideRule::Marked];
+        graph.set_parking_rule(edge, rule);
+        roads.mark_edge_dirty(edge);
+    }
+    roads.compile_dirty(&graph);
+    let supply = |graph: &RegionGraph, roads: &RoadbedSystem| {
+        [0, 1]
+            .into_iter()
+            .map(|edge| {
+                let context = kerb_context(graph, &allocator, edge);
+                (
+                    PlaceSource::Edge { edge, side: 1 },
+                    kerb_bays(
+                        graph,
+                        roads,
+                        &allocator,
+                        edge,
+                        1,
+                        graph.parking_rule(edge),
+                        &context,
+                    ),
+                )
+            })
+            .collect()
+    };
+    let mut parking = ParkingSystem::default();
+    parking.replace_kerbs(supply(&graph, &roads));
+    parking.fill_test_fleet();
+    let cars = parking.counts().1;
+    let checkpoint = graph.capture_undo_for_local_topology(
+        std::collections::HashSet::from([0, 1]),
+        std::collections::HashSet::from([1, a]),
+    );
+    graph.unite_nodes(1, a);
+    graph.rebuild_intersection_clips();
+    for edge in [0, 1] {
+        roads.mark_edge_dirty(edge);
+        assert_eq!(
+            graph.parking_rule(edge).sides,
+            [SideRule::None, SideRule::Marked]
+        );
+    }
+    for node in [1, a] {
+        roads.mark_node_dirty(node);
+    }
+    roads.compile_dirty(&graph);
+    parking.replace_kerbs(supply(&graph, &roads));
+    assert_eq!(parking.counts().1, cars);
+    graph.restore_undo_delta_local(&checkpoint);
+    for edge in [0, 1] {
+        roads.mark_edge_dirty(edge);
+    }
+    for node in [1, a] {
+        roads.mark_node_dirty(node);
+    }
+    roads.compile_dirty(&graph);
+    parking.replace_kerbs(supply(&graph, &roads));
+    assert_eq!(parking.counts().1, cars);
+    ParkingSystem::load_json(&parking.save_json(|s| s).unwrap()).unwrap();
+}
