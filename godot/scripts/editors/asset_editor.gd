@@ -972,6 +972,7 @@ func _apply_site_surface_controls(field: String) -> void:
 func _update_site_surface_preview() -> void:
 	if _preview and _preview.has_method("set_site_surfaces"):
 		_preview.set_site_surfaces(_site_surfaces_data, _selected_site_surface_index)
+	_update_site_anchor_preview()
 
 func _site_surface_vertices(surface: Dictionary) -> Array[Vector2]:
 	return PreviewGeometry.surface_vertices(surface)
@@ -1189,6 +1190,10 @@ func _apply_site_anchor_controls(field: String) -> void:
 
 func _update_site_anchor_preview() -> void:
 	if _preview and _preview.has_method("set_site_anchors"):
+		var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data}
+		var payload: Dictionary = JSON.parse_string(_session.policy.parking_diagnostics_json(
+			JSON.stringify(params), _session.yard_structure_bounds()))
+		_preview.set_parking_diagnostics(payload)
 		_preview.set_site_anchors(
 			_site_anchors_data,
 			_selected_site_anchor_indices,

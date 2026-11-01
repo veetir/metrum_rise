@@ -7,6 +7,7 @@ mod candidates;
 mod data;
 mod edits;
 mod geometry;
+pub(crate) mod validation;
 pub(crate) mod lots;
 #[cfg(test)]
 mod query;
@@ -56,6 +57,13 @@ pub(crate) struct ParkingSystem {
 }
 
 impl ParkingSystem {
+    /// Counts active supply belonging to one inspected building in O(its anchors).
+    pub(crate) fn building_place_count(&self, building: u64) -> usize {
+        self.building_sources.get(&building).into_iter().flatten()
+            .filter_map(|source| self.sources.get(source)).flatten()
+            .filter(|&&h| self.place_handles.resolve(h).is_some_and(|p| self.places.active[p])).count()
+    }
+
     /// Adds supply at an edit/spawn boundary; O(building anchor sources); may allocate,
     /// never a tick operation.
     pub(crate) fn add_place(&mut self, source: PlaceSource, bay: Bay) -> Handle<Place> {

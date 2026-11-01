@@ -208,6 +208,11 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			]
 		)
 
+	_add_section(stats_body, "Parking")
+	_add_row(stats_body, "Valid places", str(info.get("parking_valid_places", 0)))
+	for reason in info.get("parking_rejected", PackedStringArray()):
+		_add_alert(stats_body, reason)
+
 	var is_farm := info.has("field_resource")
 	if zone == "residential" or is_farm:
 		if is_farm:

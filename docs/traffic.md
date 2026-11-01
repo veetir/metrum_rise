@@ -252,6 +252,12 @@ SimCore's road-tool publication, demolition/node edits and undo call
 
 ## Resident parking trips (PARK-02 round 2a)
 
+Pass p06 exposes each rejected anchor and its exact reason in the asset editor and the
+placed building inspector, alongside the building's valid-place count. Both call the same
+Rust bay/support/structure/swept-path validator. The editor validates the asset-local path;
+only the placed inspector can validate the road-to-driveway segment and neighbouring structures.
+
+
 Residents now retain one household vehicle handle through an outing. The zoning registry's
 classification of `Building.zone_profile_runtime_id` determines ownership: low density 100%,
 medium 75%, high 50%. Explicit homes without a zoning profile use low density. The saved mobility

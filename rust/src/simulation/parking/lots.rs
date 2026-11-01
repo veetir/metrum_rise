@@ -4,7 +4,8 @@
 
 use super::{
     Bay,
-    geometry::{covered, overlaps, precise, rectangle, structure_collision},
+    geometry::{precise, rectangle, structure_collision},
+    validation::{AnchorBay, validate_bay},
 };
 use crate::assets::AnchorType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
@@ -76,6 +77,15 @@ pub(crate) fn lot_bays(
                 .collect()
         }));
     }
+    let geometry: Vec<_> = bays
+        .iter()
+        .map(|&(_, pos, forward, width, length)| AnchorBay {
+            pos,
+            forward,
+            width,
+            length,
+        })
+        .collect();
     let mut result = Vec::new();
     let mut issues = Vec::new();
     for (slot, &(anchor, pos, forward, width, length)) in bays.iter().enumerate() {
@@ -85,94 +95,48 @@ pub(crate) fn lot_bays(
                 building.asset_id, anchor, reason
             )
         };
-        if width < 1.8 || length < 4.5 || forward.length_squared() < 0.99 {
-            issues.push(fail("bay does not fit a car"));
-            continue;
-        }
-        if footprints
-            .iter()
-            .enumerate()
-            .any(|(other, foot)| other != slot && overlaps(&footprints[slot], foot))
-            || structure_collision(allocator, &footprints[slot])
-            || !covered(&footprints[slot], &support)
-        {
-            issues.push(fail(
-                "bay overlaps a structure/another bay or lacks paved support",
-            ));
-            continue;
-        }
-        let mut swept_path = [[0.0; 2]; 4];
-        let valid = anchors
+        let paths: Vec<_> = anchors
             .iter()
             .filter(|a| a.anchor_type == AnchorType::Driveway)
-            .any(|driveway| {
+            .filter_map(|driveway| {
                 if driveway.width_m.unwrap_or(3.0) < 1.8 {
-                    return false;
+                    return None;
                 }
                 let start = position(driveway.position);
                 let inward = direction(driveway.forward);
                 if inward.dot(-building.facing_dir) < 0.9 {
-                    return false;
+                    return None;
                 }
-                let Some(edge) = graph.get_edge(building.edge_idx).filter(|e| !e.deleted) else {
-                    return false;
-                };
+                let edge = graph.get_edge(building.edge_idx).filter(|e| !e.deleted)?;
                 let station =
                     BuildingAllocator::project_point_to_polyline_s(&edge.physical_geometry, start);
-                let Some(connection) = BuildingAllocator::claimed_road_side_connection_pos(
+                let connection = BuildingAllocator::claimed_road_side_connection_pos(
                     graph,
                     building.edge_idx,
                     building.side,
                     station / edge.physical_length,
-                ) else {
-                    return false;
-                };
+                )?;
                 // Placement already validates frontage support; repeat its exact connection proof.
                 if roads.height_at(connection.x, connection.y).is_none() {
-                    return false;
+                    return None;
                 }
-                let aisle = pos - forward * (length * 0.5 + 2.5);
                 let approach = start + inward * 2.5;
-                let path = [connection, approach, aisle, pos];
-                for pair in path.windows(2) {
-                    let delta = pair[1] - pair[0];
-                    if delta.length_squared() < 1e-8 {
-                        continue;
-                    }
-                    let sweep = rectangle(
-                        (pair[0] + pair[1]) * 0.5,
-                        delta.normalized(),
-                        1.8,
-                        delta.length() + 4.5,
-                    );
-                    if !covered(&sweep, &support)
-                        || structure_collision(allocator, &sweep)
-                        || footprints
-                            .iter()
-                            .enumerate()
-                            .any(|(other, foot)| other != slot && overlaps(&sweep, foot))
-                    {
-                        return false;
-                    }
-                }
-                // A conservative full turning envelope at each aisle corner proves the entire
-                // orientation change, not just a centreline or a few sampled poses.
-                for corner in [approach, aisle] {
-                    let envelope = rectangle(corner, Vector2::new(0.0, 1.0), 4.85, 4.85);
-                    if !covered(&envelope, &support)
-                        || structure_collision(allocator, &envelope)
-                        || footprints
-                            .iter()
-                            .enumerate()
-                            .any(|(other, foot)| other != slot && overlaps(&envelope, foot))
-                    {
-                        return false;
-                    }
-                }
-                swept_path = path.map(|p| [p.x, p.y]);
-                true
-            });
-        if valid {
+                Some([connection, approach])
+            })
+            .collect();
+        let checked = validate_bay(
+            slot,
+            &geometry,
+            &footprints,
+            &support,
+            anchors
+                .iter()
+                .any(|a| a.anchor_type == AnchorType::Driveway),
+            &paths,
+            |foot| structure_collision(allocator, foot),
+        );
+        if let Ok(path) = checked {
+            let swept_path = path.map(|p| [p.x, p.y]);
             result.push((
                 anchor,
                 Bay {
@@ -185,9 +149,7 @@ pub(crate) fn lot_bays(
                 },
             ));
         } else {
-            issues.push(fail(
-                "no validated driveway–aisle–bay sweep; no place published",
-            ));
+            issues.push(fail(checked.unwrap_err()));
         }
     }
     (result, issues)

@@ -101,6 +101,7 @@ var _mesh_part_aabbs: Array[AABB] = []
 var _selected_mesh_part_indices: Array[int] = []
 var _active_mesh_part_index: int = -1
 var _site_anchors: Array[Dictionary] = []
+var _parking_rejections: Dictionary = {}
 var _site_surfaces: Array[Dictionary] = []
 var _selected_site_anchor_indices: Array[int] = []
 var _selected_site_anchor_index: int = -1
@@ -517,6 +518,11 @@ func set_selected_mesh_parts(indices: Array, active_index: int = -1) -> void:
 	_build_selection_overlay()
 
 ## Replace the editor-only site anchor preview list.
+func set_parking_diagnostics(payload: Dictionary) -> void:
+	_parking_rejections.clear()
+	for issue: Dictionary in payload.get("rejected", []):
+		_parking_rejections[int(issue["anchor"])] = str(issue["reason"])
+
 func set_site_anchors(anchors: Array, selected_indices: Array = [], active_index: int = -1) -> void:
 	pick_revision += 1
 	visibility_revision += 1
@@ -1205,7 +1211,7 @@ func _build_site_anchor_overlay() -> void:
 		var length := maxf(0.0, _preview_anchor_number(anchor, "length_m", 0.0))
 		var y := pos.y + 0.12
 		var base := Vector3(pos.x, y, pos.z)
-		var color := _site_anchor_color(anchor_type)
+		var color := Color(1.0, 0.2, 0.15) if _parking_rejections.has(index) else _site_anchor_color(anchor_type)
 		var selected := _selected_site_anchor_indices.has(index)
 		var fill_alpha := SELECTED_ANCHOR_FILL_ALPHA if selected else ANCHOR_FILL_ALPHA
 		if selected:
@@ -1243,7 +1249,7 @@ func _build_site_anchor_overlay() -> void:
 		var length := maxf(0.0, _preview_anchor_number(anchor, "length_m", 0.0))
 		var y := pos.y + 0.12
 		var base := Vector3(pos.x, y, pos.z)
-		var color := _site_anchor_color(anchor_type)
+		var color := Color(1.0, 0.2, 0.15) if _parking_rejections.has(index) else _site_anchor_color(anchor_type)
 		var selected := _selected_site_anchor_indices.has(index)
 		if selected:
 			color = _selected_anchor_color()
@@ -1295,6 +1301,8 @@ func _build_site_anchor_overlay() -> void:
 				selected
 			)
 		var label := _new_overlay_label(_site_anchor_label(anchor, type_counts[anchor_type]))
+		if _parking_rejections.has(index):
+			label.text += "\nRejected: " + str(_parking_rejections[index])
 		_site_anchor_label_root.add_child(label)
 		_site_anchor_labels.append(label)
 		var label_pos := base + forward * maxf(1.25, width * 0.6) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)
