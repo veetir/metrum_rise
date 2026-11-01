@@ -31,7 +31,12 @@ pub(super) fn precise(points: &[Vector2]) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// Exact union coverage through ordered differences, including disconnected paving and holes.
+// Uncovered area below which coverage holds: abutting paving (a yard against the road surface)
+// leaves zero-width float slivers along off-axis seams, while any real gap a wheel could find
+// is far larger.
+const UNCOVERED_AREA_TOLERANCE_M2: f64 = 0.01;
+
+/// Union coverage through ordered differences, including disconnected paving and holes.
 /// O(S vertices + K overlay cost), S support contours, K AABB-overlapping contours. Disjoint
 /// contours incur no overlay; no overlapping support means no overlay or contour allocation.
 /// Shared by bay, translated sweep and turning-envelope checks at edit/load boundaries.
@@ -53,7 +58,22 @@ pub(super) fn covered(points: &[Vector2], surfaces: &[Vec<[f64; 2]>]) -> bool {
             return true;
         }
     }
-    false
+    remaining.is_some_and(|shapes| {
+        // Even-odd contours: holes wind opposite to their outer contour, so signed areas net out.
+        let area: f64 = shapes
+            .iter()
+            .flatten()
+            .map(|contour| {
+                contour
+                    .iter()
+                    .zip(contour.iter().cycle().skip(1))
+                    .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+                    .sum::<f64>()
+                    * 0.5
+            })
+            .sum();
+        area.abs() < UNCOVERED_AREA_TOLERANCE_M2
+    })
 }
 
 fn bounds(points: impl Iterator<Item = [f64; 2]>) -> [f64; 4] {

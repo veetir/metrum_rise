@@ -530,3 +530,24 @@ fn parking_place_access_follows_a_full_lane_renumbering() {
         );
     }
 }
+
+#[test]
+fn parking_lot_on_a_diagonal_road_accepts_every_bay() {
+    // Off-axis seams between the yard and the road surface leave float slivers, and the
+    // turning squares must follow the lot rather than the world axes.
+    let mut c = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    commit(&mut c, (-100.0, -100.0), (100.0, 100.0));
+    let id = register_lot(&mut c);
+    for (x, z) in [(-40.0, -10.0), (-10.0, 40.0)] {
+        c.place_service_building_internal(&id, x, z).unwrap();
+    }
+    c.publish_pending_building_site_changes();
+    let issues: Vec<_> = c.parking.diagnostics.values().flatten().collect();
+    assert!(issues.is_empty(), "{issues:#?}");
+    assert_eq!(c.parking.counts().0, 12);
+}

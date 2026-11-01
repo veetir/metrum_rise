@@ -169,14 +169,9 @@ pub(super) fn validate_bay(
         ]
         .into_iter()
         .filter(|&(before, corner, after, _)| corner == approach || turns_at(before, corner, after))
+        // Squared to the spot, which lies square to its lot, so a turned lot keeps its envelope.
         .map(|(_, corner, _, part)| {
-            let half = TURN_ENVELOPE_M * 0.5;
-            let shape = [
-                corner + Vector2::new(-half, -half),
-                corner + Vector2::new(half, -half),
-                corner + Vector2::new(half, half),
-                corner + Vector2::new(-half, half),
-            ];
+            let shape = rectangle(corner, bay.forward, TURN_ENVELOPE_M, TURN_ENVELOPE_M);
             (part, shape)
         });
         let failure = corridors
