@@ -36,7 +36,7 @@ impl ParkingSystem {
                 if let Some(destination) = self.home_place(v) {
                     self.occupy(car, destination);
                 } else {
-                    self.stored.entry(chunk_at(home)).or_default().push(car);
+                    self.stored.entry(chunk_at(home)).or_default().insert(car);
                 }
             }
         }
@@ -109,31 +109,61 @@ impl ParkingSystem {
         }
     }
 
-    /// Wakes off-map cars only in the nine home chunks near newly freed supply, in handle
-    /// order; O(W log W + W × local places), W local waiting cars. Allocates only at this
-    /// edit/release boundary; never called from the round-1 simulation tick.
+    /// Queues a deduplicated supply event in O(1) expected chunk work. No vehicle is relocated.
+    /// Local waiting cars are considered only by bounded scheduled delivery events.
     pub(crate) fn rehouse_near(&mut self, point: [f32; 2]) {
-        let (cx, cz) = chunk_at(point);
-        let mut waiting = Vec::new();
-        for z in cz - 1..=cz + 1 {
-            for x in cx - 1..=cx + 1 {
-                if let Some(cars) = self.stored.remove(&(x, z)) {
-                    waiting.extend(cars);
+        let key = chunk_at(point);
+        let chunk = self.chunks.entry(key).or_default();
+        chunk.wake_after = None;
+        if !chunk.release_pending {
+            chunk.release_pending = true;
+            self.release_events.push(key);
+        }
+    }
+
+    /// Next stable waiting handle across nine home chunks: O(9 log W), allocation-free.
+    /// The saved cursor bounds each continuation without rescanning an already considered car.
+    pub(crate) fn next_stored_car(&mut self, key: (i32, i32)) -> Option<Handle<Vehicle>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let after = self.chunks.get(&key).and_then(|chunk| chunk.wake_after);
+        let mut next = None;
+        for z in key.1 - 1..=key.1 + 1 {
+            for x in key.0 - 1..=key.0 + 1 {
+                if let Some(cars) = self.stored.get(&(x, z)) {
+                    let car = if let Some(after) = after {
+                        cars.range((Excluded(after), Unbounded)).next()
+                    } else {
+                        cars.first()
+                    };
+                    if let Some(&car) = car {
+                        next = Some(next.map_or(car, |old: Handle<Vehicle>| old.min(car)));
+                    }
                 }
             }
         }
-        waiting.sort_unstable();
-        for car in waiting {
-            let Some(v) = self.vehicle_handles.resolve(car) else {
-                continue;
-            };
-            let home = self.vehicles.home[v];
-            if let Some(place) = self.home_place(v) {
-                self.occupy(car, place);
-            } else {
-                self.stored.entry(chunk_at(home)).or_default().push(car);
-            }
+        if let Some(car) = next {
+            self.chunks
+                .get_mut(&key)
+                .expect("scheduled chunk")
+                .wake_after = Some(car);
         }
+        next
+    }
+
+    /// Ends this finite wake cycle in O(1) expected chunk work; failed cars sleep until supply changes.
+    pub(crate) fn finish_supply_event(&mut self, key: (i32, i32)) {
+        if let Some(chunk) = self.chunks.get_mut(&key) {
+            chunk.release_pending = false;
+            chunk.wake_after = None;
+        }
+    }
+
+    /// O(1) event lookups of a stored car's live home; temporary/debug fleets have none.
+    pub(crate) fn stored_car_home(&self, car: Handle<Vehicle>) -> Option<u64> {
+        let v = self.vehicle_handles.resolve(car)?;
+        (!self.vehicles.moving[v] && self.vehicles.place[v].is_none())
+            .then_some(self.vehicles.home_building[v])
+            .filter(|&h| h != u64::MAX)
     }
 }
 
@@ -164,25 +194,5 @@ impl ParkingSystem {
         for (_, bay) in bays {
             self.rehouse_near([bay.position[0], bay.position[2]]);
         }
-    }
-}
-
-impl ParkingSystem {
-    /// Consumes deduplicated supply-release events in chunk order. O(E log E + local waiting
-    /// cars × candidate scan), E released chunks. Sleeping cars are never polled. The queue is
-    /// prepared with supply; local waiting storage is reused by the existing event handler.
-    pub(crate) fn apply_supply_events(&mut self) {
-        let mut events = std::mem::take(&mut self.release_events);
-        events.sort_unstable();
-        for &(x, z) in &events {
-            self.chunks
-                .get_mut(&(x, z))
-                .expect("released chunk")
-                .release_pending = false;
-            let size = crate::simulation::network::graph::RegionGraph::CHUNK_SIZE;
-            self.rehouse_near([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size]);
-        }
-        events.clear();
-        self.release_events = events;
     }
 }

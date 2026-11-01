@@ -114,7 +114,7 @@ fn parking_lot_is_public_neutral_and_round_trips_with_cars() {
     assert_eq!(c.parking.counts(), (0, count, count));
     assert!(c.undo_action_internal());
     c.publish_pending_building_site_changes();
-    assert_eq!(c.parking.counts(), (6, count, 0));
+    assert_eq!(c.parking.counts(), (6, count, count));
     std::fs::remove_file(path).unwrap();
 }
 
@@ -210,7 +210,7 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
             )
         });
         c.schedule_parking_retries();
-        c.parking.apply_supply_events();
+        c.schedule_stored_parking_arrivals();
         let phase = c.agents.parking_trip[agent].phase;
         if phase == ParkingTripPhase::WalkToCar
             && c.agents.transit[agent] == crate::simulation::economy::agents::TRANSIT_ACCESS_INGRESS
@@ -363,5 +363,58 @@ fn parking_move_in_save_round_trip_mid_arrival() {
     assert_eq!(c.parking.save_json(|s| s).unwrap(), before);
     assert_eq!(serde_json::to_string(&c.agents.parking_trip[i]).unwrap(), trip);
     assert!(c.parking.vehicle_place(car).is_none(), "loading cannot park an arriving car");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn parking_new_lot_fills_by_driven_arrivals_and_saves_mid_delivery() {
+    use crate::assets::AnchorType;
+    use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
+    let mut c = core();
+    let lot = register_lot(&mut c);
+    let mut home = c.allocator.registry.get(&lot).unwrap().manifest.clone();
+    home.asset_id = "building.parking.home_without_bays".to_owned();
+    home.anchors.retain(|a| a.anchor_type != AnchorType::Parking);
+    home.building.as_mut().unwrap().household_capacity = Some(4);
+    let home_id = home.qualified_id("parking");
+    c.allocator.registry.register("parking", home, String::new());
+    c.place_service_building_internal(&home_id, -60.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let resident = c.debug_add_parking_commuter(0, 0).unwrap();
+    let car = c.agents.parking_trip[resident].vehicle;
+    assert_eq!(c.parking.counts(), (0, 1, 1));
+    let border = if c.allocator.entrances[0].side == -1 {
+        c.region_graph.edge(0).start_node
+    } else { c.region_graph.edge(0).end_node };
+    c.set_border_connection_internal(border as i32);
+    c.transit_network.settle_cch();
+    c.place_service_building_internal(&lot, 60.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    assert!(c.parking.vehicle_place(car).is_none(), "placing supply cannot park a stored car");
+    c.logistics.prepare_parking_borders(&c.transit_network, &c.region_graph);
+    // This is the scheduled event handler, not a direct occupancy mutation.
+    c.run_stored_parking_arrivals((0, -1), c.time.absolute_slot());
+    c.run_stored_parking_arrivals((-1, -1), c.time.absolute_slot());
+    assert_eq!(c.agents.len(), 2, "one delivery carrier must enter at the border");
+    assert!(c.parking.vehicle_place(car).is_none());
+    assert!(!c.parking.available_to(car, c.agents.agent_handle(resident)));
+    let path = temp_save_path("parking-stored-car-mid-delivery");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.load_game_internal(path.to_str().unwrap()).unwrap();
+    assert!(c.parking.vehicle_place(car).is_none(), "loading cannot complete a driven arrival");
+    for _ in 0..6000 {
+        c.agents.tick_with_parking(&c.allocator, &mut c.transit_network, &mut c.region_graph,
+            0.1, &c.time, &mut c.parking);
+        for i in 0..c.agents.len() {
+            if c.agents.parking_trip[i].delivery_only && c.agents.transit[i] == TRANSIT_IN_BUILDING {
+                assert_eq!(c.agents.current_building[i], usize::MAX, "delivery driver entered a building");
+            }
+        }
+        c.agents.remove_completed_parking_deliveries();
+        if c.parking.vehicle_place(car).is_some() { break; }
+    }
+    assert!(c.parking.vehicle_place(car).is_some());
+    assert_eq!(c.agents.len(), 1, "delivery carrier must retire at the bay");
+    assert!(c.parking.available_to(car, c.agents.agent_handle(resident)));
     std::fs::remove_file(path).unwrap();
 }

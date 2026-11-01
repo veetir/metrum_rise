@@ -16,7 +16,9 @@ rendering. Traffic integration passes 30 parking regressions and 11 bridge scrip
 Rust suite has only the two probes freshly reproduced on plain `dev`.
 Agent work scales 3× and candidate rebuilding stays about 0.75 ms through 100k background.
 Five existing economy counter limits and the external-review approval remain open; freight and
-immigration remain for round 2b. The merged `TRAFFIC-13/15/16/14` fixes retain the shared detach
+wider lifecycle work remain for round 2b. Pass p06 exposes rejected anchor reasons, brings move-in
+cars through reserved parking, and delivers stored cars from external connections through
+bounded scheduled events; save version 111 preserves these arrivals. The merged `TRAFFIC-13/15/16/14` fixes retain the shared detach
 rules and parking reservations through gridlock detours
 ([design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a)).
 

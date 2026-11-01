@@ -117,9 +117,7 @@ pub(crate) fn lot_bays(
                     station / edge.physical_length,
                 )?;
                 // Placement already validates frontage support; repeat its exact connection proof.
-                if roads.height_at(connection.x, connection.y).is_none() {
-                    return None;
-                }
+                roads.height_at(connection.x, connection.y)?;
                 let approach = start + inward * 2.5;
                 Some([connection, approach])
             })

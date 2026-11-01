@@ -14,6 +14,12 @@ impl SimulationNode {
             .map_or(-1, |i| i as i32)
     }
 
+    /// Isolated capture command: schedules an ordinary household move-in from a border.
+    #[func]
+    pub fn debug_add_parking_move_in(&mut self, home: i32) -> i32 {
+        self.lock_core().debug_add_parking_move_in(home as usize).map_or(-1, |i| i as i32)
+    }
+
     /// Isolated fixture clock reset, allowed only before any resident exists.
     #[func]
     pub fn debug_reset_parking_capture_clock(&mut self) {

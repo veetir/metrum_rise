@@ -327,6 +327,8 @@ impl SimCore {
         let agent = self.agents.spawn_housed_agent(home, door.x, door.y);
         self.agents.assign_household_id(agent, household);
         self.publish_parking_households();
+        self.parking.seed_fixture_car(self.agents.parking_trip[agent].vehicle,
+            self.allocator.building_handles.handle(home).to_bits());
         self.agents.request_parking_fixture_trip(agent, target);
         Some(agent)
     }
@@ -482,5 +484,58 @@ impl SimCore {
             &self.region_graph,
             self.households.destination_topology.car(),
         );
+    }
+}
+
+impl SimCore {
+    /// Queues edited/released home chunks, O(E log S). The existing logistics topology cache
+    /// refreshes once per graph revision here (O(nodes + edges)), outside delivery events.
+    pub(crate) fn schedule_stored_parking_arrivals(&mut self) {
+        if self.parking.release_events.is_empty() { return; }
+        self.logistics.prepare_parking_borders(&self.transit_network, &self.region_graph);
+        let mut events = std::mem::take(&mut self.parking.release_events);
+        events.sort_unstable();
+        for chunk in events.drain(..) {
+            self.schedule_trip(self.time.absolute_slot() + 1,
+                super::trips::TripEvent::StoredCarArrival { chunk });
+        }
+        self.parking.release_events = events;
+    }
+
+    /// Considers at most eight waiting cars per event in stable handle order. Per event:
+    /// O(8 × (9 log W + k + BQ) + log S), W local waiting cars, k cached home candidates,
+    /// B connected borders, Q one exact route, S scheduled events. No city population scan.
+    pub(super) fn run_stored_parking_arrivals(&mut self, chunk: (i32, i32), slot: u64) {
+        for _ in 0..8 {
+            let Some(car) = self.parking.next_stored_car(chunk) else {
+                self.parking.finish_supply_event(chunk);
+                return;
+            };
+            self.agents.start_stored_car_arrival(car, self.logistics.parking_borders(),
+                &mut self.parking, &self.allocator, &self.transit_network, &self.region_graph);
+        }
+        self.schedule_trip(slot + 1, super::trips::TripEvent::StoredCarArrival { chunk });
+    }
+}
+
+impl SimCore {
+    /// Isolated capture command: one approved household enters through the ordinary paced
+    /// departure event at the next slot. O(shared topology refresh + one household carrier).
+    pub(crate) fn debug_add_parking_move_in(&mut self, home: usize) -> Option<usize> {
+        use crate::simulation::economy::agents::HouseholdAgeComposition;
+        if home >= self.allocator.buildings.len()
+            || self.allocator.buildings[home].occupancy >= self.allocator.household_capacity(home) {
+            return None;
+        }
+        self.logistics.prepare_parking_borders(&self.transit_network, &self.region_graph);
+        let border = *self.logistics.parking_borders().first()?;
+        let pos = self.region_graph.node(border).pos;
+        self.allocator.claim_vacancy(home);
+        let i = self.agents.spawn_household_arrival_carrier(home, 1,
+            HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+        let carrier = self.agents.agent_handle(i);
+        self.schedule_trip(self.time.absolute_slot() + 1,
+            super::trips::TripEvent::ArrivalDeparture { carrier });
+        Some(i)
     }
 }

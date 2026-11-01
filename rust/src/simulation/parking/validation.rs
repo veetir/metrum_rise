@@ -119,7 +119,9 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
         })
         .collect();
     let walls: Vec<_> = structures
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| {
             [
                 Vector2::new(b[0], b[1]),

@@ -92,10 +92,10 @@ func _run() -> void:
 	_expect(info["vehicles"] == filled and info["stored"] == filled, "supply removal stores every car exactly once")
 	_expect(sim.undo_action(), "lot undo queued")
 	deadline = Time.get_ticks_msec() + 20000
-	while sim.get_parking_info()["stored"] > 0 and Time.get_ticks_msec() < deadline:
+	while sim.get_parking_info()["places"] == 0 and Time.get_ticks_msec() < deadline:
 		await process_frame
 	info = sim.get_parking_info()
-	_expect(info["vehicles"] == filled and info["stored"] == 0, "restored supply rehouses the live fleet")
+	_expect(info["vehicles"] == filled and info["stored"] == filled, "restored supply waits for driven arrivals; debug fleet has no external home")
 	sim.queue_free()
 	await process_frame
 	quit(0 if _failures == 0 else 1)

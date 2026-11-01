@@ -316,7 +316,8 @@ impl SimCore {
                 &mut self.parking,
             );
             self.schedule_parking_retries();
-            self.parking.apply_supply_events();
+            self.agents.remove_completed_parking_deliveries();
+            self.schedule_stored_parking_arrivals();
         });
         self.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
         report.agent_ms = self.last_agent_tick_us as f64 / 1000.0;

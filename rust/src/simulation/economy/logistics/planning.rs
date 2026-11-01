@@ -25,6 +25,17 @@ use super::route_cache::FreightRouteCache;
 use super::routing::collect_connected_border_nodes;
 use super::supplier_index::SupplierCandidateIndex;
 
+impl ShipmentSystem {
+    /// Prepares the existing connected-border topology once per graph revision for parking events.
+    /// O(1) unchanged; O(nodes + edges) after publication, shared with freight planning.
+    pub(crate) fn prepare_parking_borders(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
+        self.freight_topology.refresh(network, graph);
+    }
+
+    /// Stable connected-border order from the prepared shared topology; O(1), no allocation.
+    pub(crate) fn parking_borders(&self) -> &[u32] { &self.freight_topology.border_nodes }
+}
+
 /// Road-graph revisions a [`FreightTopology`] part was derived from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TopologyKeys {

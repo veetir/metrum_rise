@@ -24,6 +24,11 @@ decision and the same vehicle are adopted by the household at materialization, w
 A free home-catchment bay is reserved before entry: `Drive → PullIn → WalkToDoor`. If none
 is free, the household walks from the external connection and its car stays unavailable off-map.
 Carless households use that same pedestrian arrival. Freight retains its previous itinerary.
+Stored cars use a separate carrier with the same `Drive → PullIn` legs from an external
+connection. It reserves before entry, commits occupancy only at the bay and retires there;
+there is no walking driver or building arrival. Supply events consider at most eight cars,
+then schedule a continuation; parked and off-map cars have no polling pass. Loading preserves
+in-flight custody and scheduled wake cursors, and cannot fill a free bay instantly.
 
 Destination reservations commit at departure in deterministic agent order. Origin occupancy
 is released after lane entry, and pull-in converts destination reservation to occupancy in the

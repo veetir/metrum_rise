@@ -49,6 +49,7 @@ struct SavedTable {
 struct SavedParking {
     pending_households: Vec<u64>,
     release_events: Vec<(i32, i32)>,
+    arrival_cursors: Vec<((i32, i32), Option<u64>)>,
     mobility_seed: u64,
     owners: Vec<(u64, u64)>,
     places: Vec<SavedPlace>,
@@ -138,9 +139,17 @@ impl ParkingSystem {
             .map(|(&h, &v)| (h, v.to_bits()))
             .collect();
         owners.sort_unstable();
+        let mut arrival_cursors: Vec<_> = self
+            .chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.release_pending)
+            .map(|(&key, chunk)| (key, chunk.wake_after.map(Handle::to_bits)))
+            .collect();
+        arrival_cursors.sort_unstable();
         serde_json::to_string(&SavedParking {
             pending_households: pending.iter().map(|h| h.to_bits()).collect(),
             release_events: self.release_events.clone(),
+            arrival_cursors,
             mobility_seed: self.mobility_seed,
             owners,
             places,
@@ -292,12 +301,24 @@ impl ParkingSystem {
                     .stored
                     .entry(chunk_at(system.vehicles.home[v]))
                     .or_default()
-                    .push(car);
+                    .insert(car);
             }
         }
+        for (key, after) in saved.arrival_cursors {
+            let chunk = system.chunks.entry(key).or_default();
+            chunk.release_pending = true;
+            chunk.wake_after = after.map(Handle::from_bits);
+        }
         system.release_events = saved.release_events;
-        for key in &system.release_events { system.chunks.entry(*key).or_default().release_pending = true; }
-        system.release_events.reserve(system.chunks.len().saturating_sub(system.release_events.len()));
+        for key in &system.release_events {
+            system.chunks.entry(*key).or_default().release_pending = true;
+        }
+        system.release_events.reserve(
+            system
+                .chunks
+                .len()
+                .saturating_sub(system.release_events.len()),
+        );
         system.dirty.reserve(system.chunks.len());
         let mut keys: Vec<_> = system.chunks.keys().copied().collect();
         keys.sort_unstable();
@@ -378,10 +399,12 @@ impl ParkingSystem {
                 let i = agents
                     .resolve_agent(borrower)
                     .ok_or("parking borrower is missing")?;
-                if agents.age_group[i] == AGE_CHILD
+                if (agents.age_group[i] == AGE_CHILD && !agents.parking_trip[i].delivery_only)
                     || agents.parking_trip[i].vehicle != car
                     || (households.handles.handle(agents.household_id[i]).to_bits() != owner
-                        && !(owner == u64::MAX && agents.pending_household_size[i] > 0
+                        && !agents.parking_trip[i].delivery_only
+                        && !(owner == u64::MAX
+                            && agents.pending_household_size[i] > 0
                             && agents.parking_trip[i].arrival_ownership))
                 {
                     return Err("invalid parking custody".into());

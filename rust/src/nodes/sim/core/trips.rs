@@ -35,6 +35,8 @@ use crate::simulation::economy::logistics::ShipmentStatus;
 pub(crate) enum TripEvent {
     /// Event-driven parking departure/recovery retry at the agent's actual position.
     ParkingRetry { agent: AgentHandle },
+    /// Bounded continuation of a local stored-car supply wake cycle.
+    StoredCarArrival { chunk: (i32, i32) },
     /// Loaded shipment `shipment` sends its carrier.
     FreightDispatch { shipment: u64 },
     /// Checks whether shipment `shipment`'s carrier arrived.
@@ -58,6 +60,7 @@ impl TripEvent {
     pub(super) fn to_saved(self) -> (u16, u64) {
         match self {
             Self::ParkingRetry { agent } => (10, agent.to_bits()),
+            Self::StoredCarArrival { chunk: (x, z) } => (11, (u64::from(x as u32) << 32) | u64::from(z as u32)),
             Self::FreightDispatch { shipment } => (2, shipment),
             Self::FreightCheck { shipment } => (3, shipment),
             Self::ShopperDeparture { household } => (4, household.to_bits()),
@@ -71,6 +74,7 @@ impl TripEvent {
 
     pub(super) fn from_saved(kind: u16, a: u64) -> Option<Self> {
         Some(match kind {
+            11 => Self::StoredCarArrival { chunk: ((a >> 32) as u32 as i32, a as u32 as i32) },
             10 => Self::ParkingRetry { agent: Handle::from_bits(a) },
             2 => Self::FreightDispatch { shipment: a },
             3 => Self::FreightCheck { shipment: a },
@@ -222,6 +226,7 @@ impl SimCore {
     ) {
         let next_check = slot + TRIP_CHECK_SLOTS;
         match event {
+            TripEvent::StoredCarArrival { chunk } => self.run_stored_parking_arrivals(chunk, slot),
             TripEvent::ParkingRetry { agent } => {
                 if let Some(i) = self.agents.resolve_agent(agent) {
                     self.agents.agents.parking_trip[i].retry_pending = false;

@@ -56,6 +56,7 @@ pub(super) struct Chunk {
     pub places: Vec<Handle<Place>>,
     pub dirty: bool,
     pub release_pending: bool,
+    pub wake_after: Option<Handle<Vehicle>>,
     pub version: u64,
 }
 

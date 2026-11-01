@@ -117,6 +117,19 @@ impl AgentSystem {
                 if !trip.ready {
                     continue;
                 }
+                if trip.delivery_only && trip.phase == ParkingTripPhase::PullIn {
+                    if parking.occupy(trip.vehicle, trip.destination) {
+                        parking.set_moving(trip.vehicle, false);
+                        parking.finish_outing(trip.vehicle, self.handles.handle(i));
+                        parking.clear_retired_places(trip.vehicle);
+                        self.agents.transit[i] = TRANSIT_IN_BUILDING;
+                        self.agents.current_building[i] = usize::MAX;
+                        self.agents.parking_trip[i].phase = ParkingTripPhase::None;
+                        self.agents.parking_trip[i].ready = false;
+                        self.completed_parking_deliveries.push(self.handles.handle(i));
+                    }
+                    continue;
+                }
                 let target = allocator.building_handles.resolve(
                     crate::simulation::core::handles::Handle::from_bits(trip.target),
                 );
@@ -322,6 +335,7 @@ impl AgentSystem {
                     route_capacity: 0,
                     retry_pending: false,
                     arrival_ownership: false,
+                    delivery_only: false,
                     replan_needed: false,
                     walk_origin: crate::simulation::core::handles::Handle::NONE,
                 };

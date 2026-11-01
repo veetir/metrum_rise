@@ -38,7 +38,7 @@ pub(crate) struct ParkingSystem {
     sources: HashMap<PlaceSource, Vec<Handle<Place>>>,
     // At most one dirty entry per prepared chunk. Capacity grows only with supply edits/load.
     dirty: Vec<(i32, i32)>,
-    release_events: Vec<(i32, i32)>,
+    pub(crate) release_events: Vec<(i32, i32)>,
     retired_dirty: Vec<Handle<Place>>,
     usable_places: usize,
     pending: std::collections::BTreeMap<(i32, i32), Arc<ParkedChunk>>,
@@ -46,7 +46,7 @@ pub(crate) struct ParkingSystem {
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
-    stored: HashMap<(i32, i32), Vec<Handle<Vehicle>>>,
+    stored: HashMap<(i32, i32), std::collections::BTreeSet<Handle<Vehicle>>>,
     owners: HashMap<u64, Handle<Vehicle>>,
     mobility_seed: u64,
     pub(crate) pending_households: Vec<u64>,
@@ -244,6 +244,7 @@ impl ParkingSystem {
             chunk.release_pending = true;
             self.release_events.push(key);
         }
+        chunk.wake_after = None;
         self.mark_dirty(chunk_at([pos[0], pos[2]]));
         Some([pos[0], pos[2]])
     }
@@ -255,6 +256,14 @@ impl ParkingSystem {
         };
         if let Some(p) = self.place_handles.resolve(self.vehicles.reserved[v]) {
             self.places.reservation[p] = Handle::NONE;
+            let pos = self.places.position[p];
+            let key = chunk_at([pos[0], pos[2]]);
+            let chunk = self.chunks.get_mut(&key).expect("reserved parking chunk");
+            chunk.wake_after = None;
+            if !chunk.release_pending {
+                chunk.release_pending = true;
+                self.release_events.push(key);
+            }
         }
         self.vehicles.reserved[v] = Handle::NONE;
     }

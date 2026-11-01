@@ -60,7 +60,10 @@ fn towing_undo_and_reservations_conserve_cars() {
     s.remove_place(b);
     assert!(s.vehicles.place[0].is_none());
     s.replace_source(source(0), &[bay(0.0, 0.0)]);
-    assert!(!s.vehicles.place[0].is_none());
+    assert!(
+        s.vehicles.place[0].is_none(),
+        "restored supply must wait for a driven arrival"
+    );
     assert_eq!(s.vehicles.len(), 1);
     let free = s.add_place(source(2), bay(20.0, 0.0));
     assert!(s.reserve(car, free));
@@ -141,4 +144,43 @@ fn edit_towing_is_identical_after_loading_rebuilt_source_lists() {
         s.save_json(|s| s).unwrap(),
         loaded.save_json(|s| s).unwrap()
     );
+}
+
+#[test]
+fn stored_allocation_order_is_stable_across_insertion_order_and_save() {
+    use crate::simulation::zoning::profiles::ZoneDensity;
+    let make = |reverse: bool| {
+        let mut s = ParkingSystem::default();
+        let cars: Vec<_> = (0..24)
+            .map(|owner| {
+                s.assign_household(
+                    owner,
+                    ZoneDensity::Low,
+                    [if owner % 2 == 0 { -10.0 } else { 10.0 }, 0.0],
+                )
+            })
+            .collect();
+        for i in 0..cars.len() {
+            let car = cars[if reverse { cars.len() - 1 - i } else { i }];
+            s.park_new_car(car, 0);
+        }
+        s.rehouse_near([0.0, 0.0]);
+        s
+    };
+    let mut a = make(false);
+    let mut b = make(true);
+    let key = (0, 0);
+    for _ in 0..8 {
+        assert_eq!(a.next_stored_car(key), b.next_stored_car(key));
+    }
+    let mut loaded = ParkingSystem::load_json(&a.save_json(|s| s).unwrap()).unwrap();
+    let mut count = 8;
+    while let Some(car) = a.next_stored_car(key) {
+        assert_eq!(Some(car), b.next_stored_car(key));
+        assert_eq!(Some(car), loaded.next_stored_car(key));
+        count += 1;
+    }
+    assert_eq!(count, 24);
+    assert!(loaded.next_stored_car(key).is_none());
+    assert!(a.vehicles.place.iter().all(|p| p.is_none()));
 }

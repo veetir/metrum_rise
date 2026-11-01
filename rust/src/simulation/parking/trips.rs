@@ -34,6 +34,7 @@ pub struct ParkingTrip {
     pub(crate) route_capacity: usize,
     pub(crate) retry_pending: bool,
     pub(crate) arrival_ownership: bool,
+    pub(crate) delivery_only: bool,
     pub(crate) replan_needed: bool,
     #[serde(with = "saved_handle")]
     pub(crate) walk_origin: Handle<Place>,
@@ -128,7 +129,7 @@ impl ParkingSystem {
         }
     }
 
-    /// Records off-map custody without claiming supply. O(local waiting cars), event boundary.
+    /// Records off-map custody without claiming supply. O(log W), event boundary.
     pub(crate) fn store_arrival_car(&mut self, car: Handle<Vehicle>, home: u64) {
         let Some(v) = self.vehicle_handles.resolve(car) else {
             return;
@@ -138,12 +139,10 @@ impl ParkingSystem {
             .stored
             .entry(chunk_at(self.vehicles.home[v]))
             .or_default();
-        if !list.contains(&car) {
-            list.push(car);
-        }
+        list.insert(car);
     }
 
-    /// Reserves a border-origin vehicle's destination and exclusive carrier in O(1).
+    /// Reserves a border-origin vehicle's destination and exclusive carrier in O(log W).
     pub(crate) fn reserve_arrival(
         &mut self,
         car: Handle<Vehicle>,
@@ -158,7 +157,7 @@ impl ParkingSystem {
             return false;
         }
         if let Some(waiting) = self.stored.get_mut(&chunk_at(self.vehicles.home[v])) {
-            waiting.retain(|&h| h != car);
+            waiting.remove(&car);
         }
         self.vehicles.borrower[v] = borrower;
         self.set_moving(car, true);
@@ -221,7 +220,7 @@ impl ParkingSystem {
         };
         let home_chunk = chunk_at(self.vehicles.home[v]);
         if let Some(waiting) = self.stored.get_mut(&home_chunk) {
-            waiting.retain(|&handle| handle != car);
+            waiting.remove(&car);
             if waiting.is_empty() {
                 self.stored.remove(&home_chunk);
             }
@@ -288,8 +287,8 @@ mod saved_handle {
 }
 
 impl ParkingSystem {
-    /// Places an assigned car through the prepared home walking catchment. O(k), lifecycle
-    /// boundary only; with no free place the persistent car joins the off-map home event index.
+    /// Registers a new car off-map and queues supply, O(log W), lifecycle boundary only.
+    /// Cars enter the city through scheduled driven arrivals, including after save/load.
     pub(crate) fn park_new_car(&mut self, car: Handle<Vehicle>, home: u64) {
         let Some(v) = self.vehicle_handles.resolve(car) else {
             return;
@@ -298,17 +297,22 @@ impl ParkingSystem {
         if !self.vehicles.place[v].is_none() || self.vehicles.moving[v] {
             return;
         }
-        if let Some(candidate) = self.first_free_candidate(home) {
-            self.occupy(car, candidate.place);
-        } else {
-            let list = self
-                .stored
-                .entry(chunk_at(self.vehicles.home[v]))
-                .or_default();
-            if !list.contains(&car) {
-                list.push(car);
-            }
+        self.store_arrival_car(car, home);
+        self.rehouse_near(self.vehicles.home[v]);
+    }
+
+    /// Explicit fixture genesis only: places a car without simulating its historical arrival.
+    /// O(k + log W); ordinary household publication never calls this helper.
+    pub(crate) fn seed_fixture_car(&mut self, car: Handle<Vehicle>, home: u64) {
+        let Some(candidate) = self.first_free_candidate(home) else {
+            return;
+        };
+        if let Some(v) = self.vehicle_handles.resolve(car)
+            && let Some(waiting) = self.stored.get_mut(&chunk_at(self.vehicles.home[v]))
+        {
+            waiting.remove(&car);
         }
+        self.occupy(car, candidate.place);
     }
 }
 

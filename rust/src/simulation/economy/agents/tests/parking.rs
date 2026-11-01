@@ -81,6 +81,7 @@ fn fixture_at(
         [home_x, -12.0],
     );
     parking.park_new_car(car, home);
+    parking.seed_fixture_car(car, home);
     assert!(parking.vehicle_place(car).is_some());
     let mut agents = AgentSystem::new();
     for _ in 0..2 {

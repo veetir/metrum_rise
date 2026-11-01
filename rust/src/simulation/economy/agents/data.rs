@@ -262,6 +262,8 @@ pub struct AgentSystem {
     pub(crate) movement_serial_query: TripQueryScratch,
     /// Ordered requests for scheduled parking retries, drained by SimCore after movement.
     pub(crate) parking_retries: Vec<(AgentHandle, u16)>,
+    /// Completed delivery-only carriers, consumed after movement through normal swap removal.
+    pub(crate) completed_parking_deliveries: Vec<AgentHandle>,
     /// The wait-for cycle check's state between checks (`TRAFFIC-14`): per-lane stamps sized
     /// to the lane topology and the previous check's cycles.
     pub(crate) gridlock: GridlockChecker,
@@ -328,6 +330,7 @@ impl AgentSystem {
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
             parking_retries: Vec::new(),
+            completed_parking_deliveries: Vec::new(),
             gridlock: GridlockChecker::default(),
         }
     }

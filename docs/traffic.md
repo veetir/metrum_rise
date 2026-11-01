@@ -265,7 +265,7 @@ seed and stable household handle select the ownership bucket deterministically; 
 indices and worker scheduling do not participate. Household removal releases claims and deletes
 the vehicle. Children cannot drive, including in a household with an unused car.
 
-New cars take the first free fitting home catchment place, ordered by walking-route seconds,
+New cars reserve the first free fitting home catchment place before driving in, ordered by walking-route seconds,
 then fixed free-flow bay maneuver time, then place handle. A single destination list cannot
 order equal walks by an origin-dependent road trip; the driveway/bay maneuver is its fixed drive
 tie-break. The complete departure quote separately prices the actual free-flow road route.
@@ -338,6 +338,24 @@ Pass p06 move-ins reserve one free fitting home-catchment place at paced departu
 off-map. Carless households use the same pedestrian arrival. Ownership uses the saved seed and
 stable carrier identity before a household record exists; adoption preserves that decision and
 the original vehicle. Save version 111 adds this in-flight ownership decision, with no migration.
+
+Stored cars never become occupied places at supply publication or load. New lots, vacated bays,
+cancelled reservations and towing queue deduplicated chunk events. Each event considers at most
+eight cars in stable handle order across the nine neighbouring home chunks, continuing at the
+next eligible timing-wheel slot until that finite wake cycle ends. Failed cars sleep until the
+next supply event. Ordered sets reuse the existing home-chunk index; the continuation cursor
+lives in the existing parking chunk, and both cursor and scheduled event survive saves.
+
+Per event the bound is O(8 × (9 log W + k + BQ) + log S): W local waiting cars, k cached home
+candidates, B connected external borders, Q one exact route query, S scheduled events. A car
+selects one cached candidate before trying borders in stable order, reserves before spawning,
+and uses `Drive → PullIn`. The delivery-only carrier retires at the bay through the normal
+agent lifecycle, without entering a building. The household cannot use the car until pull-in
+commits occupancy. Supply release remains O(1), allocation-free. The shared logistics topology
+refresh is unchanged O(nodes + edges) once per revision, prepared before delivery events;
+there is no additional spatial or connectivity index. Save version 111 also stores delivery
+custody and wake cursors; SQLite stores opaque event payloads as signed bit patterns so negative
+chunk coordinates round-trip without numeric overflow.
 
 Round 2b retains freight and wider watchdog/lifecycle changes. Resident
 household removal and resident edit/watchdog recovery are already included here.

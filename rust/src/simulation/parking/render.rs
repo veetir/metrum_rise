@@ -105,7 +105,7 @@ impl ParkingSystem {
         (
             self.usable_places,
             self.vehicles.len(),
-            self.stored.values().map(Vec::len).sum(),
+            self.stored.values().map(std::collections::BTreeSet::len).sum(),
         )
     }
 }
