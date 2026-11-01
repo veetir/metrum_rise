@@ -370,6 +370,11 @@ only at its hourly recount, while car custody changes every tick; save version *
 the flag instead of rebuilding it from the agents at load. Both keep a loaded game saving the
 same bytes and continuing the same census as the uninterrupted one.
 
+A place's cached driveway access keeps its edge, side, stations and positions. Its lane ids are
+derived live from that edge's current lanes in O(lanes on the edge). A terrain edit or a dense
+undo renumbers every lane while republishing only the places near the edit, so cached lane ids
+would point at other lanes or past the end of the lane table.
+
 Round 2b retains freight and wider watchdog/lifecycle changes. Resident
 household removal and resident edit/watchdog recovery are already included here.
 

@@ -490,6 +490,21 @@ impl BuildingAllocator {
         entrance
     }
 
+    /// Re-derives a cached entrance's lane ids from its retained edge and side, so a copy kept
+    /// outside the allocator survives lane renumbering. O(lanes on the edge), allocation-free.
+    pub(crate) fn refresh_entrance_lanes(entrance: &mut BuildingEntrance, graph: &RegionGraph, lanes: &LaneSystem) {
+        entrance.foot_lane_fwd = INVALID_LANE_ID;
+        entrance.foot_lane_bkw = INVALID_LANE_ID;
+        entrance.car_lane_fwd = INVALID_LANE_ID;
+        entrance.car_lane_bkw = INVALID_LANE_ID;
+        if let Some(edge) = graph.get_edge(entrance.edge_idx) {
+            let side = entrance.side;
+            derive_foot_lanes(entrance, edge, side, lanes);
+            derive_car_lanes(entrance, edge, side, lanes);
+        }
+        derive_flags(entrance);
+    }
+
     fn derive_door_entrance(
         door: Option<Vector2>,
         edge_idx: usize,

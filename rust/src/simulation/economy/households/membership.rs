@@ -12,12 +12,12 @@ use crate::simulation::economy::agents::{
     AGE_ADULT, AGE_CHILD, AGE_ELDER, AgentSystem, age_group_can_shop, age_group_can_work,
 };
 use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
-use rayon::prelude::*;
 
 impl HouseholdSystem {
     pub(super) fn debug_validate_agent_household_refs(&self, _agents: &AgentSystem) {
         #[cfg(debug_assertions)]
         {
+            use rayon::prelude::*;
             let agents = _agents;
             let household_count = self.households.len();
             let households = &self.households;

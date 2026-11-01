@@ -21,6 +21,8 @@ fn parking_gridlock_detour_keeps_the_reserved_driveway_and_never_teleports() {
         let mut sidewalk = ring.network.lane_system.lanes[2].clone();
         sidewalk.lane_type = crate::simulation::network::lanes::LaneType::Foot;
         sidewalk.is_fwd = is_fwd;
+        // The hosts' side -1 sidewalk, indexed as the lane builder indexes it.
+        sidewalk.lane_idx = -100;
         sidewalk.next_lanes = Default::default();
         if !is_fwd {
             sidewalk.geometry.reverse();

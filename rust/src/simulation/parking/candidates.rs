@@ -380,7 +380,9 @@ impl ParkingSystem {
 
     /// Bitwise geometry stamp for an economy endpoint, O(1), allocation-free. Topology and
     /// door revisions invalidate route caches separately; local bay moves/manoeuvres need this
-    /// stamp even when the stable place handle survives an edit. Derived identically on load.
+    /// stamp even when the stable place handle survives an edit. Lane ids and flags are left
+    /// out: they are derived live and change only with the lane topology. Derived identically
+    /// on load.
     pub(crate) fn quote_geometry(&self, place: Handle<Place>) -> u64 {
         let Some(p) = self.place_handles.resolve(place) else {
             return 0;
@@ -390,16 +392,11 @@ impl ParkingSystem {
         for value in [
             entrance.edge_idx as u64,
             entrance.side as u64,
-            entrance.flags as u64,
             entrance.entrance_s_m.to_bits() as u64,
             entrance.door_pos.x.to_bits() as u64,
             entrance.door_pos.y.to_bits() as u64,
             entrance.curb_pos.x.to_bits() as u64,
             entrance.curb_pos.y.to_bits() as u64,
-            entrance.foot_lane_fwd as u64,
-            entrance.foot_lane_bkw as u64,
-            entrance.car_lane_fwd as u64,
-            entrance.car_lane_bkw as u64,
             self.maneuver_seconds(place).to_bits() as u64,
         ] {
             stamp = crate::simulation::core::stable_hash64(stamp ^ value);
@@ -407,17 +404,24 @@ impl ParkingSystem {
         stamp
     }
 
-    /// O(1), allocation-free copy of the driveway access prepared with the local publication.
+    /// Copy of the driveway access prepared with the local publication, with lane ids derived
+    /// from the current lanes: lane rebuilds renumber lanes far from the edited points that
+    /// republish access. O(lanes on the access edge), allocation-free.
     pub(crate) fn place_entrance(
         &self,
         place: Handle<Place>,
         _allocator: &BuildingAllocator,
-        _network: &TransitNetwork,
-        _graph: &RegionGraph,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
     ) -> Option<BuildingEntrance> {
         let p = self.place_handles.resolve(place)?;
         let access = &self.places.access[p];
-        (access.edge_idx != usize::MAX).then(|| access.clone())
+        if access.edge_idx == usize::MAX {
+            return None;
+        }
+        let mut entrance = access.clone();
+        BuildingAllocator::refresh_entrance_lanes(&mut entrance, graph, &network.lane_system);
+        Some(entrance)
     }
 
     /// Uses the validated driveway station and the host's existing lane identities.

@@ -337,8 +337,11 @@ fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
 fn parking_move_in_save_round_trip_mid_arrival() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     use crate::simulation::parking::ParkingTripPhase;
-    let mut c = SimCore::new(WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-        .with_chunking(128.0, 0.0).with_terrain_resolution(2.0));
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
     c.treasury.balance = 1_000_000.0;
     commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
     let id = register_lot(&mut c);
@@ -346,23 +349,46 @@ fn parking_move_in_save_round_trip_mid_arrival() {
     c.publish_pending_building_site_changes();
     let border = if c.allocator.entrances[0].side == -1 {
         c.region_graph.edge(0).start_node
-    } else { c.region_graph.edge(0).end_node };
+    } else {
+        c.region_graph.edge(0).end_node
+    };
     let pos = c.region_graph.node(border).pos;
-    let i = c.agents.spawn_household_arrival_carrier(0, 1,
-        HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
-    assert!(c.agents.start_parking_move_in(i, &mut c.parking, &c.allocator,
-        &c.transit_network, &c.region_graph));
+    let i = c.agents.spawn_household_arrival_carrier(
+        0,
+        1,
+        HouseholdAgeComposition {
+            adult_count: 1,
+            ..Default::default()
+        },
+        border,
+        pos.x,
+        pos.z,
+    );
+    assert!(c.agents.start_parking_move_in(
+        i,
+        &mut c.parking,
+        &c.allocator,
+        &c.transit_network,
+        &c.region_graph
+    ));
     c.households.recount_pending_arrivals(&mut c.agents);
     assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::Drive);
     let car = c.agents.parking_trip[i].vehicle;
     let before = c.parking.save_json(|s| s).unwrap();
     let trip = serde_json::to_string(&c.agents.parking_trip[i]).unwrap();
     let path = temp_save_path("parking-move-in-mid-arrival");
-    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
     c.load_game_internal(path.to_str().unwrap()).unwrap();
     assert_eq!(c.parking.save_json(|s| s).unwrap(), before);
-    assert_eq!(serde_json::to_string(&c.agents.parking_trip[i]).unwrap(), trip);
-    assert!(c.parking.vehicle_place(car).is_none(), "loading cannot park an arriving car");
+    assert_eq!(
+        serde_json::to_string(&c.agents.parking_trip[i]).unwrap(),
+        trip
+    );
+    assert!(
+        c.parking.vehicle_place(car).is_none(),
+        "loading cannot park an arriving car"
+    );
     std::fs::remove_file(path).unwrap();
 }
 
@@ -374,47 +400,133 @@ fn parking_new_lot_fills_by_driven_arrivals_and_saves_mid_delivery() {
     let lot = register_lot(&mut c);
     let mut home = c.allocator.registry.get(&lot).unwrap().manifest.clone();
     home.asset_id = "building.parking.home_without_bays".to_owned();
-    home.anchors.retain(|a| a.anchor_type != AnchorType::Parking);
+    home.anchors
+        .retain(|a| a.anchor_type != AnchorType::Parking);
     home.building.as_mut().unwrap().household_capacity = Some(4);
     let home_id = home.qualified_id("parking");
-    c.allocator.registry.register("parking", home, String::new());
-    c.place_service_building_internal(&home_id, -60.0, -30.0).unwrap();
+    c.allocator
+        .registry
+        .register("parking", home, String::new());
+    c.place_service_building_internal(&home_id, -60.0, -30.0)
+        .unwrap();
     c.publish_pending_building_site_changes();
     let resident = c.debug_add_parking_commuter(0, 0).unwrap();
     let car = c.agents.parking_trip[resident].vehicle;
     assert_eq!(c.parking.counts(), (0, 1, 1));
     let border = if c.allocator.entrances[0].side == -1 {
         c.region_graph.edge(0).start_node
-    } else { c.region_graph.edge(0).end_node };
+    } else {
+        c.region_graph.edge(0).end_node
+    };
     c.set_border_connection_internal(border as i32);
     c.transit_network.settle_cch();
-    c.place_service_building_internal(&lot, 60.0, -30.0).unwrap();
+    c.place_service_building_internal(&lot, 60.0, -30.0)
+        .unwrap();
     c.publish_pending_building_site_changes();
-    assert!(c.parking.vehicle_place(car).is_none(), "placing supply cannot park a stored car");
-    c.logistics.prepare_parking_borders(&c.transit_network, &c.region_graph);
+    assert!(
+        c.parking.vehicle_place(car).is_none(),
+        "placing supply cannot park a stored car"
+    );
+    c.logistics
+        .prepare_parking_borders(&c.transit_network, &c.region_graph);
     // This is the scheduled event handler, not a direct occupancy mutation.
     c.run_stored_parking_arrivals((0, -1), c.time.absolute_slot());
     c.run_stored_parking_arrivals((-1, -1), c.time.absolute_slot());
-    assert_eq!(c.agents.len(), 2, "one delivery carrier must enter at the border");
+    assert_eq!(
+        c.agents.len(),
+        2,
+        "one delivery carrier must enter at the border"
+    );
     assert!(c.parking.vehicle_place(car).is_none());
     assert!(!c.parking.available_to(car, c.agents.agent_handle(resident)));
     let path = temp_save_path("parking-stored-car-mid-delivery");
-    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
     c.load_game_internal(path.to_str().unwrap()).unwrap();
-    assert!(c.parking.vehicle_place(car).is_none(), "loading cannot complete a driven arrival");
+    assert!(
+        c.parking.vehicle_place(car).is_none(),
+        "loading cannot complete a driven arrival"
+    );
     for _ in 0..6000 {
-        c.agents.tick_with_parking(&c.allocator, &mut c.transit_network, &mut c.region_graph,
-            0.1, &c.time, &mut c.parking);
+        c.agents.tick_with_parking(
+            &c.allocator,
+            &mut c.transit_network,
+            &mut c.region_graph,
+            0.1,
+            &c.time,
+            &mut c.parking,
+        );
         for i in 0..c.agents.len() {
-            if c.agents.parking_trip[i].delivery_only && c.agents.transit[i] == TRANSIT_IN_BUILDING {
-                assert_eq!(c.agents.current_building[i], usize::MAX, "delivery driver entered a building");
+            if c.agents.parking_trip[i].delivery_only && c.agents.transit[i] == TRANSIT_IN_BUILDING
+            {
+                assert_eq!(
+                    c.agents.current_building[i],
+                    usize::MAX,
+                    "delivery driver entered a building"
+                );
             }
         }
         c.agents.remove_completed_parking_deliveries();
-        if c.parking.vehicle_place(car).is_some() { break; }
+        if c.parking.vehicle_place(car).is_some() {
+            break;
+        }
     }
     assert!(c.parking.vehicle_place(car).is_some());
     assert_eq!(c.agents.len(), 1, "delivery carrier must retire at the bay");
     assert!(c.parking.available_to(car, c.agents.agent_handle(resident)));
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn parking_place_access_follows_a_full_lane_renumbering() {
+    use crate::simulation::core::handles::Handle;
+    use crate::simulation::parking::PlaceSource;
+    let mut c = core();
+    let id = register_lot(&mut c);
+    c.place_service_building_internal(&id, -90.0, -30.0)
+        .unwrap();
+    c.publish_pending_building_site_changes();
+    let owner = c.allocator.building_handles.handle(0).to_bits();
+    let places: Vec<_> = (2..8)
+        .flat_map(|anchor| {
+            c.parking.source_bays(PlaceSource::Building {
+                building: owner,
+                anchor,
+            })
+        })
+        .map(|(bits, _)| Handle::from_bits(bits))
+        .collect();
+    assert_eq!(places.len(), 6);
+    // A road commit appends lane ids; the terrain sync then rebuilds every lane and renumbers
+    // them compactly, as a terrain edit does. Agents carry their lanes over by identity; the
+    // lot's access is not republished, so its cached lane ids point past the rebuilt lanes.
+    commit(&mut c, (100.0, 0.0), (100.0, 80.0));
+    c.transit_network
+        .sync_to_terrain(&mut c.region_graph, &c.heightmap);
+    let lanes = &c.transit_network.lane_system;
+    for place in places {
+        let entrance = c
+            .parking
+            .place_entrance(place, &c.allocator, &c.transit_network, &c.region_graph)
+            .expect("lot access survives a far edit");
+        assert!(c.region_graph.get_edge(entrance.edge_idx).is_some());
+        for lane in [
+            entrance.foot_lane_fwd,
+            entrance.foot_lane_bkw,
+            entrance.car_lane_fwd,
+            entrance.car_lane_bkw,
+        ] {
+            if lane != usize::MAX {
+                assert_eq!(
+                    lanes.lanes.get(lane).map(|l| l.edge_id),
+                    Some(entrance.edge_idx),
+                    "parking access lane must lie on its access edge after renumbering"
+                );
+            }
+        }
+        assert!(
+            entrance.car_lane_fwd != usize::MAX || entrance.car_lane_bkw != usize::MAX,
+            "lot access keeps a car lane"
+        );
+    }
 }
