@@ -1190,7 +1190,9 @@ func _apply_site_anchor_controls(field: String) -> void:
 
 func _update_site_anchor_preview() -> void:
 	if _preview and _preview.has_method("set_site_anchors"):
-		var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data}
+		var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
+			"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
+			"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
 		var payload: Dictionary = JSON.parse_string(_session.policy.parking_diagnostics_json(
 			JSON.stringify(params), _session.yard_structure_bounds()))
 		_preview.set_parking_diagnostics(payload)

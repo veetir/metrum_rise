@@ -39,7 +39,7 @@ vertices = [[-9.95, -9.5], [9.95, -9.5], [9.95, 10], [-9.95, 10]]
 
 [[anchors]]
 type = "parking"
-position = [-7.5, 0, -3]
+position = [-7.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5
@@ -47,7 +47,7 @@ vehicle_class = "car"
 
 [[anchors]]
 type = "parking"
-position = [-4.5, 0, -3]
+position = [-4.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5
@@ -55,7 +55,7 @@ vehicle_class = "car"
 
 [[anchors]]
 type = "parking"
-position = [-1.5, 0, -3]
+position = [-1.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5
@@ -63,7 +63,7 @@ vehicle_class = "car"
 
 [[anchors]]
 type = "parking"
-position = [1.5, 0, -3]
+position = [1.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5
@@ -71,7 +71,7 @@ vehicle_class = "car"
 
 [[anchors]]
 type = "parking"
-position = [4.5, 0, -3]
+position = [4.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5
@@ -79,7 +79,7 @@ vehicle_class = "car"
 
 [[anchors]]
 type = "parking"
-position = [7.5, 0, -3]
+position = [7.5, 0, -0.5]
 forward = [0, 0, -1]
 width_m = 2.5
 length_m = 5

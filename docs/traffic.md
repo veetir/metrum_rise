@@ -66,9 +66,14 @@ pockets. On two-way streets park only on the car's own driving side. Pull-out us
 
 ### Anchor lots, edits and rendering
 
-Each fitting `parking` anchor is public supply. Existing building transforms, paving, structure
-footprints and validated frontage driveways are reused. Fixed driveway–aisle–bay paths check full
-1.8 × 4.5 m translated rectangles and conservative 4.85 m turn envelopes. Unsupported layouts
+Each fitting `parking` anchor is public supply. Its `position` is the bay's entry edge and the bay
+runs `length_m` along `forward`, as asset validation and the asset editor draw it. Existing
+building transforms, paving, structure footprints and validated frontage driveways are reused. A
+bay whose entry edge lies on the lot's street edge (within 0.6 m) and points into the lot opens
+straight onto the street: the car turns in from the road and needs no `driveway` anchor. Other
+bays use fixed driveway–aisle–bay paths that check full 1.8 × 4.5 m translated rectangles and
+conservative 4.85 m turn envelopes. Paved support allows 5 cm at each bay edge. Rejections carry
+plain-language reasons, shown in the asset editor and the building inspector. Unsupported layouts
 publish diagnostics and no bay. `loading_bay` anchors are excluded. The bundled six-bay asphalt
 lot is an explicitly placed 20 × 20 m site with zero workers/households and no economy profile.
 Existing site surfaces render the asphalt; the bundled mesh supplies its rear wheel stop.

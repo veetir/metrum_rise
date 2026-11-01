@@ -5,9 +5,10 @@
 use super::{
     Bay,
     geometry::{precise, rectangle, structure_collision},
-    validation::{AnchorBay, validate_bay},
+    validation::{AnchorBay, driveway_points_inward, opens_onto_street, validate_bay},
 };
 use crate::assets::AnchorType;
+use crate::assets::asset::validation::ZONE_CELL_M;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
@@ -35,10 +36,9 @@ pub(crate) fn lot_bays(
     if !anchors.iter().any(|a| a.anchor_type == AnchorType::Parking) {
         return (Vec::new(), Vec::new());
     }
-    let (bx, bz) = building_local_xz_basis(
-        building.facing_dir,
-        asset.manifest.building_frontage_forward(),
-    );
+    let frontage = asset.manifest.building_frontage_forward();
+    let local_outward = Vector2::new(frontage[0], frontage[2]).normalized();
+    let (bx, bz) = building_local_xz_basis(building.facing_dir, frontage);
     let center = Vector2::new(building.center_x, building.center_y);
     let position = |p: [f32; 3]| center + bx * p[0] + bz * p[2];
     let direction = |p: [f32; 3]| (bx * p[0] + bz * p[2]).normalized();
@@ -47,12 +47,16 @@ pub(crate) fn lot_bays(
         .enumerate()
         .filter(|(_, a)| a.anchor_type == AnchorType::Parking)
         .map(|(i, a)| {
+            // The anchor marks the bay's entry edge and the bay runs along `forward`, as asset
+            // validation and the editor draw it; bay geometry below is centred.
+            let forward = direction(a.forward);
+            let length = a.length_m.unwrap_or(5.0);
             (
                 i as u32,
-                position(a.position),
-                direction(a.forward),
+                position(a.position) + forward * (length * 0.5),
+                forward,
                 a.width_m.unwrap_or(2.5),
-                a.length_m.unwrap_or(5.0),
+                length,
             )
         })
         .collect();
@@ -104,7 +108,7 @@ pub(crate) fn lot_bays(
                 }
                 let start = position(driveway.position);
                 let inward = direction(driveway.forward);
-                if inward.dot(-building.facing_dir) < 0.9 {
+                if !driveway_points_inward(inward, building.facing_dir) {
                     return None;
                 }
                 let edge = graph.get_edge(building.edge_idx).filter(|e| !e.deleted)?;
@@ -122,6 +126,30 @@ pub(crate) fn lot_bays(
                 Some([connection, approach])
             })
             .collect();
+        // A bay whose entry edge is the lot's street edge is reached straight from the road.
+        let local = &anchors[anchor as usize];
+        let local_forward = Vector2::new(local.forward[0], local.forward[2]).normalized();
+        let local_entry = Vector2::new(local.position[0], local.position[2]);
+        let half_extents = Vector2::new(
+            f32::from(building.width_cells),
+            f32::from(building.depth_cells),
+        ) * (ZONE_CELL_M * 0.5);
+        let street = opens_onto_street(local_entry, local_forward, local_outward, half_extents)
+            .then(|| {
+                let entry = pos - forward * (length * 0.5);
+                let edge = graph.get_edge(building.edge_idx).filter(|e| !e.deleted)?;
+                let station =
+                    BuildingAllocator::project_point_to_polyline_s(&edge.physical_geometry, entry);
+                let connection = BuildingAllocator::claimed_road_side_connection_pos(
+                    graph,
+                    building.edge_idx,
+                    building.side,
+                    station / edge.physical_length,
+                )?;
+                roads.height_at(connection.x, connection.y)?;
+                Some(connection)
+            })
+            .flatten();
         let checked = validate_bay(
             slot,
             &geometry,
@@ -131,6 +159,7 @@ pub(crate) fn lot_bays(
                 .iter()
                 .any(|a| a.anchor_type == AnchorType::Driveway),
             &paths,
+            street,
             |foot| structure_collision(allocator, foot),
         );
         if let Ok(path) = checked {
