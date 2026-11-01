@@ -6,7 +6,22 @@ use super::support::{create_test_building, register_test_asset, setup_straight_r
 use super::*;
 use crate::simulation::parking::{Bay, ParkingSystem, ParkingTripPhase, PlaceSource};
 
-fn fixture() -> (
+/// Minimal resident/lot fixture shared with the blocked-ring parking integration test.
+pub(in crate::simulation::economy::agents) fn fixture() -> (
+    AgentSystem,
+    ParkingSystem,
+    BuildingAllocator,
+    TransitNetwork,
+    RegionGraph,
+) {
+    fixture_at(45.0, 455.0, 455.0)
+}
+
+fn fixture_at(
+    home_x: f32,
+    work_x: f32,
+    driveway_x: f32,
+) -> (
     AgentSystem,
     ParkingSystem,
     BuildingAllocator,
@@ -18,8 +33,8 @@ fn fixture() -> (
     let home_asset = register_test_asset(&mut allocator, "parking", "home", ZoneClass::Residential);
     let work_asset = register_test_asset(&mut allocator, "parking", "work", ZoneClass::Commercial);
     for (x, asset, zone) in [
-        (45.0, home_asset, ZoneType::Residential),
-        (455.0, work_asset, ZoneType::Commercial),
+        (home_x, home_asset, ZoneType::Residential),
+        (work_x, work_asset, ZoneType::Commercial),
     ] {
         let mut b = create_test_building(0, -1);
         b.center_x = x;
@@ -37,6 +52,7 @@ fn fixture() -> (
     for b in 0..2 {
         let e = &allocator.entrances[b];
         let pos = e.door_pos + Vector2::new(5.0, 0.0);
+        let curb_x = if b == 1 { driveway_x } else { e.curb_pos.x };
         parking.add_place(
             PlaceSource::Building {
                 building: allocator.building_handles.handle(b).to_bits(),
@@ -46,7 +62,7 @@ fn fixture() -> (
                 identity: [0, b as u64],
                 position: [pos.x, 0.0, pos.y],
                 path: [
-                    [e.curb_pos.x, e.curb_pos.y],
+                    [curb_x, e.curb_pos.y],
                     [pos.x, e.curb_pos.y],
                     [pos.x, pos.y + 3.0],
                     [pos.x, pos.y],
@@ -62,13 +78,13 @@ fn fixture() -> (
     let car = parking.assign_household(
         0,
         crate::simulation::zoning::profiles::ZoneDensity::Low,
-        [45.0, -12.0],
+        [home_x, -12.0],
     );
     parking.park_new_car(car, home);
     assert!(parking.vehicle_place(car).is_some());
     let mut agents = AgentSystem::new();
     for _ in 0..2 {
-        let i = agents.spawn_housed_agent(0, 45.0, -12.0);
+        let i = agents.spawn_housed_agent(0, home_x, -12.0);
         agents.agents.parking_trip[i].vehicle = car;
         agents.agents.planned_target_building[i] = 1;
         agents.agents.planned_activity[i] = 1;
@@ -595,4 +611,160 @@ fn shared_economy_quotes_match_resident_mode_choice_and_respect_custody() {
         .place;
     assert!(parking.reserve_trip(car, agents.agent_handle(0), target));
     assert!(!ResidentMobility::for_agent(&parking, &agents, 1).eligible);
+}
+
+/// Services only route-buffer preparation events at the next tick boundary of these isolated
+/// fixtures, matching SimCore's schedule/retry boundary without constructing a gameplay world.
+pub(in crate::simulation::economy::agents) fn prepare_requested_routes(agents: &mut AgentSystem) {
+    let requests = std::mem::take(&mut agents.parking_retries);
+    for (handle, seconds) in requests {
+        assert_eq!(
+            seconds, 0,
+            "fixture unexpectedly needs a timed route/supply retry"
+        );
+        let i = agents.resolve_agent(handle).unwrap();
+        let trip = agents.parking_trip[i];
+        trip.prepare_route_buffer(&mut agents.agents.current_path[i]);
+        agents.agents.parking_trip[i].retry_pending = false;
+        agents.agents.next_replan_time[i] = 0.0;
+    }
+}
+
+// Run the real itinerary up to its driveway handoff, observing both lane visits and position.
+fn assert_pull_in_station(home_x: f32, work_x: f32, driveway_x: f32, loops: bool) {
+    let (mut agents, mut parking, allocator, mut network, mut graph) =
+        fixture_at(home_x, work_x, driveway_x);
+    let mut returning = false;
+    let clock = test_clock(0, 0);
+    for _ in 0..12_000 {
+        prepare_requested_routes(&mut agents);
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        let lane = agents.current_lane_id[0];
+        if agents.parking_trip[0].phase == ParkingTripPhase::Drive
+            && lane != usize::MAX
+            && !network.lane_system.lanes[lane].is_fwd
+            && network.lane_system.lanes[lane].edge_id == 0
+        {
+            returning = true;
+        }
+        if agents.parking_trip[0].phase == ParkingTripPhase::PullIn {
+            assert_eq!(returning, loops, "detached on the wrong visit");
+            let lane = agents.planned_detach_lane_id[0] as usize;
+            let distance = agents.planned_detach_lane_d[0];
+            let point =
+                BuildingAllocator::sample_pos_on_lane(&network.lane_system.lanes[lane], distance);
+            assert!((point.x - driveway_x).abs() < 0.01);
+            assert_eq!(Vector2::new(agents.pos_x[0], agents.pos_y[0]), point);
+            assert!(parking.trip_reserved(
+                agents.parking_trip[0].vehicle,
+                agents.parking_trip[0].destination,
+            ));
+            return;
+        }
+    }
+    panic!("never pulled in: {:?}", agents.parking_trip[0]);
+}
+
+#[test]
+fn parking_pull_in_reaches_the_driveway_at_the_lane_end() {
+    assert_pull_in_station(45.0, 495.0, 500.0, false);
+}
+
+#[test]
+fn parking_pull_in_waits_for_the_last_destination_edge_visit() {
+    assert_pull_in_station(455.0, 45.0, 45.0, true);
+}
+
+#[test]
+fn parking_gridlock_excludes_parked_and_stored_cars() {
+    let (mut agents, mut parking, allocator, network, graph) = fixture();
+    let parked = agents.parking_trip[0].vehicle;
+    assert!(parking.vehicle_place(parked).is_some());
+    let stored = parking.assign_household(
+        1,
+        crate::simulation::zoning::profiles::ZoneDensity::Low,
+        [45.0, -12.0],
+    );
+    assert!(!stored.is_none());
+    assert!(parking.vehicle_place(stored).is_none());
+    agents.parking_trip[1].vehicle = stored;
+    agents.prepare_lane_buckets_for_test(&network);
+    assert!(agents.lane_buckets.iter().all(Vec::is_empty));
+    for now in [1, 2] {
+        agents.check_gridlock(&allocator, &network, &graph, now, Some(&parking));
+        let report = agents.gridlock.report();
+        assert_eq!(report.waiting_lanes, 0);
+        assert_eq!(report.cycles, 0);
+        assert_eq!(report.saturation_reports, 0);
+    }
+    let saved = agents.gridlock.save(&network);
+    assert!(saved.heads.is_empty());
+    assert!(saved.cycle_cars.is_empty());
+}
+
+#[test]
+fn parking_gridlock_treats_a_held_pull_out_as_an_entry_wait() {
+    let (mut agents, mut parking, allocator, mut network, mut graph) = fixture();
+    let clock = test_clock(0, 0);
+    for _ in 0..8_000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.parking_trip[0].phase == ParkingTripPhase::PullOut {
+            break;
+        }
+    }
+    assert_eq!(agents.parking_trip[0].phase, ParkingTripPhase::PullOut);
+    let lane = agents.planned_attach_lane_id[0] as usize;
+    let distance = agents.planned_attach_lane_d[0];
+    let blocker = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+    agents.transit_mode[blocker] = MODE_CAR;
+    agents
+        .agents
+        .enter_lane(blocker, &network.lane_system, lane, distance, 0);
+    agents.speed[blocker] = 0.0;
+    // Hold the entry slot full while the real pull-out reaches the driveway.
+    for _ in 0..1_000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.access_flags[0] & ACCESS_LANE_ATTACH_PENDING != 0 {
+            break;
+        }
+        agents
+            .agents
+            .enter_lane(blocker, &network.lane_system, lane, distance, 0);
+        agents.speed[blocker] = 0.0;
+        agents.lane_bucket_snapshot_valid = false;
+    }
+    assert_ne!(agents.access_flags[0] & ACCESS_LANE_ATTACH_PENDING, 0);
+    assert_eq!(agents.current_lane_id[0], usize::MAX);
+    // The swept pull-out completed; network entry is still held at the driveway.
+    assert_eq!(agents.parking_trip[0].phase, ParkingTripPhase::Drive);
+    for now in [1, 2] {
+        agents.check_gridlock(&allocator, &network, &graph, now, Some(&parking));
+        let report = agents.gridlock.report();
+        assert_eq!(report.cycles, 0);
+        assert_eq!(report.saturation_reports, 0);
+    }
+    let saved = agents.gridlock.save(&network);
+    let borrower = agents.agent_handle(0).to_bits();
+    assert!(saved.heads.iter().all(|&(_, car, _)| car != borrower));
 }

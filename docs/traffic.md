@@ -26,7 +26,7 @@ Implementation lives mainly in:
 Round 1 ships building anchors, the standalone lot, deterministic edit towing, persistent parked
 cars, saves and parked chunk rendering on `upstream/dev`. Agent travel is unchanged. Household
 ownership and resident/freight/immigration itineraries belong to `PARK-02`, after
-`TRAFFIC-15/13/16` and before `TRAFFIC-14`. The deterministic fleet is created only by the
+the shared traffic fixes. The deterministic fleet is created only by the
 explicit `debug_fill_parking()` bridge command; ordinary gameplay does not populate it.
 
 `simulation/parking.rs` owns SoA place/vehicle rows with the existing generational handle tables,
@@ -95,11 +95,11 @@ nothing; exact version/world acknowledgements retain updates through skipped fra
 `vehicle_resources.gd` keeps moving meshes/materials identical; parked meshes omit lamps/beams.
 The resident moving/parked identity handoff is implemented in round 2a below; external vehicles remain for round 2b.
 
-Save format **109** (upstream 108 + 1, no migration) stores handle generations, building-anchor
+Save format **110** (upstream 109 + 1, no migration) stores handle generations, building-anchor
 places, cars, occupancy and reservations. Edge rules/lineage are absent. Load validates reciprocal
 custody and building owners, rebuilding source/chunk/waiting/render indices. Detached explicit
 sites retain their rigid pose so losing a driveway road disables supply without breaking saves.
-The pinned Kuopio fixture is re-recorded for this revised, unshipped 109 schema.
+The pinned Kuopio fixture is re-recorded for the combined parking/gridlock schema.
 
 ### PARK-01 acceptance (round 1b, 2026-10-31)
 
@@ -297,9 +297,9 @@ The itinerary is `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` ins
 access/network/access FSM. Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry`, including
 `ACCESS_LANE_ATTACH_PENDING`. Pull-in uses the existing `try_network_detach`. Both use the lot's
 driveway curb, followed by the retained four-point swept path outside the network. No resident
-car-mode leg finishes at a door; arrival asserts this in debug builds. The maintainer's
-`TRAFFIC-13` looping-route detach and `TRAFFIC-15` lane-end detach conditions are unchanged and
-can still affect these driving legs.
+car-mode leg finishes at a door; arrival asserts this in debug builds. The
+`TRAFFIC-13` last-visit rule and `TRAFFIC-15` lane-end reachability are authoritative and
+now apply to these driving legs through the shared detach function.
 
 Removing a reserved bay cancels its claim. A bounded three-handle reverse link retains disabled
 endpoint geometry only while its borrower needs it; it is excluded from usable supply. Recovery
@@ -329,6 +329,104 @@ rolling destination memberships; the unshipped format changes together, without 
 
 Round 2b retains freight and immigration and their wider watchdog/lifecycle changes. Resident
 household removal and resident edit/watchdog recovery are already included here.
+
+### Traffic integration after round 2a (PARK-02, 2026-11-01)
+
+Merged `upstream/dev` `c2d49902` into parking parent `6531b187`, preserving both histories.
+The five conflicts were the Kuopio SQLite fixture, `agents/data.rs`, `agents/tests.rs`,
+`tick/access.rs` and `save/schema.rs`. Agent state retains both parking retries and the gridlock
+checker; both test modules and both access exports remain. Save version stays **110**, exactly
+`dev` 109 + 1, without migration. An in-memory schema comparison verifies that every table and
+column from both parents remains, including `parking_state` and `gridlock_state`. The existing
+`record_kuopio_reference_save` recorder passes; the pinned version-110 fixture contains both rows.
+
+The shared `try_network_detach` keeps the upstream lane-end reach bound and final-route-visit
+rule unchanged. Gridlock detours now receive the same parking entrance override as ordinary
+network replans, preserving the reservation and driveway station instead of routing to the door.
+Replacement also clamps the saved route preparation budget. Additional work is O(1),
+allocation-free per attempted detour; the existing one route query and route allocation remain.
+No per-tick parked/stored-car pass or new spatial index is added.
+
+Five new integration regressions pass:
+
+- `parking_pull_in_reaches_the_driveway_at_the_lane_end`: the real resident itinerary detaches
+  at the 500 m lane-end driveway and retains its destination claim.
+- `parking_pull_in_waits_for_the_last_destination_edge_visit`: the real itinerary drives the
+  U-turn loop before pulling in on its second visit, at the planned station.
+- `parking_gridlock_excludes_parked_and_stored_cars`: both vehicles stay out of lane buckets,
+  waiting-head stamps and cycle cars across consecutive checks.
+- `parking_gridlock_treats_a_held_pull_out_as_an_entry_wait`: an actually blocked handoff has
+  `ACCESS_LANE_ATTACH_PENDING`, no current lane and no gridlock across consecutive checks.
+  The swept pull-out has completed, so its saved logical phase is `Drive` during this entry wait.
+- `parking_gridlock_detour_keeps_the_reserved_driveway_and_never_teleports`: a confirmed cycle
+  detours the parking-bound head, retaining its borrower and claim, unchanged lane/position bits
+  at replacement, bounded route budget and ordinary movement to occupancy of the reserved bay.
+  Its driveway is 80 m away from the target door, exposing an incorrect door-based replan.
+
+The isolated loop fixture services only the existing zero-delay route-preparation requests at
+its next tick boundary; it does not use a full gameplay constructor or change retry semantics.
+Fresh optimized-debug parking tests: **30 passed, 2 ignored**, 1.16 s; fresh release parking tests:
+**30 passed, 2 ignored**, 0.86 s. Full `cargo test --lib`: **1,885 passed, 186 ignored, 2 failed**,
+359.78 s, the two reference probes compared with plain `dev` below. Fresh
+`cargo clippy --all-targets`: zero warnings. `cargo doc --no-deps`: zero missing-doc diagnostics
+and ten link warnings, also compared below. Builds use Rust 1.98.1, macOS SDK 26.5,
+`CARGO_INCREMENTAL=0`, the supplied `TMPDIR` and eight Rayon workers.
+
+Each of these eleven Godot 4.7.2 scripts passes in its own isolated-profile headless process,
+launched through `perl -e 'alarm 900; exec @ARGV' godot ...`, with zero `ERROR:` or
+`SCRIPT ERROR:` lines: `parking_test`, `agent_inspector_test`, `vehicle_ground_support_test`,
+`building_asset_reload_test`, `network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`,
+`road_preview_metrics_test`, `road_junction_preview_test`, `road_preview_stream_test`,
+`road_rejection_report_test` and `gridlock_notice_test`. The parking resource comparison uses
+`e84b1136^`'s pre-extraction renderer. The gridlock fixture comes from the existing
+`record_gridlock_saturation_fixture` recorder. The isolated import has zero errors. The old
+library is removed before copying the new release library; generated import metadata is removed.
+Logs and immutable release executables remain local under `$ARTIFACTS`.
+
+Fresh plain `upstream/dev` `c2d49902` was built in a detached control worktree with the same
+profiles and environment. Its `cargo test --lib` result is **1,855 passed, 184 ignored, 2 failed**,
+284.80 s. Both builds fail exactly these same probes:
+
+- `nodes::sim::core::tests::road_reference_probe::reference_junction_products_match_the_probe`
+- `simulation::network::roadbed::node::tests::probe::roadbed_fixture_products_match_the_probe`
+
+Plain `dev` also has zero clippy warnings and zero missing-doc diagnostics. Its ten rustdoc
+link-warning messages match the parking build exactly. These are fresh comparisons, not the
+historical round-2a results below; the unrelated probe expectations are unchanged.
+
+The fresh commands in each crate are `cargo test --lib`, `cargo clippy --all-targets` and
+`cargo doc --no-deps`; parking additionally runs `cargo test --lib parking`, the existing ignored
+Kuopio recorder, `cargo build --release` and the release parking tests. Both release test
+executables are built with `cargo test --release --lib --no-run` and retained before switching
+builds. One unprofiled PERF-06 pair runs control first, parking second, serially, with eight Rayon
+workers, inherited CPU affinity and no concurrent build, correctness test or Godot process:
+
+```sh
+RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+Release test SHA-256: `dev` `5775e886182ae3f0fb3821b778f0ba2273e4065ddf650f573e98ca3068c96426`; parking `17c8fce914d2f2573cf6ea8f0c9813c68040ebe29ab8e9a50c3e6e17257c3476`.
+
+| Mode | Agents | dev, ms | parking, ms |
+| --- | ---: | ---: | ---: |
+| network | 10,000 | 0.767959 | 0.672708 |
+| network | 30,000 | 1.034875 | 1.164667 |
+| access_egress | 10,000 | 0.859042 | 1.016458 |
+| access_egress | 30,000 | 1.865333 | 2.135333 |
+| access_ingress | 10,000 | 0.475750 | 0.516000 |
+| access_ingress | 30,000 | 0.736459 | 0.775750 |
+
+All common work counts match exactly. Agent-row counts grow exactly 3×; frontage lane work stays
+at 16 and the zero-count phases remain zero. The two parking-only eligibility/transition passes
+also grow exactly 3×. Every phase satisfies the 3.6× bound and repeated fixtures have identical
+counts. These six single timing samples are a sanity check and establish no speedup.
+
+Round 2b brief: the shared detach/gridlock dependencies are merged on `feat/parking`; retain the
+last-visit/lane-end rules, held-entry exclusion, reserved driveway override and route-budget clamp.
+Freight/immigration custody, outside-door deliveries and their wider lifecycle/watchdog work remain
+for round 2b. The earlier PERF-03…05 economy counter debt remains open; this short PERF-06 pair
+does not revalidate those whole-economy measurements. Keep the two independently reproduced
+reference-probe failures separate from parking regressions.
 
 ### Round 2a verification (2026-11-01)
 
@@ -871,7 +969,7 @@ local):
   within noise and not a speed claim.
 - 100k lane audit (`traffic07_lane_entry_audit`, day 12 at 32×, 8 workers, each engine its own
   city): `dev` reproduces the `TRAFFIC-11` record exactly (0 lanes over capacity and 0 stacked cars
-  at every sample; 2,579 and 3,385 trucks held at nodes, 96 and 234 vehicles at attach points at
+  at every sample; 2,579 and 3,385 vehicles held at nodes, 96 and 234 vehicles at attach points at
   00:00 and 24:00). The fix: 0 lanes over capacity and 0 stacked cars at every sample; 2,682 and
   3,664 held at nodes, 140 and 192 at attach points (a different city, so the holds are not
   attributed). This city was prepared with the fix's first build, whose lane ends took the layout's
@@ -917,6 +1015,24 @@ entry also uses a per-tick claim to avoid two cars grabbing the same zero-distan
 Car exits check outgoing-lane occupancy and acquire the same reservation (`AUDIT-01-A11`). A
 blocked car waits at the connector end with its route intact until the outgoing entry clears.
 
+**Tried and rejected: don't block the box (`TRAFFIC-14`, round R14C, 2026-10-31).** A rule that
+let a car onto a connector only while the connector's exit lane had room, from its start to its
+tail car, for every car already on the connector plus this one (tail distance at least `(cars on
+the connector + 1) × (CAR_LENGTH + IDM_S_MIN)`, an empty exit always passing), tested in the
+connector claim and in the road-lane brake of the speed pass, was built and measured, then
+dropped by the user's decision. It reads positions only, so a moving exit queue whose tail has
+just entered counts as full: in flow a connector admits a car only after the previous one has
+cleared `(cars on the connector + 1)` slots, and a car waits at the stop line and starts from 0
+instead of rolling up the connector. Envelope against the same-session `dev` control
+(`bcbb148f`), rule alone: 30k baseline deliveries 135.7 to 79.8 (-41%), net income 9.89 to 4.69,
+bankruptcies 1.26 to 2.48, out-of-stock 0.21 to 0.46; 10k baseline deliveries 173.4 to 153.2
+and bankruptcies 0.03 to 0.57; 19 notes against 14. The claim test alone (no brake) still cut
+30k deliveries to 88.6 (-35%). On the 1-day 100k audit 40-46k cars stood unmoved per 6 hours
+against 29-30k. With it the 100k city formed no cycle at all to day 12 (68,436 cars on road,
+3,652 held at nodes, 371 at attach points; with `TRAFFIC-16` as well 70,575 / 3,710 / 376). A
+rule against a standing exit queue only, which needs the exit's speeds at the tick's start, is
+recorded under `TRAFFIC-09`; it is not built.
+
 A car that starts at a node (border-origin freight, an arrival carrier, a replan at a node, or a
 zero-hop route onto its planned detach lane) enters its first lane under the same two checks
 (`TRAFFIC-07`): `lane_entry_slot_clear` on the candidate lanes of the first edge, starting at
@@ -942,16 +1058,18 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
 - Lane audit: `frame_budget::lane_entry_audit::traffic07_lane_entry_audit` (ignored, release)
   loads a prepared snapshot, runs one game day and counts, every `METRUM_AUDIT_EVERY_MINUTES`
   (default 240), the lanes holding more cars than fit (`floor(length / 2.7) + 1`), the cars within
-  0.5 m of a lane's start, and the trucks held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
+  0.5 m of a lane's start, and the vehicles held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
   steps onto a lane that was already full in the previous frame, with its previous state. Each engine
   builds its own 100k city (`perf_contract_prepare`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`), day
-  12 at 32×. `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
+  12 at 32×. (Its freight count and its trace's "truck" label tested `freight_shipment_id != 0`,
+  but a vehicle with no shipment holds `u64::MAX`, so every vehicle counted as a truck; fixed in
+  round R14A. The held and traced counts below are vehicles.) `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
   197 fit, then 925), 685 and 754 cars within 0.5 m of one lane start, 2,872 and 3,708 cars
-  stacked on 14 and 15 lanes, 12 and 5 trucks held. With the hold: 0 lanes over capacity and 0
+  stacked on 14 and 15 lanes, 12 and 5 vehicles held. With the hold: 0 lanes over capacity and 0
   stacked cars at 00:00, 2 lanes over at 24:00 (200 cars where 140 fit; 81 cars stacked), 2,636 and
-  3,463 trucks held at nodes. None of the 81 entries that took a lane above capacity came from node
+  3,463 vehicles held at nodes. None of the 81 entries that took a lane above capacity came from node
   entry (on `dev` 255 of the first 400 entries onto a full lane did, within 40 game minutes); all
-  81 were trucks that left the access-egress state onto one lane in one tick (22 and 59 trucks at
+  81 were vehicles that left the access-egress state onto one lane in one tick (22 and 59 vehicles at
   a single attach point), tracked as `TRAFFIC-11`.
 - `PERF-06` agent contract (`tools/perf_contract.py --agents`, 3 alternating `dev`/fix pairs, cores
   `0,2,..,14`, 8 workers): identical work counts; 10k network tick 0.255, 0.238, 0.255 ms
@@ -959,7 +1077,7 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
   0.545 ms. Same fix-built 100k city, first two game hours at 1×, 3 alternating pairs: mean agent
   tick 5.065–5.091 ms with `HeldEntry` against 5.300–5.315 ms with held cars left on the serial
   pass (the earlier prototype's approach), 0.22 ms less. Each engine's own city at 1×: 4.925 and
-  4.948 ms (`dev`, 12 held trucks) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
+  4.948 ms (`dev`, 12 held vehicles) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
   differ, so that pair does not isolate the hold.
 - `./run.sh --test`: Rust suite plus the headless and rendered Godot scripts.
 - Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
@@ -974,7 +1092,7 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
   baseline workload (0.173 to 0.194 at 1.00×) and by +0.024, +0.020, +0.018 in fiscal stress (0.786
   to 0.806 at 1.00×, which crosses its band edge at 0.787): the two 10k out-of-stock notes of the
   earlier prototype. Cause: the hold shows the border's real throughput. One single-lane trunk per
-  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 trucks waiting at its
+  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 vehicles waiting at its
   border at 00:00 of day 12 and 1,919 at 24:00 (the road holds 1,100–2,600 vehicles), which the
   stacking used to hide. Border throughput stays a fixture question (`TRAFFIC-07` does not change
   it).
@@ -998,16 +1116,16 @@ belongs to the car's edge, is dropped and the car repairs from the lane's origin
 Diagnosis (`TRAFFIC-11`, 2026-10-30). On the `TRAFFIC-07` branch (`3532b612`) the traced 100k
 audit (`METRUM_AUDIT_TRACE=1`, which now also records the buildings removed in the frame and each
 car's previous building) shows both bulk entries in a frame in which the economy removed buildings:
-at game minute 16,024, 14 removals, 22 trucks step onto lane 13,362 (edge 2,227, 380 m, 141 cars
-where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 trucks onto lane 13,357 (edge
-2,226) at 343.02 m. Every truck of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
+at game minute 16,024, 14 removals, 22 vehicles step onto lane 13,362 (edge 2,227, 380 m, 141 cars
+where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 vehicles onto lane 13,357 (edge
+2,226) at 343.02 m. Every vehicle of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
 (57,760 and 57,711) the frame before, has its home as its new target and the driveway speed 3 m/s.
 That is the evacuation of a removed building: `remove_evacuated_building`
 (`buildings/allocator/lifecycle.rs:870`) calls `evacuate_referencing`
 (`agents/building_refs.rs:415`), which plans each occupant's trip home and calls
 `start_building_origin_plan_on_network` (`building_refs.rs:481`, `:509`, defined at `:601`). Its
 `enter_lane` (`building_refs.rs:644`) put every occupant on the building's attach lane at the
-attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The trucks were the egress
+attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The vehicles were the egress
 queue waiting at that full attach slot, so a business failing beside a jammed road dumps its whole
 queue onto one point. The same unchecked placement existed in the road-edit reattachment
 (`agents/remap.rs:331`) and the invalid-ingress rollback (`movement/access_state/ingress.rs:168`);
@@ -1031,7 +1149,8 @@ Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
 - Lane audit, same command as `TRAFFIC-07` (`perf_contract_prepare` then
   `traffic07_lane_entry_audit`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, day 12 at 32×, the
   fix-built city): 0 lanes over capacity and 0 cars stacked at a lane start at 00:00, 06:00,
-  12:00, 18:00 and 24:00; 2,579 trucks held at nodes at 00:00 and 3,385 at 24:00; 96 vehicles
+  12:00, 18:00 and 24:00; 2,579 vehicles held at nodes at 00:00 (2,349 of them carry freight,
+  recounted in round R14A) and 3,385 at 24:00; 96 vehicles
   held at an attach point at 00:00 and 234 at 24:00. The trace lists 51 entries onto a lane that
   was full in the previous frame, all onto lanes of at most 100 m (connectors), at most 2 per lane
   and frame, none leaving a lane over capacity. On the `TRAFFIC-07` branch's own city the same
@@ -1063,6 +1182,283 @@ Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
 - `./run.sh --test` (headless, isolated profile): exit code 0; debug library suite 1,850 passed,
   0 failed, 178 ignored; no Godot script skipped and no script error.
 
+### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
+
+A car leaves the network for its destination's ingress in `try_network_detach`
+(`tick/movement/network/detach.rs`), under one rule:
+
+- It is on its planned detach lane, with a valid access plan.
+- Its movement step has reached the planned detach distance. A step that ends inside the lane
+  reaches the car's new `lane_d`. A step that reaches the lane's end passes every point left on
+  the lane, so it reaches `length + ACCESS_LANE_D_TOLERANCE_M` (1e-4 m), the same bound the
+  planner's access legality (`access/legality.rs`) accepts for `planned_detach_lane_d`. Every
+  legal detach point is therefore reachable, the lane's end included, and the end-of-lane try
+  runs before `handle_lane_end`.
+- The route is on its last visit to the lane: no node of `current_path` is left beyond the lane's
+  terminal node (`path_idx` names the next node, the lane's terminal while the car drives toward
+  it, the same reading as `planned_next_connector`). A route that leaves its detach lane and comes
+  back to a door behind the car does not detach on the first visit.
+- A car claims the detach slot (`claim_lane_entry` on the detach lane). While another car holds
+  it, the car waits at `min(planned_detach_lane_d, length)` with speed 0.
+
+The speed pass does not brake for a detach point, mid-lane or at the lane's end: a car detaches in
+the step that reaches the point, at the speed it has. Road-lane junction braking does not apply to
+a car on its last visit to its detach lane either, since `planned_next_connector` finds no next
+connector for it. Cost: O(1) per detach try (one terminal-node lookup), no allocation; the
+end-of-lane try runs once per road-lane end event.
+
+Before this rule a step had to end strictly inside the lane, so a door that projects onto the
+lane's end (a corner store at `frontage_t` 0 seen from the opposite lane), or a step that crossed
+the detach point and the lane's end together, was never reached: the car left the lane with a
+finished route, replanned at the end node and drove round the block for ever. And a route that
+came back to a door behind the car detached on its first visit and jumped back to the door.
+
+Acceptance record (`TRAFFIC-15`, `TRAFFIC-13`, round R14B, 2026-10-31; commands and results, the
+artifact folders stay local):
+
+- Regressions (`agents::tests::detach`, debug test profile): `corner_store_door_at_the_lane_end_is_reached`
+  drives 8 shoppers on each of 64 streets toward a corner store at `frontage_t` 0 of a 30 m
+  street, whose door is the end of the lane they arrive on (`planned_detach_lane_d` = length).
+  On `dev` the first shopper leaves that lane without detaching ("left its door's lane without
+  detaching"); with the rule all 512 detach from that lane, and 1 and 8 workers give
+  bit-identical outcomes. `looping_route_detaches_only_on_its_last_visit` attaches at 950 m of
+  a 1 km lane with its door at 50 m of the same lane, route `[1, 0]`: on `dev` it detaches on
+  the first tick; with the rule it drives to node 1, back to node 0 and detaches on the return.
+- 100k built from scratch to day 12 (`lane_entry_audit::rings::traffic14_ring_formation`,
+  release test binaries, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, one run at a time; wait-for
+  cycles checked every 30 game minutes from day 1 08:00). Control: `dev` code with this round's
+  diagnostics. The `TRAFFIC-15`/`TRAFFIC-13` commit alone:
+  - `dev`: a 334-car ring from day 9 21:00 (absent at the day 10 07:30 check, back at 08:30,
+    present at day 12 00:00). At day 12, 2,375 vehicles on the road plan a detach at their
+    lane's end, which `dev` cannot reach (top targets: buildings 57645 578, 57646 555, 57644
+    547, 57650 284, 57654 155); 68,955 vehicles on the road, 2,822 held at nodes, 140 at attach
+    points.
+  - With the rule: **0 cycles** at every check to day 12 00:00. At day 12, 491 vehicles plan a
+    lane-end detach, all reachable (0 plan one beyond the end); 66,759 vehicles on the road,
+    2,027 held at nodes, 60 at attach points.
+- Looping routes (`TRAFFIC-13`), vehicles on the road whose remaining route visits the detach
+  lane before its last visit, counted at each check: 0-2 during the `dev` build and 2-4 per
+  6-hour checkpoint of the `dev` 100k day; 13 at day 12 with the rule (they now keep their
+  route instead of detaching early).
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, same session as the `dev` control): PASS,
+  determinism identical (repeat, 1 and 3 threads, reload). Doors are reached, so shopping and
+  trips shift. 10k baseline out-of-stock 0.194 to 0.111, back inside its band (the `TRAFFIC-07`
+  note is gone). 30k baseline: employment 0.602 to 0.623, final employment 0.544 to 0.583, net
+  income 8.58 to 9.89, bankruptcies 1.65 to 1.26, deliveries 129.4 to 135.7, out-of-stock
+  0.236 to 0.207, which is below its band: a new note in the good direction. 30k fiscal stress
+  deliveries 10.97 to 10.90, a new note 0.1% under its band edge (10.91). Arrivals-30k:
+  employment +2.3%, net income +7.4%, bankruptcies -10.2%, out-of-stock +7.4% (0.225 to
+  0.242). 10k fiscal stress moves by at most 0.5% on its main metrics apart from final
+  employment (0.0059 to 0.0052). 14 notes against `dev`'s 13, all of the stale baseline.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 8 workers, cores `0,2,..,14`,
+  exclusive timing lock, load average 1.7 at the start; control `dev` then the branch with both
+  this rule and `TRAFFIC-16`, then the branch, then control): identical work counts in all four
+  runs. Single samples, ms, control / branch / branch / control: network 10k 0.666 / 0.839 /
+  0.280 / 1.226, 30k 0.840 / 0.638 / 0.620 / 2.046; egress 10k 0.540 / 0.475 / 0.485 / 0.795,
+  30k 1.252 / 1.281 / 1.699 / 1.312; ingress 10k 0.705 / 0.295 / 0.521 / 0.194, 30k 0.340 /
+  0.273 / 0.318 / 0.493. They scatter within each binary as widely as between them: no speed
+  claim either way. The contract's fixture has no connector and no lane-end detach; the added
+  work is one O(1) detach try per road-lane end event.
+
+### Gridlock check (`TRAFFIC-14`)
+
+A deterministic wait-for cycle check (`tick/gridlock.rs`, `AgentSystem::check_gridlock`) runs in
+the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
+([`simulation.md`](simulation.md#scheduler)), after the frame's agent tick. Contract:
+
+- **Graph.** A lane waits when its head car (the last bucket entry, not a lane-change ghost) is a
+  car in network or junction transit standing at the lane's end (within 0.05 m; a waiting head is
+  placed at the end exactly) and the entry it needs next fails the test movement makes:
+  - a connector head waits for its exit lane while the exit's entry slot is blocked
+    (`exit_connector_lane`'s test);
+  - a road-lane head reads its next target from its route as the speed pass does
+    (`planned_next_target`, the road edge of its next path node or its zero-hop detach lane). A
+    direct pass-through lane is tested by its entry slot; otherwise the connectors leading there
+    (only the shortest ones toward an edge, as the claim keeps them) are tested in successor
+    order: the head waits only when every one fails, for the first one's connector. A connector's
+    test is its entry slot alone (`lane_entry_slot_clear`), as the claim's.
+
+  Each lane waits for at most one lane, so the graph is functional: one walk per waiting lane,
+  stamped with the check number and its start lane, finds every cycle once. Inputs are the lane
+  buckets the last tick left (`rebuild_lanes` at the tick's end); the check is skipped while the
+  bucket snapshot does not describe the current lanes. Parked and stored-off-map vehicles have
+  no lane-bucket entries. A pull-out held by `ACCESS_LANE_ATTACH_PENDING` has no current lane;
+  it is an entry wait and cannot supply a wait-for edge or confirm a cycle by itself.
+- **Confirmation.** A cycle's identity is its lanes, rotated to start at the lowest lane id, plus
+  every car on them as (agent handle, lane distance bits) in bucket order. A cycle is confirmed
+  when the previous check held one with the same lanes and the same cars at the same distances:
+  the same lanes, and no car in it moved. Exact comparison, no hash.
+- **Detour.** For each confirmed cycle, in the order the walk found them, the road-lane heads of
+  the cycle are ordered by the slot their head was first seen waiting (per-lane stamps carried
+  from check to check while the same head waits), then by agent index. The first of them with a
+  way out detours: another successor of its lane, toward an edge other than its planned one,
+  whose entry passes the normal entry test now, queried in successor order, gets one route
+  query from that exit's end to the car's destination (`plan_network_replan` for a
+  building, `plan_border_network_replan` for a border-bound truck), with the exit as the incoming
+  edge so turn rules apply. On success the remaining route becomes the junction, the exit's end
+  and the planned route, with the planned detach; the car keeps standing and enters on a later
+  tick through the normal speed pass and claim. Nothing is moved, despawned or timed out.
+  Parking-bound cars use the existing parking endpoint override to retain the reserved bay's
+  driveway, custody and reservation. Route replacement also clamps the saved preparation budget
+  to the new route's guaranteed storage. This adds O(1) endpoint work per attempted detour,
+  allocation-free; the check's scan/walk bounds and single route query remain unchanged.
+  Connector heads never detour. A connector exists only for a turn the node's lane rules allow,
+  so a detour never takes a banned turn.
+- **Report.** A confirmed cycle with no such head is genuine saturation: it stays locked and its
+  junctions (connector nodes and the terminal nodes of its road lanes) are reported, ascending
+  and unique, in `GridlockReport::junctions`, with the counts of waiting lanes, cycles,
+  confirmed and saturated cycles and the totals of detours and saturation reports. The bridge
+  exposes it as `SimulationNode::get_gridlock_report()` (`junctions`, `positions` and the counts),
+  read from the render snapshot (each frame copies the counts and the live junctions with their
+  positions into the snapshot's recycled buffers, O(reported junctions), so the bridge never
+  waits for the core). The game's `GridlockDisplay` (`godot/scripts/renderers/gridlock_display.gd`)
+  reads it twice a second and, only when the junctions change, rings each reported junction and
+  shows the HUD notice "Gridlock: traffic is locked at N junctions with no way out"
+  (`godot/scripts/ui/gridlock_notice.gd`); GDScript decides nothing.
+- **Cost.** Per check O(lanes / p) for the head scan (Rayon, 4,096 lanes a task; O(node degree)
+  per head at its lane's end; the waiting heads' stamps are updated in the same pass), one
+  serial O(lanes) pass over the flat waited-for array to start the walks, O(waiting lanes) for
+  the walks, O(cars in cycles) for the fingerprints and one route query per detour. The
+  per-lane arrays (waited-for lane, walk stamps, head stamps) are sized when the lane count or
+  `LaneSystem::revision` changes, which also forgets the previous cycles; scratch keeps its
+  capacity, so a steady state allocates nothing. A detour allocates its new route.
+- **Save** (save format 110, [`simulation.md`](simulation.md#save-bytes-road-68-k16)). One
+  `gridlock_state` row holds what the next check needs, never the per-lane arrays: the report,
+  the stamps of the lanes whose head waited at the last check (lane, head handle, slot first seen
+  waiting) and that check's cycles (lanes per cycle; lane and car count per cycle lane; handle
+  and distance bits per car), packed little-endian. Lane ids are saved live and mapped on load
+  through the lane-reference restore's map (a missing lane fails the load); each cycle is
+  rotated back to start at its lowest loaded lane, its per-lane car groups with it; junctions
+  are saved in saved node ids. A checker bound to other lanes than the save writes (a topology
+  edit since the last check) saves no heads and no cycles, as its next check would forget them.
+  Save O(lanes) for the stamps plus O(heads + cycle lanes + cycle cars) bytes; load O(heads +
+  cycle lanes + cycle cars), one map lookup per saved lane; the arrays are sized when the loaded
+  lanes are bound (`prepare_loaded_tick`).
+
+Acceptance record (`TRAFFIC-14`, round R14D, 2026-10-31; branch `port-r14d`: `TRAFFIC-16`, the
+check without the box rule, save format 109, the notice; release test binaries,
+`RAYON_NUM_THREADS=8`, cores `0,2,..,14`, one run at a time, nothing else building or running;
+control `dev` `bcbb148f`; the artifact folders stay local):
+
+- Ring fixture: `traffic14_ring_with_exits_detours_out_of_its_lock` 13 detours in 60 checks, no
+  cycle confirmed at two checks in a row, cars moving after every detour, 0 saturation reports,
+  1 and 8 workers bit-identical; `traffic14_ring_without_exits_stays_locked_and_reports_saturation`
+  0 detours, corners 0-3 reported (51 saturation reports), nobody moves after the lock, no car
+  removed; `traffic14_gridlock_check_continues_across_a_reload` (now through the save file's
+  `gridlock_state` row) matches the continuous run. Whole city:
+  `traffic14_saturated_ring_continues_across_a_save_file` (a ring of four one-way roads in a 2 km
+  world, 550 trucks, locked and reported at frame 1,103) saved one frame after a check, loaded,
+  equals the unsaved city in reports and every car's lane, distance and speed bits at the next
+  three checks.
+- 100k city from scratch to day 12 (`traffic14_ring_formation`): the check commit's build and the
+  final build print the same 523 `TRAFFIC14` lines, field for field apart from timings, as round
+  R14C's build without the box rule: the R14B column cycle forms at day 10 and every confirmed
+  one is detoured (21 detours, 18 on day 10 and 3 on day 11), 0 saturation reports, no cycle at
+  day 12; day 12 71,336 cars on road, 1,485 held at nodes, 196 at attach points (`dev`: 66,759 /
+  2,027 / 60, no cycle).
+- Check cost at 100k (184,092 lanes, up to 5,300 waiting at a check), in frame
+  (`FrameStepReport::gridlock_ms`, the final build's formation run, quiet machine): mean 0.21 ms
+  on day 1, 0.32 on day 3, 0.63 on day 5, 0.68-0.71 ms on days 6-12; worst single check 1.51 ms
+  (day 3), 6 of 15,302 checks took more than 1 ms (1.01-1.51 ms). Isolated
+  (`traffic14_gridlock_check_cost` on a day-12 snapshot the final build prepared, 64 checks on the
+  standing city, load average 3.5): median 0.28 ms, min 0.19, max 0.58. One profile (`perf record`,
+  2,000 checks on the same city, median 0.32 ms, max 0.64 ms): of the check's own samples, reading
+  the waiting heads' next targets (`planned_next_target`, `head_target`) takes 48%, the head scan
+  and walks (`check_gridlock`) 32%, the entry tests (`entry_state`) 19%. No isolated check
+  reaches 1 ms, so the six in-frame checks over it are not reproduced by the check's own work;
+  they are unexplained (contention with the frame's other work is the likely cause, not shown).
+- 1-day 100k audit of the snapshot `dev` built (`traffic07_lane_entry_audit`, 32×, 6-hour
+  checkpoints; a format-108 snapshot, so the check commit's build, whose simulation the final
+  build's equals), check build / `dev`: 0 lanes over capacity and 0 stacked cars at every
+  checkpoint in both; unmoved cars reporting more than 0.5 m/s 35-56 (connector heads at their
+  connector's end but one; heads that lost an entry claim in the sampled frame, `TRAFFIC-18`) /
+  1,648-1,728; cars unmoved per 6 hours 26,152-28,428 / 28,904-30,327; 0 cycles at every
+  checkpoint.
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, same session, final build against `dev`): both
+  PASS and deterministic (repeat, 1 and 3 threads, reload); the control's metrics equal round
+  R14C's control and the final build's equal R14C's build without the box rule, workload for
+  workload. 13 notes against 14, the same metrics, every shift the `TRAFFIC-16` one (heads start
+  from 0 at saturated junctions): 30k baseline deliveries 135.7 to 117.3, employment 0.623 to
+  0.601, final employment 0.583 to 0.520, net income 9.89 to 8.27, bankruptcies 1.26 to 1.90 (all
+  outside the band on `dev` already), out-of-stock 0.207 to 0.265 (back inside the band: the
+  14th note goes); 30k arrivals deliveries 126.2 to 122.4; 10k fiscal stress deliveries 8.67 to
+  8.48; 10k baseline deliveries 173.4 to 174.0; the other metrics move by at most 0.4%.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 8 workers, cores `0,2,..,14`,
+  exclusive timing lock, load average 1.5 at 19:46; control, final, final, control): identical
+  work counts in all four runs. Single samples, ms: network 10k 0.320 / 0.243 / 0.452 / 0.505,
+  30k 0.705 / 0.935 / 0.613 / 0.689; egress 10k 0.904 / 1.278 / 0.796 / 0.851, 30k 2.399 /
+  1.293 / 1.658 / 1.651; ingress 10k 0.955 / 0.409 / 0.302 / 0.202, 30k 0.614 / 0.622 / 0.590 /
+  0.365. They scatter within a binary as widely as between binaries: no speed claim. The
+  contract's fixture has no connector, so `TRAFFIC-16`'s brake does not run in it, and the
+  gridlock check is not part of the agent tick.
+- Gates: `cargo clippy --all-targets` warning set equal to `dev` `bcbb148f`'s (59, diffed by file
+  and message); `./run.sh --test` exit 0 (debug `cargo test --lib` 1,858 passed, 0 failed, 184
+  ignored; every headless and rendered Godot script passed, `gridlock_notice_test` included).
+
+Earlier record (round R14C, 2026-10-31; branch `port-r14c`, kept as evidence; release test
+binaries, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, one run at a time; the artifact folders stay
+local). Builds: control `dev` `bcbb148f`; box rule; box rule + `TRAFFIC-16`; final = box rule +
+`TRAFFIC-16` + the check; and a variant without the box rule (`TRAFFIC-16` + the check).
+
+- Ring fixture (`movement_pass::ring_tests`): `traffic14_ring_with_exits_detours_out_of_its_lock`
+  (an escape spur at every corner, 60 one-minute checks): the ring locks at the fourth check, is
+  confirmed and detoured at the fifth, and keeps re-forming as the corners refill it; 20 detours,
+  each confirmed cycle detoured at its confirming check (no cycle confirmed at two checks in a
+  row), cars moving in the interval after each detour, 0 saturation reports, 1 and 8 workers
+  bit-identical. `traffic14_ring_without_exits_stays_locked_and_reports_saturation`: confirmed
+  from the fifth check, 0 detours, corners 0-3 reported, nobody moves, no car removed.
+  `traffic14_gridlock_check_continues_across_a_reload`: a restore between two checks matches the
+  continuous run. Without the box rule the fixture's exits test detours 13 times and the locked
+  test reports corners 0-3 as well.
+- 100k city built from scratch to day 12 (`traffic14_ring_formation`, 30-minute checks):
+
+  | build | wait-for cycles | detours / saturation reports | day 12: on road / held at nodes / held at attach points |
+  | --- | --- | --- | --- |
+  | `dev` control | 0 at every check | n/a | 66,759 / 2,027 / 60 |
+  | box rule | 0 | n/a | 68,436 / 3,652 / 371 |
+  | box rule + `TRAFFIC-16` | 0 | n/a | 70,575 / 3,710 / 376 |
+  | final | 0 | 0 / 0 | 70,575 / 3,710 / 376 |
+  | `TRAFFIC-16` + check, no box rule | the 1,690-car column cycle of round R14B forms at day 10 10:00-23:30 and keeps re-forming while it crawls; every confirmed one is detoured | 21 / 0 (18 on day 10, 3 on day 11) | 71,336 / 1,485 / 196 |
+
+  The final build's check lines are identical, field for field apart from timings, before and
+  after the cost refactor below. In the variant the column ring is a slowly moving cycle: the
+  diagnostic sees it at 25 half-hour samples, the check confirms it only when nobody moved for a
+  minute, and detours it then, so no locked cycle outlives two check intervals.
+- Check cost at 100k (184,092 lanes, 5,000-6,600 waiting at a check): in frame
+  (`FrameStepReport::gridlock_ms`, the formation run), variant without the box rule, a quiet
+  machine: mean 0.21 ms on day 1, 0.69-0.74 ms on days 6-12, worst single check 1.64 ms. Final
+  build: 0.24 ms on day 1, 0.79-1.14 ms on days 5-12 with worst checks of 2.9-4.6 ms; that run
+  overlapped two release builds and its timings are not acceptance. Isolated
+  (`traffic14_gridlock_check_cost`, the day-12 snapshot, 64 checks on the standing city, load
+  average 5.6): median 0.34 ms, min 0.25, max 0.93; before the cost refactor (head stamps moved
+  into the parallel scan, lane fields tested before agent columns) 0.52 / 0.36 / 1.39. The mean
+  meets the 1 ms target; single checks do not always.
+- 1-day 100k audit of the snapshot the control built (`traffic07_lane_entry_audit`, 32×, 6-hour
+  checkpoints), control / box rule / final: 0 lanes over capacity and 0 stacked cars at every
+  checkpoint in all three; unmoved cars reporting more than 0.5 m/s 1,648-1,728 / 2,355-2,625 /
+  1-2; cars unmoved per 6 hours 28,904-30,327 / 40,201-45,785 / 40,058-45,882; 0 cycles.
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, same session): PASS and deterministic
+  (repeat, 1 and 3 threads, reload) for control, box rule and final. The box rule's cost is
+  above. `TRAFFIC-16` on top of it: 30k baseline deliveries 79.8 to 75.8, arrivals 60.9 to 70.1.
+  Variant without the box rule (envelope only): 13 notes; 10k baseline unchanged (deliveries
+  173.4 to 174.0); 30k baseline deliveries 135.7 to 117.3, net income 9.89 to 8.27,
+  bankruptcies 1.26 to 1.90, final employment 0.583 to 0.520, the `TRAFFIC-16` shift round R14B
+  measured.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 8 workers, cores `0,2,..,14`,
+  exclusive timing lock, load average 1.6; control, final, final, control): identical work
+  counts in all four runs. Single samples, ms: network 10k 0.556 / 0.395 / 0.252 / 0.293, 30k
+  1.007 / 0.647 / 0.730 / 0.599; egress 10k 0.598 / 0.487 / 0.483 / 0.490, 30k 1.441 / 1.687 /
+  1.275 / 1.233; ingress 10k 0.249 / 0.300 / 0.365 / 0.264, 30k 0.310 / 0.509 / 0.568 / 0.427.
+  They scatter within a binary as widely as between binaries: no speed claim. The contract's
+  fixture has no connector, so the box rule's test does not run in it.
+
+The `junction_connectors` debug view's stall detector (`agents/junction_stalls.rs`) is a separate
+observer: it reports single cars that stand on a connector, not cycles, and runs only while the
+view is on.
+
 ## Junction Speeds
 
 Junction movement uses a cap separate from the parent road speed:
@@ -1093,6 +1489,54 @@ boosts a stopped or slow car up to crawl speed when entering a connector.
 Road-lane speed prediction looks ahead to the next connector and brakes early if the connector is
 tight or blocked. Once in `TRANSIT_INTERSECTION`, the car remains capped by the connector's
 curvature speed until it exits to the target road lane.
+
+A connector head (no car ahead on its connector) brakes for its exit lane's entry slot the same
+way (`TRAFFIC-16`): while `lane_entry_slot_clear` fails for the connector's exit lane (the lane
+`exit_connector_lane` enters), its target speed is capped at `braking_speed_for_distance(0,
+distance to the connector's end)`, so it stands at the end at speed 0 until the exit clears, and
+starts from 0. One O(log bucket) slot test per connector head and tick, no allocation. Before,
+connector cars followed only their own bucket, and the head standing at a full exit kept its
+turn speed (the movement step re-clamps to the turn speed but never raises it).
+
+Acceptance record (`TRAFFIC-16`, round R14B, 2026-10-31; the artifact folders stay local):
+
+- Ring fixture (`movement_pass::ring_tests::traffic16_connector_heads_stop_at_a_blocked_exit`):
+  the locked four-lane ring's four connector heads read 0; on `dev` all four report their turn
+  speed. `traffic14_full_ring_locks` still locks (no ring rule yet) and stays ignored.
+- 1-day 100k audit of the `dev`-built snapshot (`traffic07_lane_entry_audit`, day 12 at 32×,
+  `RAYON_NUM_THREADS=8`, cores `0,2,..,14`): unmoved cars reporting more than 0.5 m/s at the
+  6-hour checkpoints, `dev` against the fix: 2,003 / 10, 2,027 / 23, 2,119 / 36, 2,140 / 29
+  (`dev`: 1,992-2,124 connector heads at the connector's end; fix: 10-34 connector heads and up
+  to 2 road-lane heads). The two connector heads followed frame by frame (`METRUM_AUDIT_FOLLOW`)
+  found their exit slot clear at the tick's start, accelerated (3.2 m/s) and lost the entry to
+  another car in that frame (`TRAFFIC-18`); the next frame they read 0. The road-lane heads were
+  not followed. Both engines: 0 lanes over capacity and 0 stacked
+  cars at every checkpoint; held at nodes 2,682 at 00:00 (2,210 of them freight) and 3,742
+  (fix) / 3,664 (`dev`) at 24:00. The snapshot already holds `dev`'s locked ring, which neither
+  fix releases.
+- **Traffic cost at saturation.** A head that stands at a blocked exit now starts from 0 when
+  the slot clears; it used to leave at its turn speed from a standstill. The exit lane's entry
+  slot therefore clears later and a saturated junction discharges more slowly. The 100k city
+  built from scratch with both fixes forms a 1,690-car wait-for cycle at day 10 10:30: two
+  columns of 35 full 30 m cross-street lanes, two full 380 m row lanes and their connectors.
+  It is absent at two later checks, present without a break from day 10 19:30 and at all five
+  checkpoints of that city's next day (47,630-50,086 cars unmoved per 6 hours, against
+  33,400-36,865 in the `dev` city). With `TRAFFIC-15`/`TRAFFIC-13` alone the same build has no
+  cycle. Envelope (both fixes, deterministic, PASS, 13 notes) against `TRAFFIC-15` alone: 30k
+  baseline deliveries 135.7 to 117.3, employment 0.623 to 0.601, net income 9.89 to 8.27,
+  bankruptcies 1.26 to 1.90, out-of-stock 0.207 to 0.265; 30k fiscal-stress deliveries 10.90
+  to 10.79; the other workloads move by at most 2.3% on their main metrics. Landing this before
+  the junction-box and gridlock rules of `TRAFFIC-14` is the user's decision (round R14B
+  handoff).
+- **Landed with the gridlock check (round R14D, 2026-10-31)**, the envelope shift accepted by
+  the user; results in the [gridlock check record](#gridlock-check-traffic-14).
+- **Round R14C (2026-10-31).** Built with the `TRAFFIC-14` gridlock check, the 100k city's
+  column cycle still forms at day 10, but every confirmed one is detoured (21 detours to day 12,
+  0 saturation reports) and day 12 ends with no cycle; with the box rule as well no cycle forms
+  at all. The 1-day audit of the final build finds 1-2 unmoved cars over 0.5 m/s per checkpoint
+  (box rule alone: 2,355-2,625, `dev` 1,648-1,728). The envelope shift is the one round R14B
+  measured: heads start from 0 at saturated junctions, so 30k baseline deliveries fall 13.5%.
+  Results in the [gridlock check record](#gridlock-check-traffic-14).
 
 ## Planned Lane Changes
 

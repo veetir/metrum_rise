@@ -5,16 +5,95 @@
 //! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`). A
 //! diagnostic of lane entry, not acceptance timing.
 
+mod rings;
+mod waits;
+
 use super::{FRAME_DT_S, MINUTES_PER_DAY, absolute_minute};
 use super::{cache_dir, residents, snapshot, timing_mode};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::economy::agents::{
-    ACCESS_LANE_ATTACH_PENDING, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_INTERSECTION,
+    TRANSIT_NETWORK,
 };
 
 // Cars closer than this to a lane's start count as one stack.
 const STACK_RADIUS_M: f32 = 0.5;
+
+// Whether car `i` drives on the road network (a vehicle, not a walker).
+fn in_play(agents: &crate::simulation::economy::agents::AgentVec, i: usize) -> bool {
+    (agents.transit[i] == TRANSIT_NETWORK || agents.transit[i] == TRANSIT_INTERSECTION)
+        && agents.transit_mode[i] != MODE_WALK
+}
+
+// A road lane's (origin, terminal) nodes.
+fn lane_nodes(core: &SimCore, lane: usize) -> Option<(u32, u32)> {
+    let l = core.transit_network.lane_system.lanes.get(lane)?;
+    if l.edge_id == usize::MAX {
+        return None;
+    }
+    let edge = core.region_graph.edge(l.edge_id);
+    Some(if l.is_fwd {
+        (edge.start_node, edge.end_node)
+    } else {
+        (edge.end_node, edge.start_node)
+    })
+}
+
+// `TRAFFIC-15`/`TRAFFIC-13`: the detach plans of the vehicles on the road, computed from the
+// agent columns alone, so the `dev` control and the fix count the same way.
+// - `at_lane_end`: the detach point is the detach lane's end (d >= length - 1e-4). On `dev` a
+//   car cannot detach at d >= length: no movement step ends there inside the lane.
+// - `beyond_lane_end`: d > length + 1e-4, which the planner's legality rejects.
+// - `looping`: the remaining route visits the detach lane before its last visit (the car is on
+//   it with route left, or the route still runs the lane's origin to its terminal, or it waits
+//   to attach to it behind the detach point). On `dev` such a car detaches on the first visit.
+// O(agents + route lengths), serial: a test diagnostic.
+fn detach_plans(core: &SimCore) -> serde_json::Value {
+    let agents = &core.agents.agents;
+    let lanes = &core.transit_network.lane_system.lanes;
+    let (mut planned, mut at_end, mut beyond_end, mut looping) = (0_u32, 0_u32, 0_u32, 0_u32);
+    let mut at_end_targets = std::collections::BTreeMap::<usize, u32>::new();
+    for i in 0..agents.len() {
+        if !in_play(agents, i) || (agents.access_flags[i] & ACCESS_PLAN_VALID) == 0 {
+            continue;
+        }
+        let detach = agents.planned_detach_lane_id[i] as usize;
+        let Some((origin, terminal)) = lane_nodes(core, detach) else {
+            continue;
+        };
+        planned += 1;
+        let d = agents.planned_detach_lane_d[i];
+        let length = lanes[detach].length;
+        if d >= length - 1e-4 {
+            at_end += 1;
+            *at_end_targets.entry(agents.target_building[i]).or_default() += 1;
+        }
+        beyond_end += u32::from(d > length + 1e-4);
+        let path = &agents.current_path[i];
+        let mut rest = &path[agents.current_path_index[i].min(path.len())..];
+        let lane = agents.current_lane_id[i];
+        if let Some((_, lane_terminal)) = lane_nodes(core, lane)
+            && rest.first() == Some(&lane_terminal)
+        {
+            rest = &rest[1..];
+        }
+        let on_detach_early = lane == detach && !rest.is_empty();
+        let runs_detach_lane = rest.windows(2).any(|w| w[0] == origin && w[1] == terminal);
+        let attaches_behind = lane == usize::MAX
+            && (agents.access_flags[i] & ACCESS_LANE_ATTACH_PENDING) != 0
+            && agents.planned_attach_lane_id[i] as usize == detach
+            && agents.planned_attach_lane_d[i] > d;
+        looping += u32::from(on_detach_early || runs_detach_lane || attaches_behind);
+    }
+    let mut top: Vec<(usize, u32)> = at_end_targets.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    top.truncate(5);
+    serde_json::json!({
+        "planned": planned, "at_lane_end": at_end, "beyond_lane_end": beyond_end,
+        "looping": looping, "at_lane_end_top_targets": top,
+    })
+}
 
 // Counts vehicles by lane from the agent columns. O(agents + lanes), serial: a test diagnostic
 // run a few times per game day.
@@ -41,7 +120,7 @@ fn audit(core: &SimCore) -> serde_json::Value {
                 && !agents.current_path[i].is_empty()
             {
                 held += 1;
-                held_freight += u32::from(agents.freight_shipment_id[i] != 0);
+                held_freight += u32::from(agents.freight_shipment_id[i] != u64::MAX);
             }
             continue;
         }
@@ -99,7 +178,7 @@ fn audit(core: &SimCore) -> serde_json::Value {
                 "transit={} mode={} freight={} path_left={} start={} detach_lane_here={}",
                 agents.transit[i],
                 agents.transit_mode[i],
-                agents.freight_shipment_id[i] != 0,
+                agents.freight_shipment_id[i] != u64::MAX,
                 agents.current_path[i]
                     .len()
                     .saturating_sub(agents.current_path_index[i]),
@@ -185,7 +264,7 @@ fn trace_entries(
                         "buildings_removed_in_frame": removed - *previous_removed, "agent": i, "lane": lane, "fit": fit,
                         "count_before": previous_count[lane], "count_now": count[lane],
                         "from_lane": previous_lane[i], "d": agents.lane_distance[i],
-                        "transit": agents.transit[i], "freight": agents.freight_shipment_id[i] != 0,
+                        "transit": agents.transit[i], "freight": agents.freight_shipment_id[i] != u64::MAX,
                         "access": agents.access_flags[i], "node": agents.current_node[i],
                         "lane_change_from": agents.lane_change_from_lane_id[i],
                         "path_left": agents.current_path[i].len().saturating_sub(agents.current_path_index[i]),
@@ -232,14 +311,22 @@ fn traffic07_lane_entry_audit() {
     let core = &mut city.core;
     core.time.speed_multiplier = speed;
     let start = absolute_minute(core);
-    let end = start + MINUTES_PER_DAY;
+    // METRUM_AUDIT_DAYS runs more days; the wait report prints at every day end.
+    let days: u64 = std::env::var("METRUM_AUDIT_DAYS")
+        .map(|value| value.parse().expect("METRUM_AUDIT_DAYS must be an integer"))
+        .unwrap_or(1);
+    let end = start + days * MINUTES_PER_DAY;
     let mut next = start;
+    let mut next_report = start + MINUTES_PER_DAY;
+    let mut waits = waits::WaitBook::default();
+    let mut last_wait_minute = u64::MAX;
     let trace = std::env::var("METRUM_AUDIT_TRACE").is_ok();
     let mut previous_lane: Vec<usize> = Vec::new();
     let mut previous_count: Vec<u32> = Vec::new();
     let mut previous_state: Vec<(u8, usize, f32, u32, usize)> = Vec::new();
     let mut previous_removed = 0;
     let mut traced = 0;
+    let mut frame = 0_u64;
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -251,18 +338,43 @@ fn traffic07_lane_entry_audit() {
             );
         }
         let now = absolute_minute(core);
+        if now != last_wait_minute {
+            waits.update(core, now);
+            last_wait_minute = now;
+        }
         if now >= next {
             eprintln!(
                 "TRAFFIC07_AUDIT {}",
                 serde_json::json!({
                     "residents": residents(), "minute": now - start, "audit": audit(core),
+                    "waits": waits.summary(now), "detach_plans": detach_plans(core),
+                })
+            );
+            waits.standing_queues(core, now - start);
+            let cycles = waits::wait_cycles(core);
+            let mut sizes: Vec<usize> = cycles.iter().map(|c| c.cars.len()).collect();
+            sizes.sort_unstable_by(|a, b| b.cmp(a));
+            eprintln!(
+                "TRAFFIC14_CYCLES {}",
+                serde_json::json!({
+                    "minute": now - start, "cycles": cycles.len(),
+                    "cars": sizes.iter().sum::<usize>(), "largest": &sizes[..sizes.len().min(12)],
+                    "with_way_out": cycles.iter().filter(|c| c.heads_with_room > 0).count(),
+                    "road_heads": cycles.iter().map(|c| c.road_heads).sum::<u32>(),
+                    "heads_with_way_out": cycles.iter().map(|c| c.heads_with_room).sum::<u32>(),
                 })
             );
             next += every_minutes;
         }
+        if now >= next_report {
+            waits.report(core, now, now - start);
+            next_report += MINUTES_PER_DAY;
+        }
         if now >= end {
             break;
         }
+        waits.trace_follow(core, frame);
+        frame += 1;
         core.step_frame(FRAME_DT_S);
     }
 }

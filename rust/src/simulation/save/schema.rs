@@ -202,6 +202,21 @@ CREATE TABLE scheduler_state(
     freight_departure_first_minute INTEGER NOT NULL,
     freight_departure_counts BLOB NOT NULL
 );
+CREATE TABLE gridlock_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    checks INTEGER NOT NULL,
+    waiting_lanes INTEGER NOT NULL,
+    cycles INTEGER NOT NULL,
+    confirmed INTEGER NOT NULL,
+    saturated INTEGER NOT NULL,
+    detours INTEGER NOT NULL,
+    saturation_reports INTEGER NOT NULL,
+    junctions BLOB NOT NULL,
+    heads BLOB NOT NULL,
+    cycle_lengths BLOB NOT NULL,
+    cycle_lanes BLOB NOT NULL,
+    cycle_cars BLOB NOT NULL
+);
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
     seq INTEGER NOT NULL,

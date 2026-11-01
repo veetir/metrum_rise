@@ -7,6 +7,7 @@ mod claims;
 #[cfg(test)]
 mod contract;
 mod frontage;
+mod gridlock;
 mod lane_buckets;
 mod lane_nav;
 mod movement;
@@ -58,6 +59,7 @@ pub(crate) use planning::{
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use lane_buckets::LaneBucketScratch;
+pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;
@@ -127,6 +129,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
         transit_network: &TransitNetwork,
     ) {
+        self.gridlock.bind_loaded_lanes(transit_network);
         let n = self.agents.len();
         if n == 0 {
             return;

@@ -9,7 +9,7 @@
 
 use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::{LaneBucketScratch, TripFailureLog, TripQueryScratch};
+use super::tick::{GridlockChecker, LaneBucketScratch, TripFailureLog, TripQueryScratch};
 use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
@@ -262,6 +262,9 @@ pub struct AgentSystem {
     pub(crate) movement_serial_query: TripQueryScratch,
     /// Ordered requests for scheduled parking retries, drained by SimCore after movement.
     pub(crate) parking_retries: Vec<(AgentHandle, u16)>,
+    /// The wait-for cycle check's state between checks (`TRAFFIC-14`): per-lane stamps sized
+    /// to the lane topology and the previous check's cycles.
+    pub(crate) gridlock: GridlockChecker,
 }
 
 impl Deref for AgentSystem {
@@ -325,6 +328,7 @@ impl AgentSystem {
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
             parking_retries: Vec::new(),
+            gridlock: GridlockChecker::default(),
         }
     }
 

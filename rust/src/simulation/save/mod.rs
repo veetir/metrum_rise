@@ -40,6 +40,7 @@ mod camera;
 mod cell_zoning;
 mod census_inputs;
 mod demand_queues;
+pub(crate) mod gridlock;
 mod handles;
 pub mod network;
 mod scheduler;
@@ -482,6 +483,7 @@ fn write_snapshot(
     let parking = view.parking.save_json_with_households(|source| source, &view.households.parking_changes)?;
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
+    gridlock::save(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
     census_inputs::save(
         tx,
@@ -755,7 +757,9 @@ pub(crate) fn load_from_sqlite(
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
-    agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
+    let lane_remap =
+        agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
+    gridlock::load(&conn, &mut agents, &lane_remap)?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     cell_zoning::validate_reservations(
         &zoning,
