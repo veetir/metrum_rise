@@ -134,7 +134,9 @@ impl AgentSystem {
             self.agents.parking_trip[i] = ParkingTrip { vehicle: car, arrival_ownership: true,
                 destination: candidate.place, target: home_handle, phase: ParkingTripPhase::Drive,
                 route_capacity: plan.current_path.len(), ..Default::default() };
+            self.leave_lane_buckets(i);
             self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+            self.join_lane_buckets(i);
             return true;
         }
         let Some(entrance) = allocator.entrances.get(home) else {
@@ -144,7 +146,9 @@ impl AgentSystem {
             entrance, network, graph, &self.pathfind_count) else {
             return false;
         };
+        self.leave_lane_buckets(i);
         self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+        self.join_lane_buckets(i);
         true
     }
 

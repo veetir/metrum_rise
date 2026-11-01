@@ -51,6 +51,8 @@ impl ParkingSystem {
     /// Rebuilds specified door catchments at publication time. O(Bₗ × ((Lₗ + Cₗ) log Lₗ
     /// plus Pₗ log Pₗ)), visiting only lanes within 400 m walking time and at most nine supply
     /// chunks per door; independent doors use Rayon. Occupancy changes never rebuild lists.
+    /// Returns the doors whose list of places changed, for the caller to wake waiting cars:
+    /// an edit is new supply for those homes, a load's reconstruction is not.
     pub(crate) fn rebuild_candidates(
         &mut self,
         buildings: &[usize],
@@ -58,10 +60,10 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
-    ) {
+    ) -> Vec<[f32; 2]> {
         crate::thread_pools::install(|| {
             self.rebuild_candidates_in_pool(buildings, allocator, network, graph, car_components)
-        });
+        })
     }
 
     fn rebuild_candidates_in_pool(
@@ -71,7 +73,7 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
-    ) {
+    ) -> Vec<[f32; 2]> {
         let mut places = Vec::new();
         for &b in buildings {
             let Some(door) = allocator.entrances.get(b) else {
@@ -119,7 +121,8 @@ impl ParkingSystem {
                 if handle.is_none() {
                     return None;
                 }
-                let (cx, cz) = chunk_at([entrance.door_pos.x, entrance.door_pos.y]);
+                let door = [entrance.door_pos.x, entrance.door_pos.y];
+                let (cx, cz) = chunk_at(door);
                 if !(cz - 1..=cz + 1).any(|z| {
                     (cx - 1..=cx + 1).any(|x| {
                         self.chunks
@@ -127,7 +130,7 @@ impl ParkingSystem {
                             .is_some_and(|c| !c.places.is_empty())
                     })
                 }) {
-                    return Some((handle.to_bits(), DestinationCandidates::default()));
+                    return Some((handle.to_bits(), door, DestinationCandidates::default()));
                 }
                 let forward = WalkField::build(entrance, false, network, graph);
                 let reverse = WalkField::build(entrance, true, network, graph);
@@ -181,15 +184,32 @@ impl ParkingSystem {
                     car_components.map_or_else(ParkingEconomyEnds::default, |components| {
                         self.build_economy_ends(&entries, b, allocator, network, graph, components)
                     });
-                Some((handle.to_bits(), DestinationCandidates { entries, economy }))
+                Some((
+                    handle.to_bits(),
+                    door,
+                    DestinationCandidates { entries, economy },
+                ))
             })
             .collect();
         if !built.is_empty() {
             self.candidate_revision = self.candidate_revision.wrapping_add(1);
         }
-        for (handle, entries) in built {
+        let mut changed = Vec::new();
+        for (handle, door, entries) in built {
             if !entries.entries.is_empty() && car_components.is_none() {
                 self.pending_economy.push(handle);
+            }
+            let old = self
+                .candidates
+                .get(&handle)
+                .map_or(&[][..], |c| &c.entries[..]);
+            if !entries
+                .entries
+                .iter()
+                .map(|e| e.place)
+                .eq(old.iter().map(|e| e.place))
+            {
+                changed.push(door);
             }
             if entries.entries.is_empty() {
                 self.candidates.remove(&handle);
@@ -197,6 +217,7 @@ impl ParkingSystem {
                 self.candidates.insert(handle, entries);
             }
         }
+        changed
     }
 
     /// O(1), version of published catchments and their economy reachability metadata.

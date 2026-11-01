@@ -789,7 +789,9 @@ fn run_parking_move_in(full: bool) {
     let pos = graph.node(border).pos;
     let i = agents.spawn_household_arrival_carrier(1, 1,
         HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+    agents.prepare_lane_buckets_for_test(&network);
     assert!(agents.start_parking_move_in(i, &mut parking, &allocator, &network, &graph));
+    agents.prepare_lane_buckets_for_test(&network);
     let car = agents.parking_trip[i].vehicle;
     assert!(!car.is_none());
     assert_eq!(agents.transit_mode[i], if full { MODE_WALK } else { MODE_CAR });
@@ -829,4 +831,26 @@ fn run_parking_move_in(full: bool) {
         assert!(parking.vehicle_place(car).is_some());
         assert!(restored);
     }
+}
+
+#[test]
+fn parking_resident_border_recovery_cannot_create_a_car_door_leg() {
+    let (_, mut parking, allocator, mut network, mut graph) = fixture();
+    parking.remove_household_car(0);
+    let mut agents = AgentSystem::new();
+    let border = graph.edge(0).start_node;
+    let pos = graph.node(border).pos;
+    let car = parking.arrival_car(0, crate::simulation::zoning::profiles::ZoneDensity::Low, [455.0, -12.0]);
+    parking.store_arrival_car(car, allocator.building_handles.handle(1).to_bits());
+    let i = agents.spawn_border_arrival_agent(1, border, pos.x, pos.z);
+    agents.agents.parking_trip[i].vehicle = car;
+    let clock = test_clock(0, 0);
+    for _ in 0..10000 {
+        agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, &mut parking);
+        assert_eq!(agents.transit_mode[i], MODE_WALK);
+        if agents.transit[i] == TRANSIT_IN_BUILDING { break; }
+    }
+    assert_eq!(agents.current_building[i], 1);
+    assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);
+    assert!(parking.vehicle_place(car).is_none());
 }

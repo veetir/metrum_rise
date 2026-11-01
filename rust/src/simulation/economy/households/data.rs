@@ -3,7 +3,6 @@
 //! Household record storage and building-reference maintenance.
 
 use rayon::prelude::*;
-use std::sync::atomic::AtomicU32;
 
 use super::metrics::household_supply_resource_runtime_id;
 use super::replenishment::{
@@ -248,7 +247,6 @@ pub struct HouseholdSystem {
     /// Advances at every change of the policy the census's copy freezes (`SIM-02-I`); part of
     /// the census key. Not saved: a loaded game counts afresh.
     pub(crate) census_policy_revision: u64,
-    pub(super) shopping_car_scratch: Vec<AtomicU32>,
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
@@ -361,7 +359,6 @@ impl HouseholdSystem {
             census_run: Default::default(),
             structure: Default::default(),
             census_policy_revision: 0,
-            shopping_car_scratch: Vec::new(),
             removal_candidates_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
             workplace_route_cache: Default::default(),
@@ -894,12 +891,6 @@ impl HouseholdSystem {
             }
         }
     }
-
-    /// Returns zeroed per-household car-eligibility flags for the load-time resident census.
-    pub(super) fn reset_shopping_car_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.shopping_car_scratch, self.households.len());
-        &self.shopping_car_scratch
-    }
 }
 
 impl std::fmt::Debug for HouseholdSystem {
@@ -913,17 +904,5 @@ impl std::fmt::Debug for HouseholdSystem {
 impl Default for HouseholdSystem {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn resize_atomic_scratch(scratch: &mut Vec<AtomicU32>, len: usize) {
-    if scratch.len() > len {
-        scratch.truncate(len);
-    }
-    while scratch.len() < len {
-        scratch.push(AtomicU32::new(0));
-    }
-    for slot in scratch {
-        slot.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }

@@ -239,9 +239,10 @@ impl SimCore {
         }
         buildings.sort_unstable();
         buildings.dedup();
-        self.publish_parking_catchments(&buildings);
-        for &point in points {
-            self.parking.rehouse_near(point);
+        // Only homes whose reachable places changed have new supply; added bays woke their
+        // own chunks in `replace_source`.
+        for door in self.publish_parking_catchments(&buildings) {
+            self.parking.rehouse_near(door);
         }
     }
 }
@@ -278,6 +279,7 @@ impl SimCore {
     /// Rebuilds physical route-buffer capacity from the saved deterministic preparation budget.
     /// O(agents + prepared nodes), load only. Allocator spare capacity cannot alter departures.
     pub(crate) fn prepare_loaded_parking_routes(&mut self) {
+        self.logistics.prepare_parking_borders(&self.transit_network, &self.region_graph);
         crate::thread_pools::install(|| {
             self.agents
                 .agents
@@ -451,7 +453,8 @@ impl SimCore {
     /// Publishes specified door catchments with the existing economy component index when
     /// routing is current. O(local searches), plus the shared topology's existing one-time
     /// O(nodes + edges) refresh after routing adoption; no new connectivity/spatial index.
-    pub(crate) fn publish_parking_catchments(&mut self, buildings: &[usize]) {
+    /// Returns the doors whose reachable places changed.
+    pub(crate) fn publish_parking_catchments(&mut self, buildings: &[usize]) -> Vec<[f32; 2]> {
         let car_components = if self.transit_network.cch_current() {
             self.households
                 .destination_topology
@@ -466,7 +469,7 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
             car_components,
-        );
+        )
     }
 
     /// Finishes only deferred local metadata at routing publication. O(1) without pending

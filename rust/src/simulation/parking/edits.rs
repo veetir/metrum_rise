@@ -82,17 +82,26 @@ impl ParkingSystem {
             })
             .collect();
         for bay in bays {
-            if let Some(h) = retained.remove(&pose_key(bay.position, bay.heading)) {
+            // Only added or reactivated bays are new supply. An unchanged bay must not wake
+            // waiting cars, or a load's frontage reconcile would schedule arrivals the
+            // uninterrupted game never did.
+            let added = if let Some(h) = retained.remove(&pose_key(bay.position, bay.heading)) {
                 let p = self.place_handles.resolve(h).expect("retained bay");
-                if !self.places.active[p] {
+                let reactivated = !self.places.active[p];
+                if reactivated {
                     self.places.active[p] = true;
                     self.usable_places += 1;
                 }
                 self.places.width[p] = bay.width;
                 self.places.length[p] = bay.length;
                 self.places.path[p] = bay.path;
+                reactivated
             } else {
                 self.add_place(source, *bay);
+                true
+            };
+            if added {
+                self.rehouse_near([bay.position[0], bay.position[2]]);
             }
         }
         // Stable handles fix tow order even when load rebuilt different swap-remove lists.
@@ -103,9 +112,6 @@ impl ParkingSystem {
             if retained.contains_key(&pose_key(self.places.position[p], self.places.heading[p])) {
                 self.remove_place(h);
             }
-        }
-        for bay in bays {
-            self.rehouse_near([bay.position[0], bay.position[2]]);
         }
     }
 
@@ -188,11 +194,6 @@ impl ParkingSystem {
             .collect();
         if !sources.is_empty() {
             self.building_sources.insert(building, sources);
-        }
-        // Newly restored owners have no old source list to run replace_source's wake-up.
-        // Reconcile waiting cars only after all of this building's supply is available.
-        for (_, bay) in bays {
-            self.rehouse_near([bay.position[0], bay.position[2]]);
         }
     }
 }

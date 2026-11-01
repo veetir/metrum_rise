@@ -799,7 +799,6 @@ pub(crate) fn load_from_sqlite(
     let budget_history = load_budget_history(&conn)?;
     // Household member lists are derived, in canonical member order (`SIM-02-I`).
     agents.rebuild_household_members();
-    households.rebuild_household_shopping_access(&agents);
 
     let parking_json: String = conn.query_row(
         "SELECT data FROM parking_state WHERE singleton=1",

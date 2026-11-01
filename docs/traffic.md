@@ -362,6 +362,14 @@ there is no additional spatial or connectivity index. Save version 111 also stor
 custody and wake cursors; SQLite stores opaque event payloads as signed bit patterns so negative
 chunk coordinates round-trip without numeric overflow.
 
+Only new supply wakes waiting cars: an added or reactivated bay wakes its own chunk, and a
+catchment rebuild wakes the doors whose list of reachable places changed. An unchanged bay or
+catchment wakes nothing, so the full frontage reconcile and catchment rebuild after a load
+schedule no arrivals the uninterrupted game did not. A household's shopping car flag changes
+only at its hourly recount, while car custody changes every tick; save version **112** stores
+the flag instead of rebuilding it from the agents at load. Both keep a loaded game saving the
+same bytes and continuing the same census as the uninterrupted one.
+
 Round 2b retains freight and wider watchdog/lifecycle changes. Resident
 household removal and resident edit/watchdog recovery are already included here.
 

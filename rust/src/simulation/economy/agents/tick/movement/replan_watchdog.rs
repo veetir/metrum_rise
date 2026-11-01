@@ -233,7 +233,13 @@ unsafe fn recover_to_border(
         } else {
             TRANSIT_NETWORK
         };
-        *slices.tmode.get_mut(i) = MODE_CAR;
+        *slices.tmode.get_mut(i) = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
+            MODE_WALK
+        } else {
+            MODE_CAR
+        };
         *slices.next_replan_time.get_mut(i) = 0.0;
         *slices.network_replan_failures.get_mut(i) = 0;
 

@@ -93,7 +93,9 @@ unsafe fn bootstrap_immigration_trip(
 
         let border_node = *s_cur_n.get(i);
         let home_bldg = *s_tgt_b.get(i);
-        let plan = if *slices.pending_household_size.get(i) > 0 {
+        let plan = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
             allocator.entrances.get(home_bldg).and_then(|entrance|
                 plan_border_arrival(border_node, home_bldg,
                     crate::simulation::economy::agents::MODE_WALK, entrance,

@@ -3601,15 +3601,12 @@ fn shopping_car_census_uses_eligible_residents_and_resets_removed_access() {
     assert!(households.households[0].shopping_has_car);
     agents.age_group[0] = AGE_ELDER;
     households.households[0].shopping_has_car = false;
-    households.rebuild_household_shopping_access(&agents);
+    households.recount_every_household(&agents, &allocator);
     assert!(
         households.households[0].shopping_has_car,
-        "the load census must include elders without relying on saved household flags"
+        "the recount must include elders"
     );
     agents.assign_household_id(0, usize::MAX);
-    households.rebuild_household_shopping_access(&agents);
-    assert!(!households.households[0].shopping_has_car);
-    households.households[0].shopping_has_car = true;
     households.recount_every_household(&agents, &allocator);
     assert!(
         !households.households[0].shopping_has_car,

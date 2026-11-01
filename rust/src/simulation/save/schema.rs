@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 111;
+pub const SAVE_VERSION: i64 = 112;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -560,7 +560,8 @@ CREATE TABLE households(
     electricity_account TEXT NOT NULL,
     gross_daily_wages REAL NOT NULL,
     employed_adults INTEGER NOT NULL,
-    paid_workers_in_window INTEGER NOT NULL
+    paid_workers_in_window INTEGER NOT NULL,
+    shopping_has_car INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,

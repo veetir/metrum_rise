@@ -29,7 +29,7 @@ impl ShipmentSystem {
     /// Prepares the existing connected-border topology once per graph revision for parking events.
     /// O(1) unchanged; O(nodes + edges) after publication, shared with freight planning.
     pub(crate) fn prepare_parking_borders(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
-        self.freight_topology.refresh(network, graph);
+        crate::thread_pools::install(|| self.freight_topology.refresh(network, graph));
     }
 
     /// Stable connected-border order from the prepared shared topology; O(1), no allocation.

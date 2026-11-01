@@ -542,7 +542,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         adult_count: 2,
         employed_adults: 1,
         gross_daily_wages: 137.125,
-        shopping_has_car: false,
+        shopping_has_car: true,
         elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 1.5,
@@ -1415,7 +1415,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].gross_daily_wages, 137.125);
     assert!(
         loaded.households.households[0].shopping_has_car,
-        "shopping car eligibility is rebuilt from the persisted adult agents"
+        "shopping car eligibility is saved: it changes only at the hourly recount"
     );
     assert_eq!(loaded.households.households[0].elder_count, 0);
     assert_eq!(loaded.agents.len(), 2);

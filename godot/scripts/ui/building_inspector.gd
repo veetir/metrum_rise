@@ -600,6 +600,7 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 func _add_alert(stats_body: VBoxContainer, text: String) -> void:
 	var label := Label.new()
 	label.text = "! " + text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
 	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	stats_body.add_child(label)
