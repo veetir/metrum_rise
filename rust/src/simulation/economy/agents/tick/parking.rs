@@ -10,6 +10,7 @@ use super::planning::{
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
+use crate::simulation::parking::stats::DepartureOutcome;
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase};
 use rayon::prelude::*;
 mod recovery;
@@ -306,10 +307,11 @@ impl AgentSystem {
         let trip = self.agents.parking_trip[i];
         let borrower = self.handles.handle(i);
         let target_handle = allocator.building_handles.handle(target).to_bits();
-        if let Some(quote) = quote_parking_trip(
+        let adult = self.agents.age_group[i] != AGE_CHILD;
+        let quote = quote_parking_trip(
             trip.vehicle,
             borrower,
-            self.agents.age_group[i] != AGE_CHILD,
+            adult,
             current,
             target,
             parking,
@@ -318,13 +320,26 @@ impl AgentSystem {
             graph,
             &self.pathfind_count,
             None,
-        ) && walk
-            .as_ref()
-            .is_none_or(|walk| walk.seconds() > quote.mode_choice_seconds)
+        );
+        // Tentatively `Drove`; corrected below if the drive leg or reservation fails.
+        let mut outcome = match &quote {
+            None => parking.walk_reason(trip.vehicle, adult, target_handle),
+            Some(quote)
+                if walk
+                    .as_ref()
+                    .is_some_and(|walk| walk.seconds() <= quote.mode_choice_seconds) =>
+            {
+                DepartureOutcome::WalkingFaster
+            }
+            Some(_) => DepartureOutcome::Drove,
+        };
+        if let Some(quote) = quote
+            && outcome == DepartureOutcome::Drove
             && let Some(plan) =
                 self.materialize_parking_leg(i, &quote.to_car, target, activity, network, graph)
         {
             if parking.reserve_trip(trip.vehicle, borrower, quote.destination) {
+                parking.departures.record(outcome);
                 self.agents.parking_trip[i] = ParkingTrip {
                     vehicle: trip.vehicle,
                     source: quote.source,
@@ -344,7 +359,11 @@ impl AgentSystem {
                 return;
             }
             self.agents.current_path[i] = plan.current_path;
+            outcome = DepartureOutcome::ReservationLost;
+        } else if outcome == DepartureOutcome::Drove {
+            outcome = DepartureOutcome::NoDriveRoute;
         }
+        parking.departures.record(outcome);
         if self.agents.parking_trip[i].retry_pending {
             return;
         }

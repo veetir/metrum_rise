@@ -3,6 +3,8 @@
 //! Thin parking inspector, debug fleet and versioned parked-render bridge.
 
 use super::*;
+use crate::simulation::core::handles::Handle;
+use crate::simulation::parking::stats::DepartureOutcome;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -59,6 +61,16 @@ impl SimulationNode {
         result.set("places", places as i64);
         result.set("vehicles", vehicles as i64);
         result.set("stored", stored as i64);
+        let breakdown = core.parking.vehicle_breakdown();
+        result.set("parked", breakdown.parked as i64);
+        result.set("moving", breakdown.moving as i64);
+        result.set("borrowed", breakdown.borrowed as i64);
+        result.set("reserved", breakdown.reserved as i64);
+        let mut departures = VarDictionary::new();
+        for outcome in DepartureOutcome::ALL {
+            departures.set(outcome.label(), core.parking.departures.count(outcome) as i64);
+        }
+        result.set("departures", departures);
         let mut phases = VarDictionary::new();
         for trip in &core.agents.parking_trip {
             let name = format!("{:?}", trip.phase);
@@ -84,13 +96,18 @@ impl SimulationNode {
         result.set("resident_cars_in_buildings", indoor as i64);
         result.set(
             "diagnostics",
-            PackedStringArray::from_iter(
-                core.parking
-                    .diagnostics
-                    .values()
-                    .flatten()
-                    .map(GString::from),
-            ),
+            PackedStringArray::from_iter(core.parking.diagnostics.iter().flat_map(
+                |(&building, issues)| {
+                    let id = core
+                        .allocator
+                        .building_handles
+                        .resolve(Handle::from_bits(building))
+                        .map_or(-1, |index| index as i64);
+                    issues
+                        .iter()
+                        .map(move |issue| GString::from(format!("building {id}: {issue}").as_str()))
+                },
+            )),
         );
         result
     }

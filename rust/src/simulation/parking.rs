@@ -13,6 +13,7 @@ pub(crate) mod lots;
 mod query;
 mod render;
 mod retired;
+pub(crate) mod stats;
 mod trips;
 pub use trips::ParkingTrip;
 pub(crate) use trips::ParkingTripPhase;
@@ -54,6 +55,8 @@ pub(crate) struct ParkingSystem {
     candidates: HashMap<u64, candidates::DestinationCandidates>,
     candidate_revision: u64,
     pending_economy: Vec<u64>,
+    // Inspection-only departure outcomes since load; never saved or read by decisions.
+    pub(crate) departures: stats::DepartureStats,
 }
 
 impl ParkingSystem {
