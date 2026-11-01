@@ -387,7 +387,11 @@ func _draw_hover(camera: Camera3D) -> void:
 				outline.append(points[(edge + 1) % points.size()] + Vector3(0, 0.01, 0))
 			if hovered["kind"] == "vertex":
 				title += " · vertex %d" % (hovered["vertex"] + 1)
-		"anchor": title = "Anchor: " + editor._site_anchor_display_label(index)
+		"anchor":
+			title = "Anchor: " + editor._site_anchor_display_label(index)
+			var rejection: String = editor._preview.parking_rejection(index)
+			if not rejection.is_empty():
+				title += " · Rejected: " + rejection
 	if hovered["kind"] != "reference" and not hovered.get("occluded", false):
 		overlay.marker = camera.unproject_position(hovered["position"])
 		overlay.marker_radius = Picker.ANCHOR_RADIUS if hovered["kind"] == "anchor" else Picker.VERTEX_RADIUS

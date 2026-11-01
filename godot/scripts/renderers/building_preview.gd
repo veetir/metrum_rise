@@ -517,6 +517,10 @@ func set_selected_mesh_parts(indices: Array, active_index: int = -1) -> void:
 	_active_mesh_part_index = active_index if _selected_mesh_part_indices.has(active_index) else -1
 	_build_selection_overlay()
 
+## Why the validator rejects parking anchor `index`, or "" when it is accepted.
+func parking_rejection(index: int) -> String:
+	return str(_parking_rejections.get(index, ""))
+
 ## Replace the editor-only site anchor preview list.
 func set_parking_diagnostics(payload: Dictionary) -> void:
 	_parking_rejections.clear()
@@ -1301,8 +1305,10 @@ func _build_site_anchor_overlay() -> void:
 				selected
 			)
 		var label := _new_overlay_label(_site_anchor_label(anchor, type_counts[anchor_type]))
+		# The full reason is in the hover line and the inspector; a long one here overlaps
+		# and hides the neighbouring spots.
 		if _parking_rejections.has(index):
-			label.text += "\nRejected: " + str(_parking_rejections[index])
+			label.text += " · rejected"
 		_site_anchor_label_root.add_child(label)
 		_site_anchor_labels.append(label)
 		var label_pos := base + forward * maxf(1.25, width * 0.6) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)

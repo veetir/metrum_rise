@@ -45,6 +45,7 @@ var _mesh_part_list: ItemList
 var _frontage_lbl: Label  # shows current frontage forward vector
 var _site_anchor_list: ItemList
 var _site_anchor_name_edit: LineEdit
+var _site_anchor_issue_label: Label
 var _site_anchor_vehicle_class_btn: OptionButton
 var _site_anchor_x_spin: SpinBox
 var _site_anchor_y_spin: SpinBox

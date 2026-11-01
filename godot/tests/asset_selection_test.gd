@@ -555,6 +555,7 @@ func _test_access_point_input() -> void:
 	selection.press(_screen(Vector3(0, 0.1, -3)), MOUSE_BUTTON_LEFT)
 	selection.release(_screen(Vector3(0, 0.1, -3)))
 	expect(editor._selected_site_surface_index == 0 and editor._view.task_picker.selected == 2 and editor._view.site_picker.selected == 2, "bare yard click opens Surfaces without a toolbar action")
+	var label_clicks := 0
 	for scale in [1.0, 2.0]:
 		root.content_scale_factor = scale
 		root.size = Vector2i(Vector2(1920, 1080) * scale)
@@ -568,10 +569,20 @@ func _test_access_point_input() -> void:
 			var point := label.global_position + camera.global_basis.x * label.get_aabb().size.x * 0.3
 			var mouse := _screen(point)
 			expect(selection.picker._label_contains("anchor", index, mouse, camera), "anchor text uses its visible billboard bounds at %.1fx UI scale" % scale)
+			# A name floats above the ground, so it can cover another spot's shape; the shape the
+			# cursor is actually on wins, and the name selects only where no shape is under it.
+			var expected := index
+			for hit in selection.picker.collect(mouse, camera, "all"):
+				if hit["kind"] == "anchor" and not hit.get("label", false) and not hit.get("occluded", false):
+					expected = hit["index"]
+					break
+			if expected == index:
+				label_clicks += 1
 			_click(mouse)
-			expect(editor._selected_site_anchor_index == index and editor._view.site_picker.selected == 1, "clicking entrance/parking/loading/driveway text selects it and opens its settings")
+			expect(editor._selected_site_anchor_index == expected and editor._view.site_picker.selected == 1, "clicking entrance/parking/loading/driveway text selects it, or the shape under it, and opens its settings (anchor %d)" % index)
 			if scale == 1.0 and index == 1:
 				await _capture_access_selection()
+	expect(label_clicks > 0, "some access point text lies clear of other shapes and selects its own point")
 	root.content_scale_factor = 1.0
 	root.size = Vector2i(1920, 1080)
 	for frame in 8:

@@ -1152,6 +1152,7 @@ func _update_site_anchor_controls() -> void:
 	_view._site_anchor_yaw_spin.editable = has_anchor and not is_driveway
 	_view._site_anchor_width_spin.editable = has_size
 	_view._site_anchor_length_spin.editable = has_length
+	_update_site_anchor_issues()
 	_updating_site_anchor_controls = false
 	if _session != null:
 		_session.selection_changed()
@@ -1201,6 +1202,23 @@ func _update_site_anchor_preview() -> void:
 			_selected_site_anchor_indices,
 			_selected_site_anchor_index
 		)
+		_update_site_anchor_issues()
+
+# Shows each rejected spot's reason in the access list and, wrapped, above the selected spot's
+# properties, so a rejection never relies on the viewport labels alone.
+func _update_site_anchor_issues() -> void:
+	if not _view._site_anchor_list or not _preview or not _preview.has_method("parking_rejection"):
+		return
+	var list: ItemList = _view._site_anchor_list
+	for index in mini(list.item_count, _site_anchors_data.size()):
+		var rejection: String = _preview.parking_rejection(index)
+		# The list is rebuilt on every refresh, so only rejected rows need styling.
+		if not rejection.is_empty():
+			list.set_item_custom_fg_color(index, Color(1.0, 0.45, 0.4))
+			list.set_item_tooltip(index, "Rejected: " + rejection)
+	var selected: String = _preview.parking_rejection(_selected_site_anchor_index) if _selected_site_anchor_index >= 0 else ""
+	_view._site_anchor_issue_label.text = "Rejected: " + selected
+	_view._site_anchor_issue_label.visible = not selected.is_empty()
 
 func _anchor_position(anchor: Dictionary) -> Vector3:
 	return PreviewGeometry.vector3(anchor.get("position"))
