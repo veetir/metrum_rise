@@ -153,6 +153,25 @@ func _test_context_commands() -> void:
 	expect(editor._anchor_forward(turned).is_equal_approx(Basis(Vector3.UP, PI / 2) * facing) and editor._anchor_position(turned).distance_to(point) < 4, "R turns a placed spot a quarter turn and keeps it under the cursor")
 	actions.confirm()
 	expect(document.snapshot().params.anchors.size() == 2 and document.can_undo(), "confirmed creation is persisted")
+	var spot: Array[Dictionary] = [{"kind": "anchor", "index": 1}]
+	var middle: Vector3 = editor._anchor_position(editor._site_anchors_data[1]) + actions._footprint_middle(editor._site_anchors_data[1])
+	actions.begin_rotation(spot, 180.0)
+	var reversed: Dictionary = editor._site_anchors_data[1]
+	expect((editor._anchor_position(reversed) + actions._footprint_middle(reversed)).distance_to(middle) < 0.05, "reversing a spot turns it in place about its middle")
+	document.undo()
+	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	var panel_click := InputEventMouseButton.new()
+	panel_click.button_index = MOUSE_BUTTON_LEFT
+	panel_click.pressed = true
+	panel_click.position = editor._view._preview_view_rect.get_global_rect().end + Vector2(-2, -2) + Vector2(40, 0)
+	expect(not actions.handle_input(panel_click) and actions.mode.is_empty() and editor._site_anchors_data.size() == 2, "a click on the panels drops the object in hand and reaches the panel")
+	var shown: bool = editor._view.library.visible
+	var tab := InputEventKey.new()
+	tab.keycode = KEY_TAB
+	tab.pressed = true
+	editor._input(tab)
+	expect(editor._view.library.visible != shown, "Tab opens and closes the Library")
+	editor._input(tab)
 	var rejection: String = editor._parking_diagnostics()["rejected"][0]["reason"]
 	editor._session.validate()
 	expect(editor._session._issues.any(func(issue): return issue.get("anchor", -1) == 1 and str(issue.message).ends_with(rejection)), "a spot cars cannot reach is a validation issue, not ready to export")

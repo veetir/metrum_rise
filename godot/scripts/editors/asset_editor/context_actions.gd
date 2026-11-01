@@ -262,7 +262,17 @@ func handle_input(event: InputEvent) -> bool:
 				_place(_ground_offset)
 		return true
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed and inside:
+		# Toolbars float over the viewport; their buttons count as panels too.
+		var control := editor.get_viewport().gui_get_hovered_control()
+		if control != null and control.mouse_filter == Control.MOUSE_FILTER_STOP:
+			inside = false
+		if not inside:
+			# A click on the panels drops the gesture and reaches them, so another button,
+			# list or dropdown works at once instead of being held by the object in hand.
+			if event.pressed:
+				cancel()
+			return false
+		if event.pressed:
 			confirm()
 		return true
 	return event is InputEventKey
@@ -282,9 +292,19 @@ func _rotate_transforms(delta: float) -> void:
 			part.position = editor._clamp_mesh_part_position_to_lot(object.index, _positions[slot])
 			editor._apply_mesh_part_transform_from_state(object.index, false)
 		else:
+			# A spot turns about the middle of its shape, not the point on its front edge.
 			var anchor: Dictionary = editor._site_anchors_data[object.index]
+			anchor.forward = editor._vector3_to_array(editor._forward_from_yaw(_angles[slot]), 0.001)
+			var centre := _positions[slot] + _footprint_middle(anchor)
 			anchor.forward = editor._vector3_to_array(editor._forward_from_yaw(yaw), 0.001)
-			anchor.position = editor._vector3_to_array(editor._clamp_site_anchor_position_to_lot(anchor, _positions[slot]), 0.01)
+			anchor.position = editor._vector3_to_array(editor._clamp_site_anchor_position_to_lot(anchor, centre - _footprint_middle(anchor)), 0.01)
+
+func _footprint_middle(anchor: Dictionary) -> Vector3:
+	var offsets: Array = editor._site_anchor_footprint_offsets(anchor)
+	var sum := Vector3.ZERO
+	for offset: Vector3 in offsets:
+		sum += offset
+	return sum / maxf(1, offsets.size())
 
 # Turns the objects being placed a quarter turn about their group centre and keeps them under the cursor.
 func _turn_placement(step: float) -> void:

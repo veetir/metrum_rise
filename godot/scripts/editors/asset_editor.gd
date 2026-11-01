@@ -1720,6 +1720,14 @@ func _input(event: InputEvent) -> void:
 			_yard_preview.exit()
 			get_viewport().set_input_as_handled()
 		return
+	if _menus.actions != null:
+		_menus.track_focus(event)
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_TAB \
+			and not _ui_captures_editor_text_input() and not _cam_input._ui_has_modal_popup():
+		# Tab opens the Library instead of moving keyboard focus between controls.
+		_view.toggle_library()
+		get_viewport().set_input_as_handled()
+		return
 	if _menus.actions != null and (_menus.actions.handle_input(event) or _menus.handle_right(event)):
 		get_viewport().set_input_as_handled()
 		return
