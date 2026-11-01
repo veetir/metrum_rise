@@ -3,13 +3,13 @@
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID,
     TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
@@ -93,14 +93,15 @@ unsafe fn bootstrap_immigration_trip(
 
         let border_node = *s_cur_n.get(i);
         let home_bldg = *s_tgt_b.get(i);
-        if let Some(plan) = plan_immigration_trip(
-            border_node,
-            home_bldg,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-        ) {
+        let plan = if *slices.pending_household_size.get(i) > 0 {
+            allocator.entrances.get(home_bldg).and_then(|entrance|
+                plan_border_arrival(border_node, home_bldg,
+                    crate::simulation::economy::agents::MODE_WALK, entrance,
+                    transit_network, graph, pathfind_count))
+        } else {
+            plan_immigration_trip(border_node, home_bldg, allocator, transit_network, graph, pathfind_count)
+        };
+        if let Some(plan) = plan {
             apply_immigration_trip(i, border_node, plan, slices);
             true
         } else {
@@ -357,7 +358,7 @@ unsafe fn apply_immigration_trip(
         let s_lane_d = &slices.lane_d;
         let s_cur_e = &slices.cur_e;
 
-        *s_tmode.get_mut(i) = MODE_CAR;
+        *s_tmode.get_mut(i) = plan.mode;
         *s_tgt_b.get_mut(i) = plan.target_building;
         *s_plan_attach_n.get_mut(i) = plan.planned_attach_node;
         *s_plan_detach_n.get_mut(i) = plan.planned_detach_node;

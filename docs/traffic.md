@@ -333,7 +333,13 @@ the proposed destination bay, with the departure bay available on return. Accept
 timeouts use the same complete physical cost. Save version 110 includes these quote stamps and
 rolling destination memberships; the unshipped format changes together, without a migration.
 
-Round 2b retains freight and immigration and their wider watchdog/lifecycle changes. Resident
+Pass p06 move-ins reserve one free fitting home-catchment place at paced departure, then use
+`Drive → PullIn → WalkToDoor`. With no free place they walk from the border and keep the car
+off-map. Carless households use the same pedestrian arrival. Ownership uses the saved seed and
+stable carrier identity before a household record exists; adoption preserves that decision and
+the original vehicle. Save version 111 adds this in-flight ownership decision, with no migration.
+
+Round 2b retains freight and wider watchdog/lifecycle changes. Resident
 household removal and resident edit/watchdog recovery are already included here.
 
 ### Traffic integration after round 2a (PARK-02, 2026-11-01)

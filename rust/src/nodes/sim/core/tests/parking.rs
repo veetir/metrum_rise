@@ -332,3 +332,36 @@ fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
         crate::simulation::economy::agents::MODE_WALK
     );
 }
+
+#[test]
+fn parking_move_in_save_round_trip_mid_arrival() {
+    use crate::simulation::economy::agents::HouseholdAgeComposition;
+    use crate::simulation::parking::ParkingTripPhase;
+    let mut c = SimCore::new(WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+        .with_chunking(128.0, 0.0).with_terrain_resolution(2.0));
+    c.treasury.balance = 1_000_000.0;
+    commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
+    let id = register_lot(&mut c);
+    c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let border = if c.allocator.entrances[0].side == -1 {
+        c.region_graph.edge(0).start_node
+    } else { c.region_graph.edge(0).end_node };
+    let pos = c.region_graph.node(border).pos;
+    let i = c.agents.spawn_household_arrival_carrier(0, 1,
+        HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+    assert!(c.agents.start_parking_move_in(i, &mut c.parking, &c.allocator,
+        &c.transit_network, &c.region_graph));
+    c.households.recount_pending_arrivals(&mut c.agents);
+    assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::Drive);
+    let car = c.agents.parking_trip[i].vehicle;
+    let before = c.parking.save_json(|s| s).unwrap();
+    let trip = serde_json::to_string(&c.agents.parking_trip[i]).unwrap();
+    let path = temp_save_path("parking-move-in-mid-arrival");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.load_game_internal(path.to_str().unwrap()).unwrap();
+    assert_eq!(c.parking.save_json(|s| s).unwrap(), before);
+    assert_eq!(serde_json::to_string(&c.agents.parking_trip[i]).unwrap(), trip);
+    assert!(c.parking.vehicle_place(car).is_none(), "loading cannot park an arriving car");
+    std::fs::remove_file(path).unwrap();
+}

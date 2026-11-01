@@ -196,11 +196,16 @@ impl SimCore {
             let density = profiles
                 .density_for_runtime_id(home.zone_profile_runtime_id)
                 .unwrap_or(ZoneDensity::Low);
-            self.parking
-                .assign_household(owner, density, [home.center_x, home.center_y]);
-            let car = self.parking.household_car(owner);
-            self.parking.park_new_car(car, home_handle);
             let members: Vec<_> = self.agents.household_members(h).collect();
+            let arrival = members.iter().copied().find(|&i| self.agents.parking_trip[i].arrival_ownership);
+            if let Some(carrier) = arrival {
+                self.parking.adopt_arrival_car(owner, self.agents.parking_trip[carrier].vehicle);
+                self.agents.agents.parking_trip[carrier].arrival_ownership = false;
+            } else {
+                self.parking.assign_household(owner, density, [home.center_x, home.center_y]);
+            }
+            let car = self.parking.household_car(owner);
+            if arrival.is_none() { self.parking.park_new_car(car, home_handle); }
             for member in members {
                 self.agents.agents.parking_trip[member].vehicle = car;
             }

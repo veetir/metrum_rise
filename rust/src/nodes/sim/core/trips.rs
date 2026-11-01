@@ -337,8 +337,14 @@ impl SimCore {
             }
             TripEvent::ArrivalDeparture { carrier } => {
                 if let Some(agent_idx) = self.agents.resolve_agent(carrier)
-                    && self.agents.release_departure(agent_idx)
+                    && self.agents.departure_held(agent_idx)
                 {
+                    if !self.agents.start_parking_move_in(agent_idx, &mut self.parking,
+                        &self.allocator, &self.transit_network, &self.region_graph) {
+                        self.schedule_trip(next_check, TripEvent::ArrivalDeparture { carrier });
+                        return;
+                    }
+                    self.agents.release_departure(agent_idx);
                     crate::debug::work::add(crate::debug::work::Work::ArrivalLaunches, 1);
                     self.schedule_trip(next_check, TripEvent::ArrivalCheck { carrier });
                 }

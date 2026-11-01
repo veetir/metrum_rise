@@ -16,12 +16,19 @@ pedestrian legs end at the actual bay and door respectively. The drive joins/lea
 driveway curb; pull-out uses the ordinary lane-entry claim/hold and pull-in uses
 `try_network_detach`. Retained swept-path interpolation connects each bay and driveway outside
 the network. Only `WalkToDoor` enters the destination building; a debug assertion rejects a
-resident car arrival at a door.
+resident or move-in car arrival at a door.
+
+Pass p06 move-ins choose car ownership at their paced departure using the saved mobility seed,
+housing density and stable carrier identity (the household record does not yet exist). This
+decision and the same vehicle are adopted by the household at materialization, without rerolling.
+A free home-catchment bay is reserved before entry: `Drive → PullIn → WalkToDoor`. If none
+is free, the household walks from the external connection and its car stays unavailable off-map.
+Carless households use that same pedestrian arrival. Freight retains its previous itinerary.
 
 Destination reservations commit at departure in deterministic agent order. Origin occupancy
 is released after lane entry, and pull-in converts destination reservation to occupancy in the
 same resource phase. Edits cancel removed reservations and recover from actual positions.
-Ownership, borrower, phase, reservations and scheduled retries survive save/load (version 110,
+Ownership, borrower, phase, reservations and scheduled retries survive save/load (version 111,
 no migration). Moving and parked buffers share a custody publication epoch. Economy commute,
 shopping and service quotes use the same itinerary and actual custody; a proposed shopping
 return starts at the proposed parked bay. Destination parking is within 400 m walking time;
@@ -29,8 +36,7 @@ the walk to the actual car has no additional distance cap. Returning home releas
 while retaining the car's last bay.
 
 The [trip design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a) records bounds,
-cache memory and outstanding acceptance. Freight and immigration keep their previous access
-behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
+cache memory and outstanding acceptance. Freight keeps its previous access behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
 function; parking does not add an alternate detach path.
 
 ## Current System

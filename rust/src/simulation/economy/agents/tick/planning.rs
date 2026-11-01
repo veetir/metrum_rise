@@ -12,7 +12,7 @@ mod trip;
 mod types;
 
 pub(crate) use candidate::{SharedNetworkQuotes, TripQueryScratch};
-pub(crate) use immigration::plan_immigration_trip;
+pub(crate) use immigration::{plan_immigration_trip, plan_border_arrival};
 pub(super) use network::{
     ReplanCandidateDiagnostic, ReplanFailure, plan_border_network_replan, plan_network_replan,
 };

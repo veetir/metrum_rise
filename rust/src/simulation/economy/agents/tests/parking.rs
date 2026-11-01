@@ -768,3 +768,64 @@ fn parking_gridlock_treats_a_held_pull_out_as_an_entry_wait() {
     let borrower = agents.agent_handle(0).to_bits();
     assert!(saved.heads.iter().all(|&(_, car, _)| car != borrower));
 }
+
+#[test]
+fn parking_move_in_parks_before_walking_to_door() {
+    run_parking_move_in(false);
+}
+
+#[test]
+fn parking_move_in_without_space_walks_and_keeps_car_off_map() {
+    run_parking_move_in(true);
+}
+
+fn run_parking_move_in(full: bool) {
+    let (_, mut parking, allocator, mut network, mut graph) = fixture();
+    parking.remove_household_car(0);
+    if full { parking.fill_test_fleet(); }
+    let mut agents = AgentSystem::new();
+    let border = graph.edge(0).start_node;
+    let pos = graph.node(border).pos;
+    let i = agents.spawn_household_arrival_carrier(1, 1,
+        HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+    assert!(agents.start_parking_move_in(i, &mut parking, &allocator, &network, &graph));
+    let car = agents.parking_trip[i].vehicle;
+    assert!(!car.is_none());
+    assert_eq!(agents.transit_mode[i], if full { MODE_WALK } else { MODE_CAR });
+    assert!(parking.vehicle_place(car).is_none(), "departure cannot create occupancy");
+    let clock = test_clock(0, 0);
+    let mut phases = [false; 3];
+    let mut restored = false;
+    for _ in 0..15000 {
+        agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, &mut parking);
+        prepare_requested_routes(&mut agents);
+        match agents.parking_trip[i].phase {
+            ParkingTripPhase::Drive => phases[0] = true,
+            ParkingTripPhase::PullIn => phases[1] = true,
+            ParkingTripPhase::WalkToDoor => phases[2] = true,
+            _ => {}
+        }
+        if !full && phases[1] && !restored {
+            parking = ParkingSystem::load_json(&parking.save_json(|s| s).unwrap()).unwrap();
+            parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+            let saved = serde_json::to_string(&agents.parking_trip[i]).unwrap();
+            agents.agents.parking_trip[i] = serde_json::from_str(&saved).unwrap();
+            restored = true;
+        }
+        if agents.transit[i] == TRANSIT_IN_BUILDING {
+            assert_eq!(agents.transit_mode[i], MODE_WALK, "move-in car reached a door");
+            break;
+        }
+    }
+    assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);
+    assert_eq!(agents.current_building[i], 1);
+    if full {
+        assert!(parking.vehicle_place(car).is_none());
+        assert_eq!(phases, [false; 3]);
+        assert_eq!(parking.counts().2, 1);
+    } else {
+        assert_eq!(phases, [true; 3]);
+        assert!(parking.vehicle_place(car).is_some());
+        assert!(restored);
+    }
+}

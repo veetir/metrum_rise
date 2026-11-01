@@ -380,7 +380,9 @@ impl ParkingSystem {
                     .ok_or("parking borrower is missing")?;
                 if agents.age_group[i] == AGE_CHILD
                     || agents.parking_trip[i].vehicle != car
-                    || households.handles.handle(agents.household_id[i]).to_bits() != owner
+                    || (households.handles.handle(agents.household_id[i]).to_bits() != owner
+                        && !(owner == u64::MAX && agents.pending_household_size[i] > 0
+                            && agents.parking_trip[i].arrival_ownership))
                 {
                     return Err("invalid parking custody".into());
                 }

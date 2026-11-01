@@ -33,6 +33,7 @@ pub struct ParkingTrip {
     /// Saved node budget prepared by an explicit event; independent of allocator spare capacity.
     pub(crate) route_capacity: usize,
     pub(crate) retry_pending: bool,
+    pub(crate) arrival_ownership: bool,
     pub(crate) replan_needed: bool,
     #[serde(with = "saved_handle")]
     pub(crate) walk_origin: Handle<Place>,
@@ -76,27 +77,92 @@ impl ParkingSystem {
         }
         let owns = owns_car(self.mobility_seed, owner, density);
         let car = if owns {
-            let v = self.vehicles.len();
-            let hash = crate::simulation::core::stable_hash64(self.mobility_seed ^ owner);
-            self.vehicles.push(Vehicle {
-                home,
-                home_building: u64::MAX,
-                owner,
-                borrower: Handle::NONE,
-                moving: false,
-                retired_places: [Handle::NONE; 3],
-                place: Handle::NONE,
-                reserved: Handle::NONE,
-                model: (hash % 4) as u8,
-                colour: ((hash >> 8) % 5) as u8,
-            });
-            self.vehicle_handles.register_appended(self.vehicles.len());
-            self.vehicle_handles.handle(v)
+            self.create_car(owner, owner, home)
         } else {
             Handle::NONE
         };
         self.owners.insert(owner, car);
         car
+    }
+
+    fn create_car(&mut self, identity: u64, owner: u64, home: [f32; 2]) -> Handle<Vehicle> {
+        let v = self.vehicles.len();
+        let hash = crate::simulation::core::stable_hash64(self.mobility_seed ^ identity);
+        self.vehicles.push(Vehicle {
+            home,
+            home_building: u64::MAX,
+            owner,
+            borrower: Handle::NONE,
+            moving: false,
+            retired_places: [Handle::NONE; 3],
+            place: Handle::NONE,
+            reserved: Handle::NONE,
+            model: (hash % 4) as u8,
+            colour: ((hash >> 8) % 5) as u8,
+        });
+        self.vehicle_handles.register_appended(self.vehicles.len());
+        self.vehicle_handles.handle(v)
+    }
+
+    /// Decides an arriving household's car once from its stable carrier identity and the saved
+    /// seed. O(1), lifecycle allocation only; adoption preserves the decision without rerolling.
+    pub(crate) fn arrival_car(
+        &mut self,
+        identity: u64,
+        density: crate::simulation::zoning::profiles::ZoneDensity,
+        home: [f32; 2],
+    ) -> Handle<Vehicle> {
+        if owns_car(self.mobility_seed, identity, density) {
+            self.create_car(identity, u64::MAX, home)
+        } else {
+            Handle::NONE
+        }
+    }
+
+    /// Transfers an arrival's original car/zero-car decision into its materialized household.
+    /// O(1), lifecycle allocation only. The car retains pose, reservation, model and colour.
+    pub(crate) fn adopt_arrival_car(&mut self, owner: u64, car: Handle<Vehicle>) {
+        self.owners.insert(owner, car);
+        if let Some(v) = self.vehicle_handles.resolve(car) {
+            self.vehicles.owner[v] = owner;
+        }
+    }
+
+    /// Records off-map custody without claiming supply. O(local waiting cars), event boundary.
+    pub(crate) fn store_arrival_car(&mut self, car: Handle<Vehicle>, home: u64) {
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return;
+        };
+        self.vehicles.home_building[v] = home;
+        let list = self
+            .stored
+            .entry(chunk_at(self.vehicles.home[v]))
+            .or_default();
+        if !list.contains(&car) {
+            list.push(car);
+        }
+    }
+
+    /// Reserves a border-origin vehicle's destination and exclusive carrier in O(1).
+    pub(crate) fn reserve_arrival(
+        &mut self,
+        car: Handle<Vehicle>,
+        borrower: AgentHandle,
+        place: Handle<Place>,
+    ) -> bool {
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return false;
+        };
+        if !self.vehicles.place[v].is_none() || self.vehicles.moving[v] || !self.reserve(car, place)
+        {
+            return false;
+        }
+        if let Some(waiting) = self.stored.get_mut(&chunk_at(self.vehicles.home[v])) {
+            waiting.retain(|&h| h != car);
+        }
+        self.vehicles.borrower[v] = borrower;
+        self.set_moving(car, true);
+        true
     }
 
     /// O(1), allocation-free lookup of the persistent household car.

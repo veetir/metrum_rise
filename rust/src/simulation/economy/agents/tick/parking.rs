@@ -109,6 +109,7 @@ impl AgentSystem {
                     parking.clear_retired_places(trip.vehicle);
                     self.agents.parking_trip[i] = ParkingTrip {
                         vehicle: trip.vehicle,
+                        arrival_ownership: trip.arrival_ownership,
                         ..Default::default()
                     };
                     continue;
@@ -320,6 +321,7 @@ impl AgentSystem {
                     ready: false,
                     route_capacity: 0,
                     retry_pending: false,
+                    arrival_ownership: false,
                     replan_needed: false,
                     walk_origin: crate::simulation::core::handles::Handle::NONE,
                 };
