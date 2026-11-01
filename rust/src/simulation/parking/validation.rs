@@ -143,7 +143,12 @@ pub(super) fn validate_bay(
     for &[connection, approach] in paths {
         let aisle = bay.pos - bay.forward * (bay.length * 0.5 + 2.5);
         let path = [connection, approach, aisle, bay.pos];
-        let corridors = path.windows(2).filter_map(|pair| {
+        let legs = [
+            "the way in from the Driveway",
+            "the way to the front of the spot",
+            "the way into the spot",
+        ];
+        let corridors = path.windows(2).zip(legs).filter_map(|(pair, leg)| {
             let delta = pair[1] - pair[0];
             (delta.length_squared() >= 1e-8).then(|| {
                 let shape = rectangle(
@@ -152,7 +157,7 @@ pub(super) fn validate_bay(
                     1.8,
                     delta.length() + 4.5,
                 );
-                ("the way in from the Driveway", shape)
+                (leg, shape)
             })
         });
         // Full turning envelopes prove the orientation change where the path bends: always at
@@ -187,10 +192,17 @@ pub(super) fn validate_bay(
     let Some((part, cause, shape)) = first else {
         return Err("the Driveway must sit at the street edge and point into the lot".into());
     };
-    let room = if part.starts_with("the turn") {
-        "a car needs about 5 m by 5 m of clear paving to turn"
-    } else {
-        "the way needs about 1.8 m of clear paving"
+    let room = match part {
+        "the turn off the Driveway" => {
+            "a car needs about 5 m by 5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 2.5 m from the lot's side edges"
+        }
+        "the turn into the spot" => {
+            "a car needs about 5 m by 5 m of clear paving in front of the spot to turn in"
+        }
+        "the way to the front of the spot" => {
+            "a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends"
+        }
+        _ => "the way needs about 1.8 m of clear paving",
     };
     Err(Rejection {
         reason: format!("no room to drive in: {part} {cause} ({room})"),
@@ -362,9 +374,35 @@ mod tests {
         // The second is reached diagonally right under the shop front.
         assert_eq!(
             rejected[0]["reason"],
-            "no room to drive in: the way in from the Driveway leaves the paved yard (the way needs about 1.8 m of clear paving)"
+            "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)"
         );
         assert_eq!(rejected[0]["shape"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_spot_needs_room_in_front_to_line_up_and_the_rejection_says_so() {
+        // A shop-front row (the K-market layout): spots face the shop, the street runs behind.
+        let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[20,15],
+            "anchors":[
+            {"anchor_type":"parking", "position":[-2.5,0,11.42], "forward":[0,0,-1],
+                "width_m":2.5, "length_m":5.0},
+            {"anchor_type":"driveway", "position":[-18.5,0,15], "forward":[0,0,-1], "width_m":3.0}],
+            "site_surfaces":[{"material":"asphalt",
+            "vertices":[[-20,-15],[20,-15],[20,15],[-20,15]]}]});
+        let reason = "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)";
+        // Its open end is 1 m from the street edge, with no paving for the car to line up on.
+        assert_eq!(
+            editor_payload(&params, &[])["rejected"][0]["reason"],
+            reason
+        );
+        // Moved towards the shop, it still cannot be reached from a Driveway in the lot's corner.
+        params["anchors"][0]["position"] = json!([-2.5, 0, 7.5]);
+        assert_eq!(
+            editor_payload(&params, &[])["rejected"][0]["reason"],
+            reason
+        );
+        params["anchors"][1]["position"] = json!([-17.0, 0, 15]);
+        assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
     }
 
     #[test]

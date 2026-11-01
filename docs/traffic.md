@@ -76,9 +76,10 @@ conservative 4.85 m turn envelopes. The envelope is required at the driveway and
 corner only when the path bends there by more than 30°; through a slighter bend the two
 corridors, each extended 2.25 m past the corner, already cover the car's sweep. Paved support
 allows 5 cm at each bay edge. Rejections carry plain-language reasons naming the failing part
-(the way in, the turn off the driveway or the turn into the spot) and its cause (unpaved,
-structure or another bay). They are shown in the asset editor, which also draws the failing
-shape for the selected spot, and in the building inspector. Unsupported layouts
+(the way to the front of the spot, the way into it, or either turn) and its cause (unpaved,
+structure or another bay), with the room that part needs. They are shown in the asset editor,
+which also draws the failing shape for the selected spot and lists each rejected spot as a
+validation issue that blocks export, and in the building inspector. Unsupported layouts
 publish diagnostics and no bay. `loading_bay` anchors are excluded. The bundled six-bay asphalt
 lot is an explicitly placed 20 × 20 m site with zero workers/households and no economy profile.
 Existing site surfaces render the asphalt; the bundled mesh supplies its rear wheel stop.

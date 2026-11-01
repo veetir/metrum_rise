@@ -549,6 +549,13 @@ func validate() -> void:
 	var fit_error: String = _editor._mesh_parts_lot_fit_error()
 	if not fit_error.is_empty():
 		_issues.append({"section": "site", "field": "lot_width_cells", "message": fit_error})
+	# A rejected spot never takes a car in the game, so it must not ship as if it worked.
+	var list: ItemList = _editor._view._site_anchor_list
+	for rejected: Dictionary in _editor._parking_diagnostics().get("rejected", []):
+		var anchor := int(rejected["anchor"])
+		var name := list.get_item_text(anchor) if list and anchor < list.item_count else "Parking spot %d" % (anchor + 1)
+		_issues.append({"section": "site", "field": "anchors", "anchor": anchor,
+			"message": "%s is rejected: %s" % [name, str(rejected["reason"])]})
 	var view = _editor._view
 	var tiers := 0
 	for part in _editor._parts:
@@ -566,7 +573,9 @@ func validate() -> void:
 func resolve_issue(issue: Dictionary) -> void:
 	var field := str(issue["field"])
 	var view = _editor._view
-	if field == "pack_id":
+	if issue.has("anchor"):
+		_editor._menus.actions.properties({"kind": "anchor", "index": int(issue["anchor"])})
+	elif field == "pack_id":
 		view.show_task("overview")
 		_editor._open_pack_select_menu(view._pack_set_btn)
 	elif field == "type":

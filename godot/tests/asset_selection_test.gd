@@ -147,8 +147,15 @@ func _test_context_commands() -> void:
 	actions.cancel()
 	expect(document.snapshot() == original and editor._site_anchors_data.size() == 1 and not document.can_undo(), "cancelled creation restores document and preview")
 	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	var facing: Vector3 = editor._anchor_forward(editor._site_anchors_data[1])
+	actions._turn_placement(90.0)
+	var turned: Dictionary = editor._site_anchors_data[1]
+	expect(editor._anchor_forward(turned).is_equal_approx(Basis(Vector3.UP, PI / 2) * facing) and editor._anchor_position(turned).distance_to(point) < 4, "R turns a placed spot a quarter turn and keeps it under the cursor")
 	actions.confirm()
 	expect(document.snapshot().params.anchors.size() == 2 and document.can_undo(), "confirmed creation is persisted")
+	var rejection: String = editor._parking_diagnostics()["rejected"][0]["reason"]
+	editor._session.validate()
+	expect(editor._session._issues.any(func(issue): return issue.get("anchor", -1) == 1 and str(issue.message).ends_with(rejection)), "a spot cars cannot reach is a validation issue, not ready to export")
 	document.undo()
 	expect(document.snapshot() == original and not document.can_undo(), "one undo removes complete placement")
 	document.redo()
@@ -179,6 +186,8 @@ func _test_context_commands() -> void:
 	actions.begin_placement("create", [], {"kind": "driveway"}, point)
 	var driveway: Dictionary = editor._site_anchors_data.back()
 	expect(editor._anchor_forward(driveway).dot(editor._driveway_anchor_forward()) > 0.99, "created driveway faces inward")
+	actions._turn_placement(90.0)
+	expect(editor._anchor_forward(driveway).dot(editor._driveway_anchor_forward()) > 0.99, "R never turns a driveway away from the street")
 	expect(not document.selection_actions(entrance).duplicate, "main entrance menu exposes its singleton constraint")
 	actions.confirm()
 	var drive: Array[Dictionary] = [{"kind": "anchor", "index": 1}]

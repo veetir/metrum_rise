@@ -1191,18 +1191,21 @@ func _apply_site_anchor_controls(field: String) -> void:
 
 func _update_site_anchor_preview() -> void:
 	if _preview and _preview.has_method("set_site_anchors"):
-		var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
-			"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
-			"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
-		var payload: Dictionary = JSON.parse_string(_session.policy.parking_diagnostics_json(
-			JSON.stringify(params), _session.yard_structure_bounds()))
-		_preview.set_parking_diagnostics(payload)
+		_preview.set_parking_diagnostics(_parking_diagnostics())
 		_preview.set_site_anchors(
 			_site_anchors_data,
 			_selected_site_anchor_indices,
 			_selected_site_anchor_index
 		)
 		_update_site_anchor_issues()
+
+# Runs the game's drive-in check over the current site, as {"rejected": [{anchor, reason, shape}]}.
+func _parking_diagnostics() -> Dictionary:
+	var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
+		"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
+		"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
+	return JSON.parse_string(_session.policy.parking_diagnostics_json(
+		JSON.stringify(params), _session.yard_structure_bounds()))
 
 # Shows each rejected spot's reason in the access list and, wrapped, above the selected spot's
 # properties, so a rejection never relies on the viewport labels alone.
