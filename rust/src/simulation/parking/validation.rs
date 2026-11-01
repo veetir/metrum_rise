@@ -24,6 +24,37 @@ pub(super) fn driveway_points_inward(forward: Vector2, outward: Vector2) -> bool
 const STREET_EDGE_TOLERANCE_M: f32 = 0.6;
 // Where a car stops on the street before turning straight into a street-edge bay.
 const STREET_APPROACH_M: f32 = 2.5;
+// A path corner that bends by at most 30° needs no turning envelope: the two 1.8 m corridors,
+// each extended 2.25 m past the corner, already cover a car's sweep through so slight a bend.
+const STRAIGHT_THROUGH_COS: f32 = 0.866;
+// Side of the square a car needs to change heading at a path corner.
+const TURN_ENVELOPE_M: f32 = 4.85;
+
+/// Why a bay is rejected, with the local shape that failed when one did, so the editor can
+/// draw it.
+pub(super) struct Rejection {
+    pub reason: String,
+    pub shape: Option<[Vector2; 4]>,
+}
+
+impl From<&str> for Rejection {
+    fn from(reason: &str) -> Self {
+        Self {
+            reason: reason.to_owned(),
+            shape: None,
+        }
+    }
+}
+
+// Whether the path bends at `corner` enough to need a turning envelope. A zero-length side
+// has no heading, so it counts as a turn. O(1).
+fn turns_at(before: Vector2, corner: Vector2, after: Vector2) -> bool {
+    let a = corner - before;
+    let b = after - corner;
+    a.length_squared() < 1e-8
+        || b.length_squared() < 1e-8
+        || a.normalized().dot(b.normalized()) < STRAIGHT_THROUGH_COS
+}
 
 /// Whether a bay, in asset-local coordinates, opens straight onto the street: its entry edge
 /// lies on the lot's frontage edge and it points into the lot. Such a bay needs no Driveway.
@@ -51,18 +82,18 @@ pub(super) fn validate_bay(
     paths: &[[Vector2; 2]],
     street: Option<Vector2>,
     collision: impl Fn(&[Vector2]) -> bool,
-) -> Result<[Vector2; 4], &'static str> {
+) -> Result<[Vector2; 4], Rejection> {
     let bay = &bays[slot];
     if !has_driveway && street.is_none() {
         return Err(
-            "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot",
+            "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot".into(),
         );
     }
     if bay.width < 1.8 || bay.length < 4.5 || bay.forward.length_squared() < 0.99 {
-        return Err("too small for a car: make it at least 1.8 m wide and 4.5 m long");
+        return Err("too small for a car: make it at least 1.8 m wide and 4.5 m long".into());
     }
     if collision(&footprints[slot]) {
-        return Err("overlaps the building or another structure");
+        return Err("overlaps the building or another structure".into());
     }
     let other_bay = |foot: &[Vector2]| {
         footprints
@@ -71,7 +102,7 @@ pub(super) fn validate_bay(
             .any(|(other, b)| other != slot && overlaps(foot, b))
     };
     if other_bay(&footprints[slot]) {
-        return Err("overlaps another parking spot");
+        return Err("overlaps another parking spot".into());
     }
     // Authored surfaces stop a few centimetres short of the lot edge they were drawn to.
     let inset = rectangle(
@@ -82,7 +113,8 @@ pub(super) fn validate_bay(
     );
     if !covered(&inset, support) {
         return Err(
-            "not fully on asphalt or concrete: move the whole spot onto a paved yard surface",
+            "not fully on asphalt or concrete: move the whole spot onto a paved yard surface"
+                .into(),
         );
     }
     if let Some(connection) = street {
@@ -95,36 +127,75 @@ pub(super) fn validate_bay(
             bay.pos,
         ]);
     }
+    // What blocks a car's swept shape, if anything.
+    let blocked = |foot: &[Vector2]| {
+        if !covered(foot, support) {
+            Some("leaves the paved yard")
+        } else if collision(foot) {
+            Some("hits the building or another structure")
+        } else if other_bay(foot) {
+            Some("crosses another parking spot")
+        } else {
+            None
+        }
+    };
+    let mut first = None;
     for &[connection, approach] in paths {
         let aisle = bay.pos - bay.forward * (bay.length * 0.5 + 2.5);
         let path = [connection, approach, aisle, bay.pos];
-        let clear =
-            |foot: &[Vector2]| covered(foot, support) && !collision(foot) && !other_bay(foot);
-        let segments_clear = path.windows(2).all(|pair| {
+        let corridors = path.windows(2).filter_map(|pair| {
             let delta = pair[1] - pair[0];
-            delta.length_squared() < 1e-8
-                || clear(&rectangle(
+            (delta.length_squared() >= 1e-8).then(|| {
+                let shape = rectangle(
                     (pair[0] + pair[1]) * 0.5,
                     delta.normalized(),
                     1.8,
                     delta.length() + 4.5,
-                ))
+                );
+                ("the way in from the Driveway", shape)
+            })
         });
-        // Full turning envelopes prove the orientation change at both aisle corners.
-        if segments_clear
-            && [approach, aisle]
-                .iter()
-                .all(|&corner| clear(&rectangle(corner, Vector2::new(0.0, 1.0), 4.85, 4.85)))
-        {
-            return Ok(path);
+        // Full turning envelopes prove the orientation change where the path bends: always at
+        // the Driveway, where the car leaves the street, and at the aisle unless it is
+        // straight through.
+        let turns = [
+            (connection, approach, aisle, "the turn off the Driveway"),
+            (approach, aisle, bay.pos, "the turn into the spot"),
+        ]
+        .into_iter()
+        .filter(|&(before, corner, after, _)| corner == approach || turns_at(before, corner, after))
+        .map(|(_, corner, _, part)| {
+            let half = TURN_ENVELOPE_M * 0.5;
+            let shape = [
+                corner + Vector2::new(-half, -half),
+                corner + Vector2::new(half, -half),
+                corner + Vector2::new(half, half),
+                corner + Vector2::new(-half, half),
+            ];
+            (part, shape)
+        });
+        let failure = corridors
+            .chain(turns)
+            .find_map(|(part, shape)| blocked(&shape).map(|cause| (part, cause, shape)));
+        match failure {
+            None => return Ok(path),
+            Some(failure) => {
+                first.get_or_insert(failure);
+            }
         }
     }
-    if paths.is_empty() {
-        return Err("the Driveway must sit at the street edge and point into the lot");
-    }
-    Err(
-        "no room to drive in: the way from the Driveway to this spot must be paved, clear of buildings and other spots, and about 5 m wide where the car turns",
-    )
+    let Some((part, cause, shape)) = first else {
+        return Err("the Driveway must sit at the street edge and point into the lot".into());
+    };
+    let room = if part.starts_with("the turn") {
+        "a car needs about 5 m by 5 m of clear paving to turn"
+    } else {
+        "the way needs about 1.8 m of clear paving"
+    };
+    Err(Rejection {
+        reason: format!("no room to drive in: {part} {cause} ({room})"),
+        shape: Some(shape),
+    })
 }
 
 /// Editor payload with original anchor indices and exact local rejection reasons.
@@ -240,7 +311,12 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
                 |foot| walls.iter().any(|wall| overlaps(foot, wall)),
             )
             .err()
-            .map(|reason| json!({"anchor":index, "reason":reason}))
+            .map(|rejection| {
+                let shape = rejection
+                    .shape
+                    .map(|shape| shape.map(|p| [p.x, p.y]).to_vec());
+                json!({"anchor":index, "reason":rejection.reason, "shape":shape})
+            })
         })
         .collect();
     json!({"rejected":rejected, "frontage_check":"Road connection checked in the placed building inspector"})
@@ -264,6 +340,31 @@ mod tests {
             .push(json!({"anchor_type":"driveway",
             "position":[0,0,-10], "forward":[0,0,1]}));
         assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
+    }
+
+    #[test]
+    fn only_a_real_turn_needs_a_turning_envelope_and_the_rejection_names_it() {
+        // Two end-on spots beside a shallow forecourt (the Kenney pharmacy layout).
+        let params = json!({"frontage_forward":[0,0,-1], "lot_half_extents":[10,10],
+            "anchors":[
+            {"anchor_type":"parking", "position":[-3.71,0,-7.89], "forward":[-1,0,0],
+                "width_m":2.5, "length_m":5.0},
+            {"anchor_type":"parking", "position":[-3.78,0,-4.53], "forward":[-1,0,0],
+                "width_m":2.5, "length_m":5.0},
+            {"anchor_type":"driveway", "position":[0.68,0,-10], "forward":[0,0,1], "width_m":3.0}],
+            "site_surfaces":[{"material":"asphalt",
+            "vertices":[[-10,-10],[5.39,-10],[5.53,-2.69],[-10,-2.77]]}]});
+        let rejected = editor_payload(&params, &[])["rejected"].clone();
+        // The first spot's way in bends by about 12° at the aisle: no envelope there, whose
+        // square would cross the street edge.
+        assert_eq!(rejected.as_array().unwrap().len(), 1, "{rejected}");
+        assert_eq!(rejected[0]["anchor"], 1);
+        // The second is reached diagonally right under the shop front.
+        assert_eq!(
+            rejected[0]["reason"],
+            "no room to drive in: the way in from the Driveway leaves the paved yard (the way needs about 1.8 m of clear paving)"
+        );
+        assert_eq!(rejected[0]["shape"].as_array().unwrap().len(), 4);
     }
 
     #[test]

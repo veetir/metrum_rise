@@ -176,7 +176,7 @@ pub(crate) fn lot_bays(
                 },
             ));
         } else {
-            issues.push(fail(checked.unwrap_err()));
+            issues.push(fail(&checked.unwrap_err().reason));
         }
     }
     (result, issues)

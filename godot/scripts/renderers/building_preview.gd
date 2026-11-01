@@ -102,6 +102,10 @@ var _selected_mesh_part_indices: Array[int] = []
 var _active_mesh_part_index: int = -1
 var _site_anchors: Array[Dictionary] = []
 var _parking_rejections: Dictionary = {}
+# Rejected anchor index -> the asset-local XZ corners of the swept shape that failed, if any.
+var _parking_rejection_shapes: Dictionary = {}
+# The site object under the cursor, whose name shows while hovered (`kind:index`).
+var _hovered_label_key := ""
 var _site_surfaces: Array[Dictionary] = []
 var _selected_site_anchor_indices: Array[int] = []
 var _selected_site_anchor_index: int = -1
@@ -524,8 +528,28 @@ func parking_rejection(index: int) -> String:
 ## Replace the editor-only site anchor preview list.
 func set_parking_diagnostics(payload: Dictionary) -> void:
 	_parking_rejections.clear()
+	_parking_rejection_shapes.clear()
 	for issue: Dictionary in payload.get("rejected", []):
 		_parking_rejections[int(issue["anchor"])] = str(issue["reason"])
+		if issue.get("shape") is Array:
+			_parking_rejection_shapes[int(issue["anchor"])] = issue["shape"]
+
+## Shows the name of the site object under the cursor; other names show only when selected or
+## rejected. `kind` is "anchor" or "surface", or "" for none.
+func set_label_hover(kind: String, index: int) -> void:
+	var key := "%s:%d" % [kind, index] if not kind.is_empty() else ""
+	if key == _hovered_label_key:
+		return
+	_hovered_label_key = key
+	_apply_site_label_visibility()
+
+func _apply_site_label_visibility() -> void:
+	for index in _site_anchor_labels.size():
+		var shown := _selected_site_anchor_indices.has(index) or _parking_rejections.has(index) or _hovered_label_key == "anchor:%d" % index
+		_site_anchor_labels[index].visible = shown
+	for index in _site_surface_labels.size():
+		if _site_surface_labels[index] != null:
+			_site_surface_labels[index].visible = index == _selected_site_surface_index or _hovered_label_key == "surface:%d" % index
 
 func set_site_anchors(anchors: Array, selected_indices: Array = [], active_index: int = -1) -> void:
 	pick_revision += 1
@@ -1107,6 +1131,7 @@ func _build_site_surface_overlay() -> void:
 
 	im.surface_set_material(0, _new_overlay_material())
 	_site_surface_overlay.mesh = im
+	_apply_site_label_visibility()
 	_site_labels_ready.call_deferred()
 
 func _build_site_surface_fill(include_planting: bool = true) -> void:
@@ -1313,10 +1338,19 @@ func _build_site_anchor_overlay() -> void:
 		_site_anchor_labels.append(label)
 		var label_pos := base + forward * maxf(1.25, width * 0.6) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)
 		_style_overlay_label(label, label.text, color, label_pos)
+	# The selected spot's failed drive-in shape, so the rejection shows where it fails.
+	var failed = _parking_rejection_shapes.get(_selected_site_anchor_index)
+	if failed is Array and failed.size() == 4:
+		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.14
+		for corner in 4:
+			var a: Array = failed[corner]
+			var b: Array = failed[(corner + 1) % 4]
+			_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), Color(1.0, 0.2, 0.15), ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
 	im.surface_end()
 
 	im.surface_set_material(0, _new_overlay_material())
 	_site_anchor_overlay.mesh = im
+	_apply_site_label_visibility()
 	_site_labels_ready.call_deferred()
 
 func _draw_quad_fill(im: ImmediateMesh, corners: Array, color: Color) -> void:

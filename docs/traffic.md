@@ -72,8 +72,13 @@ building transforms, paving, structure footprints and validated frontage drivewa
 bay whose entry edge lies on the lot's street edge (within 0.6 m) and points into the lot opens
 straight onto the street: the car turns in from the road and needs no `driveway` anchor. Other
 bays use fixed driveway–aisle–bay paths that check full 1.8 × 4.5 m translated rectangles and
-conservative 4.85 m turn envelopes. Paved support allows 5 cm at each bay edge. Rejections carry
-plain-language reasons, shown in the asset editor and the building inspector. Unsupported layouts
+conservative 4.85 m turn envelopes. The envelope is required at the driveway and at the aisle
+corner only when the path bends there by more than 30°; through a slighter bend the two
+corridors, each extended 2.25 m past the corner, already cover the car's sweep. Paved support
+allows 5 cm at each bay edge. Rejections carry plain-language reasons naming the failing part
+(the way in, the turn off the driveway or the turn into the spot) and its cause (unpaved,
+structure or another bay). They are shown in the asset editor, which also draws the failing
+shape for the selected spot, and in the building inspector. Unsupported layouts
 publish diagnostics and no bay. `loading_bay` anchors are excluded. The bundled six-bay asphalt
 lot is an explicitly placed 20 × 20 m site with zero workers/households and no economy profile.
 Existing site surfaces render the asphalt; the bundled mesh supplies its rear wheel stop.

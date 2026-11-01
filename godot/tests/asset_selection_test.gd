@@ -565,6 +565,8 @@ func _test_access_point_input() -> void:
 				await process_frame
 			camera.look_at_from_position(Vector3(-24, 30, -32), Vector3(0, 0, -2))
 			editor._cam_input._update_preview_offset()
+			# Names show only while hovered, selected or rejected; hovering the point shows it.
+			editor._preview.set_label_hover("anchor", index)
 			var label: Label3D = editor._preview.site_label("anchor", index)
 			var point := label.global_position + camera.global_basis.x * label.get_aabb().size.x * 0.3
 			var mouse := _screen(point)
@@ -583,6 +585,14 @@ func _test_access_point_input() -> void:
 			if scale == 1.0 and index == 1:
 				await _capture_access_selection()
 	expect(label_clicks > 0, "some access point text lies clear of other shapes and selects its own point")
+	editor._preview.set_label_hover("", -1)
+	var quiet := -1
+	for index in editor._site_anchors_data.size():
+		if index != editor._selected_site_anchor_index and editor._preview.parking_rejection(index).is_empty():
+			quiet = index
+			break
+	expect(quiet >= 0 and not editor._preview.site_label("anchor", quiet).visible, "an accepted, unselected, unhovered access point shows no name")
+	expect(editor._preview.site_label("anchor", editor._selected_site_anchor_index).visible, "the selected access point keeps its name")
 	root.content_scale_factor = 1.0
 	root.size = Vector2i(1920, 1080)
 	for frame in 8:
