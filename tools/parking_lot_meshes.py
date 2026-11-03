@@ -2,7 +2,11 @@
 # Usage: blender -b -P tools/parking_lot_meshes.py -- <out_dir>
 # Game axes: +Y up, lot front (street) at +Z. Blender exports (x, y, z) as glTF (x, z, -y),
 # so a game point (gx, gy, gz) is built at Blender (gx, -gz, gy).
+import math
+import os
 import sys
+
+import bmesh
 import bpy
 
 OUT = sys.argv[sys.argv.index("--") + 1]
@@ -12,7 +16,7 @@ KERB = (0.55, 0.55, 0.53, 1.0)
 POST = (0.62, 0.64, 0.66, 1.0)
 POST_HEAD = (0.30, 0.32, 0.34, 1.0)
 SIGN_BLUE = (0.05, 0.22, 0.62, 1.0)
-WHITE = (0.95, 0.95, 0.95, 1.0)
+WHITE = (1.0, 1.0, 1.0, 1.0)
 
 
 def reset():
@@ -78,20 +82,61 @@ def heating_post(path):
     export(path)
 
 
+# DIN-style face like Finnish road signs; any bold sans works if this one is missing.
+SIGN_FONT = "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf"
+
+
+def rounded_panel(name, mat, width, height, radius, y_front, depth, centre_up):
+    # A rounded-corner panel facing game +Z, its front face at game z = y_front.
+    bpy.ops.mesh.primitive_plane_add(size=1.0)
+    ob = bpy.context.active_object
+    ob.name = name
+    ob.scale = (width, height, 1.0)
+    bpy.ops.object.transform_apply(scale=True)
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bmesh.ops.bevel(bm, geom=list(bm.verts), offset=radius, segments=6, affect="VERTICES")
+    bm.to_mesh(ob.data)
+    bm.free()
+    # The plane lies in Blender XY; stand it up to face Blender -Y (game +Z), then give it depth.
+    ob.rotation_euler = (math.pi / 2, 0.0, 0.0)
+    ob.location = (0.0, -y_front, centre_up)
+    bpy.ops.object.transform_apply(location=True, rotation=True)
+    solid = ob.modifiers.new("depth", "SOLIDIFY")
+    solid.thickness = depth
+    solid.offset = -1.0
+    bpy.ops.object.modifier_apply(modifier=solid.name)
+    ob.data.materials.append(mat)
+    return ob
+
+
 def p_sign(path):
-    # Finnish parking sign (E1): blue square with a white P, on a grey pole, facing +Z.
+    # Finnish parking sign (E1): white-bordered rounded blue square with a white P, on a pole.
     reset()
     steel = material("pole", POST, 0.5, 0.6)
     blue = material("sign_blue", SIGN_BLUE, 0.4)
-    white = material("sign_white", WHITE, 0.4)
+    white = material("sign_white", WHITE, 0.3)
     box("pole", steel, -0.03, 0.03, 0.0, 2.6, -0.03, 0.03)
-    box("plate", blue, -0.3, 0.3, 2.0, 2.6, 0.03, 0.06)
-    # The P: a stem and a loop, built from bars just proud of the plate.
-    z0, z1 = 0.06, 0.07
-    box("p_stem", white, -0.14, -0.06, 2.1, 2.5, z0, z1)
-    box("p_top", white, -0.06, 0.12, 2.42, 2.5, z0, z1)
-    box("p_mid", white, -0.06, 0.12, 2.26, 2.34, z0, z1)
-    box("p_side", white, 0.06, 0.14, 2.26, 2.5, z0, z1)
+    up = 2.3
+    rounded_panel("plate", white, 0.62, 0.62, 0.05, 0.06, 0.02, up)
+    rounded_panel("face", blue, 0.57, 0.57, 0.035, 0.065, 0.004, up)
+    bpy.ops.object.text_add()
+    text = bpy.context.active_object
+    if os.path.exists(SIGN_FONT):
+        text.data.font = bpy.data.fonts.load(SIGN_FONT)
+    text.data.body = "P"
+    text.data.size = 0.66
+    text.data.align_x = "CENTER"
+    text.data.align_y = "CENTER"
+    text.data.extrude = 0.002
+    # Finnish sign lettering is heavier than the font; grow the outline.
+    text.data.offset = 0.012
+    text.data.resolution_u = 8
+    text.rotation_euler = (math.pi / 2, 0.0, 0.0)
+    text.location = (0.015, -0.071, up - 0.005)
+    bpy.ops.object.convert(target="MESH")
+    text.data.materials.clear()
+    text.data.materials.append(white)
     export(path)
 
 
