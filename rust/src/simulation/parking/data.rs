@@ -12,6 +12,8 @@ use soa_derive::StructOfArray;
 pub(crate) enum PlaceSource {
     /// Stable building handle and the anchor's manifest index, independent of dense row swaps.
     Building { building: u64, anchor: u32 },
+    /// One parking lane of a road edge (`PARK-05`); edges are tombstoned, never renumbered.
+    Kerb { edge: u32, right: bool },
 }
 
 /// One public bay. Membership offsets make chunk/source removal O(1).

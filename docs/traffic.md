@@ -71,15 +71,28 @@ reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10
 lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
 street included), and the lane dividers split only the traffic lanes' share of the carriageway.
 
-Still to come: kerbside bays in the shared pool, the in-place toggle in Road Properties and bay
-paint and signs (`PARK-04`). The local `parking-kerbside-ref` branch preserves an earlier
-superseded implementation for reference.
+Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
+right }` per parking lane, saved with the other places. Each is 6 m long (`KERB_BAY_LENGTH_M`)
+and 2.5 m wide, centred half a parking lane in from the carriageway's edge of the span's
+`RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
+centred in each free stretch. A stretch starts 5 m past the span's first section or its start
+crossing strip and ends 5 m before the last section or its end crossing strip, because Finnish
+rules forbid parking within 5 m of a junction or crossing. A building's driveways and its
+street-entered lot bays cut a gap of their half width plus 1 m each side on their own kerb
+(`KerbBlocker`, indexed per
+building and per edge, derived and rebuilt by the load reconcile). Cars park facing the traffic
+beside them: a two-way road's left kerb faces backward, and a one-way road's lanes serve both
+kerbs. Access is the bay's own side (`SameSideOnly`) when its direction has lanes, both sides
+otherwise, entered from the lane beside the bay's rear along the bay's swept path.
+`SimCore::reconcile_parking_frontages` reconciles the kerbs of every touched edge, and of every
+edge whose blockers a building change moved, after the lots, through `replace_source`: an
+unmoved bay keeps its car, and a removed one tows it. Load validation rejects a kerb place
+whose edge is missing, deleted or has no parking on that side.
 
-The bay round must read `RoadProfile::bands()` / `carriageway_half_width_m()`, never `edge.width`
-or span-mesh triangles, and junction exclusion from `MouthFrame` mouth stations. Exclude whole
-pockets. On two-way streets park only on the car's own driving side. Pull-out uses
-`lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11` hold); pull-in uses
-`try_network_detach`, after `TRAFFIC-15/13`. Paint/sign content remains `PARK-04`.
+Still to come: the in-place toggle in Road Properties and bay paint and signs (`PARK-04`). The
+local `parking-kerbside-ref` branch preserves an earlier superseded implementation for
+reference. Pull-out uses `lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11`
+hold) and pull-in uses `try_network_detach`, as for lot bays.
 
 ### Anchor lots, edits and rendering
 

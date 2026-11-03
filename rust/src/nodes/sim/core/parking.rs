@@ -3,6 +3,7 @@
 //! Local physical parking publication at existing road and site edit boundaries.
 
 use super::SimCore;
+use crate::simulation::parking::kerb::{kerb_bays, kerb_blockers};
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -51,13 +52,17 @@ impl SimCore {
                         &self.region_graph,
                         &self.transit_network.roadbed,
                     );
-                    Some((handle, bays, issues))
+                    let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &bays);
+                    Some((handle, bays, issues, blockers))
                 })
                 .collect()
         });
         // Geometry is independent; live occupancy reconciliation commits in source order.
         let mut points = Vec::new();
-        for (handle, bays, issues) in lots {
+        let mut kerb_edges = edges.clone();
+        for (handle, bays, issues, blockers) in lots {
+            self.parking
+                .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
@@ -88,8 +93,40 @@ impl SimCore {
                     })
                 }),
         );
+        self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.rebuild_parking_candidates_near(&points);
         self.build_parked_chunks();
+    }
+
+    // Both parking lanes of each edge, against the blockers already published for it. Geometry
+    // runs in parallel; custody reconciles in edge order. O(edges' sections + bays × blockers).
+    fn reconcile_kerb_parking(&mut self, edges: &BTreeSet<usize>, points: &mut Vec<[f32; 2]>) {
+        let jobs: Vec<_> = edges
+            .iter()
+            .map(|&edge| (edge, self.parking.edge_kerb_blockers(edge)))
+            .collect();
+        let bays: Vec<_> = crate::thread_pools::install(|| {
+            jobs.into_par_iter()
+                .map(|(edge, blockers)| {
+                    let bays = kerb_bays(
+                        edge,
+                        &self.region_graph,
+                        &self.transit_network.roadbed,
+                        &blockers,
+                    );
+                    (edge, bays)
+                })
+                .collect()
+        });
+        for (edge, bays) in bays {
+            points.extend(self.parking.kerb_points(edge));
+            points.extend(
+                bays.iter()
+                    .flatten()
+                    .map(|b| [b.position[0], b.position[2]]),
+            );
+            self.parking.replace_kerb(edge, &bays);
+        }
     }
 
     /// O(changed buildings × lot validation), consuming the allocator's
@@ -106,23 +143,25 @@ impl SimCore {
             changes
                 .par_iter()
                 .map(|&handle| {
-                    let (bays, issues) =
-                        if let Some(i) = self.allocator.building_handles.resolve(handle) {
-                            lot_bays(
-                                &self.allocator,
-                                i,
-                                &self.region_graph,
-                                &self.transit_network.roadbed,
-                            )
-                        } else {
-                            (Vec::new(), Vec::new())
-                        };
-                    (handle, bays, issues)
+                    let Some(i) = self.allocator.building_handles.resolve(handle) else {
+                        return (handle, Vec::new(), Vec::new(), Vec::new());
+                    };
+                    let (bays, issues) = lot_bays(
+                        &self.allocator,
+                        i,
+                        &self.region_graph,
+                        &self.transit_network.roadbed,
+                    );
+                    let blockers = kerb_blockers(&self.allocator, i, &self.region_graph, &bays);
+                    (handle, bays, issues, blockers)
                 })
                 .collect()
         });
         let mut points = Vec::new();
-        for (handle, bays, issues) in lots {
+        let mut kerb_edges = BTreeSet::new();
+        for (handle, bays, issues, blockers) in lots {
+            self.parking
+                .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
@@ -139,6 +178,7 @@ impl SimCore {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
         }
+        self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.rebuild_parking_candidates_near(&points);
         changes.clear();
         self.allocator.parking_site_changes = changes;

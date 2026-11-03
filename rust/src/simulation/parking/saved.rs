@@ -177,8 +177,7 @@ impl ParkingSystem {
             ..Self::default()
         };
         for place in saved.places {
-            let PlaceSource::Building { building, .. } = place.source;
-            {
+            if let PlaceSource::Building { building, .. } = place.source {
                 let sources = system.building_sources.entry(building).or_default();
                 if !sources.contains(&place.source) {
                     sources.push(place.source);
@@ -335,6 +334,7 @@ impl ParkingSystem {
     pub(crate) fn validate_sources(
         &self,
         allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Result<(), String> {
         for (p, source) in self.places.source.iter().enumerate() {
             if !self.places.active[p] {
@@ -345,6 +345,16 @@ impl ParkingSystem {
                     .building_handles
                     .resolve(Handle::from_bits(building))
                     .is_some(),
+                PlaceSource::Kerb { edge, right } => graph
+                    .get_edge(edge as usize)
+                    .filter(|e| !e.deleted)
+                    .is_some_and(|e| {
+                        if right {
+                            e.parking.right
+                        } else {
+                            e.parking.left
+                        }
+                    }),
             };
             if !valid {
                 return Err(format!("parking place has a missing source: {source:?}"));

@@ -7,6 +7,8 @@ use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::core::RoadCommitRequest;
 use std::time::Instant;
 
+mod kerb;
+
 fn core() -> SimCore {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
@@ -18,6 +20,14 @@ fn core() -> SimCore {
     core
 }
 fn commit(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
+    commit_with(core, a, b, crate::simulation::network::graph::RoadParking::NONE);
+}
+fn commit_with(
+    core: &mut SimCore,
+    a: (f32, f32),
+    b: (f32, f32),
+    parking: crate::simulation::network::graph::RoadParking,
+) {
     core.precompute_road_mesh_data();
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
@@ -30,7 +40,7 @@ fn commit(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
             preview: None,
             tunnel: false,
             median: None,
-            parking: crate::simulation::network::graph::RoadParking::NONE,
+            parking,
         },
         Instant::now(),
         RoadEditMetrics::default(),

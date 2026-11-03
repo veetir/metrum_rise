@@ -90,6 +90,7 @@ fn build_shared() -> SharedSetup {
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: Default::default(),
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -199,6 +200,7 @@ fn create_access_edge(n0: u32, n1: u32) -> Edge {
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: Default::default(),
     }
 }
 

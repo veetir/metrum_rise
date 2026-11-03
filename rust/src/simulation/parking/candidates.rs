@@ -378,6 +378,48 @@ impl ParkingSystem {
             .filter(|&s| s <= WALK_LIMIT_S)
     }
 
+    /// A kerbside bay's access on its own road side: entered from the traffic lanes beside it,
+    /// or from either direction when a one-way road's lanes serve both kerbs. O(lanes on the
+    /// edge), allocation-free.
+    fn kerb_place_entrance(
+        &self,
+        p: usize,
+        edge_idx: usize,
+        right: bool,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<BuildingEntrance> {
+        use crate::simulation::network::types::VehicleFrontageAccess;
+        let edge = graph.get_edge(edge_idx).filter(|e| !e.deleted)?;
+        network.lane_system.edge_lanes.get(&edge_idx)?;
+        let [x, z] = self.places.path[p][0];
+        let curb = Vector2::new(x, z);
+        let pos = self.places.position[p];
+        let serving = if right {
+            edge.fwd_lanes
+        } else {
+            edge.bkw_lanes
+        };
+        let mut entrance = BuildingEntrance {
+            edge_idx,
+            side: if right { -1 } else { 1 },
+            vehicle_frontage_access: if serving > 0 {
+                VehicleFrontageAccess::SameSideOnly
+            } else {
+                VehicleFrontageAccess::BothSides
+            },
+            entrance_s_m: BuildingAllocator::project_point_to_polyline_s(
+                &edge.physical_geometry,
+                curb,
+            ),
+            door_pos: Vector2::new(pos[0], pos[2]),
+            curb_pos: curb,
+            ..BuildingEntrance::default()
+        };
+        BuildingAllocator::refresh_entrance_lanes(&mut entrance, graph, &network.lane_system);
+        Some(entrance)
+    }
+
     /// Bitwise geometry stamp for an economy endpoint, O(1), allocation-free. Topology and
     /// door revisions invalidate route caches separately; local bay moves/manoeuvres need this
     /// stamp even when the stable place handle survives an edit. Lane ids and flags are left
@@ -434,7 +476,12 @@ impl ParkingSystem {
         graph: &RegionGraph,
     ) -> Option<BuildingEntrance> {
         let p = self.place_handles.resolve(place)?;
-        let PlaceSource::Building { building, .. } = self.places.source[p];
+        let building = match self.places.source[p] {
+            PlaceSource::Building { building, .. } => building,
+            PlaceSource::Kerb { edge, right } => {
+                return self.kerb_place_entrance(p, edge as usize, right, network, graph);
+            }
+        };
         let host = allocator
             .building_handles
             .resolve(Handle::from_bits(building))?;

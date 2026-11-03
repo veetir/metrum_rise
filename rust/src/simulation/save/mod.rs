@@ -807,7 +807,7 @@ pub(crate) fn load_from_sqlite(
     )?;
     let mut parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
     households.parking_changes = std::mem::take(&mut parking.pending_households).into_iter().map(crate::simulation::core::handles::Handle::from_bits).collect();
-    parking.validate_sources(&allocator)?;
+    parking.validate_sources(&allocator, &graph)?;
     parking.validate_custody(&agents,&households)?;
     Ok(LoadedSimulation {
         vegetation,

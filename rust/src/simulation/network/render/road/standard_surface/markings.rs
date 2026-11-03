@@ -404,7 +404,6 @@ mod tests {
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{RegionGraph, RoadParking};
-    use crate::simulation::network::render::TransitRenderer;
     use crate::simulation::network::types::EdgeClass;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::zoning::ZoningSystem;

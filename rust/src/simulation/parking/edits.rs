@@ -180,7 +180,9 @@ impl ParkingSystem {
         let mut old = self.building_sources.remove(&building).unwrap_or_default();
         old.sort_unstable();
         for source in old {
-            let PlaceSource::Building { anchor, .. } = source;
+            let PlaceSource::Building { anchor, .. } = source else {
+                continue;
+            };
             let bay = bays.iter().find(|(i, _)| *i == anchor).map(|(_, b)| *b);
             self.replace_source(source, bay.as_slice());
         }
