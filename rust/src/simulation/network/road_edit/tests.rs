@@ -51,6 +51,7 @@ impl Fixture {
             &self.graph,
             &self.network.roadbed,
             true,
+            false,
         );
         let (validation, plan) = validate_road_edit(&prepared, 1, 1, &self.terrain, &self.graph);
         assert!(validation.is_valid, "{validation:?}");
@@ -267,6 +268,7 @@ fn a_stroke_from_a_road_end_adopts_like_a_cold_add() {
             1,
             1,
             EdgeClass::Standard,
+            None,
         ));
         fixture.network.roadbed.mark_edge_dirty(0);
         fixture.network.roadbed.compile_dirty(&fixture.graph);
@@ -297,6 +299,7 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
         1,
         1,
         EdgeClass::Standard,
+        None,
     ));
     fixture.network.roadbed.compile_dirty(&fixture.graph);
     let (_, plan) = fixture.plan(&[Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)]);
@@ -357,6 +360,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             1,
             1,
             EdgeClass::Standard,
+            None,
         ));
     }
     graph.add_lane_connection(1, 0, 0, 0, 0);
@@ -435,4 +439,21 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
     assert_eq!(graph.edge(1).start_node, 1);
     assert_eq!(graph.edge(1).physical_geometry[0], Vector3::ZERO);
     assert_eq!(graph.adjacency(), local.adjacency());
+}
+
+// `ROAD-99`: the clearances by structure come from one vehicle envelope. The lining is the
+// envelope bitwise, so the tunnel cover (5 m) and a road over a tunnel (5.5 m) are as before; a
+// bridge's deck stands the envelope and its slab above a road's deck.
+#[test]
+fn the_structure_clearances_share_the_vehicle_envelope() {
+    use crate::simulation::network::roadbed::{
+        TUNNEL_COVER_M, TUNNEL_LINING_HEIGHT_M, VEHICLE_CLEARANCE_M,
+    };
+    assert_eq!(
+        TUNNEL_LINING_HEIGHT_M.to_bits(),
+        VEHICLE_CLEARANCE_M.to_bits()
+    );
+    assert_eq!(TUNNEL_COVER_M.to_bits(), 5.0_f64.to_bits());
+    assert_eq!(tunnel::ROAD_OVER_TUNNEL_M.to_bits(), 5.5_f32.to_bits());
+    assert_eq!(bridge::ROAD_UNDER_BRIDGE_M.to_bits(), 4.85_f32.to_bits());
 }

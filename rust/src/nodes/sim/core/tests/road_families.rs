@@ -14,7 +14,7 @@ use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::road_mesh_seams::open_road_edges_where;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
-use crate::simulation::network::roadbed::PieceId;
+use crate::simulation::network::roadbed::{PieceId, RoadVec3};
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use godot::prelude::Vector2;
 use std::collections::HashSet;
@@ -62,9 +62,11 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
 }
 
 // The XZ points of structure `edge`'s mouth rows where it meets another piece, without its free
-// end's (a road end without a piece, which its cap closes), and the XZ segments of its two outer
-// chains.
-type StructureEnds = (Vec<Vec<(f64, f64)>>, Vec<[(f64, f64); 2]>);
+// end's (a road end without a piece, which its cap closes), and its collars' and its lining
+// shell's outer edges (`ROAD-61`): the edges of one collar or shell face that are no lining
+// face's, which meet the terrain (a collar's bottom edges, the shell's feet and its ends in a
+// buried end row's plane).
+type StructureEnds = (Vec<Vec<(f64, f64)>>, Vec<[RoadVec3; 2]>);
 
 fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
     let graph = &core.region_graph;
@@ -84,18 +86,28 @@ fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
     .map(|(_, mouth)| mouth.vertices.iter().map(|p| (p.x, p.z)).collect())
     .collect();
     let mesh = span.mesh();
-    let chains = mesh
-        .outer_chains()
-        .iter()
-        .flat_map(|chain| chain.vertices().windows(2))
-        .map(|pair| {
-            [pair[0], pair[1]].map(|v| {
-                let p = mesh.positions()[v as usize];
-                (p.x, p.z)
-            })
-        })
+    let mut uses = std::collections::BTreeMap::new();
+    for (list, structure) in [
+        (mesh.collar_triangles(), true),
+        (mesh.shell_triangles(), true),
+        (mesh.lining_triangles(), false),
+    ] {
+        for triangle in list {
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let edge = [triangle[a], triangle[b]];
+                let entry = uses.entry([edge[0].min(edge[1]), edge[0].max(edge[1])]);
+                let (faces, lining) = entry.or_insert((0, false));
+                *faces += u32::from(structure);
+                *lining |= !structure;
+            }
+        }
+    }
+    let outer = uses
+        .into_iter()
+        .filter(|&(_, (faces, lining))| faces == 1 && !lining)
+        .map(|(edge, _)| edge.map(|v| mesh.lining_point(v)))
         .collect();
-    (rows, chains)
+    (rows, outer)
 }
 
 // The family cases: strokes, the stroke ends whose edges change, and the class they take
@@ -149,13 +161,14 @@ fn structure_and_rural_road_chunks_are_watertight() {
             // its abutment face, whose bottom edge is a skirt bottom across the row that the
             // terrain's abutment wall continues to the graded ground; the fascias, the abutment
             // face and the grounded piece's skirts end in vertical edges on the row's corner
-            // lines, of different depths (T-vertices on one line, no gap). A tunnel's sides have
-            // no strips, since its bore is its portals'. Everything else is watertight.
-            let (rows, chains) = match class {
+            // lines, of different depths (T-vertices on one line, no gap). A tunnel is lined, its
+            // walls on its deck's sides (`ROAD-61`), and its collar's bottom edges meet the
+            // terrain, as do its lining shell's feet and ends (round R8b). Everything else is
+            // watertight.
+            let (rows, outer_edges) = match class {
                 Some(_) => structure_ends(&core, edges[0]),
                 None => Default::default(),
             };
-            let tunnel = class == Some(2);
             let problems = open_road_edges_where(&mut core, |skirt_bottom, a, b| {
                 // Chunk vertices are the pieces' f64 positions rounded to f32 in the chunk frame.
                 let near = |p: (f64, f64, f64), (x, z): (f64, f64)| {
@@ -164,19 +177,18 @@ fn structure_and_rural_road_chunks_are_watertight() {
                 let on_row = |row: &Vec<(f64, f64)>, p| row.iter().any(|&q| near(p, q));
                 let on_both = |row: &Vec<(f64, f64)>| on_row(row, a) && on_row(row, b);
                 let vertical = (a.0, a.2) == (b.0, b.2);
-                let on_chain = |p: (f64, f64, f64)| {
-                    chains.iter().any(|&[s, t]| {
-                        let (dx, dz) = (t.0 - s.0, t.1 - s.1);
-                        let along = ((p.0 - s.0) * dx + (p.2 - s.1) * dz) / (dx * dx + dz * dz);
-                        let closest = (
-                            s.0 + dx * along.clamp(0.0, 1.0),
-                            s.1 + dz * along.clamp(0.0, 1.0),
-                        );
-                        near(p, closest)
+                // On a collar's or the shell's outer edge, which chunk lines may split.
+                let on_outer = |p: (f64, f64, f64)| {
+                    outer_edges.iter().any(|&[s, t]| {
+                        let d = t - s;
+                        let along = ((p.0 - s.x) * d.x + (p.1 - s.y) * d.y + (p.2 - s.z) * d.z)
+                            / d.length_squared();
+                        let closest = s + d * along.clamp(0.0, 1.0);
+                        near(p, (closest.x, closest.z)) && (p.1 - closest.y).abs() < 1e-3
                     })
                 };
                 ((skirt_bottom || vertical) && rows.iter().any(on_both))
-                    || (tunnel && on_chain(a) && on_chain(b))
+                    || (on_outer(a) && on_outer(b))
             });
             if !problems.is_empty() {
                 failures.push(format!(
@@ -249,6 +261,9 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         fwd_lanes: 1,
                         bkw_lanes: 1,
                         snap_to_existing_roads: true,
+                        // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f).
+                        tunnel: class == EdgeClass::Tunnel,
+                        median: None,
                         preview: None,
                     },
                     std::time::Instant::now(),

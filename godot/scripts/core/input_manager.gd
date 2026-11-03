@@ -46,6 +46,7 @@ var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
+const WORLD_CAMERA_MAX_DISTANCE_M := 40000.0
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # A world load hands the game over once every patch within this distance of the camera draws what it
@@ -68,8 +69,11 @@ var _industry_previous_overlay_mode := 0
 var _alt_orbit := false
 # The last gesture seen this frame, to drop the repeated engine dispatch of it.
 var _last_gesture := ""
+var _camera_window_focused := true
 
 func _ready():
+	get_window().focus_exited.connect(_on_camera_focus_exited)
+	get_window().focus_entered.connect(func(): _camera_window_focused = true)
 	# Camera input and native clearance settling must precede RoadTool's cursor sample.
 	process_priority = CAMERA_INPUT_PROCESS_PRIORITY
 	var frame_camera := get_node_or_null("../CameraNode")
@@ -141,6 +145,11 @@ func _ready():
 	gridlock_display.set_script(load("res://scripts/renderers/gridlock_display.gd"))
 	get_parent().call_deferred("add_child", gridlock_display)
 
+	var stranded_display := Node3D.new()
+	stranded_display.name = "StrandedDisplay"
+	stranded_display.set_script(load("res://scripts/renderers/stranded_display.gd"))
+	get_parent().call_deferred("add_child", stranded_display)
+
 	agent_inspector = Node3D.new()
 	agent_inspector.name = "AgentInspector"
 	agent_inspector.set_script(load("res://scripts/renderers/agent_inspector.gd"))
@@ -164,19 +173,33 @@ func _configure_world_camera_policy() -> void:
 	# The camera derives its far plane from the orbit distance plus the margin, floored at the
 	# minimum. Reduced view distance drops the margin and floors it lower instead, so the far
 	# plane still opens up when zoomed far out.
+	camera.set_distance_bounds(10.0, WORLD_CAMERA_MAX_DISTANCE_M)
 	if GameSettings.get_view_distance() == GameSettings.VIEW_DISTANCE_REDUCED:
 		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, GameSettings.REDUCED_VIEW_DISTANCE_M, 0.0)
 	else:
 		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, WORLD_CAMERA_MIN_FAR_M, WORLD_CAMERA_FAR_MARGIN_M)
 	camera.configure_world_camera()
+	camera.set_world_bounds_enabled(true)
 
-func _process(delta):
+func _process(_delta):
 	if not _world_ready:
+		_cancel_camera_motion()
 		_await_world_ready()
 		return
-	if _ui_captures_keyboard_input():
+	if not _camera_window_focused or _ui_captures_keyboard_input():
+		_cancel_camera_motion()
 		return
-	_handle_camera_controls(delta)
+	_handle_camera_controls()
+
+func _cancel_camera_motion() -> void:
+	_alt_orbit = false
+	var camera := get_viewport().get_camera_3d() as CameraNode
+	if camera:
+		camera.cancel_motion()
+
+func _on_camera_focus_exited() -> void:
+	_camera_window_focused = false
+	_cancel_camera_motion()
 
 ## Whether the loaded world was handed over: false from a load until the terrain renderer settles.
 func is_world_ready() -> bool:
@@ -195,7 +218,7 @@ func _await_world_ready() -> void:
 	world_ready.emit()
 
 func _input(event):
-	if not _world_ready:
+	if not _world_ready or not _camera_window_focused:
 		return
 	# Godot 4.7.1 dispatches every gesture twice from Input._parse_input_event_impl: once from
 	# its gesture branch and once from the generic dispatch after it. The copy arrives in the
@@ -208,6 +231,7 @@ func _input(event):
 			return
 		_last_gesture = key
 	if _ui_has_modal_popup():
+		_cancel_camera_motion()
 		return
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera:
@@ -238,7 +262,7 @@ func _input(event):
 	elif event is InputEventMagnifyGesture:
 		camera.zoom(log(event.factor) / log(camera.zoom_speed))
 
-func _handle_camera_controls(delta):
+func _handle_camera_controls():
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
 	
@@ -250,7 +274,7 @@ func _handle_camera_controls(delta):
 	if Input.is_key_pressed(KEY_D): pan_dir.x += 1.0
 	
 	if pan_dir.length_squared() > 0.0:
-		camera.pan(pan_dir, 1.0, delta)
+		camera.pan(pan_dir, 1.0)
 
 func _unhandled_input(event):
 	if not _world_ready:
@@ -279,6 +303,10 @@ func _unhandled_input(event):
 				if event.ctrl_pressed:
 					_handle_save_game()
 			KEY_P: _toggle_agent_paths()
+			KEY_T:
+				if current_tool == Tool.ROAD:
+					road_tool.set_tunnel(not road_tool.tunnel_enabled)
+					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
@@ -287,14 +315,7 @@ func _unhandled_input(event):
 					_handle_load_game()
 			KEY_F12:
 				_handle_money_and_demand_cheat()
-			
-			# Lane Adjustments (Forward)
-			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
-			KEY_BRACKETLEFT, KEY_DOWN: _handle_lane_adjust(-1, 0)
-			# Lane Adjustments (Backward)
-			KEY_PERIOD: _handle_lane_adjust(0, 1)
-			KEY_COMMA: _handle_lane_adjust(0, -1)
-			
+
 			# Overlay Modes
 			KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS:
 				_handle_overlay_mode(event.keycode)
@@ -359,10 +380,6 @@ func _handle_escape():
 	elif junction_debug_overlay and junction_debug_overlay.unfocus():
 		get_viewport().set_input_as_handled()
 
-func _handle_lane_adjust(fwd, bkw):
-	if current_tool == Tool.ROAD and road_tool:
-		road_tool.adjust_lanes(fwd, bkw)
-
 func _toggle_agent_paths():
 	if agents_node:
 		agents_node.show_paths = not agents_node.show_paths
@@ -414,9 +431,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 1
-					road_tool.bkw_lanes = 1
-					road_tool._update_lanes_label()
+					# R draws the last road type picked (`ROAD-101`).
+					road_tool.set_road_type(road_tool.last_road_type_id)
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
@@ -425,9 +441,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.fwd_lanes = 0
-					road_tool.bkw_lanes = 0
-					road_tool._update_lanes_label()
+					road_tool.set_road_type(road_tool.WALKWAY_ROAD_TYPE)
 		Tool.CUL_DE_SAC:
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled

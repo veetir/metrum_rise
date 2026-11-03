@@ -9,7 +9,7 @@ const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const InputManagerScript := preload("res://scripts/core/input_manager.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
-const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
+const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
 const CHUNK_SPAN_M := 510.0
 const CHUNK_ORIGIN_X_M := 125.5
 const CHUNK_ORIGIN_Z_M := -240.25
@@ -185,6 +185,12 @@ class MockRoadCandidateSimulation:
 
 	func release_road_preview_terrain() -> int:
 		return 0
+
+	func set_road_tool_tunnel(_tunnel: bool) -> void:
+		pass
+
+	func set_road_tool_median(_style: int, _width: float) -> String:
+		return ""
 
 	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
 		preview_calls += 1
@@ -947,7 +953,7 @@ func _test_road_pointer_frame_updates() -> void:
 	tool.pointer.x += 0.01
 	_road_frame(tool)
 	_expect(simulation.preview_calls == 11, "a sub-5 cm move must preview the exact new stroke")
-	tool.adjust_lanes(1, 0)
+	tool.set_lanes(tool.fwd_lanes + 1, tool.bkw_lanes)
 	_road_frame(tool)
 	_expect(simulation.preview_calls == 12, "a lane change must preview the new width")
 	# Click between frames: the click previews the freshly resolved cursor and submits it.

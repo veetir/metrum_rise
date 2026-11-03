@@ -6,13 +6,15 @@
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
 ##   get_growth_overview(), get_treasury_balance(), get_agent_count(),
 ##   get_service_building_assets()
-##   get_industry_building_assets()
+##   get_industry_building_assets(), get_road_types()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
+const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
+const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
@@ -42,14 +44,16 @@ var terrain_main_btn: Button
 var terrain_sub_menu: HBoxContainer
 
 # Road items
-var road_2l_btn: Button
-var road_4l_btn: Button
-var walkway_btn: Button
+## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
+var road_type_menu: RoadTypeMenu
+## The road builder window (`ROAD-101`).
+var road_builder: RoadBuilderWindow
 
 # Road options
 var straight_btn: Button
 var spline_btn: Button
 var zoning_grid_snap_check: CheckBox
+var tunnel_check: CheckBox
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
@@ -237,6 +241,21 @@ func _build_ui():
 	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
 	snap_row.add_child(zoning_grid_snap_check)
 	road_options_menu.add_child(snap_row)
+
+	var tunnel_row := HBoxContainer.new()
+	var tunnel_label := Label.new()
+	tunnel_label.text = "Structure"
+	tunnel_label.custom_minimum_size.x = 92.0
+	tunnel_row.add_child(tunnel_label)
+	tunnel_check = CheckBox.new()
+	tunnel_check.text = "Tunnel (T)"
+	tunnel_check.focus_mode = Control.FOCUS_NONE
+	tunnel_check.tooltip_text = "Keep the drawn height through the ground: a straight road runs level between its ends. Place both ends outside the hill; the stretch under 5 m of ground becomes a tunnel."
+	tunnel_check.toggled.connect(func(enabled: bool): road_tool.set_tunnel(enabled))
+	if road_tool:
+		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
+	tunnel_row.add_child(tunnel_check)
+	road_options_menu.add_child(tunnel_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)
@@ -261,32 +280,14 @@ func _build_ui():
 	sub_panel.add_child(sub_padding)
 	sub_padding.add_child(road_sub_menu)
 	
-	walkway_btn = Button.new()
-	walkway_btn.text = "Walkway"
-	walkway_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(walkway_btn)
-	
-	road_2l_btn = Button.new()
-	road_2l_btn.text = "2-Lane Road"
-	road_2l_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(road_2l_btn)
-
-	road_4l_btn = Button.new()
-	road_4l_btn.text = "4-Lane Road"
-	road_4l_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(road_4l_btn)
-
-	var ow1_btn = Button.new()
-	ow1_btn.text = "One-Way 1L"
-	ow1_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(ow1_btn)
-	ow1_btn.pressed.connect(func(): _select_road_type(1, 0))
-
-	var ow2_btn = Button.new()
-	ow2_btn.text = "One-Way 2L"
-	ow2_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(ow2_btn)
-	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
+	# The road types from Rust (`ROAD-101`), the tool's current one marked.
+	road_type_menu = RoadTypeMenu.new()
+	road_type_menu.type_picked.connect(_select_road_type)
+	if road_tool:
+		road_tool.road_type_changed.connect(road_type_menu.mark)
+	road_type_menu.setup(simulation_node)
+	road_sub_menu.add_child(road_type_menu)
+	road_sub_menu.add_child(VSeparator.new())
 
 	var cul_de_sac_btn = Button.new()
 	cul_de_sac_btn.text = "Cul-De-Sac"
@@ -647,6 +648,11 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_properties_panel)
 	if road_properties_panel.has_method("setup"):
 		road_properties_panel.setup(simulation_node, input_manager.select_tool)
+	road_builder = RoadBuilderWindow.new()
+	road_builder.setup(simulation_node)
+	add_child(road_builder)
+	road_type_menu.road_builder_requested.connect(road_builder.open)
+	road_builder.road_types_changed.connect(_on_road_types_changed)
 
 func _build_clock_content() -> VBoxContainer:
 	var clock_vbox := VBoxContainer.new()
@@ -811,10 +817,6 @@ func _connect_signals():
 	select_main_btn.pressed.connect(_on_select_main_pressed)
 	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
-	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
-	road_4l_btn.pressed.connect(func(): _select_road_type(2, 2))
-	walkway_btn.pressed.connect(func(): _select_road_type(0, 0))
-	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
 	spline_btn.pressed.connect(func(): _set_draw_mode(1))
 	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
@@ -895,24 +897,33 @@ func _on_industry_main_pressed():
 	else:
 		input_manager._cancel_active_tool()
 
-func _select_road_type(fwd: int, bkw: int):
-	# Show options panel and separator
+# A road type picked in the Roads menu: the Walkway tool for a walkway, else the Road tool
+# (whose activation picks the last type), then the picked type.
+func _select_road_type(id: String, walkway: bool) -> void:
 	get_meta("options_panel").visible = true
 	get_meta("road_sep").visible = true
-	
-	# Activate tool via input manager
-	# Walkway vs Road tool distinction from InputManager:
-	var required_tool = InputManager.Tool.WALKWAY if fwd == 0 and bkw == 0 else InputManager.Tool.ROAD
-	
+	var required_tool = InputManager.Tool.WALKWAY if walkway else InputManager.Tool.ROAD
 	if input_manager.current_tool != required_tool:
 		input_manager._toggle_tool(required_tool)
-		
-	# InputManager resets lanes, we override here
 	if road_tool:
-		road_tool.fwd_lanes = fwd
-		road_tool.bkw_lanes = bkw
-		if road_tool.has_method("_update_lanes_label"):
-			road_tool._update_lanes_label()
+		road_tool.set_road_type(id)
+
+## Lists the road types again after a library edit (`ROAD-101`, the road builder calls it) and
+## re-picks the tool's type, so an edited type draws its new layout from the next stroke on.
+func refresh_road_types() -> void:
+	road_type_menu.refresh()
+	if road_tool:
+		road_tool.reload_road_type()
+	if road_properties_panel:
+		road_properties_panel.refresh_types()
+
+# The road builder wrote the library: everything listing types refreshes, and a type it just
+# created becomes the road tool's, ready to draw.
+func _on_road_types_changed(created_id: String) -> void:
+	refresh_road_types()
+	if not created_id.is_empty():
+		road_combined_hbox.visible = true
+		_select_road_type(created_id, false)
 
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)

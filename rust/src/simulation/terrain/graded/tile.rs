@@ -11,7 +11,7 @@ use super::behind::rises_above_a_seam;
 use super::coverage::{covering_triangles, rasterize};
 use super::extras::{ExtraScratch, Named, square_extras};
 use super::grade::{CAP_M, continues_ground};
-use super::portal::{Finished, PortalWindow, open};
+use super::portal::PortalWindow;
 use super::prune::{
     BinGrid, BinLists, Lifted, bin_side, finish_second_pass, list_first_pass, list_second_pass,
 };
@@ -141,11 +141,11 @@ impl Level {
 pub struct TileInputs {
     /// The road seam keys, sorted, then the wall seam keys the structure walls read, sorted
     /// (`TERRAIN-07-C`), then those walls' abutment bottoms at bridge mouths as seam keys, in
-    /// the walls' order, then the portal rows' corner segments and the bore seams the portal
-    /// opening reads (T22 5 (a)), each sorted.
+    /// the walls' order, then the portal rows' corner segments, each with its tunnel side, in
+    /// key order (`ROAD-61`), then the keys of the road seams a tunnel's approach retains, in
+    /// key order (round R8e).
     pub seams: Vec<[u64; 6]>,
-    /// Top triangle vertex bits, sorted and unique, then the portal opening's deck triangles,
-    /// sorted and unique.
+    /// Top triangle vertex bits, sorted and unique.
     pub triangles: Vec<[u64; 9]>,
     /// `((chunk x, chunk z), revision)` per 512 m chunk under the window, sorted.
     pub base_revisions: Vec<((i32, i32), u64)>,
@@ -179,10 +179,6 @@ pub struct BakeStats {
     pub conflicts: u32,
     /// Conflict samples within one lattice spacing of a road seam.
     pub seam_conflicts: u32,
-    /// Samples the portal opening cut (`TERRAIN-07-C`, T22 5 (a)).
-    pub portal_cut: u32,
-    /// Ground samples beside a portal opening that name a bore seam.
-    pub bore_named: u32,
 }
 
 /// One baked tile at one level: the texels with their apron and the seam row, packed for
@@ -197,15 +193,14 @@ pub struct TilePayload {
     pub samples: [usize; 2],
     /// Per lattice point, rows along +z, points along +x: `delta` (graded minus base, metres),
     /// `sdf` (distance to the nearest road seam clamped to the band, negative under a road;
-    /// near a portal the nearer of it and the nearest bore seam, negative in the opening, T22
-    /// 5 (a)), that seam's index in [`Self::seams`] within the band or `-1`, and the
+    /// near a bridge or tunnel mouth the nearer of it and the mouth's row), that seam's index in [`Self::seams`] within the band or `-1`, and the
     /// material word `16 (e + 1) + class`: `class` the material class of the first site
     /// surface holding the point (0 none, 1 asphalt, 2 concrete), `e` the nearest material
     /// edge's index in [`Self::edges`] within the band, else `-1`.
     pub texels: Vec<[f32; 4]>,
     /// The road seams the texels name, tile-local `[ax, az, bx, bz]` (metres from the tile
-    /// origin), road on the left, in key order, then the bore seams they name, the deck on the
-    /// left, in key order.
+    /// origin), road on the left, in key order, then the bridge and tunnel mouth rows they
+    /// name, the road on the left, in the wall seams' order.
     pub seams: Vec<[f32; 4]>,
     /// Each named seam's heights at its ends `a` and `b` (world metres), in [`Self::seams`]'
     /// order: the road top along the seam, which the cells' outer-band overlap compares the
@@ -224,8 +219,7 @@ pub struct TilePayload {
     pub square_extras: Vec<(u32, u32)>,
     /// The conflict walls along the road seams in the tile (`T2` (c)), seam by seam in key
     /// order, each seam's faces along it; then the structure walls along its wall seams
-    /// (`TERRAIN-07-C`, T22 4 (a)), likewise, then the portal openings' side walls along the
-    /// bore seams (T22 5 (a)), likewise.
+    /// (`TERRAIN-07-C`, T22 4 (a)), likewise.
     pub walls: Vec<WallFace>,
     /// Whether any sample is graded, covered, in a pad, paved or within the band of a seam or
     /// a material edge.
@@ -328,6 +322,9 @@ pub(super) struct BakeScratch {
     bin_floor: Vec<f64>,
     pairs: Vec<(u32, Listed)>,
     first: BinLists,
+    // Per bin whether pass 1 lists a retained seam there (`ROAD-61` round R8e): its covered
+    // points read the cones.
+    trough_bins: Vec<bool>,
     second: BinLists,
     pieces: Vec<PieceId>,
     // The grounded top triangles that can cover the lattice, in visit order (the raster's).
@@ -349,11 +346,10 @@ pub(super) struct BakeScratch {
     classes: Vec<u8>,
     edges_near: Vec<(u32, f64)>,
     walls: WallScratch,
-    // The portal opening's parts around the lattice, the deck per lattice point and each
-    // point's nearest bore seam within the band (`TERRAIN-07-C`).
+    // The portal rows within the cap of the lattice, past which cones are hidden (`ROAD-61`),
+    // and per wall seam whether it is a mouth row the mask names.
     portals: PortalWindow,
-    decks: Vec<f32>,
-    bores_near: Vec<(u32, f64)>,
+    mouth_rows: Vec<bool>,
     extras: ExtraScratch,
 }
 
@@ -589,7 +585,8 @@ struct Inputs<'a, S> {
 // The covered lattice points that continue the ground across a structure mouth
 // ([`continues_ground`]) take the ground's value, evaluated over every window seam, so a pruned
 // bake equals the unpruned one by construction; their `sdf` and nearest seam stay the road's,
-// so the mask is unchanged. Visits the lattice points within the band of each wall seam's box.
+// so the mask is unchanged. At a tunnel's portal row the ground is the far side's: no seam on
+// the approach's side of the row reaches them (`PortalWindow::hides_at_mouth`). Visits the lattice points within the band of each wall seam's box.
 // `O(points within the band of the wall seams x (walls + window seams))`.
 #[allow(clippy::too_many_arguments)]
 fn continue_ground_at_mouths(
@@ -599,6 +596,7 @@ fn continue_ground_at_mouths(
     pad: impl Fn(usize) -> Option<f64>,
     base_at: impl Fn(usize, usize) -> f64,
     (nearest, band): (&[u32], f64),
+    portals: Option<&PortalWindow>,
     points: &mut Vec<u32>,
     texels: &mut [[f32; 4]],
 ) {
@@ -629,40 +627,54 @@ fn continue_ground_at_mouths(
     points.dedup();
     for &index in points.iter() {
         let (i, j) = (index as usize % xs.len(), index as usize / xs.len());
-        let base = base_at(i, j);
-        let all = (0..seams.len() as u32).map(Listed::unbounded);
-        let ground = evaluate(xs[i], zs[j], base, None, pad(index as usize), seams, all, band);
+        let (x, z, base) = (xs[i], zs[j], base_at(i, j));
+        // At a portal row the ground continued is the far side's (`ROAD-61`).
+        let all = (0..seams.len() as u32).map(Listed::unbounded).filter(|listed| {
+            !portals.is_some_and(|portals| {
+                portals.hides_at_mouth(&seams[listed.index as usize], x, z, band)
+            })
+        });
+        let ground = evaluate(
+            x,
+            z,
+            base,
+            None,
+            pad(index as usize),
+            seams,
+            all,
+            band,
+            portals,
+            false,
+        );
         texels[index as usize][0] = (ground.height - base) as f32;
     }
 }
 
-// A texel's named seam: the window's seams (`0..seams.len()`), then the bore seams, then the wall
-// seams.
-fn named_seam<'a>(
-    (seams, bores, walls): (&'a [Seam], &'a [Seam], &'a [Seam]),
-    index: usize,
-) -> &'a Seam {
+// A texel's named seam: the window's seams (`0..seams.len()`), then the wall seams.
+fn named_seam<'a>((seams, walls): (&'a [Seam], &'a [Seam]), index: usize) -> &'a Seam {
     if index < seams.len() {
         &seams[index]
-    } else if index < seams.len() + bores.len() {
-        &bores[index - seams.len()]
     } else {
-        &walls[index - seams.len() - bores.len()]
+        &walls[index - seams.len()]
     }
 }
 
-// Names the bridge mouth rows (the wall seams with an abutment bottom) in the mask
-// (`TERRAIN-07-D` round 9): a lattice point within the band of a row that is nearer than its
-// named seam, by the nearest order with the rows after the window and bore seams, names that row,
+// Names the bridge mouth rows (the wall seams with an abutment bottom) and the tunnel portal rows
+// (`opens`, `ROAD-61`) in the mask (`TERRAIN-07-D` round 9): a lattice point within the band of a
+// row that is nearer than its named seam, by the nearest order with the rows after the window's
+// seams, names that row,
 // its `sdf` the distance, negative where a road covers it. Coverage ends at the row, which is no
 // road seam, so before the cut edge across a bridge mouth fell on the bilinear zero of the road
 // seams' clamped distances, up to a metre past the row on the bridge's side, and the ground
-// stopped short of the abutment wall there (the `bridge_t` `under_bridge` dashed line). Only the
-// mask moves: heights are final. Returns the points named. `O(points within the band of the rows
-// x rows)`.
+// stopped short of the abutment wall there (the `bridge_t` `under_bridge` dashed line). At a
+// portal the hill past the row stands up to the clearance above the deck, and the cut edge on the
+// bilinear zero would leave a steep sliver of it standing in the mouth. Only the mask moves:
+// heights are final. Returns the points named. `O(points within the band of the rows x rows)`.
+#[allow(clippy::too_many_arguments)]
 fn name_mouth_rows(
-    (seams, bores): (&[Seam], &[Seam]),
+    seams: &[Seam],
     (walls, bottoms): (&[Seam], &[Option<[f64; 2]>]),
+    opens: impl Fn(&Seam) -> bool,
     (xs, zs): (&[f64], &[f64]),
     road: &[f32],
     band: f64,
@@ -672,10 +684,10 @@ fn name_mouth_rows(
     let span = |lines: &[f64], lo: f64, hi: f64| {
         lines.partition_point(|&v| v < lo - band)..lines.partition_point(|&v| v <= hi + band)
     };
-    let first_wall = (seams.len() + bores.len()) as u32;
+    let first_wall = seams.len() as u32;
     let mut named = 0;
     for (k, (row, bottom)) in walls.iter().zip(bottoms).enumerate() {
-        if bottom.is_none() {
+        if bottom.is_none() && !opens(row) {
             continue;
         }
         let code = first_wall + k as u32;
@@ -690,7 +702,7 @@ fn name_mouth_rows(
                 }
                 let current = nearest[index];
                 let nearer = current == NO_SEAM || {
-                    let other = named_seam((seams, bores, walls), current as usize).at(x, z);
+                    let other = named_seam((seams, walls), current as usize).at(x, z);
                     at.nearer_than(code, &other, current)
                 };
                 if !nearer {
@@ -737,6 +749,7 @@ fn bake_tile(
         bin_floor,
         pairs,
         first,
+        trough_bins,
         second,
         covering,
         covering_spans,
@@ -750,8 +763,7 @@ fn bake_tile(
         edges_near,
         walls,
         portals,
-        decks,
-        bores_near,
+        mouth_rows,
         extras,
         inputs: gathered,
         ..
@@ -776,9 +788,13 @@ fn bake_tile(
     let prune = evaluation != Evaluation::Unpruned;
     list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
     first.build(bins.len(), pairs);
+    trough_bins.clear();
+    trough_bins.extend((0..bins.len()).map(|bin| {
+        (first.of(bin).iter()).any(|listed| seams[listed.index as usize].retained)
+    }));
 
     rasterize(covering, xs, zs, covering_spans, road);
-    portals.rasterize(xs, zs, decks);
+    let shadow = portals.active();
     // Without sites every lattice point is outside pads and surfaces: the rasters stay empty,
     // which reads as no pad, class 0 and no edge. The nearest edges are searched in the row
     // bands below.
@@ -814,6 +830,7 @@ fn bake_tile(
         columns,
         bins,
         first,
+        troughs: trough_bins,
         seams,
         base,
         road,
@@ -822,6 +839,7 @@ fn bake_tile(
         band,
         spacing,
         evaluation,
+        portals: shadow,
     };
     let chunk = BAND_ROWS * width;
     let (xs, zs, edge_sites) = (&*xs, &*zs, &*sites);
@@ -868,7 +886,14 @@ fn bake_tile(
             .map(|(index, (texels, rows))| {
                 rows.stats = BakeStats::default();
                 let first = (index * chunk) as u32;
-                finish_second_pass(seams, second, &rows.lifted, first, texels, &mut rows.stats)
+                finish_second_pass(
+                    seams,
+                    second,
+                    &rows.lifted,
+                    (first, shadow),
+                    texels,
+                    &mut rows.stats,
+                )
             })
             .reduce(|| false, |a, b| a | b);
         for rows in bands.iter() {
@@ -888,37 +913,25 @@ fn bake_tile(
             pad,
             base_at,
             (nearest, band),
+            shadow,
             mouth_points,
             &mut out.texels,
         );
     }
-    // The portal opening, on the final values (T22 5 (a)).
-    if !portals.is_empty() {
-        let finished = Finished {
-            xs,
-            zs,
-            road,
-            pads,
-            decks,
-            band,
-        };
-        let base_at = |i: usize, j: usize| base.at_stops(&columns[i].1, &base.stop(1, zs[j]));
-        (stats.portal_cut, stats.bore_named) = open(
-            portals,
-            seams,
-            &finished,
-            base_at,
-            bores_near,
-            &mut out.texels,
-            nearest,
-        );
-        graded |= stats.portal_cut + stats.bore_named > 0;
-    }
-    // The bridge mouths' rows in the mask, on the final names.
-    if wall_bottoms.iter().any(Option::is_some) {
+    // The bridge and tunnel mouths' rows in the mask, on the final names.
+    let opens = |wall: &Seam| shadow.is_some_and(|portals| portals.opens(wall));
+    mouth_rows.clear();
+    mouth_rows.extend(
+        wall_seams
+            .iter()
+            .zip(wall_bottoms.iter())
+            .map(|(wall, bottom)| bottom.is_some() || opens(wall)),
+    );
+    if mouth_rows.iter().any(|&mouth| mouth) {
         let named = name_mouth_rows(
-            (seams, portals.bores()),
+            seams,
             (wall_seams, wall_bottoms),
+            opens,
             (xs, zs),
             road,
             band,
@@ -929,21 +942,19 @@ fn bake_tile(
     }
 
     // The squares' extra candidates of the exact mask (T48 (a)), on the final names.
-    let bores = portals.bores();
     let named = Named {
         seams: &seams[..],
         road_count,
-        bores,
         walls: &wall_seams[..],
-        mouth: &wall_bottoms[..],
+        mouth: &mouth_rows[..],
     };
     square_extras(&named, (xs, zs), nearest, (&*bins, &*first), band, extras);
 
-    // The seam row: the named road seams in key order, then the named bore seams, then the
-    // named bridge mouth rows; the squares' extra candidates are named rows too.
-    let seam_at = |index: usize| named_seam((&seams[..], bores, &wall_seams[..]), index);
+    // The seam row: the named road seams in key order, then the named bridge and tunnel mouth
+    // rows; the squares' extra candidates are named rows too.
+    let seam_at = |index: usize| named_seam((&seams[..], &wall_seams[..]), index);
     row_of.clear();
-    row_of.resize(seams.len() + bores.len() + wall_seams.len(), NO_SEAM);
+    row_of.resize(seams.len() + wall_seams.len(), NO_SEAM);
     for &named in nearest.iter() {
         if named != NO_SEAM {
             row_of[named as usize] = 0;
@@ -1017,11 +1028,13 @@ fn bake_tile(
         xs,
         zs,
         evaluation != Evaluation::Unpruned,
+        shadow,
         heights,
         walls,
         &mut out.walls,
     );
     build_structure_walls(
+        &seams[..road_count],
         (wall_seams, wall_bottoms),
         portals,
         tile,
@@ -1082,6 +1095,7 @@ struct Sampling<'a> {
     columns: &'a [(u32, AxisStop)],
     bins: &'a BinGrid,
     first: &'a BinLists,
+    troughs: &'a [bool],
     seams: &'a [Seam],
     base: &'a BaseWindow,
     road: &'a [f32],
@@ -1090,6 +1104,7 @@ struct Sampling<'a> {
     band: f64,
     spacing: f64,
     evaluation: Evaluation,
+    portals: Option<&'a PortalWindow>,
 }
 
 impl Sampling<'_> {
@@ -1111,6 +1126,7 @@ impl Sampling<'_> {
             columns,
             bins,
             first,
+            troughs,
             seams,
             base,
             road,
@@ -1119,6 +1135,7 @@ impl Sampling<'_> {
             band,
             spacing,
             evaluation,
+            portals,
         } = *self;
         out.lifted.clear();
         out.stats = BakeStats::default();
@@ -1183,6 +1200,8 @@ impl Sampling<'_> {
                         seams,
                         list.iter().copied(),
                         band,
+                        portals,
+                        troughs[bin],
                     );
                     [value; LANES]
                 } else {
@@ -1195,6 +1214,8 @@ impl Sampling<'_> {
                         seams,
                         list.iter().copied(),
                         band,
+                        portals,
+                        troughs[bin],
                     )
                 };
                 for lane in 0..run {
@@ -1203,11 +1224,7 @@ impl Sampling<'_> {
                     let delta = (value.height - base_m) as f32;
                     let (in_band, near_seam) =
                         (value.sdf < band, value.nearest_distance <= spacing);
-                    if evaluation != Evaluation::Unpruned
-                        && roads[lane].is_none()
-                        && pad_heights[lane].is_none()
-                        && value.height < base_m
-                    {
+                    if evaluation != Evaluation::Unpruned && value.ground && value.height < base_m {
                         out.lifted.push(Lifted {
                             sample: (row + i + lane) as u32,
                             bin: bin as u32,
@@ -1236,7 +1253,7 @@ impl Sampling<'_> {
 }
 
 /// The inputs a bake of `tile` at `level` records ([`TilePayload::inputs`]), gathered without
-/// sampling (`TERRAIN-07-E`): the window's seams, the coverage's triangles, the portal parts,
+/// sampling (`TERRAIN-07-E`): the window's seams, the coverage's triangles, the portal rows,
 /// the sites and the base revisions, by the bake's own set-up, so they equal the bake's inputs
 /// exactly. `O(P + S log S + T log T + sites)` for the window, without the lattice's samples.
 pub fn tile_inputs(
@@ -1275,7 +1292,7 @@ pub fn bake_window(terrain: &TerrainSystem, tile: TileKey, level: Level) -> [f64
 }
 
 // A bake's set-up up to its inputs: the lattice, the window's road and wall seams, its sites,
-// the covering top triangles, the portal parts and the inputs they make, into `scratch`.
+// the covering top triangles, the portal rows and the inputs they make, into `scratch`.
 // Returns the window.
 fn gather_window(
     inputs: &Inputs<'_, impl SiteSource>,
@@ -1311,7 +1328,7 @@ fn gather_window(
     );
     sites.gather(inputs.sites, window);
     covering_triangles(roadbed, xs, zs, pieces, covering, &mut out.triangles);
-    portals.gather(roadbed, rect, band, pieces);
+    portals.gather(roadbed, rect, &seam_scratch.pieces);
     finish_inputs(
         terrain,
         window,
@@ -1324,7 +1341,7 @@ fn gather_window(
     window
 }
 
-// The inputs once the window's road and wall seams, portal parts and sites are gathered and
+// The inputs once the window's road and wall seams, portal rows and sites are gathered and
 // `out.triangles` holds the coverage's triangles.
 fn finish_inputs(
     terrain: &TerrainSystem,
@@ -1344,7 +1361,10 @@ fn finish_inputs(
             .zip(wall_bottoms.iter())
             .filter_map(|(seam, bottom)| bottom.map(|bottom| abutment_bottom(seam, bottom).key())),
     );
-    portals.inputs(&mut out.triangles, &mut out.seams);
+    portals.inputs(&mut out.seams);
+    // The retained road seams (`ROAD-61` round R8e): a span that becomes a tunnel's approach
+    // keeps its chains' bits, and its ground changes all the same.
+    out.seams.extend(road_seams.iter().filter(|seam| seam.retained).map(Seam::key));
     sites.inputs(&mut out.sites);
     base_revisions(terrain, window, &mut out.base_revisions);
 }

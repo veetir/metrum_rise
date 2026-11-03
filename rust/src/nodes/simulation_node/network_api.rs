@@ -3,8 +3,11 @@
 //! Network, road-tool, and traffic-editing Godot API methods.
 
 use super::*;
+use crate::nodes::sim::core::RoadRejection;
+use crate::simulation::network::graph::RoadMedian;
 
 mod road_tool;
+mod road_types;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -62,9 +65,14 @@ impl SimulationNode {
         let clone_ms = clone_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        let preview =
-            self.road_tool
-                .preview_for(&points, fwd_lanes, bkw_lanes, snap_to_existing_roads);
+        let preview = self.road_tool.preview_for(
+            &points,
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            self.road_tool_tunnel,
+            self.road_tool_median,
+        );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
         self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
@@ -76,6 +84,8 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,
@@ -408,14 +418,163 @@ impl SimulationNode {
         self.lock_core().clear_lane_connections_internal(node_id);
     }
 
-    /// Toggles a user override for a crosswalk at a specific road mouth.
+    /// Turns the crossing of road arm `edge_id` at `node_id` on or off (`ROAD-74`), with an undo
+    /// record; off removes its zebra, strip, crossing lanes and signs. Returns whether it was
+    /// applied: a refused toggle (see [`Self::preview_crosswalk`]) changes nothing.
     #[func]
-    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        self.lock_core()
-            .set_crosswalk_override_internal(node_id, edge_id, enabled);
+    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> bool {
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_crosswalk_override_internal(node_id, edge_id, enabled) {
+                return false;
+            }
+            // The toggle's pieces publish now, as a removal's do on the simulation thread, so
+            // the renderer's next poll sees the new generation with its chunks (`ROAD-74`).
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
     }
 
-    /// Returns true if a crosswalk exists natively or by user override.
+    /// The commit's verdict on turning arm `edge_id`'s crossing at `node_id` on or off, without
+    /// applying it: `is_valid`, and when refused `invalid_reason` (stable key) and `detail`.
+    /// The same check as [`Self::set_crosswalk_override`], so the preview is the commit.
+    #[func]
+    pub fn preview_crosswalk(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> VarDictionary {
+        match self
+            .lock_core()
+            .preview_crosswalk_override_internal(node_id, edge_id, enabled)
+        {
+            None => vdict! { "is_valid": true },
+            Some(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
+    /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
+    /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
+    /// change) and `road_type` (`ROAD-101`: the id of the first usable road type, built-ins
+    /// first, whose layout builds exactly this cross-section, else empty). Empty for an id that
+    /// is not a live edge.
+    #[func]
+    pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
+        let (mut result, section) = {
+            let core = self.lock_core();
+            let graph = &core.region_graph;
+            let Some(edge) = usize::try_from(edge_id)
+                .ok()
+                .and_then(|edge| graph.get_edge(edge))
+                .filter(|edge| !edge.deleted)
+            else {
+                return VarDictionary::new();
+            };
+            let result = vdict! {
+                "fwd_lanes": i64::from(edge.fwd_lanes),
+                "bkw_lanes": i64::from(edge.bkw_lanes),
+                "width": edge.width,
+                "class": edge.class as i64,
+                "median_style": i64::from(RoadMedian::style_code(edge.median)),
+                "median_width": edge.median.map_or(0.0, |median| median.width_m),
+                "editable": edge
+                    .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
+                    .is_ok(),
+            };
+            let section = crate::simulation::network::road_types::RoadCrossSection {
+                fwd_lanes: edge.fwd_lanes,
+                bkw_lanes: edge.bkw_lanes,
+                median: edge.median,
+            };
+            (result, section)
+        };
+        // The library is matched without the core lock.
+        result.set("road_type", self.road_type_of(section));
+        result
+    }
+
+    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes and
+    /// the median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
+    /// `median_width` metres in place, without applying it: `is_valid`, and when refused
+    /// `invalid_reason` (stable key) and `detail`. The same check as
+    /// [`Self::set_edge_cross_section`] (`ROAD-80`).
+    #[func]
+    pub fn preview_edge_cross_section(
+        &mut self,
+        edge_id: i32,
+        fwd: i32,
+        bkw: i32,
+        median_style: i32,
+        median_width: f32,
+    ) -> VarDictionary {
+        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
+        let refusal = match RoadMedian::from_tool(median_style, median_width) {
+            Ok(median) => self.lock_core().preview_edge_cross_section_internal(
+                edge_id,
+                lanes(fwd),
+                lanes(bkw),
+                median,
+            ),
+            Err(reason) => Some(RoadRejection::new(reason, "the median's style or width")),
+        };
+        match refusal {
+            None => vdict! { "is_valid": true },
+            Some(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes and the median
+    /// `median_style` of `median_width` metres in place (`ROAD-80`), with an undo record that
+    /// restores the whole road; its pieces publish now, as a crossing toggle's do. Returns
+    /// whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
+    /// changes nothing.
+    #[func]
+    pub fn set_edge_cross_section(
+        &mut self,
+        edge_id: i32,
+        fwd: i32,
+        bkw: i32,
+        median_style: i32,
+        median_width: f32,
+    ) -> bool {
+        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
+        let Ok(median) = RoadMedian::from_tool(median_style, median_width) else {
+            return false;
+        };
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
+                return false;
+            }
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
+    }
+
+    /// Whether road arm `edge_id` at `node_id` can cross, so the select tool offers its
+    /// crossing toggle (`ROAD-74`).
+    #[func]
+    pub fn can_toggle_crosswalk(&self, node_id: u32, edge_id: i32) -> bool {
+        self.lock_core().can_toggle_crosswalk_internal(node_id, edge_id)
+    }
+
+    /// Whether the lanes carry a crossing on road arm `edge_id` at `node_id`: the zebra the
+    /// roadbed paints there.
     #[func]
     pub fn has_crosswalk(&self, node_id: u32, edge_id: i32) -> bool {
         self.lock_core().has_crosswalk_internal(node_id, edge_id)

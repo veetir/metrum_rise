@@ -9,7 +9,9 @@
 
 use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::{GridlockChecker, LaneBucketScratch, TripFailureLog, TripQueryScratch};
+use super::tick::{
+    GridlockChecker, LaneBucketScratch, StrandedWalkers, TripFailureLog, TripQueryScratch,
+};
 use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
@@ -133,6 +135,11 @@ pub struct Agent {
     pub current_path: Vec<u32>,
     /// Index into the active route buffer: `current_path`.
     pub current_path_index: usize,
+    /// A walker's sidewalk on each road of `current_path` (`ROAD-74`): entry `k` is the
+    /// `Lane::lane_idx` of the foot lane from node `k` to node `k + 1`, its route's lane
+    /// witness. Built at the route's first junction, so empty until then and for cars; cleared
+    /// with every new route. Derived, not saved: a loaded walker rebuilds the same witness.
+    pub walk_lanes: Vec<i8>,
 
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
@@ -252,6 +259,8 @@ pub struct AgentSystem {
     pub(super) inspected_failure: Option<String>,
     /// Trip failure flood control and collection buffer (`DEBUG-06`); never saved.
     pub(crate) trip_failures: TripFailureLog,
+    /// The stranded walkers and where they wait (`ROAD-74`); derived, rebuilt on load.
+    pub(crate) stranded: StrandedWalkers,
     /// One route-query scratch value per deterministic parallel movement slice.
     ///
     /// The slices are retained between ticks so route storage is prepared once per topology
@@ -327,6 +336,7 @@ impl AgentSystem {
             inspection_ended: None,
             inspected_failure: None,
             trip_failures: TripFailureLog::default(),
+            stranded: StrandedWalkers::default(),
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
             parking_retries: Vec::new(),

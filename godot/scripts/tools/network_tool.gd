@@ -633,8 +633,29 @@ func _build_road_chunk_instance(
 		instance.free()
 		return null
 	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
+	_add_lining_shadow(instance, chunk_data)
 	_place_road_chunk_instance(instance, key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
 	return instance
+
+# A tunnel's lining casts the sun's shadow into its bore (ROAD-61): road chunks only receive
+# shadows, so a chunk with a lining layer (only a chunk with a tunnel has one) gets a shadow-only
+# child holding that layer again. Bridges' concrete is never copied.
+func _add_lining_shadow(instance: MeshInstance3D, chunk_data: Dictionary) -> void:
+	var vertices: PackedVector3Array = chunk_data.get("lining_vertices", PackedVector3Array())
+	if vertices.is_empty():
+		return
+	# The layer's positions as _fill_road_chunk_mesh uploaded them, already checked there.
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, WorldMaterials.tunnel_lining_shadow_material())
+	var caster := MeshInstance3D.new()
+	caster.name = "LiningShadow"
+	caster.mesh = mesh
+	caster.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	instance.add_child(caster)
 
 # Detached chunk node with an empty ArrayMesh; callers own it until it enters the tree.
 func _new_road_chunk_node() -> MeshInstance3D:
@@ -671,8 +692,10 @@ func _road_chunk_frame_centre(
 	)
 
 # A road chunk's layers in payload order, as `NetworkMeshData` lists them (its owner runs index
-# these layers).
-const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
+# these layers). A chunk without a kerbed grass median sends no `median_grass` arrays (ROAD-80),
+# which reads as an empty layer.
+const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
+const OPTIONAL_ROAD_CHUNK_LAYER := "median_grass"
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure. The
 # mesh's `road_layer_surfaces` meta maps each layer to its surface (-1 when the layer is empty),
@@ -694,6 +717,10 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		WorldMaterials.road_asphalt_material(),
 		_marking_mat,
 		WorldMaterials.road_concrete_material(),
+		# A tunnel's lining (ROAD-61): concrete, kept from the sun and lit by its lamp strips.
+		WorldMaterials.road_concrete_material(),
+		# A kerbed grass median's top (ROAD-80): the building sites' lawn, clouds' shade included.
+		WorldMaterials.site_ground_material(),
 	]
 	var surfaces := PackedInt32Array()
 	for index in ROAD_CHUNK_LAYERS.size():
@@ -716,6 +743,8 @@ func _append_road_surface(
 	var normals_key := layer + "_normals"
 	var colors_key := layer + "_colors"
 	var uvs_key := layer + "_uvs"
+	if layer == OPTIONAL_ROAD_CHUNK_LAYER and not chunk_data.has(vertices_key):
+		return true
 	if (
 		not chunk_data.has(vertices_key)
 		or typeof(chunk_data[vertices_key]) != TYPE_PACKED_VECTOR3_ARRAY

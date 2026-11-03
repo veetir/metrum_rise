@@ -23,7 +23,7 @@ use crate::simulation::network::road_edit::{
     validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
-    RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
+    RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
@@ -1129,15 +1129,20 @@ impl SimCore {
             core.region_graph.edge_mut(edge_idx).class = class;
             HashSet::new()
         });
-        if let Err(rejection) = tried {
-            debug_log!(
-                "road",
-                "edge_class_change_rejected edge={} reason={}",
-                edge_idx,
-                rejection.reason
-            );
-            return;
-        }
+        let checkpoint = match tried {
+            Ok(checkpoint) => checkpoint,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "edge_class_change_rejected edge={} reason={}",
+                    edge_idx,
+                    rejection.reason
+                );
+                return;
+            }
+        };
+        // The checkpoint holds the whole records the change touches: its undo record (R3-k).
+        self.push_network_undo_delta(checkpoint, None);
         self.region_graph.edge_mut(edge_idx).class = class;
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
@@ -1201,6 +1206,9 @@ impl SimCore {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
+                    // Plan-less callers draw without the tool's tunnel intent or median.
+                    tunnel: false,
+                    median: None,
                 },
             ))
         } else {
@@ -1246,10 +1254,12 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                None,
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
                 snap_to_existing_roads,
+                false,
             )
             .0;
             &fresh_input
@@ -1265,10 +1275,14 @@ impl SimCore {
         );
 
         let fast_validation =
-            validate_road_candidate_fast(prepared_input, &self.heightmap, &self.region_graph);
+            validate_road_candidate_fast(
+                prepared_input,
+                (fwd_lanes_u8, bkw_lanes_u8),
+                &self.heightmap,
+                &self.region_graph,
+            );
         let fast_validation = validate_road_candidate_against_water(
-            prepared_input.class,
-            &prepared_input.points,
+            prepared_input,
             fwd_lanes_u8,
             bkw_lanes_u8,
             &self.watermap,
@@ -1288,8 +1302,7 @@ impl SimCore {
                     &self.region_graph,
                 );
                 let full_validation = validate_road_candidate_against_water(
-                    prepared_input.class,
-                    &prepared_input.points,
+                    prepared_input,
                     fwd_lanes_u8,
                     bkw_lanes_u8,
                     &self.watermap,
@@ -1375,8 +1388,12 @@ impl SimCore {
 
         // Fields and painted cells are tested against the pieces the edit installs, in
         // `validate_staged_road_render_installing` (`ROAD-68` open question 1).
-        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
-        let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
+        let road_width_m = crate::simulation::network::graph::Edge::cross_section_width_m(
+            fwd_lanes_u8,
+            bkw_lanes_u8,
+            prepared_input.median,
+        );
+        let corridor_half_width_m = road_width_m * 0.5 + config::SIDEWALK_WIDTH;
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1448,12 +1465,15 @@ impl SimCore {
                     .expect("plan source identities checked under the same simulation lock"),
             )
         } else {
-            self.transit_network.add_road(
+            // Plan-less callers draw without the tunnel intent, so the stroke has no bore.
+            self.transit_network.add_road_graded(
                 &mut self.region_graph,
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
+                prepared_input.median,
                 prepared_input.class,
+                prepared_input.grade(None),
                 &mut self.zoning,
                 &mut self.allocator,
             );
@@ -1974,7 +1994,7 @@ impl SimCore {
     // the closure compiles, keeps clear of fields and painted cells and steepens no profile past
     // the 1:3 maximum grade; nothing outside the graph has changed either way. O(local records +
     // closure pieces).
-    fn try_graph_edit(
+    pub(super) fn try_graph_edit(
         &mut self,
         edges: &HashSet<usize>,
         nodes: &HashSet<u32>,
@@ -2258,18 +2278,40 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
     }
 
-    /// Toggles a user override for a crosswalk at a specific road mouth.
+    /// Sets the crossing of arm `edge_id` at `node_id` on or off (`ROAD-74`): the node's override,
+    /// saved in `road_crosswalks`. Off removes the arm's zebra, its strip and mouth setback (D8),
+    /// its pedestrian crossing lanes and the signs that stand for it; on restores them.
     ///
     /// A crossing moves its arm's mouth in the junction layout (D8), so the toggle re-lays the
     /// node out as a road edit does: clips, the profile solve that pins the arms up to them, the
-    /// node's roadbed closure and its lanes. A toggle whose closure would not compile, or whose
-    /// pieces would overlap fields or painted cells, is refused.
-    pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+    /// node's roadbed closure and its lanes. An arm that cannot cross
+    /// ([`crossing_arm_eligible`]), or a toggle whose closure would not compile or whose pieces
+    /// would overlap fields or painted cells, is refused and changes nothing; the refusal is
+    /// [`Self::preview_crosswalk_override_internal`]'s, so the preview is the commit's. Returns
+    /// whether the toggle was applied, with an undo record and the render marked dirty; the
+    /// caller publishes the rebuilt pieces ([`Self::finalize_network_render_products`]), as the
+    /// simulation thread does after a removal. O(node closure).
+    pub fn set_crosswalk_override_internal(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
-            return;
-        }
+        let checkpoint = match self.try_crosswalk_toggle(node_id, edge_id, enabled) {
+            Ok(checkpoint) => checkpoint,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "crosswalk_override_rejected node={} edge={} reason={}",
+                    node_id,
+                    edge_id,
+                    rejection.reason
+                );
+                return false;
+            }
+        };
         let node = self.region_graph.get_valid_node(node_id);
         let edge_id = edge_id as usize;
         let affected: HashSet<usize> = self
@@ -2279,64 +2321,94 @@ impl SimCore {
             .copied()
             .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .collect();
-        let edges = affected.iter().copied().chain([edge_id]).collect();
-        // The layout reads the overrides of the node's surviving id. A toggle whose node no
-        // longer compiles, or whose moved mouths overlap reserved land, is refused (`ROAD-68`
-        // open question 11 (c)).
-        let toggle = |core: &mut Self| {
-            core.region_graph
-                .set_crosswalk_override(node, edge_id, enabled);
-            let nodes = HashSet::from([node]);
-            core.region_graph
-                .rebuild_intersection_clips_for_nodes(&nodes);
-            // A crossing moves the mouths, so the node's arms re-derive their profiles.
-            let mut changed = HashSet::new();
-            core.region_graph.finalize_junction_endpoint_profiles(
-                &nodes,
-                Some(&core.heightmap),
-                &mut changed,
-            );
-            changed
-        };
-        let checkpoint =
-            match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {
-                Ok(checkpoint) => checkpoint,
-                Err(rejection) => {
-                    debug_log!(
-                        "road",
-                        "crosswalk_override_rejected node={} edge={} reason={}",
-                        node,
-                        edge_id,
-                        rejection.reason
-                    );
-                    return;
-                }
-            };
         self.push_network_undo_delta(checkpoint, None);
-        let changed = toggle(self);
+        let changed = self.apply_crosswalk_toggle(node, edge_id, enabled);
         let nodes = HashSet::from([node]);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network
             .mark_surface_dirty_from_sets(&changed, &HashSet::new());
         let affected: HashSet<usize> = affected.into_iter().chain(changed).collect();
-        self.agents.invalidate_lane_ids_for_edges(
-            &affected,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.transit_network
-            .lane_system
-            .rebuild_edges_incremental(&mut self.region_graph, &affected);
-        self.agents.reattach_invalidated_lanes_for_edges(
-            &affected,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.rebuild_building_entrances_internal();
+        // The node's arms' lanes, the cars on them and the entrances fronting them, as an undo
+        // restores them (`ROAD-80`'s lane edit): a toggle moves no frontage, so the entrance
+        // cache rebuild's city scan (about 10 ms at 100k buildings) is not needed. Godot's main
+        // thread runs this edit, and the passes are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
         // Deferred like a commit's (D7, `ROAD-68-G`), not left to the next frame's synchronous
         // rebuild of marked chunks.
         self.schedule_cch_rebuild_of_live_graph();
+        // A new render generation, so the renderer fetches the node's chunks once their pieces
+        // publish ([`Self::finalize_network_render_products`]).
+        self.mark_local_network_render_dirty();
+        true
+    }
+
+    /// Why [`Self::set_crosswalk_override_internal`] would refuse the same toggle now, or `None`
+    /// when it would apply it: the commit's own check, run on the graph and put back, so the
+    /// select tool's preview of a toggle is its commit (`ROAD-74`). O(node closure).
+    pub(crate) fn preview_crosswalk_override_internal(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> Option<RoadRejection> {
+        self.adopt_pending_cell_lots();
+        self.try_crosswalk_toggle(node_id, edge_id, enabled).err()
+    }
+
+    // The toggle's check (`try_graph_edit`), with its undo record: an arm that cannot cross is
+    // refused first. The layout reads the overrides of the node's surviving id; a toggle whose
+    // node no longer compiles, or whose moved mouths overlap reserved land, is refused
+    // (`ROAD-68` open question 11 (c)).
+    fn try_crosswalk_toggle(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> Result<RegionGraphUndoDelta, RoadRejection> {
+        let edge = usize::try_from(edge_id).ok();
+        let node = (node_id as usize) < self.region_graph.node_count();
+        let Some(edge) = edge.filter(|&edge| {
+            node && crossing_arm_eligible(&self.region_graph, node_id, edge)
+        }) else {
+            return Err(RoadRejection::new(
+                "crosswalk_arm_not_eligible",
+                format!(
+                    "edge {edge_id} is not a road arm with sidewalks that can cross at node \
+                     {node_id}"
+                ),
+            ));
+        };
+        let node = self.region_graph.get_valid_node(node_id);
+        let edges: HashSet<usize> = self
+            .region_graph
+            .node_adjacency(node)
+            .iter()
+            .copied()
+            .filter(|&incident| !self.region_graph.edge(incident).deleted)
+            .chain([edge])
+            .collect();
+        self.try_graph_edit(&edges, &HashSet::from([node_id, node]), |core| {
+            core.apply_crosswalk_toggle(node, edge, enabled)
+        })
+    }
+
+    // Sets the override and re-lays the node out on the graph: its clips and the profile solve
+    // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
+    // profiles changed.
+    fn apply_crosswalk_toggle(&mut self, node: u32, edge: usize, enabled: bool) -> HashSet<usize> {
+        self.region_graph
+            .set_crosswalk_override(node, edge, enabled);
+        let nodes = HashSet::from([node]);
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&nodes);
+        let mut changed = HashSet::new();
+        self.region_graph.finalize_junction_endpoint_profiles(
+            &nodes,
+            Some(&self.heightmap),
+            &mut changed,
+        );
+        changed
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
@@ -2670,6 +2742,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         })
     }
 
@@ -2716,6 +2789,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2885,6 +2959,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3628,6 +3703,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3681,6 +3757,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning
@@ -4006,6 +4083,8 @@ mod tests {
                 layer(|mesh| &mesh.road_vertices),
                 layer(|mesh| &mesh.marking_vertices),
                 layer(|mesh| &mesh.concrete_vertices),
+                layer(|mesh| &mesh.lining_vertices),
+                layer(|mesh| &mesh.median_grass_vertices),
             ]
         };
         let occupied_chunks = |core: &SimCore| {

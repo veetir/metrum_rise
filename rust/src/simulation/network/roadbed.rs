@@ -13,6 +13,7 @@ pub(crate) mod fixtures;
 mod geometry;
 mod index;
 mod layout;
+mod lining;
 mod mesh;
 mod node;
 mod profile;
@@ -23,7 +24,11 @@ mod system;
 mod terrain;
 mod walkways;
 
-pub(crate) use arms::{NodeArms, directions_pass_through, edges_pass_through};
+pub(crate) use arms::{
+    NodeArms, crossing_arm_eligible, directions_pass_through, edges_pass_through,
+    is_tunnel_approach, painted_median_continues,
+};
+pub(crate) use span::NOSE_CLEARANCE_M;
 pub(crate) use geometry::CoverageTriangle;
 #[cfg(test)]
 pub(crate) use geometry::{RoadSurfaceTriangleQueryIndex, triangulate_constrained_rings_xz};
@@ -32,13 +37,19 @@ pub use layout::{
     CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
     NodeKind, SectionLine, SectorBoundary, SectorKind, SectorLayout, Side,
 };
+pub use lining::{
+    COLLAR_HEIGHT_M, LiningPart, TUNNEL_COVER_M, TUNNEL_EARTH_COVER_M, TUNNEL_LINING_HEIGHT_M,
+    TUNNEL_LINING_THICKNESS_M, VEHICLE_CLEARANCE_M,
+};
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
-pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
+pub(crate) use profile::{
+    FOOTPATH_MIN_WIDTH_M, preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
+};
 pub(crate) use query::{GroundedPieceScratch, LocalSurfaceQuery};
-pub use query::{LaneSurfaceQuery, PieceId, PortalPart, WallSegment};
+pub use query::{LaneSurfaceQuery, PieceId, WallSegment};
 pub use section::{RoadBand, RoadSection};
 pub(crate) use span::incident_direction;
 pub use span::{MouthSection, SpanPiece};

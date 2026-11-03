@@ -72,12 +72,15 @@ pub(crate) struct NodeArms {
     // index into the edge's centreline points, and height.
     centreline: Vec<(f64, usize, f64)>,
     bands: Vec<ArmBand>,
-    // A bend's default crossing that its layout cannot hold moves from the first arm (input
-    // order) to the second (`ROAD-68` open question 13).
-    crossing_fallback: Option<[usize; 2]>,
+    // A bend's default crossing that its layout cannot hold, on arm `.0` (input order): it moves
+    // to arm `.1`, or with `None` (the other arm's crossing is authored, `ROAD-74`) is dropped
+    // (`ROAD-68` open question 13).
+    crossing_fallback: Option<(usize, Option<usize>)>,
     // Whether a standard edge meets the node. Where only bridges and tunnels meet, the piece is
     // part of the structure and stands off the terrain (`TERRAIN-07-C`).
     grounded: bool,
+    // Whether only tunnels meet the node: the piece lies under the ground with them.
+    buried: bool,
 }
 
 // The buffers arms are collected and laid out in, reused between nodes (`ROAD-68-K18`).
@@ -163,10 +166,13 @@ impl NodeArms {
         self.crossing_fallback = degree_two
             .as_ref()
             .and_then(|crossings| crossings.fallback)
-            .map(|pair| pair.map(|road| roads[road]));
+            .map(|(from, to)| (roads[from], to.map(|road| roads[road])));
         self.grounded = incidents
             .iter()
             .any(|(key, _)| graph.edge(key.edge).class == EdgeClass::Standard);
+        self.buried = incidents
+            .iter()
+            .all(|(key, _)| graph.edge(key.edge).class == EdgeClass::Tunnel);
         for (index, &(key, _)) in incidents.iter().enumerate() {
             let road = roads.iter().position(|&input| input == index);
             let crossable = road.is_some_and(|road| match &degree_two {
@@ -264,6 +270,11 @@ impl NodeArms {
         self.grounded
     }
 
+    /// Whether only tunnels meet the node, so its piece is buried with them (`ROAD-61`).
+    pub(super) fn buried(&self) -> bool {
+        self.buried
+    }
+
     /// Number of arms.
     pub(super) fn len(&self) -> usize {
         self.arms.len()
@@ -323,9 +334,10 @@ impl NodeArms {
     /// Lays the node out; arm `i` of the input is arm `i` here. A bend's default crossing that
     /// does not fit on its legacy-ordered arm, so that arm is too short or its corner does not
     /// fit (the two errors whose budgets the crossing's depth enters), moves to the other arm,
-    /// as the pass-through rule does; the arms then say so too ([`Self::input`]). Any other
-    /// error, or the same on the other arm, fails the node with the first arm's error (D8,
-    /// `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
+    /// as the pass-through rule does, or is dropped when the other arm's crossing is authored
+    /// (`ROAD-74`); the arms then say so too ([`Self::input`]). Any other error, or the same
+    /// after the move, fails the node with the first arm's error (D8, `ROAD-68` open question
+    /// 13). Node pieces, clips and lanes all lay out through here.
     pub(crate) fn layout(&mut self) -> Result<JunctionLayout, LayoutError> {
         let mut layout = JunctionLayout::empty();
         self.layout_into(&mut layout, &mut ArmsScratch::default())?;
@@ -343,7 +355,7 @@ impl NodeArms {
             Ok(()) => return Ok(()),
             Err(error) => error,
         };
-        let Some([from, to]) = self.crossing_fallback else {
+        let Some((from, to)) = self.crossing_fallback else {
             return Err(error);
         };
         let first = self.arms[from].key;
@@ -352,19 +364,22 @@ impl NodeArms {
         {
             return Err(error);
         }
-        self.cross_on([from, to], to);
+        self.move_default_crossing(from, to, false);
         let built = self.build_layout(layout, scratch);
         if built.is_err() {
-            self.cross_on([from, to], from);
+            self.move_default_crossing(from, to, true);
         }
         built.map_err(|_| error)
     }
 
-    // Puts a bend's default crossing on `onto` of `[from, to]`; the fallback is the other arm.
-    fn cross_on(&mut self, [from, to]: [usize; 2], onto: usize) {
-        self.arms[from].crossable = onto == from;
-        self.arms[to].crossable = onto == to;
-        self.crossing_fallback = (onto == from).then_some([from, to]);
+    // Puts a bend's default crossing back on arm `from` (`back`), or off it onto `to` (dropped
+    // with `None`); the fallback stays only while the crossing is on `from`.
+    fn move_default_crossing(&mut self, from: usize, to: Option<usize>, back: bool) {
+        self.arms[from].crossable = back;
+        if let Some(to) = to {
+            self.arms[to].crossable = !back;
+        }
+        self.crossing_fallback = back.then_some((from, to));
     }
 
     fn build_layout(
@@ -523,7 +538,8 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 /// - a bridge whose mouth row a grounded piece shares (another standard edge meets the node, so
 ///   the node's piece is grounded or the node passes through into a standard span) hangs its
 ///   abutment face below the slab's end edge, and a tunnel whose mouth row a grounded piece
-///   shares marks it a portal row, near which the graded terrain opens the ground (T22 5 (a));
+///   shares marks it a portal row, past which no graded cone reaches and where its collar
+///   stands (`ROAD-61`);
 /// - any other end is closed by the piece it shares the row with.
 ///
 /// `O(degree)`.
@@ -556,6 +572,44 @@ pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanE
     }
 }
 
+/// Whether `edge_idx` is a tunnel's approach span (`ROAD-61` round R8e): a standard edge that
+/// passes through into a tunnel's mouth at one of its ends ([`span_end`]'s wall run that is no
+/// abutment), the span the roadbed retains ([`super::PieceMesh::retained`]) and the graded
+/// terrain walls wherever its road runs below the ground. From the node's arms alone, no terrain
+/// height. `O(degree)` at each end; it allocates only at an end where a tunnel meets the node, so
+/// per-parcel callers stay allocation-free away from tunnels.
+pub(crate) fn is_tunnel_approach(graph: &RegionGraph, edge_idx: usize) -> bool {
+    let edge = graph.edge(edge_idx);
+    let meets_tunnel = |node: u32| {
+        (node as usize) < graph.node_adjacency_count()
+            && graph.node_adjacency(node).iter().any(|&other| {
+                let other = graph.edge(other);
+                !other.deleted && other.class == EdgeClass::Tunnel
+            })
+    };
+    edge.class == EdgeClass::Standard
+        && [edge.start_node, edge.end_node].into_iter().any(|node| {
+            let node = graph.get_valid_node(node);
+            meets_tunnel(node)
+                && matches!(
+                    span_end(graph, node, edge_idx),
+                    SpanEnd::WallRun { abutment: false }
+                )
+        })
+}
+
+/// Whether only tunnels meet at `node`, two or more: a tunnel span's lining continues there into
+/// another tunnel's, or into the lining of the node piece where only tunnels meet (`ROAD-61`).
+/// `O(degree)`.
+pub(super) fn tunnels_continue(graph: &RegionGraph, node: u32) -> bool {
+    node_incidents(graph, node).is_some_and(|incidents| {
+        incidents.len() > 1
+            && incidents
+                .iter()
+                .all(|(key, _)| graph.edge(key.edge).class == EdgeClass::Tunnel)
+    })
+}
+
 fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
     matches!(incidents, [(key, _)] if graph.edge(key.edge).class != EdgeClass::Standard)
 }
@@ -582,6 +636,81 @@ pub(super) fn pass_through_crossings(
     })
 }
 
+/// Shortest edge, in horizontal metres, whose raised median continues through a pass-through
+/// node (`ROAD-80`): a node layout leaves each end at most half its edge, so each of the pair's
+/// spans keeps room for its far end's clearance, crossing strip and nose (at most 6 m, the
+/// radius of the widest median's semicircle).
+pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
+
+// Whether a pass-through node's two arms carry one median, raised when `raised` and painted
+// otherwise, that lines up across it (`ROAD-80`): equal style and width, the line between the
+// lane groups at one place (each arm's offset taken looking away from the node, so the other's
+// is its mirror), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool {
+    let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
+    let outward = |edge: &Edge, end: EdgeEnd| match end {
+        EdgeEnd::Start => edge.lane_group_offset(),
+        EdgeEnd::End => -edge.lane_group_offset(),
+    };
+    a.median
+        .zip(b.median)
+        .is_some_and(|(median, other)| median.is_raised() == raised && median == other)
+        && outward(a, a_end) == -outward(b, b_end)
+        && [a, b]
+            .iter()
+            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+}
+
+/// Whether a raised median runs on through `node` without a nose (`ROAD-80`): a pass-through
+/// node whose two arms carry one median that lines up ([`median_lines_up`]) and where
+/// neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one opens
+/// the median around it, both spans nosing out. The spans of both arms read it, so their shared
+/// row agrees. `O(degree)`.
+pub(super) fn median_continues(graph: &RegionGraph, node: u32) -> bool {
+    median_runs_through(graph, node, true)
+}
+
+/// As [`median_continues`] for a painted median (`ROAD-80`): its hatching runs on through
+/// `node` without a marking nose. A painted median keeps D8's default crossing, which stops
+/// the hatching on both sides. `O(degree)`.
+pub(crate) fn painted_median_continues(graph: &RegionGraph, node: u32) -> bool {
+    median_runs_through(graph, node, false)
+}
+
+fn median_runs_through(graph: &RegionGraph, node: u32, raised: bool) -> bool {
+    pass_through_crossings(graph, node).is_some_and(|[(a, a_crosses), (b, b_crosses)]| {
+        !a_crosses && !b_crosses && median_lines_up(graph, [a, b], raised)
+    })
+}
+
+/// Whether arm `edge` of `node` can cross, so its crossing can be turned on or off (`ROAD-74`):
+/// a car road with sidewalks at a node where two or more road arms meet, which at a pass-through
+/// node must also hold the strip on its span. Whether it crosses is the D8 rule's
+/// ([`NodeArms::collect`], [`pass_through_crossings`]); this is the set that rule ranges over, so
+/// a toggle never stores an override that rule ignores. `O(degree)`.
+pub(crate) fn crossing_arm_eligible(graph: &RegionGraph, node: u32, edge: usize) -> bool {
+    let node = graph.get_valid_node(node);
+    let Some(incidents) = node_incidents(graph, node) else {
+        return false;
+    };
+    if ends_a_structure(graph, &incidents) {
+        return false;
+    }
+    let span_owned = passes_through(graph, &incidents);
+    let roads = incidents
+        .iter()
+        .filter(|(key, _)| is_road(graph, *key))
+        .count();
+    roads >= 2
+        && incidents.iter().any(|&(key, _)| {
+            key.edge == edge
+                && has_sidewalks(graph, key)
+                && (!span_owned
+                    || 0.5 * horizontal_length_m(&graph.edge(key.edge).geometry)
+                        >= CROSSWALK_DEPTH_M)
+        })
+}
+
 // D8 crossings (`ROAD-68-C`). Only car roads with sidewalks cross.
 // - Three or more arms: every such arm, unless a node override of `false` removes it.
 // - Two arms, bends and pass-through nodes alike: the legacy `ROAD-64` rule
@@ -599,23 +728,27 @@ fn junction_arm_crosses(
         && graph.node(node).crosswalk_overrides.get(&key.edge) != Some(&false)
 }
 
-// The legacy `ROAD-64` rule at a degree-two node, per arm in input order, and the arms a default
-// crossing may move between.
+// The legacy `ROAD-64` rule at a degree-two node, per arm in input order, and where a default
+// crossing goes when its layout cannot hold it.
 struct DegreeTwoCrossings {
     crosses: [bool; 2],
-    // `[from, to]`: the default crossing's arm and the other arm, when that one may cross by
-    // default too.
-    fallback: Option<[usize; 2]>,
+    // `(from, to)`: the default crossing's arm and the other arm when that one may cross by
+    // default instead, or `None` when the other arm's crossing is authored and the default is
+    // dropped.
+    fallback: Option<(usize, Option<usize>)>,
 }
 
-// Arms are taken in order of their direction's angle in `(-pi, pi]`, then edge index; an override
-// of `true` always crosses, `false` never does, and without an override an arm crosses only if
-// no earlier arm did. So a node has exactly one crossing by default, on its first arm, and an
-// override of `false` there moves it to the other arm. A pass-through crossing lies on its arm's
-// span (`span_owned`: a pass-through node, which has no layout), so that arm must hold the strip
-// within the half of its edge the far node leaves it (`JunctionLayout` gives each end at most
-// half), or it does not cross. A default crossing on a layout that cannot hold it moves to the
-// other arm when that arm has no override ([`NodeArms::layout`]).
+// Arms are taken in order of their direction's angle in `(-pi, pi]`, then edge index. The first
+// eligible arm is the default arm: without an override it crosses, and the other arm does not;
+// a pass-through node where a raised median continues has no default arm (`ROAD-80`).
+// An override of `true` always crosses and `false` never does, so a node has exactly one crossing
+// by default, and an override of `false` on the default arm removes it rather than moving it
+// (`ROAD-74`, the user's decision R6-a: off removes the crossing). A pass-through crossing lies on
+// its arm's span (`span_owned`: a pass-through node, which has no layout), so that arm must hold
+// the strip within the half of its edge the far node leaves it (`JunctionLayout` gives each end
+// at most half), or it is not eligible. A default crossing on a layout that cannot hold it moves
+// to the other eligible arm when that arm has no override, and is dropped when it has one
+// ([`NodeArms::layout`]).
 fn degree_two_crossings(
     graph: &RegionGraph,
     node: u32,
@@ -632,24 +765,25 @@ fn degree_two_crossings(
     let first = usize::from(order.then(arms[0].0.cmp(&arms[1].0)).is_gt());
     let eligible = |index: usize| has_sidewalks(graph, arms[index].0) && fits(arms[index].0);
     let free = |index: usize| !overrides.contains_key(&arms[index].0.edge);
-    let mut crosses = [false; 2];
-    let mut crossed = false;
-    for index in [first, 1 - first] {
-        if !eligible(index) {
-            continue;
-        }
-        crosses[index] = overrides
-            .get(&arms[index].0.edge)
-            .copied()
-            .unwrap_or(!crossed);
-        crossed |= crosses[index];
-    }
-    let by_default = [first, 1 - first]
+    // Where a raised median continues through, no crossing by default (R3-f, Z3): it would cross
+    // the median. An override of `true` still crosses, and the median opens around it.
+    let median_through = span_owned && median_lines_up(graph, arms.map(|(key, _)| key), true);
+    let default_arm = [first, 1 - first]
         .into_iter()
-        .find(|&index| crosses[index] && free(index));
-    let fallback = by_default
-        .map(|from| [from, 1 - from])
-        .filter(|&[_, to]| !span_owned && !crosses[to] && eligible(to) && free(to));
+        .find(|&index| eligible(index))
+        .filter(|_| !median_through);
+    let mut crosses = [false; 2];
+    for index in [first, 1 - first] {
+        if eligible(index) {
+            crosses[index] = overrides
+                .get(&arms[index].0.edge)
+                .copied()
+                .unwrap_or(Some(index) == default_arm);
+        }
+    }
+    let fallback = default_arm
+        .filter(|&from| !span_owned && crosses[from] && free(from) && eligible(1 - from))
+        .map(|from| (from, free(1 - from).then_some(1 - from)));
     DegreeTwoCrossings { crosses, fallback }
 }
 

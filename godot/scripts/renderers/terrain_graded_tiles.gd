@@ -13,7 +13,7 @@
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
 ## rebake with the edit's serial as their token and install together in one frame, each into
 ## its own slot when its level is unchanged. The tiles' wall faces (conflict walls, abutments,
-## headwalls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
+## tunnel row and trough walls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
 ## terrain_graded_walls.gdshader from the values in their instance transforms.
 ## The road preview's graded tiles (TERRAIN-07-E) draw over the installed ones from slots of
 ## their own (show_preview); a commit's or undo's edit carries the tiles it staged, which install
@@ -63,7 +63,8 @@ const CELL_PLAIN := 5
 const CELL_INSTANCE_FLOATS := 16
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
-# patch with more draws the first ones and counts and logs the rest.
+# tunnel approach's trough walls (`ROAD-61` round R8e) take about 256 faces per side per 64 m at
+# GL0, so a patch that needs more grows its MultiMesh to the next power of two (_rebuild_patch_walls).
 const MAX_WALLS_PER_PATCH := 256
 # A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
 const HIDDEN_RANGE_M := 0.001
@@ -818,11 +819,15 @@ func _build_meshes() -> void:
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		_meshes[code] = mesh
 		counters["meshes_created"] += 1
-	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top.
+	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top. Its
+	# triangles are clockwise seen from +Z, the side terrain_graded_walls.gdshader's normal points
+	# to (the face's lower side), so that side is the front face: with cull_disabled Godot
+	# negates a back face's normal, and the other winding lit every wall seen from the road as if
+	# it faced the hill (ROAD-61 round R8f).
 	var quad := []
 	quad.resize(Mesh.ARRAY_MAX)
 	quad[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 0)])
-	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 3, 0, 3, 2])
+	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 3, 1, 0, 2, 3])
 	_wall_mesh = ArrayMesh.new()
 	_wall_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, quad)
 	counters["meshes_created"] += 1
@@ -2681,6 +2686,14 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 	var centre := rect.get_center()
 	var count := 0
 	var truncated := 0
+	# The faces' upper bound first: growing the MultiMesh drops the instances it holds.
+	var wanted := 0
+	for tile in _patch_tiles(rect):
+		var entry := _shown_in(tile, cells["key"])
+		if not entry.is_empty():
+			wanted += (entry["walls"] as PackedFloat32Array).size() / WALL_FACE_FLOATS
+	if wanted > multimesh.instance_count:
+		multimesh.instance_count = nearest_po2(wanted)
 	for tile in _patch_tiles(rect):
 		var entry := _shown_in(tile, cells["key"])
 		if entry.is_empty():
@@ -2692,7 +2705,7 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			var middle := tile_origin + Vector2(faces[at] + faces[at + 2], faces[at + 1] + faces[at + 3]) * 0.5
 			if not rect.has_point(middle):
 				continue
-			if count == MAX_WALLS_PER_PATCH:
+			if count == multimesh.instance_count:
 				truncated += 1
 				continue
 			multimesh.set_instance_transform(count, Transform3D(Basis(
@@ -2702,7 +2715,7 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			count += 1
 	if truncated > 0:
 		counters["walls_truncated"] += truncated
-		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, MAX_WALLS_PER_PATCH])
+		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, multimesh.instance_count])
 	multimesh.visible_instance_count = count
 	node.visible = count > 0
 

@@ -5,7 +5,7 @@
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
 use crate::simulation::agriculture::FieldClearanceIndex;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
 };
@@ -133,10 +133,12 @@ impl RoadEditPlan {
             &request.points,
             request.fwd_lanes.clamp(0, 255) as u8,
             request.bkw_lanes.clamp(0, 255) as u8,
+            request.median,
             terrain,
             graph,
             roadbed,
             request.snap_to_existing_roads,
+            request.tunnel,
         );
         Self::new(
             request,
@@ -188,8 +190,7 @@ impl RoadEditPlan {
         let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
         let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-            self.prepared.class,
-            &self.prepared.points,
+            &self.prepared,
             fwd,
             bkw,
             &core.watermap,
@@ -198,8 +199,8 @@ impl RoadEditPlan {
         if !validation.is_valid {
             return Some(FailedCheck::Validation(validation.invalid_reason));
         }
-        let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
-        let half_width_m = width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH;
+        let width = Edge::cross_section_width_m(fwd, bkw, self.prepared.median);
+        let half_width_m = width * 0.5 + crate::config::SIDEWALK_WIDTH;
         let parcels = core
             .zoning
             .parcel_ids_overlapping_road_corridor(&self.prepared.points, half_width_m);
@@ -319,6 +320,7 @@ mod tests {
             &RegionGraph::new(),
             &RoadbedSystem::new(16.0),
             true,
+            false,
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
@@ -327,6 +329,8 @@ mod tests {
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
             },
             3,
             prepared,

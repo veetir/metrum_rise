@@ -5,7 +5,7 @@
 //! station rule, which `ROAD-68-D` makes one constructive subdivision, and the width-change
 //! taper, which `ROAD-68-F` part 2 leaves to node pieces (a pass-through pair has one profile).
 
-use super::super::arms::{edges_pass_through, pass_through_crossings};
+use super::super::arms::{edges_pass_through, median_continues, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::RoadProfile;
@@ -18,6 +18,14 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 
+// A raised median's nose (`ROAD-80`) is a semicircle of radius `r`, half the median's width:
+// its rows stand at equal angles around the quarter circle from the tip, at most
+// `NOSE_CHORD_MAX_M` of arc apart and at least `NOSE_MIN_SEGMENTS` per quarter circle.
+const NOSE_CHORD_MAX_M: f32 = 0.5;
+const NOSE_MIN_SEGMENTS: u32 = 4;
+/// From a span's mouth, or from the far edge of the crossing strip the span holds there, to a
+/// median nose's tip (`ROAD-80`).
+pub(crate) const NOSE_CLEARANCE_M: f32 = 1.0;
 // Station and direction tolerance of the section model.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 // Two incident directions at least this opposed form a pass-through node.
@@ -43,6 +51,8 @@ pub(crate) struct SpanScratch {
     pub(super) stations: Vec<f32>,
     pub(super) protected: Vec<f32>,
     pub(super) footprint: Vec<(i32, i32)>,
+    pub(super) kinds: Vec<RowKind>,
+    pub(super) row_starts: Vec<u32>,
 }
 
 // Legacy visual node classification from incident edge directions.
@@ -91,6 +101,28 @@ impl EdgeProfilePlaneBlend {
     }
 }
 
+/// How a span's section row is laid out (`ROAD-80`): with the mouth profile, the divided body
+/// profile, or as a nose's tip, a body row whose kerbs and median have collapsed onto the line
+/// between the lane groups and share two vertices there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::simulation::network::roadbed) enum RowKind {
+    /// The mouth profile's row ([`RoadProfile::for_edge`]).
+    Mouth,
+    /// A nose's tip: the body profile at zero median width.
+    Tip,
+    /// The body profile at the median's width there ([`RoadProfile::body_for_edge`]).
+    Body,
+}
+
+// A divided span's raised median (`ROAD-80`): its authored width, each end's nose as its tip
+// and full-width stations (`None` where the median continues through the node), and the body
+// row layout.
+struct MedianBody {
+    width_m: f32,
+    noses: [Option<(f32, f32)>; 2],
+    layout: RowLayout,
+}
+
 /// The section model of one edge between its two mouth stations.
 pub(super) struct SpanModel<'a> {
     edge: &'a Edge,
@@ -111,6 +143,7 @@ pub(super) struct SpanModel<'a> {
     // section station half the strip depth inside the mouth.
     crossings_m: [Option<f32>; 2],
     layout: RowLayout,
+    body: Option<MedianBody>,
 }
 
 impl<'a> SpanModel<'a> {
@@ -196,6 +229,18 @@ impl<'a> SpanModel<'a> {
             crossing_m(EdgeEnd::Start, start_kind, start_mouth_m),
             crossing_m(EdgeEnd::End, end_kind, end_mouth_m),
         ];
+        // Only a raised median asks whether it runs on through a node (`ROAD-80`).
+        let raised = edge.median.is_some_and(|median| median.is_raised());
+        let through = [
+            (start_kind, EdgeEnd::Start),
+            (end_kind, EdgeEnd::End),
+        ]
+        .map(|(kind, end)| {
+            raised
+                && kind == Some(NodeKind::PassThrough)
+                && median_continues(graph, node_at(graph, edge, end))
+        });
+        let body = median_body(edge, (start_mouth_m, end_mouth_m), crossings_m, through);
         // A node piece's mouth fixes the frame at that end.
         if let Some(mouth) = mouths[0] {
             start_tangent = mouth.section.tangent_xz;
@@ -224,6 +269,7 @@ impl<'a> SpanModel<'a> {
             end_pass_through,
             crossings_m,
             layout: RowLayout::new(&RoadProfile::for_edge(edge)),
+            body,
         })
     }
 
@@ -273,9 +319,76 @@ impl<'a> SpanModel<'a> {
         }
     }
 
-    /// Row layout shared by every section of this span.
+    /// Row layout of every mouth-profile row of this span: every row of an undivided span.
     pub(super) fn layout(&self) -> &RowLayout {
         &self.layout
+    }
+
+    /// Row layout of a divided span's body and tip rows (`ROAD-80`); `None` for a span without
+    /// a raised median built.
+    pub(super) fn body_layout(&self) -> Option<&RowLayout> {
+        self.body.as_ref().map(|body| &body.layout)
+    }
+
+    /// How the row at station `s_m` is laid out (`ROAD-80`): mouth rows from each free end's
+    /// mouth up to its nose's tip, the tip row, and body rows between the tips (up to the mouth
+    /// where the median continues through). Every row of an undivided span is a mouth row.
+    pub(in crate::simulation::network::roadbed) fn row_kind(&self, s_m: f32) -> RowKind {
+        let Some(body) = &self.body else {
+            return RowKind::Mouth;
+        };
+        let [start, end] = body.noses.map(|nose| nose.map(|(tip_m, _)| tip_m));
+        if [start, end]
+            .into_iter()
+            .flatten()
+            .any(|tip_m| (s_m - tip_m).abs() <= SAMPLE_EPSILON_M)
+        {
+            RowKind::Tip
+        } else if start.is_some_and(|tip_m| s_m < tip_m) || end.is_some_and(|tip_m| s_m > tip_m)
+        {
+            RowKind::Mouth
+        } else {
+            RowKind::Body
+        }
+    }
+
+    /// The raised median's width at station `s_m` (`ROAD-80`): zero at a nose's tip and before
+    /// it, then the chord of the nose's semicircle, `2 sqrt(r^2 - (r - d)^2)` at `d` metres past
+    /// the tip for `r` half the authored width, up to the authored width `r` past the tip, which
+    /// it keeps between the noses and through a node where the median continues. Zero on a span
+    /// without a body. `O(1)`.
+    pub(in crate::simulation::network::roadbed) fn median_width_at(&self, s_m: f32) -> f32 {
+        let Some(body) = &self.body else {
+            return 0.0;
+        };
+        let radius_m = 0.5 * body.width_m;
+        let width_m = |nose: Option<(f32, f32)>| {
+            nose.map_or(body.width_m, |(tip_m, full_m)| {
+                let sign = (full_m - tip_m).signum();
+                if (s_m - full_m) * sign >= 0.0 {
+                    return body.width_m;
+                }
+                // `r^2 - (r - d)^2 = d (2r - d)`, without the cancellation near the tip.
+                let d_m = ((s_m - tip_m) * sign).max(0.0);
+                2.0 * (d_m * (2.0 * radius_m - d_m)).sqrt()
+            })
+        };
+        width_m(body.noses[0]).min(width_m(body.noses[1]))
+    }
+
+    // The profile and row layout of the row at `s_m`.
+    fn row_profile(&self, s_m: f32) -> (RoadProfile, &RowLayout) {
+        match (self.row_kind(s_m), &self.body) {
+            (RowKind::Mouth, _) | (_, None) => (self.profile, &self.layout),
+            (RowKind::Tip, Some(body)) => (
+                RoadProfile::body_for_edge(self.edge, 0.0),
+                &body.layout,
+            ),
+            (RowKind::Body, Some(body)) => (
+                RoadProfile::body_for_edge(self.edge, self.median_width_at(s_m)),
+                &body.layout,
+            ),
+        }
     }
 
     /// The mouth section at an end without a node piece (a pass-through node). Node pieces
@@ -286,10 +399,12 @@ impl<'a> SpanModel<'a> {
             EdgeEnd::End => self.mouths_m.1,
         };
         let section = self.section_at(s_m);
-        let mut vertices = Vec::with_capacity(self.layout.stride());
-        push_section_row(&section, &self.layout, &mut vertices);
+        // A body row where the median continues through the node (`ROAD-80`).
+        let (profile, layout) = self.row_profile(s_m);
+        let mut vertices = Vec::with_capacity(layout.stride());
+        push_section_row(&section, layout, &mut vertices);
         MouthSection {
-            profile: self.profile,
+            profile,
             section,
             vertices: vertices.into_boxed_slice(),
         }
@@ -336,7 +451,14 @@ impl<'a> SpanModel<'a> {
             center_height_m,
             tangent_xz,
             lateral_xz,
-            bands: self.lateral_bands(center, lateral_xz, profile_blend),
+            // An undivided span evaluates its one profile in place.
+            bands: match self.body {
+                None => self.lateral_bands(&self.profile, center, lateral_xz, profile_blend),
+                Some(_) => {
+                    let (profile, _) = self.row_profile(s_m);
+                    self.lateral_bands(&profile, center, lateral_xz, profile_blend)
+                }
+            },
         }
     }
 
@@ -349,6 +471,7 @@ impl<'a> SpanModel<'a> {
 
     fn lateral_bands(
         &self,
+        profile: &RoadProfile,
         center: RoadVec3,
         lateral_xz: RoadVec2,
         profile_blend: Option<EdgeProfilePlaneBlend>,
@@ -365,7 +488,7 @@ impl<'a> SpanModel<'a> {
             });
             base_height_m + offset_m
         };
-        self.profile
+        profile
             .bands()
             .iter()
             .map(|band| {
@@ -427,6 +550,25 @@ impl<'a> SpanModel<'a> {
             push_protected_section_sample(samples, protected, start_m, total_length);
             push_protected_section_sample(samples, protected, end_m, total_length);
         }
+        // A divided span's noses (`ROAD-80`): the tip and the full-width station fixed, the rows
+        // between at the nose's equal angles. Every interval between them is shorter than any
+        // step below, so none is divided further.
+        if let Some(body) = &self.body {
+            for (tip_m, full_m) in body.noses.into_iter().flatten() {
+                push_protected_section_sample(samples, protected, tip_m, total_length);
+                push_protected_section_sample(samples, protected, full_m, total_length);
+                let radius_m = 0.5 * body.width_m;
+                let sign = (full_m - tip_m).signum();
+                let segments = nose_segments(radius_m);
+                for row in 1..segments {
+                    let angle = std::f32::consts::FRAC_PI_2 * row as f32 / segments as f32;
+                    let s_m = tip_m + sign * radius_m * (1.0 - angle.cos());
+                    if (0.0..=total_length).contains(&s_m) {
+                        samples.push(s_m);
+                    }
+                }
+            }
+        }
         for &distance in self.cumulative {
             if !is_near_protected_section_sample(distance, protected) {
                 samples.push(distance);
@@ -441,7 +583,10 @@ impl<'a> SpanModel<'a> {
             EdgeClass::Tunnel => TUNNEL_SECTION_STEP_M,
         };
         // A range's ends are fixed stations, so each interval lies wholly inside or outside it.
-        let cadence_steps = [PROFILE_TRANSITION_SECTION_STEP_M; 2];
+        let cadence_steps = [
+            PROFILE_TRANSITION_SECTION_STEP_M,
+            PROFILE_TRANSITION_SECTION_STEP_M,
+        ];
         let fixed = samples.len();
         for index in 1..fixed {
             let (start_m, end_m) = (samples[index - 1], samples[index]);
@@ -461,6 +606,65 @@ impl<'a> SpanModel<'a> {
         }
         samples.sort_by(f32::total_cmp);
     }
+}
+
+// Segments of a nose's quarter circle of radius `radius_m` (`ROAD-80`): arcs of at most
+// `NOSE_CHORD_MAX_M`, so every chord is shorter, and at least `NOSE_MIN_SEGMENTS`. A nose holds
+// this plus one rows, its tip and full-width rows included: 5 up to a 2.54 m median (a 2 m
+// paving nose), 6 for the 3 m grass default, 20 at the widest (12 m kerbed grass, `ceil(3 pi)`
+// = 19 segments). `O(1)`.
+fn nose_segments(radius_m: f32) -> u32 {
+    let arc_m = std::f32::consts::FRAC_PI_2 * radius_m;
+    ((arc_m / NOSE_CHORD_MAX_M).ceil() as u32).max(NOSE_MIN_SEGMENTS)
+}
+
+// A divided span's raised median (`ROAD-80`), or `None` when the edge has no raised median or
+// the span leaves its noses no room. An end where the median continues through (`through`) has
+// no nose: the shared row there is a full-width body row. Every other end noses out in a
+// semicircle of radius `r`, half the median's width: its tip lies `NOSE_CLEARANCE_M` beyond the
+// mouth, or beyond the far edge of the crossing strip the span holds there (`crossings_m`), and
+// the median reaches its width `r` further on. Two noses that would overlap leave the span
+// undivided; a single nose ends before the through end, which `arms::MEDIAN_THROUGH_MIN_EDGE_M`
+// keeps at least `r` away. `O(B)`.
+fn median_body(
+    edge: &Edge,
+    (start_mouth_m, end_mouth_m): (f32, f32),
+    crossings_m: [Option<f32>; 2],
+    through: [bool; 2],
+) -> Option<MedianBody> {
+    let median = edge.median.filter(|median| median.is_raised())?;
+    let radius_m = 0.5 * median.width_m;
+    let clearance_m =
+        |crossing: Option<f32>| NOSE_CLEARANCE_M + crossing.map_or(0.0, |_| CROSSWALK_DEPTH_M as f32);
+    let tips_m = [
+        (!through[0]).then(|| start_mouth_m + clearance_m(crossings_m[0])),
+        (!through[1]).then(|| end_mouth_m - clearance_m(crossings_m[1])),
+    ];
+    let noses = match tips_m {
+        [Some(start_m), Some(end_m)] => {
+            if end_m - start_m < 2.0 * radius_m {
+                return None;
+            }
+            [
+                Some((start_m, start_m + radius_m)),
+                Some((end_m, end_m - radius_m)),
+            ]
+        }
+        [Some(start_m), None] => {
+            debug_assert!(end_mouth_m - start_m > radius_m, "a through end leaves the nose room");
+            [Some((start_m, start_m + radius_m)), None]
+        }
+        [None, Some(end_m)] => {
+            debug_assert!(end_m - start_mouth_m > radius_m, "a through end leaves the nose room");
+            [None, Some((end_m, end_m - radius_m))]
+        }
+        [None, None] => [None, None],
+    };
+    Some(MedianBody {
+        width_m: median.width_m,
+        noses,
+        layout: RowLayout::new(&RoadProfile::body_for_edge(edge, median.width_m)),
+    })
 }
 
 pub(in crate::simulation::network::roadbed) fn is_surface_edge(edge: &Edge) -> bool {

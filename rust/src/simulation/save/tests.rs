@@ -145,6 +145,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     let mut zoning = ZoningSystem::new(&config);
     zoning
@@ -199,6 +200,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     (graph, edge_id)
@@ -1603,6 +1605,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
 
     let mut zoning = ZoningSystem::new(&config);
@@ -2144,6 +2147,80 @@ fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
             );
         } else {
             result.unwrap();
+        }
+    }
+}
+
+// `ROAD-74`, save format 110: crossing overrides round-trip through `road_crosswalks`, both
+// values, in key order; an override on an arm its node no longer has is not saved; a row naming
+// an edge that is not an arm of its node does not load.
+#[test]
+fn crosswalk_overrides_round_trip_through_their_table() {
+    let (mut graph, edge) = snapshot_test_graph();
+    let start = graph.edge(edge).start_node;
+    let end = graph.edge(edge).end_node;
+    graph.set_crosswalk_override(start, edge, true);
+    graph.set_crosswalk_override(end, edge, false);
+    // Stale: edge 7 is not an arm of `end` (nor an edge at all).
+    graph.set_crosswalk_override(end, 7, true);
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM road_crosswalks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+    let loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(loaded.node(0).crosswalk_overrides.get(&0), Some(&true));
+    assert_eq!(loaded.node(1).crosswalk_overrides.get(&0), Some(&false));
+    assert_eq!(loaded.node(1).crosswalk_overrides.len(), 1);
+    conn.execute_batch("UPDATE road_crosswalks SET edge_id = 999")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+}
+
+// `ROAD-80`, save format 111: a median round-trips through `network_edges`' two columns, a road
+// without one saves style 0 and width 0, and a median no stroke could build does not load.
+#[test]
+fn medians_round_trip_through_the_edge_table() {
+    let (mut graph, edge) = snapshot_test_graph();
+    let save = |graph: &RegionGraph| {
+        let maps =
+            build_snapshot_maps(graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, graph, &maps).unwrap();
+        tx.commit().unwrap();
+        conn
+    };
+    let conn = save(&graph);
+    let columns: (i64, f64) = conn
+        .query_row(
+            "SELECT median_style, median_width FROM network_edges",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(columns, (0, 0.0));
+    assert_eq!(network::load_graph(&conn).unwrap().edge(edge).median, None);
+    for (style, width) in [(1, 1.5), (2, 6.0), (3, 2.0)] {
+        let median = crate::simulation::network::graph::RoadMedian::from_tool(style, width)
+            .unwrap();
+        graph.edge_mut(edge).median = median;
+        let conn = save(&graph);
+        assert_eq!(network::load_graph(&conn).unwrap().edge(edge).median, median);
+        for bad in [
+            "UPDATE network_edges SET median_style = 9",
+            "UPDATE network_edges SET median_width = 40.0",
+            "UPDATE network_edges SET bkw_lanes = 0",
+        ] {
+            let conn = save(&graph);
+            conn.execute_batch(bad).unwrap();
+            assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
         }
     }
 }

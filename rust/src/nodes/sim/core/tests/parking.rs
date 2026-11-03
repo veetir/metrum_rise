@@ -28,6 +28,8 @@ fn commit(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             preview: None,
+            tunnel: false,
+            median: None,
         },
         Instant::now(),
         RoadEditMetrics::default(),

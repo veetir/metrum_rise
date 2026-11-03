@@ -8,6 +8,7 @@
 //! console's `dump` writes. Reports are built only when a stroke is refused.
 
 use crate::debug_log;
+use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
 use godot::prelude::Vector3;
 use serde::Serialize;
@@ -40,6 +41,10 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap: bool,
+    /// The road tool's tunnel intent (`ROAD-61`), which a replay sets before it draws.
+    pub(crate) tunnel: bool,
+    /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
+    pub(crate) median: Option<RoadMedian>,
 }
 
 /// Why one stroke was refused.
@@ -125,6 +130,9 @@ impl RoadRejection {
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
+            tunnel: attempt.tunnel,
+            median_style: RoadMedian::style_code(attempt.median),
+            median_width: attempt.median.map_or(0.0, |median| median.width_m),
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -142,6 +150,10 @@ struct AttemptRecord<'a> {
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
+    tunnel: bool,
+    // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
+    median_style: i32,
+    median_width: f32,
     points: Vec<[f32; 3]>,
 }
 
@@ -151,15 +163,15 @@ fn validation_detail(
     prepared: &[Vector3],
 ) -> (String, Option<Vector3>) {
     match reason {
-        "bridge_clearance" | "tunnel_clearance" if validation.required_clearance_m <= 0.0 => (
+        "bridge_clearance" if validation.required_clearance_m <= 0.0 => (
             format!(
                 "the bridge profile dips {:.2} m below the terrain",
                 -validation.clearance_m
             ),
             None,
         ),
-        // Both validators measure clearance at the middle of the prepared profile.
-        "bridge_clearance" | "tunnel_clearance" => (
+        // The validator measures clearance at the middle of the prepared profile.
+        "bridge_clearance" => (
             format!(
                 "clearance {:.2} m at the middle of the road, needs {:.2} m",
                 validation.clearance_m, validation.required_clearance_m
@@ -182,6 +194,54 @@ fn validation_detail(
                 "the prepared road is {:.2} m long, too short to build",
                 polyline_length_m(prepared)
             ),
+            None,
+        ),
+        "tunnel_cover" => (
+            format!(
+                "the ground stands {:.2} m above the tunnel deck where the bore needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "tunnel_approach_too_short" => (
+            format!(
+                "the open approach to a portal is {:.2} m long, at least {:.2} m needed",
+                validation.geometry_measured, validation.geometry_limit
+            ),
+            None,
+        ),
+        "tunnel_too_close" => (
+            format!(
+                "the road stands {:.2} m above a tunnel deck where the bore needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "bridge_too_low" => (
+            format!(
+                "a bridge's deck and the road it passes over stand {:.2} m apart, needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "tunnel_join" => (
+            "the end is snapped onto a tunnel inside its bore; roads meet a tunnel at its portals"
+                .to_owned(),
+            None,
+        ),
+        "tunnel_crossing" => (
+            "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
+            None,
+        ),
+        "junction_in_trench" => (
+            format!(
+                "the junction stands {:.2} m below the ground in a tunnel approach's trench",
+                validation.geometry_measured
+            ),
+            None,
+        ),
+        "tunnel_under_water" => (
+            "the tunnel or its approach passes under visible water".to_owned(),
             None,
         ),
         "water_requires_bridge" => (
@@ -337,6 +397,8 @@ mod tests {
             fwd_lanes: 2,
             bkw_lanes: 1,
             snap: true,
+            tunnel: true,
+            median: None,
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -357,6 +419,7 @@ mod tests {
             (2.into(), 1.into())
         );
         assert_eq!(record["snap"], true);
+        assert_eq!(record["tunnel"], true);
         // Every coordinate parses back to the submitted f32.
         let parsed: Vec<Vec<f64>> = serde_json::from_value(record["points"].clone()).unwrap();
         for (point, row) in points.iter().zip(&parsed) {
@@ -411,6 +474,8 @@ mod tests {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap: false,
+            tunnel: false,
+            median: None,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(

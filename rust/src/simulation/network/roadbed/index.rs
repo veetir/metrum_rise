@@ -52,17 +52,19 @@ pub(crate) struct PieceFootprint {
 }
 
 impl PieceFootprint {
-    /// Footprint of a span mesh from the bounds of each pair of consecutive section rows.
+    /// Footprint of a span mesh of `rows` section rows from the bounds of each pair of
+    /// consecutive rows, `pair(r)` the vertices of rows `r - 1` and `r` (an undivided span's are
+    /// `stride` apart, a divided span's at its row starts, `ROAD-80`).
     /// `O(rows * stride + covered cells)`.
     pub(super) fn of_span(
         mesh: &PieceMesh,
-        stride: usize,
+        rows: usize,
+        pair: impl Fn(usize) -> std::ops::Range<usize> + Copy,
         grid: RenderGrid,
         scratch: &mut Vec<(i32, i32)>,
     ) -> Self {
-        let rows = mesh.positions().len() / stride.max(1);
         let pair_bounds = (1..rows).map(|row| {
-            mesh.positions()[(row - 1) * stride..(row + 1) * stride]
+            mesh.positions()[pair(row)]
                 .iter()
                 .fold(
                     [
@@ -131,6 +133,8 @@ pub(super) struct IndexedPiece {
     pub(super) mesh: Arc<PieceMesh>,
     // Whether this piece contributes terrain seams and coverage.
     pub(super) grounded: bool,
+    // Whether it lies under the ground (`PublishedPiece::buried`).
+    pub(super) buried: bool,
 }
 
 /// Query cells and render-chunk reference counts of the published pieces.
@@ -155,12 +159,14 @@ impl PieceIndex {
         mesh: &Arc<PieceMesh>,
         footprint: &PieceFootprint,
         grounded: bool,
+        buried: bool,
     ) {
         for &cell in footprint.query_cells.iter() {
             let entry = IndexedPiece {
                 id,
                 mesh: Arc::clone(mesh),
                 grounded,
+                buried,
             };
             if let Some(list) = self.cells.get_mut(&cell) {
                 let list = Arc::make_mut(list);

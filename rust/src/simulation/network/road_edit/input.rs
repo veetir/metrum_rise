@@ -4,9 +4,10 @@
 //! profile solve shared by preview and committed placement.
 
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use super::support::{RebuiltPieces, StrokeSupport};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::network::topology::StrokeGrade;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::types::TransitType;
 use crate::simulation::network::grade::{
@@ -38,11 +39,49 @@ pub(crate) struct PreparedRoadInput {
     pub(crate) class: EdgeClass,
     /// True when endpoint proximity to existing graph nodes is treated as an authored snap.
     pub(crate) endpoint_snap_enabled: bool,
+    /// The road tool's tunnel intent (`ROAD-61`): the authored profile is kept on the tunnel
+    /// lattice and the validation graph splits the stroke at its portals
+    /// ([`super::tunnel`]). False for every stroke drawn without the toggle.
+    pub(crate) tunnel: bool,
     /// The least maximum grade a standard profile can keep under the stroke's pins and the
     /// source-delta limit, when that exceeds the hard maximum (`ROAD-68` open question 37):
     /// the stroke is refused as `road_too_steep`. `None` when the solve constructed the profile
     /// within the maximum.
     pub(crate) forced_grade: Option<f32>,
+    /// The ends, start then end, that stand above the ground (`ROAD-99`): a bridge's ends the
+    /// class inference found above their support, which join no road mid-span. A standard
+    /// stroke has none; a tunnel stroke's approach ends follow from its bore.
+    pub(crate) elevated_ends: [bool; 2],
+    /// The structure span each end, start then end, is snapped onto (`ROAD-99` follow-up B1,
+    /// [`super::bridge::snapped_structure_span`]), in the committed graph's edge ids: a bridge's
+    /// span is split there and the end joins it at a junction on the deck; a tunnel's is refused
+    /// (`tunnel_join`). `None` for an end at a node or on no structure's level.
+    pub(crate) joined_spans: [Option<usize>; 2],
+    /// The stroke's median (`ROAD-80`), which its edge carries and its corridor checks widen
+    /// by. Preparation never reads it: the preparers leave it `None` and
+    /// [`super::plan_road_edit`] and the road tool's checks set the tool's.
+    pub(crate) median: Option<RoadMedian>,
+}
+
+// A stroke's prepared points, its inferred class, the grade a refused standard solve was forced
+// to, and which ends the class inference found above their support (a bridge's elevated ends).
+type PreparedPoints = (Vec<Vector3>, EdgeClass, Option<f32>, [bool; 2]);
+
+impl PreparedRoadInput {
+    /// How the stroke meets the roads it reaches (`ROAD-99`): a standard stroke on the ground, a
+    /// bridge as a structure joining roads mid-span at the ends its class inference found at
+    /// its support, a tunnel stroke with its `bore` (knot indices) a structure between ground
+    /// approaches.
+    pub(crate) fn grade(&self, bore: Option<[usize; 2]>) -> StrokeGrade {
+        match (bore, self.class) {
+            (Some(bore), _) => StrokeGrade::tunnel(self.points.len(), bore),
+            (None, EdgeClass::Bridge) => {
+                StrokeGrade::bridge(self.elevated_ends.map(|elevated| !elevated))
+            }
+            (None, class) => StrokeGrade::of_class(class),
+        }
+        .joining_spans(self.joined_spans)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -78,10 +117,7 @@ thread_local! {
 // Standard roads keep the authored XZ alignment, are densified against terrain samples, and
 // receive a constrained smooth vertical profile. Bridge and tunnel strokes preserve authored
 // heights after light XZ simplification when an authored endpoint is intentionally off terrain.
-fn prepare_road_input_points(
-    raw_points: &[Vector3],
-    terrain: &TerrainSystem,
-) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
+fn prepare_road_input_points(raw_points: &[Vector3], terrain: &TerrainSystem) -> PreparedPoints {
     prepare_road_input_points_with_support(raw_points, terrain, |_, _| None, [None; 2])
 }
 
@@ -96,7 +132,7 @@ fn prepare_road_input_points_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     support: &mut StrokeSupport,
-) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
+) -> PreparedPoints {
     let end_heights = [support.end_height(0), support.end_height(1)];
     prepare_road_input_points_with_support(
         raw_points,
@@ -116,11 +152,21 @@ fn prepare_snapped_road_input_to_visible_surface(
     graph: &RegionGraph,
     support: &mut StrokeSupport,
 ) -> PreparedRoadInput {
-    let (mut points, mut class, forced_grade) =
+    let (mut points, mut class, forced_grade, mut elevated_ends) =
         prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
+    let joined_spans = snap_road_endpoints_to_structure_spans(
+        &mut points,
+        raw_points,
+        terrain,
+        graph,
+        support,
+    );
     if class == EdgeClass::Standard && is_terminal_bridge_transition(&points, terrain, graph)
     {
+        // The ramp's elevated end is the bridge terminal it joins; its other end is grounded.
+        elevated_ends = [points[0], points[points.len() - 1]]
+            .map(|end| source_terrain_clearance_m(end, terrain).abs() > PREVIEW_CLEARANCE_M);
         solve_structural_transition_profile(&mut points);
         class = EdgeClass::Bridge;
     }
@@ -128,19 +174,66 @@ fn prepare_snapped_road_input_to_visible_surface(
         points,
         class,
         endpoint_snap_enabled: true,
+        tunnel: false,
+        median: None,
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
+        elevated_ends,
+        joined_spans,
     }
+}
+
+// The structure span each end of the raw stroke is snapped onto (`ROAD-99` follow-up B1): the
+// level nearest the end's authored height between the span's graph profile and the ground
+// under it (the support, else the terrain). A joined end takes the span's graph height, as an
+// end at a node takes the node's (`snap_road_endpoints_to_existing_nodes`). Two span queries.
+fn snap_road_endpoints_to_structure_spans(
+    prepared_points: &mut [Vector3],
+    raw_points: &[Vector3],
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    support: &mut StrokeSupport,
+) -> [Option<usize>; 2] {
+    let (Some(&first), Some(&last)) = (raw_points.first(), raw_points.last()) else {
+        return [None; 2];
+    };
+    if prepared_points.len() < 2 {
+        return [None; 2];
+    }
+    let last_idx = prepared_points.len() - 1;
+    let mut joined = [None; 2];
+    for (end, (raw, idx)) in [(first, 0), (last, last_idx)].into_iter().enumerate() {
+        if graph
+            .find_node_within(prepared_points[idx], config::SNAP_TOLERANCE)
+            .is_some()
+        {
+            continue;
+        }
+        let (ground_m, _) = road_profile_support_height(
+            terrain,
+            &mut |x, z| support.height_at(x, z),
+            raw.x,
+            raw.z,
+        );
+        if let Some((span, deck_m)) = super::bridge::snapped_structure_span(graph, raw, ground_m)
+        {
+            prepared_points[idx].y = deck_m;
+            joined[end] = Some(span);
+        }
+    }
+    joined
 }
 
 /// Prepares road-tool input with optional endpoint snapping to the existing road graph, pinned
 /// to every visible carriageway: the first pass of [`super::plan_road_edit`], which the commit,
-/// the preview and the editor's checks use (`ROAD-68` open question 16).
+/// the preview and the editor's checks use (`ROAD-68` open question 16). With `tunnel`, the
+/// tool's tunnel intent, the stroke keeps its authored profile instead (`ROAD-61`).
 pub(crate) fn prepare_road_input_for_tool(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
 ) -> PreparedRoadInput {
     let excluded = RebuiltPieces::default();
     prepare_road_input_excluding(
@@ -149,21 +242,28 @@ pub(crate) fn prepare_road_input_for_tool(
         graph,
         roadbed,
         snap_to_existing_roads,
+        tunnel,
         &excluded,
     )
     .0
 }
 
 // As `prepare_road_input_for_tool`, reading no carriageway of the `excluded` pieces; also
-// returns the pieces whose carriageway the preparation read.
+// returns the pieces whose carriageway the preparation read. A tunnel stroke reads none.
 pub(super) fn prepare_road_input_excluding(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
     excluded: &RebuiltPieces,
 ) -> (PreparedRoadInput, Vec<PieceId>) {
+    if tunnel {
+        let prepared =
+            super::tunnel::prepare_tunnel_input(raw_points, graph, snap_to_existing_roads);
+        return (prepared, Vec::new());
+    }
     if snap_to_existing_roads {
         let mut support = StrokeSupport::new(roadbed, graph, excluded);
         let prepared = prepare_snapped_road_input_to_visible_surface(
@@ -175,18 +275,23 @@ pub(super) fn prepare_road_input_excluding(
         return (prepared, support.into_read());
     }
 
-    let (points, class, forced_grade) = prepare_road_input_points(raw_points, terrain);
+    let (points, class, forced_grade, elevated_ends) =
+        prepare_road_input_points(raw_points, terrain);
     let prepared = PreparedRoadInput {
         points,
         class,
         endpoint_snap_enabled: false,
+        tunnel: false,
+        median: None,
         forced_grade,
+        elevated_ends,
+        joined_spans: [None; 2],
     };
     (prepared, Vec::new())
 }
 
 // Snaps prepared road endpoints to existing graph nodes using the same tolerance as commit.
-fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph: &RegionGraph) {
+pub(super) fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph: &RegionGraph) {
     if prepared_points.len() < 2 {
         return;
     }
@@ -209,7 +314,7 @@ fn prepare_road_input_points_with_support(
     terrain: &TerrainSystem,
     visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
-) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
+) -> PreparedPoints {
     // Taken for the solve, not borrowed: a solve nested on this thread (a pool job stolen while
     // a support query waits) starts from empty buffers instead of failing a borrow.
     let mut scratch = STROKE_SCRATCH.take();
@@ -230,7 +335,7 @@ fn prepare_road_input_points_in(
     mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
     scratch: &mut StrokeScratch,
-) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
+) -> PreparedPoints {
     let StrokeScratch {
         alignment: simplified_points,
         samples,
@@ -240,10 +345,13 @@ fn prepare_road_input_points_in(
     } = scratch;
     simplify_road_alignment_points(raw_points, simplified_points);
     if simplified_points.len() < 2 {
-        return (simplified_points.clone(), EdgeClass::Standard, None);
+        return (simplified_points.clone(), EdgeClass::Standard, None, [false; 2]);
     }
 
-    let mut endpoint_above_clearance = false;
+    // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f): an end below the ground is a
+    // grounded road's, which the standard profile below cuts in or refuses. It still keeps a
+    // stroke with one end above the ground and the other below it off the bridge.
+    let mut elevated_ends = [false; 2];
     let mut endpoint_below_clearance = false;
     let last_idx = simplified_points.len() - 1;
     for (end, idx) in [0, last_idx].into_iter().enumerate() {
@@ -253,22 +361,14 @@ fn prepare_road_input_points_in(
                 .0
         });
         let clearance_m = point.y - support_h;
-        if clearance_m > PREVIEW_CLEARANCE_M {
-            endpoint_above_clearance = true;
-        }
+        elevated_ends[end] = clearance_m > PREVIEW_CLEARANCE_M;
         if clearance_m < -PREVIEW_CLEARANCE_M {
             endpoint_below_clearance = true;
         }
     }
 
-    let class = match (endpoint_above_clearance, endpoint_below_clearance) {
-        (true, false) => EdgeClass::Bridge,
-        (false, true) => EdgeClass::Tunnel,
-        _ => EdgeClass::Standard,
-    };
-
-    if class != EdgeClass::Standard {
-        return (simplified_points.clone(), class, None);
+    if elevated_ends.contains(&true) && !endpoint_below_clearance {
+        return (simplified_points.clone(), EdgeClass::Bridge, None, elevated_ends);
     }
 
     build_standard_road_profile_samples(
@@ -291,7 +391,7 @@ fn prepare_road_input_points_in(
         .map(|sample| Vector3::new(sample.x, sample.y, sample.z))
         .collect();
 
-    (prepared_points, EdgeClass::Standard, forced_grade)
+    (prepared_points, EdgeClass::Standard, forced_grade, [false; 2])
 }
 
 fn terminal_incident_surface_edge(
@@ -385,7 +485,7 @@ fn solve_structural_transition_profile(points: &mut [Vector3]) {
 }
 
 // Into `simplified_points`, which allocates only to grow.
-fn simplify_road_alignment_points(points: &[Vector3], simplified_points: &mut Vec<Vector3>) {
+pub(super) fn simplify_road_alignment_points(points: &[Vector3], simplified_points: &mut Vec<Vector3>) {
     simplified_points.clear();
     if !points.is_empty() {
         simplified_points.push(points[0]);
@@ -650,7 +750,7 @@ fn profile_sample_run_m(a: RoadVerticalProfileSample, b: RoadVerticalProfileSamp
     ((b.x - a.x).hypot(b.z - a.z)).max(f32::EPSILON)
 }
 
-fn xz_distance(a: Vector3, b: Vector3) -> f32 {
+pub(super) fn xz_distance(a: Vector3, b: Vector3) -> f32 {
     (b.x - a.x).hypot(b.z - a.z)
 }
 

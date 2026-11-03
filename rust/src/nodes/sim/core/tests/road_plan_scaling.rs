@@ -9,6 +9,31 @@ use std::time::Instant;
 
 mod memory;
 
+// The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
+// T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
+// flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
+// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`); or
+// no stroke: the T's side road, drawn, widened in place or given that median in place
+// (`ROAD-80`).
+#[derive(Clone, Copy, PartialEq)]
+enum Measured {
+    Ground,
+    Tunnel,
+    OverTunnel,
+    UnderBridge,
+    JoinBridge,
+    Divided,
+    LaneEdit,
+    MedianEdit,
+}
+
+// The median of the divided measurements (`ROAD-80`).
+const GRASS: crate::simulation::network::graph::RoadMedian =
+    crate::simulation::network::graph::RoadMedian {
+        style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
+        width_m: 3.0,
+    };
+
 #[derive(Clone, Copy, PartialEq)]
 enum CellScenario {
     None,
@@ -20,37 +45,138 @@ enum CellScenario {
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::None);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Ground);
+}
+
+// `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled tunnel planning locality; run alone with --release --ignored --nocapture"]
+fn populated_tunnel_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Tunnel);
+}
+
+// `ROAD-61` round R8h locality: a road over that tunnel, crossing its bore on the hill, planned as
+// the remote city grows.
+#[test]
+#[ignore = "unprofiled road-over-tunnel planning locality; run alone with --release --ignored --nocapture"]
+fn populated_road_over_tunnel_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::OverTunnel,
+    );
+}
+
+// `ROAD-99` locality: a road on the ground passing under a bridge 6 m over it, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled road-under-bridge planning locality; run alone with --release --ignored --nocapture"]
+fn populated_road_under_bridge_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::UnderBridge,
+    );
+}
+
+// `ROAD-99` follow-up B1 locality: a road from the ground joining that bridge mid-span, which
+// splits the bridge, planned as the remote city grows.
+#[test]
+#[ignore = "unprofiled mid-span bridge join locality; run alone with --release --ignored --nocapture"]
+fn populated_bridge_join_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::JoinBridge,
+    );
+}
+
+// `ROAD-80` locality: the T's side road drawn with a 3 m kerbed grass median, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled divided-stroke planning locality; run alone with --release --ignored --nocapture"]
+fn populated_divided_road_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::Divided,
+    );
+}
+
+// `ROAD-80` locality: the T's side road given a 3 m kerbed grass median in place.
+#[test]
+#[ignore = "unprofiled in-place median edit locality; run alone with --release --ignored --nocapture"]
+fn populated_median_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::MedianEdit,
+    );
+}
+
+#[test]
+#[ignore = "unprofiled in-place lane edit locality; run alone with --release --ignored --nocapture"]
+fn populated_lane_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::LaneEdit,
+    );
 }
 
 #[test]
 #[ignore = "unprofiled field reservation scaling; run alone with --release --ignored --nocapture"]
 fn populated_field_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, true, CellScenario::None);
+    measure_populated_road_plan_scaling(false, false, true, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_paved_road_plan_scaling() {
-    measure_populated_road_plan_scaling(true, false, false, CellScenario::None);
+    measure_populated_road_plan_scaling(true, false, false, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
 fn populated_zoning_feasibility_scaling() {
-    measure_populated_road_plan_scaling(true, true, false, CellScenario::None);
+    measure_populated_road_plan_scaling(true, true, false, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "matched populated cell-reservation planning locality; run without competing work"]
 fn populated_cell_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Placement);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::Placement,
+        Measured::Ground,
+    );
 }
 
 #[test]
 #[ignore = "snapshot component diagnostic; run release alone without profiling"]
 fn populated_cell_snapshot_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::Snapshot,
+        Measured::Ground,
+    );
 }
 
 fn measure_populated_road_plan_scaling(
@@ -58,7 +184,9 @@ fn measure_populated_road_plan_scaling(
     zoning_only: bool,
     fields: bool,
     scenario: CellScenario,
+    measured: Measured,
 ) {
+    let tunnel = measured == Measured::Tunnel;
     let mut memory_phase = 0;
     let mut previous_memory_products = None;
     if scenario == CellScenario::Memory {
@@ -66,10 +194,63 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = scenario != CellScenario::None;
     let mut core = test_core();
+    if matches!(measured, Measured::Tunnel | Measured::OverTunnel) {
+        // A 1:4 cone hill 25 m high south of the T: the measured stroke tunnels through it, or
+        // crosses over the tunnel through it.
+        let terrain = &mut core.heightmap;
+        for gz in 0..terrain.height {
+            for gx in 0..terrain.width {
+                let (x, z) = terrain.grid_to_world_coords(gx, gz);
+                if x.abs() > 110.0 || (z + 200.0).abs() > 110.0 {
+                    continue;
+                }
+                let height = (0.25 * (100.0 - x.hypot(z + 200.0))).max(0.0);
+                terrain.set_height(gx, gz, height / crate::config::HEIGHT_SCALE);
+            }
+        }
+        core.refresh_road_terrain_inputs();
+    }
     road_terrain_plan::commit_ready(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
+    let in_place = matches!(measured, Measured::LaneEdit | Measured::MedianEdit);
+    if in_place {
+        road_terrain_plan::commit_ready(
+            &mut core,
+            vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+        );
+        core.precompute_road_mesh_data();
+    }
+    let mut previous_lane_products = None;
+    if matches!(
+        measured,
+        Measured::OverTunnel | Measured::UnderBridge | Measured::JoinBridge
+    ) {
+        // The tunnel the measured road crosses over, or the bridge it passes under or joins.
+        let (points, tunnel) = if measured == Measured::OverTunnel {
+            let points = [(0.0, -320.0), (0.0, -80.0)].map(|(x, z)| Vector3::new(x, 0.0, z));
+            (points, true)
+        } else {
+            let points = [(-30.0, -150.0), (30.0, -150.0)].map(|(x, z)| Vector3::new(x, 6.0, z));
+            (points, false)
+        };
+        let outcome = core.commit_road(
+            crate::nodes::sim::core::road_commit::RoadCommitRequest {
+                points: points.to_vec(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel,
+                median: None,
+                preview: None,
+            },
+            Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+        core.precompute_road_mesh_data();
+    }
     let asset = register_test_asset(&mut core.allocator, "scaling_site", ZoneType::Residential);
     if paved {
         let mut manifest = core
@@ -241,6 +422,21 @@ fn measure_populated_road_plan_scaling(
             measure_snapshot_components(&core, remote_buildings);
             continue;
         }
+        if in_place {
+            // Widened to 2 + 2, or given the grass median at 1 + 1.
+            let section = if measured == Measured::LaneEdit {
+                (2, 2, None)
+            } else {
+                (1, 1, Some(GRASS))
+            };
+            let products =
+                measure_lane_edit(&mut core, remote_buildings, background_roads, section);
+            if let Some(previous) = &previous_lane_products {
+                assert_eq!(&products, previous, "remote state changed local products");
+            }
+            previous_lane_products = Some(products);
+            continue;
+        }
         if zoning_only {
             let geometry = core
                 .zoning
@@ -292,12 +488,38 @@ fn measure_populated_road_plan_scaling(
         let mut status_samples = Vec::new();
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
+        let points = match measured {
+            Measured::Ground | Measured::Divided => {
+                vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
+            }
+            Measured::Tunnel => vec![
+                Vector3::new(0.0, 0.0, -320.0),
+                Vector3::new(0.0, 0.0, -80.0),
+            ],
+            Measured::OverTunnel => vec![
+                Vector3::new(-30.0, 0.0, -250.0),
+                Vector3::new(30.0, 0.0, -250.0),
+            ],
+            Measured::UnderBridge => vec![
+                Vector3::new(0.0, 0.0, -180.0),
+                Vector3::new(0.0, 0.0, -120.0),
+            ],
+            Measured::JoinBridge => vec![
+                Vector3::new(0.0, 0.0, -210.0),
+                Vector3::new(0.0, 6.0, -150.0),
+            ],
+            Measured::LaneEdit | Measured::MedianEdit => {
+                unreachable!("measured by measure_lane_edit")
+            }
+        };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
-            points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+            points: points.clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel,
+            median: (measured == Measured::Divided).then_some(GRASS),
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -306,6 +528,11 @@ fn measure_populated_road_plan_scaling(
             let status_start = Instant::now();
             assert_eq!(plan.status(&core), "ready");
             let status_ms = status_start.elapsed().as_secs_f64() * 1000.0;
+            // The measured join splits the bridge: its end is snapped onto the span.
+            assert_eq!(
+                plan.prepared().joined_spans[1].is_some(),
+                measured == Measured::JoinBridge
+            );
             let preview_start = Instant::now();
             let (prepared_points, validation) = snapshot.validate(&request());
             let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
@@ -331,7 +558,11 @@ fn measure_populated_road_plan_scaling(
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
-                "field_reservations": fields,
+                "field_reservations": fields, "tunnel": tunnel,
+                "over_tunnel": measured == Measured::OverTunnel,
+                "under_bridge": measured == Measured::UnderBridge,
+                "join_bridge": measured == Measured::JoinBridge,
+                "divided": measured == Measured::Divided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
@@ -343,6 +574,98 @@ fn measure_populated_road_plan_scaling(
             })
         );
     }
+}
+
+// `ROAD-80`: the T's side road (south of the T) given `(fwd, bkw, median)` in place: widened
+// from 1+1 to 2+2, or given a median. Times the verdict (the check, run and put back) over 100
+// samples, then 20 commits each followed by its undo, then 20 toggles of the side arm's
+// crossing (`ROAD-74`) with their undos; returns the local products after a commit: the T's span
+// and node pieces and the side road's lanes, which must not depend on the remote city. The
+// once-per-tier setup is not timed.
+fn measure_lane_edit(
+    core: &mut SimCore,
+    remote_buildings: usize,
+    remote_roads: usize,
+    (fwd, bkw, median): (u8, u8, Option<crate::simulation::network::graph::RoadMedian>),
+) -> String {
+    // The fixture commits without lanes; the edit rebuilds the lanes it touches, so they exist
+    // before the first one, as in a game (setup, not timed). No agent is on a lane.
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 1.0)
+        .expect("the T");
+    let side = core.get_hovered_edge_internal(0.0, -60.0);
+    assert!(side >= 0);
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let mut out = String::new();
+        for &edge in core.region_graph.node_adjacency(node) {
+            let piece = roadbed.span_piece(edge).expect("a span");
+            out += &format!("{edge} {:?}\n", piece.mesh().positions());
+        }
+        let piece = roadbed.node_piece(node).expect("the T's piece");
+        out += &format!("{:?}\n", piece.mesh().positions());
+        let lanes = &core.transit_network.lane_system;
+        for &id in &lanes.edge_lanes[&(side as usize)] {
+            out += &format!("{:?}\n", lanes.lanes[id].geometry);
+        }
+        out
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let mut verdicts = Vec::new();
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(verdict.is_none(), "{verdict:?}");
+        if iteration >= 3 {
+            verdicts.push(ms);
+        }
+    }
+    let (mut commits, mut undos) = (Vec::new(), Vec::new());
+    let before = local(core);
+    let mut products = String::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median));
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        assert_eq!(local(core), before, "undo restores the T");
+    }
+    // The side arm's crossing toggled off and undone: its lanes rebuild locally too.
+    let mut toggles = Vec::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.set_crosswalk_override_internal(node, side, false));
+        toggles.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(core.undo_action_internal());
+        core.precompute_road_mesh_data();
+        assert_eq!(local(core), before, "undo restores the crossing");
+    }
+    println!(
+        "LANE_EDIT_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
+            "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "toggle_p50_ms": p50(&mut toggles),
+            "commit_samples": commits.len(), "identical_local_products": true,
+        })
+    );
+    products
 }
 
 fn measure_snapshot_components(core: &SimCore, background: usize) {

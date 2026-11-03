@@ -8,6 +8,51 @@ use crate::simulation::network::road_edit::plan_road_edit;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Sets the road tool's tunnel intent (`ROAD-61`), which every later hover check, preview,
+    /// commit and refusal report of the tool carries: with it a stroke keeps its drawn profile
+    /// through the ground, its covered stretch becomes a tunnel and its open ends approaches.
+    #[func]
+    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
+        self.road_tool_tunnel = tunnel;
+    }
+
+    /// Sets the road tool's median (`ROAD-80`) for every later hover check, preview, commit and
+    /// refusal report of the tool: `style` 0 none, 1 painted, 2 kerbed grass, 3 kerbed paving,
+    /// `width_m` within the style's range. Returns the empty string when set, else the refusal
+    /// key (`unknown_median_style`, `median_width_out_of_range`), keeping the previous median.
+    /// Whether the stroke's lanes may carry it is the stroke's check
+    /// (`median_requires_both_directions`, `median_requires_vehicle_road`).
+    #[func]
+    pub fn set_road_tool_median(&mut self, style: i32, width_m: f32) -> GString {
+        match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
+            Ok(median) => {
+                self.road_tool_median = median;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
+    /// Each median style's widths in metres (`ROAD-80`), keyed by the style code
+    /// [`Self::set_road_tool_median`] takes (1 painted, 2 kerbed grass, 3 kerbed paving): a
+    /// dictionary of `default_m` (the width a picked style starts at), `min_m` and `max_m` (the
+    /// range outside which a width is refused). The table is constant; the road tool's keys and
+    /// the cross-section controls read it once.
+    #[func]
+    pub fn get_median_styles(&self) -> VarDictionary {
+        use crate::simulation::network::graph::{MedianStyle, RoadMedian};
+        let mut styles = VarDictionary::new();
+        for style in MedianStyle::ALL {
+            let (min_m, max_m) = RoadMedian::width_range_m(style);
+            let mut widths = VarDictionary::new();
+            widths.set("default_m", RoadMedian::default_width_m(style));
+            widths.set("min_m", min_m);
+            widths.set("max_m", max_m);
+            styles.set(style as i64, widths.to_variant());
+        }
+        styles
+    }
+
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
     /// Returns prepared points and validation; the road tool's display comes from
@@ -42,6 +87,8 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             });
             (query.surface_generation, validated)
         };
@@ -102,14 +149,15 @@ impl SimulationNode {
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
+                self.road_tool_median,
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
                 snap_to_existing_roads,
+                self.road_tool_tunnel,
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-                prepared_input.class,
-                &prepared_input.points,
+                &prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &query.water,
@@ -197,6 +245,8 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -233,6 +283,8 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -267,6 +319,7 @@ impl SimulationNode {
             "terrain_source_generation",
             generation(fingerprint.terrain_source_generation),
         );
+        dict.set("tunnel", preview.plan.request().tunnel);
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
@@ -510,6 +563,7 @@ impl SimulationNode {
                 prepared_points,
                 fwd_lanes,
                 bkw_lanes,
+                self.road_tool_median,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }

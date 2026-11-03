@@ -56,6 +56,10 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
+        /// The road tool's tunnel intent at submission (`ROAD-61`).
+        tunnel: bool,
+        /// The road tool's median at submission (`ROAD-80`).
+        median: Option<crate::simulation::network::graph::RoadMedian>,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -74,14 +78,19 @@ pub(crate) enum SimCommand {
     Stop,
 }
 
-// Parallel rebuilds: they run in the shared pool, as every phase under the core lock does
-// (CODE-17). The lock stays on this thread; a pool worker never waits for it (`SIM-01`).
-fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolPublication> {
-    crate::thread_pools::install(|| {
-        core.rebuild_network_surface_terrain_internal();
-        core.precompute_road_mesh_data();
-        core.publish_road_tool_view()
-    })
+impl SimCore {
+    /// Publishes an edit's dirty roadbed pieces to their consumers: the pieces compile and
+    /// publish their terrain changes, the changed road chunks are emitted for the render
+    /// generation the edit marked, and the road tool's view follows. Parallel rebuilds run in the
+    /// shared pool, as every phase under the core lock does (CODE-17); the lock stays on the
+    /// caller's thread (`SIM-01`). `O(dirty pieces + changed chunks)`.
+    pub(crate) fn finalize_network_render_products(&mut self) -> Option<RoadToolPublication> {
+        crate::thread_pools::install(|| {
+            self.rebuild_network_surface_terrain_internal();
+            self.precompute_road_mesh_data();
+            self.publish_road_tool_view()
+        })
+    }
 }
 
 fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
@@ -185,7 +194,7 @@ pub(crate) fn run_sim_thread(
                             None
                         } else if core.road_tool_surface_generation != generation_before {
                             record_crash_phase_for_core(&core, "undo network finalize");
-                            finalize_network_render_products(&mut core)
+                            core.finalize_network_render_products()
                         } else {
                             None
                         }
@@ -206,7 +215,7 @@ pub(crate) fn run_sim_thread(
                             .unwrap_or(false);
                         if road_deleted {
                             record_crash_phase_for_core(&core, "bulldoze network finalize");
-                            finalize_network_render_products(&mut core)
+                            core.finalize_network_render_products()
                         } else {
                             None
                         }
@@ -220,6 +229,8 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
+                    tunnel,
+                    median,
                     enqueued_at,
                     completion,
                     preview,
@@ -255,6 +266,8 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
+                                tunnel,
+                                median,
                                 preview,
                             },
                             road_total,

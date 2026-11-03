@@ -103,6 +103,18 @@ pub const ACCESS_FREIGHT_BORDER_DESTINATION: u8 = 0x10;
 /// `planned_attach_lane_d` and steps onto that lane once the attach slot is clear and claimed,
 /// like an egress car at its handoff (`TRAFFIC-11`). Plan clears keep it with its attach point.
 pub const ACCESS_LANE_ATTACH_PENDING: u8 = 0x20;
+/// Stranded bit (`ROAD-74`): a walker with no route to its destination nor home waits at the end
+/// of its lane, its path cleared and its exit lane unset, and plans home again on the
+/// backoff in `network_replan_failures` and `next_replan_time` (5 s, 30 s, then every 2 min).
+/// Set with [`ACCESS_PLAN_VALID`]; a new route or any plan clear drops it.
+pub const ACCESS_WALK_STRANDED: u8 = 0x40;
+/// Sidewalk-walk bit (`TRAFFIC-19`): a walker off every sidewalk (its road removed under it)
+/// walks across the ground at walking pace to `planned_attach_lane_id` at
+/// `planned_attach_lane_d` on `current_edge`, the nearest sidewalk point within
+/// `OFF_NETWORK_WALK_MAX_M`, and steps onto that lane there. Kept through plan clears, as the
+/// car's lane-attach hold is; a road edit drops it and the walker looks again from where it
+/// stands.
+pub const ACCESS_WALK_TO_SIDEWALK: u8 = 0x80;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).

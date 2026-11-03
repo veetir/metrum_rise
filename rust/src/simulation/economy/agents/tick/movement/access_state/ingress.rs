@@ -218,6 +218,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 match plan_network_replan(
                     *s_plan_detach_n.get(i),
                     *s_cur_e.get(i),
+                    None,
                     b_id,
                     *s_tmode.get(i),
                     *s_access_flags.get(i),
@@ -233,7 +234,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "invalid-ingress-replan",
                         FailureCause::StaleExit {
                             lane: detach_lane_id,

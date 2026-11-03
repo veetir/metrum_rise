@@ -11,9 +11,18 @@
 ## in one call. The preview's graded terrain tiles (`TERRAIN-07-E`) show on the terrain
 ## renderer's graded tiles from the frame that staged them; frames without a new pose stage the
 ## pose's rest, and the commit's edit replaces them with the committed tiles in one frame. Also
-## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free) and the
-## distance + angle HUD label.
-## Rust methods called: preview_road(), advance_road_preview_terrain(),
+## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
+## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
+## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
+## label. The next stroke's lanes and median come from a road type (`ROAD-101`):
+## `set_road_type` reads the type's cross-section from Rust's `get_road_types` and sets the
+## lanes (per-call arguments of every preview and commit) and the median through
+## `set_road_tool_median`, as before. R keeps the last road type picked (2-Lane Road at first),
+## X picks the Walkway. `set_lanes` and `set_median` stay the two low-level setters
+## (benchmarks, probes and the debug replay write them). Rust stays the guard: the stroke's
+## check refuses a median its lanes cannot carry (a one-way road or a walkway).
+## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), get_road_types(),
+## preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
@@ -25,6 +34,7 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
+const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -42,6 +52,23 @@ var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 var zoning_grid_snap_enabled: bool = false
+# The tunnel intent, mirrored in Rust, which carries it in every preview, commit and refusal.
+var tunnel_enabled: bool = false
+signal tunnel_toggled(enabled: bool)
+# The next stroke's median (`ROAD-80`), mirrored in Rust like the tunnel intent: style 0 none,
+# 1 painted, 2 kerbed grass, 3 kerbed paving, and its width with kerbs, in metres.
+var median_style: int = 0
+var median_width: float = 0.0
+## The built-in type R starts with and falls back to when the picked type is gone.
+const DEFAULT_ROAD_TYPE := "builtin:road_2l"
+## The built-in Walkway type, X's pick.
+const WALKWAY_ROAD_TYPE := "builtin:walkway"
+## The road type the next stroke draws (`ROAD-101`), "" before the first pick.
+var road_type_id: String = ""
+## The last car road type picked: R draws it again.
+var last_road_type_id: String = DEFAULT_ROAD_TYPE
+## The next stroke's road type changed (the Roads menu marks it).
+signal road_type_changed(id: String)
 
 # Border-check positions queued while roads are in-flight on the sim thread.
 # Drained by NetworkRenderer._process once the road is confirmed in the graph.
@@ -69,6 +96,9 @@ var _preview_points := PackedVector3Array()
 var _preview_fwd_lanes: int = -1
 var _preview_bkw_lanes: int = -1
 var _preview_snap_to_roads: bool = true
+var _preview_tunnel: bool = false
+var _preview_median_style: int = 0
+var _preview_median_width: float = 0.0
 # Counts preview_road calls; it names displayed results for the metrics trace only.
 var _preview_sequence: int = 0
 var _preview_drawn_sequence: int = 0
@@ -200,11 +230,67 @@ func _update_lanes_label():
 	if active and current_path != null:
 		_queue_preview_update()
 
-func adjust_lanes(fwd_delta: int, bkw_delta: int):
-	if fwd_delta != 0: fwd_lanes = clamp(fwd_lanes + fwd_delta, 0, 4)
-	if bkw_delta != 0: bkw_lanes = clamp(bkw_lanes + bkw_delta, 0, 4)
-	# Allow 0,0 for walkways
+## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway).
+func set_lanes(fwd: int, bkw: int) -> void:
+	fwd_lanes = clamp(fwd, 0, 4)
+	bkw_lanes = clamp(bkw, 0, 4)
 	_update_lanes_label()
+
+func set_tunnel(enabled: bool) -> void:
+	if enabled == tunnel_enabled:
+		return
+	tunnel_enabled = enabled
+	simulation_node.set_road_tool_tunnel(enabled)
+	tunnel_toggled.emit(enabled)
+	_queue_preview_update()
+
+## Sets the next stroke's median through Rust and returns its refusal key ("" when set). A
+## refused median leaves the tool's median as it was.
+func set_median(style: int, width: float) -> String:
+	if style == 0:
+		width = 0.0
+	var reason: String = simulation_node.set_road_tool_median(style, width)
+	if not reason.is_empty():
+		return reason
+	median_style = style
+	median_width = width
+	_queue_preview_update()
+	return ""
+
+## Draws the next strokes with road type `id` (`ROAD-101`): its lanes and median as Rust's
+## `get_road_types` lists them. Returns "" when picked, else the refusal key: the type's
+## `invalid_reason` when it is unusable, `road_type_unknown` when no type has `id`; a refused
+## pick leaves the tool as it was. `O(types x parts)` on a UI action.
+func set_road_type(id: String) -> String:
+	var type := _road_type(id)
+	if type.is_empty():
+		return "road_type_unknown"
+	if not bool(type.get("usable", false)):
+		return String(type.get("invalid_reason", "road_type_unknown"))
+	var reason := set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
+	if not reason.is_empty():
+		return reason
+	set_lanes(int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)))
+	road_type_id = id
+	if id != WALKWAY_ROAD_TYPE:
+		last_road_type_id = id
+	road_type_changed.emit(id)
+	return ""
+
+## Picks the current type again after the library changed (`ROAD-101`): an edited type's new
+## layout draws from the next stroke on; built roads keep theirs. A type that is gone or no longer
+## usable falls back to the 2-Lane Road (the Walkway stays the Walkway).
+func reload_road_type() -> void:
+	if not bool(_road_type(last_road_type_id).get("usable", false)):
+		last_road_type_id = DEFAULT_ROAD_TYPE
+	if not road_type_id.is_empty() and not set_road_type(road_type_id).is_empty():
+		set_road_type(last_road_type_id)
+
+func _road_type(id: String) -> Dictionary:
+	for type in simulation_node.get_road_types().get("types", []):
+		if String(type.get("id", "")) == id:
+			return type
+	return {}
 
 func adjust_altitude(delta: float):
 	altitude_offset += delta
@@ -301,6 +387,10 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 		return _preview
 	_preview_sequence += 1
 	var start_us := Time.get_ticks_usec()
+	# Re-asserted per preview: a debug replay may have set Rust's intent since; the click's
+	# commit and refusal report use the intent of the preview it submits.
+	simulation_node.set_road_tool_tunnel(tunnel_enabled)
+	simulation_node.set_road_tool_median(median_style, median_width)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
 		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
@@ -310,6 +400,9 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_fwd_lanes = fwd_lanes
 	_preview_bkw_lanes = bkw_lanes
 	_preview_snap_to_roads = _snap_to_roads_enabled()
+	_preview_tunnel = tunnel_enabled
+	_preview_median_style = median_style
+	_preview_median_width = median_width
 	return _preview
 
 func _preview_is_for(points: PackedVector3Array) -> bool:
@@ -319,6 +412,9 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and fwd_lanes == _preview_fwd_lanes
 		and bkw_lanes == _preview_bkw_lanes
 		and _snap_to_roads_enabled() == _preview_snap_to_roads
+		and tunnel_enabled == _preview_tunnel
+		and median_style == _preview_median_style
+		and median_width == _preview_median_width
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 
@@ -568,74 +664,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 	_info_label.visible = true
 
 func _preview_invalid_text(preview: Dictionary) -> String:
-	var reason := String(preview.get("invalid_reason", ""))
-	match reason:
-		"bridge_clearance":
-			return "Bridge clearance %.1f m / %.1f m" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"tunnel_clearance":
-			return "Tunnel clearance %.1f m / %.1f m" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"water_requires_bridge":
-			return "Water crossing requires a bridge"
-		"field_overlap":
-			return "Road overlaps a farm field"
-		"zoning_cell_overlap":
-			return "Road overlaps painted zoning cells"
-		"surface_geometry_invalid":
-			return "Road surface compilation failed"
-		"terrain_clip_missing_outer_boundary_owner":
-			return "Road terrain boundary could not be built"
-		"parcel_overlap":
-			return "Road overlaps existing zoning parcels"
-		"road_grade_change":
-			return "Road bends too sharply up or down"
-		"road_too_steep":
-			return "Road too steep: %.0f%%, at most %.0f%%" % [
-				float(preview.get("geometry_measured", 0.0)) * 100.0,
-				float(preview.get("geometry_limit", 0.0)) * 100.0,
-			]
-		"road_tight_curve":
-			return "Curve too tight: radius %.1f m, needs %.1f m" % [
-				float(preview.get("geometry_measured", 0.0)),
-				float(preview.get("geometry_limit", 0.0)),
-			]
-		"junction_arm_angle":
-			return "Roads meet at %.0f°; junction arms need %.0f°" % [
-				float(preview.get("geometry_measured", 0.0)),
-				float(preview.get("geometry_limit", 0.0)),
-			]
-		"junction_corner_does_not_fit":
-			return "Junction corner does not fit; lengthen the roads between junctions"
-		"junction_core_not_simple":
-			return "Junction roads overlap; widen the angle between them"
-		"junction_band_mismatch":
-			return "These road types cannot meet at a junction yet"
-		"junction_arm_too_short":
-			return "Road too short for its junction"
-		"junction_profile_mismatch":
-			return "Junction heights do not fit; adjust the road grade"
-		"junction_layout_invalid":
-			return "Junction could not be laid out"
-		"junction_degree":
-			return "Too many roads at one junction (%d, at most %d)" % [
-				int(preview.get("geometry_measured", 0.0)),
-				int(preview.get("geometry_limit", 0.0)),
-			]
-		"same_node_connection":
-			return "Road endpoints connect to the same junction"
-		"too_short":
-			return "Road too short"
-		"validation_unavailable":
-			return "Road check unavailable"
-		"road_commit_rejected":
-			return "Road could not be built; adjust the road and try again"
-		_:
-			return "Road cannot be placed"
+	return RoadReasonText.text(preview)
 
 func _commit_segment(end_pos: Vector3) -> bool:
 	if _commit_request_id > 0:

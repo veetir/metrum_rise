@@ -17,6 +17,85 @@ mod node_geometry;
 
 const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
+/// How a new edge meets the roads it reaches (`ROAD-99`, grade separation by structure): two
+/// roads meet, at a crossing, a mid-span end join or a node the edge passes through, only where
+/// both are on the ground. A structure (a bridge, or a tunnel's bore) meets other roads at its
+/// own nodes, and at the end of a road snapped onto its span (follow-up B1), and crosses
+/// everything else without a node, whatever the heights; the road tool's clearance rules refuse
+/// the crossings too close to keep (`road_edit`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StrokeGrade {
+    // The geometry factors (segment index + t) of the edge's structure, inclusive: the whole of
+    // a bridge, a tunnel stroke's bore between its portals. `None` for a ground road.
+    structure: Option<[f32; 2]>,
+    // Whether each end, start then end, stands on the ground and may join a ground road's span
+    // mid-span: a ground road's ends, a tunnel stroke's approach ends, a bridge's ends the class
+    // inference found at its support.
+    ground_ends: [bool; 2],
+    // The structure span each end, start then end, joins mid-span whatever its class (follow-up
+    // B1): the bridge span the road tool snapped it onto. Such an end joins no other span.
+    joined_spans: [Option<usize>; 2],
+}
+
+impl StrokeGrade {
+    /// A ground road: it meets every ground road it reaches.
+    pub(crate) const GROUND: Self = Self {
+        structure: None,
+        ground_ends: [true, true],
+        joined_spans: [None; 2],
+    };
+
+    /// A bridge, all structure, with the ends at its support that `ground_ends` names.
+    pub(crate) fn bridge(ground_ends: [bool; 2]) -> Self {
+        Self {
+            structure: Some([0.0, f32::INFINITY]),
+            ground_ends,
+            joined_spans: [None; 2],
+        }
+    }
+
+    /// A tunnel stroke of `knots` knots whose bore runs from knot `first` to knot `last`: its
+    /// approaches before and after are ground roads, its ends on them ground ends.
+    pub(crate) fn tunnel(knots: usize, [first, last]: [usize; 2]) -> Self {
+        Self {
+            structure: Some([first as f32, last as f32]),
+            ground_ends: [first > 0, last + 1 < knots],
+            joined_spans: [None; 2],
+        }
+    }
+
+    /// This grade with its ends joining the structure spans `spans` (start, end) mid-span
+    /// (`ROAD-99` follow-up B1): the spans the road tool snapped them onto, in the ids of the
+    /// graph the edge is added to.
+    pub(crate) fn joining_spans(self, joined_spans: [Option<usize>; 2]) -> Self {
+        Self {
+            joined_spans,
+            ..self
+        }
+    }
+
+    /// The joined spans renamed by `local` (a committed edge id to its copy in an excerpt).
+    pub(crate) fn map_joined_spans(self, local: impl Fn(usize) -> usize) -> Self {
+        self.joining_spans(self.joined_spans.map(|span| span.map(&local)))
+    }
+
+    /// The grade of an edge of `class` added without a road-tool plan: a standard edge is a
+    /// ground road; a bridge or tunnel is all structure and joins other roads at its own nodes
+    /// only.
+    pub(crate) fn of_class(class: EdgeClass) -> Self {
+        match class {
+            EdgeClass::Standard => Self::GROUND,
+            EdgeClass::Bridge | EdgeClass::Tunnel => Self::bridge([false, false]),
+        }
+    }
+
+    // Whether the edge is on the ground at geometry factor `factor` of its full geometry.
+    fn ground_at(&self, factor: f32) -> bool {
+        self.structure
+            .is_none_or(|[from, to]| factor < from || factor > to)
+    }
+}
+
 /// Inverse of the dependent records changed by one staged edge split.
 pub(super) struct RoadSplitDependentsUndo {
     edge_id: usize,
@@ -253,6 +332,14 @@ impl RegionGraph {
         self.node_aliases.insert(remove, keep);
         self.nodes[keep as usize].node_type = NodeType::Junction;
         self.nodes[keep as usize].lane_connections.clear();
+        // The removed node's arms become the survivor's and keep their crossings (`ROAD-74`).
+        let overrides = self.nodes[remove as usize].crosswalk_overrides.clone();
+        for (edge, marked) in overrides {
+            self.nodes[keep as usize]
+                .crosswalk_overrides
+                .entry(edge)
+                .or_insert(marked);
+        }
 
         let mut affected = std::mem::take(&mut self.adjacency[remove as usize]);
         affected.retain(|&edge_id| !self.edges[edge_id].deleted);
@@ -425,17 +512,31 @@ fn crossed_road_height_at(
 }
 
 /// Identifies all physical road crossings where edges intersect in 2D.
+///
+/// A crossing is a junction only where both roads are on the ground there (`ROAD-99`): the new
+/// edge outside its structure (`grade`), the crossed one a standard edge (or, crossing itself,
+/// outside its structure too). A bridge or a tunnel crosses every road, and every road crosses
+/// them, without a node or a split at any height (`ROAD-61` round R8h for tunnels); the road
+/// tool's clearance rules refuse the crossings that would not keep a bore's cover or a vehicle's
+/// clearance under a deck. Two ground roads always meet, at the crossed road's height; the
+/// grade and junction rules refuse the junctions whose heights do not fit.
 fn collect_crossing_splits(
     graph: &mut RegionGraph,
     edge_id: usize,
+    grade: StrokeGrade,
     candidates: &[usize],
     all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
 ) {
     let edge1_geo_full = graph.edge(edge_id).geometry.clone();
     let edge1_geo_ds = downsample(&edge1_geo_full, ISECT_MIN_STEP);
+    // A ground stroke reads no factor; a structure stroke one per crossing, `O(points)`.
+    let ground_at = |p: Vector3| {
+        grade.structure.is_none() || grade.ground_at(find_geo_factor(&edge1_geo_full, p))
+    };
 
     for &other_id in candidates {
-        if graph.edge(other_id).deleted {
+        let other = graph.edge(other_id);
+        if other.deleted || (other_id != edge_id && other.class != EdgeClass::Standard) {
             continue;
         }
 
@@ -471,8 +572,7 @@ fn collect_crossing_splits(
                 ) {
                     let p1 = edge1_geo_ds[i].lerp(edge1_geo_ds[i + 1], t);
                     let p2 = edge2_geo_ds[j].lerp(edge2_geo_ds[j + 1], u);
-
-                    if (p1.y - p2.y).abs() > 4.5 {
+                    if !ground_at(p1) || (other_id == edge_id && !ground_at(p2)) {
                         continue;
                     }
 
@@ -503,9 +603,15 @@ fn collect_crossing_splits(
 }
 
 /// Checks endpoints of the new edge for snapping to existing edges or nodes.
+///
+/// An end joins a span mid-span when both stand on the ground (`ROAD-99`): a ground end of the
+/// new edge (`grade`) and a standard span; or when the road tool snapped the end onto the span,
+/// a bridge's among them (`grade`'s joined spans, follow-up B1), and then that span only. A
+/// structure's span takes no other mid-span join; a road meets it at its nodes.
 fn collect_endpoint_snap_splits(
     graph: &mut RegionGraph,
     edge_id: usize,
+    grade: StrokeGrade,
     candidates: &[usize],
     all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
 ) {
@@ -517,7 +623,16 @@ fn collect_endpoint_snap_splits(
     let endpoints = [edge1_geo_ds[0], *edge1_geo_ds.last().unwrap()];
 
     for &other_id in candidates {
-        if edge_id == other_id || graph.edge(other_id).deleted {
+        let other = graph.edge(other_id);
+        if edge_id == other_id || other.deleted {
+            continue;
+        }
+        let standard = other.class == EdgeClass::Standard;
+        let joins = |idx: usize| match grade.joined_spans[idx] {
+            Some(span) => span == other_id,
+            None => standard && grade.ground_ends[idx],
+        };
+        if !joins(0) && !joins(1) {
             continue;
         }
 
@@ -525,6 +640,9 @@ fn collect_endpoint_snap_splits(
         let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
 
         for (idx, &p) in endpoints.iter().enumerate() {
+            if !joins(idx) {
+                continue;
+            }
             let factor_t = if idx == 0 {
                 0.0
             } else {
@@ -542,7 +660,10 @@ fn collect_endpoint_snap_splits(
                 }
             }
 
-            if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
+            // An end snapped onto this span joins it: the road tool found it on the full centre
+            // line, which the tolerance tests below would repeat on samples.
+            let snapped = grade.joined_spans[idx].is_some();
+            if best_dist < snap_guard || snapped {
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
                 // The float segment index is an address, not an exact geometric parameter.
@@ -568,8 +689,9 @@ fn collect_endpoint_snap_splits(
                     }
                 }
 
-                if Vector2::new(p.x - refined.x, p.z - refined.z).length()
-                    < config::INTERSECTION_TOLERANCE
+                if snapped
+                    || Vector2::new(p.x - refined.x, p.z - refined.z).length()
+                        < config::INTERSECTION_TOLERANCE
                 {
                     // Endpoint snaps are topological centerline connections. Use the refined
                     // existing-road XZ so dense baked roads split at the true centerline, at
@@ -759,9 +881,14 @@ pub(super) fn migrate_split_dependents(
 /// that belongs only to parallel roads: `collect_crossing_splits` skips parallel pairs
 /// (and `find_intersection_2d` returns `None` for them regardless), while
 /// `collect_endpoint_snap_splits` only tests the *new* edge's own endpoints.
+///
+/// The edge captures a node only where both stand on the ground (`ROAD-99`): the edge outside
+/// its structure (`grade`) and a grounded node ([`RegionGraph::grounded_node`]). A ground road
+/// passes under a bridge's bend node and over a tunnel's; it joins a bridge's abutment.
 fn collect_interior_node_splits(
     graph: &mut RegionGraph,
     edge_id: usize,
+    grade: StrokeGrade,
     candidates: &[usize],
     all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
 ) {
@@ -802,7 +929,6 @@ fn collect_interior_node_splits(
         // Find the closest point on the new edge's centreline to this node (XZ plane).
         let mut best_dist_xz = f32::MAX;
         let mut best_factor = 0.0_f32;
-        let mut best_y = 0.0_f32;
         for (seg_idx, w) in edge_geo.windows(2).enumerate() {
             let t = segment_factor_xz(node_pos, w[0], w[1]);
             let closest = w[0].lerp(w[1], t);
@@ -811,7 +937,6 @@ fn collect_interior_node_splits(
                     .length();
             if dist_xz < best_dist_xz {
                 best_dist_xz = dist_xz;
-                best_y = closest.y;
                 best_factor = seg_idx as f32 + t;
             }
         }
@@ -819,8 +944,8 @@ fn collect_interior_node_splits(
         if best_dist_xz >= config::INTERSECTION_TOLERANCE {
             continue;
         }
-        if (node_pos.y - best_y).abs() > 4.5 {
-            continue; // different elevation (bridge / tunnel)
+        if !grade.ground_at(best_factor) || !graph.grounded_node(node_id) {
+            continue;
         }
         // Endpoint cases are handled by collect_endpoint_snap_splits.
         let at_start = best_factor < 0.1;
@@ -844,6 +969,23 @@ pub fn process_intersections(
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
+    let grade = StrokeGrade::of_class(graph.edge(edge_id).class);
+    process_intersections_splitting_at(network, graph, edge_id, grade, &[], zoning, allocator);
+}
+
+/// As [`process_intersections`], the edge meeting other roads by `grade` (`ROAD-99`), and also
+/// splitting `edge_id` at `extra`: `(geometry factor, node)` pairs of nodes the caller placed on
+/// the edge, such as a tunnel's portals (`ROAD-61`), applied with the crossings in the same
+/// ordered pass.
+pub(crate) fn process_intersections_splitting_at(
+    network: &mut TransitNetwork,
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    grade: StrokeGrade,
+    extra: &[(f32, u32)],
+    zoning: &mut crate::simulation::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+) {
     let t0 = std::time::Instant::now();
 
     // 1. Scan for candidates
@@ -851,9 +993,15 @@ pub fn process_intersections(
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
 
     // 2. Collect all splits: geometric crossings, endpoint snaps, interior-node snaps.
-    collect_crossing_splits(graph, edge_id, &candidates, &mut all_splits);
-    collect_endpoint_snap_splits(graph, edge_id, &candidates, &mut all_splits);
-    collect_interior_node_splits(graph, edge_id, &candidates, &mut all_splits);
+    collect_crossing_splits(graph, edge_id, grade, &candidates, &mut all_splits);
+    collect_endpoint_snap_splits(graph, edge_id, grade, &candidates, &mut all_splits);
+    collect_interior_node_splits(graph, edge_id, grade, &candidates, &mut all_splits);
+    if !extra.is_empty() {
+        all_splits
+            .entry(edge_id)
+            .or_default()
+            .extend_from_slice(extra);
+    }
 
     // 3. Emit per-split details before apply_splits consumes the map.
     if crate::debug::Channel::Traffic.enabled() {
@@ -972,6 +1120,7 @@ pub fn split_edge(
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
+    let median = old_edge.median;
 
     // Remove from spatial index BEFORE updating geometry so the AABB still matches
     // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
@@ -1010,6 +1159,7 @@ pub fn split_edge(
         deleted: false,
         no_building_spawn,
         vehicle_frontage_access,
+        median,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
@@ -1017,6 +1167,19 @@ pub fn split_edge(
     new_edge.physical_length = length_new;
 
     let new_edge_id = graph.add_edge(new_edge);
+    // The far end's arm is now the second half (`ROAD-74`); a self-loop's start keeps its arm on
+    // the first half too.
+    let far = &mut graph.nodes[old_end_node as usize].crosswalk_overrides;
+    let marked = if graph.edges[edge_id].start_node == old_end_node {
+        far.get(&edge_id).copied()
+    } else {
+        far.remove(&edge_id)
+    };
+    if let Some(marked) = marked {
+        graph.nodes[old_end_node as usize]
+            .crosswalk_overrides
+            .insert(new_edge_id, marked);
+    }
 
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;
@@ -1213,6 +1376,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             );
             // Physical stations differ from the materialized control support stations.
             edge.physical_geometry = vec![
@@ -1278,6 +1442,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
         }
         graph.remove_from_spatial_index(0);
@@ -1319,6 +1484,7 @@ mod tests {
                     1,
                     1,
                     EdgeClass::Standard,
+                    None,
                 ));
             }
             graph.rebuild_adjacency_list();
@@ -1367,6 +1533,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
             graph.rebuild_adjacency_list();
             let junction = graph.add_node(Vector3::new(-4200.0, 0.0, 600.0), NodeType::Junction);
@@ -1418,6 +1585,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
         }
         let row: Vec<_> = (0..=40)
@@ -1432,6 +1600,7 @@ mod tests {
             1,
             1,
             EdgeClass::Standard,
+            None,
         ));
         graph.rebuild_adjacency_list();
         process_intersections(

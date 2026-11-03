@@ -45,8 +45,9 @@ On the `road` branch:
 
 The product geometry is far simpler than the legacy compiler assumed:
 
-- only four band kinds are ever emitted: `Carriageway`, `CurbOrShoulder`, `Sidewalk` and
-  `Footpath`; `Median`, `Parking`, `CycleTrack` and `TramReservation` are reserved
+- only five band kinds are ever emitted: `Carriageway`, `CurbOrShoulder`, `Sidewalk`,
+  `Footpath` and, on a divided span's body, `Median` ([Medians](#medians-road-80)); `Parking`,
+  `CycleTrack` and `TramReservation` are reserved
 - a car road's cross-section is fixed: `sidewalk | curb | carriageway | carriageway | curb |
   sidewalk`, or shoulders in place of curb and sidewalk
 - there are exactly two height levels: ground (carriageway, footpath) and raised, `+0.12 m` (curb,
@@ -200,11 +201,36 @@ frame:
 | Car road with sidewalks | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb, sidewalk | raised, raised, ground, ground, raised, raised |
 | Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
 | Footpath | footpath `max(edge.width, 2 m)` | ground |
+| Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
-`w` is `max(edge.width, LANE_WIDTH)`. The profile, not the `Edge::width` doc comment, defines what
+`w` is `max(edge.width, LANE_WIDTH)`; `Edge::width` includes a median (`ROAD-80`). The profile, not the `Edge::width` doc comment, defines what
 width means. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds, such as medians,
 parking or cycle tracks, are added as explicit ordered bands with a level; nothing else in the
 compiler may special-case them.
+
+### Lane centring (`ROAD-100`)
+
+The carriageway is centred on the centreline and the markings divide it evenly into
+`fwd + bkw` lanes, so the vehicle lanes sit there too: the line between the backward and the
+forward lane group lies at `Edge::lane_group_offset` = `(bkw - fwd) * LANE_WIDTH / 2` towards the
+driving side, and lane `i` (forward `0, 1, ..`, backward `-1, -2, ..`) at that offset plus
+`(i + 0.5) * LANE_WIDTH` (`lanes/rebuild.rs` `vehicle_lane_offset`). The mouth ends
+(`vehicle_lane_end`) read the same offset, so connectors start and end mid-lane. Lateral offsets
+in the forward frame (right-hand traffic, forward on the right), before and after round R3a:
+
+| Lanes | Before | After |
+| --- | --- | --- |
+| 1+0 | +1.75 (on the kerb of a +-1.75 m carriageway) | 0 |
+| 0+2 | -1.75, -5.25 (outer lane on the kerb) | +1.75, -1.75 |
+| 2+1 | +1.75, +5.25 / -1.75 (forward lane 1 on the kerb) | 0, +3.5 / -3.5 |
+| 3+1 | +1.75, +5.25, +8.75 / -1.75 | -1.75, +1.75, +5.25 / -5.25 |
+| 1+1, 2+2 | unchanged (offset 0: bitwise) | |
+
+`O(1)` per lane. Lanes are derived, so a saved car on a one-way or uneven road moves sideways
+once on load (at most 1.75 m per lane of imbalance, reattached as after any rebuild). Before the
+fix such a lane ran on the kerb and connectors left the carriageway at the kerb corners (the
+connector sweep's `four_way_2x1` fixture: 2 connectors 1.24 m outside). The fork's
+`median_center_offset` is the source; its pocket term waits for the pockets round.
 
 ### Junction layout
 
@@ -471,7 +497,10 @@ rows fall a few millimetres apart before a knot.
   tunnel end without a continuation has no node piece; its span ends on its mouth row, which the
   abutment or portal closes. Their terrain side (abutment and portal cutouts, wall seams) is
   `TERRAIN-07`'s ([T14](terrain.md#terrain-07-open-questions);
-  [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)).
+  [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)). A tunnel's pieces are
+  lined (`ROAD-61` round R8, [the closed tunnel](#road-tunnels-road-61)): walls on the outer
+  chains, a ceiling over them, an end wall where a bore ends underground and a headwall at each
+  portal row, every vertex a mesh vertex or the lining top above one.
 
 **`PieceMesh`.** A piece's mesh holds:
 
@@ -498,7 +527,8 @@ edges (which meet terrain) and mouth edges. Every mouth edge appears in exactly 
 node piece, with bit-identical endpoints. Tests check both conditions on every fixture. In the
 published chunks (`TERRAIN-07-B`) the strips close the outer-chain edges: each is a strip's top
 edge, the strips of two pieces share the vertical edge at their mouth corner, and only the skirts'
-bottoms, and a structure's ends and a tunnel's sides, stay open.
+bottoms, a structure's ends and a tunnel headwall's outer edges stay open; a tunnel's sides are
+its lining's walls (`ROAD-61` round R8).
 
 ### Footprint and terrain
 
@@ -9929,12 +9959,14 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
 - an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`. Lanes take
   the [D8](#product-decisions) rule from `roadbed::arms`, which the layout and the spans read
   too: every junction arm, one arm of every degree-two node and none at a road end, adjusted by
-  node overrides. At a degree-two node the crossing arm is the first by direction angle in
-  `(-pi, pi]`, then edge index; an override of `true` always crosses, `false` never does, and an
-  arm without one crosses only if no earlier arm did; road arms alone count, so a footpath at a
-  straight road gives the node a layout with one crossing. A bend whose crossing does not fit on
-  its first arm crosses on the other. Structure ends and failed layouts have none ([open
-  question 13](#road-68-open-questions))
+  node overrides ([`ROAD-74`](#crossing-toggle-and-save-road-74)). At a degree-two node the
+  default arm is the first eligible one by direction angle in `(-pi, pi]`, then edge index; an
+  override of `true` always crosses, `false` never does, and an arm without one crosses only if
+  it is the default arm, so `false` on the default arm removes the node's crossing (before
+  `ROAD-74` it moved to the other arm); road arms alone count, so a footpath at a straight road
+  gives the node a layout with one crossing. A bend whose default crossing does not fit on its
+  first arm crosses on the other when that arm has no override, and has none when it has one.
+  Structure ends and failed layouts have none ([open question 13](#road-68-open-questions))
 - the marking is the layout's zebra strip: its kerb points are the two carriageway-edge points on
   the strip's crossing line, at the node plane's height, bitwise the node piece's
   (`NodePiece::crosswalk_kerbs`). A pass-through node has no node piece: its strip lies on the
@@ -9979,6 +10011,87 @@ same functions, so the painted marking is the lanes' marking bitwise, ends in or
 directions of its connector walk exactly that segment
 (`zebra_markings_and_their_connectors_share_one_kerb_segment`: T, bend, pass-through and the
 footpath fixtures, flat and sloped). A preview, which builds no lanes, paints the same zebras.
+
+### Crossing toggle and save (`ROAD-74`)
+
+The user's decision R6-a (2026-10-30): pedestrians cross a road only where a zebra is painted.
+An arm without a zebra has no pedestrian crossing at all: no paint, no 3 m strip and no mouth
+setback (D8), no crossing lanes or connectors, and no crossing signs (they stand at the pieces'
+crossings, so they go with the zebra; no street light exists for a crossing alone). New arms
+get a zebra by default, as before; turning it off removes the crossing. Ported from Veeti's
+road-chain branch, `cd09557a` (its `ROAD-74` half), without its default-off, its unmarked
+crossings and its legacy migration.
+
+- **One decision.** `roadbed::arms` decides which arms cross ([D8](#product-decisions), the
+  rule above); layout, walkways, lanes, render and signs all read it through the node's
+  `NodeArms` or `pass_through_crossings`. `crossing_arm_eligible` is the set that rule ranges
+  over: a car road with sidewalks at a node of two or more road arms, which at a pass-through
+  node must hold the strip on its span. `O(degree)` per node, unchanged.
+- **Toggle.** The select tool shows a toggle on each eligible arm of the selected junction
+  (`can_toggle_crosswalk`), labelled with its state. Hovering asks for the commit's verdict
+  (`preview_crosswalk`, the commit's own `try_graph_edit` check run and put back), and a click
+  commits only an accepted toggle (`set_crosswalk_override`, which returns whether it applied).
+  A refused toggle (an arm that cannot cross, a node that no longer lays out, pieces over a
+  field or painted cells) changes nothing and the label names the reason. Each toggle has an
+  undo record. An applied toggle marks a render generation and publishes its pieces at once
+  through the removal's path (`SimCore::finalize_network_render_products`: compile, terrain
+  changes, changed chunks, the road tool's view), so the junction redraws in the same frame;
+  until the user's play-test of round R6 it marked none and the old paint stayed drawn
+  (`a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws`,
+  `godot/tests/crosswalk_toggle_test.gd` on the real bridge). Crossing edits do not appear in the road-attempt replay, which records strokes.
+  Cost: one node closure compile per hovered toggle and per click, bounded by the node's
+  neighbourhood (its arms, their spans and far-end pieces).
+- **Remaps.** Overrides are keyed by edge per node. A split moves the far end's override onto
+  the second half (`topology::split_edge`); a node merge copies the removed node's overrides to
+  the survivor (`unite_nodes`); the road tool's validation excerpt copies the overrides of its
+  nodes, so its junction solve lays them out as the live graph does, and the plan installs the
+  excerpt's overrides on each surviving node (`RoadTopologyPlan::apply_to_graph`, shared by
+  preview and commit). A removed road's arm keeps its override only for undo; a road drawn
+  again is a new arm with the default zebra.
+- **Save.** `road_crosswalks(node_id, edge_id, marked)`, save format 110
+  ([`simulation.md`](simulation.md#save-bytes-road-68-k16)): one row per override whose edge is
+  still an arm of its node; a row naming an edge that is not an arm of its node fails the load.
+- **Split walk networks.** With crossings off the sidewalks can fall into separate walk
+  networks (a block whose corners all lack zebras). The walking proof is then withdrawn and the
+  planner materializes walks on the lanes: a walk between two networks has no route
+  (`pedestrian_connector_fallback_missing`), so it is never planned. A walker follows its
+  route's lane witness, the sidewalk its route needs on each road
+  ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), round R6b). A
+  walker whose crossing is removed under it replans from its own lane; with no route it gives the
+  trip up and walks home, and with no way home either it is stranded at the end of its lane and
+  plans home again after 5 s, 30 s, then every 2 min, shown to the player as "N pedestrians
+  stranded at M junctions" ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74));
+  nothing teleports it, and no hidden crossing is made
+  (`a_walk_between_split_walk_networks_has_no_route`,
+  `test_walking_missing_crosswalk_route_waits_at_junction_mouth`).
+- **Measured (round R6, 2026-11-01).** With default crossings the economy envelope and
+  determinism are bit-identical to the control's metrics (`tools/sim02_gate.py envelope
+  determinism`, `RAYON_NUM_THREADS=6`, control `ef7c5f2b`). A variant with every third
+  four-way junction's crossings off (208 toggles at 10k, 648 at 30k; not committed) passes
+  determinism and moves the economy little (30k baseline deliveries 117.6 against 117.3 per
+  1,000 buildings a day, employment 0.600 against 0.601, net income 8.30 against 8.27), but
+  walkers do reach a junction without the crossing their route needs: 12,172 trip-failure
+  records per 1,000 residents a day at 10k and 14,570 at 30k (control 0), each a waiting
+  walker's record per tick. Movement follows a walk's node path and takes any connector onto
+  the next edge, so a walker could be left on the wrong side. Round R6b traced it (the shortest
+  connector at the node before a crossing-less junction kept the walker on the sidewalk that has
+  no connector into its exit lane there) and fixed it: walkers follow their route's lane witness
+  ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74)).
+- **Cost (round R6, 2026-11-01, one C F F C session, P-cores, `RAYON_NUM_THREADS=4`, load
+  1.8-2.2, release test binaries of `ef7c5f2b` and of the branch).** Preview stages
+  (`benchmark_road_preview_stages`), total p50 ms C/F/F/C: `sloped_t` 2.75 / 2.92 / 3.47 /
+  2.87, `sloped_branch` 3.05 / 2.63 / 2.56 / 2.56; the spread lies within each binary, no
+  claim either way. Populated locality (`populated_road_plan_scaling`): products identical at
+  every tier; compile p50 0.157 / 0.156 ms (branch) against 0.159 / 0.149 ms (control) at
+  10,004 / 100,004 parcels, so planning follows the neighbourhood; the branch's 1,004-parcel
+  tier read 0.72 ms against 0.16 ms, its first measurement, not rerun. The plan's override
+  install is `O(plan nodes x degree)`; a toggle compiles its node's closure once on hover and
+  once on click.
+- **Tests.** `nodes::sim::core::tests::road_crosswalks` (off removes every product and on
+  restores it, preview = commit, undo, refusal, a split through an authored arm and its undo, a
+  road removed and drawn again, the save file), `crosswalk_overrides_round_trip_through_their_table`,
+  `node_merge_replaces_its_original_spatial_entry`, the degree-two cases in `lanes::tests::crossings`
+  and the walking tests above; `godot/tests/selection_gesture_test.gd` covers the tool.
 
 Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
 `ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could
@@ -10027,6 +10140,475 @@ depend on unordered edge iteration. The query remains allocation-free and scans 
 the affected closure; its cost is O(P), where P is their total polyline point count. The existing
 outer invalidation/reattachment passes still visit the agent store; this change does not add a
 new agent spatial index or claim to remove that O(A) work.
+
+### In-place cross-section edits (`ROAD-80`)
+
+An existing road's lane counts change in place (round R3a of the road-feature port), and its
+median with them (rounds R3b1 and R3b2, [Medians](#medians-road-80)). Rust owns the rule:
+`get_edge_cross_section(edge)` reports the counts, width, median style and width, class and
+whether the road can change; `preview_edge_cross_section(edge, fwd, bkw, median_style,
+median_width)` returns the commit's verdict (`is_valid`, or `invalid_reason` and `detail`)
+without geometry (R3-d); `set_edge_cross_section(edge, fwd, bkw, median_style, median_width)`
+commits, pushes the undo record and publishes the chunks at once, as the crossing toggle does
+(`nodes/sim/cross_section.rs`, `network_api.rs`). Median style 0 is none, 1 painted, 2 kerbed
+grass, 3 kerbed paving (`RoadMedian::from_tool`: an unknown style or a width outside the
+style's range is refused with `unknown_median_style` or `median_width_out_of_range`).
+
+The transaction is the toggle's (`try_graph_edit`). Cheap refusals first: `invalid_road`,
+`cross_section_not_road` (footpaths stay footpaths), `too_many_lanes` (4 per direction),
+`cross_section_cannot_change_transit_mode` (0+0), `cross_section_unchanged`, and
+`edit_tunnel_width`: a tunnel is not widened in place (R3-j), since its cover was checked across
+the bore it was drawn with; narrowing applies. Then the edit is applied to the graph
+(`RegionGraph::set_edge_cross_section`: counts, median and `width = max((fwd + bkw) *
+LANE_WIDTH + median, 2 m)`, the stroke's rule), both end nodes are laid out again (clips, the endpoint profile solve), and their
+closure is compiled into a scratch roadbed: a failed node piece (`node_piece_failed`), fields and
+newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steepened profile
+(`road_too_steep`) refuse. A widening is also checked on the applied graph against visible water
+(standard roads, `water_requires_bridge`, as the class change), parcels inside the new frontage
+corridor (`width / 2 + SIDEWALK_WIDTH`, the stroke's half-width, `parcel_overlap`) and the
+illegal curve radius at the new width (`cross_section_too_wide_for_curve`). The graph is put back
+either way; the preview is this check.
+
+The commit pushes the check's checkpoint (whole `Node` and `Edge` records, so undo restores lane
+counts and width with nothing new in the undo path), marks the cell lots and surfaces of the two
+nodes' arms, and rebuilds their lanes, cars and entrances with the undo's local pass
+(`restore_lanes_locally`): cars on a lane that no longer exists reattach to the nearest rebuilt
+lane within 30 m (narrowing 3+3 to 1+1 moves them at most 7 m). The full entrance cache rebuild
+the class change runs is not used: it scans every building (the crossing toggle uses the local
+pass too since round R3b1). Routing is rebuilt
+deferred (D7). The class change (`set_edge_class_internal`) now pushes its checkpoint too (R3-k).
+
+Bounds: the check is `O(closure pieces)` (two nodes' closures); the commit tail `O(local lanes +
+invalidated)` plus the undo's parallel `O(A / P + B / P)` membership passes over agents and
+buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width`.
+
+Acceptance record (round R3a, 2026-11-02, fresh; release binaries of `ea63df40` (control, with
+R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,8,10,12,14`,
+`RAYON_NUM_THREADS=4`, exclusive timing lock, load 1.75 at the start; logs in `$ARTIFACTS`):
+
+- Locality (`$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::populated_lane_edit_scaling
+  --exact --ignored --nocapture --test-threads=1`: the T's side road widened 1+1 to 2+2 with
+  0/1k/10k/100k remote buildings, parcels, 6 agents each and remote roads; local pieces and lanes
+  identical at every tier; per-tier setup untimed), p50 ms: verdict 0.433 / 0.365 / 0.291 /
+  0.311 (100 samples), commit 1.486 / 1.549 / 1.106 / 1.608 and its undo 0.446 / 0.480 / 0.385 /
+  0.980 (20 each). With the full entrance cache rebuild the commit had grown to 12.1 ms at 100k
+  (an unpinned check run): hence the local pass.
+- Preview stages (`road_preview::benchmark_road_preview_stages`, C F F C, total p50 ms):
+  `sloped_t` 2.956 3.102 3.003 2.945, `sloped_branch` 2.873 2.925 2.986 2.701; products equal.
+  The stroke path differs only by an empty abutment iteration per span (`ROAD-97`): no claim.
+- Road chunk Criterion rows (`road_chunk_benchmark`, C F F C, ms): `full_network_emit/64` 9.825
+  9.881 9.674 9.908, `/1024` 166.75 166.01 163.06 167.42, `chunk_emit_only/1024` 0.212 0.221
+  0.191 0.198, `bridge_chunk_emit_only/1024` 0.338 0.305 0.287 0.316, `tunnel_chunk_emit_only/1024`
+  0.297 0.325 0.272 0.287: within the controls' spread.
+- No change without an edit on symmetric roads: R8's probe (town, hill, steep) hashes equal the
+  control's and R8h's; `ROAD-68-K22`'s saved commit cities (0/10k/30k/100k) give identical
+  `COMMIT_PRODUCTS` (md5 `4852535b...`, as `ROAD-99`'s); the `SIM-02` envelope and determinism
+  gate (`RAYON_NUM_THREADS=6`, bursts departures and settlements) passes with the same 13 notes and
+  identical daily fingerprints control vs branch in all five workload runs (its cities have no
+  one-way road), determinism without a difference. Asymmetric roads change by design (the table
+  in [Lane centring](#lane-centring-road-100)); the roadbed product probe's lanes hash changed for
+  its 117 one-way fixtures and no other hash.
+- Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
+
+The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
+R3 lane steppers and Median rows): the usable types, the selected road's marked from
+`get_edge_cross_section`'s `road_type`, or a disabled "Custom layout" when no type has its
+cross-section (duplicate layouts resolve to the first type in list order). A pick asks the
+in-place check (`preview_edge_cross_section` through the select tool) and shows the verdict
+beside Apply, which commits through `set_edge_cross_section` (Ctrl+Z undoes it once the window
+no longer has focus: a focused tool window keeps the HUD keys). Every in-place refusal shows with
+its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
+place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
+shows. It opens at 400 x 500 px (minimum 360 x 460). The reason text is `ui/road_reason_text.gd`,
+shared with the road tool's stroke preview, and words the road types' layout, name and library
+keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
+road builder's median part.
+
+**Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
+cars and entrances with the same local pass (`restore_lanes_locally`) instead of the entrance
+cache rebuild: a toggle moves no frontage. The class change still runs the full rebuild: its
+entrance refresh also prepares the cell lots and repairs road attachments, which the local pass
+does not do, so moving it is not a like-for-like change (recorded, not done).
+
+**Emission order (`ROAD-97`).** A bridge span's abutment faces (`TERRAIN-07-C`) were emitted into
+the skirt layer after every piece (`emit_bridge_structures`), so that layer's owner runs were
+`[edges.., nodes.., Edge(bridge)]`, out of owner order. The splice of a local publication merges
+kept and fresh runs as two sorted sequences, so a kept node of higher id than the rebuilt ones
+sorted ahead of the abutment run and the chunk differed from a full emission. The abutment faces
+are now emitted with the span's own surfaces after its skirts; `emit_bridge_structures` keeps the
+fascias, slab and piers (the concrete layer holds bridge edges only, in order). Every in-place
+edit next to an older bridge publishes through that splice; the class change, the lane edit and
+their undos are tested against a full emission (`road_in_place`).
+
+### Medians (`ROAD-80`)
+
+A road may carry a median between its two lane groups (round R3b1 of the road-feature port: the
+data, the save and the roadbed; round R3b2: the road tool, the window, the grass layer and the
+painted hatching). Ported from the fork's `graph/cross_section.rs`, its geometry constructed
+here.
+
+**Data.** `Edge::median: Option<RoadMedian { style, width_m }>`; `MedianStyle` is `Painted`
+(0.5-2 m), `KerbedGrass` (2-12 m) or `KerbedPaving` (1-3 m), the width the whole separator's,
+kerbs included. No authored end setbacks (R3-i): noses and clearances are derived. A median needs
+a car road with both directions (`median_requires_vehicle_road`,
+`median_requires_both_directions`, `ROAD-92`'s rule in Rust); `Edge::validate_cross_section`
+holds every in-place and load rule. `Edge::width` includes the median, so frontage, zoning,
+parcels, water and tunnel-cover checks, the profile's outer bands and the graded terrain read the
+wider road with no change (R3-e). `split_edge` copies the median to both halves.
+`RegionGraph::set_edge_cross_section(edge, fwd, bkw, median)` replaces `set_edge_lanes`; the
+in-place edit and its Godot calls take the median, and `get_edge_cross_section` reports
+`median_style` and `median_width`.
+
+**Save (format 111).** `network_edges.median_style` (0 none, 1-3 the styles) and
+`median_width` (0 without). A load accepts only a median a stroke or an edit could build, and
+fails the file otherwise; exact-version loads.
+
+**Lanes and access.** Each lane group sits `median_half_width` (half the width, painted or
+raised) off `lane_group_offset`, so lane `i`'s offset is `lane_group_offset + ((i + 0.5) *
+LANE_WIDTH ± median_half_width) * side`, the mouth ends with it; `road_half_width` adds the half
+width. Mouths are median-free, so every connector starts and ends as before. A raised median makes
+`effective_vehicle_frontage_access` `SameSideOnly` (entrances read it; the stored policy
+survives); a painted one keeps the stored policy (R3-c, R3-m). A divided road's dividers run
+within each lane group, with no centre line; a painted median is hatched between the groups
+([Painted hatching](#painted-hatching-round-r3b2)).
+
+**Profiles.** `RoadProfile::for_edge` stays the mouth profile, median-free; node pieces, arms,
+zoning, sidewalks, signs and lights read it unchanged. `RoadProfile::body_for_edge(edge, m)`
+opens its split into kerb, median, kerb (`CurbOrShoulder`, `Median`, `CurbOrShoulder`, all
+raised) centred on `lane_group_offset`, `m` wide; the kerbs are `MEDIAN_KERB_WIDTH_M` (0.15 m) at
+the authored width and scale with `m`, so at `m = 0` all three collapse onto the line. Its
+offsets mirror bit for bit for the reversed edge. `MAX_PROFILE_BANDS` is 9. A painted median adds
+no band.
+
+**Where a median continues.** The pass-through rule is unchanged (one mouth profile), so a
+divided road and an undivided one of its width share a pass-through row and the median noses out
+there, and no node is laid out for a median. `arms::median_continues(node)` holds where a raised
+median runs on through a pass-through node: both arms carry one style and width, the lane groups
+line up looking along the road (each arm's `lane_group_offset` taken looking away from the node),
+both edges are at least `MEDIAN_THROUGH_MIN_EDGE_M` (20 m, so each span keeps room for its far
+nose) and neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one
+crosses and opens the median, both spans nosing out around it.
+
+**Noses.** A raised median ends in a semicircle whose radius `r` is half the median's width
+(round R3d, the user's decision of 2026-11-03; R3b1 tapered linearly over 4 m to a point). A
+span's median width `w(s)` is 0 at a nose's tip and before it, `2 sqrt(r^2 - (r - d)^2)` at `d`
+metres past the tip for `d` in `[0, r]` (evaluated as `2 sqrt(d (2r - d))`), and the authored
+width from `r` past the tip on, between the noses and through a node where it continues. A free
+end's tip lies `NOSE_CLEARANCE_M` (1 m) past its mouth, or past the far edge of the crossing
+strip the span holds there. The tip and full-width stations are protected stations; the rows
+between stand at equal angles around the quarter circle (the arc is vertical at the tip, so a
+uniform step would leave it pointed): `n = max(4, ceil((pi r / 2) / 0.5 m))` arcs, each at most
+0.5 m, so every chord is shorter. A nose holds `n + 1` rows, tip and full-width row included: 5
+for a 2 m paving median, 6 for the 3 m grass default, 8 for 4 m, 20 for the widest (12 m grass,
+`n = 19`). Every interval between them is shorter than any cadence step, so the one station rule
+divides none of them further; a polyline knot inside a nose adds a row on the circle. Two noses
+whose tips lie closer than `2r` (the median's width) leave the span undivided; a single nose's
+`r` (at most 6 m) always fits before a continuing end (`MEDIAN_THROUGH_MIN_EDGE_M`). The kerbs
+scale with the median's width (`body_for_edge`), so the outer kerb edges run on the circle and
+the median's top on the circle scaled across the road by `1 - 0.3 m / width`; the kerb narrows
+to nothing at the tip. A painted median keeps its pointed 4 m chevron (road-marking practice,
+`PAINTED_NOSE_LENGTH_M` in `markings.rs`); no other marking follows a raised median's kerb.
+
+**Mesh.** A divided span lays its rows out by kind: mouth rows (the mouth profile; the end rows
+are the shared mouth sections) up to each tip, the tip row, and body rows between. The tip row
+keeps two vertices where the body's six median slots meet (the split's ground and raised one), so
+the median's three quads beside it are single triangles and its two kerb faces meet on the tip's
+0.12 m vertical edge; the pair between the last mouth row and the tip takes the mouth bands onto
+the body's outer bands and steps. Rows differ in length, so the mesh reports row starts, which
+the outer chains, end closures (caps, wall runs, abutments, portals), the lining and the footprint
+read. Watertight by construction; an undivided span takes the old code path. Bridges and tunnels
+may be divided (R3-h): fascias, slab, abutments, caps and the lining stand on the outer chains
+and the end rows, which a median does not touch.
+
+Bounds: `body_for_edge` and `median_continues` `O(B)` and `O(degree)`; at most 20 rows per
+nose (19 arcs, the 12 m median; R3b1's taper had 5); the mesh `O(rows * B)`, its tip pairs `O(B)`; lanes and access `O(1)` per lane; the save
+`O(E)`. No city scan, no cache, no per-tick code.
+
+Acceptance record (round R3b1, 2026-11-02, fresh; release binaries of `b43adb12` (control, with
+R8's uncommitted probe extended by Kuopio and lane hashes) and the round's code; P-cores
+`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.3-1.9 at the start;
+logs in `$ARTIFACTS`):
+
+- No change without medians: R8's probe (pieces, payload, graded tiles GL0-GL2, vegetation,
+  surface queries, and now every lane's geometry, successors and crossings) equal on town, hill,
+  steep and Kuopio, control (format 110 save) vs branch (the re-recorded 111 save); the roadbed
+  and reference product probes unchanged; `ROAD-68-K22`'s saved commit cities (0/10k/30k/100k)
+  give identical `COMMIT_PRODUCTS` (md5 `4852535b...`, as `ROAD-99`'s and R3a's).
+- `roadbed_span/build` (Criterion, C F F C, µs; second session after the profile-copy fix):
+  `span_100m` 10.93 11.20 10.93 10.88, `span_400m` 38.92 39.44 38.47 37.58, `span_100m_four_lane`
+  11.52 11.55 11.76 11.18, `span_100m_bridge` 12.48 12.45 12.35 12.28, `span_25m` 3.79 4.06 3.94
+  3.72, `span_100m_footpath` 3.59 3.79 3.84 3.53 (a fixed +0.2 µs a span: the divided rows'
+  bookkeeping on every span, removed in round R3b2); the new `span_100m_divided` (2+2, 4 m grass, two noses) 23.56 / 24.12,
+  under the 50 µs target. The first session, before the fix, had `span_100m` at 12.14 / 11.62
+  against 10.65 / 10.61.
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `sloped_t` 2.907 3.073
+  3.109 3.122, `sloped_branch` 2.723 2.768 2.734 2.658; payload vertices equal. No divided stroke
+  yet (R3b2 threads the median through strokes).
+- Road chunk Criterion rows (C F F C, ms): `full_network_emit/64` 9.760 9.470 9.664 9.576,
+  `/1024` 163.64 164.88 163.82 163.13, `chunk_emit_only/1024` 0.205 0.188 0.176 0.182,
+  `bridge_chunk_emit_only/1024` 0.282 0.307 0.316 0.333, `tunnel_chunk_emit_only/1024` 0.279
+  0.273 0.260 0.334: within the controls' spread.
+- Locality (`populated_lane_edit_scaling`, branch, 0/1k/10k/100k remote buildings, p50 ms):
+  verdict 0.235 / 0.390 / 0.235 / 0.290, lane edit commit 1.159 / 1.823 / 1.123 / 1.862, undo
+  0.339 / 0.553 / 0.440 / 1.234, and the crossing toggle on the local pass 1.033 / 2.194 / 0.856 /
+  1.742 (R3a measured the full entrance rebuild path at about 12 ms at 100k); local products
+  identical per tier.
+
+#### Drawing a median (round R3b2)
+
+A stroke carries the road tool's median as it carries the tunnel intent:
+`set_road_tool_median(style, width)` (the empty string when set, else `unknown_median_style` or
+`median_width_out_of_range`, keeping the previous median) sets it for every later hover check,
+preview, commit and refusal report; it is part of the preview's and the plan's identity
+(`RoadPreview::is_for`), the queued `AddRoad` command and the refusal's replay record
+(`median_style`, `median_width`). `PreparedRoadInput.median` is set after preparation, which
+never reads it (`plan_road_edit`, the tool's hover check); plan-less callers draw without one.
+`build_surface_edge(.., median)` builds the stroke's edge with it, its width
+`Edge::cross_section_width_m` (bitwise the old width without a median), in the validation graph
+and in the plan-less `add_road_graded`, so splits and adopted plans carry it. Every corridor check
+widens by it: the excerpt pad, the close-crossing and tunnel-section half widths, water, parcels
+and fields. A stroke takes the in-place edit's median rule (`Edge::validate_median`): a median on a
+one-way stroke is `median_requires_both_directions`, on a walkway `median_requires_vehicle_road`,
+in the hover check and the plan alike.
+
+The road tool (`road_tool.gd`) keeps the median beside the tunnel intent and re-asserts it before
+each preview. Since `ROAD-101` the player never sets it directly: a road type carries it (below).
+The defaults and ranges are Rust's (`RoadMedian::default_width_m`, `width_range_m`), published by
+`get_median_styles` (per style code `default_m`, `min_m`, `max_m`). `ROAD-92` is now a property
+of the types: the Walkway type has no median, so picking it clears the tool's; Rust still refuses
+a walkway stroke with a median whatever the tool holds (`median_requires_vehicle_road`).
+
+#### Road types and the road library (ROAD-101)
+
+Rounds RB1a (Rust), RB1b (Godot) and RB2 (the road builder window), 2026-11-03.
+
+The player draws roads by picking a **road type**; the drawing panel has no lane or median
+controls (Tool mode, Snapping and Structure stay), and the lane and median keys (`]` / Up,
+`[` / Down, `.`, `,`, N, `;`, `'`) are gone; T still toggles the tunnel.
+
+- **Model** (`simulation/network/road_types.rs`, engine-free). A layout is an ordered list of
+  parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
+  `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
+  style's range) and `Footpath` (2 m, the Walkway's only part, valid only alone). One check
+  (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
+  (fwd, bkw, median) or a refusal with its key: a sidewalk at each end and none inside, backward
+  lanes left of forward ones (right-hand traffic), the median between the two directions, at
+  least one car lane, at most 4 per direction, a median only on a two-way layout. A layout is
+  never auto-sorted. The built-ins are one table (`BUILTIN_ROAD_TYPES`): Walkway, 2-Lane Road
+  (1 + 1), 4-Lane Road (2 + 2), One-Way 1L, One-Way 2L, as the Roads menu's buttons were.
+- **Library**: one file per user, shared by every city, `user://road_types.json`
+  (`{"format": "metrum-road-types", "version": 1, "next_id", "types": [...]}`, pretty JSON,
+  median styles stored by name). Read on first use, re-read before every write, written
+  atomically. A file that does not parse is left byte-identical, the list shows the built-ins and
+  `library_unreadable`, and every write is refused until it is fixed or removed; a newer
+  `version` is read-only; an entry that fails a rule is listed unusable with its reason and
+  written back as it was. Names: trimmed, 1-40 characters, no control characters, unique
+  ignoring case among all types. **Library edits have no undo**: they are tool configuration
+  owned by `SimulationNode`, never `SimCore`, and outside the sim undo stack.
+- **No save change**: a built road keeps its own layout in its edge (fwd, bkw, median, width) as
+  before; no type id reaches the graph or a save, so a save loads without the library, and
+  editing or deleting a type changes new strokes only.
+- **Godot API** (`network_api/road_types.rs`): `get_road_types()` (every type with its parts,
+  per-part and total widths, `usable` / `invalid_reason`; built-ins first, then the file's
+  entries; the library `error`), `check_road_layout(parts)` (verdict, widths, suggested name),
+  `create_road_type(name, parts)`, `update_road_type(id, name, parts)`,
+  `delete_road_type(id)`, and `get_edge_cross_section`'s `road_type` (the first usable type,
+  built-ins first, whose cross-section equals the edge's exactly, else ""). For the road
+  builder (RB2): `check_road_type_name(name, id)` (the write's name verdict, `name_*` keys, for
+  a new type with `id` empty or as custom type `id`'s name) and `reload_road_types()` (re-reads
+  the file, so a library fixed or edited by hand lists without a restart; writes always re-read
+  first).
+- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes and median from
+  `get_road_types()` and sets them through the existing inputs (lanes per call,
+  `set_road_tool_median`), so a built-in type sends exactly the arguments the old buttons did and
+  the `road_attempt` record and its replay are unchanged. There is no Rust "pick type" call. R
+  draws the last road type picked (2-Lane Road at first), X the Walkway. `set_lanes` and
+  `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
+  `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
+  edited type draws its new layout from the next stroke on.
+- **Roads menu** (`ui/road_type_menu.gd`): the five built-ins as buttons, then one fixed-width
+  "Custom roads" drop-down listing every usable custom type, a separator and "Road builder...",
+  then Cul-De-Sac (a tool button). The tool's current type is marked: its built-in button
+  pressed, or the drop-down showing the custom type's name (trimmed with an ellipsis) in the
+  pressed style with the item checked. However many types the library holds, the row fits a
+  1280 x 720 screen (RB2; RB1b's row of up to ten type buttons ran off it with two custom
+  types).
+- **Road Properties**: a road-type picker (below); it relists the types after a library edit.
+
+#### The road builder (ROAD-101, round RB2)
+
+"Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
+(`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,
+library column and glyphs are views). It is a persistent, movable, resizable, non-exclusive
+`Window` (960 x 360 at the 1920 x 1080 reference, minimum 760 x 300,
+`UIStyle.set_persistent_window_layout`, `WindowResizeHandles`): the camera and the road tool keep
+working, as under Road Properties (a focused window holds the HUD keys until the map is clicked).
+Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
+
+- **Strip.** The layout across the road, left to right looking the way it is drawn, to scale
+  (at most 24 px/m, each part at least 24 px so a 0.5 m painted median stays clickable), in the
+  roadbed's surface colours: asphalt lanes, light paving sidewalks with a kerb edge, painted
+  hatching, a kerbed grass or paving median. Above each part a procedural `_draw()` glyph (an
+  arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
+  sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
+  width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
+  cannot be moved, removed or opened. Every change asks `check_road_layout`; an invalid layout is
+  tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
+- **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
+  median (each median at its style's default width; no footpath tile: the Walkway stays a
+  built-in). Both gestures: click a "+" slot between two parts and then a tile (the tile goes
+  there and the next slot is selected; the slot before the right sidewalk is selected at
+  first), or drag a tile into the strip (a marker shows the boundary it lands on). A part
+  dragged along the strip moves; dragged off it, it is removed.
+- **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
+  Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
+  None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
+- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
+  until the player types one. Create road (Save when editing) is enabled only when the layout
+  passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
+  characters, or another type's name ignoring case, built-ins included) and the library can be
+  written; the line under the strip gives the first reason it is not. Enter creates, Esc and
+  Cancel close without writing. Create and Save write the library and close the builder; a
+  created type becomes the road tool's, ready to draw.
+- **Library column.** The built-ins (selecting one starts a new type from its layout; Duplicate
+  does the same; the Walkway cannot be duplicated), then the player's types (select to edit,
+  Duplicate, Delete after a `ConfirmationDialog` naming the type and that built roads keep their
+  layout). An unusable entry is greyed with its reason ("Broken Road: Lanes against traffic go on
+  the left"); selecting it opens it for editing so it can be fixed and saved. When the file does
+  not parse or a newer game wrote it, the library error stands on top and every write is
+  refused (Create, Save and Delete disabled), the file left as it was.
+- **After a write.** Create, Save and Delete emit `road_types_changed`;
+  `MainUI.refresh_road_types()` relists the Roads row and Road Properties and re-picks the road
+  tool's type, so an edited type draws its new layout from the next stroke on. Library edits
+  have no undo, and roads already built keep their own layout (decision 4).
+- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn;
+  `road_types_test` checks the row at 1280 x 720 with thirteen custom types.
+- Not in v1: speed limits per type, parking, bike, bus or tram lanes, one-sided sidewalks, lane
+  widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
+  type discards the layout being built).
+
+#### Grass layer (round R3b2)
+
+R3-g option 1: a kerbed grass median's top draws on its own layer (`MeshLayer::MedianGrass`, the
+ninth, `median_grass_*` arrays and owner runs), chosen at emission from the owning edge's
+`median.style` (`top_surface.rs`); kerbed paving stays on the sidewalk layer and a painted median
+has no band. Node pieces have no median band. A chunk without grass sends no grass arrays in the
+Godot payload, and Godot reads a missing grass layer as empty (no surface, `road_layer_surfaces`
+-1), so no other chunk's payload or upload changes. The material is the building sites' lawn
+(`WorldMaterials.site_ground_material()`, `site_ground.gdshader`: the terrain's grass palette and
+detail, the clouds' shade on the sun, wetness, the ambient floor and street lamps) rather than a
+second grass shader.
+
+#### Painted hatching (round R3b2)
+
+A painted median is paint alone (R3-c, `markings.rs`): two solid edge lines at
+`lane_group_offset` ± half the median's width and 45° diagonals between them every 3 m, in the
+urban lane-line width (0.10 m), drawn whatever the lane-line rule says (a 1+1 residential street
+shows its painted median). The noses start at the raised medians' tips: at an end that is not
+a continuation the edge lines meet on the centre line `NOSE_CLEARANCE_M` inside the marked range
+(which starts past a crossing strip the span holds) and open in a straight chevron to the full
+width over `PAINTED_NOSE_LENGTH_M` (4 m; a raised median's nose is round since round R3d, a
+painted one stays pointed); chevrons that would overlap leave the span unpainted. The section pairs are cut at
+the nose stations so the taper is exact. Where a painted median runs on through a pass-through
+node (`roadbed::painted_median_continues`: the raised rule's alignment and length test for a
+painted pair with no crossing) the hatching runs on; a painted median keeps D8's default crossing
+(Z3 is the raised medians' rule), which stops the hatching on both sides. `O(sections + length /
+3 m)` per painted span, allocation-free.
+
+Acceptance record (round R3b2, 2026-11-03, fresh; release binaries of `dev` `71a90e20`
+(control, with R8's uncommitted probe) and the round's code (`ea64cc99`, with the probe);
+P-cores `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.85 and 1.90
+at the starts, no build or Godot run beside them; logs in `$ARTIFACTS`). The control is `dev`
+before the whole R3 stack, so these rows compare R3a + R3b1 + R3b2 together:
+
+- No change without medians: R8's probe (pieces, payload, graded tiles, vegetation, surface
+  queries, every lane's geometry, successors and crossings) equal on town, hill, steep and Kuopio,
+  control (format 110 save) vs branch (111), and equal to R3b1's hashes; `ROAD-68-K22`'s saved
+  commit cities (0/10k/30k/100k, `RAYON_NUM_THREADS=8`) give identical `COMMIT_PRODUCTS` (md5
+  `4852535b...`, as `ROAD-99`'s, R3a's and R3b1's).
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `sloped_t` 2.870 2.855
+  2.897 2.862, `sloped_branch` 2.480 2.411 2.573 2.499 (payload vertices equal); the new
+  `divided_t` (`sloped_t` with a 3 m grass median) 3.109 / 3.034, payload p50 0.457 / 0.442 ms
+  for 11,875 payload vertices a pose against 9,845.
+- `roadbed_span/build` (Criterion, C F F C, µs): `span_25m` 3.885 3.819 3.831 3.863,
+  `span_100m_footpath` 3.658 3.598 3.595 3.617, `span_100m` 10.80 10.73 10.97 10.76, `span_400m`
+  38.29 38.87 37.83 39.06, `span_100m_four_lane` 11.41 11.27 11.35 11.21, `span_100m_bridge`
+  12.30 12.27 12.39 12.26, `span_100m_rural` 8.90 8.33 8.32 8.27: undivided spans cost what
+  they did on `dev` (R3b1's +0.2 µs is gone); `span_100m_divided` 24.42 / 24.43.
+- Road chunk Criterion rows (C F F C): `full_network_emit/64` 9.614 9.681 9.386 9.886 ms,
+  `/1024` 164.59 162.39 164.90 164.55 ms, `chunk_emit_only/1024` 176.4 187.3 167.6 170.7 µs,
+  `bridge_chunk_emit_only/1024` 269.6 274.9 262.1 260.4 µs, `tunnel_chunk_emit_only/1024`
+  248.4 257.3 269.2 257.8 µs: within the controls' spread; the new `divided_chunk_emit_only`
+  281.6 / 265.8 µs alone and 270.0 / 274.9 µs beside 1023 distant chunks.
+- Godot chunk upload (`road_chunk_renderer_benchmark.gd`, each tree's script and cdylib, a second
+  session at 00:28 after the first's control rows failed to load, stage p50 µs, C F F C):
+  `resident/1024` 2917 2901 2948 2945, `affected/1024/1` 3002 2947 3048 2978, `/4` 9630 9756
+  9892 10187, `/16` 38685 38990 39365 40797, `bridge/4` 11605 11806 11931 12232, `tunnel/4` 11684
+  11888 11922 12283: the absent grass layer costs nothing measurable; the new `divided/4` (1,800
+  grass vertices a chunk) 11758 / 11916, as `bridge` and `tunnel` with the same vertex count.
+- Locality (branch, 0/1k/10k/100k remote buildings, p50 ms; local products identical per tier):
+  a divided stroke (`populated_divided_road_plan_scaling`, the T's side road with a 3 m grass
+  median) compile 0.511 / 0.165 / 0.171 / 0.213, hover check 0.057 / 0.031 / 0.031 / 0.031,
+  readiness 0.017 / 0.009 / 0.009 / 0.009; the median given in place
+  (`populated_median_edit_scaling`, 1+1 with a 3 m grass median) verdict 0.222 / 0.324 / 0.229 /
+  0.227, commit 1.206 / 1.182 / 0.961 / 1.868, undo 0.378 / 0.419 / 0.410 / 1.269, the crossing
+  toggle 1.952 / 1.545 / 0.950 / 1.697. Flat in the remote city (the 0-tier compile's first
+  samples are cold).
+- The leftover cost (round R3b1): a profile of R3b1's binaries (perf, `span_25m`, one P-core)
+  put it in `build_span_mesh`, `PieceFootprint::of_span` and `SpanModel::new`: the divided rows'
+  bookkeeping (row kinds, row lengths, row starts in the footprint, the continuation query at
+  pass-through ends) ran on every span. An undivided span now skips it.
+
+Stills (`$ARTIFACTS`, gamescope headless 1280x720, isolated profile, two sessions under 5
+minutes): a divided T with noses and zebras, a pass-through continuation, a bend's nose pair,
+painted (hatched) vs grass vs paving, a divided bridge and a divided tunnel's portal, a road given
+a median in place and its undo, and the Road Properties and road options rows.
+
+#### Round noses (round R3d)
+
+The user's decision of 2026-11-03, while testing R3: a raised median (kerbed grass, kerbed
+paving) ends in a semicircle of radius half its width; a painted median keeps its pointed
+chevron. The rule, the row cadence and the bound are in **Noses** above; the code is
+`span/model.rs` (`median_width_at`, `nose_segments`, `median_body`, the nose stations in
+`section_sample_distances`). Tests (`span/median_tests.rs`): every outline vertex of a nose lies
+on its circle in station and lateral metres within 0.1 mm, the tip `NOSE_CLEARANCE_M` past the
+mouth or the crossing strip and the first full-width row `r` past the tip, each arc at most
+0.5 m, the rows per width (2 m paving 4 arcs, 3 m grass 5, 4 m 7, 12 m 19) on the T, bend,
+pass-through, bridge and tunnel fixtures, flat and sloped; the divided fixtures (now with a 12 m
+grass and a 2 m paving pair) stay watertight with mouth rows bitwise the node pieces' and their
+structures closed; a lone road too short for its two noses stays undivided; undivided and
+painted pairs hash as recorded on `a40e6f6b`.
+
+Acceptance record (round R3d, 2026-11-03, fresh; release binaries of `a40e6f6b` (control, the
+R3 stack before this round) and `01843087`, both with R8's uncommitted probe; P-cores `taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.63 at the start, no build, Godot
+run or game beside it; logs in `$ARTIFACTS`):
+
+- No change without a raised median: R8's probe (pieces, payload, graded tiles, vegetation,
+  surface queries, lanes) equal on town, hill, steep and Kuopio, control vs branch. `ROAD-68-K22`
+  was not rerun: its saved cities carry no medians, and the probe covers the undivided path.
+- `roadbed_span/build` (Criterion, C F F C, µs): `span_25m` 3.790 3.778 3.778 3.816, `span_100m`
+  10.67 10.77 11.51 10.73, `span_400m` 38.16 38.45 37.74 38.22, `span_100m_curved` 10.68 10.83
+  10.80 10.75, `span_100m_four_lane` 11.98 11.27 11.25 11.27, `span_100m_rural` 8.249 8.255
+  8.251 8.259, `span_100m_footpath` 3.518 3.694 3.553 4.063, `span_100m_bridge` 12.32 12.55
+  12.21 12.28: undivided spans equal to the control within its spread (one `span_100m` sample at
+  11.51; its path is unchanged and its products bitwise equal). `span_100m_divided` (2+2, 4 m
+  grass, two noses, knots every 11.1 m) 24.34 / 23.69 -> 30.78 / 30.64: 27 rows -> 35 (35
+  counted on the branch's span, 27 by the old station rule), 8 per nose instead of 5 (+6) and one more body row beside each nose, whose
+  full-width station moved from 4 m to 2 m past the tip and left an interval over 8 m before the
+  first knot (+2); the cost follows the rows (+30 % rows, +28 % time), under the 50 µs target.
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `divided_t` 3.161
+  3.180 3.338 3.330, payload vertices 11,875 -> 12,226 a pose; `sloped_t` 3.094 3.094 2.941
+  3.287 and `sloped_branch` 2.845 2.860 2.768 2.653 with payload vertices equal.
+- Road chunk Criterion rows (C F F C, µs): `divided_chunk_emit_only/1` 296.2 287.3 286.7 271.9,
+  `/1024` 293.4 306.3 293.8 280.9; `chunk_emit_only/1024` 180.2 189.7 204.1 177.8,
+  `bridge_chunk_emit_only/1024` 284.9 290.9 278.4 288.1, `tunnel_chunk_emit_only/1024` 263.8
+  298.8 276.7 266.8: within the controls' spread.
+
+Stills (`$ARTIFACTS`, gamescope headless 1280x720, isolated profile, one session per cdylib
+under 5 minutes, before and after side by side): a divided T with zebras (3 m grass) near and
+far, a 2 m paving nose, a 12 m grass nose, a nose at a dead end's cap, and a painted median's
+chevron (unchanged).
 
 ## Road Geometry Validation (`ROAD-54`)
 
@@ -10184,7 +10766,8 @@ commit may differ in cache lifetime or display detail, but not in geometry owner
 
 Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
 before graph commit or preview compilation: long spans are densified every few metres, samples are
-grounded against source terrain or existing visible road support, true endpoints and road
+grounded against source terrain or the carriageways of existing grounded roads (not a bridge's or
+a tunnel's deck, [`ROAD-99`](#grade-separation-road-99)), true endpoints and road
 connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
 targeting smooth grade and curvature changes. These profile targets shape generated geometry and
 remain available as diagnostics; they are not player-facing placement limits. The dense solved
@@ -10201,7 +10784,9 @@ and it never becomes `Standard` earthwork that raises terrain to the bridge deck
 
 Player-facing placement rules include existing parcel conflicts and structural impossibilities:
 roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
-bridge/tunnel clearance failures, and endpoints that resolve to an impossible same-node connection.
+bridge/tunnel clearance failures (`bridge_too_low` among them, [`ROAD-99`](#grade-separation-road-99)),
+an end snapped onto a tunnel inside its bore (`tunnel_join`),
+and endpoints that resolve to an impossible same-node connection.
 There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
 `same_node_connection` reason; it is not reported as a compiler failure.
 
@@ -10211,6 +10796,966 @@ endpoints within the node capture radius. Retention releases by distance to that
 to the previous projected point. Interior polyline knots have no endpoint margin, avoiding artificial
 half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
 uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
+
+### Grade separation (`ROAD-99`)
+
+**Status: done (2026-11-02, branch `port-road99-gradesep`; the user's decisions of 2026-11-02).**
+Two roads are separated by structure, not by height. Until `ROAD-99` the topology pass read one
+4.5 m window between the two profiles (`topology.rs`: crossings, mid-span end joins, nodes a
+stroke passes through), and a stroke's profile was pinned to the highest exposed carriageway at
+each 6 m sample, a bridge's deck among them. In play no road could pass under a bridge: the deck
+pinned it and the crossing became a junction on the bridge, or the stroke was too steep. A
+bridge drawn over a road within 4.5 m split the road and dipped to it; above 4.5 m nothing checked
+the clearance. `config::CLEARANCE_THRESHOLD` (5 m) had no reader and is deleted.
+
+**The rules** (`topology::StrokeGrade`: where a new edge is a structure, which of its ends stand on
+the ground). A structure is a bridge, or a tunnel stroke's bore between its portals; a node is
+grounded when a live standard edge meets it (`RegionGraph::grounded_node`, the roadbed's notion).
+
+- *R1, crossings.* A crossing is a junction only where both roads are on the ground there. A
+  bridge or a bore crosses every road, and every road crosses them, with no node at any height.
+  Two ground roads always meet, at the crossed road's profile height, and the grade and junction
+  rules (`road_too_steep`, `junction_in_trench`, the junction checks) refuse what does not fit. A
+  tunnel stroke's approaches are ground roads (R8h unchanged for its bore).
+- *R2, clearance under a bridge* (`road_edit::bridge::deck_to_deck_m`, reason `bridge_too_low`).
+  Over every point of the stroke's footprint lattice (stations along each segment and points
+  across its roadbed, at most 4 m apart) that another deck covers, the higher deck stands at least
+  `ROAD_UNDER_BRIDGE_M` above the lower. The other decks are the bridges near the stroke and, for a
+  bridge stroke, the grounded roads too, less the roads it joins at its ends (at a node, its arms;
+  on a span, B1 below, the span and the bridge decks it continues at its nodes). Both orders: a road
+  drawn under a bridge, a bridge drawn over a road or over another bridge. The hover check and the
+  exact plan read the same prepared points and excerpt, so they agree. The tool shows "Too low
+  under a bridge: x.xx m / 4.85 m deck to deck".
+- *R5, end joins.* An end joins a standard span mid-span when both stand on the ground: a ground
+  end and a standard span. A bridge's ground ends are those its class inference found within 1 m of
+  their support (`PreparedRoadInput::elevated_ends`); a tunnel stroke's are its approach ends. An
+  end snapped onto a structure's span joins that span instead (B1, below); a structure's span
+  takes no other mid-span join.
+- *R6, nodes passed through.* A stroke captures a node only on the ground and only a grounded one:
+  a ground road passes under a bridge's bend node and joins its abutment.
+- *R7, support and cursor.* (a) A stroke's profile pins to grounded carriageways only
+  (`RoadbedSystem::for_each_grounded_carriageway_top_at`). (b) A snapped node or edge reports its
+  graph height (an edge's profile at the projection); a free cursor stays on the level its ray hit
+  (`exposed_height_nearest_at` on a road, `grounded_height_at` or the ground on the terrain).
+  (c) The network snap takes a snap on each level, the ground and the structures, as it took one
+  before, and where both have one keeps the one nearer the cursor's height, the ground on a tie.
+  Since B1 (below) the structures' level offers only the structure the ray hit.
+
+**Constants.** One vehicle envelope, `roadbed::VEHICLE_CLEARANCE_M` = 4.5 m: the tunnel lining's
+clear height is it, bitwise (`TUNNEL_COVER_M` stays 5 m, `ROAD_OVER_TUNNEL_M` 5.5 m), and
+`ROAD_UNDER_BRIDGE_M` = `VEHICLE_CLEARANCE_M + BRIDGE_DECK_DEPTH_M` = 4.85 m deck to deck: 4.5 m
+clear under the slab's soffit, as under the lining's ceiling.
+
+**What players lose** (accepted by the user, 2026-11-02): bridges 4.5-4.85 m over a road (now
+refused with the height). A ground road branching onto a bridge mid-span and a bridge forking
+from another mid-span were lost too; both are restored at the user's request by the follow-up B1
+below.
+
+**Mid-span joins of a bridge (B1, the `ROAD-99` follow-up; branch `port-b1-bridge-join`,
+2026-11-02).** The user's play-test found that a road could join a bridge only at the bridge's
+nodes: an end anywhere else on the deck was refused as "Too low under a bridge: 0.00 m / 4.85 m"
+(R5 gave a structure's span no mid-span join, so the end stood on its own node on the deck, and R2
+measured the stroke against the very deck it ends on). Now a stroke whose end is snapped onto a
+bridge's span joins that span there: the span is split and a junction stands on the deck, as at a
+join at one of the bridge's nodes. This holds for any stroke the class inference makes: a bridge
+stroke (a fork), or a road from the ground climbing to the deck (the inference makes it a bridge,
+as at a node).
+
+- *The cursor snaps only to what its ray hit* (the user's decision on B1, 2026-11-02;
+  `interaction::StructureHit`, `RoadbedSystem::raycast_piece`). The structures' level of the
+  network snap offers only the structure whose piece the ray hit first, nearer than the ground:
+  a bridge's span (with its nodes), or a node piece no standard road meets (with its bridge
+  arms). It never offers a tunnel's bore, which no ray sees, nor a bridge the ray did not hit:
+  a ray that hit the ground beside or under a bridge, or the hill over a tunnel, stays on the
+  ground's level, even within 5 m of the structure in plan. A retained snap the ray no longer
+  admits is dropped. The ground's level (standard edges, grounded nodes) snaps as before,
+  bitwise. Cost: the hit piece from the same ray walk, an `O(degree)` test per structure
+  candidate.
+- *The join follows the snap* (`road_edit::bridge::snapped_structure_span`, during
+  preparation, so the hover check, the preview and the commit read the same decision;
+  `PreparedRoadInput::joined_spans`, `topology::StrokeGrade::joining_spans`). A snapped cursor
+  reports the point on the span's centre line at the span's graph height, so an end not at a node
+  joins the structure span whose centre line it lies on in plan (within rounding, 1 cm) and whose
+  graph profile there stands nearer the end's height than the ground under it (the grounded
+  support, else the terrain): the cursor's own choice between levels. Ties go to the ground, then
+  the nearer centre line, then the lower edge id. No height window decides, and the inference
+  agrees with the cursor: an end on the ground beside or under a deck, or on the hill over a bore,
+  stands nearer the ground and joins nothing (R2 then checks it). The joined end takes the span's
+  graph height, as an end at a node takes the node's. The topology joins that span, whatever its
+  class, and no other at that end; crossings along the stroke stay as R1 has them.
+- *What the join builds.* The same pieces as a join at a node there: on the flat fixture, a node
+  piece and three spans with the same triangles bitwise as a bridge drawn in two strokes meeting
+  at the join, the same zebras (the default crossing rule) and connectors. Every arm is a bridge,
+  so the junction is not grounded and nothing fronts it; each half keeps its piers at its ends, as
+  at a node. The usual rules refuse what does not fit, with their own reasons (`road_too_steep`, the
+  junction rules), and the hover check, which runs no junction rule, does not show those.
+- *Tunnels.* The cursor never snaps to a bore, so a road ending on the hill over a tunnel stays on
+  the hill, unjoined, as before B1 (roads and junctions above tunnels, R8h and `ROAD-98`). Only a
+  scripted or replayed end lying on a bore's centre line at the bore's height is refused, as
+  `tunnel_join`, "Roads cannot join a tunnel inside its bore: join it at a portal", in all three
+  checks; bores join roads only at their portals.
+- *Bounds.* Preparation: two span queries per stroke, `O(log E + K x profile points)` for the `K`
+  edges near each end; R2's exclusion adds the joined span's two nodes' degree. Nothing per tick,
+  no index, no city scan.
+- *Acceptance* (fresh, 2026-11-02; release test binaries: C = `dev` `ea63df40`, F = this branch,
+  each with R8's uncommitted probe). Tests (`road_grade_separation`): a bridge stroke and a road
+  from the ground (either direction) join the 6 m bridge mid-span (hover = preview = commit, the
+  bridge split into two bridge edges, the junction at the deck's height, not grounded, no
+  frontage, its node piece built, connectors into every arm, undo restoring the network and every
+  piece bitwise); the junction equals a node join's (pieces, zebras, connectors); a road ending on
+  the ground under the bridge does not join it (6 m passes, 4 m `bridge_too_low`), nor one ending
+  1-10 m from its centre line, the bridge intact and the road on the ground; a road ending on the
+  hill over a bore commits unjoined at the hill's height; refused joins
+  name `road_too_steep`, `junction_arm_angle` and, 5 m from a bend node, `junction_arm_too_short`
+  (the hover check passing them); a scripted end on a bore's line at its height is
+  `tunnel_join`. Cursor tests: `road_tool_cursor_snaps_only_to_the_structure_its_ray_hit` (the
+  real roadbed ray: onto the deck snaps to the bridge at 6 m; onto the ground 1, 3 and 5 m beyond
+  the deck's edge and under it, no snap, where the snap without the hit took the bridge under it)
+  and `interaction`'s `the_snap_takes_only_the_structure_the_ray_hit` (a bore never, a bridge
+  only when hit, the ground road bitwise). On C's code the
+  four join tests fail with `bridge_too_low` (the user's 0.00 m; the steep join's exact plan
+  already said `road_too_steep`, its hover check `bridge_too_low`), and the tunnel test commits:
+  C did not refuse an end on a bore, it moved the end up to the hill's surface and left it
+  unjoined. ROAD-99's five case tests and its guard pass on both. The tests of ends beside a
+  bridge and on the hill over a bore pass on the first B1 commit too (`d2c5c2c1`): its join
+  inference already chose the ground there; what put such ends on the deck or the bore was that
+  commit's cursor (ROAD-99's R7(c)), which the cursor tests pin. No change without a
+  join: R8's probe products (town, 1:4 hill, 1:2 hill) and the `ROAD-68-K22` `COMMIT_PRODUCTS` at
+  0, 10k, 30k and 100k residents are identical on C and F (and equal to `ROAD-99`'s). Stills
+  (headless gamescope, isolated profile, dump C at format 110, a bridge 6.5 m over open ground,
+  then a bridge stroke forking from it and a road from the ground climbing to it, both mid-span,
+  committed through the tool's path): before, both refused `bridge_too_low`; after, two
+  junctions on the deck with zebras, piers at the halves' ends. Cursor stills (the same dump, the
+  tool's own `get_road_tool_cursor_pos` with a vertical ray, the end committed where it reports):
+  over tunnel 6's bore, the cursor before the rule snaps to the bore 19 m under the hill and the
+  road is refused `tunnel_join`; after, it stays on the hill (no snap) and the road commits there,
+  unjoined. Beside the bridge, 2 m beyond its deck's edge (5 m from the centre line): no snap
+  either way, the road ends on the ground. The cursor change is not in the cost session below
+  (one ray walk names its piece; nothing else is timed). Cost (one session,
+  19:57-19:58; release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.3 at
+  the start, no compiler, Godot or backup running; C F F C, the binaries above): products
+  identical (payload 9,845 / 9,973 vertices per pose, lining 2,326 / 2,574); total p50 ms
+  `sloped_t` 3.117 3.233 2.910 2.886, `sloped_branch` 2.747 2.657 2.689 3.186, tunnel 1:2 3.691
+  3.705 3.722 3.707, tunnel 1:4 3.682 3.694 3.702 3.676: within spread. Locality
+  (`road_plan_scaling`, same session, local products identical at every tier), compile p50 ms
+  at 0 / 1k / 10k / 100k remote buildings: the T's side road C 0.148 0.155 0.166 0.163, F 0.216
+  0.161 0.167 0.166; the road under a bridge C 0.041 0.042 0.042 0.042, F 0.043 0.066 0.043 0.044;
+  the tunnel C 0.078 0.168 0.073 0.074, F 0.068 0.068 0.081 0.113 (single noisy tiers both ways);
+  the new mid-span join (`populated_bridge_join_plan_scaling`, F only: C refuses it) 0.024 0.025
+  0.026 0.025, its hover check 0.0014-0.0016. Flat: the join's cost follows the bridge's
+  neighbourhood, not the city.
+
+**Saves.** Nothing is repaired on load and no format changes: a crossing that only height
+separated loads as saved and changes only when one of its roads is redrawn. The scan
+(`road_grade_separation::scan_crossings_separated_by_height_alone`, ignored; fresh on the
+Kuopio reference save and copies of the user's dumps A, B and C at format 110, an empty
+`road_crosswalks` table added) finds none: no bridge in any of them, no junction on a deck, and
+no two roads crossing without a node but dump C's road over a tunnel 17.5 m above it (`ROAD-98`).
+
+**Acceptance** (fresh, 2026-11-02, release test binaries: C = `dev` `f680729b`, F = this branch).
+
+- *Tests* (`nodes::sim::core::tests::road_grade_separation`): a road under a bridge 6 m up passes
+  (hover = preview = commit, the bridge's edge and nodes bitwise intact, the road's profile on the
+  ground, undo restores every piece) and 4 m up is `bridge_too_low` (clearance 4, 4.85 required,
+  nothing changed); the mirror over a road (6 / 4 m) and over a bridge 2 m up (7.5 / 6 m); a road
+  over a road in a cut on the 1:4 and 1:8 hills, support on and off, three sampling phases, always
+  a junction or `road_too_steep`; a bridge over a tunnel's approach (6 m passes, 4 m refused) and a
+  ground road across it (`junction_in_trench`); a tunnel drawn under a hill road, its approach
+  meeting the road (refused). All five fail on C's code with the same tests; a bridge drawn from a
+  road mid-span still joins it. Unit tests in `test_topology.rs` (R1, R5, R6) and
+  `interaction.rs` (R7(c)).
+- *No change without structures.* R8's probe products (pieces, payload, graded tiles at GL0-GL2,
+  vegetation, queries) on the town, the 1:4 hill (its bridge beside the road) and the 1:2 hill:
+  C and F equal, and equal to `ROAD-98`'s. The `ROAD-68-K22` commit breakdown on each binary's own
+  saved cities at 0, 10k, 30k and 100k residents: `COMMIT_PRODUCTS` identical, C and F.
+- *Cost* (one session, 10:51-10:52; release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both
+  timing locks, load 1.5 at the start, no compiler, Godot or backup running; C F F C;
+  `benchmark_road_preview_stages` and `benchmark_tunnel_preview_stages` as in `ROAD-98`). Products
+  identical (payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, lining 2,326 / 2,574).
+  Total p50 ms, C1 F1 F2 C2: `sloped_t` 2.802 2.809 2.870 2.901, `sloped_branch` 2.496 2.510 2.596
+  2.688, tunnel 1:2 3.683 3.679 3.693 3.708, tunnel 1:4 3.641 3.669 3.652 3.669; plan p50
+  `sloped_t` 0.409 0.416 0.427 0.424, `sloped_branch` 0.367 0.371 0.382 0.381. Within spread.
+- *Locality* (`road_plan_scaling`, the same session, local products identical at every tier):
+  compile p50 ms at 0 / 1k / 10k / 100k remote buildings, the T's side road C 0.145 0.161 0.153
+  0.155, F 0.144 0.259 0.159 0.147 (one noisy tier: no cost grows with the city); the tunnel C
+  0.068 0.069 0.077 0.071, F 0.067 0.114 0.075 0.075; the new road under a bridge
+  (`populated_road_under_bridge_plan_scaling`, F only: C pins it to the deck) 0.040 0.041 0.041
+  0.041, its hover check 0.0197 0.0198 0.0199 0.0200. Flat.
+- *Stills* (headless gamescope, isolated profile, dump C at format 110, a bridge 6.5 m over open
+  ground and a road drawn across it, both committed through the tool's path): before, the road
+  climbs an earth bank to a four-way junction on the deck; after, it passes under the bridge on
+  the ground.
+- *Bounds.* R1/R5/R6: one class or flag read per candidate, a node's `O(degree)`; R2
+  `O(log E + K + P x D)` per stroke, one excerpt and one deck `Vec`; R7(a) one flag per piece;
+  R7(c) the same candidates, one profile read per level. Nothing per tick, no city scan, no index.
+
+**Known limits.** The decks of roads at a stroke's end nodes are left out of R2, so a bridge that
+leaves a junction on road A and curves back over A mid-span is not checked against A. A tunnel
+stroke's approach is not checked against a bridge over it (R2 reads standard and bridge strokes),
+nor against another bore (R8h). A footpath narrower than the 4 m lattice can cross between two
+lattice points. The hover check sees no junction (R1, R5, R6 are topology), as for every junction
+rule.
+
+## Road tunnels (`ROAD-61`)
+
+**Status: done (2026-11-01, rounds R2 to R8g of the road-feature port; the last, R8g, on branch
+`port-r8g-pinhole`):** the tunnel logic (round R2), the ground over a bore (R2b), the closed
+tunnel (R8: lining, ceiling, no cone past a portal row; R8b: the lining's own layer, its
+thickness, lamp strips), the walled approaches (R8e), the collar and the tool's rules (R8f) and
+the trough wall's foot (R8g) are built; see "The closed tunnel" below. Later work stays open
+below (grade limit `ROAD-96`, trench junctions, flat-ground ramps). Ported from Veeti's road-chain branch (`b07b3781`,
+`55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
+tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
+separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
+
+**The problem.** The road tool picked Standard / Bridge / Tunnel from the stroke's two ends only
+(`road_edit/input.rs`, `prepare_road_input_points_in`). A stroke through a hill drawn with both
+ends on the ground is a standard road: the terrain-following solve erases its buried interior and
+the road climbs the hill. The three probe strokes of the fork's spec (`(x, height)` at z = 0 on
+flat ground at 0, one lane each way, no snapping), run on `dev` c2d49902 before the fix
+(`road_tunnels::tunnel_probes_without_tunnel_intent`, fresh 2026-10-31):
+
+| Stroke | Quick validation | Preview (exact plan) | Commit |
+| --- | --- | --- | --- |
+| `(-100,0), (-50,-6), (50,-6), (100,0)` | valid, 36 knots all at 0 | valid | a 200 m surface road at height 0: the buried interior is erased |
+| `(-50,-6), (50,-6)` | valid | valid | one tunnel edge at -6 with pavement (99 vertices) and 6 lanes |
+| `(-100,0), (-50,-6), (50,-6)` | valid | valid | one tunnel edge, -6 at its east end, 153 vertices, 6 lanes |
+
+The fork's other two failures (the fully buried stroke refused at commit, the mixed one without
+concrete) do not reproduce on `dev`: the constructive roadbed builds every edge's span. Quick
+validation and the exact plan agree on all three. The defect left is the first probe's: a tunnel
+cannot be drawn between two grounded ends, which is how a player draws one through a hill.
+
+**The tool.** The road tool has a tunnel toggle: `T` with the road tool active, or the
+"Tunnel (T)" checkbox in the road options (`road_tool.gd` `set_tunnel`, `main_ui.gd`). Rust holds
+the intent as `SimulationNode::road_tool_tunnel` (`set_road_tool_tunnel`), and every request the
+tool sends carries it: the hover check, the synchronous preview (`RoadPreviewRequest::tunnel`,
+part of `RoadPreview::is_for`, so a preview made without the intent is not the click's), the
+commit (`RoadCommitRequest::tunnel`, `SimCommand::AddRoad`; a fresh plan prepares the stroke with
+it), undo (the edit's topology record, as for any stroke) and the refusal report's
+`road_attempt` record (`tunnel`), which `road_attempt_replay.gd` sets before it replays. The tool
+re-asserts its intent before each preview, so a replay cannot leave Rust's copy stale. Without the
+toggle a stroke never becomes a tunnel (round R8f): an end below the ground no longer classes it,
+so the stroke is a grounded road, which the standard profile cuts in or refuses (`road_too_steep`
+where no grounded profile keeps the hard maximum). An end above the ground still makes a bridge.
+
+**The profile.** With the intent (`road_edit/tunnel.rs`) the stroke keeps its authored profile:
+the alignment is simplified as for any road, its ends snap to existing nodes, every height stays
+as drawn, and each segment is divided into equal steps of at most 4 m, so the knots interpolate
+the authored polyline. A straight stroke (two points) keeps the chord between its end heights; a
+curve keeps the heights the tool drew along it. No terrain-following solve runs, and a grounded end
+never erases the buried interior.
+
+**The bore.** A knot's cover is the least height of the source terrain above it across the bore's
+whole section (round R8f, `section_cover_m`): on a lattice across the knot, perpendicular to the
+stroke there (the chord of its neighbours), from one outer face of the lining's shell to the other
+(the roadbed's half width plus the lining's 0.5 m thickness) in equal steps of at most 4 m, both
+corners and the centre among them, `O(knots x (2 ceil(W / 4 m) + 1))`. The bore runs from the
+first knot with the bore clearance of cover (5 m, the *tunnel cover rule* `roadbed::TUNNEL_COVER_M`
+= `TUNNEL_LINING_HEIGHT_M` 4.5 + `TUNNEL_LINING_THICKNESS_M` 0.5 + `TUNNEL_EARTH_COVER_M` 0.0, its
+one definition since round R8h: the tunnel lies fully underground, its shell's roof at most at the
+ground) to the last; the stretches before and
+after it are open approaches. `tunnel_bore` is the one rule: quick validation
+(`validate_road_candidate_fast`, through `profile_validation`) and the exact plan
+(`validate_road_edit`) read the same knots, so they accept and refuse the same strokes. The
+validation graph adds a portal node at each approach's last knot and splits the stroke there with
+its crossings in one ordered pass (`topology::process_intersections_splitting_at`); the edges are
+then classed (`classify_tunnel_stroke`) before the profiles are solved: tunnel between the
+portals, standard on the approaches. An approach is a standard road in a cut (within the 5 m
+source band), so the portal node is a pass-through between a standard span and a tunnel span: the
+standard span closes its chains across the mouth with a wall run and the tunnel span marks it a
+portal row, which the graded terrain opens (`TERRAIN-07-C`, [`terrain.md`](terrain.md) T22). An
+end inside the cover is a buried continuation and gets no portal (its free end is capped). The
+committed edges are ordinary `Standard` and `Tunnel` edges, so the save needs nothing new
+(format 109 unchanged). Buried spans publish their pavement like any span and their lanes are
+built like any edge's; a car drives through (below).
+
+**Refusals** (no geometry repair, no fallback), each with its reason in the tool:
+
+- `tunnel_cover`: no knot has 5 m of cover across the section, or a knot between the portals has
+  less (the stroke leaves the hill in the middle, or the hill falls away beside the bore so the
+  shell's roof would stand out of it); the tool shows the cover and the 5 m it needs.
+- `tunnel_approach_too_short`: an open approach shorter than 8 m (two lattice steps), so a
+  portal node would stand within a step of the stroke's end.
+- `tunnel_crossing`: the bore crosses another tunnel edge in plan at any height (tested on the
+  validation graph's local excerpt before the stroke is inserted), or another road meets it: a
+  junction inside the bore, a portal that is not a plain pass-through, or a buried end shared by
+  more than one other road. Tunnel junctions are out of scope.
+- `tunnel_join` (`ROAD-99` follow-up B1): a road whose end is snapped onto a tunnel inside its
+  bore ([grade separation](#grade-separation-road-99)); roads meet a tunnel at its portals.
+- `tunnel_too_close` (round R8h): a grounded road over a bore whose deck would stand less than the
+  cover rule (5 m) and the road's own depth below its deck (`SKIRT_DEPTH_M`, 0.5 m), 5.5 m, above
+  the tunnel's deck over the bore's section, so no road geometry reaches the shell; the tool shows
+  the height and the 5.5 m it needs. A road over a tunnel is otherwise a grade-separated crossing (below).
+- `tunnel_under_water`: the stroke's corridor, bore or approach, overlaps visible water: its
+  cover or a portal would be a water body (`validate_road_candidate_against_water`, hover,
+  preview and commit alike).
+- `junction_in_trench` (round R8f, the user's decision): any stroke that makes a junction (three
+  or more surface arms) at a node below the source ground (`cover_m` above zero, the cover the
+  bore check reads) where one arm is a tunnel or a tunnel's approach (a standard edge whose far
+  node has only it and a tunnel). The terrain walls only the approach span; the junction's node
+  piece would be graded down to in a cut and step against the walls. The tool shows the depth.
+  The preview's exact plan and the commit refuse it alike (one `validate_road_edit`); the hover
+  check, which builds no graph, sees no junction, as for every junction refusal.
+
+**Cost.** Preparation `O(stroke length / 4 m + points)` with one returned polyline and one
+alignment buffer; the bore `O(knots)`, allocation-free; the crossing test `O(bore segments ×
+tunnel segments in the local excerpt)`; the classification `O(stroke edges²)`, a handful of edges.
+All on the road-edit path only, nothing per tick, no city scan, no new index. Strokes without the
+intent run none of it.
+
+**Road-edit cost of other strokes (fresh, 2026-10-31 21:39).** `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.6, `dev`
+c2d49902 (C) and this round (F), C F F C in one session. Products identical (payload 9,845 /
+9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 / 4.62). p50 ms, C1 C2 / F1 F2:
+
+| Stage | `sloped_t` | `sloped_branch` |
+| --- | --- | --- |
+| Plan | 0.417 0.414 / 0.425 0.415 | 0.359 0.365 / 0.368 0.373 |
+| Roadbed | 0.315 0.312 / 0.310 0.302 | 0.311 0.314 / 0.311 0.312 |
+| Payload | 0.362 0.357 / 0.365 0.362 | 0.360 0.356 / 0.363 0.357 |
+| Graded | 1.762 1.783 / 1.810 1.808 | 1.440 1.450 / 1.554 1.505 |
+| Total | 2.823 2.817 / 2.881 2.857 | 2.411 2.411 / 2.517 2.498 |
+
+The plan stage, the only one the change runs code in (a branch on the intent and the validation
+graph's `Result`), is within 0.01 ms; the graded stage, which the change does not touch, reads
+0.03-0.10 ms higher in both candidate runs: no speed claim either way, a layout effect is
+suspected and not investigated.
+
+**Tests** (`nodes/sim/core/tests/road_tunnels.rs`, Rust, no Godot):
+`tunnel_probes_without_tunnel_intent` (the table above until round R8f; since R8f every probe
+commits as a surface road at 0),
+`tunnel_probes_with_tunnel_intent` (quick = exact = commit on all three; the first commits
+standard / tunnel / standard, the second one tunnel, the third standard / tunnel; every edge
+publishes pavement and lanes; the authored -6 m knots survive), `a_straight_tunnel_keeps_the_chord_through_a_hill`
+(every physical point within 1 mm of the chord, 5 m of cover over the bore; without the intent the
+same stroke climbs the hill; undo removes it), `a_curved_tunnel_keeps_its_authored_profile`,
+`a_car_drives_through_the_tunnel` (a debug car enters the bore and reaches the far approach's
+end) and `invalid_tunnels_are_refused_with_a_reason` (water, two crossings, no cover, a short
+approach; hover, preview and commit refuse alike and the graph is unchanged); the six run in
+0.2 s (round R2b's tests below). Godot:
+`godot/tests/road_tunnels_test.gd` (in `run.sh --test`) drives the player's tool on a sculpted
+hill: `T` and the checkbox, a refused stroke past the hill, the preview's chord, the commit as two
+approaches and a tunnel, and a debug car passing under the hill's top and out of the east portal;
+with `METRUM_ROAD61_SCREENSHOT` on a rendered run it saves the west portal
+(`METRUM_ROAD61_VIEW` picks another orbit view). The rendered run (gamescope headless, isolated
+profile, 2026-10-31) shows the approach in its cut, the portal opening with its side walls and
+the debug car at the mouth; the hill stays closed over the bore.
+
+**The ground over a bore (round R2b, branch `port-r2b-tunnel-surface`, 2026-10-31).** R2 found
+that everything which reads the visible surface (`GradedSurface::surface_height_at` and its
+siblings: the cursor, zoning cell heights, off-lane vehicles, the inspector's ground) answered the
+buried deck over the whole bore, that vegetation cleared the bore across the hill, and that the hill
+showed pale stripes. The rule now: a tunnel span is on the ground surface only inside its portal
+opening (the graded terrain's opening within 10 m of a portal row where the ground stands less
+than 5 m above the deck, [`terrain.md`](terrain.md) T22 5 (a)); everywhere else over a bore the
+surface is the graded hill. The rule lives in the graded terrain's opening test, which `mask_at`
+and the bake already read; the roadbed only tells the exposed pieces from the buried ones (a tunnel
+span, or a node piece where only tunnels meet), see [`terrain.md`](terrain.md) "The ground over a
+tunnel bore". Fixed:
+
+- Surface heights: the surface queries take a buried deck only inside the opening; over the bore
+  of a tunnel through a 1:4 hill they answer the hill (exact to 1 cm at five stations and two
+  offsets), 2 m into either opening the deck.
+- Trees: vegetation's deck test and walkway setback read the exposed pieces only. The scatter of
+  both layers over the bore equals the same hill's without the tunnel, plant for plant; the
+  approaches and openings stay clear.
+- Buildings: a building fronts only a grounded road. Zoning cells already read standard edges
+  only, but parcel placement (with its preview and restore), explicit service frontage, lot
+  placement, the attachment repair and the road-side connection read only `no_building_spawn`, so
+  a parcel placed beside a tunnel's hill or beside a bridge attached to the structure's span
+  (checked first: `Ok(Tunnel)` on `e402c0b2`). One predicate, `Edge::takes_buildings` (live,
+  standard, not closed to buildings), now gates every one of them.
+- The inspector: not reproduced. Entering a lane sets an agent's transit to network or
+  intersection, and the inspector reads the lane in both, so a car in a tunnel is reported on its
+  lane (a regression test holds it there, under the hill). R2's Godot test never asserted the
+  reported position; it does now.
+- The pale stripes are not a consumer of the surface: on the 1:2 test cone the approaches'
+  tie-in cones cut the hill over the bore by up to 5.8 m out to the 64 m cap, where the ground
+  steps back up by 6.0 m, a cliff whose rock material reads as pale stripes. Open below.
+
+**Tests** (fresh, 2026-10-31): `the_surface_over_a_bore_is_the_hill` (un-ignored; the 1:4 hill
+replaces R2's 1:2 cone, whose hill over the bore the graded terrain cuts, below),
+`the_hill_over_a_bore_keeps_its_plants`, `no_parcel_fronts_a_tunnel_or_a_bridge` and the
+inspector regression `the_inspector_reports_a_car_in_a_tunnel_on_its_lane`. All four fail on
+`e402c0b2` (surface 0 m over the bore against a 12.5 m hill; no plant over the bore against the
+bare hill's; a parcel on the tunnel span; the inspector's lane position matched there, but the
+surface over the car read the deck it drives on) and pass after.
+Ignored: `a_steep_hill_over_a_bore_keeps_its_height` (below). Godot `road_tunnels_test.gd` adds
+the surface over the bore standing above the deck and the inspector's position inside the bore.
+On fixtures without a tunnel the graded tiles (`GL0`-`GL2`), the vegetation scatter and the surface
+queries hash bitwise equal before and after: a 1:4 hill with a surface road and a bridge
+(`1c612c59b9d809a0`, `757c8f1202962b63`, `716d91b544c120a9`) and the grown starter town
+(`254bb17558de5067`, `288abc8d84adaadd`, `28dcd1e2d4d01c09`), debug test binaries of `e402c0b2`
+and of this round.
+
+**Cost.** `RoadbedSystem::exposed_and_buried_heights_at` is one walk of the point's query cell,
+as `height_at`; `any_exposed_band_near_disc` is `any_band_near_disc` with buried pieces skipped;
+the far-vehicle local surface query leaves buried pieces out while it gathers; all
+allocation-free. A surface query over no buried deck costs what it did; over one it adds the
+point's preparation and portal gather. `Edge::takes_buildings` is `O(1)`. Nothing runs per tick
+that did not before, and no road-edit or bake stage changed.
+
+**Timing (fresh, 2026-10-31 23:24-23:25).** `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.9 at the
+start; control R2's binary (`e402c0b2`'s code, C), this round's (`ccc6aeb4`, F), C F F C. Products
+identical (payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 /
+4.62). p50 total ms, C1 C2 / F1 F2: `sloped_t` 2.804 2.841 / 2.779 2.797, `sloped_branch` 2.376
+2.504 / 2.419 2.500; plan, roadbed, payload and graded within the controls' spread. No claim
+either way.
+
+**Locality (fresh, same session, the populated-map check R2 skipped).**
+`road_plan_scaling::populated_tunnel_road_plan_scaling` (release, same binary and settings): a
+tunnel stroke through a 1:4 hill beside the measured T, planned while remote buildings, parcels,
+agents and roads grow; fixture construction is not timed. The prepared points are equal at every
+scale (asserted). p50 / p95 ms over 100 samples:
+
+| Remote buildings | Roads | Agents | Parcels | Compile | Readiness p50 | Preview p50 | Snapshot (once per edit) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 24 | 4 | 0.069 / 0.182 | 0.032 | 0.037 | 0.007 |
+| 1,000 | 4 | 6,024 | 1,004 | 0.102 / 0.190 | 0.039 | 0.044 | 0.007 |
+| 10,000 | 40 | 60,024 | 10,004 | 0.043 / 0.128 | 0.021 | 0.024 | 0.021 |
+| 100,000 | 391 | 600,024 | 100,004 | 0.042 / 0.097 | 0.021 | 0.023 | 0.220 |
+
+The stroke's planning cost follows its neighbourhood, not the city; the one-time snapshot grows
+with the city and is kept apart.
+
+**The closed tunnel (round R8, branch `port-r8-tunnel-lining`, 2026-11-01).** R2's screenshot
+showed sky through the mouth: the bore had a deck and nothing else, the terrain is one surface
+drawn from above, the portal opening cut the ground within 10 m past a portal row, and the
+approaches' tie-in cones graded the hill over the bore (a 6 m rock step on a 1:2 hill). Ported in
+intent from the fork's `55cf6f85` (section-sized concrete lining, portal faces, explicit terrain
+ownership of open cuts), whose code lived in the deleted `surface/` compiler; built constructively
+in `network/roadbed/lining.rs` and the graded bake.
+
+- **Lining** (`lining.rs`, `PieceMesh::lining_triangles`). A tunnel span is lined: walls stand on
+  its deck's two outer chains, straight up `TUNNEL_LINING_HEIGHT_M` (4.5 m) to the lining tops,
+  and a flat ceiling spans the two tops of each section row (a box section sized from the span's
+  own sections). A lining top is a function of its chain vertex (`lining_top`), so pieces that
+  share a mouth share their lining edges bitwise: a span and the next tunnel's span at a
+  pass-through, or the node piece where only tunnels meet, which is lined along its outer chains
+  with a ceiling triangulated over the ring of their tops (its mouth edges the same straight edges
+  between the corners' tops). A bore that ends underground is closed by an end wall in its end
+  row's plane from the deck to the ceiling, which replaces the free end's cap (below the deck lies
+  the earth). Walls face the road, the ceiling down. A junction inside a tunnel cannot be built
+  today: a tunnel stroke that meets a road inside its bore is refused (`tunnel_crossing`, round R2),
+  so only bends and pass-throughs between tunnels occur, and those are lined.
+- **Collar** (round R8f, `PieceMesh::collar_triangles`; R8's headwall and R8c's wings are gone).
+  At each portal row (a tunnel's mouth a grounded piece shares, and where a tunnel opens straight
+  onto a bridge) the span stands a collar in the row's vertical plane: the ring between the
+  lining's mouth and the end of its shell, flat-topped at `COLLAR_HEIGHT_M` (5.0 m, the shell's
+  roof: the lining's 4.5 m and its 0.5 m thickness) above the row's corners and reaching the
+  thickness beyond each corner, with the skirt below the row. Its outer corners are the shell's
+  own functions of the row (`shell_foot`, `shell_top`), so its outer edges above the row are the
+  shell's end edges bitwise; its opening runs up the walls' end edges and along the ceiling's,
+  and its edges below the corners are the approach's skirt end edges. Only its bottom edges meet
+  the terrain. It faces out of the tunnel in outdoor concrete. The terrain stands the row wall on
+  its flat top where the hill rises higher (round R8e).
+- **Terrain** ([`terrain.md`](terrain.md) T22, "The portal row"). No tie-in cone reaches past a
+  portal row, so the hill over the bore stays natural and the cut ends at the row; the portal
+  opening and its side walls are gone; under the approach's deck at the row the ground continues
+  the hill, so the step down to the deck lies where the mask discards it, not in the mouth. Since
+  round R8e the approach's own seams only bound the ground from below and the bake walls the cut
+  (below).
+- **Rendering** (round R8b). The lining, its end walls, the collars and the lining's shell are
+  the payload's own lining layer (`MeshLayer::Lining`, `lining_*` arrays; every chunk carries the
+  four arrays, empty without a tunnel), the road chunk's eighth surface, drawn on both sides in
+  the concrete material, which takes the cloud shadow (`standard_light.gdshaderinc`). Their colour
+  alpha is 0, which marks them: the lining takes no sun, no sky reflection and 60% of the ambient
+  light. Road chunks only receive shadows, so a chunk with a lining gets a shadow-only child
+  holding that layer again (`network_tool.gd::_add_lining_shadow`, `tunnel_lining_shadow.gdshader`);
+  a chunk without a tunnel gets none, and a bridge's concrete is never uploaded twice (R8 copied
+  every chunk's whole concrete layer and discarded the bridges' faces in the shader). So the
+  ceiling shades the deck inside and the collar the approach.
+- **Thickness** (round R8b). The lining is `TUNNEL_LINING_THICKNESS_M` (0.5 m) thick: a shell of
+  outer walls that far outside the walls and a roof that far above the ceiling, buried in the
+  hill (`PieceMesh::shell_triangles`). Its feet at a mouth corner are a function of the row's two
+  corners (`shell_foot`), so pieces sharing a mouth share its edges bitwise; a node piece mitres
+  its chain vertices out and roofs itself with its ceiling's triangulation over the shell tops (no
+  new triangulation and no new failure). Why: R8's thin walls left a line of sun on the sidewalk
+  along their feet. With the lining the only caster (roads and terrain only receive shadows),
+  the nearest caster on the sun's ray from a point beside a wall's foot was that wall,
+  centimetres away, and a shadow map keeps a receiver lit within its bias of its caster. With the
+  shell the nearest caster is at least the thickness away. The bias is unchanged and no shader
+  hides anything. `O(chain vertices + ceiling triangles)` per lined piece.
+- **Lamp strips** (round R8b, the user's choice). On a lined span's walls and ceiling the lining's
+  UVs carry the lamp station along the bore (`x`) and the height above the deck (`y`): the rows'
+  stations scaled so that a whole number of `TUNNEL_LAMP_SPACING_M` (10 m) spacings fits the bore
+  (at least one), so the lamps sit symmetric in every span and evenly spaced within 5% of 10 m.
+  End walls, collars, the shell and lined node pieces carry `y = -1`: no lamps. The concrete
+  shader draws a 1.2 m emissive band across the ceiling at the middle of each spacing and lights
+  the walls with emission from the same coordinate, strongest under the ceiling and fading over
+  2.5 m along the bore. No `Light3D` per lamp: the cost is a few ALU operations per lining
+  fragment (none for a bridge's), nothing on the CPU. The deck is not brightened (its layers
+  carry no station); the interior keeps 60% of the ambient, so it stays readable.
+- **Bounds.** A lined piece's XZ bounds hold its lining (the shell and the collars reach the
+  lining's thickness past the deck; R8c's 11 m wings are gone), so a chunk the shell reaches into
+  lists the piece when it alone is rebuilt.
+- **Whole-map view.** The lining is a few hundred triangles per tunnel, all in the chunk's
+  lining layer under the hill, so a whole-map view drops it with the road chunks it already
+  culls or simplifies by distance: from far away only the collar shows, and a coarse view can
+  draw the collar alone (its triangles come after the lining's) or nothing. Nothing of it is
+  built here.
+
+**Tests** (fresh, 2026-11-01, release lib subset and the debug suite in the gates):
+`road_tunnels::a_steep_hill_over_a_bore_keeps_its_height` un-ignored and passing (the 1:2 cone's
+graded ground over the bore equals the hill to 1 cm at x = -30, -8, 8 and 30);
+`the_lining_closes_the_bore` (the tunnel through the 1:2 hill: every lining and headwall edge is
+shared bitwise with another face, deck, curb face, skirt, lining or headwall, but the headwalls'
+outer edges; lining faces face the bore's axis, headwalls their approach);
+`the_lining_closes_buried_ends_and_bends` (R2's buried probe continued by a second tunnel round a
+bend: the bend's node piece is lined, the free ends closed, no open edge, no headwall underground);
+`graded::portal_tests::no_cone_reaches_past_a_portal_row` (the T22 fixture: past the row the
+ground is the hill at every `GL0` point out to 63 m and across the bore's sides, the cut before
+it, the hill under the deck at the row, the bake's packed values equal the queries', pruned equals
+unpruned at every level, batch, order and worker count); the road families' chunk check now closes
+a tunnel's sides with its lining (the exemption for them is gone) and exempts only the headwalls'
+outer edges. Changed for the new rule: `the_surface_over_a_bore_is_the_hill` (2 m into the bore
+the hill, unmasked; 2 m before each mouth the approach's deck), `the_hill_over_a_bore_keeps_its_plants`
+(the hill keeps its plants up to 6 m from the rows), `structure_mouths_wall_the_graded_ground` (no
+terrain face on a portal row). The roadbed strip probe hashes the lining; its six tunnel entries
+are re-recorded, every other entry unchanged.
+
+**No change without tunnels** (fresh). Hashes of the roadbed pieces (positions, road space,
+triangles, chains, wall runs, strips, caps, abutment faces, portal rows, bounds), the road payload's
+buffers, the graded tiles at `GL0`-`GL2`, the vegetation scatter and the surface queries on a
+3.7 m grid, recorded on `f97a85e0` before the change and on this round's code, release test
+binaries: a 1:4 hill with a surface road and a bridge `2ea91063b19c5506 b4754ee0b61a4ac3
+1c612c59b9d809a0 757c8f1202962b63 ffb245475d0d5ccb`; a 1:2 hill with a surface road
+`0e303ce5c6ff35d9 93d52d7d97680eb7 2d7a29cf73e8b32f 5e81711625c10d75 17caa53686614f34`; the grown
+starter town `4b50aba160f94f42 eba822c50552e5ad 254bb17558de5067 288abc8d84adaadd
+240fa2bd45b8484b`: equal. The probe is not committed.
+
+**Screenshots** (gamescope headless 1280x720, isolated profile, release library, kept in
+`$ARTIFACTS`): inside the bore with a car, R2's portal camera, a closer mouth camera, R2's overhead
+camera (no step or stripes over the bore) and the sculpted hill from the side (1:2 around the
+portals: 3.8 m at x = -80, 8.3 at -70, 13.8 at -60, 20.0 at -50). Rendered sky test
+(`road_tunnels_test.gd`, `METRUM_ROAD61_SKY_TEST=1`): the camera's own environment keys the sky to
+one colour; a control frame from the approach shows 150,937 key pixels, the view along the bore
+from its middle 0 outside the far mouth's opening (40 through it).
+
+**Cost.** Lining `O(sections + bands log bands)` per tunnel span (two walls and a ceiling per
+section row, a plane triangulation per end face) and `O(V log V + V^2)` per lined node piece for
+its `V` chain vertices (the ring's CDT and its vertex lookup, as the free end's cap); built once per
+piece in the compile, nothing for any other piece. Terrain: a point within the cap of a portal row
+tests it, `O(rows)`, and past a row each candidate seam's nearest point, `O(rows)` per candidate;
+the rows come from the grounded pieces each bake and query gathers anyway; without a row the
+evaluation runs as before (one false per lane). Selection: a changed tunnel span widens its
+candidates by the cap (was the 10 m reach) and compares rows only.
+
+**Timing (fresh, 2026-11-01).** Release test binaries, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`,
+both timing locks, C F F C. Ordinary strokes (02:11, load 1.98 at the start): `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, control `f97a85e0` (C), this round's `1176db0b` code (F). Products identical
+(payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 / 4.62). p50 ms,
+C1 C2 / F1 F2: `sloped_t` total 2.801 2.817 / 2.832 2.787, roadbed 0.311 0.316 / 0.322 0.314;
+`sloped_branch` total 2.436 2.467 / 2.496 2.535, roadbed 0.315 0.321 / 0.316 0.323; plan, payload
+and graded within the controls' spread. No claim either way. A tunnel stroke (02:21, load 1.71):
+`road_tunnels::benchmark_tunnel_preview_stages` (eight poses of the stroke through the 1:2 hill,
+400 samples), the control `f97a85e0` with only that test added, p50 (p95) ms, C1 C2 / F1 F2:
+plan 0.177 0.174 / 0.183 0.177; roadbed 0.208 0.203 / 0.238 0.229 (0.269 0.260 p95); payload
+0.269 0.271 / 0.322 0.317 (1,188 lining vertices per pose); graded 2.946 2.942 / 2.846 2.850
+(3.227 3.259 / 3.128 3.091 p95); total 3.585 3.570 / 3.571 3.542. The lining costs about
+0.03 ms of roadbed and 0.05 ms of payload per pose, within their 0.5 and 1.0 ms budgets; the
+graded stage is 0.1 ms cheaper (no cut past the rows, no opening) and stays at its 3.0 ms budget
+at p50, over it at p95 as before (the steep hill's approach cut).
+
+**Locality (fresh, same session as the ordinary strokes).**
+`road_plan_scaling::populated_tunnel_road_plan_scaling` on the control and this round: the
+prepared points equal at 0 / 1k / 10k / 100k remote buildings (asserted); compile p50 0.048 0.043
+0.043 0.043 ms (control) and 0.042 0.063 0.042 0.042 ms; preview p50 0.026 0.023 0.023 0.024 and
+0.024 0.036 0.024 0.024 ms; the once-per-edit snapshot 0.004 -> 0.210 ms and 0.003 -> 0.202 ms.
+Planning follows the stroke's neighbourhood; the round touches no planning code.
+
+**Rounds R8b and R8c (branch `port-r8b-tunnel-polish`, 2026-11-01).** The lining's own layer,
+its thickness and the lamp strips are described above; the wing tops under "Headwall" and
+"Terrain". Release test binaries, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks,
+C F F C against the control `9c633119` (R8's `8fcd4f07` plus the benchmark fixtures).
+
+- *Tests* (fresh): `the_lining_is_its_own_layer`, `the_lining_carries_the_lamp_station`,
+  `the_lining_shell_stands_a_thickness_out` (R8b), `the_ground_is_graded_to_the_headwall_wings`
+  (R8c); `no_cone_reaches_past_a_portal_row` now expects the wings' cones beside the bore and the
+  hill over it; the roadbed strip probe's six tunnel entries are re-recorded in R8b and again in
+  R8c, every other entry unchanged.
+- *Preview payload of tunnel-free strokes* (`ROAD-61` R8c item 1). R8b's candidate paid about
+  0.04 ms more payload than the control (p50, R8b's session, 08:25: `sloped_t` 0.365 0.356 (C) /
+  0.408 0.399 (F), `sloped_branch` 0.358 0.365 / 0.408 0.410). Profiled (`perf record --call-graph
+  lbr` on `benchmark_road_preview_stages`, both binaries): the lining layer's four empty arrays
+  cost nothing measurable (`render_payload_is_valid`, `owner_vertex_ranges` and the allocator kept
+  their samples); the excess was in the per-triangle chunk router
+  (`push_triangle_to_layer_with_crossing`, 1,296 to 1,994 samples), which copied the triangle onto
+  its stack in 16-byte stores and read its points back for the bounds in a 16-byte load that
+  straddled two of them: a failed store-to-load forward per triangle. `WorldTriangle` now borrows
+  the caller's arrays (`render/road/chunks.rs`). Fresh, 09:31 and 10:09 (load 1.83 and 1.84 at
+  the start): payload p50 `sloped_t` 0.361 / 0.378 0.375 / 0.355 and 0.358 / 0.372 0.385 / 0.355,
+  `sloped_branch` 0.353 / 0.374 0.374 / 0.351 and 0.399 / 0.382 0.383 / 0.366 (C / F F / C),
+  products identical (9,845 / 9,973 payload and 4,188 / 6,475 hidden vertices per pose, 7.38 /
+  4.62 graded tiles). The router and the clipper are back at the control's samples (1,704 against
+  1,680); a residual of about 0.02 ms (5%) remains, spread over the router's entry and
+  `push_layer_triangle`, whose code is the control's; not removed in this round (an `#[inline]` on
+  `push_layer_triangle` did not change it: 0.377 0.371 / 0.367 0.371). Graded stage unchanged
+  (p50 `sloped_t` 1.748 1.780 / 1.767 1.821, `sloped_branch` 1.513 / 1.510 1.502, one control
+  sample disturbed). A tunnel stroke (`benchmark_tunnel_preview_stages`, p50): roadbed 0.223
+  0.229 / 0.233 0.236, payload 0.312 0.318 / 0.371 0.373 (1,188 to 2,329 lining vertices per pose:
+  the shell and the wings' extra vertices), graded 2.861 2.859 / 2.864 2.874, total 3.553 3.579 /
+  3.637 3.649 ms, within the 0.5, 1.0 and 3.0 ms stage budgets at p50.
+- *Godot upload and the Rust chunk benchmark* (R8b's session, historical for R8b's code; R8c
+  changes neither the upload nor the chunks' layers): the bridge fixture's chunks lost their
+  shadow copies (4 copies of 7,200 vertices to none, stage p50 11.97 to 11.66-11.72 ms); the tunnel
+  fixture keeps its 4; `full_network_emit/64` 9.95 / 9.88 (C) against 9.68 / 9.67 ms.
+- *No change without tunnels* (fresh, R8c's final code against `9c633119`, R8's probe, not
+  committed): roadbed pieces, road payload buffers, graded tiles at `GL0`-`GL2`, vegetation and
+  surface queries on the 1:4 hill with a road and a bridge, the 1:2 hill with a road and the grown
+  starter town hash equal (R8's recorded values), and the payload's lining arrays are empty. A
+  bridge chunk's payload differs from R8's only by the lining layer: four more dictionary entries
+  (`lining_vertices`, `lining_normals`, `lining_uvs`, `lining_colors`), each an empty packed
+  array (in Godot the chunk mesh's `road_layer_surfaces` meta gains an eighth entry, `-1`: no surface);
+  its concrete arrays are bitwise R8's, and R8's shadow-only copy of its concrete is gone.
+- *Screenshots* (gamescope headless 1280x720, isolated profile, release library of the final
+  code, kept in `$ARTIFACTS`): R8's camera sheet, the wing close-ups before (R8b) and after, and
+  the variants below. Rendered sky test: 140,117 key pixels from the approach (control), 0 outside
+  the far mouth from the bore (713 through it).
+- *Cost.* Wing tops: two more headwall vertices per portal, nothing else in the roadbed. Bake:
+  two wing seams per portal row in windows within the cap of a portal, `O(rows)` per wing hide
+  test; elsewhere one kind test per candidate seam.
+
+**Tunnel mouths in the user's saves (round R8d, 2026-11-01).** The user played R8 + R8b + R8c
+and reported broken-looking mouths: dark triangles round the mouth, black headwalls and wings,
+black wedges standing out of the hill, missing polygons, a broken headwall top on a 4-lane tunnel
+and stripes up a steep hill. Their two debug dumps (format 109): dump A, 3 straight tunnels, 6
+mouths; dump B, 13 tunnels, 26 mouths (curved, 4-lane 460 m and 40 m, short 24-83 m, one
+1,123 m, three side by side 22 m apart, grades up to +26 %). Every mouth was measured by a probe
+over the loaded dumps (the hill's slope and its angle to the approach, the cover at the corners,
+curvature, the nearest portal, the frame's exposure above the graded ground, the lining's and the
+shell's exposure, open edges) and shot from three fixed cameras per mouth (gamescope headless,
+isolated profile, sheets in `$ARTIFACTS`). Defect classes and root causes (FRESH):
+
+| Defect (user's words) | Mouths | Root cause (evidence) | Status |
+| --- | --- | --- | --- |
+| Black headwalls and wings | all 32 | `emit_lining` gave every lining-layer triangle `lining_color()` (alpha 0), so the concrete shader kept the headwalls, wings and shell out of the sun and the sky | fixed (below) |
+| Dark sawtooth triangles in the rock | most | the black wing showing through the lattice cells that straddle its plane (the accepted sliver, `TERRAIN-18`); with outdoor light the teeth are concrete grey on rock | lighting fixed; sliver stays `TERRAIN-18` |
+| Wedges and fins out of the hill | all 32 | the fixed frame (top 5.5 m above the corners, 11 m wings) is shaped without the hill: where the cover at a corner is below 5.5 m or the hill falls sideways, the top stands 0.57-3.05 m above the ground behind it (5.9 m beside a neighbour's cut, dump B side by side) | design (options below) |
+| Lining standing out along the bore, "missing polygons", the black ellipses between side-by-side tunnels | 15 of 32 (over 0.5 m at 9, all in dump B) | cover is tested at the centre line's 4 m knots only (`tunnel_bore`), while the section is 10-17 m wide plus the shell and the hill slopes across it (corner cover down to 2.9 m); the shell's roof (4.5 + 0.5 m) sits exactly at the 5 m clearance; between side-by-side tunnels a neighbour's approach cut, not hidden past a staggered row, lowers the hill over the next bore onto the roof | decision (cover over the section) |
+| Broken headwall top on the 4-lane tunnel | dump B 40 m 4-lane (both mouths), dump A 4-lane | not the headwall (its 10 triangles per row close, area as built, 0 open edges at every mouth): on dump B's 40 m one the ceiling and shell rise behind the top on an uphill bore the hill does not cover (roof up to 3.3 m above the top line, ceiling 2.2-2.9 m above ground); on dump A's, whose hill falls 3.8 m across the 17 m row, the cut in front of the uphill wing stands up to 1.1 m above the wing's top | as the rows above |
+| Stripes up a steep hill | dump A slope 65 %, dump B 52 % | R8c's wing grading on hills steeper than 1:2 (below) | design (options below) |
+
+No mouth shows open headwall edges, wings standing on another road (0 of 44 samples per mouth)
+or a chunk-line gap. Curved mouths (turn up to 13° over 40 m) and slanted ones (approach up to
+87° off the fall line) show the same classes as straight ones, worse where the hill falls across
+the row. Grades: tunnel edges of +23.6 % and +26.1 % were committed; no grade rule limits a
+tunnel (reported only). The junction the user forgot, built on copies of dump A (a road from
+the approach's centre line `d` m out from a portal row, 40 m to one side, snapping): refused at
+3-6 m (`junction_arm_too_short`) and 8-15 m (`junction_corner_does_not_fit`), committed at 20
+and 30 m with both portals unchanged and closed; a side road drawn level into the hillside
+without the tunnel intent commits as a tunnel edge (classed from its buried end) whose one portal
+has 1.2 m of cover (the intent-less classification, `tunnel_probes_without_tunnel_intent`).
+
+*Fix (commit `fix(render): headwalls and the lining's shell take outdoor light`).* Only the bore's
+faces (walls, ceiling, end walls) take the lining's colour; headwalls and the shell take the
+outdoor concrete's (alpha 1: sun, sky, full ambient, no lamp UV). Test
+`road_tunnels::only_the_bore_keeps_the_lining_light` (a lining-layer face carries alpha 0 exactly
+when it carries the lamp station). No change without tunnels: the R8 product probe (pieces,
+whole payload with the lining arrays, GL0-GL2 tiles, vegetation, queries) on the hill + bridge,
+1:2 hill road and grown town gives equal hashes on `ff6a4723` and the fix, both built fresh.
+
+**A mouth that fits the hill (R8d's open question, closed: the user chose option T with walls,
+2026-11-01; built in rounds R8e and R8f).** The frame cannot fit varied
+hills because the roadbed reads no terrain. Options (stills of the committed mouth beside option
+T on the same cameras over both dumps' worst cases, steep, gentle, slanted, curved, side by side,
+short, wide and the junction, in `$ARTIFACTS`):
+
+1. *Flared wingwalls* (not prototyped): wings along the approach cut's side slopes in plan, tops
+   down the cut slope, the ground graded to them by cut and fill within a bounded window. Bound
+   `O(rows)` per hide test as now, two seams per row. Risk: fill cones are lower bounds (new for
+   portals; conflict-wall and pruning interplay); the wing's height profile still comes from graph
+   data, so on slanted hills the window becomes a visible mound or cut.
+2. *Headwall height from cover* (not prototyped): measured at road-edit commit (validation already
+   reads the cover), stored per portal row with the graph, `O(1)` per row. Save format 110 and the
+   Kuopio reference re-recorded. A later terrain edit leaves the stored height stale (fins or gaps
+   return) unless the terrain tool re-measures and rewrites it as a graph edit; it fixes the
+   headwall's top, not the wings on slanted hills.
+3. *Option T, the terrain-owned portal* (prototyped): the roadbed keeps the bore's lining and a
+   0.5 m collar round its mouth (no wings); the bake hides the approach's own cones in a trough
+   within 40 m in front of each portal row, so the hill stands natural up to the approach's edges,
+   and builds the retaining faces with `walls::build_structure_walls` (as for bridge abutments):
+   along the approach's seams in the trough and along the row above the collar. The wall tops
+   follow the graded ground; the roadbed reads no terrain. Stills: no fins, no wings, no stripes
+   up the steep hill, no wings to overlap side by side, and the ellipses between side-by-side
+   tunnels gone (each trough hides its approach's cut); the prototype's trough walls show sky gaps
+   and crenellated tops, not root-caused (its wall seams are the road seam list, not the mask's
+   discard boundary). Bound: the hide test stays `O(rows)` per (sample, seam) pair; walls
+   `O(trough seams x lattice crossings)` per tile, only in windows within the cap of a portal.
+   Graded-stage cost not measured (prototype); it drops two wing seams per row and adds trough
+   walls, against the 3.0 ms stage (the tunnel stroke's graded p95 is already 3.1 ms, R8c).
+   Production: the trough by piece (the approach span sharing the mouth, by station), not by the
+   row's straight strip, so curved approaches and a junction 20 m out keep their own cones; the
+   trough ends where the natural ground meets the deck (found by the bake, deterministic), so no
+   step at its end; on fill the same walls retain the road.
+
+Recommendation: option T, with the cover tested over the whole section (the shell's outer top
+corners at every knot, quick and exact validation alike, `O(knots)`), which no mouth design fixes.
+
+**Walled approaches, the terrain side (option T, round R8e, 2026-11-01).** The user chose option
+T with walls, not slopes: wherever the road runs below the ground in a tunnel's approach a
+vertical wall stands from the road's edge up to the graded ground, from the row's corner to where
+the ground meets the road, resuming where the road dips again; no fixed trough length, and the
+design stays general for a future flat-ground ramp entry (the trough is a property of the seam).
+A junction whose node lies below the source terrain inside an approach is to be refused
+(`junction_in_trench`, the tool half, round R8f). Landed (the terrain's mechanism in
+[`terrain.md`](terrain.md#graded-terrain-surface-terrain-07), "Walled approaches"): the roadbed
+flags an approach span's chain segments as retained (`PieceMesh::retained`, from
+`SpanEnd::WallRun { abutment: false }`), in the `ChainChanges` key and the tile inputs; a
+retained seam bounds the ground from below only and a covered sample naming it takes the
+ground's value, so the seam stays named and the mask is exact on it; the bake stands the trough's
+walls along retained seams and the row wall above the headwall's top; R8c's wing seams are gone
+from the terrain. The roadbed's headwall and its wings stood until round R8f's collar (below).
+Measurements (FRESH, 2026-11-01):
+
+- No change without tunnels: the R8 product probe (town, hill and steep fixtures) gives equal
+  hashes on `bdabf8ed` and R8e, both release builds of the same session.
+- The user's dumps (A, B and the junction copy at M1; 8 hard cases, R8d's cameras plus two keyed
+  views per mouth from above, gamescope headless, isolated profile): 0 key-coloured sky pixels on
+  every keyed view after (before: up to 47 per view through the R8c frame). The first run showed
+  whole trough walls missing (up to 27,560 key pixels): a render patch drew at most 256 wall
+  faces, fixed (above). The fins, the wing grading's stripes up the steep hill and the
+  neighbour's cut between side-by-side tunnels are gone; the wings still stand.
+- `benchmark_tunnel_preview_stages` (release, 4 workers, P-cores, C F F C against `bdabf8ed` in
+  one session; graded p50/p95 ms): 1:2 hill control 2.878/3.135 and 2.883/3.142, R8e
+  2.879/3.147 and 2.878/3.143; 1:4 hill (`METRUM_TUNNEL_BENCH_HILL=gentle`, long walled cuts)
+  control 2.839/3.109 and 2.864/3.120, R8e 2.857/3.116 and 2.869/3.119; totals 3.57-3.66 p50,
+  3.91-3.97 p95 in all four. The graded p95 stays over the 3.0 ms stage as before R8e (R8c's
+  3.1 ms); R8e adds at most 0.01 ms. `benchmark_road_preview_stages` (tunnel-free strokes):
+  payload, skirt, hidden and graded tile counts identical; graded p50/p95 `sloped_t` 1.944/2.811
+  and 1.880/2.655 control, 1.881/2.678 and 1.826/2.386 R8e; `sloped_branch` 1.702/2.945 and
+  1.645/2.639 control, 1.597/2.487 and 1.710/3.056 R8e (noise).
+
+**The collar and the tool's rules (option T, round R8f, 2026-11-01).** The roadbed and tool
+side of option T; the user's decisions taken as settled: walls, not slopes; `junction_in_trench`
+refused; exact wall tops kept (no faces cap).
+
+- *The collar* ("Collar" above). `headwall_wing`, `HEADWALL_WING_M` and `HEADWALL_WING_SLOPE`
+  are deleted, `HEADWALL_HEIGHT_M` (5.5 m) became `COLLAR_HEIGHT_M` (5.0 m), `LiningPart::Headwall`
+  `Collar`. The terrain's row wall stands on the collar's flat top (round R8e). The bounds shrink
+  from the wings' 11 m to the shell's 0.5 m past the deck: the roadbed strip probe's six tunnel
+  entries are re-recorded (spans and queries; every other entry unchanged).
+- *Cover across the bore* ("The bore" above). On the user's two dumps (16 tunnels, 32 mouths;
+  each stroke rebuilt from its committed approach, bore and approach edges, `$ARTIFACTS`
+  probe): no tunnel would be refused, because the least section cover always lies at a portal,
+  never between them; drawn again, 14 tunnels get their portals 4-16 m further in (2 keep them).
+  At their committed portals the shell's roof corner stands above the hill by up to 2.17 m (dump
+  B's 24 m tunnel on the 1:2 hill), 0.03-1.32 m at 13 others, under it at 2. The saves keep their
+  tunnels as built: nothing is checked or repaired on load. Where the hill falls across a
+  committed row below the collar's top, the top's corner shows as a concrete edge above the low
+  side and the shell's roof as concrete in the hill; nothing opens.
+- *No tunnel without the toggle* (the tool above). A stroke without the toggle is classed by the
+  standard profile alone: on the test hills a level stroke into a 15 % hill commits as a grounded
+  road that climbs it, and into a 1:2 hill it is refused as `road_too_steep` (quick = exact =
+  commit; `tunnel_probes_without_tunnel_intent`). R8d's level side road on dump A was not re-run. The editor's class change
+  (`set_edge_class_internal`) still sets any class. Found on the way: a grounded road made a
+  bridge by that class change splices a road chunk that differs from a full emission
+  (`ROAD-97`, fixed in round R3a: the cause was emission order, below).
+- *`junction_in_trench`* (refusals above). On a copy of dump A, R8d's side roads 3, 6, 8, 12, 15,
+  20 and 30 m from mouths M1 and M5, both sides: all refused, the deck 1.04-4.55 m (M1) and
+  4.31-4.76 m (M5) below the source ground. The approaches are the strokes' straight chords under
+  convex hills, so they stay below the ground to the strokes' starts: M1's cut is 68 m long and
+  M5's 112 m (the long-cut case), and a junction on such an approach can only be made at its
+  far end, on the ground. R8d's 20 and 30 m junctions on M1 committed before; its junction copy
+  keeps its junction as saved (its node piece graded in a cut against the walls, as R8e left it).
+- *A bend's lining* (found by this round). With the toggle the only way to draw a tunnel, a bend
+  drawn on the 4 m lattice left a zero-area face in its node piece's ceiling over three ring tops
+  collinear to within rounding (the shared triangulator's centroid inside test keeps such a
+  sliver); `node_lining` drops a face over three consecutive ring vertices listed against the
+  ring's winding (exact, tunnel node pieces only).
+- *Wall faces' lighting* (item 5; [`terrain.md`](terrain.md#graded-terrain-surface-terrain-07),
+  "The collar and the tool's rules"). The trough walls' dark slate was lighting, not material: the
+  wall quad was wound so that Godot drew the road's side as a back face and negated its normal.
+  Fixed in `terrain_graded_tiles.gd`; every graded wall (conflict walls and abutments too) is lit
+  from its own side now.
+
+Measurements (FRESH, 2026-11-01, release test binaries and library of the round's tip against
+the control `86d3d87d` (R8e), both with R8's product probe and the gentle benchmark option):
+
+- *Tests.* `the_lining_closes_the_bore` (the collar: every edge shared but its own at or below
+  the row, flat top at 5.0 m, no point beyond the 0.5 m reach), `the_hill_meets_the_collar`,
+  `tunnel_probes_without_tunnel_intent`, `a_tunnel_keeps_its_cover_across_the_whole_bore`,
+  `a_junction_in_a_tunnel_approach_trench_is_refused`, the bend tests drawn with the toggle; R8's
+  sky test and every R2, R2b, R8 and R8e tunnel test pass (debug suite: 1,884 passed, 0 failed).
+- *No change without tunnels.* R8's product probe on the town, hill and steep fixtures: equal
+  hashes on the control and this round. The wall quad's winding changes how every graded wall is
+  lit (a Godot render change, not a Rust product).
+- *The user's dumps* (R8d's three cameras per mouth on all 32 mouths plus one plan view per mouth
+  with the sky keyed, and the junction copy's four views; gamescope headless, isolated profile,
+  hour 13; sheets and before/after sheets against R8d's in `$ARTIFACTS`): no wing, fin, wedge or
+  stripe; walled cuts on every approach; 2 key-coloured pixels over 34 keyed views (dump B
+  `P-M9` and `P-M22`, one each), at a trough wall's foot on the deck's outer edge, the same
+  pixels with the control library: a pinhole where the wall's bottom edge, split at lattice
+  crossings, meets the deck's edge, split at its section rows (R8e's code; open).
+- *Cost* (`RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.68, C F F C in one
+  session). `benchmark_tunnel_preview_stages` p50/p95 ms: 1:2 hill graded C 2.899/3.190,
+  2.883/3.143, F 2.882/3.136, 2.880/3.133; total C 3.653/3.971, 3.634/3.973, F 3.663/3.950,
+  3.650/3.976; plan p50 C 0.168, 0.176, F 0.195, 0.194 (the full-width cover's five lattice
+  points per knot and the half width's one edge, +0.02 ms); 1:4 hill graded C 2.846/3.125,
+  2.852/3.100, F 2.862/3.112, 2.848/3.129. The graded p95 stays over the 3.0 ms stage as since R8c
+  (control and round alike). Lining vertices per pose 2,329 -> 2,326 (1:2), 2,592 -> 2,574 (1:4).
+  `benchmark_road_preview_stages` (tunnel-free): payload, hidden and graded tile counts equal;
+  total p50 `sloped_t` C 3.214, 3.011, F 2.912, 2.929; `sloped_branch` C 2.676, 2.752, F 2.746,
+  2.584 (noise; no claim). Bounds: section cover `O(knots x (2 ceil(W / 4 m) + 1))`,
+  `junction_in_trench` `O(affected nodes x degree^2)`, the collar 12 ring points per portal row
+  (`O(1)`), the bend's sliver rule `O(ring)`; none allocates per knot or reads the city.
+- *Locality* (`road_plan_scaling::populated_tunnel_road_plan_scaling`, same session, C then F,
+  the check R8e could not run): local products identical at 0, 1k, 10k and 100k remote buildings
+  in both; compile p50 C 0.069 0.103 0.043 0.043 ms, F 0.062 0.162 0.113 0.063 ms; preview p50 C
+  0.039 0.025 0.024 0.024 ms, F 0.036 0.067 0.036 0.036 ms; snapshot once per edit 0.005 ->
+  0.214 ms (C), 0.003 -> 0.212 ms (F). Planning follows the stroke's neighbourhood: flat from 0
+  to 100k (the 1k point is the noisy one in both).
+
+**The trough wall's foot (round R8g, 2026-11-01).** R8f's two sky pixels (dump B, `P-M9` and
+`P-M22`, present since R8e) are rays grazing the corner where a trough wall stands on the deck's
+outer edge. Evidence (FRESH, `$ARTIFACTS` probe: each key pixel's ray from the capture, cast in
+`f64` against dump B's roadbed pieces, skirts and baked `GL0` wall faces): the rays cross the
+chain's vertical plane 0.47 mm below (`P-M9`, span 13, 6 cm from a chain vertex) and 0.96 mm above
+(`P-M22`, span 33, mid-segment) the deck's edge, 45.7 and 48.8 m from the camera, where a pixel is
+about 0.1 m: within 1 % of a pixel of the corner line. The wall's bottom vertices lie on the chain
+within 7.5e-6 m and the skirt's top is the chain bitwise, so nothing is open in the geometry; the
+face stood exactly on the edge, meeting the deck in a T-junction between two meshes (its bottom
+split at lattice crossings, the deck's edge at section rows, each in its own `f32` frame), and a
+ray that the rasteriser let through between them above the skirt went on under the hill, where
+nothing is drawn. Both pinholes lie on curved approaches; the cause is not the curve.
+
+- *Fix* (`walls::build_structure_walls`, [`terrain.md`](terrain.md#graded-terrain-surface-terrain-07)
+  "Walled approaches"): a trough face stands from the skirt's bottom, `SKIRT_DEPTH_M` (0.5 m)
+  below the road's edge, so the edge lies inside it. The part below the edge lies behind the deck
+  from the road and under the ground from the hill (the ground stands at or above the edge along
+  every trough face). Same face count, one `f64` subtraction per face. Not a deeper skirt and no
+  mask (seam contract 10). Every other wall keeps its bottoms bitwise. A conflict wall's foot
+  meets the deck the same way, but beside a conflict wall the ground can dip below the road,
+  where an overlap would show against the skirt: left as it is (no pinhole seen; none of the
+  keyed views targets one).
+- *Test* `graded::portal_tests::the_roads_edge_lies_inside_every_trough_wall` (fails at
+  `ef7c5f2b`: the edge lies on the face's bottom; passes after);
+  `the_trough_is_walled_where_the_road_runs_below_the_ground` expects the new bottom.
+- *Sky key* (FRESH, gamescope headless, isolated profile, R8f's capture script and cameras, hour
+  13): R8f's 34 keyed views of dumps A, B and the junction copy: 0 key pixels (the R8f library on
+  the two pinhole views, same session: 1 and 1). Added views where the cause could show: every
+  trough wall run's end away from a portal row (where the ground meets the road; 41 ends, each
+  from both directions along the road at pitch -1.25 / 45 m and -0.85 / 30 m) and the middles of
+  the curved (0.15-0.50 rad of turn) and wide (17 m) approaches, 182 views on dumps A and B: 0
+  key pixels with this round's library; the R8f library shows 1 more (dump B, a wall end on the
+  most curved approach, at the wall's foot).
+- *No change without tunnels* (FRESH, same session): R8's product probe on the town, hill and
+  steep fixtures gives equal hashes with and without the fix (and R8f's).
+- *Cost*: not timed (the coordinator's decision, 2026-11-01): no added work, by construction. The
+  fix lowers the existing trough faces' two bottom values by `SKIRT_DEPTH_M` before their one
+  `f32` rounding; vertex and face counts, the code path and the payload size are unchanged and
+  nothing is allocated. The walls stay `O(retained seams x their lattice crossings)` per tile, one
+  `f64` subtraction per face more. R8f's measurements stand for the stage.
+
+**Roads over tunnels, and zoning above a bore (round R8h, 2026-11-01, `ROAD-98`).** The user's
+play-test of `dev` `dc979ad8` (dump C) found two bugs.
+
+- *A road on the hill over a tunnel was refused.* Cause (FRESH, dump C copy, release test binary
+  of `dc979ad8`): a snapped stroke's profile is pinned to the visible carriageways it crosses
+  (`StrokeSupport::height_at`), and that query read every piece, the tunnel's buried span among
+  them, so the profile dived to the bore's deck under the hill: across tunnel 6 from 149.2 m to
+  129.3 m, across tunnel 2 from 161 m to 144.3 m, both `road_too_steep` in the hover check, the
+  preview and the commit; without snapping the same strokes follow the hill. The user's stroke
+  reported `surface_geometry_invalid` from the same pin (its tunnel was gone by the time of the
+  dump). Fix: the support reads exposed pieces only
+  (`RoadbedSystem::for_each_exposed_carriageway_top_at`; since
+  [`ROAD-99`](#grade-separation-road-99) grounded pieces only, so no bridge deck pins it either).
+- *Grade separation.* A stroke that is not a tunnel never splits an existing tunnel where it
+  crosses it, at any height (`topology::collect_crossing_splits`): no node, both edges intact.
+  The *clearance rule* (`tunnel::deck_over_tunnels_m`): over every lattice point of a crossed
+  bore's section (R8f's full-width lattice, out to the shell's outer faces) that the road's
+  footprint covers (its profile within its roadbed half width), the road's deck stands at least
+  `ROAD_OVER_TUNNEL_M` above the tunnel's deck, the cover rule (5 m) and the road's depth below its
+  deck (the skirt, 0.5 m), 5.5 m (the user's rule, 2026-11-01); otherwise `tunnel_too_close`.
+  Beside the deck the road's graded cut rises from it at 1:2, steeper than any road grade, so the
+  deck bounds the cut over the section. A portal row's knot is left to the trench rules
+  (`junction_in_trench`); the next knot, 4 m in, is checked. The hover check and the exact plan
+  read the same prepared points and excerpt (the exact plan after the junction rules); the bound
+  is the local excerpt, `O(log E + T x ceil(W / 4 m) x stroke points)` for the `T` tunnel knots
+  within reach, `ROAD_DECK_REACH_M` (32 m) bounding the excerpt query.
+- *The reverse order.* A tunnel stroke's section cover reads, at each lattice point, the lower of
+  the source terrain and the deck of a grounded road over it (`RoadDeck`,
+  `grounded_decks_near`): a tunnel drawn under a road in a cut keeps its cover under the road as
+  built, not under the hill. Without a road over the bore the cover is bitwise R8f's.
+- *Zoning above a bore* ([`zoning.md`](zoning.md)): the cell blocker and the painted-cell checks
+  (road edit and load) read exposed pieces only, so a tunnel neither clears, blocks nor refuses
+  the cells over its bore; on dump C all 469 cell candidates over tunnel 6 beside the long road
+  were missing before and are present after. The approach troughs keep what a road does.
+- *Surface use over a bore* (the user's rule, 2026-11-01; [`zoning.md`](zoning.md),
+  [`building_allocator.md`](building_allocator.md)): the land over a bore is used as land with no
+  tunnel under it. Lots (`footprint_blocked`), explicit sites (`validate_explicit_site_road_overlap`
+  skips tunnel edges), fields (placement and `FieldClearanceIndex::overlaps_road_piece`) and a
+  site's road probes (`SiteRoads`) read only roads on or above the ground; the building debug
+  probes and the road tool's cursor fallback read `exposed_height_at`. Nothing keeps a pad's cut
+  out of the bore's cover. Measured (FRESH, the graded ground on every bore knot's section lattice
+  against the shell's roof): the user's dumps hold no buildings; the ground stands below the roof
+  at 18 of 1,071 lattice points on dump A (at most 0.88 m) and 43 of 5,584 on dump B (at most
+  2.17 m), all on tunnels committed before R8f's full-width cover check, none under a lot; dump C
+  0 of 620. With a farm and a coal mine over tunnel 6 on dump C, 93 lattice points under their
+  lots keep at least 12.1 m above the roof; farms on a 1:8 and a 1:4 hill over a bore with 7-15 m
+  of cover level their pads 1.9 m and 5.1 m above the roof. No pad cut into a shell was seen; with
+  no earth cover a pad that levels below the hill over a bore at its minimum cover would.
+- *No frontage at a tunnel's entry* (the user's rule, 2026-11-01, from a screenshot of cells
+  lining a trench): a tunnel's approach span (`roadbed::is_tunnel_approach`, the span the roadbed
+  retains: a standard edge passing through into a tunnel's mouth; topology only, no terrain
+  height; allocation-free away from tunnels) fronts nothing. `RegionGraph::fronts_ground` is the
+  one predicate (live, standard, no approach) and `RegionGraph::takes_buildings` adds the
+  player's no-build flag; it replaces `Edge::takes_buildings` at every reader (parcels, lots,
+  explicit sites, compatibility expiry, attachment repair, road-side connections) and the
+  standard-class tests of cell generation, its continuity and curve history, the chunk warm-up
+  and lot frontage. The whole approach is excluded (the user's decision, 2026-11-01): the walled stretch ends where the graded
+  ground meets the road, a terrain product the graph and roadbed do not hold (reading it would put
+  terrain into every cell, lot and site check, the deferred lot plan's snapshots included). Cells
+  inside the trench were already blocked: the trench is the approach's road footprint. Tests
+  (failing at `5e5b91d5`, FRESH): `surface_over_tunnels::no_zoning_cells_line_a_tunnel_approach`
+  (18 cell hits along the trench before, 0 after; the continued road keeps its cells; painting
+  beside the trench finds no cell) and `no_building_fronts_a_tunnel_approach` (a farm beside the
+  trench was placed before, refused after; beside the continued road it is placed).
+- *Tests* (FRESH, each failing at `d4fc4818`): `surface_over_tunnels::a_farm_and_its_field_stand_over_a_tunnel`
+  (placed, the pad bitwise the farm's without a tunnel, its field committed),
+  `a_tunnel_is_drawn_under_a_field`, `cell_zoning::painted_cells_over_a_tunnel_take_lots`, and
+  `road_over_tunnels::a_road_too_close_above_a_tunnel_is_refused` at 3 m and 5.2 m. The cover
+  rule's constant is bitwise: R8's probe hashes and R8's products on tunnels through the 1:2 and
+  1:4 hills equal `dc979ad8`'s.
+- *Tests* (`nodes::sim::core::tests::road_over_tunnels`, all failing at `dc979ad8`, FRESH):
+  `a_road_over_a_tunnel_crosses_it_grade_separated` (hover = preview = commit, the preview's
+  pieces equal a fresh commit's bitwise, the tunnel edge and its nodes intact, undo restores every
+  piece), `a_road_too_close_above_a_tunnel_is_refused` (3 m in a cut), `a_tunnel_under_a_road_keeps_its_cover_under_the_road`,
+  `a_tunnel_under_a_road_keeps_the_roads_zoning_cells` (generated and painted, bitwise, undo), and
+  the ignored `the_users_dump_crosses_and_keeps_its_cells` (`METRUM_R8H_DUMP`, `METRUM_R8H_STROKES`).
+- *No change without tunnels* (FRESH): R8's probe on the town, hill and steep fixtures gives the
+  same hashes at `dc979ad8` and after (and R8g's).
+- *Cost* (FRESH, 2026-11-01 18:58, one C F F C session, release test binaries of `dc979ad8` (C)
+  and the fix (F), `RAYON_NUM_THREADS=4`, P-cores, exclusive timing lock, load 1.88 -> 1.79):
+  tunnel preview stages total p50/p95, 1:2 hill C 3.524/3.939 F 3.564/3.878 F 3.536/3.928 C
+  3.500/3.910 ms (plan p50 C 0.151 F 0.141 0.161 C 0.149), 1:4 hill C 3.477/3.895 F 3.515/3.967
+  3.553/3.954 C 3.479/3.889 ms (plan p50 C 0.138 F 0.153 0.174 C 0.155): the deck reads add at most
+  0.02 ms of plan, within the session's spread. Tunnel-free `road_preview_stages` total p50
+  sloped_t C 3.013 F 2.486 3.165 C 3.447, sloped_branch C 2.765 F 2.291 3.607 C 3.427 ms (noise;
+  the tunnel-free path adds one empty excerpt query). Locality (populated city, 0 / 1k / 10k / 100k
+  remote buildings, local products identical at every scale): the tunnel stroke compile p50 C
+  0.063 0.065 0.065 0.064, F 0.069 0.096 0.070 0.072 ms; the new road-over-tunnel stroke
+  (`populated_road_over_tunnel_plan_scaling`, F only: the control refuses it) compile p50 0.043
+  0.051 0.044 0.044 ms, hover check 0.020 0.024 0.020 0.020 ms, snapshot once per edit 0.004 ->
+  0.238 ms. Flat with the city.
+
+**Open (`ROAD-61`):**
+
+- A grade limit for every road class (`ROAD-96`, planned): tunnels of +23.6 % and +26.1 % are
+  committed in the user's saves and a tunnel stroke keeps its authored grade.
+- Junctions inside a trench (a per-edge trench flag so a side road can be a trench too, node
+  pieces inheriting it) and the flat-ground ramp entry (a descending authored profile): later
+  work, not in `ROAD-61`.
+- The load leg of the tunnel stroke's bitwise stage test (the test hill has no world config to
+  save).
+- The shared triangulator's centroid inside test (`triangulate_constrained_rings_xz`) can keep a
+  sliver over nearly collinear ring vertices for roads and building sites too; not observed
+  there, not changed.
 
 ## Road marking lighting — RENDER-12
 

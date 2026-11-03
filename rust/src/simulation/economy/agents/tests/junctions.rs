@@ -396,14 +396,27 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
 
     agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
+    // `ROAD-74`: its route has no step from its own sidewalk, and this walker has neither a
+    // destination to plan to nor a home: it is stranded, waits where it stands, with no crossing
+    // of its own and no teleport, and plans again on its backoff (one logged record).
     assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
     assert_eq!(agents.current_lane_id[idx], west_lane);
     assert_eq!(agents.lane_distance[idx], west_lane_len);
+    assert!(agents.access_flags[idx] & ACCESS_WALK_STRANDED != 0);
+    assert!(agents.current_path[idx].is_empty());
+    let waiting_at = (agents.pos_x[idx], agents.pos_y[idx]);
+    for _ in 0..60 {
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+    }
+    assert_eq!(agents.current_lane_id[idx], west_lane);
+    assert_eq!((agents.pos_x[idx], agents.pos_y[idx]), waiting_at);
     assert_eq!(
-        agents.current_path[idx],
-        vec![west_node, center_node, east_node]
+        agents.network_replan_failures[idx], 1,
+        "one retry after 5 s"
     );
-    assert_eq!(agents.current_path_index[idx], 1);
+    let lines = &agents.trip_failures.lines;
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains("stranded with no way home"), "{lines:#?}");
 }
 
 #[test]

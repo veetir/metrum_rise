@@ -30,7 +30,7 @@ pub(crate) mod street_lights;
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 
-// Discriminants index `NetworkMeshData`'s seven layers.
+// Discriminants index `NetworkMeshData`'s nine layers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
     Skirt = 0,
@@ -40,6 +40,8 @@ pub(super) enum MeshLayer {
     Road = 4,
     Marking = 5,
     Concrete = 6,
+    Lining = 7,
+    MedianGrass = 8,
 }
 
 /// Top-surface road renderer built entirely from compiled roadbed ownership.
@@ -594,9 +596,9 @@ fn push_triangle_to_layer_with_crossing(
     if let Some(partition) = mesh.chunk_partition.as_mut() {
         let owner = mesh.current_owner;
         let triangle = chunks::WorldTriangle {
-            points: vertices,
-            uvs,
-            paint: crossing,
+            points: &vertices,
+            uvs: &uvs,
+            paint: &crossing,
         };
         partition.route(&triangle, |chunk_mesh, local, uvs, paint| {
             chunk_mesh.current_owner = owner;
@@ -671,6 +673,18 @@ impl NetworkMeshData {
                 &mut self.concrete_uvs,
                 &mut self.concrete_colors,
             ),
+            MeshLayer::Lining => (
+                &mut self.lining_vertices,
+                &mut self.lining_normals,
+                &mut self.lining_uvs,
+                &mut self.lining_colors,
+            ),
+            MeshLayer::MedianGrass => (
+                &mut self.median_grass_vertices,
+                &mut self.median_grass_normals,
+                &mut self.median_grass_uvs,
+                &mut self.median_grass_colors,
+            ),
         };
         for index in 0..3 {
             target.0.push(vertices[index]);
@@ -740,6 +754,12 @@ fn cosmetic_road_age(edge: &crate::simulation::network::graph::Edge) -> f32 {
 
 pub(super) fn concrete_color() -> Color {
     Color::from_rgba(0.75, 0.75, 0.75, 1.0)
+}
+
+// A tunnel lining's concrete (`ROAD-61`): the concrete's colour, with alpha 0 marking the faces
+// the concrete shader keeps out of the sun and the sky and lights with the lamp strips.
+pub(super) fn lining_color() -> Color {
+    Color::from_rgba(0.75, 0.75, 0.75, 0.0)
 }
 
 pub(super) fn marking_dash_color() -> Color {

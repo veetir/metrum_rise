@@ -326,6 +326,8 @@ fn benchmark_parking_locality() {
                     bkw_lanes: 1,
                     snap_to_existing_roads: true,
                     preview: None,
+                    tunnel: false,
+                    median: None,
                 },
                 Instant::now(),
                 RoadEditMetrics::default(),

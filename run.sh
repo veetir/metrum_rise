@@ -1082,13 +1082,13 @@ if [ $TEST -eq 1 ]; then
     for bridge_test_script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        vehicle_ground_support_test selection_gesture_test ui_settings_test \
+        vehicle_ground_support_test selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_walkway_preset_test road_types_test road_builder_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
-        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test \
+        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
-        junction_debug_overlay_test road_rejection_report_test \
+        junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
         agent_inspector_test street_lamp_grid_test graded_tile_renderer_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
@@ -1108,6 +1108,14 @@ if [ $TEST -eq 1 ]; then
         exit 1
     fi
     if ! godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd; then
+        exit 1
+    fi
+    # The stranded block city the stranded-walker notice test loads (`ROAD-74`), written by Rust.
+    export METRUM_STRANDED_FIXTURE="$asset_test_profile/stranded-block.sqlite"
+    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib record_stranded_walkers_fixture -- --ignored); then
+        exit 1
+    fi
+    if ! godot --headless --path "$asset_test_project" --script res://tests/stranded_notice_test.gd; then
         exit 1
     fi
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"

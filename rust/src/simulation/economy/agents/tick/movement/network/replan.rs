@@ -4,7 +4,7 @@
 
 use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID,
-    TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
+    ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
@@ -16,6 +16,7 @@ use super::super::super::trip_failures::FailureCause;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
+use super::walk_home::{give_up_trip, retry_home, retry_home_without_lane};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -111,7 +112,9 @@ unsafe fn bootstrap_immigration_trip(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "immigration-bootstrap",
                 FailureCause::NoImmigrationRoute {
                     border: border_node,
@@ -160,7 +163,9 @@ unsafe fn ensure_exact_access_plan(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "missing-replan-start",
                 FailureCause::NoPosition,
                 slices,
@@ -171,6 +176,7 @@ unsafe fn ensure_exact_access_plan(
         match plan_network_replan(
             start_node,
             incoming_edge,
+            (*s_tmode.get(i) == MODE_WALK).then_some(*slices.lane_id.get(i)),
             target_building,
             *s_tmode.get(i),
             0,
@@ -185,12 +191,29 @@ unsafe fn ensure_exact_access_plan(
                 apply_network_replan(i, replan, slices);
                 true
             }
+            Err(failure) if walker_on_road_lane(i, start_node, transit_network, graph, slices) => {
+                give_up_trip(
+                    i,
+                    start_node,
+                    *slices.lane_id.get(i),
+                    FailureCause::NoRoute(failure),
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+                true
+            }
             Err(failure) => {
                 delay_or_recover_after_network_replan_failure(
                     i,
                     sim_time,
                     allocator,
+                    transit_network,
                     graph,
+                    pathfind_count,
                     "exact-access-replan",
                     FailureCause::NoRoute(failure),
                     slices,
@@ -224,6 +247,38 @@ unsafe fn repair_stale_detach_plan(
             return true;
         }
         if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
+            return true;
+        }
+        // A stranded walker has no exit lane: it plans home on its backoff from its road lane,
+        // wherever it waits on it (`ROAD-74`), or, with no lane, from where it stands
+        // (`TRAFFIC-19`).
+        if (*s_access_flags.get(i) & ACCESS_WALK_STRANDED) != 0 {
+            let lane = *slices.lane_id.get(i);
+            if lane == usize::MAX && *s_tmode.get(i) == MODE_WALK {
+                retry_home_without_lane(
+                    i,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            } else if let Some(node) = lane_terminal_node(lane, transit_network, graph)
+                && walker_on_road_lane(i, node, transit_network, graph, slices)
+            {
+                retry_home(
+                    i,
+                    node,
+                    lane,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
             return true;
         }
 
@@ -264,7 +319,9 @@ unsafe fn repair_stale_detach_plan(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "missing-stale-detach-replan-start",
                 stale_exit(None),
                 slices,
@@ -275,6 +332,7 @@ unsafe fn repair_stale_detach_plan(
         match plan_network_replan(
             start_node,
             incoming_edge,
+            (*s_tmode.get(i) == MODE_WALK).then_some(*slices.lane_id.get(i)),
             target_building,
             *s_tmode.get(i),
             *s_access_flags.get(i),
@@ -289,12 +347,29 @@ unsafe fn repair_stale_detach_plan(
                 apply_network_replan(i, replan, slices);
                 true
             }
+            Err(failure) if walker_on_road_lane(i, start_node, transit_network, graph, slices) => {
+                give_up_trip(
+                    i,
+                    start_node,
+                    *slices.lane_id.get(i),
+                    FailureCause::NoRoute(failure),
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+                true
+            }
             Err(failure) => {
                 delay_or_recover_after_network_replan_failure(
                     i,
                     sim_time,
                     allocator,
+                    transit_network,
                     graph,
+                    pathfind_count,
                     "stale-detach-replan",
                     stale_exit(Some(failure)),
                     slices,
@@ -302,6 +377,27 @@ unsafe fn repair_stale_detach_plan(
                 false
             }
         }
+    }
+}
+
+// Whether walker `i` stands on a road foot lane ending at `start_node`: a failed replan from
+// there gives its trip up for a walk home (`ROAD-74`) instead of the watchdog's recovery.
+unsafe fn walker_on_road_lane(
+    i: usize,
+    start_node: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        let lane = *slices.lane_id.get(i);
+        *slices.tmode.get(i) == MODE_WALK
+            && transit_network
+                .lane_system
+                .lanes
+                .get(lane)
+                .is_some_and(|value| value.edge_id != usize::MAX)
+            && lane_terminal_node(lane, transit_network, graph) == Some(start_node)
     }
 }
 
@@ -378,6 +474,7 @@ unsafe fn apply_immigration_trip(
         *s_speed.get_mut(i) = 0.0;
         slices.parking_trip.get_mut(i).route_replaced(plan.current_path.len());
         *s_path.get_mut(i) = plan.current_path;
+        slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_transit.get_mut(i) = TRANSIT_NETWORK;
     }
@@ -403,6 +500,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
 
         slices.parking_trip.get_mut(i).route_replaced(replan.current_path.len());
         *s_path.get_mut(i) = replan.current_path;
+        slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
         *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;

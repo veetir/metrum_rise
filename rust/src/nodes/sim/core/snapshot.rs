@@ -374,6 +374,11 @@ pub struct RenderSnapshot {
     // their capacity holds the list.
     pub(crate) gridlock: GridlockReport,
     pub(crate) gridlock_junctions: Vec<(u32, Vector3)>,
+    // The last stranded-walker report (`ROAD-74`): `(node, walkers, position)` per junction where
+    // walkers wait with no route home, ascending by node, copied likewise.
+    pub(crate) stranded_junctions: Vec<(u32, u32, Vector3)>,
+    // Walkers waiting on the road for their household's next home (`TRAFFIC-19`), same report.
+    pub(crate) waiting_for_home: u32,
     /// Heightmap width in cells (for CSV logging on the main thread).
     pub heightmap_width: usize,
     /// Heightmap height in cells (for CSV logging on the main thread).
@@ -443,6 +448,8 @@ impl Default for RenderSnapshot {
             treasury_balance: 0.0,
             gridlock: GridlockReport::default(),
             gridlock_junctions: Vec::new(),
+            stranded_junctions: Vec::new(),
+            waiting_for_home: 0,
             heightmap_width: 0,
             terrain_world_size: godot::prelude::Vector2::ZERO,
             terrain_patch_cols: 0,
@@ -612,6 +619,16 @@ impl SimCore {
                 .filter(|&&node| (node as usize) < self.region_graph.node_count())
                 .map(|&node| (node, self.region_graph.node(node).pos)),
         );
+        snapshot.stranded_junctions.clear();
+        snapshot.stranded_junctions.extend(
+            self.agents
+                .stranded_report()
+                .junctions
+                .iter()
+                .filter(|&&(node, _)| (node as usize) < self.region_graph.node_count())
+                .map(|&(node, walkers)| (node, walkers, self.region_graph.node(node).pos)),
+        );
+        snapshot.waiting_for_home = self.agents.stranded_report().waiting_for_home;
         snapshot.heightmap_width = self.heightmap.width;
         snapshot.heightmap_height = self.heightmap.height;
         snapshot.terrain_world_size =

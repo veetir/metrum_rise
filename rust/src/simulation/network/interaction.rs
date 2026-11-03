@@ -6,6 +6,8 @@
 //! finding the closest entities, and geometrical intersections.
 
 use super::graph::RegionGraph;
+use super::roadbed::PieceId;
+use super::types::EdgeClass;
 use godot::prelude::*;
 
 const EDGE_SNAP_ENDPOINT_MARGIN_M: f32 = 0.25;
@@ -19,10 +21,93 @@ pub(crate) enum NetworkSnapTarget {
     Edge(usize),
 }
 
+/// The structure a road-tool cursor's ray hit (`ROAD-99` follow-up B1): the cursor snaps to a
+/// structure only where its ray hit that structure's deck, never to a buried tunnel bore, and a
+/// ray that hit the ground beside or under a bridge stays on the ground's level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StructureHit {
+    /// No ray: every structure may take the snap and the level choice alone decides.
+    Any,
+    /// The ray hit the ground, a grounded piece or a tunnel's: no structure takes the snap.
+    Ground,
+    /// The ray hit this bridge span's deck: it and its nodes may take the snap.
+    Span(usize),
+    /// The ray hit the piece of this node, which only structures meet: it and its bridge arms
+    /// may take the snap.
+    Node(u32),
+}
+
+impl StructureHit {
+    /// The structure of the roadbed piece a ray hit first in `graph` (`None`: no piece). A
+    /// bridge's span, or a node piece no standard road meets; anything else is the ground.
+    /// `O(degree)`.
+    pub(crate) fn of_piece(graph: &RegionGraph, piece: Option<PieceId>) -> Self {
+        match piece {
+            Some(PieceId::Span(edge))
+                if graph
+                    .edges()
+                    .get(edge)
+                    .is_some_and(|edge| !edge.deleted && edge.class == EdgeClass::Bridge) =>
+            {
+                Self::Span(edge)
+            }
+            Some(PieceId::Node(node))
+                if (node as usize) < graph.node_count() && !graph.grounded_node(node) =>
+            {
+                Self::Node(graph.get_valid_node(node))
+            }
+            _ => Self::Ground,
+        }
+    }
+
+    /// Whether `target` may take the cursor's snap: always on the ground's level (a standard
+    /// edge, a grounded node); a structure's only as this hit allows. `O(degree)`.
+    pub(crate) fn admits(self, graph: &RegionGraph, target: NetworkSnapTarget) -> bool {
+        match target {
+            NetworkSnapTarget::Node(node) => {
+                graph.grounded_node(node) || self.allows_node(graph, node)
+            }
+            NetworkSnapTarget::Edge(edge) => {
+                graph.edge(edge).class == EdgeClass::Standard || self.allows_edge(graph, edge)
+            }
+        }
+    }
+
+    fn allows_node(self, graph: &RegionGraph, node: u32) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Ground => false,
+            Self::Span(edge) => {
+                let edge = graph.edge(edge);
+                [edge.start_node, edge.end_node]
+                    .into_iter()
+                    .any(|end| graph.get_valid_node(end) == node)
+            }
+            Self::Node(hit) => hit == node,
+        }
+    }
+
+    fn allows_edge(self, graph: &RegionGraph, edge_idx: usize) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Ground => false,
+            Self::Span(hit) => hit == edge_idx,
+            Self::Node(hit) => {
+                let edge = graph.edge(edge_idx);
+                edge.class == EdgeClass::Bridge
+                    && [edge.start_node, edge.end_node]
+                        .into_iter()
+                        .any(|end| graph.get_valid_node(end) == hit)
+            }
+        }
+    }
+}
+
 /// Current pointer projection and the network entity responsible for the snap.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct NetworkSnap {
-    /// Exact network position before the editor applies visible-surface height.
+    /// Exact network position: the target's graph height (`ROAD-99`), a node's own or an edge's
+    /// profile at the projection.
     pub(crate) position: Vector3,
     /// Target retained until the pointer leaves its release radius or the graph changes.
     pub(crate) target: NetworkSnapTarget,
@@ -100,23 +185,45 @@ pub(crate) fn retained_network_snap_xz(
                     closest = Some(NetworkSnap { position, target });
                 }
             }
-            closest
+            closest.map(|snap| at_graph_height(graph, snap))
         }
     }
 }
 
 /// Acquires a cursor snap using the existing node grid and edge R-tree.
+///
+/// The ground (standard edges and grounded nodes) and the structures (bridges, tunnels and the
+/// nodes only they meet) are separate levels (`ROAD-99`): a road under a bridge lies within the
+/// same XZ radius as the deck. Each level takes its snap as one network did before, nodes first;
+/// where both have one, the snap whose graph height stands nearer the cursor's (`world_pos.y`,
+/// the level its ray hit) wins, the ground on a tie. With one level near the cursor this is that
+/// level's snap. The snap reports its graph height: a node's, an edge's profile at the
+/// projection. Same candidates and bound as one level; one profile read per level.
 pub(crate) fn get_closest_network_snap_xz(
     graph: &RegionGraph,
     world_pos: Vector3,
     max_dist: f32,
 ) -> Option<NetworkSnap> {
-    let mut closest_pos = None;
-    let mut min_score = f32::MAX;
+    get_closest_network_snap_at_hit(graph, world_pos, max_dist, StructureHit::Any)
+}
+
+/// [`get_closest_network_snap_xz`] for a cursor whose ray hit `hit` (`ROAD-99` follow-up B1): the
+/// structures' level takes only the structure the ray hit, so a cursor on the ground beside or
+/// under a bridge, or on a hill over a tunnel, never snaps to it. The ground's level is as
+/// before, bitwise. Adds an `O(degree)` test per structure candidate.
+pub(crate) fn get_closest_network_snap_at_hit(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    hit: StructureHit,
+) -> Option<NetworkSnap> {
+    // Per level, ground first: the best snap, its score and the nearest node's distance.
+    let mut closest_pos: [Option<NetworkSnap>; 2] = [None; 2];
+    let mut min_score = [f32::MAX; 2];
 
     // 1. Check nodes first (Higher priority/Sticky)
     let node_snap_dist = max_dist * 2.5;
-    let mut closest_node_dist = f32::MAX;
+    let mut closest_node_dist = [f32::MAX; 2];
 
     let min = Vector3::new(
         world_pos.x - node_snap_dist,
@@ -135,74 +242,102 @@ pub(crate) fn get_closest_network_snap_xz(
         let node = graph.node(node_id);
         let d = snap_distance(node.pos, world_pos);
         if d < node_snap_dist {
+            let level = usize::from(!graph.grounded_node(node_id));
+            if level == 1 && !hit.allows_node(graph, node_id) {
+                return;
+            }
             let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
-            if score < min_score
-                || (score == min_score
-                    && closest_pos.is_some_and(|snap: NetworkSnap| {
+            if score < min_score[level]
+                || (score == min_score[level]
+                    && closest_pos[level].is_some_and(|snap: NetworkSnap| {
                         matches!(snap.target, NetworkSnapTarget::Node(best) if node_id < best)
                     }))
             {
-                min_score = score;
-                closest_pos = Some(NetworkSnap {
+                min_score[level] = score;
+                closest_pos[level] = Some(NetworkSnap {
                     position: node.pos,
                     target: NetworkSnapTarget::Node(node_id),
                 });
             }
-            if d < closest_node_dist {
-                closest_node_dist = d;
+            if d < closest_node_dist[level] {
+                closest_node_dist[level] = d;
             }
         }
     });
 
     // ABSOLUTE NODE PRIORITY:
     // If the cursor is close to an existing intersection node (within the standard snap tolerance),
-    // absolutely lock to it and return early. This prevents the segment distance calculator from
+    // absolutely lock to it and skip that level's edges. This prevents the segment distance calculator from
     // mathematically overriding the node with a tiny fractional margin point (e.g. 0.1m away on an attached edge),
     // which results in overlapping collision fragments and chaotic geometric splitting.
-    if closest_node_dist <= max_dist {
-        return closest_pos;
-    }
+    let locked = closest_node_dist.map(|distance| distance <= max_dist);
 
     // 2. Check nearby edges using Spatial Index. The R-tree's order is unspecified, so the
     // candidates ascend by edge id and the strict comparison below keeps the lowest id among
     // edges at exactly the same distance (`ROAD-68` open question 37).
-    let mut nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
-    nearby_edges.sort_unstable();
+    if !(locked[0] && locked[1]) {
+        let mut nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
+        nearby_edges.sort_unstable();
 
-    for edge_idx in nearby_edges {
-        let edge = graph.edge(edge_idx);
-        if edge.deleted {
-            continue;
-        }
-
-        let half_width = edge.width * 0.5;
-        let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
-
-        for (index, segment) in edge.geometry.windows(2).enumerate() {
-            let Some(pos) = get_edge_snap_point(
-                world_pos,
-                segment[0],
-                segment[1],
-                index == 0,
-                index + 2 == edge.geometry.len(),
-            ) else {
+        for edge_idx in nearby_edges {
+            let edge = graph.edge(edge_idx);
+            let level = usize::from(edge.class != EdgeClass::Standard);
+            if edge.deleted || locked[level] || (level == 1 && !hit.allows_edge(graph, edge_idx)) {
                 continue;
-            };
-            let d_perp = snap_distance(pos, world_pos);
+            }
 
-            if d_perp < edge_snap_dist {
-                let score = d_perp;
-                if score < min_score {
-                    min_score = score;
-                    closest_pos = Some(NetworkSnap {
-                        position: pos,
-                        target: NetworkSnapTarget::Edge(edge_idx),
-                    });
+            let half_width = edge.width * 0.5;
+            let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
+
+            for (index, segment) in edge.geometry.windows(2).enumerate() {
+                let Some(pos) = get_edge_snap_point(
+                    world_pos,
+                    segment[0],
+                    segment[1],
+                    index == 0,
+                    index + 2 == edge.geometry.len(),
+                ) else {
+                    continue;
+                };
+                let d_perp = snap_distance(pos, world_pos);
+
+                if d_perp < edge_snap_dist {
+                    let score = d_perp;
+                    if score < min_score[level] {
+                        min_score[level] = score;
+                        closest_pos[level] = Some(NetworkSnap {
+                            position: pos,
+                            target: NetworkSnapTarget::Edge(edge_idx),
+                        });
+                    }
                 }
             }
         }
     }
-    closest_pos
+    match closest_pos.map(|snap| snap.map(|snap| at_graph_height(graph, snap))) {
+        [Some(ground), Some(structure)]
+            if (structure.position.y - world_pos.y).abs()
+                < (ground.position.y - world_pos.y).abs() =>
+        {
+            Some(structure)
+        }
+        [ground, structure] => ground.or(structure),
+    }
+}
+
+// `snap` at its target's graph height (`ROAD-99`): a node's own, an edge's profile at the
+// projection (its physical profile when present). `O(profile points)`.
+fn at_graph_height(graph: &RegionGraph, mut snap: NetworkSnap) -> NetworkSnap {
+    if let NetworkSnapTarget::Edge(edge_idx) = snap.target {
+        let edge = graph.edge(edge_idx);
+        let profile = if edge.physical_geometry.len() >= 2 {
+            &edge.physical_geometry
+        } else {
+            &edge.geometry
+        };
+        snap.position.y = RegionGraph::profile_height_at(profile, snap.position.x, snap.position.z);
+    }
+    snap
 }
 
 fn snap_distance(a: Vector3, b: Vector3) -> f32 {
@@ -475,8 +610,9 @@ pub(crate) fn snap_stroke_angle(
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkSnapTarget, find_intersection_2d, get_closest_network_snap_xz, get_closest_point_xz,
-        get_edge_snap_point, retained_network_snap_xz,
+        NetworkSnapTarget, StructureHit, find_intersection_2d, get_closest_network_snap_at_hit,
+        get_closest_network_snap_xz, get_closest_point_xz, get_edge_snap_point,
+        retained_network_snap_xz,
     };
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{EdgeClass, NodeType};
@@ -495,6 +631,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
         }
         assert_eq!(super::get_closest_edge_xz(&graph, 0.1, 10.0, 3.0), Some(0));
@@ -523,6 +660,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
         }
         for _ in 0..2 {
@@ -556,6 +694,7 @@ mod tests {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             ));
         }
         for order in [[0, 1], [1, 0]] {
@@ -606,6 +745,7 @@ mod tests {
                     1,
                     1,
                     EdgeClass::Standard,
+                    None,
                 ));
             }
             let setup_us = setup.elapsed().as_secs_f64() * 1e6;
@@ -876,6 +1016,7 @@ mod tests {
             1,
             1,
             EdgeClass::Standard,
+            None,
         )
     }
 
@@ -956,6 +1097,7 @@ mod tests {
             1,
             1,
             EdgeClass::Standard,
+            None,
         ));
         graph.add_edge(super::super::build_surface_edge(
             b,
@@ -964,6 +1106,7 @@ mod tests {
             1,
             1,
             EdgeClass::Standard,
+            None,
         ));
         // Dead end at a: continue westward, away from the road.
         assert_eq!(
@@ -996,5 +1139,124 @@ mod tests {
             ),
             Some(StartDirection::Along(_))
         ));
+    }
+
+    // `ROAD-99` follow-up B1: a tunnel's bore is never what a cursor's ray hit, so it never takes
+    // the snap, and neither does a bridge the ray did not hit; the ground's snap is unchanged. A
+    // bore along x at y = -10, a bridge along z at y = 6 and a ground road along z at x = 40.
+    #[test]
+    fn the_snap_takes_only_the_structure_the_ray_hit() {
+        use crate::simulation::network::roadbed::PieceId;
+        let mut graph = RegionGraph::new();
+        for (class, [a, b]) in [
+            (
+                EdgeClass::Tunnel,
+                [
+                    Vector3::new(-30.0, -10.0, 0.0),
+                    Vector3::new(30.0, -10.0, 0.0),
+                ],
+            ),
+            (
+                EdgeClass::Bridge,
+                [Vector3::new(0.0, 6.0, 20.0), Vector3::new(0.0, 6.0, 80.0)],
+            ),
+            (
+                EdgeClass::Standard,
+                [Vector3::new(40.0, 0.0, 20.0), Vector3::new(40.0, 0.0, 80.0)],
+            ),
+        ] {
+            let start = graph.add_node(a, NodeType::Junction);
+            let end = graph.add_node(b, NodeType::Junction);
+            graph.add_edge(super::super::build_surface_edge(
+                start,
+                end,
+                vec![a, b],
+                1,
+                1,
+                class,
+                None,
+            ));
+        }
+        // A ray's piece: a bore's is the ground, a bridge's span its own, a missing one the ground.
+        assert_eq!(
+            StructureHit::of_piece(&graph, Some(PieceId::Span(0))),
+            StructureHit::Ground
+        );
+        assert_eq!(
+            StructureHit::of_piece(&graph, Some(PieceId::Span(1))),
+            StructureHit::Span(1)
+        );
+        assert_eq!(
+            StructureHit::of_piece(&graph, Some(PieceId::Span(2))),
+            StructureHit::Ground
+        );
+        assert_eq!(StructureHit::of_piece(&graph, None), StructureHit::Ground);
+        let snap = |cursor: Vector3, hit: StructureHit| {
+            get_closest_network_snap_at_hit(&graph, cursor, 5.0, hit).map(|snap| snap.target)
+        };
+        // On the hill over the bore: before, the bore; now nothing.
+        let over_bore = Vector3::new(0.0, 15.0, 1.0);
+        assert_eq!(
+            get_closest_network_snap_xz(&graph, over_bore, 5.0).map(|snap| snap.target),
+            Some(NetworkSnapTarget::Edge(0))
+        );
+        assert_eq!(snap(over_bore, StructureHit::Ground), None);
+        // Beside the bridge on the ground: nothing; on its deck: the bridge.
+        assert_eq!(
+            snap(Vector3::new(3.0, 0.0, 50.0), StructureHit::Ground),
+            None
+        );
+        assert_eq!(
+            snap(Vector3::new(1.0, 6.0, 50.0), StructureHit::Span(1)),
+            Some(NetworkSnapTarget::Edge(1))
+        );
+        // The ground road snaps as before, bitwise, whatever the ray hit.
+        let road = Vector3::new(41.0, 0.0, 50.0);
+        let before = get_closest_network_snap_xz(&graph, road, 5.0);
+        for hit in [StructureHit::Ground, StructureHit::Span(1)] {
+            assert_eq!(
+                get_closest_network_snap_at_hit(&graph, road, 5.0, hit),
+                before
+            );
+        }
+    }
+
+    // `ROAD-99`: under a bridge the cursor snaps to the level its ray hit. A ground road along x
+    // and a bridge 6 m over it along z: at the crossing, a cursor on the ground takes the road at
+    // its height, a cursor at the deck the bridge at its height; away from the bridge the road.
+    #[test]
+    fn the_snap_takes_the_level_the_cursor_hit() {
+        let mut graph = RegionGraph::new();
+        for (class, [a, b]) in [
+            (
+                EdgeClass::Standard,
+                [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)],
+            ),
+            (
+                EdgeClass::Bridge,
+                [Vector3::new(0.0, 6.0, -30.0), Vector3::new(0.0, 6.0, 30.0)],
+            ),
+        ] {
+            let start = graph.add_node(a, NodeType::Junction);
+            let end = graph.add_node(b, NodeType::Junction);
+            graph.add_edge(super::super::build_surface_edge(
+                start,
+                end,
+                vec![a, b],
+                1,
+                1,
+                class,
+                None,
+            ));
+        }
+        for (cursor, edge, height) in [
+            (Vector3::new(0.5, 0.1, 0.5), 0, 0.0),
+            (Vector3::new(0.5, 5.9, 0.5), 1, 6.0),
+            (Vector3::new(10.0, 5.9, 0.5), 0, 0.0),
+        ] {
+            let snap = get_closest_network_snap_xz(&graph, cursor, 5.0).unwrap();
+            assert_eq!(snap.target, NetworkSnapTarget::Edge(edge), "{cursor:?}");
+            assert_eq!(snap.position.y, height, "{cursor:?}");
+        }
     }
 }

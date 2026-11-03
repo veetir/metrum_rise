@@ -15,11 +15,18 @@ pub(super) mod graded_stage;
 mod parking;
 mod road_edit_order;
 mod road_families;
+mod road_grade_separation;
 mod road_mesh_seams;
+mod road_crosswalks;
+mod road_in_place;
 mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;
 mod road_terrain_plan;
+mod road_over_tunnels;
+mod surface_over_tunnels;
+mod road_tunnels;
+mod stranded_fixture;
 mod routing_adoption;
 mod zoning_buildability;
 
@@ -582,6 +589,8 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
     });
 
     assert!(!validation.is_valid);
@@ -814,6 +823,8 @@ fn planned_topology_rejection_restores_split_dependents() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -867,6 +878,8 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -905,6 +918,7 @@ fn add_test_border_road(core: &mut SimCore) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     core.transit_network
         .lane_system
@@ -1142,6 +1156,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 

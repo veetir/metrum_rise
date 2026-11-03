@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Deterministic headless benchmark for committed-road chunk validation and ArrayMesh upload.
+## A chunk without a kerbed grass median sends no `median_grass` arrays, as Rust's payload does
+## (ROAD-80), so every row but `divided` measures the layer's absence.
 extends SceneTree
 
 const LAYERS: Array[String] = [
@@ -11,6 +13,8 @@ const LAYERS: Array[String] = [
 	"road",
 	"marking",
 	"concrete",
+	"lining",
+	"median_grass",
 ]
 const LARGE_LAYER_VERTEX_COUNTS := {
 	"skirt": 1200,
@@ -20,6 +24,8 @@ const LARGE_LAYER_VERTEX_COUNTS := {
 	"road": 3000,
 	"marking": 990,
 	"concrete": 0,
+	"lining": 0,
+	"median_grass": 0,
 }
 const RESIDENT_CHUNK_COUNTS: Array[int] = [4, 64, 256, 1024, 4096]
 const AFFECTED_CHUNK_COUNTS: Array[int] = [0, 1, 4, 16]
@@ -29,6 +35,9 @@ const CHUNK_ORIGIN_Z_M := 5120.0
 const WARMUP_SAMPLES := 20
 const MEASURED_SAMPLES := 101
 const LARGE_VERTICES_PER_CHUNK := 8190
+# A bridge's or a tunnel's structure faces in each changed chunk of the structure cases (ROAD-61).
+const STRUCTURE_VERTICES := 1800
+const STRUCTURE_CHANGED_CHUNKS := 4
 
 class MockSimulation:
 	extends Node
@@ -57,6 +66,11 @@ class BenchmarkRoadTool:
 var _failures: int = 0
 var _large_layer_arrays: Dictionary
 var _small_layer_arrays: Dictionary
+# The large chunk with a bridge's concrete (alpha 1), or with a tunnel's lining and collars.
+var _bridge_layer_arrays: Dictionary
+var _tunnel_layer_arrays: Dictionary
+# The large chunk with a kerbed grass median's top (ROAD-80).
+var _divided_layer_arrays: Dictionary
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -65,6 +79,9 @@ func _run() -> void:
 	_large_layer_arrays = _build_layer_arrays(LARGE_LAYER_VERTEX_COUNTS)
 	_small_layer_arrays = _build_layer_arrays({"road": 3})
 	assert(_layer_vertex_count(_large_layer_arrays) == LARGE_VERTICES_PER_CHUNK)
+	_bridge_layer_arrays = _structure_layer_arrays("concrete", Color.WHITE)
+	_tunnel_layer_arrays = _structure_layer_arrays("lining", Color(1.0, 1.0, 1.0, 0.0))
+	_divided_layer_arrays = _structure_layer_arrays("median_grass", Color.WHITE)
 
 	var host := Node3D.new()
 	root.add_child(host)
@@ -97,6 +114,9 @@ func _run() -> void:
 		await _run_case("resident", road_tool, simulation, resident_chunks, 1)
 	for changed_chunks in AFFECTED_CHUNK_COUNTS:
 		await _run_case("affected", road_tool, simulation, 1024, changed_chunks)
+	await _run_case("bridge", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
+	await _run_case("tunnel", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
+	await _run_case("divided", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
 	print("ROAD_CHUNK_GODOT_END failures=%d" % _failures)
 
 	host.queue_free()
@@ -118,7 +138,9 @@ func _run_case(
 	var updates: Array = []
 	for index in resident_chunks:
 		var key := _chunk_key(index)
-		var arrays := _large_layer_arrays if index < changed_chunks else _small_layer_arrays
+		var arrays := _small_layer_arrays
+		if index < changed_chunks:
+			arrays = _case_layer_arrays(kind)
 		var chunk := _chunk_payload(key.x, key.y, arrays)
 		initial_chunks.append(chunk)
 		if index < changed_chunks:
@@ -169,11 +191,14 @@ func _run_case(
 	stage_samples_us.sort()
 	complete_samples_us.sort()
 
-	var changed_vertices := changed_chunks * LARGE_VERTICES_PER_CHUNK
+	var vertices_per_changed := _layer_vertex_count(_case_layer_arrays(kind))
+	var changed_vertices := changed_chunks * vertices_per_changed
+	var shadow := _shadow_copies(road_tool)
 	print(
 		(
 			"ROAD_CHUNK_GODOT kind=%s resident_chunks=%d changed_chunks=%d "
-			+ "vertices_per_changed=%d changed_vertices=%d samples=%d "
+			+ "vertices_per_changed=%d changed_vertices=%d "
+			+ "shadow_copies=%d shadow_vertices=%d samples=%d "
 			+ "stage_median_us=%d stage_p95_us=%d stage_min_us=%d stage_max_us=%d "
 			+ "complete_median_us=%d complete_p95_us=%d complete_min_us=%d complete_max_us=%d"
 		)
@@ -181,8 +206,10 @@ func _run_case(
 			kind,
 			resident_chunks,
 			changed_chunks,
-			LARGE_VERTICES_PER_CHUNK,
+			vertices_per_changed,
 			changed_vertices,
+			shadow.x,
+			shadow.y,
 			stage_samples_us.size(),
 			_percentile(stage_samples_us, 0.50),
 			_percentile(stage_samples_us, 0.95),
@@ -254,6 +281,41 @@ func _run_update(
 	RenderingServer.force_sync()
 	return Vector2i(stage_usec, complete_usec)
 
+# The changed chunks' layers of a case.
+func _case_layer_arrays(kind: String) -> Dictionary:
+	match kind:
+		"bridge":
+			return _bridge_layer_arrays
+		"tunnel":
+			return _tunnel_layer_arrays
+		"divided":
+			return _divided_layer_arrays
+	return _large_layer_arrays
+
+# The large chunk plus STRUCTURE_VERTICES in `layer` and `color`: a bridge's concrete (alpha 1)
+# or a tunnel's lining layer (alpha 0, ROAD-61).
+func _structure_layer_arrays(layer: String, color: Color) -> Dictionary:
+	var counts := LARGE_LAYER_VERTEX_COUNTS.duplicate()
+	counts[layer] = STRUCTURE_VERTICES
+	var arrays := _build_layer_arrays(counts)
+	var colors := PackedColorArray()
+	colors.resize(STRUCTURE_VERTICES)
+	colors.fill(color)
+	arrays[layer]["colors"] = colors
+	return arrays
+
+# Shadow-only copies under the resident chunks and the vertices they upload again: (count,
+# vertices).
+func _shadow_copies(road_tool: BenchmarkRoadTool) -> Vector2i:
+	var result := Vector2i.ZERO
+	for instance in road_tool._road_chunk_instances.values():
+		for child in instance.get_children():
+			if child is MeshInstance3D \
+					and child.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
+				result.x += 1
+				result.y += child.mesh.surface_get_array_len(0)
+	return result
+
 func _batch(generation: int, full_replace: bool, chunks: Array) -> Dictionary:
 	return {
 		"surface_generation": generation,
@@ -272,6 +334,8 @@ func _chunk_payload(chunk_x: int, chunk_z: int, layer_arrays: Dictionary) -> Dic
 	}
 	for layer in LAYERS:
 		var arrays: Dictionary = layer_arrays[layer]
+		if layer == "median_grass" and arrays["vertices"].is_empty():
+			continue
 		chunk[layer + "_vertices"] = arrays["vertices"]
 		chunk[layer + "_normals"] = arrays["normals"]
 		chunk[layer + "_uvs"] = arrays["uvs"]

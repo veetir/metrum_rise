@@ -253,7 +253,18 @@ impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             FailureOutcome::Replans => write!(f, "drops its route and replans"),
-            FailureOutcome::Waits => write!(f, "waits at the end of its lane"),
+            FailureOutcome::WalksHome { building } => {
+                write!(f, "gives up and walks home to building {building}")
+            }
+            FailureOutcome::Stranded { after_s } => write!(
+                f,
+                "stranded with no way home: waits at the end of its lane, plans again in \
+                 {after_s:.0} s"
+            ),
+            FailureOutcome::WalksToSidewalk { metres } => write!(
+                f,
+                "off every sidewalk: walks {metres:.0} m to the nearest one and plans from there"
+            ),
             FailureOutcome::Retry {
                 after_s,
                 failure,

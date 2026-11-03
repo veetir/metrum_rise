@@ -8,8 +8,9 @@ pub(super) use lanes::restore_lane_references;
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, AGE_ELDER,
-    Agent, AgentSystem, MODE_CAR, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID,
+    ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, AGE_ELDER, Agent, AgentSystem, MODE_CAR,
+    MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
     TRANSIT_INTERSECTION, TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::simulation::network::TransitNetwork;
@@ -385,6 +386,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         planned_activity: 0,
         current_path: rec.current_path,
         current_path_index: rec.current_path_index,
+        walk_lanes: Vec::new(),
         has_car: rec.has_car,
         parking_trip: rec.parking_trip,
         vehicle_type: rec.vehicle_type,
@@ -499,15 +501,26 @@ pub(super) fn validate_loaded_agents(
             };
             let freight_border_destination =
                 agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0;
-            let detach_ok = if freight_border_destination {
+            // A stranded walker on the road has no exit lane until its next home plan.
+            let stranded = agents.access_flags[i] & ACCESS_WALK_STRANDED != 0;
+            let stranded_ok = !stranded
+                || (agents.transit_mode[i] == MODE_WALK
+                    && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION));
+            let detach_ok = if stranded {
+                agents.planned_detach_lane_id[i] == u32::MAX
+            } else if freight_border_destination {
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] == u32::MAX
             } else {
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] != u32::MAX
             };
-            // 0x20 is `ACCESS_LANE_ATTACH_PENDING`; the bits above it are unused.
-            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xC0) != 0 {
+            // 0x80, `ACCESS_WALK_TO_SIDEWALK`, never comes with a valid plan.
+            if !attach_ok
+                || !detach_ok
+                || !stranded_ok
+                || (agents.access_flags[i] & ACCESS_WALK_TO_SIDEWALK) != 0
+            {
                 clear_agent_access_plan(agents, i);
             }
         }
@@ -563,6 +576,7 @@ fn repair_orphaned_loaded_network_agent(
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
         || agents.agents.pending_lane_attach(i).is_some()
+        || agents.agents.sidewalk_walk(i).is_some()
     {
         return;
     }
@@ -648,10 +662,11 @@ fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     agents.network_replan_failures[i] = 0;
 }
 
-// A car held at its attach point keeps standing there (`TRAFFIC-11`), as plan clears in a
-// running game keep it.
+// A car held at its attach point keeps standing there (`TRAFFIC-11`), and a walker walking to a
+// sidewalk keeps walking there (`TRAFFIC-19`), as plan clears in a running game keep them.
 fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     let pending_attach = agents.agents.pending_lane_attach(i);
+    let sidewalk_walk = agents.agents.sidewalk_walk(i);
     agents.planned_attach_node[i] = u32::MAX;
     agents.planned_detach_node[i] = u32::MAX;
     agents.planned_attach_lane_id[i] = u32::MAX;
@@ -660,10 +675,22 @@ fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     agents.planned_detach_lane_d[i] = 0.0;
     agents.access_flags[i] = 0;
     agents.agents.keep_pending_lane_attach(i, pending_attach);
+    agents.agents.keep_sidewalk_walk(i, sidewalk_walk);
 }
 
 pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_count: usize) {
     for i in 0..agents.len() {
+        // A walk to a lane that does not exist is dropped; the walker looks for its sidewalk
+        // again where it stands.
+        if agents
+            .agents
+            .sidewalk_walk(i)
+            .is_some_and(|(lane, _)| lane as usize >= lane_count)
+        {
+            agents.access_flags[i] &= !ACCESS_WALK_TO_SIDEWALK;
+            agents.planned_attach_lane_id[i] = u32::MAX;
+            agents.planned_attach_lane_d[i] = 0.0;
+        }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
             if preserve_loaded_network_retry_state_without_graph(agents, i) {
                 clear_loaded_access_plan_fields(agents, i);
@@ -684,7 +711,11 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_id[i] != u32::MAX
                 && (agents.planned_attach_lane_id[i] as usize) < lane_count
         };
-        let detach_ok = if agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0 {
+        // A border destination and a stranded walker (`ROAD-74`) have no exit lane.
+        let detach_ok = if agents.access_flags[i]
+            & (ACCESS_FREIGHT_BORDER_DESTINATION | ACCESS_WALK_STRANDED)
+            != 0
+        {
             agents.planned_detach_lane_id[i] == u32::MAX
         } else {
             agents.planned_detach_lane_id[i] != u32::MAX

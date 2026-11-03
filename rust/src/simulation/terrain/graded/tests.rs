@@ -165,7 +165,7 @@ pub(crate) fn payload_digest<'a>(payloads: impl IntoIterator<Item = &'a TilePayl
         (stats.window_seams, stats.listed, stats.candidates).hash(&mut hasher);
         (stats.reach_sum_m.to_bits(), stats.reach_max_m.to_bits()).hash(&mut hasher);
         (stats.second_pass_samples, stats.second_pass_candidates).hash(&mut hasher);
-        (stats.conflicts, stats.seam_conflicts, stats.portal_cut, stats.bore_named).hash(&mut hasher);
+        (stats.conflicts, stats.seam_conflicts).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -335,11 +335,13 @@ fn a_seam_in_lanes_equals_the_seam_at_each_point() {
             a: [-3.25, 1.5, 2.0],
             b: [7.75, -0.375, -4.5],
             kind: SeamKind::Road,
+            retained: false,
         },
         super::seams::Seam {
             a: [0.1, 2.0, 0.3],
             b: [0.1, 2.0, 0.3],
             kind: SeamKind::Road,
+            retained: false,
         },
     ];
     for seam in &seams {
@@ -642,7 +644,8 @@ fn the_graded_ground_never_lies_below_a_seam() {
         {
             let [x, h, z] = seam.a;
             let all = (0..seams.len() as u32).map(super::sample::Listed::unbounded);
-            let value = evaluate(x, z, base.at(x, z), None, None, &seams, all, 2.0);
+            let ground = base.at(x, z);
+            let value = evaluate(x, z, ground, None, None, &seams, all, 2.0, None, false);
             assert!(
                 value.height >= h,
                 "{name}: ground {} below seam {h}",

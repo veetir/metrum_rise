@@ -30,6 +30,12 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) bkw_lanes: i32,
     /// Whether authored endpoints may snap to nearby existing road nodes.
     pub(crate) snap_to_existing_roads: bool,
+    /// The road tool's tunnel intent (`ROAD-61`): a preview made without it is not this
+    /// stroke's, and a fresh plan prepares the stroke with it.
+    pub(crate) tunnel: bool,
+    /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
+    /// the stroke's edge carries it.
+    pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
     /// The road tool's preview of this stroke (`ROAD-68-E`): its plan and pieces are installed
     /// when its fingerprint is still current, else the commit recompiles locally.
     pub(crate) preview: Option<std::sync::Arc<RoadPreview>>,
@@ -102,6 +108,8 @@ impl SimCore {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
+            tunnel,
+            median,
             preview,
         } = request;
         self.last_road_rejection = None;
@@ -115,7 +123,14 @@ impl SimCore {
         let live_fingerprint = RoadPreviewFingerprint::live(self);
         let preview = preview.filter(|preview| {
             preview.fingerprint == live_fingerprint
-                && preview.is_for(&points, fwd_lanes, bkw_lanes, snap_to_existing_roads)
+                && preview.is_for(
+                    &points,
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    tunnel,
+                    median,
+                )
         });
         edit_metrics.preview_plan_reused = preview.is_some();
         record_crash_phase_for_core(self, "add road plan compile");
@@ -131,6 +146,8 @@ impl SimCore {
                         fwd_lanes,
                         bkw_lanes,
                         snap_to_existing_roads,
+                        tunnel,
+                        median,
                     },
                 );
                 &fresh_plan
@@ -321,6 +338,8 @@ impl SimCore {
                     fwd_lanes,
                     bkw_lanes,
                     snap: snap_to_existing_roads,
+                    tunnel,
+                    median,
                 },
                 self.road_tool_surface_generation,
             );
@@ -379,6 +398,8 @@ mod tests {
                 fwd_lanes: 2,
                 bkw_lanes: 1,
                 snap_to_existing_roads: false,
+                tunnel: false,
+                median: None,
                 preview: None,
             },
             Instant::now(),

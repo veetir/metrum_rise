@@ -3,6 +3,7 @@
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
+use super::RoadMedian;
 use godot::prelude::*;
 use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -69,7 +70,8 @@ pub struct Edge {
     pub allowed_types: u8,
     /// Classification (Standard, Bridge, Tunnel). Multi-modal foundation (Item 26).
     pub class: EdgeClass,
-    /// Total road width in metres (asphalt + sidewalks).
+    /// Carriageway width in metres, the median included (`ROAD-80`), kerbs and sidewalks
+    /// excluded: the roadbed profile adds those (`roadbed::RoadProfile::for_edge`).
     pub width: f32,
     /// Number of forward (start->end) vehicle lanes.
     pub fwd_lanes: u8,
@@ -100,6 +102,8 @@ pub struct Edge {
     pub no_building_spawn: bool,
     /// Controls whether buildings along this edge may directly use only same-side lanes or both carriageways for car access.
     pub vehicle_frontage_access: VehicleFrontageAccess,
+    /// The median between the two lane groups, if any (`ROAD-80`).
+    pub median: Option<RoadMedian>,
 }
 
 impl Edge {
@@ -252,6 +256,39 @@ impl Default for RegionGraph {
 }
 
 impl RegionGraph {
+    /// Whether `edge_idx` gives frontage on the ground: a live standard road that is no tunnel's
+    /// approach. A bridge or tunnel span stands off the ground (`ROAD-61`), and an approach runs
+    /// in its walled trench (round R8h, the user's rule: no frontage along a tunnel's entry), so
+    /// no zoning cell, lot, parcel, driveway or entrance fronts them. The approach is the whole
+    /// span the roadbed retains (`roadbed::is_tunnel_approach`), from topology alone.
+    /// `O(degree)` at each end.
+    pub fn fronts_ground(&self, edge_idx: usize) -> bool {
+        let edge = self.edge(edge_idx);
+        !edge.deleted
+            && edge.class == EdgeClass::Standard
+            && !crate::simulation::network::roadbed::is_tunnel_approach(self, edge_idx)
+    }
+
+    /// Whether `node_id` stands on the ground (`ROAD-99`): a live standard edge meets it, the
+    /// roadbed's notion of a grounded node piece. A road on the ground meets a structure only at
+    /// such a node (a bridge's abutment); a node where only bridges or tunnels meet (a bridge's
+    /// bend) stands off the ground. `O(degree)`.
+    pub fn grounded_node(&self, node_id: u32) -> bool {
+        let node_id = self.get_valid_node(node_id);
+        (node_id as usize) < self.adjacency.len()
+            && self.adjacency[node_id as usize].iter().any(|&edge_idx| {
+                let edge = self.edge(edge_idx);
+                !edge.deleted && edge.class == EdgeClass::Standard
+            })
+    }
+
+    /// Whether a building may front `edge_idx`: it fronts the ground ([`Self::fronts_ground`])
+    /// and the player has not closed it to buildings. The one rule lots, parcels, explicit
+    /// sites, attachment repair and road-side connections read.
+    pub fn takes_buildings(&self, edge_idx: usize) -> bool {
+        !self.edge(edge_idx).no_building_spawn && self.fronts_ground(edge_idx)
+    }
+
     /// Creates a new, empty road graph.
     pub fn new() -> Self {
         Self {

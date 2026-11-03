@@ -4,10 +4,10 @@
 //! emission of the strips a piece hangs from its outer chains.
 
 use super::super::{
-    MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
-    render_point, world_point,
+    MeshLayer, NetworkMeshData, concrete_color, lining_color, push_triangle,
+    push_triangle_preserving_winding_with_exact_normal, render_point, world_point,
 };
-use crate::simulation::network::roadbed::{PieceMesh, RoadSection, RoadVec3};
+use crate::simulation::network::roadbed::{LiningPart, PieceMesh, RoadSection, RoadVec3};
 use godot::prelude::{Color, Vector2, Vector3};
 
 const BAND_EPSILON_M: f32 = 0.001;
@@ -108,6 +108,48 @@ pub(super) fn emit_chain_strips(
 pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: Color) {
     piece.for_each_abutment_triangle(|world, bottoms| {
         emit_strip_triangle(mesh, MeshLayer::Skirt, color, world, bottoms);
+    });
+}
+
+/// The spacing of a tunnel's lamp strips along its bore (`ROAD-61` round R8b), metres; the
+/// lining shader's `lamp_spacing_m` must match it.
+const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
+
+// Emits a buried piece's lining, a tunnel span's collars and the lining's shell (`ROAD-61`)
+// into the lining layer as the piece wound them, facing into the bore, out of the portal and
+// away from the bore; the concrete material is drawn on both sides, so the lining also closes
+// the bore seen from outside. On a span's walls and ceiling the UVs carry the lamp station and
+// the height above the deck (round R8b): the station along the bore scaled so that a whole
+// number of lamp spacings fits the bore (at least one), so lamps at the middle of each spacing
+// sit symmetric in every span and evenly spaced within 5% of `TUNNEL_LAMP_SPACING_M`. Every
+// other face takes `y = -1`: no lamps. The concrete shader is triplanar in world space.
+// Round R8d: only the faces inside the bore, the walls, the ceiling and the end walls, take the
+// lining's colour (alpha 0: no sun, no sky, the lining's ambient); a collar and the shell face
+// the open air (the shell where the hill leaves it bare) and take the outdoor concrete's.
+pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
+    let scale = piece.lining_bore_m().filter(|&bore| bore > 0.0).map(|bore| {
+        (bore / TUNNEL_LAMP_SPACING_M).round().max(1.0) * TUNNEL_LAMP_SPACING_M / bore
+    });
+    piece.for_each_lining_triangle(|world, part, along| {
+        let [a, b, c] = world.map(render_point);
+        let uvs = match (part, scale) {
+            (LiningPart::Bore, Some(scale)) => {
+                along.map(|at| Vector2::new((at.x * scale) as f32, at.y as f32))
+            }
+            _ => [Vector2::new(0.0, -1.0); 3],
+        };
+        let color = match part {
+            LiningPart::Bore | LiningPart::EndWall => lining_color(),
+            LiningPart::Collar | LiningPart::Shell => concrete_color(),
+        };
+        push_triangle_preserving_winding_with_exact_normal(
+            mesh,
+            MeshLayer::Lining,
+            world,
+            uvs,
+            color,
+            -((b - a).cross(c - a)),
+        );
     });
 }
 

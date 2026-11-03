@@ -21,15 +21,18 @@ mod model;
 use model::SpanModel;
 pub(crate) use model::SpanScratch;
 pub(crate) use model::incident_direction;
+pub(crate) use model::NOSE_CLEARANCE_M;
+pub(super) use model::RowKind;
 pub(super) use model::{
     PASS_THROUGH_DOT_THRESHOLD, WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M,
     WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, is_surface_edge,
 };
 
-use super::arms::span_end;
+use super::arms::{span_end, tunnels_continue};
+use super::lining::LiningEnd;
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
-use super::mesh::{PieceMesh, StripKind, build_span_mesh};
+use super::mesh::{PieceMesh, SpanEnd, SpanRows, StripKind, build_span_mesh};
 use super::node::plan_node;
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
@@ -67,6 +70,8 @@ pub struct SpanPiece {
     // A standard edge's span stands on the terrain; a bridge's or tunnel's does not, so its
     // chains are no terrain loops (`ROAD-68-E` terrain changes).
     grounded: bool,
+    // A tunnel's span lies under the ground (`ROAD-61`).
+    buried: bool,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -151,6 +156,11 @@ impl SpanPiece {
         self.grounded
     }
 
+    // Whether the edge was a tunnel when the span was built.
+    pub(super) fn buried(&self) -> bool {
+        self.buried
+    }
+
     pub(super) fn nodes(&self) -> [u32; 2] {
         self.nodes
     }
@@ -174,6 +184,8 @@ pub(crate) fn build_span_piece(
         stations,
         protected,
         footprint,
+        kinds,
+        row_starts,
     } = scratch;
     let model = SpanModel::new(
         graph,
@@ -203,14 +215,58 @@ pub(crate) fn build_span_piece(
     // closed below its slab by the abutment face, a tunnel's marked a portal row.
     let ends = [edge.start_node, edge.end_node]
         .map(|node| span_end(graph, graph.get_valid_node(node), edge_idx));
+    // A tunnel's span is lined (`ROAD-61`): open where another tunnel continues it, an end wall
+    // where it ends underground, a collar at a portal row or where it opens onto a bridge.
+    let nodes = [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node));
+    let lining = (edge.class == EdgeClass::Tunnel).then(|| {
+        [0, 1].map(|end| match ends[end] {
+            SpanEnd::Cap(_) => LiningEnd::Closed,
+            SpanEnd::Shared if tunnels_continue(graph, nodes[end]) => LiningEnd::Open,
+            _ => LiningEnd::Portal,
+        })
+    });
+    // A divided span's rows by kind: mouth rows up to each nose's tip, body rows between
+    // (`ROAD-80`).
+    kinds.clear();
+    if model.body_layout().is_some() {
+        kinds.extend(sections.iter().map(|section| model.row_kind(section.s_m)));
+    }
+    let rows = SpanRows {
+        mouth: model.layout(),
+        body: model.body_layout().map(|body| (body, kinds.as_slice())),
+    };
     let mesh = build_span_mesh(
         &sections,
         (&start_mouth, &end_mouth),
-        model.layout(),
+        rows,
         strips,
         ends,
+        lining,
+        row_starts,
     );
-    let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
+    let rows = sections.len();
+    let footprint = match model.body_layout() {
+        None => {
+            let stride = model.layout().stride();
+            PieceFootprint::of_span(
+                &mesh,
+                rows,
+                |row| (row - 1) * stride..(row + 1) * stride,
+                grid,
+                footprint,
+            )
+        }
+        Some(_) => {
+            let starts = row_starts.as_slice();
+            PieceFootprint::of_span(
+                &mesh,
+                rows,
+                |row| starts[row - 1] as usize..starts[row + 1] as usize,
+                grid,
+                footprint,
+            )
+        }
+    };
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
     // vertices `pass_through_crossing` evaluates for the lanes.
     let crossings = [EdgeEnd::Start, EdgeEnd::End].map(|end| {
@@ -218,7 +274,7 @@ pub(crate) fn build_span_piece(
         let row = sections.iter().position(|section| section.s_m == s_m);
         debug_assert!(row.is_some(), "a span keeps a row on its crossing line");
         let (first, last) = model.layout().carriageway_edge_slots()?;
-        let row = &mesh.positions()[row? * model.layout().stride()..];
+        let row = &mesh.positions()[row_starts[row?] as usize..];
         Some((
             s_m,
             crossing_kerbs_right_first([row[first], row[last]], end),
@@ -226,12 +282,13 @@ pub(crate) fn build_span_piece(
     });
     Some(SpanPiece {
         edge_idx,
-        nodes: [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)),
+        nodes,
         sections: sections.into_boxed_slice(),
         start_mouth,
         end_mouth,
         crossings,
         grounded: edge.class == EdgeClass::Standard,
+        buried: edge.class == EdgeClass::Tunnel,
         mesh: Arc::new(mesh),
         footprint,
     })
@@ -308,5 +365,7 @@ pub(super) fn pass_through_crossing(graph: &RegionGraph, arm: ArmKey) -> Option<
     })
 }
 
+#[cfg(test)]
+mod median_tests;
 #[cfg(test)]
 mod tests;

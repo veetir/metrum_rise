@@ -344,7 +344,9 @@ fn cell_site_blocked(
     footprint_blocked(&allocator.field_clearance, allocator, roads, cell_m, corners)
 }
 
-// Whether a cell footprint meets a field, an explicit cell site or a road.
+// Whether a cell or lot footprint meets a field, an explicit cell site or a road on or above the
+// ground. A tunnel's bore lies in the hill: the land over it is used as if no tunnel ran under it
+// (`ROAD-61` round R8h).
 pub(super) fn footprint_blocked(
     fields: &FieldClearanceIndex,
     sites: &impl ExplicitCellSites,
@@ -362,7 +364,7 @@ pub(super) fn footprint_blocked(
         }
     }
     let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
-    PolygonFootprint::from_precise_slice(&points).overlaps_roads(roads)
+    PolygonFootprint::from_precise_slice(&points).overlaps_exposed_roads(roads)
 }
 
 #[cfg(test)]

@@ -55,6 +55,8 @@ fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
             preview: None,
         },
         Instant::now(),
@@ -103,7 +105,11 @@ fn vegetation_gather_after_a_road_edit_and_undo_reads_only_live_pieces() {
     let side = core.get_hovered_edge_internal(0.0, 100.0);
     assert!(side >= 0);
     let index_generation = core.terrain_query_index.generation();
-    core.set_edge_class_internal(side, 1);
+    // The roads are grounded (`ROAD-61` round R8f: drawn 380 m under the terrain without the
+    // tunnel intent, they were tunnels before, which this edit made bridges); the class edit
+    // makes the side road a tunnel. A grounded road made a bridge splices a chunk that differs
+    // from a full emission (found by round R8f, `ROAD-97`).
+    core.set_edge_class_internal(side, 2);
     core.precompute_road_mesh_data();
     assert_ne!(
         core.terrain_query_index.generation(),

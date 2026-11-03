@@ -812,6 +812,20 @@ the grid. Straight groups use one endpoint phase, with a perpendicular incident 
 its curb offset at a junction. The first slice reuses the parcel frontage offset
 `edge.width / 2 + SIDEWALK_WIDTH`; compiled surface exclusions are supplied by the caller.
 Ground-level eligible road spans generate cells; bridge and tunnel spans do not.
+A tunnel's bore lies in the hill: its buried pieces neither block nor clear the cells over it,
+generated or painted, and a tunnel drawn under painted cells is not refused for them (`ROAD-61`
+round R8h; before, a tunnel built under a zoned road removed the road's cells over the bore). The
+approach troughs are open cuts and keep what a road does. Lots and fields treat the land over a
+bore as land with no tunnel under it (the user's rule, 2026-11-01): a lot over a bore takes a
+building, a field may lie over a bore and a tunnel may be drawn under a field (`ROAD-98`).
+A tunnel's entry is the exception (the user's rule, 2026-11-01): its approach span, the standard
+edge that passes through into the tunnel's mouth and runs in the walled trench, gives no
+frontage. No cell, lot, parcel, driveway or entrance fronts it (`RegionGraph::fronts_ground`,
+read by cell generation, continuity and curve history, lot derivation and attachment, and
+`RegionGraph::takes_buildings` for parcels, sites and connections), so painting beside the
+trench finds no cell; the road the approach continues keeps its frontage. The whole approach
+span is excluded, not only its walled stretch (the user's decision, 2026-11-01): where the walls end is a graded-terrain product
+(base terrain, other roads' cuts, pads) that the graph and roadbed do not hold.
 
 Frames normalize quarter-turn-equivalent direction vectors on a one-part-per-trillion component
 grid, then normalize the basis. Origin phase and footprint vertices use the road overlay's

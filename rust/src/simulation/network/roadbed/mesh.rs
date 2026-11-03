@@ -9,8 +9,11 @@
 //! the road.
 
 use super::geometry::{SurfaceTriangleGrid, bounds_xz, triangulate_constrained_rings_xz};
+use super::lining::{
+    Lining, LiningEnd, LiningError, LiningPart, NO_SOURCE, node_lining, span_lining,
+};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
-use super::span::MouthSection;
+use super::span::{MouthSection, RowKind};
 use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
 
 // Band-kind groups in `BandKind` declaration order, then the curb faces.
@@ -72,8 +75,9 @@ pub(super) enum SpanEnd {
     /// A bridge's mouth shared with a grounded piece: the abutment face below the slab's end
     /// edge ([`PieceMesh::for_each_abutment_triangle`]).
     Abutment,
-    /// A tunnel's mouth shared with a grounded piece: its portal row, near which the graded
-    /// terrain opens the ground over the deck ([`PieceMesh::portal_rows`], T22 5 (a)).
+    /// A tunnel's mouth shared with a grounded piece: its portal row, past which no cone of the
+    /// graded terrain reaches and where the collar stands ([`PieceMesh::portal_rows`],
+    /// `ROAD-61`).
     Portal,
 }
 
@@ -203,6 +207,11 @@ pub struct PieceMesh {
     // The portal rows of a tunnel span (`TERRAIN-07-C`): per mouth shared with a grounded piece
     // its end row's first and last vertex, the row the vertices between them.
     portals: Vec<[u32; 2]>,
+    // A buried piece's lining and collars (`ROAD-61`), empty for every other piece.
+    lining: Lining,
+    // Whether the piece is a tunnel's approach span, whose seams the graded terrain retains
+    // (`ROAD-61` round R8e).
+    retained: bool,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -280,6 +289,15 @@ impl PieceMesh {
         &self.abutment_runs
     }
 
+    /// Whether the piece is a tunnel's approach (`ROAD-61` round R8e): a grounded span with a
+    /// wall run across a tunnel's mouth ([`Self::wall_runs`] that is no abutment run). The graded
+    /// terrain retains the ground beside its outer chains: their cones bound it from below only,
+    /// so walls stand wherever the road runs below the ground. Topology alone decides it; no
+    /// terrain height is read. A node piece is never an approach.
+    pub fn retained(&self) -> bool {
+        self.retained
+    }
+
     /// The kind of strips hanging from the outer chains, `None` for a tunnel's road piece.
     pub fn strip_kind(&self) -> Option<StripKind> {
         self.strips
@@ -349,7 +367,7 @@ impl PieceMesh {
         }
     }
 
-    /// The portal rows of a tunnel span (`TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)): per end
+    /// The portal rows of a tunnel span (`TERRAIN-07-C`, `ROAD-61`): per end
     /// row it shares with a grounded piece, the row's vertices from one corner to the other,
     /// bitwise the vertices the grounded piece's wall run across that mouth takes. Empty for
     /// every other piece. `O(1)` per row.
@@ -357,6 +375,97 @@ impl PieceMesh {
         self.portals
             .iter()
             .map(|&[first, last]| &self.positions[first as usize..=last as usize])
+    }
+
+    /// A lining or collar vertex (`ROAD-61`): a mesh vertex below [`Self::positions`]' length,
+    /// else the lining's own vertex after them (a lining top above an outer-chain vertex, a
+    /// collar's own corner, or a shell vertex).
+    pub fn lining_point(&self, vertex: u32) -> RoadVec3 {
+        let count = self.positions.len();
+        match (vertex as usize).checked_sub(count) {
+            Some(own) => self.lining.positions[own],
+            None => self.positions[vertex as usize],
+        }
+    }
+
+    /// The lining's triangles of a buried piece (`ROAD-61`): its walls on the outer chains, its
+    /// ceiling and the end wall where a bore ends underground, over [`Self::lining_point`]
+    /// indices, each wound so that `-(b - a) x (c - a)` faces into the bore. Empty for every
+    /// other piece.
+    pub fn lining_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[..self.lining.collars]
+    }
+
+    /// The collars at a tunnel span's portal rows (`ROAD-61` round R8f), over
+    /// [`Self::lining_point`] indices, each in its row's vertical plane facing out of the tunnel:
+    /// the ring from the lining's mouth to the shell's end, flat-topped at
+    /// [`super::COLLAR_HEIGHT_M`] above the row. Empty for every other piece.
+    pub fn collar_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[self.lining.collars..self.lining.shell]
+    }
+
+    /// The lining's shell (`ROAD-61` round R8b), over [`Self::lining_point`] indices: outer walls
+    /// `TUNNEL_LINING_THICKNESS_M` outside the walls, facing away from the road, and the roof the
+    /// thickness above the ceiling over them, facing up, sharing no edge with the bore. Empty for
+    /// every other piece.
+    pub fn shell_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[self.lining.shell..]
+    }
+
+    /// Whether the piece is buried (`ROAD-61`): a tunnel span, or a node piece where only
+    /// tunnels meet, the pieces that carry a lining. Its top lies in the hill under the ground.
+    pub fn buried(&self) -> bool {
+        !self.lining.triangles.is_empty()
+    }
+
+    /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
+    /// unlined piece or a lined node piece, whose lining runs along no rows.
+    pub fn lining_bore_m(&self) -> Option<f64> {
+        let chain = self.outer_chains.first()?;
+        let (&first, &last) = (chain.vertices.first()?, chain.vertices.last()?);
+        self.lining.along_rows.then(|| {
+            f64::from(self.road_space[last as usize][0] - self.road_space[first as usize][0])
+        })
+    }
+
+    /// Visits the lining's, the collars' and the shell's triangles as world points, in their
+    /// windings, with their part and per vertex its station along the bore from the span's first
+    /// row and its height above the deck vertex it stands on (`(0, 0)` for a vertex standing on
+    /// none, a collar's own corner, and on a node piece the stations are 0).
+    /// `O(triangles)`, without allocation.
+    pub fn for_each_lining_triangle(
+        &self,
+        mut visit: impl FnMut([RoadVec3; 3], LiningPart, [RoadVec2; 3]),
+    ) {
+        let count = self.positions.len();
+        let start = self
+            .outer_chains
+            .first()
+            .and_then(|chain| chain.vertices.first())
+            .map_or(0.0, |&first| self.road_space[first as usize][0]);
+        let along = |vertex: u32| {
+            let point = self.lining_point(vertex);
+            let source = match (vertex as usize).checked_sub(count) {
+                Some(own) => self.lining.sources[own],
+                None => vertex,
+            };
+            if source == NO_SOURCE {
+                return RoadVec2::ZERO;
+            }
+            let station = if self.lining.along_rows {
+                f64::from(self.road_space[source as usize][0] - start)
+            } else {
+                0.0
+            };
+            RoadVec2::new(station, point.y - self.positions[source as usize].y)
+        };
+        for (index, triangle) in self.lining.triangles.iter().enumerate() {
+            visit(
+                triangle.map(|vertex| self.lining_point(vertex)),
+                self.lining.part(index),
+                triangle.map(along),
+            );
+        }
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every vertex.
@@ -557,35 +666,230 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
     })
 }
 
+/// The row layouts of a span (`ROAD-80`): the mouth layout every row of an undivided span takes,
+/// and for a divided span the body layout with each row's kind.
+#[derive(Clone, Copy)]
+pub(super) struct SpanRows<'a> {
+    /// Layout of the mouth-profile rows.
+    pub(super) mouth: &'a RowLayout,
+    /// The body layout and every row's kind, for a divided span.
+    pub(super) body: Option<(&'a RowLayout, &'a [RowKind])>,
+}
+
+impl SpanRows<'_> {
+    // The layout and kind of row `row`.
+    fn row(&self, row: usize) -> (&RowLayout, RowKind) {
+        match self.body {
+            Some((body, kinds)) if kinds[row] != RowKind::Mouth => (body, kinds[row]),
+            _ => (self.mouth, RowKind::Mouth),
+        }
+    }
+
+    // Vertices of row `row`: a tip row's collapsed kerbs and median share two (`tip_vertex`).
+    fn row_len(&self, row: usize) -> usize {
+        match self.row(row) {
+            (layout, RowKind::Tip) => layout.stride() - TIP_SHARED_SLOTS,
+            (layout, _) => layout.stride(),
+        }
+    }
+}
+
+// A body layout's six vertex slots at the median, from the left carriageway's end (the ground
+// slot `g`): `g` and `g + 5` on the ground, `g + 1 ..= g + 4` raised (kerb, median, kerb). At a
+// nose's tip they all lie on the line between the lane groups and the row keeps two of them, so
+// four slots share another's vertex.
+const TIP_SHARED_SLOTS: usize = 4;
+
+impl RowLayout {
+    // The ground slot `g` where a body layout's left carriageway ends, at the median's kerb.
+    fn median_ground_slot(&self) -> u8 {
+        let kinds = &self.kinds[..usize::from(self.band_count)];
+        let median = kinds
+            .iter()
+            .position(|&kind| kind == BandKind::Median)
+            .expect("a body layout has a median band");
+        let ground = self.band_slots[median - 2].1;
+        debug_assert_eq!(self.band_slots[median].0, ground + 2);
+        debug_assert_eq!(self.band_slots[median + 2].0, ground + 5);
+        ground
+    }
+
+    // The body band of mouth band `band`: the bands from the right carriageway on sit three
+    // further on (kerb, median, kerb). The carriageways are the mouth profile's split pair.
+    fn body_band(mouth: &RowLayout, band: usize) -> usize {
+        let split = mouth.kinds[..usize::from(mouth.band_count)]
+            .iter()
+            .position(|&kind| kind == BandKind::Carriageway)
+            .expect("a divided mouth has a carriageway");
+        if band <= split { band } else { band + 3 }
+    }
+}
+
+// The vertex offset within a tip row of body slot `slot`: the median's ground slots share `g`,
+// its raised ones `g + 1`, and the slots past them close up by `TIP_SHARED_SLOTS`.
+fn tip_vertex(ground: u8, slot: u8) -> u8 {
+    match slot {
+        _ if slot <= ground => slot,
+        _ if slot == ground + 5 => ground,
+        _ if slot <= ground + 4 => ground + 1,
+        _ => slot - TIP_SHARED_SLOTS as u8,
+    }
+}
+
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
 /// mouth sections, with `strips` below its two outer chains, and each end row closed as `ends`
-/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run, an abutment face or a portal row.
-/// `O(sections * bands)`; allocates only the mesh.
+/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run, an abutment face or a portal row. A
+/// tunnel's span (`lining`, how the lining closes each end row) is lined (`ROAD-61`). A divided
+/// span (`rows.body`, `ROAD-80`) lays its rows out by kind: mouth rows up to each nose's tip, the
+/// tip row, body rows between ([`divided_triangles`]). `row_starts` receives each row's first
+/// vertex, then the vertex count. `O(sections * bands)` plus the lining's
+/// `O(sections + bands log bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
     (start_mouth, end_mouth): (&MouthSection, &MouthSection),
-    layout: &RowLayout,
+    rows: SpanRows<'_>,
     strips: Option<StripKind>,
     ends: [SpanEnd; 2],
+    lining: Option<[LiningEnd; 2]>,
+    row_starts: &mut Vec<u32>,
 ) -> PieceMesh {
-    let rows = sections.len();
-    let stride = layout.stride();
-    let mut positions = Vec::with_capacity(rows * stride);
-    let mut road_space = Vec::with_capacity(rows * stride);
-    for (row, section) in sections.iter().enumerate() {
+    let layout = rows.mouth;
+    let row_count = sections.len();
+    row_starts.clear();
+    // An undivided span's rows are all `stride` long, as before medians (`ROAD-80`): the per-row
+    // kind lookups are the divided span's alone.
+    match rows.body {
+        None => {
+            let stride = layout.stride() as u32;
+            row_starts.extend((0..=row_count as u32).map(|row| row * stride));
+        }
+        Some(_) => {
+            row_starts.push(0);
+            for row in 0..row_count {
+                row_starts.push(row_starts[row] + rows.row_len(row) as u32);
+            }
+        }
+    }
+    let vertex_count = row_starts[row_count] as usize;
+    let mut positions = Vec::with_capacity(vertex_count);
+    let mut road_space = Vec::with_capacity(vertex_count);
+    // Row `row`'s positions (the mouths' own at both ends) and road-space coordinates.
+    let push_row = |positions: &mut Vec<RoadVec3>,
+                    road_space: &mut Vec<[f32; 2]>,
+                    row: usize,
+                    section: &RoadSection,
+                    row_layout: &RowLayout| {
         if row == 0 {
             positions.extend_from_slice(&start_mouth.vertices);
-        } else if row + 1 == rows {
+        } else if row + 1 == row_count {
             positions.extend_from_slice(&end_mouth.vertices);
         } else {
-            push_section_row(section, layout, &mut positions);
+            push_section_row(section, row_layout, positions);
         }
-        for_each_boundary(section, layout, |lateral_m, _| {
+        for_each_boundary(section, row_layout, |lateral_m, _| {
             road_space.push([section.s_m, lateral_m]);
         });
+    };
+    match rows.body {
+        None => {
+            for (row, section) in sections.iter().enumerate() {
+                push_row(&mut positions, &mut road_space, row, section, layout);
+            }
+        }
+        Some(_) => {
+            for (row, section) in sections.iter().enumerate() {
+                let (row_layout, kind) = rows.row(row);
+                push_row(&mut positions, &mut road_space, row, section, row_layout);
+                if kind == RowKind::Tip {
+                    // Keep the median's first ground and raised vertex (`tip_vertex`).
+                    let shared =
+                        row_starts[row] as usize + usize::from(row_layout.median_ground_slot()) + 2;
+                    positions.drain(shared..shared + TIP_SHARED_SLOTS);
+                    road_space.drain(shared..shared + TIP_SHARED_SLOTS);
+                }
+            }
+        }
     }
-    debug_assert_eq!(positions.len(), rows * stride);
+    debug_assert_eq!(positions.len(), vertex_count);
 
+    let triangles_and_starts = match rows.body {
+        None => uniform_triangles(layout, row_count),
+        Some(_) => divided_triangles(rows, row_starts),
+    };
+    let (triangles, group_starts) = triangles_and_starts;
+    let rows = row_count;
+
+    // Road on the left in XZ (the counter-clockwise side, as the node chains): slot 0 runs
+    // forward from the start mouth, the last slot back from the end mouth (`ROAD-68-D`).
+    let outer_chains = vec![
+        OuterChain {
+            vertices: (0..rows).map(|row| row_starts[row]).collect(),
+        },
+        OuterChain {
+            vertices: (0..rows).rev().map(|row| row_starts[row + 1] - 1).collect(),
+        },
+    ];
+    let (mut wall_runs, mut abutment_runs, mut faces) =
+        (Vec::new(), Vec::new(), EndFaces::default());
+    for (end, closure) in ends.into_iter().enumerate() {
+        // The end row, the row next to it inside the span, and the end row's first and last
+        // vertices. A wall run lists the row with the span's road on its left: the start row
+        // from chain 1's end (the last slot) back to chain 0's start, the end row from chain
+        // 0's end (slot 0) to chain 1's start.
+        let (row, inner) = if end == 0 {
+            (0, 1)
+        } else {
+            (rows - 1, rows - 2)
+        };
+        let (first, last) = (row_starts[row], row_starts[row + 1] - 1);
+        match closure {
+            SpanEnd::Shared => {}
+            SpanEnd::WallRun { abutment } => {
+                faces.retained |= !abutment;
+                wall_runs.push(if end == 0 {
+                    wall_run(&positions, (first..=last).rev())
+                } else {
+                    wall_run(&positions, first..=last)
+                });
+                abutment_runs.push(abutment);
+            }
+            // A lined bore that ends underground is closed by its lining's end wall from the
+            // deck up to the ceiling; below the deck lies the earth (`ROAD-61`).
+            SpanEnd::Cap(_) if lining.is_some() => {}
+            SpanEnd::Cap(kind) => {
+                faces.cap_kind = Some(kind);
+                end_cap(
+                    &positions,
+                    (first as usize, row_starts[inner] as usize),
+                    (last - first + 1) as usize,
+                    kind.depth_m(),
+                    &mut faces.caps,
+                );
+            }
+            // An abutment runs the other way, so the space under the bridge lies on its right.
+            SpanEnd::Abutment if end == 0 => faces.abutments.push([first, last]),
+            SpanEnd::Abutment => faces.abutments.push([last, first]),
+            SpanEnd::Portal => faces.portals.push([first, last]),
+        }
+    }
+    faces.lining = lining
+        .map(|ends| span_lining(&positions, row_starts, &outer_chains, ends))
+        .unwrap_or_default();
+    PieceMesh::new(
+        positions,
+        road_space,
+        triangles,
+        group_starts,
+        (outer_chains, wall_runs, abutment_runs),
+        strips,
+        faces,
+    )
+}
+
+// An undivided span's triangles in groups and the group starts: every row in `layout`, each pair
+// of consecutive rows one quad per band and two curb faces per step.
+fn uniform_triangles(layout: &RowLayout, rows: usize) -> (Vec<[u32; 3]>, [u32; GROUPS + 1]) {
+    let stride = layout.stride();
     let pairs = rows.saturating_sub(1);
     let mut counts = [0u32; GROUPS];
     for &kind in &layout.kinds[..usize::from(layout.band_count)] {
@@ -629,69 +933,105 @@ pub(super) fn build_span_mesh(
             }
         }
     }
+    (triangles, group_starts)
+}
 
-    // Road on the left in XZ (the counter-clockwise side, as the node chains): slot 0 runs
-    // forward from the start mouth, the last slot back from the end mouth (`ROAD-68-D`).
-    let last = stride as u32 - 1;
-    let outer_chains = vec![
-        OuterChain {
-            vertices: (0..rows as u32).map(|row| row * stride as u32).collect(),
-        },
-        OuterChain {
-            vertices: (0..rows as u32)
-                .rev()
-                .map(|row| row * stride as u32 + last)
-                .collect(),
-        },
-    ];
-    let (mut wall_runs, mut abutment_runs, mut faces) =
-        (Vec::new(), Vec::new(), EndFaces::default());
-    for (end, closure) in ends.into_iter().enumerate() {
-        // The end row, the row next to it inside the span, and the end row's first and last
-        // vertices. A wall run lists the row with the span's road on its left: the start row
-        // from chain 1's end (the last slot) back to chain 0's start, the end row from chain
-        // 0's end (slot 0) to chain 1's start.
-        let (row, inner) = if end == 0 {
-            (0, 1)
+// A divided span's triangles in groups and the group starts (`ROAD-80`), as `uniform_triangles`
+// lays them out pair by pair: a pair of mouth rows in the mouth layout, a pair of body or tip
+// rows in the body layout, and the pair between the last mouth row and a tip by band
+// correspondence (`RowLayout::body_band`), its collapsed kerbs and median left out. A tip row's
+// shared vertices (`tip_vertex`) turn the median's quads beside it into single triangles, its
+// kerb faces meeting on the tip's vertical edge; no other triangle repeats a vertex. Counted,
+// then written. `O(rows * bands)`.
+fn divided_triangles(rows: SpanRows<'_>, row_starts: &[u32]) -> (Vec<[u32; 3]>, [u32; GROUPS + 1]) {
+    let mut counts = [0u32; GROUPS];
+    for_each_divided_triangle(rows, row_starts, |group, _| counts[group] += 1);
+    let group_starts = group_starts(counts);
+    let mut triangles = vec![[0u32; 3]; group_starts[GROUPS] as usize];
+    let mut cursors = [0u32; GROUPS];
+    cursors.copy_from_slice(&group_starts[..GROUPS]);
+    for_each_divided_triangle(rows, row_starts, |group, triangle| {
+        triangles[cursors[group] as usize] = triangle;
+        cursors[group] += 1;
+    });
+    (triangles, group_starts)
+}
+
+fn for_each_divided_triangle(
+    rows: SpanRows<'_>,
+    row_starts: &[u32],
+    mut push: impl FnMut(usize, [u32; 3]),
+) {
+    let (body, _) = rows.body.expect("a divided span");
+    let ground = body.median_ground_slot();
+    // Vertex of slot `slot` of row `row` laid out as `kind`.
+    let vertex = |row: usize, kind: RowKind, slot: u8| {
+        let offset = if kind == RowKind::Tip {
+            tip_vertex(ground, slot)
         } else {
-            (rows - 1, rows - 2)
+            slot
         };
-        let (first, last) = ((row * stride) as u32, (row * stride + stride - 1) as u32);
-        match closure {
-            SpanEnd::Shared => {}
-            SpanEnd::WallRun { abutment } => {
-                wall_runs.push(if end == 0 {
-                    wall_run(&positions, (first..=last).rev())
-                } else {
-                    wall_run(&positions, first..=last)
-                });
-                abutment_runs.push(abutment);
+        row_starts[row] + u32::from(offset)
+    };
+    let mut emit = |group: usize, triangle: [u32; 3]| {
+        let [a, b, c] = triangle;
+        if a != b && b != c && a != c {
+            push(group, triangle);
+        }
+    };
+    for pair in 0..row_starts.len().saturating_sub(2) {
+        let ((start_layout, start_kind), (end_layout, end_kind)) = (rows.row(pair), rows.row(pair + 1));
+        // Each band of the pair as (kind, start-row slots, end-row slots), and each curb step as
+        // (start-row step, end-row step).
+        let mixed = (start_kind == RowKind::Mouth) != (end_kind == RowKind::Mouth);
+        debug_assert!(
+            !mixed || matches!((start_kind, end_kind), (RowKind::Mouth, RowKind::Tip) | (RowKind::Tip, RowKind::Mouth)),
+            "a mouth row meets the body only at a tip"
+        );
+        let mouth = rows.mouth;
+        let bands = if mixed { mouth.band_count } else { start_layout.band_count };
+        for band in 0..usize::from(bands) {
+            let (start_band, end_band) = match (mixed, start_kind) {
+                (false, _) => (band, band),
+                (true, RowKind::Mouth) => (band, RowLayout::body_band(mouth, band)),
+                (true, _) => (RowLayout::body_band(mouth, band), band),
+            };
+            let (start_first, start_last) = start_layout.band_slots[start_band];
+            let (end_first, end_last) = end_layout.band_slots[end_band];
+            let start_left = vertex(pair, start_kind, start_first);
+            let end_left = vertex(pair + 1, end_kind, end_first);
+            let end_right = vertex(pair + 1, end_kind, end_last);
+            let start_right = vertex(pair, start_kind, start_last);
+            let group = start_layout.kinds[start_band] as usize;
+            emit(group, [start_left, end_left, end_right]);
+            emit(group, [start_left, end_right, start_right]);
+        }
+        let steps = if mixed { mouth.step_count } else { start_layout.step_count };
+        for step in 0..usize::from(steps) {
+            // A mouth row's steps are the body's outer two: the median's two lie between them.
+            let body_step = |step: usize| if step == 0 { 0 } else { step + 2 };
+            let (start_step, end_step) = match (mixed, start_kind) {
+                (false, _) => (step, step),
+                (true, RowKind::Mouth) => (step, body_step(step)),
+                (true, _) => (body_step(step), step),
+            };
+            let (start, end) = (start_layout.steps[start_step], end_layout.steps[end_step]);
+            debug_assert_eq!(start.raised_on_left, end.raised_on_left);
+            let top_start = vertex(pair, start_kind, start.raised_slot);
+            let top_end = vertex(pair + 1, end_kind, end.raised_slot);
+            let bottom_end = vertex(pair + 1, end_kind, end.ground_slot);
+            let bottom_start = vertex(pair, start_kind, start.ground_slot);
+            for mut face in [
+                [top_start, top_end, bottom_end],
+                [top_start, bottom_end, bottom_start],
+            ] {
+                if !start.raised_on_left {
+                    face.swap(1, 2);
+                }
+                emit(CURB_FACE_GROUP, face);
             }
-            SpanEnd::Cap(kind) => {
-                faces.cap_kind = Some(kind);
-                end_cap(
-                    &positions,
-                    (row * stride, inner * stride),
-                    stride,
-                    kind.depth_m(),
-                    &mut faces.caps,
-                );
-            }
-            // An abutment runs the other way, so the space under the bridge lies on its right.
-            SpanEnd::Abutment if end == 0 => faces.abutments.push([first, last]),
-            SpanEnd::Abutment => faces.abutments.push([last, first]),
-            SpanEnd::Portal => faces.portals.push([first, last]),
         }
     }
-    PieceMesh::new(
-        positions,
-        road_space,
-        triangles,
-        group_starts,
-        (outer_chains, wall_runs, abutment_runs),
-        strips,
-        faces,
-    )
 }
 
 // The faces closing a span's end rows (`TERRAIN-07-C`): the free-end caps' triangles over
@@ -703,6 +1043,9 @@ struct EndFaces {
     cap_kind: Option<StripKind>,
     abutments: Vec<[u32; 2]>,
     portals: Vec<[u32; 2]>,
+    lining: Lining,
+    // A tunnel's approach span (`PieceMesh::retained`).
+    retained: bool,
 }
 
 // The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
@@ -762,6 +1105,8 @@ impl PieceMesh {
     /// then curb faces), hanging `strips` from its chains: skirts where it stands on the terrain,
     /// none where only structures meet. `wall_runs` close the chains across its structure
     /// mouths ([`Self::wall_runs`]), each with whether it is a bridge's ([`Self::abutment_runs`]).
+    /// A node where only tunnels meet (`lined`) is lined along its chains (`ROAD-61`), or has no
+    /// mesh when the ring of its lining tops bounds no simple polygon.
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
@@ -769,23 +1114,32 @@ impl PieceMesh {
         outer_chains: Vec<Box<[u32]>>,
         wall_runs: Vec<(OuterChain, bool)>,
         strips: Option<StripKind>,
-    ) -> Self {
+        lined: bool,
+    ) -> Result<Self, LiningError> {
         let group_starts = group_starts(groups.each_ref().map(|group| group.len() as u32));
         let triangles = groups.iter().flatten().copied().collect();
-        let outer_chains = outer_chains
+        let outer_chains: Vec<OuterChain> = outer_chains
             .into_iter()
             .map(|vertices| OuterChain { vertices })
             .collect();
         let (wall_runs, abutment_runs) = wall_runs.into_iter().unzip();
-        Self::new(
+        let lining = if lined {
+            node_lining(&positions, &outer_chains)?
+        } else {
+            Lining::default()
+        };
+        Ok(Self::new(
             positions,
             road_space,
             triangles,
             group_starts,
             (outer_chains, wall_runs, abutment_runs),
             strips,
-            EndFaces::default(),
-        )
+            EndFaces {
+                lining,
+                ..EndFaces::default()
+            },
+        ))
     }
 
     // Builds the bounds and top-triangle grid of grouped triangles.
@@ -801,6 +1155,8 @@ impl PieceMesh {
             cap_kind,
             abutments,
             portals,
+            lining,
+            retained,
         }: EndFaces,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
@@ -811,7 +1167,8 @@ impl PieceMesh {
             |triangle| triangle as u32,
         );
         Self {
-            bounds_xz: bounds_xz(positions.iter().copied()),
+            // The lining's shell and collars reach beyond the deck (`ROAD-61`).
+            bounds_xz: bounds_xz(positions.iter().chain(&lining.positions).copied()),
             seam_blocks: seam_blocks(&positions, &outer_chains),
             positions,
             road_space,
@@ -825,6 +1182,8 @@ impl PieceMesh {
             cap_kind,
             abutments,
             portals,
+            lining,
+            retained,
             grid,
         }
     }

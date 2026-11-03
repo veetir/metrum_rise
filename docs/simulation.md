@@ -226,10 +226,22 @@ saved game. A whole city saved one frame after a check and loaded matches the un
 next three checks (`traffic14_saturated_ring_continues_across_a_save_file`). The Kuopio fixture is
 re-recorded in format 109; only the version and the new, empty row change (`sqldiff`).
 
-Save format 110 (`PARK-02`, merged with `TRAFFIC-14`, 2026-11-01) retains the complete format-109
+Save format 110 (`ROAD-74`, round R6, 2026-11-01) adds the `road_crosswalks` table: one row
+(`node_id`, `edge_id`, `marked`) per crossing override whose edge is still an arm of its node,
+in key order ([`roads.md`](roads.md#crossing-toggle-and-save-road-74)). Before it the select
+tool's crossing toggles were lost on save. The Kuopio fixture is re-recorded in format 110; only
+the version and the new, empty table change (`sqldiff`).
+
+Save format 111 (`ROAD-80`, round R3b1, 2026-11-02) adds `network_edges.median_style` (0 none,
+1 painted, 2 kerbed grass, 3 kerbed paving) and `median_width` (metres, 0 without a median); a
+load fails on a median no stroke could build ([`roads.md`](roads.md#medians-road-80)). The Kuopio
+fixture is re-recorded in format 111; only the version and the two columns at their defaults
+change (`sqldiff`).
+
+Save format 113 (`PARK-01`/`PARK-02`, merged with `ROAD-80`, 2026-11-03) retains the complete format-111
 gridlock state alongside parking ownership, custody, claims, itinerary/recovery state and economy
 endpoint quote stamps ([`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)). It is
-`dev` 109 + 1, current-only, with no migration. The existing Kuopio recorder re-records the pinned
+`dev` 111 + 2 (the parking branch had used 110–112), current-only, with no migration. The existing Kuopio recorder re-records the pinned
 fixture with both parking and gridlock state.
 
 ## Scheduler
@@ -829,6 +841,21 @@ field diffusion and other read-only precomputation.
   (`thread_pools::on_pool_worker`). Regression test
   `the_adoption_wait_leaves_every_pool_worker_to_the_rebuild`: the rebuild needs every worker
   (a broadcast) after the adoption frame began; the old adoption deadlocks there.
+- **No nested jobs** (`CODE-18`, round T19b, 2026-11-02). A background worker never runs one
+  pure job's work inside another's. Waiting in a join (the rebuild's nested dissection joins),
+  a worker takes queued work, the starts of later jobs among it, and each started rebuild joined
+  and took the next: R6's crossings-off variant, which toggles 2,572 crossing arms at build at
+  100k (each toggle a routing rebuild), nested 156 rebuilds, 16,731 frames, on
+  `metrum-bg-0` until its 2 MB stack overflowed (gdb backtrace of the control: 156 frames each
+  of `PureJob` start, `CchGraph::build` and `build_in_pool`, 864 of `dissect`). A start taken
+  under a job's work is now deferred (`pure_job.rs`: a per-thread depth and list) and queued
+  again when that work returns, so a worker's stack holds at most one started job, plus one per
+  owner that runs its own job through `install`. The deferred start runs once at the top of a
+  worker's stack, or finds its job superseded or taken and runs nothing; results are pure, so
+  nothing else changes. Not a raised stack size. Test
+  `a_worker_never_runs_a_started_job_inside_another`: 10,000 jobs, each starting the next and
+  yielding to it on a one-worker pool with a 2 MB stack, run one at a time (the control
+  overflows the stack).
 - **Pool.** The shared pool, not a dedicated one: while the rebuild runs the frame holds (below),
   so it competes only with render-snapshot building, cell-chunk preparation and Godot's terrain
   jobs. The dedicated-pool reason above (a long job must not starve per-frame movement) does not

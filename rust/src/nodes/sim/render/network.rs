@@ -294,6 +294,43 @@ impl SimCore {
             "concrete_colors",
             PackedColorArray::from_iter(mesh_data.concrete_colors.iter().copied()),
         );
+        // A tunnel's lining (`ROAD-61`), its own layer: empty arrays in a chunk without one.
+        dict.set(
+            "lining_vertices",
+            PackedVector3Array::from_iter(mesh_data.lining_vertices.iter().copied()),
+        );
+        dict.set(
+            "lining_normals",
+            PackedVector3Array::from_iter(mesh_data.lining_normals.iter().copied()),
+        );
+        dict.set(
+            "lining_uvs",
+            PackedVector2Array::from_iter(mesh_data.lining_uvs.iter().copied()),
+        );
+        dict.set(
+            "lining_colors",
+            PackedColorArray::from_iter(mesh_data.lining_colors.iter().copied()),
+        );
+        // A kerbed grass median's top (`ROAD-80`), its own layer, sent only by a chunk that has
+        // one: every other chunk's payload is unchanged, and Godot reads a missing layer as empty.
+        if !mesh_data.median_grass_vertices.is_empty() {
+            dict.set(
+                "median_grass_vertices",
+                PackedVector3Array::from_iter(mesh_data.median_grass_vertices.iter().copied()),
+            );
+            dict.set(
+                "median_grass_normals",
+                PackedVector3Array::from_iter(mesh_data.median_grass_normals.iter().copied()),
+            );
+            dict.set(
+                "median_grass_uvs",
+                PackedVector2Array::from_iter(mesh_data.median_grass_uvs.iter().copied()),
+            );
+            dict.set(
+                "median_grass_colors",
+                PackedColorArray::from_iter(mesh_data.median_grass_colors.iter().copied()),
+            );
+        }
         // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
         dict.set(
             "street_lights",

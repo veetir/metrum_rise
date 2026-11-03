@@ -3492,12 +3492,12 @@ lattice sample:
   because `clamp` returns the base itself there.
 - G, `sdf`: distance to the nearest road seam, clamped to the band `B = max(2 m, 3 × spacing)`
   (2 m at `GL0`, as in the spike), negative where the sample is covered by a road top triangle.
-  Near a tunnel's portal row it is the nearer of that and the nearest bore seam, negative where
-  the portal opening cuts the sample ([T22](#terrain-07-open-questions) 5 (a), `TERRAIN-07-C`).
+  Near a bridge's or tunnel's mouth row it is the nearer of that and the row (the mouth rows
+  named in the mask, `TERRAIN-07-D` round 9 and `ROAD-61` round R8).
   The band grows with the spacing so that the four samples around any fragment within two texels
   of an edge name a seam. A level's bake reads the tile grown by `max(C, B)`.
 - B: the nearest road seam's index in the tile's seam row when `|sdf| < B`, else `-1`; the row
-  lists the named bore seams after the named road seams, each group in key order.
+  lists the named mouth rows after the named road seams, in key order and the wall seams' order.
 - A: `16 × (e + 1) + class`, integer-valued: `class` the material class (0 none, 1 asphalt,
   2 concrete), `e` the nearest material edge's index in the tile's edge row within `B`, else `-1`.
   The nearest edge takes the seams' total order (distance, then the larger distance to its line,
@@ -3986,7 +3986,7 @@ km.
   terrain shader paints with the paving include. Outside the pad they follow the graded ground, as
   today's paving triangles do.
 - For consumers, `mask_at` reports `Pad` inside the footprint and `Paved` on a surface. `Road`
-  comes first: covered by a grounded top triangle, or cut by a portal opening (T22 5 (a)).
+  comes first: covered by a grounded top triangle.
   Clarification (`TERRAIN-07-C`): `Pad` wins over `Paved`, so `Pad` is exactly the footprint
   test that the `sample_building_site_height(..).is_some()` consumers make, and `Paved` is the
   paving outside footprints (frontage, aprons); the texels carry the material inside pads too,
@@ -4021,10 +4021,10 @@ km.
   crossings with the lattice lines and cell diagonals and where the lattice surface crosses the
   seam's height between two of them (both linear there, so the crossing is exact); a face joins
   two consecutive vertices where the surface differs from the seam's height at either end,
-  between the two: a portal's headwall where the graded ground stands above a tunnel's mouth, an
-  abutment where it stands below a bridge's. The terrain is masked on the road's side of the
+  between the two: a tunnel's row wall where the graded ground stands above a portal's collar,
+  an abutment where it stands below a bridge's. The terrain is masked on the road's side of the
   seam, so the faces close its cut edge against the mouth row. A wall face runs `a -> b` with
-  its lower side on the left, as a conflict wall's road is: along the seam for a headwall,
+  its lower side on the left, as a conflict wall's road is: along the seam for a row wall,
   against it (the space under the bridge on the left) for an abutment. Below the bridge's slab
   the roadbed's own abutment face closes the road chunk down to the skirt depth
   ([skirts](#skirts), round 4), so at a bridge's mouth the abutment wall starts at that face's
@@ -4035,12 +4035,11 @@ km.
   corners); faces stand from the surface up to the edge where the surface lies below it, and a
   headwall from the deck where it stands above the deck, with nothing between, which the slab and
   the face close. The two faces meet on that edge instead of overlapping in one plane (round 6's
-  0.15 m band, seen from under the bridge). At a tunnel's portal row the terrain
-  beyond is cut where it stands less than `H` above the deck (the portal opening,
-  [T22](#terrain-07-open-questions) 5 (a), round 5), so the headwall keeps only faces with an end
-  at or above `h + H`; the opening's sides are structure walls along the bore seams, from the
-  deck's edge to the surface where it stands below `h + H` within the reach. Ordinary grounded
-  roads get no structural walls.
+  0.15 m band, seen from under the bridge). At a tunnel's portal row the roadbed's collar closes
+  the row up to `roadbed::COLLAR_HEIGHT_M` (5 m) above it, and the terrain's row wall stands
+  from the collar's flat top up to the ground where the hill rises higher (`ROAD-61` rounds R8e
+  and R8f, "Walled approaches" below).
+  Ordinary grounded roads get no structural walls.
 - **Conflict walls** ([T2](#terrain-07-open-questions) (c), built in `TERRAIN-07-C` round 1 as
   payload data, rendered in `TERRAIN-07-D`). Along every road seam of a tile (its part in the
   tile), the vertices are the seam's crossings with the level's lattice lines and cell diagonals,
@@ -4405,8 +4404,8 @@ km.
   a variant without the mask was exact and invisible, but took 0.014 ms of the saved pose's
   0.19 ms for 41 MiB of video memory, twice the cell sets' prewarm and four more `MultiMesh`es
   and materials per set; the binding of a set's materials while it draws stays.
-- **Walls.** A tile's wall faces (conflict walls, abutments, headwalls, the portal opening's
-  sides) reach Godot with its slot bytes, eight little-endian `f32` per face (`pack_walls`:
+- **Walls.** A tile's wall faces (conflict walls, abutments, a tunnel's row and trough walls)
+  reach Godot with its slot bytes, eight little-endian `f32` per face (`pack_walls`:
   `a`, `b`, the bottoms and the tops). Each pooled cell set holds one more `MultiMesh`, of one
   quad, prewarmed with 1,024 instances; a face draws as one instance of the patch holding its
   midpoint, its eight values carried raw in the instance transform's basis (full floats in both
@@ -4621,11 +4620,136 @@ the road, one site chunk lookup and the seams near the point
 | --- | --- | --- | --- |
 | `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
 | `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; in a 64 m tile without a seam or pad within the cap the bilinear base, as `raycast_surface` marches it (correction, `TERRAIN-07-D` round 2: the two queries disagreed there by the `GL0` triangles' chord of the bilinear base, 3.7 mm at the grade breaks of `vehicle_ground_support_test.gd`); under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
-| `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
+| `surface_height_at(x, z)` | the visible surface: the highest road top where a road on or above the ground covers `p`, never a buried deck (a tunnel span, or a node piece where only tunnels meet); else `ground_height_at`, so over a bore it is the hill (`ROAD-61`, rounds R2b and R8 of the road-feature port) | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
 | `normal_at(x, z)` | the rendered `GL0` normal: per lattice point today's base gradient (the central difference of the base over one base cell either side) plus the central difference of the packed delta over its four neighbours, interpolated over the `GL0` triangle; the shader computes the same (correction, `TERRAIN-07-D`: the base term was the 0.5 m difference, which the [renderer rule](#godot-tile-renderer) does not draw and which would crease the shading at every graded cell's border with a base cell) | (new) | vegetation slope tests |
-| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }`; `Road` also where a portal opening cuts the ground (T22 5 (a)) | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
+| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
 | `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles), never ground a road covers or a portal opening cuts | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
+
+**The ground over a tunnel bore (`ROAD-61`, rounds R2b and R8).** A tunnel span is never on the
+visible surface: over a bore the surface is the graded ground, which past a portal row is the hill
+(below). The roadbed marks a buried piece in its query index and answers the exposed pieces' top
+alone (`RoadbedSystem::exposed_height_at`, one walk of the point's query cell, as `height_at`);
+`surface_height_at`, `surface_height_near` and the height-and-normal variants read it. Vegetation's
+deck test and walkway setback read the exposed pieces only, so the hill keeps its plants over a
+bore and loses them on the approaches. Without a buried piece every answer is bitwise the old one.
+R2b took a buried deck where the portal opening cut the ground; R8 removed the opening.
+
+**The portal row (`ROAD-61`, round R8 of the road-feature port, 2026-11-01; closes R2b's open
+T22 finding).** The approaches' grounded chains end at the portal row, and their tie-in cones
+graded the ground over the bore (`g <= h + k d` within the cap of the row's corners): on a 1:2 hill
+a 5.8 m cut over the bore out to the 64 m cap and a 6.0 m rock step there. The rule now: **no
+cone reaches past a portal row.** A point lies past a row when it lies strictly on the tunnel's
+side of the line through the row's corners and within the cap of their segment; a seam's cone (and
+its name as the point's nearest seam) is hidden from such a point when the seam's nearest point to
+it lies on the line or on the approach's side (`portal::PortalWindow::past` and `hides`, read by
+both passes of the bake, the walls' lower bounds and the queries alike, so pruned equals unpruned
+and the queries equal the bake). The rows come from the grounded pieces' wall runs across tunnel
+mouths (`RoadbedSystem::for_each_tunnel_mouth`: road on their left, tunnel on their right), which
+every bake and query gathers anyway. So the hill over the bore stays natural and the approach's cut
+ends at the row, where the roadbed's collar stands ([`roads.md`](roads.md#road-tunnels-road-61)).
+Two rules close the row: a covered point that continues the ground across the mouth
+(`continues_ground`) takes the far side's ground there, with no seam on the approach's side
+(`PortalWindow::hides_at_mouth`), so the hill meets the row at its own height and the lattice's
+step down to the deck lies over the approach, which the mask discards; and the portal row is named
+in the mask like a bridge's mouth row, so the cut edge lies on the row. The collar closes the row
+up to its flat top and the row wall above it (round R8e). The portal opening (the cut over the deck within 10 m past
+a row, its bore seams and side walls) is gone. Selection: a changed piece with a portal row widens
+its candidates by the cap and compares the rows. Without a portal row nothing changes (bitwise on
+the 1:4 hill with a road and a bridge, a 1:2 hill with a road and the grown starter town). Test:
+`graded::portal_tests::no_cone_reaches_past_a_portal_row`; `road_tunnels::
+a_steep_hill_over_a_bore_keeps_its_height` (un-ignored).
+
+**The user's saves (`ROAD-61` round R8d, 2026-11-01).** On 32 mouths in two of the user's dumps
+the wings' frame stands 0.57-3.05 m above the graded ground behind it (5.9 m beside a
+neighbour's cut), the dark teeth in the rock were the black wing through the sliver's cells (the
+wing now takes outdoor light, so they read as concrete on rock), and between side-by-side tunnels
+whose rows are staggered a neighbour's approach cut, not hidden past the other row, lowers the
+hill over the next bore onto its shell. A terrain-owned portal (option T) is the recommended
+design: the bake hides the approach's own cones in a trough in front of the row and retains the
+hill with `walls::build_structure_walls` along the approach and over the mouth, as it does at a
+bridge's mouth, with no wing seams; prototype stills and the open points in
+[`roads.md`](roads.md#road-tunnels-road-61) ("A mouth that fits the hill").
+
+**Walled approaches (option T, `ROAD-61` round R8e, the terrain side; the user's decision,
+2026-11-01: walls, not slopes).** A tunnel's approach span (a grounded span with a wall run
+across a tunnel's mouth, `PieceMesh::retained`, from topology alone) publishes its chain
+segments as *retained* seams (`Seam::retained`). The flag is part of `ChainChanges`' key and of
+the tile inputs (the retained seams' keys after the portal rows), so a span that becomes an
+approach without changing its chains' bits dirties and rebakes its far tiles. Grading:
+- a retained seam's cone is one-sided, `L = max(L, h - k d)` and no upper bound: beside the
+  approach the ground stays natural wherever no other seam cuts it;
+- a covered sample whose nearest road seam within the band is retained takes the overlap rule
+  `max(L, min(b, U))` over the same cones, its own seam's arm `h - k s` included, instead of the
+  inside rule. Both sides of the seam evaluate one function, so the lattice edge on the seam is
+  the ground's, and the seam stays named: the exact mask discards on the seam line. A bin whose
+  pass-1 list holds a retained seam evaluates its covered lanes like ground lanes (and sends them
+  to pass 2 when a cut holds them below the base); the queries decide the same over their
+  window, so they stay the bake's values bitwise. Pruning is unchanged and stays exact: a
+  retained seam's symmetric listing is a superset, and its lower bound is as before.
+- `walls::build_structure_walls` stands the trough's walls along every retained seam with
+  `above` (faces where the surface stands above the road, from the road's edge up to it, ending
+  exactly where they meet and resuming where the road dips again) and the row wall above the
+  collar's flat top (`roadbed::COLLAR_HEIGHT_M` above the row, round R8f; faces where the surface
+  stands above it, none where the hill stands exactly at it); `build_walls` gives retained seams no
+  conflict wall.
+- A trough face stands from the skirt's bottom (`roadbed::SKIRT_DEPTH_M` below the road's edge)
+  up to the ground (round R8g), so the deck's edge lies inside the face. Standing on the edge, the
+  face met the deck in a T-junction between two meshes (its bottom split at lattice crossings,
+  the deck's edge at section rows, each in its own `f32` frame), and a ray from the road grazing
+  that corner within a millimetre could pass between them above the skirt into the void under
+  the hill: R8f's two sky pixels on dump B ([invariant 10](#invariants): fixed at the wall, not
+  with a deeper skirt or a mask). The part below the edge lies behind the deck seen from the road
+  and under the ground seen from the hill, which stands at or above the edge along every trough
+  face. Conflict walls, abutments and the row wall keep their bottoms bitwise; a conflict wall's
+  foot meets the deck the same way, but where the ground beside it dips below the road an
+  overlap would show against the skirt, so it is left as it is (no pinhole seen, though no keyed
+  view targets one; `ROAD-61` R8g in [`roads.md`](roads.md#road-tunnels-road-61)).
+- The wing seams of round R8c are gone from the terrain (`SeamKind::Wing` and its cap, hides and
+  listing); the portal window keeps R8's hide past the row, a function of the row alone. No reach
+  from the row along the approach: the trough is a property of the seam, so a future flat-ground
+  ramp entry walls its U-section the same way. Round R8c's wing grading and its accepted rock
+  sliver (`TERRAIN-18`, retired) went with the wings: round R8f's collar has none.
+- Cost: covered lanes of trough bins read their bins' candidates like ground lanes (at most the
+  band strip on the road side of each retained seam per tile); walls `O(retained seams x their
+  lattice crossings)` per tile; no new allocation (`trough_bins` is one reused `Vec<bool>`).
+  A trough wall takes about 256 faces per side per 64 m at `GL0`, past the 256 wall instances a
+  render patch prewarms: a patch now grows its wall MultiMesh to the next power of two when its
+  tiles' faces need more (`terrain_graded_tiles.gd`), where it dropped the rest before. Timings in
+  [`roads.md`](roads.md#road-tunnels-road-61) (round R8e).
+
+Tests: `roadbed::terrain::tests::a_tunnel_at_a_roads_end_changes_every_approach_segment`,
+`graded::portal_tests::{an_approach_changes_the_inputs_of_its_far_tiles,
+trough_texels_name_their_seam, the_trough_is_walled_where_the_road_runs_below_the_ground,
+the_roads_edge_lies_inside_every_trough_wall, the_hill_meets_the_collar,
+no_cone_reaches_past_a_portal_row}`,
+`road_tunnels::side_by_side_tunnels_leave_each_others_bores_natural`.
+
+**The collar and the tool's rules (option T, `ROAD-61` round R8f, the roadbed and tool side).**
+- *The collar.* The roadbed's face at a portal row is a collar in the row's plane: the ring between
+  the lining's mouth and the end of its shell, flat-topped at the shell's roof
+  (`COLLAR_HEIGHT_M` = the lining's 4.5 m + its 0.5 m thickness above the row) and reaching the
+  thickness beyond each corner, with the skirt below the row. Its outer edges are the shell's end
+  edges bitwise. The terrain closes the row above it: the row wall from the flat top to the ground
+  where the hill stands higher; nothing where the hill stands at or below the top. The headwall,
+  its wings and the wings' grading are gone.
+- *Cover across the bore.* The tool refuses a tunnel whose hill does not stand 5 m above the deck
+  across the bore's whole width at every knot between the portals (the shell's roof at both
+  corners and between them; [`roads.md`](roads.md#road-tunnels-road-61)), so on new strokes the
+  collar never stands above the hill at a corner and the row wall's height is never negative. The
+  user's existing saves keep their tunnels; where their hill falls across a row the collar's top
+  edge stands above the low corner (a concrete edge, nothing open).
+- *No junction in a trench.* The tool refuses a junction whose node lies below the source ground
+  in a tunnel approach (`junction_in_trench`): the node's piece is not retained, so the ground
+  would be graded down to it in a cut and step against the trough walls at the piece's boundary.
+- *Wall faces' lighting* (found by round R8f). The wall quad (`terrain_graded_tiles.gd`) was wound
+  counter-clockwise seen from the side `terrain_graded_walls.gdshader`'s normal points to (the
+  face's lower side, the road's). Godot's front faces are clockwise, and with `cull_disabled` it
+  negates a back face's normal, so every graded wall seen from the road was lit as if it faced the
+  hill: the trough wall facing the sun read dark slate, the one facing away pale. The quad is now
+  wound to face the normal. The walls' material is the retaining walls' light grey (albedo 0.54,
+  0.54, 0.50) through `standard_light.gdshaderinc`, so the clouds dim the sun on it as on the
+  collar's concrete.
 
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
 `raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through
@@ -9899,6 +10023,15 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         is no portal span: a tunnel junction within `R` of a portal is not opened over that
         piece. A road more than `2 R` wide has ground up to `H` above the deck at the middle of
         its row, which stays closed there by a headwall.
+    - **Round R8 of the road-feature port (`ROAD-61`, 2026-11-01): 5 (a) replaced by 5 (b)**,
+      the user's request for a closed tunnel (2026-11-01). The roadbed lines the tunnel and stands
+      a headwall at each portal row ([`roads.md`](roads.md#road-tunnels-road-61)); the terrain
+      grades no cone past a portal row, so the opening, its bore seams (`SeamKind::Bore`) and side
+      walls, the deck raster and `mask_at`'s and `raycast_surface`'s opening rules are deleted;
+      along a portal row's wall seam no face (4 (a)'s headwall face there is the roadbed's now);
+      covered points that continue the ground at a portal row take the far side's ground; the
+      portal row is named in the mask. See "The portal row" above. `PORTAL_CLEARANCE_M` stays the
+      bore's cover (road edit) and the headwall's height reference; `PORTAL_REACH_M` is gone.
 
 23. **T23. Slot pools above the `Texture2DArray` depth limit (`TERRAIN-07-D`) — decided by the
     coordinator under the user's delegation, 2026-10-26 night, confirmed by the user 2026-10-26:
@@ -12630,6 +12763,21 @@ Weather, clouds and the night sky (`RENDER-16`, `RENDER-17`, `RENDER-20`, `RENDE
   sky's own horizon haze, as dense as the deck. The march fades into it over its last 9 km. The
   band once mixed in the deck's shade with a fixed lift, which drew a grey stripe at night and a
   lilac one at dusk under overcast and storm. Its hard cut-off also drew a stepped edge.
+- **Overview altitude** (`CAM-02`). The sky-only cumulus composite fades with world camera
+  height from 1200 to 1500 m; cirrus fades from 6500 to 8000 m. Both are absent above 8 km,
+  so overview navigation never evaluates a cloud intersection behind the camera. The low
+  march also rejects origins at or above its base. These visibility weights affect cloud colour
+  and transmittance, including the water-reflection panorama, but never change weather state,
+  the ground-shadow bake or receiver shadow sampling. Above the lowest fade threshold, a
+  change in camera height invalidates view and panorama history (including all interleaved
+  workgroups), preventing old clouds from persisting after ascent. Below that threshold the
+  existing history policy is retained. The changes are O(1) per pixel and per camera update,
+  with no new texture lookup, spatial structure or per-frame CPU allocation.
+  Fresh rendered validation on `camera/playtest` (2026-11-01) reads cloud transmittance at
+  1000, 1350, 1500, 6500, 7250, 8000 and 42000 m, then returns to 1000 m. The panorama is
+  fully transparent at/above 8000 m and clouds return on descent; the 64² sampled ground-shadow
+  image hashes identically at every altitude. Overview workload/timings are in
+  [ui.md](ui.md#whole-map-zoom--cam-02). Stars and moon remain sky directions, not finite shells.
 - **High cloud** (`RENDER-25`). Above the cumulus a sheet of cirrus at 8 km is drawn in the
   same march as one translucent surface (`high_clouds()` in `weather_cloud_march.glsl`): broad
   patches carrying fine fibres, both read from the weather map stretched along the world

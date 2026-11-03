@@ -2,7 +2,11 @@
 
 ## Selection tool — click to select one road edge; drag to grow the selection
 ## along connected edges. All selected edges share the same property edits.
-## Also supports selecting Junctions to edit Lane Connections and Crosswalks.
+## Also supports selecting Junctions to edit Lane Connections and Crosswalks: each arm that can
+## cross gets a toggle that turns its zebra, and with it its pedestrian crossing, on or off
+## (`ROAD-74`). Rust decides: hovering a toggle asks for the commit's verdict, and a click
+## commits only a toggle that verdict accepted. The Road Properties window's lane steppers
+## (`ROAD-80`) ask the same kind of verdict for the selected roads' lanes and commit on Apply.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -41,6 +45,10 @@ var selected_node: int = -1
 var lane_spheres = []
 var connection_lines = []
 var crosswalk_toggles = []
+# The hovered toggle and the commit's verdict on it: [node, edge, has_cw] and preview_crosswalk's
+# dictionary, asked once per hovered toggle.
+var _crosswalk_preview_key: Array = []
+var _crosswalk_preview: Dictionary = {}
 
 var _drag_source: Dictionary = {}
 var drag_line_mesh: MeshInstance3D
@@ -96,10 +104,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			if selected_node != -1:
 				var clicked_cw = _get_hovered_cw_toggle(pos)
 				if clicked_cw != null:
-					simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw)
-					_build_node_visuals(selected_node)
-					if get_node_or_null("../RoadTool"):
-						get_node("../RoadTool").update_main_mesh()
+					if _preview_crosswalk(clicked_cw).get("is_valid", false) and simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw):
+						_build_node_visuals(selected_node)
+						if get_node_or_null("../RoadTool"):
+							get_node("../RoadTool").update_main_mesh()
 					return
 						
 				var clicked_lane = _get_hovered_lane_sphere(pos)
@@ -159,6 +167,8 @@ func _process(_delta):
 	
 	if not _drag_source.is_empty():
 		_update_drag_line()
+	elif selected_node != -1:
+		_update_crosswalk_hover()
 	elif selected_node == -1 and _mouse_pressed:
 		var edge_idx := _hovered_edge()
 		if edge_idx != -1 and edge_idx != _last_hovered and not selected_edges.has(edge_idx):
@@ -179,7 +189,10 @@ func _clear_node_visuals():
 	connection_lines.clear()
 	for c in crosswalk_toggles:
 		c.mesh_inst.queue_free()
+		c.label_inst.queue_free()
 	crosswalk_toggles.clear()
+	_crosswalk_preview_key = []
+	_crosswalk_preview = {}
 	if drag_line_mesh: drag_line_mesh.mesh = null
 
 func _build_node_visuals(node_id: int):
@@ -240,6 +253,9 @@ func _build_node_visuals(node_id: int):
 		connection_lines.push_back(rel_inst)
 		
 	for edge_id in unique_edges:
+		# Only arms that can cross get a toggle; the rule is Rust's.
+		if not simulation_node.can_toggle_crosswalk(node_id, edge_id):
+			continue
 		var pos = unique_edges[edge_id]
 		var node_pos = simulation_node.get_node_pos(node_id)
 		var dir = (pos - node_pos).normalized()
@@ -256,10 +272,19 @@ func _build_node_visuals(node_id: int):
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		mesh_inst.material_override = mat
 		
+		var label := Label3D.new()
+		label.text = _crosswalk_label(has_cw, {})
+		label.font_size = 32
+		label.pixel_size = 0.008
+		label.no_depth_test = true
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		add_child(label)
+		label.global_position = mesh_inst.global_position + Vector3(0, 1.5, 0)
 		crosswalk_toggles.push_back({
 			"edge_id": edge_id,
 			"pos": mesh_inst.global_position,
 			"mesh_inst": mesh_inst,
+			"label_inst": label,
 			"has_cw": has_cw
 		})
 		
@@ -281,6 +306,30 @@ func _build_node_visuals(node_id: int):
 			add_child(line_inst)
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
+
+func _crosswalk_label(has_cw: bool, preview: Dictionary) -> String:
+	var text := "Zebra on" if has_cw else "Zebra off"
+	if preview.is_empty():
+		return text
+	if preview.get("is_valid", false):
+		return text + " · click to turn " + ("off" if has_cw else "on")
+	return text + " · can't turn " + ("off" if has_cw else "on") + ": " + str(preview.get("invalid_reason", ""))
+
+# The commit's verdict on toggling `toggle`, asked once while it stays hovered.
+func _preview_crosswalk(toggle: Dictionary) -> Dictionary:
+	var key := [selected_node, toggle.edge_id, toggle.has_cw]
+	if key != _crosswalk_preview_key:
+		_crosswalk_preview_key = key
+		_crosswalk_preview = simulation_node.preview_crosswalk(selected_node, toggle.edge_id, not toggle.has_cw)
+	return _crosswalk_preview
+
+func _update_crosswalk_hover() -> void:
+	if crosswalk_toggles.is_empty():
+		return
+	var hovered = _get_hovered_cw_toggle(_world_position(get_viewport().get_mouse_position()))
+	for c in crosswalk_toggles:
+		var preview: Dictionary = _preview_crosswalk(c) if c == hovered else {}
+		c.label_inst.text = _crosswalk_label(c.has_cw, preview)
 
 func _world_position(screen_position: Vector2):
 	var camera = get_viewport().get_camera_3d()
@@ -417,6 +466,27 @@ func set_selected_edge_class(class_int: int) -> void:
 		simulation_node.set_edge_class(idx, class_int)
 	if get_node_or_null("../RoadTool"):
 		get_node("../RoadTool").update_main_mesh()
+
+## Rust's verdict on giving every selected road `fwd` + `bkw` lanes and the median
+## `median_style` of `median_width` metres in place (`ROAD-80`): the first refusal
+## (`invalid_reason`, `detail`), else `is_valid`. Each road is checked as it stands, as Apply
+## commits them one by one.
+func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> Dictionary:
+	for idx in selected_edges:
+		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width)
+		if not bool(verdict.get("is_valid", false)):
+			return verdict
+	return {"is_valid": true}
+
+## Gives every selected road Rust accepts `fwd` + `bkw` lanes and the median, each with its
+## undo record, and returns how many were refused. The edits publish their chunks at once.
+func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> int:
+	var refused := 0
+	for idx in selected_edges:
+		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width):
+			refused += 1
+	_rebuild_highlight()
+	return refused
 
 func set_selected_edge_no_building_spawn(enabled: bool) -> void:
 	for idx in selected_edges:

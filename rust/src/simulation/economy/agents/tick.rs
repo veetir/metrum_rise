@@ -28,8 +28,10 @@ mod schedule;
 mod scrub;
 mod slices;
 mod speed;
+mod stranded;
 mod traffic;
 mod trip_failures;
+mod walk_lanes;
 
 use super::data::AgentSystem;
 use super::{
@@ -60,9 +62,12 @@ pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
+pub(crate) use stranded::StrandedWalkers;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;
+#[cfg(test)]
+pub(crate) use trip_failures::probe_tally;
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.
@@ -109,6 +114,7 @@ impl AgentSystem {
             self.prepare_parking_movement(parking,transit_network);
         }
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n, parking.as_deref());
+        self.note_stranded_walkers();
         if let Some(parking) = parking {
             self.commit_parking_transitions(parking, allocator, transit_network, graph);
         }

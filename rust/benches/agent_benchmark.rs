@@ -89,6 +89,7 @@ fn build_shared() -> SharedSetup {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -197,6 +198,7 @@ fn create_access_edge(n0: u32, n1: u32) -> Edge {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 
@@ -481,6 +483,7 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
+        walk_lanes: Vec::new(),
         has_car: true,
         parking_trip: Default::default(),
         job_lock_until_day: 0,
@@ -545,6 +548,7 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
+        walk_lanes: Vec::new(),
         has_car: true,
         parking_trip: Default::default(),
         job_lock_until_day: 0,
@@ -648,6 +652,7 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
+        walk_lanes: Vec::new(),
         has_car: true,
         parking_trip: Default::default(),
         job_lock_until_day: 0,
@@ -716,6 +721,7 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         planned_activity: 0,
         current_path: route,
         current_path_index: 1, // [0] = origin node, [1] = live target
+        walk_lanes: Vec::new(),
         has_car: true,
         parking_trip: Default::default(),
         job_lock_until_day: 0,

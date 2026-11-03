@@ -28,19 +28,6 @@ pub enum PieceId {
     Node(u32),
 }
 
-/// One part of a tunnel span with a portal row ([`RoadbedSystem::for_each_portal_part_in_bounds`],
-/// `TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)).
-#[derive(Clone, Copy, Debug)]
-pub enum PortalPart<'a> {
-    /// A portal row's vertices, corner to corner ([`PieceMesh::portal_rows`]).
-    Row(&'a [RoadVec3]),
-    /// A top triangle: the deck the graded terrain opens near a portal row.
-    Top([RoadVec3; 3]),
-    /// An outer-chain segment, the deck on its left: a bore seam, along which the opening's
-    /// sides stand.
-    Bore([RoadVec3; 2]),
-}
-
 /// One wall-run segment ([`RoadbedSystem::wall_seams_in_bounds`], `TERRAIN-07-C`), with the
 /// abutment face's bottom edge below its ends where its run crosses a bridge's mouth
 /// (`TERRAIN-07-D`, the abutment band).
@@ -150,6 +137,15 @@ fn surface_at(
     best
 }
 
+// A top triangle's face normal, turned upward.
+fn upward_normal([a, b, c]: [RoadVec3; 3]) -> Vector3 {
+    let mut normal = (b - a).cross(c - a).normalize();
+    if normal.y < 0.0 {
+        normal = -normal;
+    }
+    Vector3::new(normal.x as f32, normal.y as f32, normal.z as f32)
+}
+
 // Visits the segments of `chains` (a piece's outer chains or wall runs) whose XZ bounds touch
 // `bounds_xz`, in chain order.
 fn for_each_segment_in_bounds(
@@ -191,8 +187,9 @@ fn triangle_near_disc(triangle: [RoadVec3; 3], point: RoadVec2, radius: f64) -> 
 }
 
 impl RoadbedSystem {
-    /// Prepares all road pieces meeting a bounded support window in canonical piece order.
-    /// Storage is reused, so a warm query allocates nothing.
+    /// Prepares the road pieces on or above the ground meeting a bounded support window in
+    /// canonical piece order: a buried piece's top lies under the terrain (`ROAD-61`). Storage is
+    /// reused, so a warm query allocates nothing.
     pub(crate) fn prepare_local_surface_query(
         &self,
         bounds: [f64; 4],
@@ -204,7 +201,7 @@ impl RoadbedSystem {
         for x in first.0..=last.0 {
             for z in first.1..=last.1 {
                 for indexed in self.index.cell((x, z)) {
-                    if !bounds_intersect(indexed.mesh.bounds_xz(), bounds) {
+                    if indexed.buried || !bounds_intersect(indexed.mesh.bounds_xz(), bounds) {
                         continue;
                     }
                     match query
@@ -290,16 +287,86 @@ impl RoadbedSystem {
         })
     }
 
+    /// The highest top triangle's height at a world XZ point over the exposed pieces: every
+    /// piece but the buried ones (a tunnel span, or a node piece where only tunnels meet), which
+    /// lie under the ground (`ROAD-61`). Where no buried piece holds the point it equals
+    /// [`Self::height_at`], bitwise. One walk of the point's query cell, as [`Self::height_at`];
+    /// allocation-free.
+    pub fn exposed_height_at(&self, x: f32, z: f32) -> Option<f32> {
+        self.exposed_top_at(x, z).map(|(height_m, _)| height_m)
+    }
+
+    /// [`Self::exposed_height_at`] with the triangle's upward face normal, as
+    /// [`Self::height_and_normal_at`] gives it.
+    pub fn exposed_height_and_normal_at(&self, x: f32, z: f32) -> Option<(f32, Vector3)> {
+        self.exposed_top_at(x, z)
+            .map(|(height_m, triangle)| (height_m, upward_normal(triangle)))
+    }
+
+    /// The highest top triangle's height at a world XZ point over the grounded pieces (those a
+    /// standard edge builds, `ROAD-99`): the road surface on the ground, under any bridge deck
+    /// over it. One walk of the point's query cell; allocation-free.
+    pub fn grounded_height_at(&self, x: f32, z: f32) -> Option<f32> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<f32> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if indexed.grounded
+                && let Some((height_m, _, _)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|best_m| height_m > best_m)
+            {
+                best = Some(height_m);
+            }
+        }
+        best
+    }
+
+    /// The height at a world XZ point of the exposed piece whose top there stands nearest
+    /// `near_m` (`ROAD-99`): the level a ray hit, where a bridge passes over a road, rather than
+    /// the highest. Ties keep the first in piece order. One walk of the point's query cell;
+    /// allocation-free.
+    pub fn exposed_height_nearest_at(&self, x: f32, z: f32, near_m: f32) -> Option<f32> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<f32> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if !indexed.buried
+                && let Some((height_m, _, _)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|best_m| (height_m - near_m).abs() < (best_m - near_m).abs())
+            {
+                best = Some(height_m);
+            }
+        }
+        best
+    }
+
+    // The highest top triangle at the point over the exposed pieces; ties keep the first in
+    // piece order, as `top_at`.
+    fn exposed_top_at(&self, x: f32, z: f32) -> Option<(f32, [RoadVec3; 3])> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<(f32, [RoadVec3; 3])> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if !indexed.buried
+                && let Some((height_m, _, triangle)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|(best_m, _)| height_m > best_m)
+            {
+                best = Some((height_m, triangle));
+            }
+        }
+        best
+    }
+
     /// Height of the highest visible carriageway triangle at a world XZ point.
     pub fn carriageway_height_at(&self, x: f32, z: f32) -> Option<f32> {
         self.top_at(x, z, |kind| kind == BandKind::Carriageway)
             .map(|(height_m, _)| height_m)
     }
 
-    /// Visits each piece with a carriageway triangle at a world XZ point, in piece order, with
-    /// the height of its highest one there: what [`Self::carriageway_height_at`] takes the
-    /// maximum of, for callers that must leave some pieces out (`ROAD-68` open question 16).
-    pub(crate) fn for_each_carriageway_top_at(
+    /// Visits each grounded piece with a carriageway triangle at a world XZ point, in piece
+    /// order, with the height of its highest one there, for callers that must leave some pieces
+    /// out (`ROAD-68` open question 16): the ground a stroke on the ground meets. A buried
+    /// piece's carriageway lies in the hill under the ground (`ROAD-61` round R8h) and a
+    /// bridge's stands above it (`ROAD-99`): a stroke over a tunnel or under a bridge meets
+    /// neither. A piece is grounded where a standard edge builds it.
+    pub(crate) fn for_each_grounded_carriageway_top_at(
         &self,
         x: f32,
         z: f32,
@@ -307,6 +374,9 @@ impl RoadbedSystem {
     ) {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
         for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if !indexed.grounded {
+                continue;
+            }
             if let Some((height_m, _)) =
                 top_at(&indexed.mesh, point, |kind| kind == BandKind::Carriageway)
             {
@@ -345,19 +415,48 @@ impl RoadbedSystem {
         radius_m: f64,
         kinds: impl Fn(BandKind) -> bool,
     ) -> bool {
+        self.band_near_disc(center, radius_m, false, kinds)
+    }
+
+    /// [`Self::any_band_near_disc`] over the pieces on or above the ground: a buried piece
+    /// ([`Self::exposed_height_at`]) lies under the terrain (`ROAD-61`).
+    pub fn any_exposed_band_near_disc(
+        &self,
+        center: RoadVec2,
+        radius_m: f64,
+        kinds: impl Fn(BandKind) -> bool,
+    ) -> bool {
+        self.band_near_disc(center, radius_m, true, kinds)
+    }
+
+    fn band_near_disc(
+        &self,
+        center: RoadVec2,
+        radius_m: f64,
+        exposed_only: bool,
+        kinds: impl Fn(BandKind) -> bool,
+    ) -> bool {
         let bounds = [
             center.x - radius_m,
             center.y - radius_m,
             center.x + radius_m,
             center.y + radius_m,
         ];
-        self.any_top_triangle_in_bounds(bounds, |triangle, kind| {
-            kinds(kind) && triangle_near_disc(triangle, center, radius_m)
+        self.any_top_triangle_of_pieces_in_bounds(bounds, exposed_only, |mesh, triangle| {
+            mesh.triangle_band(triangle).is_some_and(|kind| {
+                kinds(kind) && triangle_near_disc(mesh.triangle_points(triangle), center, radius_m)
+            })
         })
     }
 
     /// First hit of a world-space ray against the visible road surface.
     pub fn raycast(&self, origin: Vector3, direction: Vector3) -> Option<Vector3> {
+        self.raycast_piece(origin, direction).map(|(hit, _)| hit)
+    }
+
+    /// [`Self::raycast`] with the piece the ray hit (`ROAD-99` follow-up B1: the road tool's
+    /// cursor snaps to a structure only where its ray hit it).
+    pub fn raycast_piece(&self, origin: Vector3, direction: Vector3) -> Option<(Vector3, PieceId)> {
         if direction.length_squared() <= f32::EPSILON {
             return None;
         }
@@ -372,7 +471,7 @@ impl RoadbedSystem {
             extent[2] + BOUNDS_EPSILON_M,
             extent[3] + BOUNDS_EPSILON_M,
         )?;
-        let mut best: Option<(f64, RoadVec3)> = None;
+        let mut best: Option<(f64, RoadVec3, PieceId)> = None;
         // A vertical ray visits its one cell over an unbounded parameter.
         walk_ray_cells(
             RoadVec2::new(origin.x, origin.z),
@@ -383,10 +482,15 @@ impl RoadbedSystem {
             |x, z, t0, t1| {
                 self.raycast_cell((x as i32, z as i32), origin, direction, (t0, t1), &mut best);
                 // A hit before the next cell cannot be beaten by any later cell.
-                best.is_none_or(|(best_t, _)| best_t > t1)
+                best.is_none_or(|(best_t, _, _)| best_t > t1)
             },
         );
-        best.map(|(_, hit)| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
+        best.map(|(_, hit, piece)| {
+            (
+                Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32),
+                piece,
+            )
+        })
     }
 
     // Tests the triangles of the cell's pieces along the ray's `t` interval inside the cell.
@@ -396,7 +500,7 @@ impl RoadbedSystem {
         origin: RoadVec3,
         direction: RoadVec3,
         (t0, t1): (f64, f64),
-        best: &mut Option<(f64, RoadVec3)>,
+        best: &mut Option<(f64, RoadVec3, PieceId)>,
     ) {
         for indexed in self.index.cell(cell) {
             indexed
@@ -405,9 +509,9 @@ impl RoadbedSystem {
                 .items_along_ray(origin, direction, t0, t1, |item| {
                     let triangle = indexed.mesh.triangle_points(item as usize);
                     if let Some(t) = road_ray_triangle_intersection_t(triangle, origin, direction)
-                        && best.is_none_or(|(best_t, _)| t < best_t)
+                        && best.is_none_or(|(best_t, _, _)| t < best_t)
                     {
-                        *best = Some((t, origin + direction * t));
+                        *best = Some((t, origin + direction * t, indexed.id));
                     }
                 });
         }
@@ -442,7 +546,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         mut visit: impl FnMut([RoadVec3; 3], BandKind) -> bool,
     ) -> bool {
-        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, |mesh, triangle| {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, false, |mesh, triangle| {
             mesh.triangle_band(triangle)
                 .is_some_and(|kind| visit(mesh.triangle_points(triangle), kind))
         })
@@ -455,20 +559,47 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         mut visit: impl FnMut([RoadVec3; 3]) -> bool,
     ) -> bool {
-        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, |mesh, triangle| {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, false, |mesh, triangle| {
             visit(mesh.triangle_points(triangle))
+        })
+    }
+
+    /// [`Self::any_top_triangle_points_in_bounds`] over the pieces on or above the ground: a
+    /// buried piece ([`Self::exposed_height_at`]) lies under the terrain (`ROAD-61`).
+    pub fn any_exposed_top_triangle_points_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut([RoadVec3; 3]) -> bool,
+    ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, true, |mesh, triangle| {
+            visit(mesh.triangle_points(triangle))
+        })
+    }
+
+    /// [`Self::any_top_triangle_in_bounds`] over the pieces on or above the ground (`ROAD-61`).
+    pub fn any_exposed_top_triangle_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut([RoadVec3; 3], BandKind) -> bool,
+    ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, true, |mesh, triangle| {
+            mesh.triangle_band(triangle)
+                .is_some_and(|kind| visit(mesh.triangle_points(triangle), kind))
         })
     }
 
     // Visits the top triangles of the pieces' grid cells touching `bounds_xz`, as in
     // `any_top_triangle_in_bounds`.
+    // `any_top_triangle_in_bounds`, leaving out the buried pieces with `exposed_only`.
     fn any_top_triangle_of_pieces_in_bounds(
         &self,
         bounds_xz: [f64; 4],
+        exposed_only: bool,
         mut visit: impl FnMut(&PieceMesh, usize) -> bool,
     ) -> bool {
-        self.any_piece_in_bounds(bounds_xz, |_, mesh| {
-            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| visit(mesh, triangle))
+        self.any_piece_in_bounds(bounds_xz, |_, mesh, buried| {
+            !(exposed_only && buried)
+                && mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| visit(mesh, triangle))
         })
     }
 
@@ -479,7 +610,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
     ) -> impl Iterator<Item = (PieceId, u64)> + '_ {
         let mut pieces = Vec::new();
-        self.any_piece_in_bounds(bounds_xz, |id, _| {
+        self.any_piece_in_bounds(bounds_xz, |id, _, _| {
             pieces.push(id);
             false
         });
@@ -505,19 +636,20 @@ impl RoadbedSystem {
         out: &mut Vec<[RoadVec3; 2]>,
     ) {
         out.clear();
-        self.for_each_grounded_seam_in_bounds(bounds_xz, pieces, |segment| out.push(segment));
+        self.for_each_grounded_seam_in_bounds(bounds_xz, pieces, |segment, _| out.push(segment));
         let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
         out.sort_unstable_by_key(key);
         out.dedup_by_key(|segment| key(segment));
     }
 
     /// Appends grounded outer-chain segments from an already-local candidate piece list in
-    /// canonical segment order, without repeating the spatial piece lookup.
+    /// canonical segment order, without repeating the spatial piece lookup, each with whether
+    /// its piece is a tunnel's approach ([`PieceMesh::retained`]).
     pub(crate) fn grounded_seams_from_pieces(
         &self,
         bounds_xz: [f64; 4],
         pieces: &[PieceId],
-        out: &mut Vec<[RoadVec3; 2]>,
+        out: &mut Vec<([RoadVec3; 2], bool)>,
     ) {
         out.clear();
         for id in pieces {
@@ -535,24 +667,27 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        out.push([a, b]);
+                        out.push(([a, b], mesh.retained()));
                     }
                 }
             }
         }
-        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        let key = |([a, b], retained): &([RoadVec3; 2], bool)| {
+            ([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), *retained)
+        };
         out.sort_unstable_by_key(key);
-        out.dedup_by_key(|segment| key(segment));
+        out.dedup_by_key(|segment| key(segment).0);
     }
 
-    /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order: a segment two
-    /// pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S` segments in the runs
-    /// of eight that meet the bounds.
+    /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order, each segment with
+    /// whether its piece is a tunnel's approach ([`PieceMesh::retained`], `ROAD-61` round R8e):
+    /// a segment two pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S`
+    /// segments in the runs of eight that meet the bounds.
     pub fn for_each_grounded_seam_in_bounds(
         &self,
         bounds_xz: [f64; 4],
         pieces: &mut Vec<PieceId>,
-        visit: impl FnMut([RoadVec3; 2]),
+        visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.for_each_grounded_seam_in_bounds_where(bounds_xz, pieces, |_, _| true, visit);
     }
@@ -567,7 +702,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         pieces: &mut Vec<PieceId>,
         mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
-        mut visit: impl FnMut([RoadVec3; 2]),
+        mut visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.grounded_pieces_in_bounds(bounds_xz, pieces);
         for id in pieces.iter() {
@@ -584,7 +719,7 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        visit([a, b]);
+                        visit([a, b], mesh.retained());
                     }
                 }
             }
@@ -598,7 +733,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         scratch: &mut GroundedPieceScratch,
         mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
-        mut visit: impl FnMut([RoadVec3; 2]),
+        mut visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.gather_grounded_indexed(bounds_xz, scratch);
         let mut walk = |mesh: &PieceMesh| {
@@ -614,7 +749,7 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        visit([a, b]);
+                        visit([a, b], mesh.retained());
                     }
                 }
             }
@@ -767,46 +902,25 @@ impl RoadbedSystem {
         }
     }
 
-    /// Visits the parts of the tunnel spans with a portal row ([`PieceMesh::portal_rows`],
-    /// `TERRAIN-07-C`) whose bounds touch the XZ bounds, piece by piece in ascending piece order:
-    /// every portal row, the top triangles whose piece grid cells touch the bounds (a triangle
-    /// may come more than once), and the outer-chain segments whose own bounds touch them. No
-    /// terrain height is read. `pieces` is the caller's scratch. `O(P log P + T + V)` for the
-    /// pieces met, the triangles visited and their chain vertices.
-    pub fn for_each_portal_part_in_bounds(
+    /// Visits the tunnel mouths of `pieces`, grounded pieces (`ROAD-61`): per wall run across a
+    /// tunnel's mouth ([`PieceMesh::wall_runs`] that are no abutment runs), the piece's
+    /// positions and the run's vertices, corner to corner with the grounded road on their left
+    /// and the tunnel on their right; bitwise the tunnel span's portal row
+    /// ([`PieceMesh::portal_rows`]), a curb pair once at its lower vertex. No terrain height is
+    /// read. `O(runs)`.
+    pub fn for_each_tunnel_mouth(
         &self,
-        bounds_xz: [f64; 4],
-        pieces: &mut Vec<PieceId>,
-        mut visit: impl FnMut(PortalPart<'_>),
+        pieces: &[PieceId],
+        mut visit: impl FnMut(&[RoadVec3], &[u32]),
     ) {
-        self.portal_pieces_in_bounds(bounds_xz, pieces);
-        for id in pieces.iter() {
+        for id in pieces {
             let mesh = self.pieces[id].mesh();
-            mesh.portal_rows()
-                .for_each(|row| visit(PortalPart::Row(row)));
-            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
-                visit(PortalPart::Top(mesh.triangle_points(triangle)));
-                false
-            });
-            for_each_segment_in_bounds(mesh, mesh.outer_chains(), bounds_xz, &mut |segment| {
-                visit(PortalPart::Bore(segment))
-            });
-        }
-    }
-
-    /// The tunnel spans with a portal row ([`PieceMesh::portal_rows`], `TERRAIN-07-C`) whose
-    /// bounds touch the XZ bounds, sorted and unique, into `pieces`. `O(P log P)` for the pieces
-    /// met.
-    pub fn portal_pieces_in_bounds(&self, bounds_xz: [f64; 4], pieces: &mut Vec<PieceId>) {
-        pieces.clear();
-        self.any_piece_in_bounds(bounds_xz, |id, mesh| {
-            if mesh.portal_rows().next().is_some() {
-                pieces.push(id);
+            for (run, &abutment) in mesh.wall_runs().iter().zip(mesh.abutment_runs()) {
+                if !abutment {
+                    visit(mesh.positions(), run.vertices());
+                }
             }
-            false
-        });
-        pieces.sort_unstable();
-        pieces.dedup();
+        }
     }
 
     /// The point-in-triangle predicate and height [`Self::height_at`] takes the highest of:
@@ -864,11 +978,12 @@ impl RoadbedSystem {
 
     // Visits pieces whose bounds touch `bounds` until `visit` returns true. Walks the query
     // cells of the bounds clipped to the published extent, or every piece in order when that
-    // is fewer; a piece may be visited once per cell it shares with the bounds.
+    // is fewer; a piece may be visited once per cell it shares with the bounds. `visit` also
+    // takes whether the piece is buried.
     fn any_piece_in_bounds(
         &self,
         bounds: [f64; 4],
-        mut visit: impl FnMut(PieceId, &PieceMesh) -> bool,
+        mut visit: impl FnMut(PieceId, &PieceMesh, bool) -> bool,
     ) -> bool {
         let Some(extent) = self.index.extent_xz() else {
             return false;
@@ -889,14 +1004,14 @@ impl RoadbedSystem {
         if cells as u64 > self.pieces.len() as u64 {
             return self.pieces.iter().any(|(&id, published)| {
                 let mesh = published.mesh();
-                bounds_intersect(mesh.bounds_xz(), bounds) && visit(id, mesh)
+                bounds_intersect(mesh.bounds_xz(), bounds) && visit(id, mesh, published.buried())
             });
         }
         for x in first.0..=last.0 {
             for z in first.1..=last.1 {
                 for indexed in self.index.cell((x, z)) {
                     if bounds_intersect(indexed.mesh.bounds_xz(), bounds)
-                        && visit(indexed.id, &indexed.mesh)
+                        && visit(indexed.id, &indexed.mesh, indexed.buried)
                     {
                         return true;
                     }

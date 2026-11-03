@@ -676,9 +676,9 @@ pub(crate) fn structure_mouth(
 // the bridge (`TERRAIN-07-D`, the abutment band) an abutment against the seam from the ground
 // up to the abutment face's bottom edge where the ground stands below that edge, and no face
 // where it stands between the edge and the deck (the roadbed's face closes it); at the tunnel's
-// portal row (T22 5 (a)) the terrain beyond is cut wherever the ground stands less than the
-// clearance above the seam, and no face on the seam covers those points (a headwall where it
-// stands higher). Pruned walls equal the walls over every seam.
+// portal row no face below the collar's top (`ROAD-61` rounds R8, R8f: the roadbed's collar
+// closes the row, with the lining's mouth open in it) and the row wall above it, from the top up
+// to the ground (round R8e). Pruned walls equal the walls over every seam.
 #[test]
 fn structure_mouths_wall_the_graded_ground() {
     use crate::simulation::network::types::EdgeClass;
@@ -742,15 +742,42 @@ fn structure_mouths_wall_the_graded_ground() {
                         let off = (face.a[0] + dx * s - lx).hypot(face.a[1] + dz * s - lz);
                         (-1e-4..=1.0 + 1e-4).contains(&s) && off < 2e-3
                     };
-                    if class == EdgeClass::Tunnel && ground < h + PORTAL_CLEARANCE_M {
-                        assert!(
-                            !payload
-                                .walls
-                                .iter()
-                                .filter(on_seam)
-                                .any(|face| covering(&face)),
-                            "{class:?}: a headwall at ({x}, {z}) over the opening"
-                        );
+                    if class == EdgeClass::Tunnel {
+                        let top = h + crate::simulation::network::roadbed::COLLAR_HEIGHT_M;
+                        // Along the row: a trough wall's face ending at the row's corner lies
+                        // across it.
+                        let along = |face: &&WallFace| {
+                            let (fx, fz) = (face.b[0] - face.a[0], face.b[1] - face.a[1]);
+                            let (rx, rz) = ((b.x - a.x) as f32, (b.z - a.z) as f32);
+                            (fx * rz - fz * rx).abs() <= 1e-3 * fx.hypot(fz) * rx.hypot(rz)
+                        };
+                        let faces: Vec<_> = (payload.walls.iter())
+                            .filter(on_seam)
+                            .filter(covering)
+                            .filter(along)
+                            .collect();
+                        // Two faces meet where the row's wall seams join.
+                        if (ground - top).abs() > 1e-3 {
+                            assert_eq!(
+                                !faces.is_empty(),
+                                ground > top,
+                                "{class:?} at ({x}, {z}): the row wall where the ground \
+                                 {ground} stands above the collar's top {top}"
+                            );
+                        }
+                        for face in faces {
+                            // The face's bottom at the point: the collar's top.
+                            let (dx, dz) = (face.b[0] - face.a[0], face.b[1] - face.a[1]);
+                            let s = (((lx - face.a[0]) * dx + (lz - face.a[1]) * dz)
+                                / (dx * dx + dz * dz))
+                                .clamp(0.0, 1.0);
+                            let bottom = face.bottom[0] + (face.bottom[1] - face.bottom[0]) * s;
+                            assert!(
+                                (f64::from(bottom) - top).abs() < 1e-3,
+                                "{class:?}: a terrain face at ({x}, {z}) over the collar: \
+                                 {face:?}"
+                            );
+                        }
                         opened += 1;
                         continue;
                     }
@@ -800,8 +827,8 @@ fn structure_mouths_wall_the_graded_ground() {
             }
         }
         // The rendered surface on the row interpolates the samples beside it: the hidden inside
-        // rule's on the road's side, the cones of the chains' end corners beyond (up to 1.0 m
-        // above the tunnel's mouth, all of it opened, 0.47 m below the bridge's).
+        // rule's on the road's side, the hill past the tunnel's row (no cone reaches past it),
+        // the cones of the chains' end corners beyond the bridge's (0.47 m below it).
         match class {
             EdgeClass::Tunnel => assert!(opened > 50 && walled == 0, "{opened} opened, {walled}"),
             _ => assert!(

@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! What a stroke's profile pins to (`ROAD-68` open question 16): the visible carriageways of the
-//! pieces its edit leaves alone, the graph profile of a road it crosses mid-span and the graph
-//! height of a node it ends at, never the pieces its own edit rebuilds. Which pieces the edit
-//! rebuilds is read off its topology plan, so [`plan_road_edit`] prepares and plans the stroke
-//! again until the pieces a preparation read are none its own plan rebuilds.
+//! What a stroke's profile pins to (`ROAD-68` open question 16): the grounded carriageways of the
+//! pieces its edit leaves alone (not a bridge's deck or a tunnel's, `ROAD-99`), the graph
+//! profile of a road it crosses mid-span and the graph height of a node it ends at, never the
+//! pieces its own edit rebuilds. Which pieces the edit rebuilds is read off its topology plan,
+//! so [`plan_road_edit`] prepares and plans the stroke again until the pieces a preparation
+//! read are none its own plan rebuilds.
 
 use super::input::prepare_road_input_excluding;
 use super::{PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, validate_road_edit};
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{RegionGraph, RoadMedian};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -79,13 +80,14 @@ impl<'a> StrokeSupport<'a> {
         }
     }
 
-    /// Highest carriageway at a world XZ point among the pieces the edit keeps, and the crossed
-    /// roads' graph profiles where their rebuilt spans lie. `O(pieces in the point's query cell
-    /// + crossed edges' profile points)`.
+    /// Highest grounded carriageway at a world XZ point among the pieces the edit keeps (a
+    /// tunnel's lies under the hill, `ROAD-61` round R8h, a bridge's deck over the ground,
+    /// `ROAD-99`), and the crossed roads' graph profiles where their rebuilt spans lie. `O(pieces in the point's query cell + crossed edges'
+    /// profile points)`.
     pub(super) fn height_at(&mut self, x: f32, z: f32) -> Option<f32> {
         let (rebuilt, graph, read) = (self.rebuilt, self.graph, &mut self.read);
         let mut best: Option<f32> = None;
-        self.roadbed.for_each_carriageway_top_at(x, z, |piece, height_m| {
+        self.roadbed.for_each_grounded_carriageway_top_at(x, z, |piece, height_m| {
             let height_m = if !rebuilt.rebuilds(piece) {
                 read.push(piece);
                 height_m
@@ -121,15 +123,18 @@ impl<'a> StrokeSupport<'a> {
 /// pieces excluded as well. The exclusion only grows and each further pass adds a piece the
 /// previous one read, so the passes end; a stroke that reads no carriageway takes one pass, a
 /// join or crossing usually two. The commit, the preview and the editor's checks all plan here.
+/// The prepared stroke carries `median` (`ROAD-80`), which preparation does not read.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_road_edit(
     raw_points: &[Vector3],
     fwd_lanes: u8,
     bkw_lanes: u8,
+    median: Option<RoadMedian>,
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
 ) -> (
     PreparedRoadInput,
     RoadPreviewValidation,
@@ -137,14 +142,16 @@ pub(crate) fn plan_road_edit(
 ) {
     let mut excluded = RebuiltPieces::default();
     loop {
-        let (prepared, read) = prepare_road_input_excluding(
+        let (mut prepared, read) = prepare_road_input_excluding(
             raw_points,
             terrain,
             graph,
             roadbed,
             snap_to_existing_roads,
+            tunnel,
             &excluded,
         );
+        prepared.median = median;
         let (validation, topology) =
             validate_road_edit(&prepared, fwd_lanes, bkw_lanes, terrain, graph);
         let rebuilt = topology
