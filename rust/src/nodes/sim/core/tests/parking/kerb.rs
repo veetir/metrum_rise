@@ -112,3 +112,26 @@ fn kerbside_bays_keep_their_cars_through_a_save_and_go_with_their_road() {
     assert_eq!(c.parking.counts().2, counts.1);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn a_parking_lane_turned_on_in_place_publishes_its_bays_and_undo_takes_them_away() {
+    let (mut c, edge) = kerb_core(RoadParking::NONE);
+    assert_eq!(c.parking.counts().0, 0);
+    let right = RoadParking {
+        left: false,
+        right: true,
+    };
+    assert!(c.set_edge_cross_section_internal(edge as i32, 1, 1, None, right));
+    c.finalize_network_render_products();
+    assert_eq!(c.region_graph.get_edge(edge).unwrap().parking, right);
+    let bays = side(&c, edge, true);
+    assert!(bays.len() >= 30, "{} bays", bays.len());
+    assert_eq!(c.parking.counts().0, bays.len());
+    assert!(c.undo_action_internal());
+    c.finalize_network_render_products();
+    assert_eq!(
+        c.region_graph.get_edge(edge).unwrap().parking,
+        RoadParking::NONE
+    );
+    assert_eq!(c.parking.counts().0, 0);
+}

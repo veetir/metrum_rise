@@ -10219,9 +10219,12 @@ beside Apply, which commits through `set_edge_cross_section` (Ctrl+Z undoes it o
 no longer has focus: a focused tool window keeps the HUD keys). Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
-shows. It opens at 400 x 500 px (minimum 360 x 460). The reason text is `ui/road_reason_text.gd`,
-shared with the road tool's stroke preview, and words the road types' layout, name and library
-keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
+shows. The type's kerbside parking (`PARK-05`) travels with its lanes and median, and a Parking
+lane row's Left and Right boxes switch one kerb's parking lane on the selected roads in place,
+keeping their lanes and median, with the same check, undo and refusal text (left and right look
+along the direction the road was drawn). It opens at 400 x 540 px (minimum 360 x 500). The
+reason text is `ui/road_reason_text.gd`, shared with the road tool's stroke preview, and words
+the road types' layout, name and library keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
 road builder's median part.
 
 **Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,

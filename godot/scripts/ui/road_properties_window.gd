@@ -9,7 +9,9 @@
 ## A pick asks Rust's verdict for the type's lanes and median through the select tool (the
 ## in-place edit's check, no geometry preview) and shows it beside Apply, which commits an
 ## accepted change (Ctrl+Z undoes it). The picker stays enabled on a walkway so the refusal
-## (walkway <-> road) shows with its text. The window opens tall enough for every row.
+## (walkway <-> road) shows with its text. Kerbside parking (`PARK-05`) has its own Left and
+## Right toggles, which change only that lane, in place, with the same refusal text. The window
+## opens tall enough for every row.
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -23,9 +25,12 @@ const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := Color.YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
-# verdict with Apply, and No buildings.
-const DEFAULT_SIZE := Vector2i(400, 500)
-const MIN_SIZE := Vector2i(360, 460)
+# verdict with Apply, kerbside parking and No buildings.
+const DEFAULT_SIZE := Vector2i(400, 540)
+const MIN_SIZE := Vector2i(360, 500)
+## Parking code bits of the left and right kerb, as Rust's `parking` reports them.
+const PARKING_LEFT := 1
+const PARKING_RIGHT := 2
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -38,6 +43,7 @@ var _type_picker: OptionButton
 var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
+var _parking_checks: Dictionary = {}
 var _selected_edges: Array[int] = []
 var _last_screen_pos := Vector2.ZERO
 
@@ -130,6 +136,22 @@ func _build_window() -> void:
 
 	root_vbox.add_child(HSeparator.new())
 
+	var parking_row := HBoxContainer.new()
+	var parking_label := Label.new()
+	parking_label.text = "Parking lane"
+	parking_label.tooltip_text = "Left and right looking along the direction the road was drawn"
+	parking_label.mouse_filter = Control.MOUSE_FILTER_PASS
+	UIStyle.set_font_size(parking_label, 14)
+	parking_row.add_child(parking_label)
+	for side in [[PARKING_LEFT, "Left"], [PARKING_RIGHT, "Right"]]:
+		var check := CheckBox.new()
+		check.text = side[1]
+		UIStyle.set_font_size(check, 14)
+		check.toggled.connect(_on_parking_toggled.bind(side[0]))
+		parking_row.add_child(check)
+		_parking_checks[side[0]] = check
+	root_vbox.add_child(parking_row)
+
 	_no_build_check = CheckBox.new()
 	_no_build_check.text = "No buildings"
 	UIStyle.set_font_size(_no_build_check, 14)
@@ -169,6 +191,7 @@ func _refresh() -> void:
 		return
 
 	_refresh_type()
+	_refresh_parking()
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -232,6 +255,24 @@ func _refresh_type() -> void:
 	_verdict_label.text = ""
 	_apply_button.disabled = true
 
+# A side's box is ticked when every selected road parks there.
+func _refresh_parking() -> void:
+	for bit: int in _parking_checks:
+		var on := _selected_edges.all(
+			func(idx): return (int(_simulation_node.get_edge_cross_section(idx).get("parking", 0)) & bit) != 0
+		)
+		(_parking_checks[bit] as CheckBox).set_pressed_no_signal(on)
+
+func _on_parking_toggled(enabled: bool, side_bit: int) -> void:
+	if _select_tool == null or not _select_tool.has_method("set_selected_edge_parking_side"):
+		return
+	var result: Dictionary = _select_tool.set_selected_edge_parking_side(side_bit, enabled)
+	_refresh()
+	var refused := int(result.get("refused", 0))
+	if refused > 0:
+		_verdict_label.add_theme_color_override("font_color", VERDICT_REFUSED)
+		_verdict_label.text = RoadReasonText.text(result.get("verdict", {}), "%d road(s) refused the parking lane" % refused)
+
 # The type picked in the picker, or {} for "Custom layout".
 func _picked_type() -> Dictionary:
 	var index := _type_picker.selected
@@ -243,7 +284,8 @@ func _on_type_selected(_index: int) -> void:
 		return
 	show_verdict(_select_tool.preview_selected_edge_cross_section(
 		int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
-		int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
+		int(type.get("median_style", 0)), float(type.get("median_width", 0.0)),
+		int(type.get("parking", 0))
 	))
 
 ## Shows Rust's verdict on the picked type and enables Apply when it accepts it.
@@ -259,7 +301,8 @@ func _on_apply_pressed() -> void:
 	if not type.is_empty() and _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
 		var refused: int = _select_tool.set_selected_edge_cross_section(
 			int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
-			int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
+			int(type.get("median_style", 0)), float(type.get("median_width", 0.0)),
+			int(type.get("parking", 0))
 		)
 		_refresh()
 		if refused > 0:

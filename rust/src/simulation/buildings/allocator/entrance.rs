@@ -1497,7 +1497,7 @@ mod tests {
                 style,
                 width_m: 2.0,
             });
-            graph.set_edge_cross_section(id, 1, 1, median);
+            graph.set_edge_cross_section(id, 1, 1, median, Default::default());
             let mut lanes = LaneSystem::new();
             lanes.rebuild(&mut graph);
             for side in [-1, 1] {

@@ -193,15 +193,17 @@ impl Edge {
             + parking.width_m()
     }
 
-    /// Whether this edge may carry `fwd` forward and `bkw` backward lanes and `median` after an
-    /// in-place edit (`ROAD-80`): it must be a live road (a footpath stays a footpath), keep at
-    /// least one lane and stay within [`MAX_LANES_PER_DIRECTION`] per direction; a median must
-    /// be valid, on a car road, between two directions. The error is the stable refusal key.
+    /// Whether this edge may carry `fwd` forward and `bkw` backward lanes, `median` and
+    /// `parking` after an in-place edit (`ROAD-80`, `PARK-05`): it must be a live road (a
+    /// footpath stays a footpath), keep at least one lane and stay within
+    /// [`MAX_LANES_PER_DIRECTION`] per direction; a median must be valid, on a car road, between
+    /// two directions; parking needs a car lane. The error is the stable refusal key.
     pub(crate) fn validate_cross_section(
         &self,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> Result<(), &'static str> {
         if self.deleted || self.primary_type != TransitType::Road {
             return Err("cross_section_not_road");
@@ -212,7 +214,8 @@ impl Edge {
         if fwd == 0 && bkw == 0 {
             return Err("cross_section_cannot_change_transit_mode");
         }
-        Self::validate_median(self.allowed_types, fwd, bkw, median)
+        Self::validate_median(self.allowed_types, fwd, bkw, median)?;
+        Self::validate_parking(self.allowed_types, fwd, bkw, parking)
     }
 
     /// The median rules alone, for an edge of `allowed_types` with `fwd` + `bkw` lanes: valid
@@ -257,7 +260,8 @@ impl Edge {
 }
 
 impl RegionGraph {
-    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, and the width they take,
+    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, `parking` (`PARK-05`) and
+    /// the width they take,
     /// keeping its centreline, id, class and everything else (`ROAD-80`). The cross-section must
     /// pass [`Edge::validate_cross_section`]. The spatial index reads the centreline only, so it
     /// is kept. Callers re-lay out both end nodes and rebuild their lanes, as `SimCore`'s
@@ -268,13 +272,18 @@ impl RegionGraph {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) {
         let edge = self.edge_mut(id);
-        debug_assert_eq!(edge.validate_cross_section(fwd, bkw, median), Ok(()));
+        debug_assert_eq!(
+            edge.validate_cross_section(fwd, bkw, median, parking),
+            Ok(())
+        );
         edge.fwd_lanes = fwd;
         edge.bkw_lanes = bkw;
         edge.median = median;
-        edge.width = Edge::cross_section_width_m(fwd, bkw, median, edge.parking);
+        edge.parking = parking;
+        edge.width = Edge::cross_section_width_m(fwd, bkw, median, parking);
     }
 }
 
@@ -291,14 +300,17 @@ mod tests {
         };
         let median = RoadMedian::from_tool(2, 5.0).unwrap();
         assert_eq!(
-            edge.validate_cross_section(1, 0, median),
+            edge.validate_cross_section(1, 0, median, RoadParking::NONE),
             Err("median_requires_both_directions")
         );
         assert_eq!(
-            edge.validate_cross_section(0, 1, median),
+            edge.validate_cross_section(0, 1, median, RoadParking::NONE),
             Err("median_requires_both_directions")
         );
-        assert!(edge.validate_cross_section(1, 1, median).is_ok());
+        assert!(
+            edge.validate_cross_section(1, 1, median, RoadParking::NONE)
+                .is_ok()
+        );
         assert_eq!(
             Edge::validate_median(TransitFlags::FOOT, 1, 1, median),
             Err("median_requires_vehicle_road")
@@ -309,7 +321,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            foot.validate_cross_section(0, 0, median),
+            foot.validate_cross_section(0, 0, median, RoadParking::NONE),
             Err("cross_section_not_road")
         );
         assert!(RoadMedian::from_tool(1, f32::NAN).is_err());

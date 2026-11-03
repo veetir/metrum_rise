@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts and median,
+//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts, median and
+//! kerbside parking (`PARK-05`),
 //! changed on the crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
 //! applied to the graph, its two nodes are laid out again, their closure is compiled into a
 //! scratch roadbed (fields, painted cells, steepened profiles) and the graph is put back; a
@@ -14,7 +15,7 @@
 use super::core::{RoadRejection, SimCore};
 use crate::config;
 use crate::debug_log;
-use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian, RoadParking};
 use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::validate::{
@@ -23,7 +24,8 @@ use crate::simulation::network::validate::{
 use std::collections::HashSet;
 
 impl SimCore {
-    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes and `median` in place,
+    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median` and `parking`
+    /// in place,
     /// keeping its centreline, id and class (`ROAD-80`). Both end nodes are laid out again at the new width
     /// and the lanes of their arms rebuilt; cars on a lane that no longer exists reattach to the
     /// nearest rebuilt lane. Returns whether the edit was applied, with an undo record and the
@@ -36,19 +38,23 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let (checkpoint, nodes) = match self.try_cross_section_edit(edge_id, fwd, bkw, median) {
+        let (checkpoint, nodes) = match self
+            .try_cross_section_edit(edge_id, fwd, bkw, median, parking)
+        {
             Ok(tried) => tried,
             Err(rejection) => {
                 debug_log!(
                     "road",
-                    "cross_section_edit_rejected edge={} lanes={}+{} median={:?} reason={}",
+                    "cross_section_edit_rejected edge={} lanes={}+{} median={:?} parking={:?} reason={}",
                     edge_id,
                     fwd,
                     bkw,
                     median,
+                    parking,
                     rejection.reason
                 );
                 return false;
@@ -57,7 +63,7 @@ impl SimCore {
         let edge = edge_id as usize;
         let incident = self.live_edges_at(&nodes, edge);
         self.push_network_undo_delta(checkpoint, None);
-        let changed = self.apply_edge_cross_section(edge, fwd, bkw, median, &nodes);
+        let changed = self.apply_edge_cross_section(edge, fwd, bkw, median, parking, &nodes);
         let affected: HashSet<usize> = incident
             .into_iter()
             .chain(changed.iter().copied())
@@ -88,9 +94,11 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> Option<RoadRejection> {
         self.adopt_pending_cell_lots();
-        self.try_cross_section_edit(edge_id, fwd, bkw, median).err()
+        self.try_cross_section_edit(edge_id, fwd, bkw, median, parking)
+            .err()
     }
 
     // The edit's check with its undo record and the edge's two (surviving) end nodes. Cheap
@@ -104,6 +112,7 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> Result<(RegionGraphUndoDelta, HashSet<u32>), RoadRejection> {
         let graph = &self.region_graph;
         let Some(edge) = usize::try_from(edge_id)
@@ -117,20 +126,30 @@ impl SimCore {
         };
         let current = graph.edge(edge);
         current
-            .validate_cross_section(fwd, bkw, median)
+            .validate_cross_section(fwd, bkw, median, parking)
             .map_err(|reason| {
                 RoadRejection::new(
                     reason,
-                    format!("{fwd}+{bkw} lanes, median {median:?} on edge {edge}"),
+                    format!(
+                        "{fwd}+{bkw} lanes, median {median:?}, parking {parking:?} on edge {edge}"
+                    ),
                 )
             })?;
-        if (current.fwd_lanes, current.bkw_lanes, current.median) == (fwd, bkw, median) {
+        let section = (
+            current.fwd_lanes,
+            current.bkw_lanes,
+            current.median,
+            current.parking,
+        );
+        if section == (fwd, bkw, median, parking) {
             return Err(RoadRejection::new(
                 "cross_section_unchanged",
-                format!("edge {edge} already has {fwd}+{bkw} lanes, median {median:?}"),
+                format!(
+                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, parking {parking:?}"
+                ),
             ));
         }
-        let widens = Edge::cross_section_width_m(fwd, bkw, median, current.parking) > current.width;
+        let widens = Edge::cross_section_width_m(fwd, bkw, median, parking) > current.width;
         if widens && current.class == EdgeClass::Tunnel {
             return Err(RoadRejection::new(
                 "edit_tunnel_width",
@@ -144,7 +163,7 @@ impl SimCore {
         let edges = self.live_edges_at(&nodes, edge);
         let mut corridor = None;
         let tried = self.try_graph_edit(&edges, &nodes, |core| {
-            let changed = core.apply_edge_cross_section(edge, fwd, bkw, median, &nodes);
+            let changed = core.apply_edge_cross_section(edge, fwd, bkw, median, parking, &nodes);
             if widens {
                 corridor = core.widened_corridor_refusal(edge);
             }
@@ -176,10 +195,11 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         nodes: &HashSet<u32>,
     ) -> HashSet<usize> {
         self.region_graph
-            .set_edge_cross_section(edge, fwd, bkw, median);
+            .set_edge_cross_section(edge, fwd, bkw, median, parking);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();

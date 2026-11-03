@@ -89,10 +89,15 @@ edge whose blockers a building change moved, after the lots, through `replace_so
 unmoved bay keeps its car, and a removed one tows it. Load validation rejects a kerb place
 whose edge is missing, deleted or has no parking on that side.
 
-Still to come: the in-place toggle in Road Properties and bay paint and signs (`PARK-04`). The
-local `parking-kerbside-ref` branch preserves an earlier superseded implementation for
-reference. Pull-out uses `lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11`
-hold) and pull-in uses `try_network_detach`, as for lot bays.
+Road Properties changes parking in place (`set_edge_cross_section`'s `parking` code, checked by
+`Edge::validate_cross_section` with the other in-place rules): a picked road type brings its
+parking, and the Parking lane row's Left and Right boxes switch one kerb. The edit rebuilds the
+roadbed, and its publication reconciles the kerb's bays like any road edit.
+
+Still to come: bay paint and signs (`PARK-04`). The local `parking-kerbside-ref` branch
+preserves an earlier superseded implementation for reference. Pull-out uses
+`lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11` hold) and pull-in uses
+`try_network_detach`, as for lot bays.
 
 ### Anchor lots, edits and rendering
 

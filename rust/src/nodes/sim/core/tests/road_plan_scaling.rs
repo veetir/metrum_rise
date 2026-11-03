@@ -623,7 +623,7 @@ fn measure_lane_edit(
     let mut verdicts = Vec::new();
     for iteration in 0..103 {
         let start = Instant::now();
-        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median);
+        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median, Default::default());
         let ms = start.elapsed().as_secs_f64() * 1000.0;
         assert!(verdict.is_none(), "{verdict:?}");
         if iteration >= 3 {
@@ -635,7 +635,7 @@ fn measure_lane_edit(
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
-        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median));
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, Default::default()));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
         core.precompute_road_mesh_data();
         products = local(core);
