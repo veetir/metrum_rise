@@ -101,16 +101,17 @@ pub(super) fn validate_bay(
             .enumerate()
             .any(|(other, b)| other != slot && overlaps(foot, b))
     };
-    if other_bay(&footprints[slot]) {
-        return Err("overlaps another parking spot".into());
-    }
-    // Authored surfaces stop a few centimetres short of the lot edge they were drawn to.
+    // Authored surfaces stop a few centimetres short of the lot edge they were drawn to, and
+    // bays painted side by side share an edge that rounding may push a hair into the next.
     let inset = rectangle(
         bay.pos,
         bay.forward,
         bay.width - SUPPORT_TOLERANCE_M * 2.0,
         bay.length - SUPPORT_TOLERANCE_M * 2.0,
     );
+    if other_bay(&inset) {
+        return Err("overlaps another parking spot".into());
+    }
     if !covered(&inset, support) {
         return Err(
             "not fully on asphalt or concrete: move the whole spot onto a paved yard surface"

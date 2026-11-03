@@ -513,6 +513,10 @@ func extend_lot_at_back(cells: int) -> void:
 func yard_structure_bounds() -> PackedFloat32Array:
 	var walls := PackedFloat32Array()
 	for index in _editor._parts.size():
+		# Ground dressing (paint, kerbs) blocks nothing; the limit matches Rust's
+		# GROUND_DRESSING_MAX_HEIGHT_M.
+		if _editor._parts[index].aabb.size.y * _editor._parts[index].scale <= 0.15:
+			continue
 		var rect: Rect2 = _editor._mesh_part_footprint_bounds(index, _editor._parts[index].position)
 		if rect.has_area():
 			walls.append_array([rect.position.x, rect.position.y, rect.end.x, rect.end.y])

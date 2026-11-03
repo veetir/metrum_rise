@@ -309,7 +309,14 @@ fn benchmark_parking_locality() {
             "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
         )))
         .unwrap();
-        manifest.mesh_parts[0].imported_bounds = Some([[-0.8, 0.0, -0.12], [0.8, 0.16, 0.12]]);
+        // The bounds the game imports from the lot's glb files.
+        for part in &mut manifest.mesh_parts {
+            part.imported_bounds = Some(match part.name.as_str() {
+                "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+                "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
+                _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
+            });
+        }
         let id = manifest.qualified_id("parking");
         core.allocator
             .registry
@@ -428,7 +435,7 @@ fn benchmark_parking_locality() {
                     &core.transit_network.roadbed,
                 );
                 lot_samples.push(start.elapsed().as_secs_f64() * 1000.0);
-                assert_eq!(result.0.len(), 6);
+                assert_eq!(result.0.len(), 12);
                 assert!(result.1.is_empty());
             }
         }

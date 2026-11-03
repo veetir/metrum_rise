@@ -38,13 +38,29 @@ fn commit(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
     core.adopt_pending_cell_lots();
     core.transit_network.settle_cch();
 }
+// Bays in the bundled small lot.
+const LOT_BAYS: usize = 12;
+
 fn register_lot(core: &mut SimCore) -> String {
-    let mut manifest = AssetManifest::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
-    )))
-    .unwrap();
-    manifest.mesh_parts[0].imported_bounds = Some([[-0.8, 0.0, -0.12], [0.8, 0.16, 0.12]]);
+    register_lot_toml(
+        core,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+        )),
+    )
+}
+
+fn register_lot_toml(core: &mut SimCore, toml: &str) -> String {
+    let mut manifest = AssetManifest::from_str(toml).unwrap();
+    // The bounds the game imports from the lot's glb files.
+    for part in &mut manifest.mesh_parts {
+        part.imported_bounds = Some(match part.name.as_str() {
+            "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+            "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
+            _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
+        });
+    }
     let id = manifest.qualified_id("parking");
     core.allocator
         .registry
@@ -63,7 +79,7 @@ fn parking_lot_frontage_split_and_undo_reconcile_live_cars() {
     c.parking.fill_test_fleet();
     let owner = c.allocator.building_handles.handle(0).to_bits();
     let product = |c: &SimCore| {
-        (2..8)
+        (2..2 + LOT_BAYS as u32)
             .flat_map(|anchor| {
                 c.parking.source_bays(PlaceSource::Building {
                     building: owner,
@@ -73,19 +89,19 @@ fn parking_lot_frontage_split_and_undo_reconcile_live_cars() {
             .collect::<Vec<_>>()
     };
     let before = product(&c);
-    assert_eq!(before.len(), 6);
+    assert_eq!(before.len(), LOT_BAYS);
     commit(&mut c, (30.0, 0.0), (30.0, 80.0));
     c.precompute_road_mesh_data();
     c.publish_road_tool_view();
     c.publish_pending_building_site_changes();
     assert_eq!(product(&c), before);
-    assert_eq!(c.parking.counts(), (6, 6, 0));
+    assert_eq!(c.parking.counts(), (LOT_BAYS, LOT_BAYS, 0));
     assert!(c.undo_action_internal());
     c.precompute_road_mesh_data();
     c.publish_road_tool_view();
     c.publish_pending_building_site_changes();
     assert_eq!(product(&c), before);
-    assert_eq!(c.parking.counts(), (6, 6, 0));
+    assert_eq!(c.parking.counts(), (LOT_BAYS, LOT_BAYS, 0));
 }
 
 #[test]
@@ -116,7 +132,7 @@ fn parking_lot_is_public_neutral_and_round_trips_with_cars() {
     assert_eq!(c.parking.counts(), (0, count, count));
     assert!(c.undo_action_internal());
     c.publish_pending_building_site_changes();
-    assert_eq!(c.parking.counts(), (6, count, count));
+    assert_eq!(c.parking.counts(), (LOT_BAYS, count, count));
     std::fs::remove_file(path).unwrap();
 }
 
@@ -551,5 +567,23 @@ fn parking_lot_on_a_diagonal_road_accepts_every_bay() {
     c.publish_pending_building_site_changes();
     let issues: Vec<_> = c.parking.diagnostics.values().flatten().collect();
     assert!(issues.is_empty(), "{issues:#?}");
-    assert_eq!(c.parking.counts().0, 12);
+    assert_eq!(c.parking.counts().0, 2 * LOT_BAYS);
+}
+
+#[test]
+fn parking_medium_lot_accepts_all_twenty_bays() {
+    let mut c = core();
+    let id = register_lot_toml(
+        &mut c,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.medium_lot/asset.toml"
+        )),
+    );
+    c.place_service_building_internal(&id, -60.0, -30.0)
+        .unwrap();
+    c.publish_pending_building_site_changes();
+    let issues: Vec<_> = c.parking.diagnostics.values().flatten().collect();
+    assert!(issues.is_empty(), "{issues:#?}");
+    assert_eq!(c.parking.counts().0, 20);
 }

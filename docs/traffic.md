@@ -82,9 +82,16 @@ allows 5 cm at each bay edge. Rejections carry plain-language reasons naming the
 structure or another bay), with the room that part needs. They are shown in the asset editor,
 which also draws the failing shape for the selected spot and lists each rejected spot as a
 validation issue that blocks export, and in the building inspector. Unsupported layouts
-publish diagnostics and no bay. `loading_bay` anchors are excluded. The bundled six-bay asphalt
-lot is an explicitly placed 20 × 20 m site with zero workers/households and no economy profile.
-Existing site surfaces render the asphalt; the bundled mesh supplies its rear wheel stop.
+publish diagnostics and no bay. `loading_bay` anchors are excluded. Bays painted side by side
+may share an edge: the bay-on-bay check uses the same 5 cm inset. Mesh parts no taller than
+0.15 m (`GROUND_DRESSING_MAX_HEIGHT_M`: paint, kerbs) are ground dressing and block neither
+cars nor yard hedges.
+
+The bundled lots follow Finnish practice: 2.5 × 5 m bays at right angles to a central 7 m
+two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater
+post per pair of bays on the strip behind the kerb, and a P sign at the entrance. The small lot
+(20 × 20 m) holds 12 bays and the larger one (20 × 30 m) 20. Both are explicitly placed sites
+with zero workers/households and no economy profile; their site surfaces render the asphalt.
 
 Coverage retains exact ordered polygon differences, filtering support polygons by AABB before
 any overlay. With S support vertices and K overlapping contours, each footprint costs
