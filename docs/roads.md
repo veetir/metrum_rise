@@ -10389,7 +10389,9 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
 - **Model** (`simulation/network/road_types.rs`, engine-free). A layout is an ordered list of
   parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
   `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
-  style's range) and `Footpath` (2 m, the Walkway's only part, valid only alone). One check
+  style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
+  (2.5 m kerbside parking lane next to a sidewalk, `PARK-05`,
+  [`traffic.md`](traffic.md#kerbside-parking-lanes-park-05)). One check
   (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
   (fwd, bkw, median) or a refusal with its key: a sidewalk at each end and none inside, backward
   lanes left of forward ones (right-hand traffic), the median between the two directions, at
@@ -10454,9 +10456,9 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
   cannot be moved, removed or opened. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
-- **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
-  median (each median at its style's default width; no footpath tile: the Walkway stays a
-  built-in). Both gestures: click a "+" slot between two parts and then a tile (the tile goes
+- **Parts in.** Six tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
+  median (each median at its style's default width) and Parking lane (`PARK-05`); no footpath
+  tile: the Walkway stays a built-in. Both gestures: click a "+" slot between two parts and then a tile (the tile goes
   there and the next slot is selected; the slot before the right sidewalk is selected at
   first), or drag a tile into the strip (a marker shows the boundary it lands on). A part
   dragged along the strip moves; dragged off it, it is removed.

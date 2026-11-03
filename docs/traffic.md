@@ -50,15 +50,28 @@ per-destination candidate caches and free-flow driving costs through `nearest_wi
 scheduled events. The demand gate is a journaled counter maintained by placement mutators.
 Dense-area employment must continue to work for carless households.
 
-### Kerbside: deferred roadbed band round
+### Kerbside parking lanes (PARK-05)
 
-This branch has no edge-side rules, road-properties toggle, edge parking save columns, kerb bay
-generator or carriageway-painted parking. The local `parking-kerbside-ref` branch preserves that
-superseded implementation for reference. Kerbside returns after the median work in
-`RoadProfile::for_edge`, as a `BandKind::Parking` outside the lanes that widens the road by the
-bay width. `Unmarked` renders plain asphalt; `Marked` renders the white grid.
+A road edge carries `parking: RoadParking { left, right }`, its kerbs looking along the forward
+direction. Each parking lane is `PARKING_LANE_WIDTH_M` (2.5 m) and is part of `edge.width`
+(`Edge::cross_section_width_m`); the traffic lanes keep their widths and
+`Edge::lane_group_offset` moves them half a parking lane off a one-sided parking kerb. Only a
+road with a car lane may park (`parking_requires_vehicle_road`, checked on the stroke and on
+load). Splits copy the setting; no graph operation reverses an edge. Save format 114 stores it as
+`network_edges.parking` (bit 0 left, bit 1 right).
 
-That round must read `RoadProfile::bands()` / `carriageway_half_width_m()`, never `edge.width`
+The road builder (`ROAD-101`) has a Parking lane part, allowed only next to a sidewalk
+(`layout_parking_at_kerb`), so at most one per side; a type's parking reaches the road tool
+through `set_road_tool_parking` and travels with the stroke through preview, commit and the
+refusal report like the median. Road types store it as the `parking` part kind.
+
+Still to come: the roadbed band, kerbside bays in the shared pool, the in-place toggle in Road
+Properties and paint/signs (`PARK-04`). The local `parking-kerbside-ref` branch preserves an
+earlier superseded implementation for reference. The band is a `BandKind::Parking` in
+`RoadProfile::for_edge` outside the lanes. `Unmarked` renders plain asphalt; `Marked` renders
+the white grid.
+
+The bay round must read `RoadProfile::bands()` / `carriageway_half_width_m()`, never `edge.width`
 or span-mesh triangles, and junction exclusion from `MouthFrame` mouth stations. Exclude whole
 pockets. On two-way streets park only on the car's own driving side. Pull-out uses
 `lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11` hold); pull-in uses

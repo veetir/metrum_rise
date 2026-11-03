@@ -33,6 +33,22 @@ impl SimulationNode {
         }
     }
 
+    /// Sets the road tool's kerbside parking (`PARK-05`) for every later hover check, preview,
+    /// commit and refusal report of the tool: `code` bit 0 the left kerb, bit 1 the right, looking
+    /// along the stroke. Returns the empty string when set, else `parking_code_out_of_range`,
+    /// keeping the previous setting. Whether the stroke's lanes may carry it is the stroke's
+    /// check (`parking_requires_vehicle_road`).
+    #[func]
+    pub fn set_road_tool_parking(&mut self, code: i32) -> GString {
+        match crate::simulation::network::graph::RoadParking::from_code(code) {
+            Some(parking) => {
+                self.road_tool_parking = parking;
+                GString::new()
+            }
+            None => "parking_code_out_of_range".into(),
+        }
+    }
+
     /// Each median style's widths in metres (`ROAD-80`), keyed by the style code
     /// [`Self::set_road_tool_median`] takes (1 painted, 2 kerbed grass, 3 kerbed paving): a
     /// dictionary of `default_m` (the width a picked style starts at), `min_m` and `max_m` (the

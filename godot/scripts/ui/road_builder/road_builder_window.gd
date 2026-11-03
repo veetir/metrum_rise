@@ -6,7 +6,7 @@
 ##
 ## Left: the library column (built-ins to duplicate; the player's types to edit, duplicate or
 ## delete, unusable ones greyed with their reason; the library error when the file cannot be
-## written). Right: five part tiles, the strip with the layout to scale (sidewalks fixed at both
+## written). Right: six part tiles, the strip with the layout to scale (sidewalks fixed at both
 ## ends), the lane split and widths, Rust's verdict under it, and a footer with the name (Rust's
 ## suggestion until the player types one), Cancel and Create road (Save when editing). Parts go
 ## in by clicking a "+" slot and then a tile, or by dragging a tile into the strip; a click on a
@@ -177,7 +177,8 @@ func _label(parent: Control, font_size: int) -> Label:
 	parent.add_child(label)
 	return label
 
-# The five part tiles: the lanes by direction and the three medians at their default widths.
+# The six part tiles: the lanes by direction, the three medians at their default widths and the
+# kerbside parking lane (`PARK-05`).
 func _build_tiles() -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
@@ -186,6 +187,7 @@ func _build_tiles() -> Control:
 	]
 	for style in [RoadPartGlyph.PAINTED, RoadPartGlyph.GRASS, RoadPartGlyph.PAVING]:
 		tile_parts.append({"kind": "median", "style": style, "width_m": 0.0})
+	tile_parts.append({"kind": "parking"})
 	for part in tile_parts:
 		var tile := RoadPartTile.new(part)
 		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL

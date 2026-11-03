@@ -148,6 +148,9 @@ func _on_custom_item(item_id: int) -> void:
 static func _is_walkway(type: Dictionary) -> bool:
 	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
 
+# Kerbside parking (`PARK-05`) by Rust's code: bit 0 the left kerb, bit 1 the right.
+const PARKING_TEXT: Array[String] = ["", ", parking left", ", parking right", ", parking both sides"]
+
 ## "2 + 2 lanes, Grass 3.0 m, 17.0 m wide" (or "Footpath, 2.0 m wide") from Rust's figures for a
 ## `get_road_types` entry; `with_width` false leaves the width out.
 static func describe(type: Dictionary, with_width: bool = true) -> String:
@@ -157,6 +160,7 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 	var style := int(type.get("median_style", 0))
 	if style > 0 and style < MedianControls.MEDIAN_STYLE_NAMES.size():
 		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
+	text += PARKING_TEXT[int(type.get("parking", 0)) & 3]
 	if with_width:
 		text += ", %.1f m wide" % float(type.get("total_m", 0.0))
 	return text

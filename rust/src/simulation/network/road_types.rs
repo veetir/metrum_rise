@@ -2,7 +2,8 @@
 
 //! Road types (`ROAD-101`): a road's layout as the player composes it, an ordered list of parts
 //! left to right looking along the road's forward direction, and the one check that turns it
-//! into the cross-section an edge stores (forward lanes, backward lanes, median) or refuses it
+//! into the cross-section an edge stores (forward lanes, backward lanes, median, kerbside
+//! parking) or refuses it
 //! with a stable key. The built-in types the Roads menu offers are one table here; the player's
 //! own types live in the per-user library file ([`library`]).
 //!
@@ -15,7 +16,9 @@ pub(crate) mod library;
 #[cfg(test)]
 mod tests;
 
-use super::graph::{Edge, MAX_LANES_PER_DIRECTION, MedianStyle, RoadMedian};
+use super::graph::{
+    Edge, MAX_LANES_PER_DIRECTION, MedianStyle, PARKING_LANE_WIDTH_M, RoadMedian, RoadParking,
+};
 use super::roadbed::FOOTPATH_MIN_WIDTH_M;
 use super::types::TransitFlags;
 use crate::config;
@@ -34,23 +37,28 @@ pub enum RoadPart {
     Median(RoadMedian),
     /// A walkway's single footpath band: valid only as the whole layout.
     Footpath,
+    /// A kerbside parking lane (`PARK-05`), [`PARKING_LANE_WIDTH_M`] wide: valid only next to a
+    /// sidewalk, so at most one per side.
+    Parking,
 }
 
 impl RoadPart {
     /// The part's width across the road in metres: a sidewalk 1.5, a lane 3.5, a median its own
-    /// width, a footpath the walkway's 2. `O(1)`.
+    /// width, a footpath the walkway's 2, a parking lane 2.5. `O(1)`.
     pub fn width_m(self) -> f32 {
         match self {
             Self::Sidewalk => config::SIDEWALK_WIDTH,
             Self::CarLane { .. } => config::LANE_WIDTH,
             Self::Median(median) => median.width_m,
             Self::Footpath => FOOTPATH_MIN_WIDTH_M,
+            Self::Parking => PARKING_LANE_WIDTH_M,
         }
     }
 }
 
-/// What a valid layout builds: the lane counts and median an edge stores. Every car road also
-/// carries a sidewalk on each side; a walkway (0 + 0 lanes) is one footpath band.
+/// What a valid layout builds: the lane counts, median and kerbside parking an edge stores.
+/// Every car road also carries a sidewalk on each side; a walkway (0 + 0 lanes) is one footpath
+/// band.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoadCrossSection {
     /// Lanes along the road's forward direction.
@@ -59,6 +67,8 @@ pub struct RoadCrossSection {
     pub bkw_lanes: u8,
     /// The median between the two directions, if any.
     pub median: Option<RoadMedian>,
+    /// The kerbside parking lanes.
+    pub parking: RoadParking,
 }
 
 impl RoadCrossSection {
@@ -70,6 +80,7 @@ impl RoadCrossSection {
             fwd_lanes,
             bkw_lanes,
             median: None,
+            parking: RoadParking::NONE,
         }
     }
 
@@ -79,8 +90,9 @@ impl RoadCrossSection {
     }
 
     /// The layout this cross-section is drawn from, left to right along the forward direction:
-    /// a walkway's footpath, else a sidewalk, the backward lanes, the median, the forward lanes
-    /// and a sidewalk (right-hand traffic; mirrored when driving on the left). `O(lanes)`.
+    /// a walkway's footpath, else a sidewalk, a parking lane, the backward lanes, the median, the
+    /// forward lanes, a parking lane and a sidewalk (right-hand traffic; the lanes mirrored when
+    /// driving on the left), each parking lane only on a side that has one. `O(lanes)`.
     pub fn parts(self) -> Vec<RoadPart> {
         if self.is_walkway() {
             return vec![RoadPart::Footpath];
@@ -92,23 +104,26 @@ impl RoadCrossSection {
         let right_lane = RoadPart::CarLane {
             forward: !config::DRIVE_ON_LEFT,
         };
-        let mut parts = Vec::with_capacity(usize::from(left + right) + 3);
+        let mut parts = Vec::with_capacity(usize::from(left + right) + 5);
         parts.push(RoadPart::Sidewalk);
+        parts.extend(self.parking.left.then_some(RoadPart::Parking));
         parts.extend((0..left).map(|_| left_lane));
         parts.extend(self.median.map(RoadPart::Median));
         parts.extend((0..right).map(|_| right_lane));
+        parts.extend(self.parking.right.then_some(RoadPart::Parking));
         parts.push(RoadPart::Sidewalk);
         parts
     }
 
     /// The name a new type of this cross-section is offered: "2+2", "2+2 Grass 3 m", "1+0" for a
-    /// one-way road, "Walkway" for a walkway.
+    /// one-way road, "Walkway" for a walkway; kerbside parking adds " Parking", or " Parking L" /
+    /// " Parking R" on one side only.
     pub fn base_name(self) -> String {
         if self.is_walkway() {
             return "Walkway".to_string();
         }
         let lanes = format!("{}+{}", self.fwd_lanes, self.bkw_lanes);
-        match self.median {
+        let name = match self.median {
             None => lanes,
             Some(median) => {
                 let style = match median.style {
@@ -119,7 +134,14 @@ impl RoadCrossSection {
                 // f32's shortest display: "3" for 3.0, "2.5" for 2.5.
                 format!("{lanes} {style} {} m", median.width_m)
             }
-        }
+        };
+        let parking = match (self.parking.left, self.parking.right) {
+            (false, false) => "",
+            (true, true) => " Parking",
+            (true, false) => " Parking L",
+            (false, true) => " Parking R",
+        };
+        name + parking
     }
 }
 
@@ -153,6 +175,7 @@ impl LayoutRefusal {
 /// order:
 /// - a footpath anywhere but as the whole layout: `layout_footpath_alone`;
 /// - a sidewalk missing at either end, or one inside the road: `layout_sidewalks`;
+/// - a parking lane not next to a sidewalk: `layout_parking_at_kerb`;
 /// - two medians: `layout_two_medians`;
 /// - a backward lane right of a forward one (right-hand traffic): `layout_lane_order`;
 /// - no car lane: `layout_no_car_lane`;
@@ -179,10 +202,15 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
     // Lanes counted left and right of the centre line, and how many of each the median follows.
     let (mut left, mut right) = (0usize, 0usize);
     let mut median: Option<(usize, RoadMedian, usize, usize)> = None;
+    let mut parking = RoadParking::NONE;
     for (offset, part) in inside.iter().enumerate() {
         let at = Some(offset + 1);
         match *part {
             RoadPart::Sidewalk => return Err(LayoutRefusal::new("layout_sidewalks", at)),
+            // Parts run left to right along the forward direction, as the edge's kerbs do.
+            RoadPart::Parking if offset == 0 => parking.left = true,
+            RoadPart::Parking if offset + 1 == inside.len() => parking.right = true,
+            RoadPart::Parking => return Err(LayoutRefusal::new("layout_parking_at_kerb", at)),
             RoadPart::Median(found) => {
                 if median.is_some() {
                     return Err(LayoutRefusal::new("layout_two_medians", at));
@@ -217,6 +245,7 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
         fwd_lanes,
         bkw_lanes,
         median: median.map(|(_, median, _, _)| median),
+        parking,
     };
     if let Some((at, found, left_before, right_before)) = median {
         let at = Some(at);

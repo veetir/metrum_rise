@@ -9,7 +9,9 @@
 //!
 //! A part crosses the bridge as a dictionary: `{"kind": "sidewalk"}`, `{"kind": "car_lane",
 //! "forward": bool}`, `{"kind": "median", "style": 1 painted | 2 kerbed grass | 3 kerbed paving,
-//! "width_m": float}` or `{"kind": "footpath"}` (a walkway's single part).
+//! "width_m": float}`, `{"kind": "parking"}` (a kerbside parking lane, `PARK-05`) or
+//! `{"kind": "footpath"}` (a walkway's single part). The tool's parking goes to
+//! `set_road_tool_parking`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
@@ -73,7 +75,8 @@ impl SimulationNode {
     /// direction (`ROAD-101`): `is_valid`; `invalid_reason` and `detail` (`part <index>`) when
     /// refused (`layout_unknown_part` for a dictionary that is not a part, else the layout
     /// check's keys); the cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`,
-    /// `median_style` (0 none) and `median_width`; `part_widths_m` (one per part, refused
+    /// `median_style` (0 none), `median_width` and `parking` (bit 0 left, bit 1 right);
+    /// `part_widths_m` (one per part, refused
     /// layouts included), `carriageway_m` (the road's width between its sidewalks) and
     /// `total_m` (sidewalks included); and `suggested_name`, a free name for a new type of a
     /// valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus the
@@ -202,6 +205,7 @@ fn layout_to_variant(
         "bkw_lanes": section.map_or(0, |section| i64::from(section.bkw_lanes)),
         "median_style": i64::from(RoadMedian::style_code(median)),
         "median_width": median.map_or(0.0, |median| median.width_m),
+        "parking": section.map_or(0, |section| i64::from(section.parking.code())),
         "part_widths_m": PackedFloat32Array::from(widths.as_slice()),
         "carriageway_m": carriageway_m,
         "total_m": total_m,
@@ -218,6 +222,7 @@ fn part_to_variant(part: RoadPart) -> VarDictionary {
             "width_m": median.width_m,
         },
         RoadPart::Footpath => vdict! { "kind": "footpath" },
+        RoadPart::Parking => vdict! { "kind": "parking" },
     }
 }
 
@@ -242,6 +247,7 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
     match kind.to_string().as_str() {
         "sidewalk" => Ok(RoadPart::Sidewalk),
         "footpath" => Ok(RoadPart::Footpath),
+        "parking" => Ok(RoadPart::Parking),
         "car_lane" => Ok(RoadPart::CarLane {
             forward: field("forward")?.try_to().map_err(|_| UNKNOWN)?,
         }),

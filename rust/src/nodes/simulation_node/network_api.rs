@@ -462,6 +462,7 @@ impl SimulationNode {
 
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
+    /// `parking` (`PARK-05`: bit 0 left kerb, bit 1 right),
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
     /// change) and `road_type` (`ROAD-101`: the id of the first usable road type, built-ins
     /// first, whose layout builds exactly this cross-section, else empty). Empty for an id that
@@ -485,6 +486,7 @@ impl SimulationNode {
                 "class": edge.class as i64,
                 "median_style": i64::from(RoadMedian::style_code(edge.median)),
                 "median_width": edge.median.map_or(0.0, |median| median.width_m),
+                "parking": i64::from(edge.parking.code()),
                 "editable": edge
                     .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
                     .is_ok(),
@@ -493,6 +495,7 @@ impl SimulationNode {
                 fwd_lanes: edge.fwd_lanes,
                 bkw_lanes: edge.bkw_lanes,
                 median: edge.median,
+                parking: edge.parking,
             };
             (result, section)
         };

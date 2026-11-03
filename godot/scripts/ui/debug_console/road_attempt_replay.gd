@@ -48,6 +48,7 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	simulation.set_road_tool_tunnel(bool(attempt.get("tunnel", false)))
 	# Its median (`ROAD-80`), re-asserted by the road tool per preview the same way.
 	simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width", 0.0)))
+	simulation.set_road_tool_parking(int(attempt.get("parking", 0)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
 	var validation: Dictionary = {}

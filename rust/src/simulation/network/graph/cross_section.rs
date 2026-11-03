@@ -236,6 +236,24 @@ impl Edge {
         }
         Ok(())
     }
+
+    /// Whether a road of `allowed_types` with `fwd` + `bkw` lanes may carry `parking`
+    /// (`PARK-05`): kerbside parking needs a car lane to park from. The error is the stable
+    /// refusal key. `O(1)`.
+    pub(crate) fn validate_parking(
+        allowed_types: u8,
+        fwd: u8,
+        bkw: u8,
+        parking: RoadParking,
+    ) -> Result<(), &'static str> {
+        if parking == RoadParking::NONE {
+            return Ok(());
+        }
+        if allowed_types & TransitFlags::CAR == 0 || fwd + bkw == 0 {
+            return Err("parking_requires_vehicle_road");
+        }
+        Ok(())
+    }
 }
 
 impl RegionGraph {

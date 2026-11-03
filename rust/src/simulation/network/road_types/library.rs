@@ -15,7 +15,8 @@
 //! `{"format": "metrum-road-types", "version": 1, "next_id": 3, "types": [{"id": "custom:1",
 //! "name": "Boulevard", "parts": [{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 //! {"kind": "median", "style": "grass", "width_m": 3.0}, ...]}]}`. Part kinds `sidewalk`,
-//! `car_lane`, `median`, `footpath`; median styles `painted`, `grass`, `paving`.
+//! `car_lane`, `median`, `footpath`, `parking` (`PARK-05`); median styles `painted`, `grass`,
+//! `paving`.
 
 use super::{
     BUILTIN_ROAD_TYPES, RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal, check_layout,
@@ -69,6 +70,7 @@ enum StoredPart {
     CarLane { forward: bool },
     Median { style: String, width_m: f32 },
     Footpath,
+    Parking,
 }
 
 const STYLE_KEYS: [(MedianStyle, &str); 3] = [
@@ -91,6 +93,7 @@ impl StoredPart {
                 width_m: median.width_m,
             },
             RoadPart::Footpath => Self::Footpath,
+            RoadPart::Parking => Self::Parking,
         }
     }
 
@@ -107,6 +110,7 @@ impl StoredPart {
                 width_m: *width_m,
             }),
             Self::Footpath => RoadPart::Footpath,
+            Self::Parking => RoadPart::Parking,
         })
     }
 }

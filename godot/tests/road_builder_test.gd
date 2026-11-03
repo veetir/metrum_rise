@@ -22,6 +22,8 @@ const TILE_BACK := 0
 const TILE_AHEAD := 1
 const TILE_PAINTED := 2
 const TILE_GRASS := 3
+const TILE_PARKING := 5
+const PARK := {"kind": "parking"}
 
 var _failures := 0
 var _main: Node
@@ -192,7 +194,7 @@ func _run() -> void:
 	_expect(not _builder.create_button.disabled and _builder.create_button.text == "Create road", "a new 1 + 1 can be created")
 	_expect(_builder.name_edit.text == String(_builder.check.suggested_name) and not _builder.name_edit.text.is_empty(),
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
-	_expect(_builder.tiles.size() == 5, "five part tiles")
+	_expect(_builder.tiles.size() == 6, "six part tiles")
 
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
 	await _click_part(1)
@@ -236,6 +238,17 @@ func _run() -> void:
 		"an invalid order shows its reason: %s" % _builder.status_label.text)
 	_drag_part(3, 1)
 	_expect(_builder.parts == built and not _builder.create_button.disabled, "dragged back: %s" % [_builder.parts])
+
+	# Kerbside parking (`PARK-05`): only next to a sidewalk, and it widens the road.
+	_drop_tile(TILE_PARKING, 2)
+	_expect(not _builder.strip.valid and _builder.status_label.text == "A parking lane goes next to a sidewalk",
+		"parking inside the road is refused: %s" % _builder.status_label.text)
+	_drag_part(2, 1)
+	_expect(_builder.parts == [SW, PARK, BACK, grass, AHEAD, SW] and _builder.strip.valid and int(_builder.check.parking) == 1,
+		"parking at the left kerb: %s" % [_builder.parts])
+	_expect(_builder.widths_label.text == "Road %.1f m\nTotal %.1f m" % [9.5 + grass_m, 12.5 + grass_m], "parking widths: %s" % _builder.widths_label.text)
+	_drag_part_off(1)
+	_expect(_builder.parts == built, "parking dragged off: %s" % [_builder.parts])
 
 	# The median popup: width and style, Move left / right.
 	await _click_part(2)

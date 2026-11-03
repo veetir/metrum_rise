@@ -83,6 +83,8 @@ fn types_round_trip_through_the_file() {
     let divided = [S, B, B, grass(3.5), F, F, S];
     assert_eq!(library.create("Boulevard", &divided), Ok("custom:1".into()));
     assert_eq!(library.create("Lane", &[S, F, S]), Ok("custom:2".into()));
+    let street = [S, RoadPart::Parking, B, F, S];
+    assert_eq!(library.create("Street", &street), Ok("custom:3".into()));
     let written = custom(&mut library);
     assert_eq!(written[0].name, "Boulevard");
     assert_eq!(written[0].parts, divided);
@@ -95,6 +97,7 @@ fn types_round_trip_through_the_file() {
                 style: MedianStyle::KerbedGrass,
                 width_m: 3.5,
             }),
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         })
     );
     // Another handle (another game instance, the next session) reads the same types.
@@ -103,12 +106,15 @@ fn types_round_trip_through_the_file() {
     let text = fs::read_to_string(fixture.path()).unwrap();
     assert!(text.starts_with("{\n  \"format\": \"metrum-road-types\",\n  \"version\": 1,"));
     let json = fixture.json();
-    assert_eq!(json["next_id"], 3);
+    assert_eq!(json["next_id"], 4);
     assert_eq!(json["types"][0]["parts"][3]["kind"], "median");
     assert_eq!(json["types"][0]["parts"][3]["style"], "grass");
     assert_eq!(json["types"][0]["parts"][3]["width_m"], 3.5);
     assert_eq!(json["types"][1]["parts"][1]["kind"], "car_lane");
     assert_eq!(json["types"][1]["parts"][1]["forward"], true);
+    assert_eq!(json["types"][2]["parts"][1]["kind"], "parking");
+    assert_eq!(written[2].parts, street);
+    assert_eq!(written[2].usable().unwrap().parking.code(), 1);
 }
 
 #[test]

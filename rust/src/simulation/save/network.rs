@@ -247,9 +247,15 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 .map_err(|reason| {
                     SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
                 })?;
-            let parking = RoadParking::from_code(row.get(18)?).ok_or_else(|| {
-                SaveLoadError::custom(format!("edge {eid} has an invalid parking code"))
-            })?;
+            let parking = RoadParking::from_code(row.get(18)?)
+                .ok_or("parking_code_out_of_range")
+                .and_then(|parking| {
+                    Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking)
+                        .map(|()| parking)
+                })
+                .map_err(|reason| {
+                    SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
+                })?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
