@@ -243,6 +243,7 @@ fn measure_populated_road_plan_scaling(
                 snap_to_existing_roads: true,
                 tunnel,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 preview: None,
             },
             Instant::now(),
@@ -513,6 +514,7 @@ fn measure_populated_road_plan_scaling(
             }
         };
         let request = || RoadPreviewRequest {
+            parking: Default::default(),
             surface_generation: generation,
             points: points.clone(),
             fwd_lanes: 1,

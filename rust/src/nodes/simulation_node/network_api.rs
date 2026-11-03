@@ -72,6 +72,7 @@ impl SimulationNode {
             snap_to_existing_roads,
             self.road_tool_tunnel,
             self.road_tool_median,
+            self.road_tool_parking,
         );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
@@ -86,6 +87,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,

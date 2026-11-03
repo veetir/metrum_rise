@@ -61,6 +61,8 @@ pub(crate) struct PreparedRoadInput {
     /// by. Preparation never reads it: the preparers leave it `None` and
     /// [`super::plan_road_edit`] and the road tool's checks set the tool's.
     pub(crate) median: Option<RoadMedian>,
+    /// The stroke's kerbside parking (`PARK-05`), set like `median`.
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
 }
 
 // A stroke's prepared points, its inferred class, the grade a refused standard solve was forced
@@ -176,6 +178,7 @@ fn prepare_snapped_road_input_to_visible_surface(
         endpoint_snap_enabled: true,
         tunnel: false,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
         elevated_ends,
         joined_spans,
@@ -283,6 +286,7 @@ pub(super) fn prepare_road_input_excluding(
         endpoint_snap_enabled: false,
         tunnel: false,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         forced_grade,
         elevated_ends,
         joined_spans: [None; 2],

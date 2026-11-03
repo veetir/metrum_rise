@@ -130,7 +130,7 @@ impl SimCore {
                 format!("edge {edge} already has {fwd}+{bkw} lanes, median {median:?}"),
             ));
         }
-        let widens = Edge::cross_section_width_m(fwd, bkw, median) > current.width;
+        let widens = Edge::cross_section_width_m(fwd, bkw, median, current.parking) > current.width;
         if widens && current.class == EdgeClass::Tunnel {
             return Err(RoadRejection::new(
                 "edit_tunnel_width",

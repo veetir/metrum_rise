@@ -17,7 +17,7 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
@@ -41,6 +41,8 @@ pub(crate) struct RoadPreviewRequest {
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), part of the identity like `median`.
+    pub(crate) parking: RoadParking,
 }
 
 /// Corridor clearance of a stroke against live parcels and field reservations.
@@ -68,10 +70,11 @@ impl RoadCorridorClearance {
         fwd_lanes: i32,
         bkw_lanes: i32,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> Self {
         let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
-        let half_width = Edge::cross_section_width_m(lanes(fwd_lanes), lanes(bkw_lanes), median)
-            * 0.5
+        let half_width =
+            Edge::cross_section_width_m(lanes(fwd_lanes), lanes(bkw_lanes), median, parking) * 0.5
             + crate::config::SIDEWALK_WIDTH;
         let parcels = core
             .zoning
@@ -291,6 +294,7 @@ pub(crate) struct RoadPreview {
 
 impl RoadPreview {
     /// True when this preview was made for exactly this stroke.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
         points: &[Vector3],
@@ -299,6 +303,7 @@ impl RoadPreview {
         snap_to_existing_roads: bool,
         tunnel: bool,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> bool {
         let request = self.plan.request();
         request.points == points
@@ -307,6 +312,7 @@ impl RoadPreview {
             && request.snap_to_existing_roads == snap_to_existing_roads
             && request.tunnel == tunnel
             && request.median == median
+            && request.parking == parking
     }
 }
 

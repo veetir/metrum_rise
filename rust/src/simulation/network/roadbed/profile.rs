@@ -7,7 +7,7 @@
 
 use crate::config;
 use crate::simulation::network::build_surface_edge;
-use crate::simulation::network::graph::{Edge, RoadMedian};
+use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use godot::prelude::Vector3;
 
@@ -266,12 +266,13 @@ pub(crate) fn preview_candidate_roadbed_half_width_m(
     fwd_lanes: u8,
     bkw_lanes: u8,
     median: Option<RoadMedian>,
+    parking: RoadParking,
 ) -> f32 {
     let points = match (prepared_points.first(), prepared_points.last()) {
         (Some(first), Some(last)) => vec![*first, *last],
         _ => Vec::new(),
     };
-    let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class, median);
+    let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class, median, parking);
     visual_roadbed_half_width_m(&edge)
 }
 

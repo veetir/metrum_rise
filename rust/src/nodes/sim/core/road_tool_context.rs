@@ -267,6 +267,7 @@ impl RoadToolShared {
     }
 
     /// The latest preview when it was made for exactly this stroke.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn preview_for(
         &self,
         points: &[godot::prelude::Vector3],
@@ -275,6 +276,7 @@ impl RoadToolShared {
         snap_to_existing_roads: bool,
         tunnel: bool,
         median: Option<crate::simulation::network::graph::RoadMedian>,
+        parking: crate::simulation::network::graph::RoadParking,
     ) -> Option<Arc<RoadPreview>> {
         let context = self
             .context
@@ -291,6 +293,7 @@ impl RoadToolShared {
                     snap_to_existing_roads,
                     tunnel,
                     median,
+                    parking,
                 )
             })
             .cloned()

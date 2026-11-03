@@ -45,6 +45,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) tunnel: bool,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`).
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
 }
 
 /// Why one stroke was refused.
@@ -133,6 +135,7 @@ impl RoadRejection {
             tunnel: attempt.tunnel,
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
+            parking: attempt.parking.code(),
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -154,6 +157,8 @@ struct AttemptRecord<'a> {
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
+    // Kerbside parking (`PARK-05`) as `RoadParking::code`: bit 0 left, bit 1 right.
+    parking: i32,
     points: Vec<[f32; 3]>,
 }
 
@@ -399,6 +404,7 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -476,6 +482,7 @@ mod tests {
             snap: false,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(

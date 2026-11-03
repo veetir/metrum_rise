@@ -335,6 +335,7 @@ fn benchmark_parking_locality() {
                     preview: None,
                     tunnel: false,
                     median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
                 },
                 Instant::now(),
                 RoadEditMetrics::default(),

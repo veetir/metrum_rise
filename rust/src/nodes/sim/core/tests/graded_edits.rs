@@ -35,6 +35,7 @@ pub(super) fn commit_stroke(core: &mut SimCore, (ends, lanes): Stroke) {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             preview: None,
         },
         std::time::Instant::now(),

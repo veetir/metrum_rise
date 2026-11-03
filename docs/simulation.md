@@ -244,6 +244,11 @@ endpoint quote stamps ([`traffic.md`](traffic.md#resident-parking-trips-park-02-
 `dev` 111 + 2 (the parking branch had used 110–112), current-only, with no migration. The existing Kuopio recorder re-records the pinned
 fixture with both parking and gridlock state.
 
+Save format 114 (`PARK-05`, 2026-11-03) adds `network_edges.parking`, the edge's kerbside
+parking lanes as a bit set (bit 0 left, bit 1 right, looking along the edge; 0 without any); a
+load fails on any other value. Each parking lane is included in the stored `width`. Current-only,
+no migration; the Kuopio fixture is re-recorded with the column at its default.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

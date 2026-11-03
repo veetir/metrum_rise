@@ -100,6 +100,55 @@ impl RoadMedian {
     }
 }
 
+/// Width of one kerbside parking lane in metres: room for a parallel-parked car and its opened
+/// door's clearance from the traffic lane (`PARK-05`).
+pub const PARKING_LANE_WIDTH_M: f32 = 2.5;
+
+/// Which kerbs of a road carry a parking lane (`PARK-05`), left and right looking along the
+/// edge's forward direction. A parking lane widens the carriageway on its side; the traffic
+/// lanes keep their widths and shift away from it. Cars park along it, never drive in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoadParking {
+    /// A parking lane along the left kerb.
+    pub left: bool,
+    /// A parking lane along the right kerb.
+    pub right: bool,
+}
+
+impl RoadParking {
+    /// No parking lane.
+    pub const NONE: Self = Self {
+        left: false,
+        right: false,
+    };
+
+    /// The save and tool code: bit 0 left, bit 1 right.
+    pub fn code(self) -> i32 {
+        i32::from(self.left) | i32::from(self.right) << 1
+    }
+
+    /// [`Self::code`]'s inverse; `None` for a code outside 0-3.
+    pub fn from_code(code: i32) -> Option<Self> {
+        (0..=3).contains(&code).then_some(Self {
+            left: code & 1 != 0,
+            right: code & 2 != 0,
+        })
+    }
+
+    /// Total width the parking lanes add to the carriageway.
+    pub fn width_m(self) -> f32 {
+        f32::from(u8::from(self.left) + u8::from(self.right)) * PARKING_LANE_WIDTH_M
+    }
+
+    /// How far the traffic lanes' centre sits from the carriageway's: half a parking lane
+    /// towards the side without one when only one kerb parks, else zero.
+    pub fn lane_shift_m(self) -> f32 {
+        (f32::from(u8::from(self.left)) - f32::from(u8::from(self.right)))
+            * PARKING_LANE_WIDTH_M
+            * 0.5
+    }
+}
+
 impl Edge {
     /// Lateral offset, in the edge's forward frame, of the line between its backward and forward
     /// lane groups: zero when both directions carry equally many lanes, else half a lane per
@@ -107,9 +156,11 @@ impl Edge {
     /// profile centres on the centreline (`ROAD-100`), where the markings already divide it.
     /// A 2+1 road's lanes sit at -3.5, 0 and 3.5 m, a one-way lane on the centreline. A median
     /// is centred on this line. `O(1)`, allocation-free.
+    /// Kerbside parking (`PARK-05`) moves the line with the lanes, off the parking side.
     pub fn lane_group_offset(&self) -> f32 {
         let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
         (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes)) * config::LANE_WIDTH * 0.5 * side
+            + self.parking.lane_shift_m()
     }
 
     /// How far each lane group sits out from [`Self::lane_group_offset`]: half the median's
@@ -128,11 +179,18 @@ impl Edge {
         }
     }
 
-    /// The carriageway width a road of `fwd` + `bkw` lanes and `median` has, as a stroke builds
-    /// it (`network::build_surface_edge`): a lane width each plus the median, at least 2 m.
-    pub(crate) fn cross_section_width_m(fwd: u8, bkw: u8, median: Option<RoadMedian>) -> f32 {
+    /// The carriageway width a road of `fwd` + `bkw` lanes, `median` and `parking` has, as a
+    /// stroke builds it (`network::build_surface_edge`): a lane width each plus the median, at
+    /// least 2 m, plus its parking lanes.
+    pub(crate) fn cross_section_width_m(
+        fwd: u8,
+        bkw: u8,
+        median: Option<RoadMedian>,
+        parking: RoadParking,
+    ) -> f32 {
         (f32::from(fwd + bkw) * config::LANE_WIDTH + median.map_or(0.0, |median| median.width_m))
             .max(2.0)
+            + parking.width_m()
     }
 
     /// Whether this edge may carry `fwd` forward and `bkw` backward lanes and `median` after an
@@ -198,7 +256,7 @@ impl RegionGraph {
         edge.fwd_lanes = fwd;
         edge.bkw_lanes = bkw;
         edge.median = median;
-        edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+        edge.width = Edge::cross_section_width_m(fwd, bkw, median, edge.parking);
     }
 }
 
@@ -267,9 +325,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(edge.median_half_width(), 0.0);
-        assert_eq!(Edge::cross_section_width_m(2, 2, None), 14.0);
+        assert_eq!(
+            Edge::cross_section_width_m(2, 2, None, RoadParking::NONE),
+            14.0
+        );
         let grass = RoadMedian::from_tool(2, 4.0).unwrap();
-        assert_eq!(Edge::cross_section_width_m(2, 2, grass), 18.0);
+        assert_eq!(
+            Edge::cross_section_width_m(2, 2, grass, RoadParking::NONE),
+            18.0
+        );
         edge.median = grass;
         assert_eq!(edge.median_half_width(), 2.0);
         assert_eq!(
@@ -282,5 +346,36 @@ mod tests {
             edge.effective_vehicle_frontage_access(),
             edge.vehicle_frontage_access
         );
+    }
+
+    #[test]
+    fn kerbside_parking_widens_the_road_and_shifts_the_lanes_off_its_side() {
+        let mut edge = Edge {
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            ..Default::default()
+        };
+        let right = RoadParking {
+            left: false,
+            right: true,
+        };
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        assert_eq!(Edge::cross_section_width_m(1, 1, None, right), 9.5);
+        assert_eq!(Edge::cross_section_width_m(1, 1, None, both), 12.0);
+        // A 2 m footpath-width floor applies to the lanes, not to the parking added after it.
+        assert_eq!(Edge::cross_section_width_m(0, 0, None, right), 4.5);
+        edge.parking = right;
+        assert_eq!(edge.lane_group_offset(), -1.25);
+        edge.parking = both;
+        assert_eq!(edge.lane_group_offset(), 0.0);
+        for code in 0..4 {
+            assert_eq!(RoadParking::from_code(code).map(RoadParking::code), Some(code));
+        }
+        assert_eq!(RoadParking::from_code(4), None);
     }
 }

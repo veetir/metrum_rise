@@ -75,6 +75,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
         snap_to_existing_roads: snap,
         tunnel,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
     };
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
     let quick = view.validate(&request(core)).1;
@@ -88,6 +89,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
             snap_to_existing_roads: snap,
             tunnel,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             preview: Some(preview),
         },
         std::time::Instant::now(),

@@ -209,6 +209,8 @@ pub struct SimulationNode {
     pub(crate) road_tool_tunnel: bool,
     /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
+    pub(crate) road_tool_parking: crate::simulation::network::graph::RoadParking,
     /// The player's road types (`ROAD-101`), read from `user://road_types.json` on first use:
     /// tool configuration, never in `SimCore`, a save or the undo stack.
     pub(crate) road_types:
@@ -440,6 +442,7 @@ impl INode3D for SimulationNode {
             road_tool,
             road_tool_tunnel: false,
             road_tool_median: None,
+            road_tool_parking: Default::default(),
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),

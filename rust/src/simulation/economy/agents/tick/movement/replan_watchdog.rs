@@ -528,6 +528,7 @@ mod tests {
 
     fn test_edge(start_node: u32, end_node: u32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: TransitType::Road,

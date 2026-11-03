@@ -36,6 +36,8 @@ pub(crate) struct RoadCommitRequest {
     /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
     /// the stroke's edge carries it.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), carried like `median`.
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's preview of this stroke (`ROAD-68-E`): its plan and pieces are installed
     /// when its fingerprint is still current, else the commit recompiles locally.
     pub(crate) preview: Option<std::sync::Arc<RoadPreview>>,
@@ -110,6 +112,7 @@ impl SimCore {
             snap_to_existing_roads,
             tunnel,
             median,
+            parking,
             preview,
         } = request;
         self.last_road_rejection = None;
@@ -130,6 +133,7 @@ impl SimCore {
                     snap_to_existing_roads,
                     tunnel,
                     median,
+                    parking,
                 )
         });
         edit_metrics.preview_plan_reused = preview.is_some();
@@ -148,6 +152,7 @@ impl SimCore {
                         snap_to_existing_roads,
                         tunnel,
                         median,
+                        parking,
                     },
                 );
                 &fresh_plan
@@ -340,6 +345,7 @@ impl SimCore {
                     snap: snap_to_existing_roads,
                     tunnel,
                     median,
+                    parking,
                 },
                 self.road_tool_surface_generation,
             );
@@ -400,6 +406,7 @@ mod tests {
                 snap_to_existing_roads: false,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 preview: None,
             },
             Instant::now(),

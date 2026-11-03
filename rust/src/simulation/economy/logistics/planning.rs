@@ -254,6 +254,7 @@ mod tests {
         let start = graph.add_node(points[0], NodeType::Junction);
         let end = graph.add_node(points[1], NodeType::Junction);
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: start,
             end_node: end,
             primary_type: TransitType::Road,

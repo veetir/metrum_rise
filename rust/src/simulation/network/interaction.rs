@@ -632,6 +632,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
         }
         assert_eq!(super::get_closest_edge_xz(&graph, 0.1, 10.0, 3.0), Some(0));
@@ -661,6 +662,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
         }
         for _ in 0..2 {
@@ -695,6 +697,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
         }
         for order in [[0, 1], [1, 0]] {
@@ -746,6 +749,7 @@ mod tests {
                     1,
                     EdgeClass::Standard,
                     None,
+                    Default::default(),
                 ));
             }
             let setup_us = setup.elapsed().as_secs_f64() * 1e6;
@@ -1017,6 +1021,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
         )
     }
 
@@ -1098,6 +1103,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
         ));
         graph.add_edge(super::super::build_surface_edge(
             b,
@@ -1107,6 +1113,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
         ));
         // Dead end at a: continue westward, away from the road.
         assert_eq!(
@@ -1175,6 +1182,7 @@ mod tests {
                 1,
                 class,
                 None,
+                Default::default(),
             ));
         }
         // A ray's piece: a bore's is the ground, a bridge's span its own, a missing one the ground.
@@ -1247,6 +1255,7 @@ mod tests {
                 1,
                 class,
                 None,
+                Default::default(),
             ));
         }
         for (cursor, edge, height) in [

@@ -28,6 +28,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Road,
@@ -147,7 +148,7 @@ pub(crate) fn divided(mut edge: Edge, fwd: u8, bkw: u8, median: Option<RoadMedia
     edge.fwd_lanes = fwd;
     edge.bkw_lanes = bkw;
     edge.median = median;
-    edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+    edge.width = Edge::cross_section_width_m(fwd, bkw, median, Default::default());
     edge
 }
 

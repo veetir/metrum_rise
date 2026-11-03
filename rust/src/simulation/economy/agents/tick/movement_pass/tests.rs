@@ -364,6 +364,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
         let end = graph.add_node(Vector3::new(2_000.0, 0.0, z), NodeType::Junction);
         let geometry = vec![Vector3::new(0.0, 0.0, z), Vector3::new(2_000.0, 0.0, z)];
         let edge = graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: start,
             end_node: end,
             primary_type: TransitType::Road,

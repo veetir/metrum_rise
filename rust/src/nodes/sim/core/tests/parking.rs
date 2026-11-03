@@ -30,6 +30,7 @@ fn commit(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
             preview: None,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         },
         Instant::now(),
         RoadEditMetrics::default(),

@@ -1209,6 +1209,7 @@ impl SimCore {
                     // Plan-less callers draw without the tool's tunnel intent or median.
                     tunnel: false,
                     median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
                 },
             ))
         } else {
@@ -1255,6 +1256,7 @@ impl SimCore {
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 None,
+                Default::default(),
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1392,6 +1394,7 @@ impl SimCore {
             fwd_lanes_u8,
             bkw_lanes_u8,
             prepared_input.median,
+            prepared_input.parking,
         );
         let corridor_half_width_m = road_width_m * 0.5 + config::SIDEWALK_WIDTH;
         let overlapping_parcels = self
@@ -1472,6 +1475,7 @@ impl SimCore {
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 prepared_input.median,
+                prepared_input.parking,
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,
@@ -2743,6 +2747,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         })
     }
 
@@ -2790,6 +2795,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2960,6 +2966,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3704,6 +3711,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3758,6 +3766,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

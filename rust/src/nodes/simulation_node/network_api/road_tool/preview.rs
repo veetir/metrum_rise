@@ -89,6 +89,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
             });
             (query.surface_generation, validated)
         };
@@ -150,6 +151,7 @@ impl SimulationNode {
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 self.road_tool_median,
+                self.road_tool_parking,
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -247,6 +249,7 @@ impl SimulationNode {
                 snap: snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -285,6 +288,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -564,6 +568,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 self.road_tool_median,
+                self.road_tool_parking,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }

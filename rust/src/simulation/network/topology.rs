@@ -1121,6 +1121,7 @@ pub fn split_edge(
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
+    let parking = old_edge.parking;
 
     // Remove from spatial index BEFORE updating geometry so the AABB still matches
     // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
@@ -1160,6 +1161,7 @@ pub fn split_edge(
         no_building_spawn,
         vehicle_frontage_access,
         median,
+        parking,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
@@ -1377,6 +1379,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             );
             // Physical stations differ from the materialized control support stations.
             edge.physical_geometry = vec![
@@ -1443,6 +1446,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
         }
         graph.remove_from_spatial_index(0);
@@ -1485,6 +1489,7 @@ mod tests {
                     1,
                     EdgeClass::Standard,
                     None,
+                    Default::default(),
                 ));
             }
             graph.rebuild_adjacency_list();
@@ -1534,6 +1539,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
             graph.rebuild_adjacency_list();
             let junction = graph.add_node(Vector3::new(-4200.0, 0.0, 600.0), NodeType::Junction);
@@ -1586,6 +1592,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
             ));
         }
         let row: Vec<_> = (0..=40)
@@ -1601,6 +1608,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
         ));
         graph.rebuild_adjacency_list();
         process_intersections(

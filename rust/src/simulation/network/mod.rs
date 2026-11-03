@@ -35,6 +35,7 @@ use render::road::RoadRenderer;
 use roadbed::{RoadbedSystem, SurfaceChunkKey};
 use types::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network) fn build_surface_edge(
     start_node: u32,
     end_node: u32,
@@ -43,6 +44,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
     bkw_lanes: u8,
     class: EdgeClass,
     median: Option<RoadMedian>,
+    parking: RoadParking,
 ) -> graph::Edge {
     let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
     let mut allowed_types = TransitFlags::NONE;
@@ -72,7 +74,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         },
         allowed_types,
         class,
-        width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median),
+        width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median, parking),
         fwd_lanes,
         bkw_lanes,
         speed_limit: config::DEFAULT_URBAN_ROAD_SPEED_MS,
@@ -86,6 +88,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         no_building_spawn: false,
         vehicle_frontage_access,
         median,
+        parking,
     }
 }
 
@@ -293,13 +296,22 @@ impl TransitNetwork {
     ) {
         let grade = topology::StrokeGrade::of_class(class);
         self.add_road_graded(
-            graph, points, fwd_lanes, bkw_lanes, None, class, grade, zoning, allocator,
+            graph,
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            None,
+            RoadParking::NONE,
+            class,
+            grade,
+            zoning,
+            allocator,
         );
     }
 
     /// As [`Self::add_road`], the road meeting the roads it reaches by `grade` (`ROAD-99`): a
     /// road-tool stroke's, whose bridge ends at its support join roads mid-span, with the
-    /// stroke's `median` (`ROAD-80`).
+    /// stroke's `median` (`ROAD-80`) and kerbside `parking` (`PARK-05`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_road_graded(
         &mut self,
@@ -308,6 +320,7 @@ impl TransitNetwork {
         fwd_lanes: u8,
         bkw_lanes: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -347,6 +360,7 @@ impl TransitNetwork {
                 fwd_lanes,
                 bkw_lanes,
                 median,
+                parking,
                 class,
                 grade,
                 zoning,
@@ -366,6 +380,7 @@ impl TransitNetwork {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -381,7 +396,7 @@ impl TransitNetwork {
         }
 
         let edge_id = graph.add_edge(build_surface_edge(
-            start, end, points, fwd, bkw, class, median,
+            start, end, points, fwd, bkw, class, median, parking,
         ));
 
         let (cost, length) =

@@ -106,12 +106,20 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
     let section = check_layout(&[S, B, B, grass(3.0), F, F, S]).unwrap();
     assert_eq!(
         carriageway,
-        Edge::cross_section_width_m(section.fwd_lanes, section.bkw_lanes, section.median)
+        Edge::cross_section_width_m(
+            section.fwd_lanes,
+            section.bkw_lanes,
+            section.median,
+            Default::default()
+        )
     );
     // A walkway is its footpath, as wide as a 0 + 0 edge.
     let (widths, carriageway, total) = layout_widths(&[RoadPart::Footpath]);
     assert_eq!((widths, carriageway, total), (vec![2.0], 2.0, 2.0));
-    assert_eq!(carriageway, Edge::cross_section_width_m(0, 0, None));
+    assert_eq!(
+        carriageway,
+        Edge::cross_section_width_m(0, 0, None, Default::default())
+    );
     // Refused layouts still have widths for the builder to draw.
     assert_eq!(layout_widths(&[S, F, B, S]).2, 10.0);
 }
