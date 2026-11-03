@@ -65,11 +65,15 @@ The road builder (`ROAD-101`) has a Parking lane part, allowed only next to a si
 through `set_road_tool_parking` and travels with the stroke through preview, commit and the
 refusal report like the median. Road types store it as the `parking` part kind.
 
-Still to come: the roadbed band, kerbside bays in the shared pool, the in-place toggle in Road
-Properties and paint/signs (`PARK-04`). The local `parking-kerbside-ref` branch preserves an
-earlier superseded implementation for reference. The band is a `BandKind::Parking` in
-`RoadProfile::for_edge` outside the lanes. `Unmarked` renders plain asphalt; `Marked` renders
-the white grid.
+On the roadbed the parking lane is part of the carriageway bands: the same ground-level asphalt,
+so kerbs, junction mouths, crossings and the roadbed queries need no new band kind, and the
+reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10 m line a parking
+lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
+street included), and the lane dividers split only the traffic lanes' share of the carriageway.
+
+Still to come: kerbside bays in the shared pool, the in-place toggle in Road Properties and bay
+paint and signs (`PARK-04`). The local `parking-kerbside-ref` branch preserves an earlier
+superseded implementation for reference.
 
 The bay round must read `RoadProfile::bands()` / `carriageway_half_width_m()`, never `edge.width`
 or span-mesh triangles, and junction exclusion from `MouthFrame` mouth stations. Exclude whole

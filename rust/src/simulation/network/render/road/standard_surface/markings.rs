@@ -6,7 +6,8 @@
 //! whole span, except past a pass-through node's crossing strip, which lies on the span (D8).
 //! A painted median (`ROAD-80`, R3-c) is paint alone: edge lines and 45 degree hatching across
 //! the gap between the lane groups, nosing out in a pointed chevron from the raised medians'
-//! nose tips.
+//! nose tips. A kerbside parking lane (`PARK-05`) is set off from the traffic lanes by a solid
+//! line, and the lane dividers split only the traffic lanes' share of the carriageway.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -15,7 +16,7 @@ use super::super::{
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, PARKING_LANE_WIDTH_M, RegionGraph};
 use crate::simulation::network::graph::MedianStyle;
 use crate::simulation::network::roadbed::{
     BandKind, EdgeEnd, NOSE_CLEARANCE_M, RoadSection, RoadbedSystem,
@@ -84,7 +85,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
         let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
-        if total_lanes <= 1 {
+        if total_lanes <= 1 && edge.parking == Default::default() {
             continue;
         }
 
@@ -103,6 +104,10 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             ),
         );
         if marking_s_range.1 <= marking_s_range.0 + MIN_SEGMENT_LEN {
+            continue;
+        }
+        emit_parking_lines(mesh, edge, sections, marking_s_range);
+        if total_lanes <= 1 {
             continue;
         }
         if edge.median.is_some_and(|median| median.style == MedianStyle::Painted) {
@@ -133,7 +138,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         for divider in 1..total_lanes {
             let lane_fraction = divider as f32 / total_lanes as f32;
             emit_lane_marking_sections(mesh, sections, marking_s_range, line, |section| {
-                let (left, right) = carriageway_bounds(section)?;
+                let (left, right) = traffic_bounds(edge, section)?;
                 Some(left + (right - left) * lane_fraction)
             });
         }
@@ -311,6 +316,38 @@ fn emit_lane_marking_sections(
     }
 }
 
+// A kerbside parking lane's solid line (`PARK-05`) on each parking side, a parking lane's width
+// in from the carriageway's edge, in the urban lane-line width.
+fn emit_parking_lines(
+    mesh: &mut NetworkMeshData,
+    edge: &Edge,
+    sections: &[RoadSection],
+    marking_s_range: (f32, f32),
+) {
+    let line = FinnishLaneLine {
+        width_m: FINNISH_LINE_WIDTH_M,
+        pattern: MARKING_PATTERN_SOLID,
+    };
+    if edge.parking.left {
+        emit_lane_marking_sections(mesh, sections, marking_s_range, line, |section| {
+            Some(carriageway_bounds(section)?.0 + PARKING_LANE_WIDTH_M)
+        });
+    }
+    if edge.parking.right {
+        emit_lane_marking_sections(mesh, sections, marking_s_range, line, |section| {
+            Some(carriageway_bounds(section)?.1 - PARKING_LANE_WIDTH_M)
+        });
+    }
+}
+
+// The section's carriageway without its kerbside parking lanes (`PARK-05`): where the traffic
+// lanes run.
+fn traffic_bounds(edge: &Edge, section: &RoadSection) -> Option<(f32, f32)> {
+    let (left, right) = carriageway_bounds(section)?;
+    let parked = |side: bool| if side { PARKING_LANE_WIDTH_M } else { 0.0 };
+    Some((left + parked(edge.parking.left), right - parked(edge.parking.right)))
+}
+
 fn carriageway_bounds(section: &RoadSection) -> Option<(f32, f32)> {
     let mut carriageway = section
         .bands
@@ -359,4 +396,62 @@ fn emit_marking_segment(
         ],
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::graph::{RegionGraph, RoadParking};
+    use crate::simulation::network::render::TransitRenderer;
+    use crate::simulation::network::types::EdgeClass;
+    use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::zoning::ZoningSystem;
+    use godot::prelude::Vector3;
+
+    // The lateral offsets of a straight 2 + 0 road's markings along +X, so lateral is world Z;
+    // each line's two long edges are averaged by rounding |z| to the decimetre.
+    fn marking_offsets(parking: RoadParking) -> Vec<f32> {
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        let points = vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)];
+        network.add_road(
+            &mut graph,
+            points,
+            2,
+            0,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        let edge = graph.edge_mut(0);
+        edge.parking = parking;
+        edge.width += parking.width_m();
+        let terrain = TerrainSystem::new(256, 256);
+        let mesh = network.generate_mesh_data(&graph, &terrain);
+        let mut offsets: Vec<f32> = mesh
+            .marking_vertices
+            .iter()
+            .map(|vertex| (vertex.z.abs() * 10.0).round() / 10.0)
+            .collect();
+        offsets.sort_by(f32::total_cmp);
+        offsets.dedup();
+        offsets
+    }
+
+    #[test]
+    fn kerbside_parking_gets_its_line_and_the_dividers_split_the_traffic_lanes() {
+        // Without parking the one divider is on the centreline: 0.05 either side of it.
+        assert_eq!(marking_offsets(RoadParking::NONE), vec![0.1]);
+        // Right parking on a 9.5 m carriageway: the parking line 2.5 m in from the right
+        // edge (lateral 2.25) and the divider between the two traffic lanes (lateral -1.25).
+        let right = RoadParking {
+            left: false,
+            right: true,
+        };
+        assert_eq!(marking_offsets(right), vec![1.2, 1.3, 2.2, 2.3]);
+    }
 }
