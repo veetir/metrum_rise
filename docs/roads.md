@@ -11797,7 +11797,8 @@ that fades from near black (linear albedo 0.07) to light grey (0.17) with age, c
 grain and blotches at about 2 and 6 m, sealed lengthwise and transverse cracks, long trench
 patches (bands across the road or one lane, strips along it) each with its own age, small cut
 and hand patches, manhole covers, drain grates in the gutters, grime along the kerb, and a
-crumbling edge where no kerb hides it. Studded-tyre ruts and polished wheel paths appear only on
+crumbling edge where no kerb hides it (past the whole carriageway: parking lanes and a median
+count, `PARK-05`). Studded-tyre ruts and polished wheel paths appear only on
 busy roads: their strength is 0 on a 1 + 1 road at 50 km/h, rising with lanes beyond two and
 speed beyond 55 km/h. Stripes along every lane of a residential street looked wrong against the
 Kuopio reference photographs. The material's `light()` adds a GGX sun specular to the paving

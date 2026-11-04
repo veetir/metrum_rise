@@ -73,6 +73,9 @@ so kerbs, junction mouths, crossings and the roadbed queries need no new band ki
 reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10 m line a parking
 lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
 street included), and the lane dividers split only the traffic lanes' share of the carriageway.
+The asphalt shader gets the parking sides and the median's width (half metres) in spare bits of
+the lane-count channels (`road_space_color`), so the parking lane draws as the same asphalt, not
+as the gravel shoulder past the traffic lanes' width, and wheel paths stay in the traffic lanes.
 
 Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
 right }` per parking lane, saved with the other places. Each is 6 m long (`KERB_BAY_LENGTH_M`)
