@@ -39,6 +39,7 @@ func build(input_manager: Node) -> void:
 	_pause_button.pressed.connect(input_manager._toggle_pause)
 	speed.add_child(_pause_button)
 	var slower := HudIcons.icon_button("slower", "Slower", "", BUTTON_SIDE)
+	HudIcons.set_shortcut(slower, ",")
 	slower.pressed.connect(func(): input_manager.step_simulation_speed(-1))
 	speed.add_child(slower)
 	_speed_label = _label("Paused", 12, UIStyle.TEXT_PRIMARY)
@@ -46,6 +47,7 @@ func build(input_manager: Node) -> void:
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	speed.add_child(_speed_label)
 	var faster := HudIcons.icon_button("fast", "Faster", "", BUTTON_SIDE)
+	HudIcons.set_shortcut(faster, ".")
 	faster.pressed.connect(func(): input_manager.step_simulation_speed(1))
 	speed.add_child(faster)
 

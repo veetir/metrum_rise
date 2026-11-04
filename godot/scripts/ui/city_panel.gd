@@ -116,20 +116,29 @@ func set_growth(growth: Dictionary) -> void:
 		var projects := maxi(0, int(entry.get("projects", 0)))
 		row.count.text = "%d project%s" % [projects, "" if projects == 1 else "s"]
 		row.fill.anchor_right = float(projects) / float(scale)
-		var chips: HFlowContainer = row.chips
-		for child in chips.get_children():
-			chips.remove_child(child)
-			child.queue_free()
+		# Chips and notes update in place: rebuilding them on every refresh would drop the hover
+		# (and its tooltip) of the chip under the mouse while the city runs.
+		var chips: Dictionary = row.chip_nodes
 		var figures: Dictionary = entry.get("figures", {})
+		for key in chips:
+			chips[key].visible = figures.has(key)
 		for key in figures:
-			chips.add_child(_chip(str(key), int(figures[key])))
-		var body: VBoxContainer = row.body
-		for child in body.get_children():
-			body.remove_child(child)
-			child.queue_free()
+			if not chips.has(key):
+				chips[key] = _chip(str(key))
+				row.chips.add_child(chips[key])
+			_set_chip(chips[key], str(key), int(figures[key]))
 		# Before the first assessment the only note is "Waiting…", not a warning.
-		for note in PackedStringArray(entry.get("notes", PackedStringArray())):
-			body.add_child(_note(note, not figures.is_empty()))
+		var notes := PackedStringArray(entry.get("notes", PackedStringArray()))
+		var warning := not figures.is_empty()
+		if notes != row.notes or warning != row.warning:
+			row.notes = notes
+			row.warning = warning
+			var body: VBoxContainer = row.body
+			for child in body.get_children():
+				body.remove_child(child)
+				child.queue_free()
+			for note in notes:
+				body.add_child(_note(note, warning))
 
 func _zone_card(zone: String) -> Control:
 	var color := Color(ZONE_COLORS[zone], 1.0).lightened(0.3)
@@ -160,22 +169,32 @@ func _zone_card(zone: String) -> Control:
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 4)
 	card.add_child(body)
-	_zone_rows[zone] = {"count": count, "fill": fill, "chips": chips, "body": body}
+	_zone_rows[zone] = {
+		"count": count, "fill": fill, "chips": chips, "chip_nodes": {}, "body": body,
+		"notes": PackedStringArray(), "warning": false,
+	}
 	return card
 
-# An icon and a count; the hover names the figure. Zero dims, except zero free lots, which warns.
-func _chip(key: String, value: int) -> Control:
+# An icon and a count; the hover names the figure.
+func _chip(key: String) -> Control:
 	var spec: Array = FIGURES.get(key, ["asset", key.capitalize()])
 	var chip := HBoxContainer.new()
 	chip.add_theme_constant_override("separation", 5)
 	chip.mouse_filter = Control.MOUSE_FILTER_STOP
+	chip.add_child(_icon(str(spec[0]), UIStyle.TEXT_PRIMARY))
+	chip.add_child(_label("0", 13, UIStyle.TEXT_PRIMARY))
+	Tooltip.new().attach(chip, str(spec[1]))
+	return chip
+
+# Zero dims, except zero free lots, which warns.
+func _set_chip(chip: Control, key: String, value: int) -> void:
 	var color := UIStyle.TEXT_PRIMARY if value > 0 else UIStyle.TEXT_DIM
 	if key == "free_lots" and value == 0:
 		color = WARN
-	chip.add_child(_icon(str(spec[0]), color))
-	chip.add_child(_label(CityStatusPanel.format_count(value), 13, color))
-	Tooltip.new().attach(chip, str(spec[1]))
-	return chip
+	var label: Label = chip.get_child(1)
+	label.text = CityStatusPanel.format_count(value)
+	label.add_theme_color_override("font_color", color)
+	chip.get_child(0).modulate = color
 
 func _note(text: String, warning: bool) -> Control:
 	var line := HBoxContainer.new()

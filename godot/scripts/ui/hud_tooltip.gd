@@ -89,16 +89,26 @@ static func view(title: String, body: String, width: float, key: String = "") ->
 	var column := VBoxContainer.new()
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_theme_constant_override("separation", 8)
-	column.custom_minimum_size.x = width
 	panel.add_child(column)
+	var lines := body.split("\n", false)
+	# A name alone (most icons) is a compact label; `width` wraps cards that carry figures.
+	if not lines.is_empty():
+		column.custom_minimum_size.x = width
 	var heading := HBoxContainer.new()
 	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	heading.add_theme_constant_override("separation", 10)
 	column.add_child(heading)
-	_label(heading, title, 16, UIStyle.TEXT_PRIMARY).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var title_label := _label(heading, title, 16 if lines else 14, UIStyle.TEXT_PRIMARY)
+	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if lines.is_empty():
+		title_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		style.content_margin_top = 7
+		style.content_margin_bottom = 7
+		style.content_margin_left = 11
+		style.content_margin_right = 11
 	if not key.is_empty():
 		heading.add_child(_keycap(key))
-	for line in body.split("\n", false):
+	for line in lines:
 		_label(column, line, 13, UIStyle.HUD_ACCENT if line.contains("upkeep") else UIStyle.TEXT_DIM)
 	return panel
 

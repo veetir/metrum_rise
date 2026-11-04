@@ -320,6 +320,12 @@ func _unhandled_input(event):
 				if current_tool == Tool.ROAD:
 					road_tool.set_tunnel(not road_tool.tunnel_enabled)
 					get_viewport().set_input_as_handled()
+			KEY_COMMA, KEY_KP_SUBTRACT:
+				step_simulation_speed(-1)
+				get_viewport().set_input_as_handled()
+			KEY_PERIOD, KEY_KP_ADD:
+				step_simulation_speed(1)
+				get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()

@@ -259,13 +259,16 @@ Gameplay HUD status widgets share that row. Speed is pause/resume (Space), slowe
 speed ("4x" or "Paused") and faster, stepping through Rust's existing steps with the existing
 handler. Zoning and Services keep one palette row each: opening a zone's profiles or a service
 class widens the row instead of stacking another panel above it. Tooltips name the control and
-show its shortcut as a keycap; data tooltips (road types, assets, profiles) keep their figures.
+show its shortcut as a keycap in a compact label; data tooltips (road types, assets, profiles)
+keep their figures in a wider card. Show FPS draws its readout at the right end of the gameplay
+menu bar.
 Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terrain panel) and
 switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
 from the left: treasury, agents and per zone its project count, Rust's growth figures as icon
 chips (named on hover; zero free lots warns) and the constraint notes the figures cannot show.
-While Roads or Zoning is open, 1-9 act on its tiles, each showing its digit at its bottom-right
-edge (`HudIcons.set_number`; `MainUI.handle_number_key`). Roads: the five built-in types, new
+While Roads or Zoning is open, 1-9 act on its tiles, each showing its digit in a small disc at
+its bottom-right corner (`HudIcons.set_number`; `MainUI.handle_number_key`); a key press plays
+the tile's click animation (`HudIcons.activate`). Roads: the five built-in types, new
 custom road, the custom-roads tile (each press picks the next custom type), Cul-De-Sac, Edit
 roads. Zoning: Residential, Commercial, Industrial (again: that zone's next profile), the
 cells/parcels switch (its digit sits on the workflow it switches to), the four cell shapes,
@@ -385,6 +388,7 @@ Current WorldEditor shortcuts:
 | C          | Toggle Cul-De-Sac tool |
 | Y          | Toggle Terrain Sculpt |
 | Space      | Pause / unpause |
+| , / .      | Slower / faster (also keypad - / +) |
 | Escape     | Cancel active tool |
 | Ctrl+Z     | Undo |
 | F12        | Add 1,000,000 money and enable the private growth cheat |

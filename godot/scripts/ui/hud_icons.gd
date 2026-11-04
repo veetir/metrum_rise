@@ -90,6 +90,9 @@ static func activate(button: Button) -> void:
 	if button.toggle_mode and not (button.button_group and button.button_pressed):
 		button.button_pressed = not button.button_pressed
 	button.pressed.emit()
+	var feedback: HoverFeedback = button.get_node_or_null(NodePath(FEEDBACK))
+	if feedback:
+		feedback.pulse()
 
 ## Tints artwork without tinting the shared shell or selected accent underline.
 static func tint(button: Button, color: Color) -> void:
@@ -183,6 +186,18 @@ class HoverFeedback extends Node:
 		var zoom := 0.97 if _down else (1.08 if _hovered else 1.0)
 		_tween.tween_property(self, "_zoom", 1.0 if button.disabled else zoom, 0.12)
 
+	# A keyboard press plays the click: lit and pressed in, then back to rest.
+	func pulse() -> void:
+		if is_instance_valid(_tween):
+			_tween.kill()
+		# Parallel within a step; chain() starts the next step.
+		_tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		_tween.tween_property(self, "_amount", 1.0, 0.06)
+		_tween.tween_property(self, "_zoom", 0.94, 0.06)
+		_tween.chain().tween_property(self, "_zoom", 1.08, 0.10)
+		_tween.chain().tween_property(self, "_zoom", 1.0, 0.16)
+		_tween.tween_property(self, "_amount", 1.0 if _hovered else 0.0, 0.30)
+
 	func _draw() -> void:
 		var selected := menu_selected or (button.toggle_mode and button.button_pressed)
 		var amount := 0.0 if button.disabled else _amount
@@ -217,14 +232,19 @@ class HoverFeedback extends Node:
 		if not number.is_empty():
 			_draw_number(rect, selected)
 
-	# Unscaled by the hover zoom, right of the accent underline, outlined to read over thumbnails.
+	# A light disc with dark digit in the bottom-right corner, unscaled by the hover zoom; the
+	# accent fills it when selected.
 	func _draw_number(rect: Rect2, selected: bool) -> void:
 		var font := button.get_theme_font("font")
 		var font_size := maxi(8, roundi(button.get_theme_font_size("font_size") * 0.8))
-		var width := font.get_string_size(number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-		var at := Vector2(rect.end.x - width - 4.0, rect.end.y - 3.0)
-		var color := UIStyle.HUD_ACCENT if selected else UIStyle.TEXT_DIM
+		var radius := font_size * 0.72
+		var center := rect.end - Vector2.ONE * (radius + 1.0)
+		var disc := UIStyle.HUD_ACCENT if selected else Color(0.92, 0.93, 0.95)
 		if button.disabled:
-			color = Color(UIStyle.TEXT_DIM, 0.4)
-		button.draw_string_outline(font, at, number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 3, Color(0, 0, 0, 0.7))
-		button.draw_string(font, at, number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+			disc.a = 0.35
+		button.draw_circle(center, radius + 1.0, Color(0, 0, 0, 0.45))
+		button.draw_circle(center, radius, disc)
+		var width := font.get_string_size(number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var baseline := center.y + (font.get_ascent(font_size) - font.get_descent(font_size)) * 0.5
+		button.draw_string(font, Vector2(center.x - width * 0.5, baseline), number,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.08, 0.09, 0.11))
