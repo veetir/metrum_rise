@@ -84,7 +84,9 @@ and 2.5 m wide, centred half a parking lane in from the carriageway's edge of th
 centred in each free stretch. A stretch starts 5 m past the span's first section or its start
 crossing strip and ends 5 m before the last section or its end crossing strip, because Finnish
 rules forbid parking within 5 m of a junction or crossing. A building's driveways and its
-street-entered lot bays cut a gap of their half width plus 1 m each side on their own kerb
+street-entered lot bays cut a gap of their half width plus 1 m each side on their own kerb; a
+building without driveway anchors keeps a 3 m drive clear opposite its main entrance, where its
+deliveries and drop-offs pull in, so parked cars never wall off a frontage
 (`KerbBlocker`, indexed per
 building and per edge, derived and rebuilt by the load reconcile). Cars park facing the traffic
 beside them: a two-way road's left kerb faces backward, and a one-way road's lanes serve both

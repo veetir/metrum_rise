@@ -91,6 +91,48 @@ fn kerbside_bays_leave_a_lot_driveway_clear_and_close_the_gap_when_it_goes() {
 }
 
 #[test]
+fn kerbside_bays_leave_a_drive_clear_opposite_a_building_without_driveway_anchors() {
+    let (mut c, edge) = kerb_core(RoadParking {
+        left: true,
+        right: true,
+    });
+    let full = [side(&c, edge, false), side(&c, edge, true)];
+    // The small lot's frame with only its main entrance (x = 0 at the frontage) left of its
+    // anchors: no driveway, no bays.
+    let toml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+    ))
+    .replace(
+        "building.parking.small_lot",
+        "building.parking.kerb_test_shop",
+    );
+    let toml = toml
+        .split("\n[[")
+        .filter(|block| !block.starts_with("anchors]]") || block.contains("type = \"entrance\""))
+        .collect::<Vec<_>>()
+        .join("\n[[");
+    let id = register_lot_toml(&mut c, &toml);
+    c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let gapped = [side(&c, edge, false), side(&c, edge, true)];
+    let near = usize::from(gapped[1].len() < full[1].len());
+    assert!(gapped[near].len() < full[near].len());
+    assert_eq!(gapped[1 - near], full[1 - near]);
+    // A 3 m drive at x = 0 and a metre either side: the nearest bay centre is at least half a
+    // bay past it and less than a whole bay further.
+    let nearest = gapped[near]
+        .iter()
+        .map(|bay| bay.position[0].abs())
+        .fold(f32::INFINITY, f32::min);
+    let clear = 1.5 + 1.0 + 0.5 * KERB_BAY_LENGTH_M;
+    assert!(
+        (clear - 1e-3..clear + KERB_BAY_LENGTH_M).contains(&nearest),
+        "{nearest}"
+    );
+}
+
+#[test]
 fn kerbside_bays_keep_their_cars_through_a_save_and_go_with_their_road() {
     let (mut c, edge) = kerb_core(RoadParking {
         left: true,

@@ -4,7 +4,9 @@
 
 use super::Bay;
 use crate::assets::AnchorType;
-use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, building_local_xz_basis, main_entrance_anchor,
+};
 use crate::simulation::network::graph::{Edge, PARKING_LANE_WIDTH_M, RegionGraph};
 use crate::simulation::network::roadbed::{BandKind, EdgeEnd, RoadSection, RoadbedSystem};
 use godot::prelude::Vector2;
@@ -15,6 +17,9 @@ pub(crate) const KERB_BAY_LENGTH_M: f32 = 6.0;
 const KERB_CLEAR_M: f32 = 5.0;
 // Room kept either side of a driveway's opening so cars can turn in past parked ones.
 const DRIVEWAY_CLEAR_M: f32 = 1.0;
+// Opening of a driveway anchor without a width, and of the drive a building without driveway
+// anchors has opposite its main entrance.
+const DRIVEWAY_WIDTH_M: f32 = 3.0;
 
 /// A stretch of one road side that kerbside bays keep clear of: a driveway, or a lot bay entered
 /// straight from the street.
@@ -171,7 +176,8 @@ fn bay_at(
 }
 
 /// Stretches of the building's frontage its driveways and street-entered lot bays need clear.
-/// O(anchors + bays), allocation bounded by them.
+/// A building without driveway anchors keeps a drive clear opposite its main entrance, where
+/// its deliveries and drop-offs pull in. O(anchors + bays), allocation bounded by them.
 pub(crate) fn kerb_blockers(
     allocator: &BuildingAllocator,
     index: usize,
@@ -198,24 +204,23 @@ pub(crate) fn kerb_blockers(
         s_m: BuildingAllocator::project_point_to_polyline_s(&edge.physical_geometry, point),
         half_m,
     };
-    let driveways = asset
-        .manifest
-        .anchors
+    let anchors = &asset.manifest.anchors;
+    let at = |a: &crate::assets::Anchor| center + bx * a.position[0] + bz * a.position[2];
+    let mut out: Vec<_> = anchors
         .iter()
         .filter(|a| a.anchor_type == AnchorType::Driveway)
-        .map(|a| {
-            blocker(
-                center + bx * a.position[0] + bz * a.position[2],
-                0.5 * a.width_m.unwrap_or(3.0),
-            )
-        });
-    let bays = lot_bays.iter().map(|(_, bay)| {
+        .map(|a| blocker(at(a), 0.5 * a.width_m.unwrap_or(DRIVEWAY_WIDTH_M)))
+        .collect();
+    if out.is_empty() {
+        out.extend(main_entrance_anchor(anchors).map(|a| blocker(at(a), 0.5 * DRIVEWAY_WIDTH_M)));
+    }
+    out.extend(lot_bays.iter().map(|(_, bay)| {
         blocker(
             Vector2::new(bay.path[0][0], bay.path[0][1]),
             0.5 * bay.width,
         )
-    });
-    driveways.chain(bays).collect()
+    }));
+    out
 }
 
 impl super::ParkingSystem {
