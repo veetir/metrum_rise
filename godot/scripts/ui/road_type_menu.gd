@@ -40,6 +40,7 @@ var _buttons: Dictionary = {}
 var _types: Dictionary = {}
 var _marked_id := ""
 var _grid := GridContainer.new()
+var _builder: Button
 
 func _init() -> void:
 	add_theme_constant_override("separation", 10)
@@ -48,9 +49,9 @@ func _init() -> void:
 	_grid.add_theme_constant_override("h_separation", 6)
 	_grid.add_theme_constant_override("v_separation", 6)
 	add_child(_grid)
-	var builder := HudIcons.icon_button("plus", "New custom road", "", HudIcons.TILE_SIZE)
-	builder.pressed.connect(func(): road_builder_requested.emit())
-	add_child(builder)
+	_builder = HudIcons.icon_button("plus", "New custom road", "", HudIcons.TILE_SIZE)
+	_builder.pressed.connect(func(): road_builder_requested.emit())
+	add_child(_builder)
 	custom_menu = HudIcons.menu_tile(CUSTOM_ROADS, "")
 	custom_menu.get_popup().id_pressed.connect(_on_custom_item)
 	add_child(custom_menu)
@@ -134,6 +135,22 @@ func pick(id: String) -> void:
 		_buttons[id].pressed.emit()
 	elif custom_ids.has(id):
 		custom_menu.get_popup().id_pressed.emit(custom_ids.find(id) + 1)
+
+## The row's tiles in order, for number keys: built-in types, "New custom road", custom roads.
+func number_tiles() -> Array[Button]:
+	var tiles: Array[Button] = []
+	tiles.assign(_buttons.values())
+	tiles.append(_builder)
+	tiles.append(custom_menu)
+	return tiles
+
+## Picks the custom type after the marked one, wrapping (the first when a built-in is marked);
+## with no custom types, opens the drop-down, which offers the road builder.
+func pick_next_custom() -> void:
+	if custom_ids.is_empty():
+		custom_menu.show_popup()
+		return
+	pick(custom_ids[(custom_ids.find(_marked_id) + 1) % custom_ids.size()])
 
 func _on_custom_item(item_id: int) -> void:
 	if item_id == BUILDER_ITEM:

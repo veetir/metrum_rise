@@ -77,6 +77,20 @@ static func set_icon(button: Button, icon_name: String) -> void:
 static func set_shortcut(button: Control, key: String) -> void:
 	button.set_meta(Tooltip.SHORTCUT_META, key)
 
+## A small digit at the tile's bottom-right edge naming its number key; empty removes it.
+static func set_number(button: Button, digit: String) -> void:
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.number = digit
+	button.queue_redraw()
+
+## Acts as a click would: flips a toggle (a grouped one only on), then emits `pressed`.
+static func activate(button: Button) -> void:
+	if button.disabled or not button.is_visible_in_tree():
+		return
+	if button.toggle_mode and not (button.button_group and button.button_pressed):
+		button.button_pressed = not button.button_pressed
+	button.pressed.emit()
+
 ## Tints artwork without tinting the shared shell or selected accent underline.
 static func tint(button: Button, color: Color) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
@@ -123,6 +137,7 @@ class HoverFeedback extends Node:
 	var tinted := false
 	var road: RoadThumbnail
 	var menu_selected := false
+	var number := ""
 	var _hovered := false
 	var _down := false
 	var _tween: Tween
@@ -199,3 +214,17 @@ class HoverFeedback extends Node:
 			Vector2(rect.position.x + 12, rect.end.y - 3),
 			Vector2(rect.end.x - 12, rect.end.y - 3), accent, 2.0, true)
 		button.draw_set_transform(Vector2.ZERO)
+		if not number.is_empty():
+			_draw_number(rect, selected)
+
+	# Unscaled by the hover zoom, right of the accent underline, outlined to read over thumbnails.
+	func _draw_number(rect: Rect2, selected: bool) -> void:
+		var font := button.get_theme_font("font")
+		var font_size := maxi(8, roundi(button.get_theme_font_size("font_size") * 0.8))
+		var width := font.get_string_size(number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var at := Vector2(rect.end.x - width - 4.0, rect.end.y - 3.0)
+		var color := UIStyle.HUD_ACCENT if selected else UIStyle.TEXT_DIM
+		if button.disabled:
+			color = Color(UIStyle.TEXT_DIM, 0.4)
+		button.draw_string_outline(font, at, number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 3, Color(0, 0, 0, 0.7))
+		button.draw_string(font, at, number, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)

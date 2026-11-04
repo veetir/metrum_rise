@@ -114,6 +114,7 @@ func _ready():
 	_refresh_clock_display(true)
 	_refresh_city_status_display()
 	set_sim_speed_display(0.0)
+	_apply_number_badges()
 
 func _process(_delta):
 	_refresh_clock_display(false)
@@ -280,10 +281,10 @@ func _build_ui():
 	cell_controls.workflow_changed.connect(func(cells: bool):
 		zoning_options_btn.visible = not cells
 		zoning_options_popup.hide()
-		_refresh_zoning_profile_button_states())
-	var cell_shell := HudIcons.shell(cell_controls)
-	zoning_view.row.add_child(cell_shell)
-	zoning_view.row.move_child(cell_shell, 0)
+		_refresh_zoning_profile_button_states()
+		_apply_number_badges())
+	# Right of the zone types, so the number keys (zones 1-3, then the tools) read left to right.
+	zoning_view.row.add_child(HudIcons.shell(cell_controls))
 	vbox.add_child(zoning_view)
 	zoning_view.hide()
 	for entry in ZONING_MAIN_TYPES:
@@ -628,6 +629,7 @@ func _select_road_type(id: String, walkway: bool) -> void:
 ## re-picks the tool's type, so an edited type draws its new layout from the next stroke on.
 func refresh_road_types() -> void:
 	road_type_menu.refresh()
+	_apply_number_badges()
 	if road_tool:
 		road_tool.reload_road_type()
 	if road_properties_panel:
@@ -1130,6 +1132,74 @@ func _refresh_city_status_display() -> void:
 		_city_panel.set_stats(treasury, agent_count)
 
 ## Tab, or a click on the demand bars: the city status panel with each zone's growth reasons.
+# Number keys act on the open palette's tiles, each showing its digit at its bottom edge. While
+# Roads or Zoning is open it claims 1-9 (unnumbered digits do nothing); with neither open the
+# digits keep their global bindings (zone types, terrain overlays).
+var _numbered: Array[Button] = []
+
+## Runs digit `digit`'s action in the open palette; false when no numbered palette is open.
+func handle_number_key(digit: int) -> bool:
+	var slots: Array = []
+	if road_combined_hbox.visible:
+		slots = _road_number_slots()
+	elif zoning_combined_hbox.visible:
+		slots = _zoning_number_slots()
+	else:
+		return false
+	if digit >= 1 and digit <= slots.size():
+		var action: Callable = slots[digit - 1][1]
+		action.call()
+	return true
+
+# [tile, action] per digit from 1: built-in types, new custom road, the custom roads tile (which
+# cycles the player's types), cul-de-sac, edit roads.
+func _road_number_slots() -> Array:
+	var slots: Array = []
+	for tile in road_type_menu.number_tiles():
+		var action := road_type_menu.pick_next_custom if tile == road_type_menu.custom_menu else HudIcons.activate.bind(tile)
+		slots.append([tile, action])
+	slots.append([_cul_de_sac_btn, HudIcons.activate.bind(_cul_de_sac_btn)])
+	slots.append([select_main_btn, HudIcons.activate.bind(select_main_btn)])
+	return slots
+
+# Zone types 1-3 (again: the zone's next profile), then the cell tools: the workflow switch,
+# the four shapes, erase.
+func _zoning_number_slots() -> Array:
+	var slots: Array = []
+	for entry in ZONING_MAIN_TYPES:
+		var zone_type := str(entry.id)
+		slots.append([_zoning_type_buttons[zone_type], _number_zone_type.bind(zone_type)])
+	for tile in zoning_combined_hbox.cell_controls.number_tiles():
+		slots.append([tile, HudIcons.activate.bind(tile)])
+	return slots
+
+func _number_zone_type(zone_type: String) -> void:
+	var profiles: Array = _zoning_profiles_by_zone_type.get(zone_type, [])
+	if not zoning_profile_panel.visible or _active_zoning_zone_type != zone_type or profiles.is_empty():
+		_open_zoning_zone_type(zone_type, true)
+		return
+	var current := _current_zoning_profile_runtime_id()
+	var next := 0
+	for index in profiles.size():
+		if int(Dictionary(profiles[index]).get("runtime_id", 0)) == current:
+			next = (index + 1) % profiles.size()
+	_select_zoning_profile(zone_type, int(Dictionary(profiles[next]).get("runtime_id", 0)))
+
+# Redrawn when the tiles change: road types refresh, the zoning workflow (its digit sits on the
+# workflow it switches to).
+func _apply_number_badges() -> void:
+	if not is_instance_valid(road_type_menu) or not is_instance_valid(zoning_combined_hbox):
+		return
+	for tile in _numbered:
+		if is_instance_valid(tile):
+			HudIcons.set_number(tile, "")
+	_numbered.clear()
+	for slots in [_road_number_slots(), _zoning_number_slots()]:
+		for index in slots.size():
+			var tile: Button = slots[index][0]
+			HudIcons.set_number(tile, str(index + 1) if index < 9 else "")
+			_numbered.append(tile)
+
 func toggle_city_panel() -> void:
 	_city_panel.toggle()
 	if _city_panel.is_open() and simulation_node:

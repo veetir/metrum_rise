@@ -264,6 +264,12 @@ Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terra
 switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
 from the left: treasury, agents and per zone its project count, Rust's growth figures as icon
 chips (named on hover; zero free lots warns) and the constraint notes the figures cannot show.
+While Roads or Zoning is open, 1-9 act on its tiles, each showing its digit at its bottom-right
+edge (`HudIcons.set_number`; `MainUI.handle_number_key`). Roads: the five built-in types, new
+custom road, the custom-roads tile (each press picks the next custom type), Cul-De-Sac, Edit
+roads. Zoning: Residential, Commercial, Industrial (again: that zone's next profile), the
+cells/parcels switch (its digit sits on the workflow it switches to), the four cell shapes,
+Erase. The zone palette sits left of the cell tools so the digits read left to right.
 The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts
@@ -382,7 +388,9 @@ Current WorldEditor shortcuts:
 | Escape     | Cancel active tool |
 | Ctrl+Z     | Undo |
 | F12        | Add 1,000,000 money and enable the private growth cheat |
-| 7 / 8 / 9 / 0 / - | Overlay modes |
+| 1 / 2 / 3  | Zoning: Residential / Commercial / Industrial (when no palette is open) |
+| 1-9        | The open Roads or Zoning palette's numbered tiles |
+| 7 / 8 / 9 / 0 / - | Overlay modes (7-9 when no Roads or Zoning palette is open) |
 
 **Camera** (owned by `input_manager.gd`):
 
@@ -557,7 +565,8 @@ changes overlapped accepted measurement.
 ### 5. Overlays
 
 Overlays are rendered as shader-driven mesh layers on the terrain. They are toggled via the
-View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-`.
+View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-` (an open Roads or Zoning palette
+takes `7`-`9` for its tiles).
 
 Current implementation detail: `terrain.gd` exposes five overlay modes through
 `overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`, `4=Deposits`.

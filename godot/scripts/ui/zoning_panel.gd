@@ -11,11 +11,11 @@ var mode_menu: HBoxContainer
 var type_menu: HBoxContainer
 var options_button: Button
 var cell_controls: HBoxContainer
-## The one palette row: the controller puts the cell-controls shell first, at its left.
+## The one palette row: the controller adds the cell-controls shell after the zone palette.
 var row: HBoxContainer
 
 # One row, so opening a zone's profiles widens the palette instead of stacking another
-# panel above it: [tool options] [gear · R C I | profiles].
+# panel above it: [gear · R C I | profiles] [tool options].
 func build() -> void:
 	size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	add_theme_constant_override("separation", 8)

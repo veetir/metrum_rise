@@ -20,3 +20,7 @@ func add_item(icon: String, title: String, detail: String) -> void:
 func select(index: int) -> void:
 	for i in range(_buttons.size()):
 		HudIcons.mark(_buttons[i], i == index)
+
+## The tile of item `index`.
+func button(index: int) -> Button:
+	return _buttons[index]

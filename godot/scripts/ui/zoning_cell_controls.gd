@@ -45,6 +45,14 @@ func _ready() -> void:
 	zoning_tool.controls_changed.connect(_sync)
 	_sync()
 
+## Number-key tiles in row order: the workflow it would switch to, the four shapes, erase.
+func number_tiles() -> Array[Button]:
+	var tiles: Array[Button] = [_workflow.button(1 if zoning_tool.workflow_cells else 0)]
+	for index in range(4):
+		tiles.append(_shape.button(index))
+	tiles.append(_erase)
+	return tiles
+
 func _sync() -> void:
 	_workflow.select(0 if zoning_tool.workflow_cells else 1)
 	_shape.select(zoning_tool.cell_shape)
