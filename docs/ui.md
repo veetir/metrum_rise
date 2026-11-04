@@ -201,12 +201,11 @@ Deterministic rule:
 
 ### 2. Bottom Toolbar
 
-**Nodes:** Procedural bottom-strip layout rooted under a full-screen `Control`. The left
-gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The category row
-has its own compact translucent shell, with independent submenu panels above it and road
-options to the left. A transparent layout wrapper groups them. Status and tool layers are
-anchored independently: `_layout_bottom_toolbar()` keeps the icons centred and raises the
-palette above the status strip when they would overlap.
+**Nodes:** Procedural layout rooted under a full-screen `Control`. The category row stays
+centred at a fixed bottom inset, with independent submenu panels above it and road options
+to the left. `top_status_bar.gd` places the compact status row at top-left, below the actual
+scaled top menu height. Both surfaces register with `debug_console_keep_clear`; no status
+collision calculation lifts the bottom toolbar.
 **Script:** `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
@@ -216,11 +215,15 @@ The `u01` demo slice uses hand-authored white SVG category/tool icons, one `UISt
 ease-out hover/press feedback; `hud_tooltip.gd` shows wrapped name/detail/cost cards after
 150 ms. `hud_road_thumbnail.gd` paints Rust's `parts` and `part_widths_m` through the existing
 road-part glyphs. Built-ins occupy a five-column grid; a `+` tile opens the builder and the
-fixed-width custom menu tile previews the selected custom layout. Other submenu contents
-remain unchanged. `road_options_view.gd` owns the compact toggle layout. InputManager emits
+fixed-width custom menu tile previews the selected custom layout. Round `u02` extends the same
+helpers to zoning family/profile tiles, segmented workflow/shape choices and the parcel gear,
+plus service class and asset tiles (`zoning_panel.gd`, `asset_panel.gd`). Unknown pack classes
+use a generic building glyph. Tooltips show available asset metadata; the asset bridge does
+not currently expose cost/upkeep. `road_options_view.gd` owns the road toggle layout. InputManager emits
 tool transitions for persistent marks; no new per-frame callback is added. Accessibility
 refreshes the fonts and icon ink size; tile footprints remain bounded at 1280×720.
-Standalone syntax/lint checks passed; engine regressions and in-game visual review are pending.
+Godot parse-only checks passed for the changed scripts and affected tests; runtime regressions
+and in-game visual review remain pending. Zoning control sync uses signals instead of polling.
 
 Road guiding lines and the G shortcut are removed. The road-options icon toggle controls
 zoning-grid snapping; road-connection snapping remains available. Distance and angle
@@ -250,25 +253,26 @@ Sub-menus expand upward above the toolbar row. The menu cluster has:
 
 - one transparent layout wrapper around the menu stack
 - separate translucent panels for the category row and road controls
-- fixed-height bottom HUD shells for the clock, city-status panel, and R/C/I meter
+- a separate slim top status shell for the clock, speed steps, city status and R/C/I bars
 
-Gameplay HUD status widgets: the clock / simulation-speed panel remains anchored at bottom-left,
-a compact city-status panel sits immediately to its right, and the R/C/I demand meter sits to
-the right of that. The city-status panel shows current treasury value plus live agent count,
+Gameplay HUD status widgets share one top row. Speed icons select Rust's existing steps
+(0, 0.5, 1, 2, 4, 8, 16 and 32×) through the existing handler, with small value captions.
+The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts
 from the last hourly assessment: newly selected, previously queued, and physically constructing.
 The green / blue / yellow bars share a scale whose maximum is the largest current count; they are
-not percentages. Compact colored `R n / C n / I n` labels expose the counts. Each label explains its
-zone; the meter tooltip combines all three. Rust supplies housing need, ready homes, live funded
+not percentages. Three tinted tracks remain visible at zero; the exact counts and all three
+explanations are available in the shared styled tooltip. Rust supplies housing need, ready homes, live funded
 jobs, missing assets, free/unsuitable lots and customer/income/workforce rejections from recorded
 planner decisions. Reading the HUD never runs another city scan or changes a reservation. Until
 the first hourly assessment after creation/load, the tooltip explicitly says it is waiting.
 F12 enables the growth cheat; the tooltip labels bypassed economic checks rather than inventing
 100% demand. `growth_meter_test.gd` covers the bridge, bar scaling, zero counts and explanations.
 
-Zoning interaction rule: `Rect` and `Brush` are shared paint-mode controls, not their own
-submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential`,
+Zoning interaction rule: Cells/Parcels and Cell/Marquee/Fill/Brush are segmented icon choices;
+Erase is an independent toggle. The gear and Free tile only appear in the parcel workflow.
+Opening the Zoning tool shows the controls and zone-family row. Clicking `Residential`,
 `Commercial`, or `Industrial` toggles the profile row for that family above it and
 automatically selects the first profile in that family. Clicking the same family again
 collapses that profile row.
@@ -461,7 +465,10 @@ button or programmatically.
 Most windows are instantiated on first open and hidden (not freed) on close so state is
 preserved within a session. The Building Inspector is the exception: it creates a fresh window
 for each inspected building and frees it on close. Only one inspector is open at a time, so
-inspecting another building closes the previous window.
+inspecting another building closes the previous window. With Inspect active, Esc clears the
+selection and closes either inspector; a second Esc exits Inspect. V toggles Inspect off,
+empty ground clears the selection, and Road Properties' close button clears its highlight.
+Both inspectors use `UIStyle.keep_keyboard_with_game` and shared title/section/action styles.
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
@@ -472,7 +479,7 @@ inspecting another building closes the previous window.
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
 | Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane, route and latest trip failure (`DEBUG-06`). Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |
 | Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`): library column (built-ins, the player's types, unusable entries with reasons, the library error), five part tiles, the layout strip to scale (click a + then a tile, or drag and drop), a part popup (median style and width, Move, Remove), the type's attributes (Sidewalks for both sides, else 0.75 m shoulder bands drawn on the strip; a Speed stepper on Rust's 20-120 km/h grid in steps of 10, hidden for a footpath; Zoning, off once by default when a new type reaches 80 km/h; Street lights, ticked by default), Rust's cost line ("15 / m, upkeep 0.10 / m / day"), the warning for no sidewalks with zoning, the name field with Rust's suggestion, Cancel and Create road / Save. Persistent, resizable, non-exclusive `Window` (960 x 440, min 760 x 400); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
-| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout"; `ROAD-101`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the type's zoning off demolishes), No Buildings flag, and slope warnings for the current selection. Opens at 400 x 500 so every row fits. Uses Godot's built-in draggable `Window` chrome. |
+| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout"; `ROAD-101`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the type's zoning off demolishes), No Buildings flag, and slope warnings for the current selection. Uses a content-sized, draggable window beside the selection: segmented class icons, a bounded scrollable road-thumbnail grid, verdict, accent Apply and a No buildings toggle. The native picker remains its selection/metadata model for existing test drivers. |
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
 | Economy Overview | City → Economy Overview | `scripts/ui/economy_overview.gd` *(implemented)* | Live fiscal budget, services, and policy overview with persisted window layout and split-panel offsets. |
@@ -578,8 +585,8 @@ menu until a real renderer path exists.
 
 The debug console is an autoload (`DebugConsole`) available in every scene and build. The key
 left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored left: a third of
-the window wide by default, below the top menu bar and above the bottom-left strip with the
-clock, money and RCI boxes. Its right edge, bottom edge and bottom-right grip resize it, and the size persists across
+the window wide by default, below the top menu and status bar and above any overlapping
+bottom toolbar/palette. Its right edge, bottom edge and bottom-right grip resize it, and the size persists across
 restarts. It sits above the other surfaces on canvas layer
 120. Gameplay keeps the keyboard until one of the console's two text fields is clicked, and Esc
 returns it. Its Channels tab also holds a Visual modes section, one value picker per renderer
@@ -629,7 +636,7 @@ Padding (MarginContainer constants)
   HUD_SHELL_PAD_Y = 10
 
 Bottom HUD sizing
-  HUD_STRIP_HEIGHT = 60.0   # fixed shell height for clock / city-status / RCI / toolbar row
+  HUD_STRIP_HEIGHT = 60.0   # category toolbar shell height
   HUD_BUTTON_HEIGHT = 60.0  # toolbar button target height before inner-shell clamping
   HUD_BOTTOM_MARGIN = 20.0  # bottom-screen gap
   HUD_PANEL_GAP = 12.0      # gap between bottom-strip shells

@@ -250,7 +250,9 @@ func _run() -> void:
 	_expect(_layout(road) == [1, 1, 1, 1.5, 8.5], "Apply gives the road the divided type: %s" % [_layout(road)])
 	_expect(await _await_generation(generation), "the type change publishes")
 	# A focused tool window keeps the HUD keys (InputManager._ui_has_modal_popup): the player's
-	# Ctrl+Z reaches the game once the window is closed or the map has focus.
+	# Ctrl+Z reaches the game once the window is closed or the map has focus. Road Properties
+	# never takes the keyboard, so the Road Builder opened above must close first.
+	_ui.road_builder.close()
 	_ui.hide_road_properties()
 	generation = _simulation.get_network_render_generation()
 	_press_ctrl_z()

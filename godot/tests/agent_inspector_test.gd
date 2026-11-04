@@ -30,6 +30,10 @@ class BuildingInspectorStub extends Node:
 		clicks += 1
 		last = {"world_pos": world_pos, "screen_pos": screen_pos, "toggle": toggle}
 		return false
+	func is_inspecting() -> bool:
+		return false
+	func close_window() -> void:
+		pass
 
 var _failures := 0
 

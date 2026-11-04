@@ -53,6 +53,33 @@ const WINDOW_REFERENCE_VIEWPORT := Vector2(1920.0, 1080.0)
 const MAX_WINDOW_LAYOUT_SCALE := 2.0
 const WINDOW_MAX_VIEWPORT_COVERAGE := 0.92
 
+## Consistent title/section typography for the road and building inspectors.
+static func inspector_heading(text: String, section: bool = false) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_color_override("font_color", TEXT_SECTION if section else TEXT_PRIMARY)
+	set_font_size(label, 13 if section else 16)
+	return label
+
+## Accent action style for inspector commits; keeps disabled state visibly muted.
+static func style_primary_button(button: Button) -> void:
+	set_font_size(button, 14)
+	button.focus_mode = Control.FOCUS_NONE
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var color := HUD_ACCENT.darkened(0.55)
+		if state == "hover":
+			color = color.lightened(0.12)
+		elif state == "pressed":
+			color = color.darkened(0.12)
+		elif state == "disabled":
+			color = BG_SUBMENU
+		var style := panel_style(color, CORNER_SUB, Color.TRANSPARENT, 0)
+		style.content_margin_left = 14
+		style.content_margin_right = 14
+		style.content_margin_top = 8
+		style.content_margin_bottom = 8
+		button.add_theme_stylebox_override(state, style)
+
 static func ui_scale() -> float:
 	return GameSettings.get_ui_scale()
 

@@ -19,16 +19,7 @@ var active: bool = false:
 	set(value):
 		active = value
 		if not active:
-			_cancel_gesture()
-			_hide_properties_panel()
-			var building_inspector = _get_building_inspector()
-			if building_inspector:
-				building_inspector.close_window()
-			_clear_highlight()
-			selected_edges.clear()
-			_connected_nodes.clear()
-			_clear_node_visuals()
-			selected_node = -1
+			clear_selection()
 
 # Edge Selection
 var selected_edges: Array[int] = []
@@ -71,6 +62,22 @@ func _ready():
 
 	drag_line_mesh = MeshInstance3D.new()
 	add_child(drag_line_mesh)
+
+## Clears roads, junction handles and the building inspector; returns whether anything was selected.
+func clear_selection() -> bool:
+	var had_selection := not selected_edges.is_empty() or selected_node != -1
+	_cancel_gesture()
+	_hide_properties_panel()
+	var building_inspector = _get_building_inspector()
+	if building_inspector:
+		had_selection = building_inspector.is_inspecting() or had_selection
+		building_inspector.close_window()
+	_clear_highlight()
+	selected_edges.clear()
+	_connected_nodes.clear()
+	_clear_node_visuals()
+	selected_node = -1
+	return had_selection
 
 func _input(event: InputEvent) -> void:
 	if active and _mouse_pressed and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
@@ -143,7 +150,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					building_inspector.close_window()
 				_set_selection([edge_idx])
 			else:
-				_set_selection([])
+				clear_selection()
 				
 		else:
 			if not _drag_source.is_empty():

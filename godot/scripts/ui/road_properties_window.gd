@@ -3,7 +3,7 @@
 ## Floating road-properties window for SelectTool edge editing.
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in
-## draggable Window surface and preserves its placement within the session.
+## draggable Window surface, sized to content and placed beside each new selection.
 ## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types, each with its speed
 ## and Rust's build cost per metre, and shows the selected road's (Rust's `road_type` for its
 ## cross-section, sidewalks and speed, or "Custom layout" when no type matches; zoning is not
@@ -20,7 +20,7 @@
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
-const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
 ## The picker's text for a road whose cross-section no type has.
@@ -29,17 +29,24 @@ const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := Color.YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
 # verdict with Apply, and No buildings.
-const DEFAULT_SIZE := Vector2i(400, 500)
-const MIN_SIZE := Vector2i(360, 460)
+const DEFAULT_SIZE := Vector2i(428, 460)
+const MIN_SIZE := Vector2i(360, 300)
 
 var _simulation_node: Node
 var _select_tool: Node
 
 var _window: Window
 var _warning_label: Label
-var _no_build_check: CheckBox
+var _no_build_check: CheckButton
 var _class_buttons: Array[Button] = []
+# Native selection/metadata model retained for the existing edit API and regression drivers.
+# The visible tiles feed the same item_selected path; there is only one pending type.
 var _type_picker: OptionButton
+var _type_grid: GridContainer
+var _type_tiles: Dictionary = {}
+var _type_scroll: ScrollContainer
+var _type_title: Label
+var _body: PanelContainer
 var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
@@ -49,7 +56,6 @@ var _verdict: Dictionary = {}
 # Rust's speed grid (`get_road_types().speeds`), for a walkway's attributes.
 var _speeds: Dictionary = {}
 var _selected_edges: Array[int] = []
-var _last_screen_pos := Vector2.ZERO
 
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
@@ -61,19 +67,16 @@ func _ready() -> void:
 func _build_window() -> void:
 	_window = Window.new()
 	_window.title = "Road Properties"
-	_window.unresizable = false
+	_window.unresizable = true
 	_window.exclusive = false
 	_window.visible = false
-	_window.close_requested.connect(_window.hide)
-	UIStyle.set_persistent_window_layout(
-		_window,
-		"road_properties",
-		DEFAULT_SIZE,
-		MIN_SIZE,
-		get_viewport()
-	)
+	_window.close_requested.connect(_close_selection)
+	UIStyle.keep_keyboard_with_game(_window)
+	# Content-sized: stale persisted dimensions from the former large panel do not apply.
+	UIStyle.set_window_base_size(_window, DEFAULT_SIZE, MIN_SIZE, get_viewport())
 
 	var body := PanelContainer.new()
+	_body = body
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	body.add_theme_stylebox_override("panel", UIStyle.window_body_style())
 	_window.add_child(body)
@@ -87,7 +90,8 @@ func _build_window() -> void:
 	body.add_child(margin)
 
 	var root_vbox := VBoxContainer.new()
-	root_vbox.add_theme_constant_override("separation", 10)
+	root_vbox.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(UIStyle.inspector_heading("Road Properties"))
 	margin.add_child(root_vbox)
 
 	_warning_label = Label.new()
@@ -96,51 +100,53 @@ func _build_window() -> void:
 	UIStyle.set_font_size(_warning_label, 13)
 	root_vbox.add_child(_warning_label)
 
+	var classes := HBoxContainer.new()
+	classes.add_theme_constant_override("separation", 2)
+	root_vbox.add_child(classes)
 	for i in range(3):
-		var button := Button.new()
+		var title: String = ["Standard", "Bridge", "Tunnel"][i]
+		var button := HudIcons.icon_button(["road", "bridge", "tunnel"][i], title, title + " road class")
 		button.toggle_mode = true
-		button.text = ["Standard", "Bridge", "Tunnel"][i]
-		UIStyle.set_font_size(button, 14)
 		button.pressed.connect(_on_class_button_pressed.bind(i))
-		root_vbox.add_child(button)
+		classes.add_child(button)
 		_class_buttons.append(button)
 
-	root_vbox.add_child(HSeparator.new())
-
-	var type_row := HBoxContainer.new()
-	var type_label := Label.new()
-	type_label.text = "Road type"
-	type_label.custom_minimum_size.x = 92.0
-	UIStyle.set_font_size(type_label, 14)
-	type_row.add_child(type_label)
+	_type_title = UIStyle.inspector_heading("Road type", true)
+	root_vbox.add_child(_type_title)
 	_type_picker = OptionButton.new()
-	_type_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_type_picker.fit_to_longest_item = false
-	UIStyle.set_font_size(_type_picker, 14)
 	_type_picker.item_selected.connect(_on_type_selected)
-	type_row.add_child(_type_picker)
-	root_vbox.add_child(type_row)
+	root_vbox.add_child(_type_picker)
+	_type_picker.hide()
+	_type_scroll = ScrollContainer.new()
+	_type_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_type_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root_vbox.add_child(_type_scroll)
+	_type_grid = GridContainer.new()
+	_type_grid.columns = 5
+	_type_grid.add_theme_constant_override("h_separation", 4)
+	_type_grid.add_theme_constant_override("v_separation", 4)
+	_type_scroll.add_child(_type_grid)
 	_layout_label = Label.new()
 	_layout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UIStyle.set_font_size(_layout_label, 13)
 	root_vbox.add_child(_layout_label)
-	var apply_row := HBoxContainer.new()
+
 	_verdict_label = Label.new()
 	_verdict_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_verdict_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UIStyle.set_font_size(_verdict_label, 13)
-	apply_row.add_child(_verdict_label)
+	root_vbox.add_child(_verdict_label)
 	_apply_button = Button.new()
 	_apply_button.text = "Apply"
 	_apply_button.disabled = true
-	UIStyle.set_font_size(_apply_button, 14)
+	UIStyle.style_primary_button(_apply_button)
 	_apply_button.pressed.connect(_on_apply_pressed)
-	apply_row.add_child(_apply_button)
-	root_vbox.add_child(apply_row)
+	root_vbox.add_child(_apply_button)
 
 	root_vbox.add_child(HSeparator.new())
 
-	_no_build_check = CheckBox.new()
+	_no_build_check = CheckButton.new()
+	_no_build_check.focus_mode = Control.FOCUS_NONE
 	_no_build_check.text = "No buildings"
 	UIStyle.set_font_size(_no_build_check, 14)
 	_no_build_check.toggled.connect(_on_no_build_toggled)
@@ -153,7 +159,8 @@ func _build_window() -> void:
 	_window.add_child(_demolish_dialog)
 
 	add_child(_window)
-	WindowResizeHandles.install(_window)
+	_window.size_changed.connect(_fit_columns)
+	_body.minimum_size_changed.connect(_refit_visible, CONNECT_DEFERRED)
 	_window.hide()
 
 func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO) -> void:
@@ -162,20 +169,35 @@ func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO
 		close_window()
 		return
 	_refresh()
-	_last_screen_pos = screen_pos
-	if not _window.has_meta("opened_once") and not UIStyle.has_persistent_window_position(_window):
+	if not _window.visible:
+		_fit_content()
 		_place_window_near_cursor(screen_pos)
-	if not _window.has_meta("opened_once"):
-		UIStyle.popup_persistent_window(_window, false)
-		_window.set_meta("opened_once", true)
-	else:
-		_window.show()
-		_window.grab_focus()
+	_window.show()
 
 func close_window() -> void:
+	_selected_edges.clear()
 	if _window:
-		UIStyle.save_persistent_window_layout(_window)
+		_demolish_dialog.hide()
 		_window.hide()
+
+func _close_selection() -> void:
+	if _select_tool:
+		_select_tool.clear_selection()
+	close_window()
+
+func _fit_columns() -> void:
+	if _type_grid:
+		_type_grid.columns = clampi(int((_window.size.x - UIStyle.PAD_WINDOW * 2 - 16) / 76), 1, 5)
+
+func _refit_visible() -> void:
+	if _window.visible:
+		_fit_content()
+
+func _fit_content() -> void:
+	_fit_columns()
+	var rows := ceili(float(_type_tiles.size()) / float(_type_grid.columns))
+	_type_scroll.custom_minimum_size.y = minf(rows, 2) * 76.0
+	_window.size.y = mini(int(_body.get_combined_minimum_size().y), int(get_viewport().get_visible_rect().size.y * 0.9))
 
 func _place_window_near_cursor(screen_pos: Vector2) -> void:
 	UIStyle.place_window_near_cursor(_window, screen_pos, get_viewport())
@@ -220,6 +242,8 @@ func _refresh() -> void:
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
 
+	_warning_label.visible = not _warning_label.text.is_empty()
+
 ## Lists the road types again (after a library edit) while the window shows a road.
 func refresh_types() -> void:
 	if _window and _window.visible and not _selected_edges.is_empty():
@@ -231,6 +255,10 @@ func _refresh_type() -> void:
 	var first: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
 	var current := String(first.get("road_type", ""))
 	_type_picker.clear()
+	for tile in _type_grid.get_children():
+		_type_grid.remove_child(tile)
+		tile.queue_free()
+	_type_tiles.clear()
 	var library: Dictionary = _simulation_node.get_road_types()
 	_speeds = library.get("speeds", {})
 	if current.is_empty():
@@ -242,15 +270,26 @@ func _refresh_type() -> void:
 			continue
 		_type_picker.add_item(RoadTypeMenu.picker_text(type))
 		_type_picker.set_item_metadata(_type_picker.item_count - 1, type)
+		var index := _type_picker.item_count - 1
+		var tile := HudIcons.road_tile(type, RoadTypeMenu.tooltip(type))
+		tile.pressed.connect(func():
+			_type_picker.select(index)
+			_type_picker.item_selected.emit(index))
+		_type_grid.add_child(tile)
+		_type_tiles[index] = tile
 		if String(type.get("id", "")) == current:
 			_type_picker.select(_type_picker.item_count - 1)
 	if current.is_empty():
 		_type_picker.select(0)
+	_type_title.text = "Road type — " + CUSTOM_LAYOUT if current.is_empty() else "Road type"
+	_mark_type_tiles()
 	_layout_label.text = RoadTypeMenu.describe(first, false)
 	_verdict_label.text = ""
+	_verdict_label.hide()
 	_verdict = {}
 	_apply_button.text = "Apply"
 	_apply_button.disabled = true
+	_refit_visible.call_deferred()
 
 # The type picked in the picker, or {} for "Custom layout".
 func _picked_type() -> Dictionary:
@@ -263,7 +302,12 @@ func _type_arguments(type: Dictionary) -> Array:
 	return [int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)), int(type.get("median_style", 0)),
 		float(type.get("median_width", 0.0))] + RoadTypeMenu.tool_attributes(type, _speeds)
 
+func _mark_type_tiles() -> void:
+	for index in _type_tiles:
+		HudIcons.mark(_type_tiles[index], index == _type_picker.selected)
+
 func _on_type_selected(_index: int) -> void:
+	_mark_type_tiles()
 	var type := _picked_type()
 	if type.is_empty() or _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
 		return
@@ -272,6 +316,7 @@ func _on_type_selected(_index: int) -> void:
 ## Shows Rust's verdict on the picked type and enables Apply when it accepts it; Apply shows the
 ## cost difference Rust charges ("Apply (+1,230)").
 func show_verdict(verdict: Dictionary) -> void:
+	_verdict_label.show()
 	_verdict = verdict
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
@@ -312,6 +357,7 @@ func _apply() -> void:
 		var refused: int = _select_tool.callv("set_selected_edge_cross_section", _type_arguments(type))
 		_refresh()
 		if refused > 0:
+			_verdict_label.show()
 			_verdict_label.add_theme_color_override("font_color", VERDICT_REFUSED)
 			_verdict_label.text = "%d road(s) refused the change" % refused
 

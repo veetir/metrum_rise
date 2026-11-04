@@ -67,6 +67,25 @@ static func decorate(button: Button, icon_name: String, side: float) -> void:
 	feedback.attach()
 	Tooltip.new().attach(button)
 
+## Tints artwork without tinting the shared shell or selected accent underline.
+static func tint(button: Button, color: Color) -> void:
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.ink = Color(color, 1.0)
+	feedback.tinted = true
+	button.queue_redraw()
+
+## A padded, compact palette shell shared by zoning, assets and the status bar.
+static func shell(content: Control) -> PanelContainer:
+	var panel := PanelContainer.new()
+	var style := UIStyle.submenu_style()
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", style)
+	panel.add_child(content)
+	return panel
+
 ## Replaces the custom tile's preview after a selection or library edit; empty resets its icon.
 static func set_road(button: Button, type: Dictionary) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
@@ -90,6 +109,8 @@ static func mark(button: Button, selected: bool) -> void:
 class HoverFeedback extends Node:
 	var button: Button
 	var texture: Texture2D
+	var ink := UIStyle.TEXT_PRIMARY
+	var tinted := false
 	var road: RoadThumbnail
 	var menu_selected := false
 	var _hovered := false
@@ -147,16 +168,18 @@ class HoverFeedback extends Node:
 		if selected:
 			_style.bg_color = _style.bg_color.lerp(UIStyle.HUD_ACCENT.darkened(0.65), 0.65)
 		button.draw_style_box(_style, rect)
-		var ink := UIStyle.HUD_ACCENT if selected else UIStyle.TEXT_PRIMARY
+		var paint := ink
+		if selected:
+			paint = ink.lightened(0.18) if tinted else UIStyle.HUD_ACCENT
 		if button.disabled:
-			ink = Color(UIStyle.TEXT_DIM, 0.4)
+			paint = Color(UIStyle.TEXT_DIM, 0.4)
 		if road != null:
 			road.paint(button, rect.grow(-8.0))
 		else:
 			# The scale-aware font size is already refreshed by Accessibility; no settings I/O.
 			var side := minf(2.0 * button.get_theme_font_size("font_size"), rect.size.x - 12.0)
 			var box := Rect2(rect.get_center() - Vector2.ONE * side * 0.5, Vector2.ONE * side)
-			button.draw_texture_rect(texture, box, false, ink)
+			button.draw_texture_rect(texture, box, false, paint)
 		var accent := UIStyle.HUD_ACCENT
 		accent.a = 1.0 if selected else amount * 0.75
 		if button.disabled:

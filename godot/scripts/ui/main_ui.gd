@@ -10,8 +10,9 @@
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
-const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
-const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
+const TopStatusBar = preload("res://scripts/ui/top_status_bar.gd")
+const ZoningPanel = preload("res://scripts/ui/zoning_panel.gd")
+const AssetPanel = preload("res://scripts/ui/asset_panel.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
@@ -27,12 +28,7 @@ const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 @onready var simulation_node = $"../SimulationNode"
 
 var bottom_panel: Control
-# Independent status and tool layers; the centred toolbar rises above the status strip
-# when the viewport is too narrow for them to share a row.
-var _left_bottom_strip: Control
-var _toolbar_margin: MarginContainer
-var _toolbar_shell: Control
-var _toolbar_layout_pending := false
+var _top_status: TopStatusBar
 var main_toolbar: HBoxContainer
 
 var road_main_btn: Button
@@ -89,11 +85,7 @@ var _industry_asset_buttons: Dictionary = {}
 var select_main_btn: Button
 var bulldoze_btn: Button
 var road_properties_panel: Node
-var clock_panel: PanelContainer
 var clock_label: Label
-var speed_label: Label
-var speed_down_btn: Button
-var speed_up_btn: Button
 var city_status_panel: Control
 var demand_meter: Control
 var _display_day: int = -1
@@ -112,9 +104,6 @@ const ZONING_PARCEL_WIDTH_DEFAULT_CELLS := 2
 const ZONING_PARCEL_DEPTH_DEFAULT_CELLS := 2
 const ZONING_PARCEL_GAP_DEFAULT_M := 0.0
 
-const CLOCK_PANEL_WIDTH := 220.0
-const CITY_STATUS_PANEL_WIDTH := 170.0
-const DEMAND_METER_WIDTH := 92.0
 
 func _ready():
 	_build_ui()
@@ -139,25 +128,6 @@ func _build_ui():
 	root.add_child(bottom_panel)
 	bottom_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bottom_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	var left_strip_margin := MarginContainer.new()
-	left_strip_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	left_strip_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	left_strip_margin.add_theme_constant_override("margin_left", int(UIStyle.HUD_LEFT_MARGIN))
-	left_strip_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN))
-	bottom_panel.add_child(left_strip_margin)
-
-	var left_strip_stack := VBoxContainer.new()
-	left_strip_stack.alignment = BoxContainer.ALIGNMENT_END
-	left_strip_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	left_strip_margin.add_child(left_strip_stack)
-
-	var left_bottom_strip := HBoxContainer.new()
-	left_bottom_strip.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
-	left_bottom_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# The debug console stops above the clock, money and RCI boxes.
-	left_bottom_strip.add_to_group("debug_console_keep_clear")
-	left_strip_stack.add_child(left_bottom_strip)
 
 	var toolbar_margin := MarginContainer.new()
 	toolbar_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -282,176 +252,54 @@ func _build_ui():
 	hbox_terrain_sub_center.add_child(terrain_sub_margin)
 	vbox.add_child(hbox_terrain_sub_center)
 
-	# --- Combined Zoning Sub-Menu Row ---
-	zoning_combined_hbox = VBoxContainer.new()
-	zoning_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	zoning_combined_hbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	zoning_combined_hbox.add_theme_constant_override("separation", 8)
-	zoning_combined_hbox.visible = false
-	vbox.add_child(zoning_combined_hbox)
-	vbox.move_child(zoning_combined_hbox, vbox.get_child_count() - 2)
-
-	zoning_profile_panel = PanelContainer.new()
-	var z_sub_style = StyleBoxFlat.new()
-	z_sub_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
-	z_sub_style.set_corner_radius_all(15)
-	zoning_profile_panel.add_theme_stylebox_override("panel", z_sub_style)
-	zoning_profile_panel.visible = false
-	
-	var z_profile_padding = MarginContainer.new()
-	z_profile_padding.add_theme_constant_override("margin_left", 12)
-	z_profile_padding.add_theme_constant_override("margin_right", 12)
-	z_profile_padding.add_theme_constant_override("margin_top", 8)
-	z_profile_padding.add_theme_constant_override("margin_bottom", 8)
-	zoning_profile_panel.add_child(z_profile_padding)
-	
-	zoning_profile_menu = HBoxContainer.new()
-	zoning_profile_menu.alignment = BoxContainer.ALIGNMENT_CENTER
-	zoning_profile_menu.add_theme_constant_override("separation", 10)
-	z_profile_padding.add_child(zoning_profile_menu)
-	
-	zoning_combined_hbox.add_child(zoning_profile_panel)
-	var cell_controls := preload("res://scripts/ui/zoning_cell_controls.gd").new()
+	# Palette views own widget construction; selection and tool handlers remain here.
+	var zoning_view := ZoningPanel.new()
+	zoning_view.build()
+	zoning_combined_hbox = zoning_view
+	zoning_profile_panel = zoning_view.profile_panel
+	zoning_profile_menu = zoning_view.profile_menu
+	zoning_mode_menu = zoning_view.mode_menu
+	zoning_type_menu = zoning_view.type_menu
+	zoning_options_btn = zoning_view.options_button
+	zoning_options_btn.button_down.connect(_remember_zoning_options_button_down_state)
+	zoning_options_btn.pressed.connect(_toggle_zoning_options_popup)
+	_build_zoning_options_popup()
+	var cell_controls := zoning_view.cell_controls
 	cell_controls.zoning_tool = input_manager.zoning_tool
 	cell_controls.workflow_changed.connect(func(cells: bool):
 		zoning_options_btn.visible = not cells
 		zoning_options_popup.hide()
 		_refresh_zoning_profile_button_states())
-	zoning_combined_hbox.add_child(cell_controls)
-
-	var zoning_controls_row = HBoxContainer.new()
-	zoning_controls_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	zoning_controls_row.add_theme_constant_override("separation", 15)
-	zoning_combined_hbox.add_child(zoning_controls_row)
-
-	var zoning_mode_panel = PanelContainer.new()
-	zoning_mode_panel.add_theme_stylebox_override("panel", z_sub_style.duplicate())
-
-	var zoning_mode_padding = MarginContainer.new()
-	zoning_mode_padding.add_theme_constant_override("margin_left", 12)
-	zoning_mode_padding.add_theme_constant_override("margin_right", 12)
-	zoning_mode_padding.add_theme_constant_override("margin_top", 8)
-	zoning_mode_padding.add_theme_constant_override("margin_bottom", 8)
-	zoning_mode_panel.add_child(zoning_mode_padding)
-
-	zoning_mode_menu = HBoxContainer.new()
-	zoning_mode_menu.add_theme_constant_override("separation", 10)
-	zoning_mode_padding.add_child(zoning_mode_menu)
-
-	zoning_controls_row.add_child(zoning_mode_panel)
-
-	var zoning_type_panel = PanelContainer.new()
-	zoning_type_panel.add_theme_stylebox_override("panel", z_sub_style.duplicate())
-
-	var zoning_type_padding = MarginContainer.new()
-	zoning_type_padding.add_theme_constant_override("margin_left", 12)
-	zoning_type_padding.add_theme_constant_override("margin_right", 12)
-	zoning_type_padding.add_theme_constant_override("margin_top", 8)
-	zoning_type_padding.add_theme_constant_override("margin_bottom", 8)
-	zoning_type_panel.add_child(zoning_type_padding)
-
-	zoning_type_menu = HBoxContainer.new()
-	zoning_type_menu.add_theme_constant_override("separation", 10)
-	zoning_type_padding.add_child(zoning_type_menu)
-
-	zoning_controls_row.add_child(zoning_type_panel)
-
-	zoning_options_btn = Button.new()
-	zoning_options_btn.text = "⚙"
-	zoning_options_btn.tooltip_text = "Parcel options"
-	zoning_options_btn.visible = false
-	zoning_options_btn.custom_minimum_size = Vector2(70, 50)
-	zoning_options_btn.focus_mode = Control.FOCUS_NONE
-	UIStyle.set_font_size(zoning_options_btn, 24)
-	zoning_options_btn.button_down.connect(_remember_zoning_options_button_down_state)
-	zoning_options_btn.pressed.connect(_toggle_zoning_options_popup)
-	zoning_mode_menu.add_child(zoning_options_btn)
-	_build_zoning_options_popup()
-
+	var cell_shell := HudIcons.shell(cell_controls)
+	zoning_view.add_child(cell_shell)
+	zoning_view.move_child(cell_shell, 1)
+	vbox.add_child(zoning_view)
+	zoning_view.hide()
 	for entry in ZONING_MAIN_TYPES:
-		var zone_type := str(entry.get("id", ""))
-		var button := Button.new()
-		button.text = str(entry.get("label", zone_type.capitalize()))
-		button.custom_minimum_size = Vector2(150, 50)
-		button.toggle_mode = true
-		_apply_colored_button_style(button, _zone_type_color(zone_type))
+		var zone_type := str(entry.id)
+		var button := ZoningPanel.tile(zone_type, str(entry.label), "Choose a zoning profile")
 		button.pressed.connect(func(): _toggle_zoning_zone_type(zone_type))
 		zoning_type_menu.add_child(button)
 		_zoning_type_buttons[zone_type] = button
-
 	_rebuild_zoning_profiles_index()
 	_collapse_zoning_profiles()
 
-	# --- Combined Services Sub-Menu Row ---
-	services_combined_hbox = VBoxContainer.new()
-	services_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	services_combined_hbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	services_combined_hbox.add_theme_constant_override("separation", 8)
-	services_combined_hbox.visible = false
-	vbox.add_child(services_combined_hbox)
+	var services_view := AssetPanel.new()
+	services_view.build(true)
+	services_combined_hbox = services_view
+	service_asset_panel = services_view.asset_panel
+	service_asset_menu = services_view.asset_menu
+	service_category_menu = services_view.category_menu
+	vbox.add_child(services_view)
+	services_view.hide()
+	var industry_view := AssetPanel.new()
+	industry_view.build(false)
+	industry_combined_hbox = industry_view
+	industry_asset_panel = industry_view.asset_panel
+	industry_asset_menu = industry_view.asset_menu
+	vbox.add_child(industry_view)
+	industry_view.hide()
 
-	var service_panel_style = StyleBoxFlat.new()
-	service_panel_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
-	service_panel_style.set_corner_radius_all(15)
-
-	service_asset_panel = PanelContainer.new()
-	service_asset_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
-	service_asset_panel.visible = false
-
-	var service_asset_padding = MarginContainer.new()
-	service_asset_padding.add_theme_constant_override("margin_left", 12)
-	service_asset_padding.add_theme_constant_override("margin_right", 12)
-	service_asset_padding.add_theme_constant_override("margin_top", 8)
-	service_asset_padding.add_theme_constant_override("margin_bottom", 8)
-	service_asset_panel.add_child(service_asset_padding)
-
-	service_asset_menu = HBoxContainer.new()
-	service_asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
-	service_asset_menu.add_theme_constant_override("separation", 10)
-	service_asset_padding.add_child(service_asset_menu)
-	services_combined_hbox.add_child(service_asset_panel)
-
-	var service_category_panel = PanelContainer.new()
-	service_category_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
-
-	var service_category_padding = MarginContainer.new()
-	service_category_padding.add_theme_constant_override("margin_left", 12)
-	service_category_padding.add_theme_constant_override("margin_right", 12)
-	service_category_padding.add_theme_constant_override("margin_top", 8)
-	service_category_padding.add_theme_constant_override("margin_bottom", 8)
-	service_category_panel.add_child(service_category_padding)
-
-	service_category_menu = HBoxContainer.new()
-	service_category_menu.alignment = BoxContainer.ALIGNMENT_CENTER
-	service_category_menu.add_theme_constant_override("separation", 10)
-	service_category_padding.add_child(service_category_menu)
-	services_combined_hbox.add_child(service_category_panel)
-
-	# --- Industry Sub-Menu Row ---
-	industry_combined_hbox = VBoxContainer.new()
-	industry_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	industry_combined_hbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	industry_combined_hbox.add_theme_constant_override("separation", 8)
-	industry_combined_hbox.visible = false
-	vbox.add_child(industry_combined_hbox)
-
-	industry_asset_panel = PanelContainer.new()
-	industry_asset_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
-	industry_asset_panel.visible = true
-
-	var industry_asset_padding = MarginContainer.new()
-	industry_asset_padding.add_theme_constant_override("margin_left", 12)
-	industry_asset_padding.add_theme_constant_override("margin_right", 12)
-	industry_asset_padding.add_theme_constant_override("margin_top", 8)
-	industry_asset_padding.add_theme_constant_override("margin_bottom", 8)
-	industry_asset_panel.add_child(industry_asset_padding)
-
-	industry_asset_menu = HBoxContainer.new()
-	industry_asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
-	industry_asset_menu.add_theme_constant_override("separation", 10)
-	industry_asset_padding.add_child(industry_asset_menu)
-	industry_combined_hbox.add_child(industry_asset_panel)
-	
 	# 1. Main Toolbar (Bottom stack layer)
 	main_toolbar = HBoxContainer.new()
 	main_toolbar.add_theme_constant_override("separation", 6)
@@ -480,43 +328,16 @@ func _build_ui():
 	var category_shell := _create_bottom_strip_shell(hbox_main_center)
 	category_shell.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vbox.add_child(category_shell)
-	_toolbar_shell = _create_bottom_group_shell(main_vbox)
-	toolbar_center.add_child(_toolbar_shell)
+	var toolbar_shell := _create_bottom_group_shell(main_vbox)
+	toolbar_shell.add_to_group("debug_console_keep_clear")
+	toolbar_center.add_child(toolbar_shell)
 
-	# --- Bottom-left Strip ---
-	clock_panel = _create_bottom_strip_shell(_build_clock_content(), CLOCK_PANEL_WIDTH)
-	left_bottom_strip.add_child(clock_panel)
-
-	city_status_panel = CityStatusPanel.new()
-	left_bottom_strip.add_child(_create_bottom_strip_shell(city_status_panel, CITY_STATUS_PANEL_WIDTH))
-
-	demand_meter = DemandMeter.new()
-	left_bottom_strip.add_child(_create_bottom_strip_shell(demand_meter, DEMAND_METER_WIDTH))
-
-	_left_bottom_strip = left_bottom_strip
-	_toolbar_margin = toolbar_margin
-	for control in [bottom_panel, left_bottom_strip, _toolbar_shell]:
-		control.resized.connect(_queue_bottom_toolbar_layout)
-	_queue_bottom_toolbar_layout()
-
-func _queue_bottom_toolbar_layout() -> void:
-	if not _toolbar_layout_pending:
-		_toolbar_layout_pending = true
-		call_deferred("_layout_bottom_toolbar")
-
-# Keep the icons centred. At narrow resolutions the whole palette rises above the status
-# strip instead of letting either control overlap the other. Only resize events relayout it.
-func _layout_bottom_toolbar() -> void:
-	_toolbar_layout_pending = false
-	var width := bottom_panel.size.x
-	var gap := UIStyle.HUD_PANEL_GAP
-	var left_edge := UIStyle.HUD_LEFT_MARGIN + _left_bottom_strip.get_combined_minimum_size().x + gap
-	var toolbar_width := _toolbar_shell.get_combined_minimum_size().x
-	var start := (width - toolbar_width) * 0.5
-	var rise := 0.0
-	if start < left_edge:
-		rise = _left_bottom_strip.get_combined_minimum_size().y + gap
-	_toolbar_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN + rise))
+	_top_status = TopStatusBar.new()
+	root.add_child(_top_status)
+	_top_status.build(input_manager)
+	clock_label = _top_status.clock_label
+	city_status_panel = _top_status.city_status_panel
+	demand_meter = _top_status.demand_meter
 
 func _build_auxiliary_windows() -> void:
 	road_properties_panel = RoadPropertiesWindow.new()
@@ -528,43 +349,6 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_builder)
 	road_type_menu.road_builder_requested.connect(road_builder.open)
 	road_builder.road_types_changed.connect(_on_road_types_changed)
-
-func _build_clock_content() -> VBoxContainer:
-	var clock_vbox := VBoxContainer.new()
-	clock_vbox.add_theme_constant_override("separation", 8)
-
-	clock_label = Label.new()
-	clock_label.text = "Day 1 00:00"
-	clock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	UIStyle.set_font_size(clock_label, UIStyle.HUD_TEXT_SIZE)
-	clock_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	clock_vbox.add_child(clock_label)
-
-	var speed_hbox := HBoxContainer.new()
-	speed_hbox.add_theme_constant_override("separation", 8)
-	clock_vbox.add_child(speed_hbox)
-
-	speed_down_btn = Button.new()
-	speed_down_btn.text = "-"
-	speed_down_btn.custom_minimum_size = Vector2(36, 32)
-	speed_down_btn.focus_mode = Control.FOCUS_NONE
-	speed_hbox.add_child(speed_down_btn)
-
-	speed_label = Label.new()
-	speed_label.text = "Paused"
-	speed_label.custom_minimum_size = Vector2(90, 0)
-	speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(speed_label, UIStyle.HUD_TEXT_SIZE)
-	speed_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	speed_hbox.add_child(speed_label)
-
-	speed_up_btn = Button.new()
-	speed_up_btn.text = "+"
-	speed_up_btn.custom_minimum_size = Vector2(36, 32)
-	speed_up_btn.focus_mode = Control.FOCUS_NONE
-	speed_hbox.add_child(speed_up_btn)
-
-	return clock_vbox
 
 func _create_bottom_strip_shell(
 	content: Control,
@@ -690,8 +474,6 @@ func _connect_signals():
 	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
 	spline_btn.pressed.connect(func(): _set_draw_mode(1))
-	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
-	speed_up_btn.pressed.connect(func(): input_manager.step_simulation_speed(1))
 
 # Both menu visibility and input transitions are event-driven, including keyboard/Esc paths.
 func _refresh_hud_marks(_tool: int = 0) -> void:
@@ -850,46 +632,6 @@ func hide_road_properties():
 	if road_properties_panel and road_properties_panel.has_method("close_window"):
 		road_properties_panel.close_window()
 
-func _color_from_hex(hex: String, alpha: float) -> Color:
-	if hex.length() == 7 and hex.begins_with("#"):
-		var r := hex.substr(1, 2).hex_to_int()
-		var g := hex.substr(3, 2).hex_to_int()
-		var b := hex.substr(5, 2).hex_to_int()
-		return Color8(r, g, b, int(clampf(alpha, 0.0, 1.0) * 255.0))
-	return Color(0.5, 0.5, 0.5, alpha)
-
-func _apply_colored_button_style(button: Button, base_color: Color) -> void:
-	button.focus_mode = Control.FOCUS_NONE
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = base_color
-	normal.set_corner_radius_all(10)
-
-	var hover := normal.duplicate()
-	hover.bg_color = base_color.lightened(0.08)
-
-	var pressed := normal.duplicate()
-	pressed.bg_color = base_color.lightened(0.16)
-
-	var disabled := normal.duplicate()
-	disabled.bg_color = Color(base_color.r, base_color.g, base_color.b, base_color.a * 0.5)
-
-	button.add_theme_stylebox_override("normal", normal)
-	button.add_theme_stylebox_override("hover", hover)
-	button.add_theme_stylebox_override("pressed", pressed)
-	button.add_theme_stylebox_override("focus", pressed)
-	button.add_theme_stylebox_override("disabled", disabled)
-
-func _zone_type_color(zone_type: String) -> Color:
-	match zone_type:
-		"residential":
-			return UIStyle.ZONE_RESIDENTIAL
-		"commercial":
-			return UIStyle.ZONE_COMMERCIAL
-		"industrial":
-			return UIStyle.ZONE_INDUSTRIAL
-		_:
-			return Color(0.35, 0.35, 0.35, 0.75)
-
 func _build_zoning_options_popup() -> void:
 	zoning_options_popup = PopupPanel.new()
 	zoning_options_popup.name = "ZoningOptions"
@@ -1037,22 +779,16 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 	var profiles: Array = _zoning_profiles_by_zone_type.get(zone_type, [])
 	for entry in profiles:
 		var profile: Dictionary = entry
-		var button := Button.new()
-		button.text = str(profile.get("display_name", zone_type.capitalize()))
-		button.tooltip_text = str(profile.get("ui_description", ""))
-		button.custom_minimum_size = Vector2(165, 50)
-		button.toggle_mode = true
-		_apply_colored_button_style(button, _color_from_hex(str(profile.get("ui_color", "#777777")), 0.4))
+		var button := ZoningPanel.tile(zone_type,
+			str(profile.get("display_name", zone_type.capitalize())), str(profile.get("ui_description", "")),
+			str(profile.get("ui_color", "")))
 		var runtime_id := int(profile.get("runtime_id", 0))
 		button.pressed.connect(func(): _select_zoning_profile(zone_type, runtime_id))
 		zoning_profile_menu.add_child(button)
 		_zoning_profile_buttons[runtime_id] = button
 
-	var clear_btn := Button.new()
-	clear_btn.text = "Free"
-	clear_btn.custom_minimum_size = Vector2(90, 50)
+	var clear_btn := HudIcons.icon_button("erase", "Free", "Remove parcel zoning", 64)
 	clear_btn.toggle_mode = true
-	_apply_colored_button_style(clear_btn, Color(0.45, 0.45, 0.45, 0.60))
 	clear_btn.pressed.connect(func(): _select_zoning_profile(zone_type, 0))
 	zoning_profile_menu.add_child(clear_btn)
 	_zoning_profile_buttons[0] = clear_btn
@@ -1140,11 +876,7 @@ func _rebuild_service_category_menu() -> void:
 
 	for service_class in classes:
 		var class_id := str(service_class)
-		var button := Button.new()
-		button.text = _service_class_label(class_id)
-		button.custom_minimum_size = Vector2(145, 50)
-		button.toggle_mode = true
-		_apply_colored_button_style(button, _service_class_color(class_id))
+		var button := AssetPanel.class_tile(class_id, _service_class_label(class_id))
 		button.pressed.connect(func(): _toggle_service_class(class_id))
 		service_category_menu.add_child(button)
 		_service_class_buttons[class_id] = button
@@ -1189,12 +921,7 @@ func _rebuild_service_asset_menu(service_class: String) -> void:
 		var asset_id := str(asset.get("asset_id", ""))
 		if asset_id.is_empty():
 			continue
-		var button := Button.new()
-		button.text = str(asset.get("display_name", asset_id))
-		button.tooltip_text = asset_id
-		button.custom_minimum_size = Vector2(190, 50)
-		button.toggle_mode = true
-		_apply_colored_button_style(button, _service_class_color(service_class).lightened(0.04))
+		var button := AssetPanel.asset_tile(asset, service_class)
 		button.pressed.connect(func(): _select_service_asset(service_class, asset_id))
 		service_asset_menu.add_child(button)
 		_service_asset_buttons[asset_id] = button
@@ -1267,12 +994,7 @@ func _rebuild_industry_asset_menu() -> void:
 		var asset_id := str(asset.get("asset_id", ""))
 		if asset_id.is_empty():
 			continue
-		var button := Button.new()
-		button.text = str(asset.get("display_name", asset_id))
-		button.tooltip_text = "%s / %s" % [asset_id, str(asset.get("resource_id", ""))]
-		button.custom_minimum_size = Vector2(190, 50)
-		button.toggle_mode = true
-		_apply_colored_button_style(button, Color(0.40, 0.39, 0.34, 0.76))
+		var button := AssetPanel.asset_tile(asset, str(asset.get("area_kind", "")))
 		button.pressed.connect(func(): _select_industry_asset(asset_id))
 		industry_asset_menu.add_child(button)
 		_industry_asset_buttons[asset_id] = button
@@ -1319,17 +1041,6 @@ func _service_class_label(service_class: String) -> String:
 		_:
 			return service_class.replace("_", " ").capitalize()
 
-func _service_class_color(service_class: String) -> Color:
-	match service_class:
-		"power":
-			return Color(0.78, 0.55, 0.18, 0.72)
-		"water":
-			return Color(0.16, 0.50, 0.70, 0.72)
-		"waste", "sewage":
-			return Color(0.28, 0.52, 0.34, 0.72)
-		_:
-			return Color(0.42, 0.42, 0.46, 0.72)
-
 func _refresh_clock_display(force: bool):
 	if not clock_label or not simulation_node:
 		return
@@ -1366,9 +1077,5 @@ func _refresh_city_status_display() -> void:
 
 func set_sim_speed_display(speed: float):
 	_display_speed = speed
-	if not speed_label:
-		return
-	if speed <= 0.001:
-		speed_label.text = "Paused"
-	else:
-		speed_label.text = "%.1fx" % speed
+	if _top_status:
+		_top_status.mark_speed(speed)

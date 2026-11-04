@@ -12,7 +12,6 @@ extends Node
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
-const TITLE_FONT_SIZE := 16
 const SECTION_FONT_SIZE := 13
 const ROW_FONT_SIZE := 14
 
@@ -37,6 +36,7 @@ func _process(_delta: float) -> void:
 func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle := true) -> bool:
 	var info: Dictionary = simulation_node.get_building_info_at(world_pos.x, world_pos.z)
 	if info.is_empty():
+		close_window()
 		return false
 
 	var key := _building_key(info)
@@ -58,6 +58,10 @@ func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle 
 	window.show()
 	_last_observed_hour = _current_absolute_hour()
 	return true
+
+## Whether the inspector currently owns a selection, used by the two-stage Escape action.
+func is_inspecting() -> bool:
+	return not _open_windows.is_empty()
 
 func close_window() -> void:
 	var keys := _open_windows.keys()
@@ -120,9 +124,7 @@ func _create_window_entry(key: String) -> Dictionary:
 	root_vbox.add_theme_constant_override("separation", 6)
 	margin.add_child(root_vbox)
 
-	var title_label := Label.new()
-	UIStyle.set_font_size(title_label, TITLE_FONT_SIZE)
-	title_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	var title_label := UIStyle.inspector_heading("")
 	title_label.clip_text = true
 	root_vbox.add_child(title_label)
 
@@ -370,11 +372,7 @@ func _resource_units(amount: float) -> String:
 
 func _add_section(stats_body: VBoxContainer, title: String) -> void:
 	stats_body.add_child(HSeparator.new())
-	var label := Label.new()
-	label.text = title
-	label.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	UIStyle.set_font_size(label, SECTION_FONT_SIZE)
-	stats_body.add_child(label)
+	stats_body.add_child(UIStyle.inspector_heading(title, true))
 
 func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String) -> void:
 	var hbox := HBoxContainer.new()
@@ -422,6 +420,7 @@ func _add_field_section(stats_body: VBoxContainer, info: Dictionary) -> void:
 	_add_row(stats_body, "%s Area" % resource_name, "%.0f m2" % area_m2)
 	var edit_button := Button.new()
 	edit_button.text = "Edit Field"
+	UIStyle.style_primary_button(edit_button)
 	edit_button.pressed.connect(func():
 		get_node("../InputManager").edit_farm_field(info)
 	)

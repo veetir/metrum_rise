@@ -5,7 +5,7 @@
 ## This HUD panel is read-only and intended to sit between the clock/speed panel
 ## and the R/C/I demand meter. Call `set_stats()` whenever the displayed values
 ## may have changed; the panel updates its labels only when the values differ.
-extends VBoxContainer
+extends HBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
@@ -18,11 +18,19 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_theme_constant_override("separation", 8)
 
+	var icon := TextureRect.new()
+	icon.texture = load("res://assets/ui/icons/money.svg")
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.custom_minimum_size = Vector2(22, 22)
+	add_child(icon)
 	_treasury_label = _make_value_label()
 	add_child(_treasury_label)
 
 	_agents_label = _make_value_label()
 	add_child(_agents_label)
+	UIStyle.set_font_size(_agents_label, 11)
+	_agents_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 
 	set_stats(0.0, 0)
 
@@ -39,10 +47,10 @@ func set_stats(treasury_balance: float, agent_count: int) -> void:
 
 func _make_value_label() -> Label:
 	var label := Label.new()
-	UIStyle.set_font_size(label, UIStyle.HUD_TEXT_SIZE)
+	UIStyle.set_font_size(label, 14)
 	label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	label.clip_text = true
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	return label
 
 func _format_currency(value: float) -> String:

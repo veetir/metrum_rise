@@ -379,6 +379,13 @@ func _ui_captures_keyboard_input() -> bool:
 	return _ui_has_modal_popup() or editing_focus
 
 func _handle_escape():
+	if current_tool == Tool.SELECT and select_tool and select_tool.clear_selection():
+		get_viewport().set_input_as_handled()
+		return
+	if building_inspector and building_inspector.is_inspecting():
+		building_inspector.close_window()
+		get_viewport().set_input_as_handled()
+		return
 	if current_tool != Tool.NONE:
 		_cancel_active_tool()
 	elif agent_inspector and agent_inspector.end_inspection():
@@ -712,6 +719,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 		camera.project_ray_normal(mouse_pos)
 	)
 	if pos == null:
+		building_inspector.close_window()
 		return
 	# With the junction overlay on, a click on a junction focuses it instead of inspecting.
 	if junction_debug_overlay and junction_debug_overlay.try_focus_at(pos):

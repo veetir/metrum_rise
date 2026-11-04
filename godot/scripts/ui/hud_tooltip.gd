@@ -7,14 +7,16 @@ extends Node
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const DELAY := 0.15
 
-var _button: Button
+var _button: Control
+var _title := ""
 var _timer: Timer
 var _layer: CanvasLayer
 var _card: PanelContainer
 
 ## Installs one delayed tooltip on a HUD button; the button suppresses its native tooltip.
-func attach(button: Button) -> void:
+func attach(button: Control, title: String = "") -> void:
 	_button = button
+	_title = title
 	button.add_child(self)
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -23,19 +25,21 @@ func attach(button: Button) -> void:
 	_timer.timeout.connect(_show)
 	button.mouse_entered.connect(func(): _timer.start())
 	button.mouse_exited.connect(_hide)
-	button.button_down.connect(_hide)
+	if button is BaseButton:
+		button.button_down.connect(_hide)
 	button.visibility_changed.connect(_hide)
 	button.resized.connect(_hide)
 
 func _show() -> void:
-	if not _button.is_visible_in_tree() or not _button.is_hovered():
+	if not _button.is_visible_in_tree() or not _button.get_global_rect().has_point(_button.get_global_mouse_position()):
 		return
 	_layer = CanvasLayer.new()
 	_layer.layer = 100
 	add_child(_layer)
 	var viewport_size := _button.get_viewport_rect().size
 	var width := minf(UIStyle.scaled_px(310), viewport_size.x - 60)
-	_card = view(_button.text, _button.tooltip_text, width)
+	var title: String = _button.text if _button is Button else _title
+	_card = view(title, _button.tooltip_text, width)
 	_card.visible = false
 	_card.resized.connect(_place, CONNECT_DEFERRED)
 	_layer.add_child(_card)
