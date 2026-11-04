@@ -319,7 +319,10 @@ road_attempt {"attempt":4,"by":"commit","reason":"parcel_overlap","generation":3
   middle of the prepared road. The stroke's ends give the snapped node or open terrain, with
   the road and terrain heights there.
 - `road_attempt` carries the stroke exactly as submitted: every point at full `f32` precision,
-  the lane counts, snapping and the road-tool generation (`get_road_tool_surface_generation`),
+  the lane counts, snapping, the tool's `tunnel`, its median (`median_style`, `median_width`)
+  and road-type attributes (`speed_kmh`, `sidewalks`, `zoning`, `street_lights`; `ROAD-101`),
+  and the road-tool
+  generation (`get_road_tool_surface_generation`),
   which changes whenever the road network is rebuilt: a built or bulldozed road, an undo, a
   loaded world. A refused stroke leaves it unchanged. Both lines end with the same attempt
   number.
@@ -341,8 +344,11 @@ the text dump names its save and the road network it holds. To check a refusal a
 
 This builds, then runs `godot/tests/replay_road_attempts.gd` headless in a throwaway profile. It
 loads every installed asset pack read-only, loads the save, and sends each `road_attempt` along
-the player's path: the click check, then, if that passes, the commit. Each attempt prints one
-line:
+the player's path: the click check, then, if that passes, the commit, with the attempt's tunnel,
+median and road-type attributes set first (an attempt without `speed_kmh`, `sidewalks`,
+`zoning` or `street_lights`, from before them, replays the built-ins' 50 km/h with sidewalks,
+zoning and street lights).
+Each attempt prints one line:
 
 ```text
 attempt 4 (commit, parcel_overlap): reproduced, refused by commit

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! An edge's cross-section: where its two directional lane groups sit inside the centred
-//! carriageway (`ROAD-100`), the median between them (`ROAD-80`), and the lane counts and median
-//! edited in place (`ROAD-80`). The median's geometry is the roadbed's (`roadbed::profile`).
+//! carriageway (`ROAD-100`), the median between them (`ROAD-80`), and the lane counts, median and
+//! road-type attributes edited in place (`ROAD-80`, `ROAD-101`). The median's geometry is the
+//! roadbed's (`roadbed::profile`).
 
 use super::{Edge, RegionGraph};
 use crate::config;
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::types::{TransitFlags, TransitType, VehicleFrontageAccess};
+use crate::simulation::pathing::cost::CostCalculator;
 
 /// Most vehicle lanes one direction of a road carries, as the road tool offers them.
 pub(crate) const MAX_LANES_PER_DIRECTION: u8 = 4;
@@ -218,6 +221,15 @@ impl Edge {
         Self::validate_parking(self.allowed_types, fwd, bkw, parking)
     }
 
+    /// A car road's `allowed_types` with its sidewalks (`FOOT`) on or off (`ROAD-101`). `O(1)`.
+    pub(crate) fn sidewalk_flags(allowed_types: u8, sidewalks: bool) -> u8 {
+        if sidewalks {
+            allowed_types | TransitFlags::FOOT
+        } else {
+            allowed_types & !TransitFlags::FOOT
+        }
+    }
+
     /// The median rules alone, for an edge of `allowed_types` with `fwd` + `bkw` lanes: valid
     /// dimensions, a car road, both directions (`ROAD-92`: a walkway has no median). Strokes,
     /// in-place edits and loads share them.
@@ -260,12 +272,14 @@ impl Edge {
 }
 
 impl RegionGraph {
-    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, `parking` (`PARK-05`) and
-    /// the width they take,
-    /// keeping its centreline, id, class and everything else (`ROAD-80`). The cross-section must
-    /// pass [`Edge::validate_cross_section`]. The spatial index reads the centreline only, so it
-    /// is kept. Callers re-lay out both end nodes and rebuild their lanes, as `SimCore`'s
-    /// in-place edit does. `O(1)`.
+    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, `parking` (`PARK-05`)
+    /// and the width they take, and its road type's `attributes` (`ROAD-101`): the `FOOT` flag
+    /// from `sidewalks`, the speed limit (the routing `base_cost` recomputed from it when it
+    /// changes), `no_building_spawn` from `zoning` and `no_street_lights` from `street_lights`.
+    /// Keeps its centreline, id, class and everything else (`ROAD-80`). The cross-section must
+    /// pass [`Edge::validate_cross_section`], so the edge is a car road. The spatial index reads
+    /// the centreline only, so it is kept. Callers re-lay out both end nodes and rebuild their
+    /// lanes, as `SimCore`'s in-place edit does. `O(1)`, or `O(points)` for a speed change.
     pub(crate) fn set_edge_cross_section(
         &mut self,
         id: usize,
@@ -273,6 +287,7 @@ impl RegionGraph {
         bkw: u8,
         median: Option<RoadMedian>,
         parking: RoadParking,
+        attributes: RoadAttributes,
     ) {
         let edge = self.edge_mut(id);
         debug_assert_eq!(
@@ -284,6 +299,13 @@ impl RegionGraph {
         edge.median = median;
         edge.parking = parking;
         edge.width = Edge::cross_section_width_m(fwd, bkw, median, parking);
+        edge.allowed_types = Edge::sidewalk_flags(edge.allowed_types, attributes.sidewalks);
+        edge.no_building_spawn = !attributes.zoning;
+        edge.no_street_lights = !attributes.street_lights;
+        if edge.speed_limit.to_bits() != attributes.speed_ms.to_bits() {
+            edge.speed_limit = attributes.speed_ms;
+            edge.base_cost = CostCalculator::calculate_costs(edge).0;
+        }
     }
 }
 

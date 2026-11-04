@@ -41,6 +41,7 @@ fn commit_with(
             tunnel: false,
             median: None,
             parking,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
         Instant::now(),
         RoadEditMetrics::default(),

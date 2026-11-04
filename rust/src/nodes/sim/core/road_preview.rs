@@ -19,9 +19,11 @@ use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
-    RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
+    PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
+    validate_road_candidate_fast,
 };
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
 use crate::simulation::terrain::TerrainSystem;
@@ -43,6 +45,9 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) median: Option<RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`), part of the identity like `median`.
     pub(crate) parking: RoadParking,
+    /// The road tool's road-type attributes (`ROAD-101`): part of the preview's and the plan's
+    /// identity; the stroke's edge and its pieces carry them.
+    pub(crate) attributes: RoadAttributes,
 }
 
 /// Corridor clearance of a stroke against live parcels and field reservations.
@@ -62,20 +67,20 @@ pub(crate) struct RoadCorridorClearance {
 
 impl RoadCorridorClearance {
     /// Queries the parcel chunk index and the field reservations along the corridor that the
-    /// lanes, the `median` and the sidewalks cover. O(corridor segments × parcels and fields in
-    /// the touched chunks).
+    /// lanes, the `median` and the sidewalks (or a road without them its shoulders,
+    /// `attributes`) cover. O(corridor segments × parcels and fields in the touched chunks).
     pub(crate) fn evaluate(
         core: &SimCore,
         points: &[Vector3],
-        fwd_lanes: i32,
-        bkw_lanes: i32,
+        (fwd_lanes, bkw_lanes): (i32, i32),
         median: Option<RoadMedian>,
         parking: RoadParking,
+        attributes: RoadAttributes,
     ) -> Self {
         let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
-        let half_width =
-            Edge::cross_section_width_m(lanes(fwd_lanes), lanes(bkw_lanes), median, parking) * 0.5
-            + crate::config::SIDEWALK_WIDTH;
+        let (fwd, bkw) = (lanes(fwd_lanes), lanes(bkw_lanes));
+        let half_width = Edge::cross_section_width_m(fwd, bkw, median, parking) * 0.5
+            + attributes.corridor_side_m(fwd == 0 && bkw == 0);
         let parcels = core
             .zoning
             .parcel_ids_overlapping_road_corridor(points, half_width);
@@ -148,12 +153,12 @@ impl RoadToolQuerySnapshot {
     }
 
     /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
-    /// checks of the hover path. Returns the prepared points and the validation.
-    /// O(stroke points + endpoint snap lookups).
+    /// checks of the hover path. Returns the prepared input (its points and class: the stroke's
+    /// cost) and the validation. O(stroke points + endpoint snap lookups).
     pub(crate) fn validate(
         &self,
         request: &RoadPreviewRequest,
-    ) -> (Vec<Vector3>, RoadPreviewValidation) {
+    ) -> (PreparedRoadInput, RoadPreviewValidation) {
         let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let mut prepared = prepare_road_input_for_tool(
@@ -165,6 +170,7 @@ impl RoadToolQuerySnapshot {
             request.tunnel,
         );
         prepared.median = request.median;
+        prepared.attributes = request.attributes;
         let validation = validate_road_candidate_fast(
             &prepared,
             (fwd_lanes, bkw_lanes),
@@ -181,7 +187,7 @@ impl RoadToolQuerySnapshot {
         if request.surface_generation != self.surface_generation {
             validation = validation.with_invalid_reason("stale_surface_generation");
         }
-        (prepared.points, validation)
+        (prepared, validation)
     }
 }
 
@@ -302,8 +308,7 @@ impl RoadPreview {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
-        median: Option<RoadMedian>,
-        parking: RoadParking,
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
         request.points == points
@@ -313,6 +318,7 @@ impl RoadPreview {
             && request.tunnel == tunnel
             && request.median == median
             && request.parking == parking
+            && request.attributes == attributes
     }
 }
 

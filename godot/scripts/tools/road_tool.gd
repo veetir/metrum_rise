@@ -14,15 +14,19 @@
 ## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
 ## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
 ## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
-## label. The next stroke's lanes, median and kerbside parking come from a road type
+## label. The next stroke's lanes, median, kerbside parking and attributes come from a road type
 ## (`ROAD-101`, `PARK-05`): `set_road_type` reads the type's cross-section from Rust's
 ## `get_road_types` and sets the lanes (per-call arguments of every preview and commit), the
-## median through `set_road_tool_median` and the parking through `set_road_tool_parking`. R keeps the last road type picked (2-Lane Road at first),
+## median through `set_road_tool_median`, the parking through `set_road_tool_parking`, and the
+## type's speed, sidewalks, zoning and street lights through `set_road_tool_attributes` (a
+## walkway, which has no speed, sends the built-ins' defaults); each preview re-asserts the
+## median, parking and attributes, and the HUD's cost is the preview's `build_cost`, Rust's cost
+## of the type over the stroke. R keeps the last road type picked (2-Lane Road at first),
 ## X picks the Walkway. `set_lanes` and `set_median` stay the two low-level setters
 ## (benchmarks, probes and the debug replay write them). Rust stays the guard: the stroke's
 ## check refuses a median its lanes cannot carry (a one-way road or a walkway).
 ## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), set_road_tool_parking(),
-## get_road_types(),
+## set_road_tool_attributes(), get_road_types(),
 ## preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
@@ -36,6 +40,7 @@ extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
+const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -63,6 +68,13 @@ var median_width: float = 0.0
 # The next stroke's kerbside parking (`PARK-05`), mirrored in Rust: bit 0 the left kerb, bit 1
 # the right, looking along the stroke.
 var parking: int = 0
+# The next stroke's road-type attributes (`ROAD-101`), mirrored in Rust like the median: the
+# speed limit in km/h, sidewalks on both sides (else a shoulder each side), zoning and street
+# lights.
+var speed_kmh: int = 50
+var sidewalks: bool = true
+var zoning: bool = true
+var street_lights: bool = true
 ## The built-in type R starts with and falls back to when the picked type is gone.
 const DEFAULT_ROAD_TYPE := "builtin:road_2l"
 ## The built-in Walkway type, X's pick.
@@ -104,6 +116,7 @@ var _preview_tunnel: bool = false
 var _preview_median_style: int = 0
 var _preview_median_width: float = 0.0
 var _preview_parking: int = 0
+var _preview_attributes := []
 # Counts preview_road calls; it names displayed results for the metrics trace only.
 var _preview_sequence: int = 0
 var _preview_drawn_sequence: int = 0
@@ -272,17 +285,37 @@ func set_parking(code: int) -> String:
 	_queue_preview_update()
 	return ""
 
-## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median and parking as Rust's
-## `get_road_types` lists them. Returns "" when picked, else the refusal key: the type's
-## `invalid_reason` when it is unusable, `road_type_unknown` when no type has `id`; a refused
-## pick leaves the tool as it was. `O(types x parts)` on a UI action.
+## Sets the next stroke's speed limit, sidewalks, zoning and street lights through Rust and
+## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid, keeping the tool's
+## attributes).
+func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool, with_lights: bool) -> String:
+	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning, with_lights)
+	if not reason.is_empty():
+		return reason
+	speed_kmh = speed
+	sidewalks = with_sidewalks
+	zoning = with_zoning
+	street_lights = with_lights
+	_queue_preview_update()
+	return ""
+
+## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, parking, speed,
+## sidewalks, zoning and street lights as Rust's `get_road_types` lists them. Returns "" when
+## picked, else the refusal key: the type's `invalid_reason` when it is unusable,
+## `road_type_unknown` when no type has `id`; a refused pick leaves the tool as it was (a usable
+## type's median, parking and speed always pass). `O(types x parts)` on a UI action.
 func set_road_type(id: String) -> String:
-	var type := _road_type(id)
+	var library: Dictionary = simulation_node.get_road_types()
+	var type := _road_type(id, library)
 	if type.is_empty():
 		return "road_type_unknown"
 	if not bool(type.get("usable", false)):
 		return String(type.get("invalid_reason", "road_type_unknown"))
-	var reason := set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
+	var attributes := RoadTypeMenu.tool_attributes(type, library.get("speeds", {}))
+	var reason := set_attributes(attributes[0], attributes[1], attributes[2], attributes[3])
+	if not reason.is_empty():
+		return reason
+	reason = set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
 	if reason.is_empty():
 		reason = set_parking(int(type.get("parking", 0)))
 	if not reason.is_empty():
@@ -298,13 +331,13 @@ func set_road_type(id: String) -> String:
 ## layout draws from the next stroke on; built roads keep theirs. A type that is gone or no longer
 ## usable falls back to the 2-Lane Road (the Walkway stays the Walkway).
 func reload_road_type() -> void:
-	if not bool(_road_type(last_road_type_id).get("usable", false)):
+	if not bool(_road_type(last_road_type_id, simulation_node.get_road_types()).get("usable", false)):
 		last_road_type_id = DEFAULT_ROAD_TYPE
 	if not road_type_id.is_empty() and not set_road_type(road_type_id).is_empty():
 		set_road_type(last_road_type_id)
 
-func _road_type(id: String) -> Dictionary:
-	for type in simulation_node.get_road_types().get("types", []):
+func _road_type(id: String, library: Dictionary) -> Dictionary:
+	for type in library.get("types", []):
 		if String(type.get("id", "")) == id:
 			return type
 	return {}
@@ -409,6 +442,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	simulation_node.set_road_tool_tunnel(tunnel_enabled)
 	simulation_node.set_road_tool_median(median_style, median_width)
 	simulation_node.set_road_tool_parking(parking)
+	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning, street_lights)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
 		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
@@ -422,6 +456,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_median_style = median_style
 	_preview_median_width = median_width
 	_preview_parking = parking
+	_preview_attributes = [speed_kmh, sidewalks, zoning, street_lights]
 	return _preview
 
 func _preview_is_for(points: PackedVector3Array) -> bool:
@@ -435,6 +470,7 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and median_style == _preview_median_style
 		and median_width == _preview_median_width
 		and parking == _preview_parking
+		and _preview_attributes == [speed_kmh, sidewalks, zoning, street_lights]
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 

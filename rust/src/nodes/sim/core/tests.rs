@@ -592,6 +592,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         tunnel: false,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     });
 
     assert!(!validation.is_valid);
@@ -827,6 +828,7 @@ fn planned_topology_rejection_restores_split_dependents() {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -883,6 +885,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -920,6 +923,7 @@ fn add_test_border_road(core: &mut SimCore) {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(180.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
@@ -1159,6 +1163,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         geometry,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,

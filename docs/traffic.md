@@ -60,8 +60,8 @@ road with a car lane may park (`parking_requires_vehicle_road`, checked on the s
 load). Splits copy the setting; no graph operation reverses an edge. Save format 114 stores it as
 `network_edges.parking` (bit 0 left, bit 1 right).
 
-The road builder (`ROAD-101`) has a Parking lane part, allowed only next to a sidewalk
-(`layout_parking_at_kerb`), so at most one per side; a type's parking reaches the road tool
+The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb (next to a sidewalk, or
+outermost on a road without them; `layout_parking_at_kerb`), so at most one per side; a type's parking reaches the road tool
 through `set_road_tool_parking` and travels with the stroke through preview, commit and the
 refusal report like the median. Road types store it as the `parking` part kind. A clicked
 Parking tile always lands at a kerb: the one on the selected slot's side, the right on a tie, the

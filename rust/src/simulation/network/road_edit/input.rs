@@ -5,6 +5,7 @@
 
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::road_types::RoadAttributes;
 use super::support::{RebuiltPieces, StrokeSupport};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::network::topology::StrokeGrade;
@@ -63,6 +64,10 @@ pub(crate) struct PreparedRoadInput {
     pub(crate) median: Option<RoadMedian>,
     /// The stroke's kerbside parking (`PARK-05`), set like `median`.
     pub(crate) parking: crate::simulation::network::graph::RoadParking,
+    /// The stroke's road-type attributes (`ROAD-101`: speed, sidewalks, zoning), which its edge
+    /// and every piece a crossing splits it into carry. Set beside the median, never read by
+    /// preparation; the preparers leave the default.
+    pub(crate) attributes: RoadAttributes,
 }
 
 // A stroke's prepared points, its inferred class, the grade a refused standard solve was forced
@@ -179,6 +184,7 @@ fn prepare_snapped_road_input_to_visible_surface(
         tunnel: false,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: RoadAttributes::DEFAULT,
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
         elevated_ends,
         joined_spans,
@@ -287,6 +293,7 @@ pub(super) fn prepare_road_input_excluding(
         tunnel: false,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: RoadAttributes::DEFAULT,
         forced_grade,
         elevated_ends,
         joined_spans: [None; 2],

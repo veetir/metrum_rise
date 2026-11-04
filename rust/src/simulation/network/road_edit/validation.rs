@@ -22,6 +22,7 @@ use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{
     LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
 };
@@ -320,6 +321,7 @@ fn profile_validation(
             bkw_lanes,
             prepared_input.median,
             prepared_input.parking,
+            prepared_input.attributes,
         );
         let decks = grounded_decks_near(graph, prepared_points, half_width_m);
         return tunnel_profile_validation(
@@ -393,6 +395,7 @@ fn refuse_close_crossing(
         bkw_lanes,
         prepared_input.median,
         prepared_input.parking,
+        prepared_input.attributes,
     );
     let over_tunnel = (class == EdgeClass::Standard)
         .then(|| deck_over_tunnels_m(points, half_width_m, graph))
@@ -553,6 +556,7 @@ fn validate_against_graph(
                 bkw_lanes,
                 prepared_input.median,
                 prepared_input.parking,
+                prepared_input.attributes,
             );
             let decks = grounded_decks_near(existing_graph, prepared_points, half_width_m);
             tunnel_bore(prepared_points, half_width_m, terrain, &decks).ok()
@@ -577,7 +581,13 @@ fn validate_against_graph(
         prepared_points,
         prepared_input.class,
         prepared_input.grade(bore),
-        (fwd_lanes, bkw_lanes, prepared_input.median, prepared_input.parking),
+        (
+            fwd_lanes,
+            bkw_lanes,
+            prepared_input.median,
+            prepared_input.parking,
+            prepared_input.attributes,
+        ),
         existing_graph,
         prepared_input.endpoint_snap_enabled,
         terrain,
@@ -665,7 +675,13 @@ fn build_validation_graph(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
     grade: StrokeGrade,
-    (fwd_lanes, bkw_lanes, median, parking): (u8, u8, Option<RoadMedian>, RoadParking),
+    (fwd_lanes, bkw_lanes, median, parking, attributes): (
+        u8,
+        u8,
+        Option<RoadMedian>,
+        RoadParking,
+        RoadAttributes,
+    ),
     existing_graph: &RegionGraph,
     endpoint_snap_enabled: bool,
     terrain: &TerrainSystem,
@@ -691,7 +707,7 @@ fn build_validation_graph(
 
     let existing_edge_ids = candidate_existing_edge_ids(
         prepared_points,
-        (fwd_lanes, bkw_lanes, median, parking),
+        (fwd_lanes, bkw_lanes, median, parking, attributes),
         edge_class,
         existing_graph,
         start_existing,
@@ -750,6 +766,7 @@ fn build_validation_graph(
     };
     let new_edge_idx = validation_graph.add_edge(build_surface_edge(
         start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class, median, parking,
+        attributes,
     ));
     let (base_cost, physical_length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(
@@ -822,7 +839,13 @@ fn build_validation_graph(
 #[allow(clippy::too_many_arguments)]
 fn candidate_existing_edge_ids(
     prepared_points: &[Vector3],
-    (fwd_lanes, bkw_lanes, median, parking): (u8, u8, Option<RoadMedian>, RoadParking),
+    (fwd_lanes, bkw_lanes, median, parking, attributes): (
+        u8,
+        u8,
+        Option<RoadMedian>,
+        RoadParking,
+        RoadAttributes,
+    ),
     edge_class: EdgeClass,
     existing_graph: &RegionGraph,
     start_existing: Option<u32>,
@@ -848,6 +871,7 @@ fn candidate_existing_edge_ids(
             bkw_lanes,
             median,
             parking,
+            attributes,
         );
     let mut edge_ids = existing_graph.get_edges_near_aabb(
         Vector3::new(min_x - pad, 0.0, min_z - pad),

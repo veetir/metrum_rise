@@ -52,6 +52,7 @@ fn commit_with(
             tunnel,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
         std::time::Instant::now(),
@@ -78,6 +79,7 @@ fn preview(
         tunnel,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     };
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
     let quick = view.validate(&request()).1;

@@ -9,10 +9,10 @@
 //! city-wide scan or recursive chain dependency.
 
 use super::standard_surface::CompiledSurfaceCoverage;
+use super::verge::VergeGround;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{BandKind, NodeKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, TransitType};
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
 /// Street light models, in the order of `godot/assets/models/street_lights/`.
@@ -73,7 +73,8 @@ struct Rule {
 }
 
 fn rule_for_edge(edge: &Edge) -> Option<Rule> {
-    if edge.deleted || edge.class != EdgeClass::Standard {
+    // A road whose type has street lights off has none, and ends its neighbours' streets.
+    if edge.deleted || edge.class != EdgeClass::Standard || edge.no_street_lights {
         return None;
     }
     // Spacings are the look-dev defaults from the street-light models' metadata (assumed, not
@@ -106,11 +107,12 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
 /// Lights are spaced along whole streets: chains of edges through degree-two nodes that take the
 /// same family of light. Each edge emits the chain's lights that fall on it, so every chunk
 /// rebuild agrees. Endpoint resolution is O(degree * (chain sections + walk steps)), degree <= 6,
-/// plus O(chain length + lights) for placement. Scratch allocation is per chain, never per pole.
+/// plus O(chain length + lights) for placement, and one `ground` query per pole off a sidewalk.
+/// Scratch allocation is per chain, never per pole.
 pub(super) fn place_street_lights(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     coverage: &CompiledSurfaceCoverage,
 ) -> Vec<StreetLight> {
     let mut lights = Vec::new();
@@ -123,11 +125,11 @@ pub(super) fn place_street_lights(
             continue;
         };
         let (start, end) = chain_end_nodes(graph, &chain);
-        let start_m = separated_end_margin(graph, roadbed, terrain, start, chain[0].0);
-        let end_m = separated_end_margin(graph, roadbed, terrain, end, chain[chain.len() - 1].0);
+        let start_m = separated_end_margin(graph, roadbed, start, chain[0].0);
+        let end_m = separated_end_margin(graph, roadbed, end, chain[chain.len() - 1].0);
         place_along_chain(
             &mut lights,
-            terrain,
+            ground,
             &chain,
             &runs,
             edge_idx,
@@ -137,6 +139,82 @@ pub(super) fn place_street_lights(
         );
     }
     lights
+}
+
+/// The edges whose street lights or signs may change when the pieces of `edges` and `nodes` were
+/// rebuilt (any edit, or a road's lights turned on or off), in ascending order: what a chunk
+/// publication must emit again beyond its changed chunks. Lights are spaced along streets (chains
+/// of one family through degree-two nodes) and an end pole keeps clear of the other arms' end
+/// poles at its node, and signs follow degree-two streets of any family, so a change re-spaces
+/// up to the whole degree-two street through each rebuilt edge or node, and moves end poles on
+/// the streets meeting at that street's two ends. A street ends at a node of another degree, so
+/// one ring of such neighbours suffices: an end pole depends on the arms ranked above it at its
+/// node and on their far ends' degree and node piece, never on another node's resolution.
+/// `O(seeds * street + ends * degree * street)` edges walked, no city scan.
+pub(super) fn furniture_dependents(
+    graph: &RegionGraph,
+    edges: &[usize],
+    nodes: &[u32],
+) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut ends = Vec::new();
+    let mut street = Vec::new();
+    let seeds = edges.iter().copied().chain(
+        nodes
+            .iter()
+            .flat_map(|&node| graph.node_adjacency(node).iter().copied()),
+    );
+    for edge in seeds {
+        if graph.edge(edge).deleted || out.contains(&edge) {
+            continue;
+        }
+        ends.extend(degree_two_street(graph, edge, &mut street));
+        out.extend(street.iter().copied());
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    for node in ends {
+        for &edge in graph.node_adjacency(node) {
+            if !graph.edge(edge).deleted && !out.contains(&edge) {
+                degree_two_street(graph, edge, &mut street);
+                out.extend(street.iter().copied());
+            }
+        }
+    }
+    out
+}
+
+// Every live edge of the street through `edge` across degree-two nodes, whatever their family,
+// into `street` (cleared first), and the street's two end nodes (the same node twice for a
+// closed loop). `O(street)`.
+fn degree_two_street(graph: &RegionGraph, edge: usize, street: &mut Vec<usize>) -> [u32; 2] {
+    street.clear();
+    street.push(edge);
+    let start = graph.edge(edge);
+    [start.start_node, start.end_node].map(|mut node| {
+        let mut previous = edge;
+        while live_degree(graph, node) == 2 {
+            let Some(&next) = graph
+                .node_adjacency(node)
+                .iter()
+                .find(|&&e| e != previous && !graph.edge(e).deleted)
+            else {
+                break;
+            };
+            if next == edge {
+                break;
+            }
+            street.push(next);
+            let next_edge = graph.edge(next);
+            node = if next_edge.start_node == node {
+                next_edge.end_node
+            } else {
+                next_edge.start_node
+            };
+            previous = next;
+        }
+        node
+    })
 }
 
 // The visible stretch of one chain edge, in chain order.
@@ -298,7 +376,6 @@ fn arm_rank(graph: &RegionGraph, edge: usize) -> Option<(u8, usize)> {
 fn separated_end_margin(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
-    terrain: &TerrainSystem,
     node: u32,
     target: usize,
 ) -> f32 {
@@ -358,7 +435,7 @@ fn separated_end_margin(
         let mut margin = normal;
         let found = loop {
             let along = if from_start { margin } else { total - margin };
-            let poles = poles_at(terrain, &chain, &runs, along, &rule);
+            let poles = poles_at(&chain, &runs, along, &rule);
             let clear = poles.iter().flatten().all(|pole| {
                 accepted.iter().all(|&(owner, other)| {
                     owner == chain_key
@@ -387,9 +464,9 @@ fn planar_distance(a: Vector3, b: Vector3) -> f32 {
     (a.x - b.x).hypot(a.z - b.z)
 }
 
-// The poles `place_along_chain` would put `along` metres from the chain's start.
+// The poles `place_along_chain` would put `along` metres from the chain's start, in plan: the
+// clearance between end poles is planar, so a pole off a sidewalk is not given its height.
 fn poles_at(
-    terrain: &TerrainSystem,
     chain: &[(usize, bool)],
     runs: &[Run],
     along: f32,
@@ -414,7 +491,7 @@ fn poles_at(
         .unwrap_or(sections.len() - 2);
     let (a, b) = (&sections[i], &sections[i + 1]);
     let side = chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 };
-    let place = |side| place_at(terrain, a, b, s, side, rule.kind);
+    let place = |side| place_at(None, a, b, s, side, rule.kind);
     if rule.both_sides {
         [place(1.0), place(-1.0)]
     } else {
@@ -425,7 +502,7 @@ fn poles_at(
 #[allow(clippy::too_many_arguments)]
 fn place_along_chain(
     lights: &mut Vec<StreetLight>,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     chain: &[(usize, bool)],
     runs: &[Run],
     edge_idx: usize,
@@ -484,7 +561,7 @@ fn place_along_chain(
         }
         let (a, b) = (&sections[section_index], &sections[section_index + 1]);
         for &side in sides {
-            if let Some(light) = place_at(terrain, a, b, s, side, rule.kind) {
+            if let Some(light) = place_at(Some(&mut *ground), a, b, s, side, rule.kind) {
                 lights.push(light);
             }
         }
@@ -504,8 +581,9 @@ fn chain_side(first: &Run, forward: bool) -> f32 {
     if forward { world } else { -world }
 }
 
+// `ground` gives a pole off a sidewalk its height; `None` places in plan only (height 0).
 fn place_at(
-    terrain: &TerrainSystem,
+    ground: Option<&mut VergeGround<'_>>,
     a: &RoadSection,
     b: &RoadSection,
     s: f32,
@@ -522,23 +600,26 @@ fn place_at(
     let lateral = a.lateral_xz.lerp(b.lateral_xz, t).try_normalize()?;
     let near = if t < 0.5 { a } else { b };
     let (offset_m, band_height) = pole_offset(near, side, kind)?;
-    let ground = center + lateral * f64::from(offset_m * side);
-    let height = band_height
-        .unwrap_or_else(|| terrain.sample_height_world(ground.x as f32, ground.y as f32));
+    let position = center + lateral * f64::from(offset_m * side);
+    let height = match (band_height, ground) {
+        (Some(height), _) => height,
+        (None, Some(ground)) => ground.height_at(position.x, position.y),
+        (None, None) => 0.0,
+    };
     if !height.is_finite() {
         return None;
     }
     // The model's arm points along +X; turn it toward the road centre.
     let toward_road = -lateral * f64::from(side);
     Some(StreetLight {
-        position: Vector3::new(ground.x as f32, height, ground.y as f32),
+        position: Vector3::new(position.x as f32, height, position.y as f32),
         yaw: (-toward_road.y).atan2(toward_road.x) as f32,
         kind,
     })
 }
 
 // Lateral distance of the pole from the centreline on `side`, and the surface height there when
-// the pole stands on a compiled band (None: on the verge, use the terrain).
+// the pole stands on a compiled band (None: on the verge, it stands on the drawn ground).
 fn pole_offset(
     section: &RoadSection,
     side: f32,

@@ -168,6 +168,7 @@ fn committed_with(
                 tunnel: false,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),

@@ -1541,12 +1541,13 @@ These need a user decision; work that does not depend on them continues.
       it reaches only the other footpaths there, and the walking proof is withdrawn on such a
       network. The legacy rule joined it to the corner between the nearest sidewalk arms, across
       the car-only road. No fixture or perf city has one.
-      - **Evidence (2026-10-25).** The proof (`ConnectorTargets::prove_complete`) requires foot
+      - **Evidence (2026-10-25).** The proof (`ConnectorTargets::prove_complete`) required foot
         lanes both ways on every live edge, car-only ones included, so a single road without
-        sidewalks withdraws it on its whole network whatever its junctions do
-        (`a_road_without_sidewalks_withdraws_the_walking_proof`: the reference T keeps it, the same
-        T with a side road without sidewalks loses it). No road tool authors such a road today
-        (strokes always carry sidewalks); saves may hold them.
+        sidewalks withdrew it on its whole network whatever its junctions did. Since `ROAD-101`
+        (RB3a, 2026-11-03) it checks only the edges walkers cross (every `FOOT` edge and the edge
+        the path lookup selects for its node pair), so such a road keeps it
+        (`a_road_without_sidewalks_keeps_the_walking_proof`: the reference T and the same T with
+        a side road drawn without sidewalks both keep it).
       - **Options.** (a) keep: the footpath joins only the footpaths there; (b) the legacy join
         across the car-only road to the nearest sidewalk corner, an unmarked crossing walkers take
         without a zebra, against question 12's rule that walkers switch sides only on crossings;
@@ -10165,7 +10166,8 @@ closure is compiled into a scratch roadbed: a failed node piece (`node_piece_fai
 newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steepened profile
 (`road_too_steep`) refuse. A widening is also checked on the applied graph against visible water
 (standard roads, `water_requires_bridge`, as the class change), parcels inside the new frontage
-corridor (`width / 2 + SIDEWALK_WIDTH`, the stroke's half-width, `parcel_overlap`) and the
+corridor (`width / 2` plus the road's side band, `parcel_overlap`; a widening is judged on the
+roadbed half-width since round RB3b) and the
 illegal curve radius at the new width (`cross_section_too_wide_for_curve`). The graph is put back
 either way; the preview is this check.
 
@@ -10180,7 +10182,9 @@ deferred (D7). The class change (`set_edge_class_internal`) now pushes its check
 
 Bounds: the check is `O(closure pieces)` (two nodes' closures); the commit tail `O(local lanes +
 invalidated)` plus the undo's parallel `O(A / P + B / P)` membership passes over agents and
-buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width`.
+buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width` (and since
+`ROAD-101`'s round RB3b the type's `FOOT`, speed limit, `base_cost` and `no_building_spawn`,
+below).
 
 Acceptance record (round R3a, 2026-11-02, fresh; release binaries of `ea63df40` (control, with
 R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,8,10,12,14`,
@@ -10210,13 +10214,108 @@ R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,
   its 117 one-way fixtures and no other hash.
 - Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
 
+**Road-type attributes in place (`ROAD-101`, round RB3b, 2026-11-03).** The edit takes the full
+spec: lanes, median and the road type's `RoadAttributes` (speed, sidewalks, zoning).
+`preview_edge_cross_section` and `set_edge_cross_section` gained `speed_kmh` (20-120 in steps of
+10, else `speed_out_of_range`), `sidewalks` and `zoning`; a valid verdict also carries
+`buildings_removed`, `demolition_permanent` and `cost_delta`. `RegionGraph::set_edge_cross_section` writes `FOOT` (a car
+road's sidewalks), the speed limit (with `base_cost` recomputed, only when the speed changes) and
+`no_building_spawn`; `cross_section_unchanged` compares the full spec. A widening is judged on the
+roadbed half-width (`visual_roadbed_half_width_m`: sidewalks, or without them the 0.75 m
+shoulders), so sidewalks added beside a parcel are refused (`parcel_overlap`) though the
+carriageway keeps its width, and the parcel corridor is `width / 2` plus the road's side band
+(`side_band_width_m`). Walkers on a removed sidewalk go through the same reattach as cars: the
+nearest sidewalk lane within 30 m, else laneless on their road (`TRAFFIC-19`'s case); none is
+moved or lost. The closure's entrances are rebuilt, so the road's buildings become car-only
+destinations, and the deferred routing rebuild takes the new speed and the walking topology.
+Zoning turned off does what the "No buildings" checkbox does: the allocator maintenance
+demolishes the road's buildings at once and its parcels are removed, other roads' buildings keep
+their rezone grace; `buildings_removed` counts them first (every building whose road it is,
+only when zoning goes off: among the buildings of the 512 m chunks within the road's reach,
+`attachment_repair_candidates`, checked against the whole city in test builds; a parallel
+`O(B / P)` count only while the chunk index is stale). The undo record restores the edge records
+and the emptied parcels; demolished buildings stay demolished: no undo path restores a road's
+buildings (the bulldoze journal restores one building per entry), so the verdict's
+`demolition_permanent` is true whenever `buildings_removed` is not 0, for the confirmation to say
+Apply cannot be undone (round RB3b2). `cost_delta` is the new cost
+weight less the current one times 15 times the road's length, floored at 0 (a cheaper type
+refunds nothing); the commit charges it outside `benchmark_mode`. Until round RB3c's Road
+Properties passed a type's attributes, `select_tool.gd` sent each road's own (read back with
+`get_edge_cross_section`); since round RB3c Road Properties sends the picked type's (below).
+The cost rule is `simulation/network/road_types/cost.rs`.
+
+Acceptance record (round RB3b, fresh; release library test binaries of `dev` `7843de33`
+(control) and the round's code (`1c57f055`, with R8's uncommitted probe), plus round RB3a's last
+commit `f32712bc` for a bisect; P-cores `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`,
+`.run.lock` and the exclusive timing lock, 1-minute load 0.92-1.47 at each session's start, no
+Godot running; logs in `$ARTIFACTS`). `$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored
+--nocapture --test-threads=1`, 0/1k/10k/100k remote buildings, local products identical at every
+tier, p50 ms:
+
+| run (C B T C, B C T, C A B A: 11 runs in three short sessions) | verdict | commit | undo | crossing toggle |
+|---|---|---|---|---|
+| control, `populated_median_edit_scaling` (4 runs) | 0.27-1.06 / 0.34-0.80 / 0.31-0.39 / 0.28-0.41 | 1.25-2.43 / 1.00-1.43 / 0.97-1.02 / 1.54-1.62 | 0.36-0.68 / 0.31-0.50 / 0.40-0.42 / 1.04-1.07 | 0.79-1.23 / 0.66-0.97 / 0.75-0.81 / 1.33-1.42 |
+| RB3a `f32712bc`, the same (2 runs) | 0.26-0.39 / 0.48-0.63 / 0.41-0.46 / 0.33 | 0.81-1.79 / 0.85-0.98 / 1.01-1.04 / 1.94-2.03 | 0.23-0.54 / 0.28-0.34 / 0.45-0.49 / 1.41-1.45 | 0.66-1.22 / 0.56-0.86 / 0.83-0.87 / 1.73-1.76 |
+| branch, the same (3 runs) | 0.27-1.37 / 0.30-0.59 / 0.34-0.36 / 0.35-0.39 | 0.61-1.96 / 0.70-1.09 / 0.99-1.07 / 1.92-1.99 | 0.20-0.60 / 0.24-0.35 / 0.48-0.53 / 1.41-1.44 | 0.44-0.58 / 0.58-0.77 / 0.76-0.84 / 1.69-1.75 |
+| branch, `populated_road_type_edit_scaling` (sidewalks off, 80 km/h; 2 runs) | 0.26 / 0.32-0.36 / 0.30-0.33 / 0.31-0.32 | 0.85-1.62 / 0.67-1.12 / 0.93-1.03 / 1.87-1.91 | 0.30-0.50 / 0.22-0.45 / 0.48-0.50 / 1.39-1.43 | 0.91-1.00 / 0.63-1.20 / 0.84-0.91 / 1.69-1.78 |
+
+The road-type change costs what the median edit costs and stays flat in the remote city, as
+round R3b2's record (100k commit 1.868, undo 1.269, toggle 1.697); its 100k step is the undo's
+`O(A / P + B / P)` membership passes over 600k agents. At 100k the branch's commit, undo and
+crossing toggle sat 0.3-0.45 ms above the control's in every interleaved run, from round RB3a's
+last commit on; round RB3b2 found why and removed it.
+
+**The 100k edit rise (round RB3b2, 2026-11-04).** Cause: code generation, not a new pass. Every
+in-place edit, undo and crossing toggle runs `restore_lanes_locally`, whose agent passes
+(`invalidate_lane_ids_for_edges`, then in `reattach_invalidated_lanes_for_edges` the detached
+agents and the touched routes) each test all 600k agents in parallel. They were written as
+`filter(..).collect()` on a rayon range, and whether LLVM inlined rayon's folder into the range
+split decided their speed: in the branch's build it did not for the two reattach scans, and the
+outlined `FilterFolder::consume_iter` kept the range iterator in memory, storing and reloading it
+for every agent (perf annotate: about three quarters of the function's cycles on the per-agent
+16-byte store of its state and the loads of it). perf (`cpu_core/cycles/u`, LBR call stacks, the harness with 300 extra 100k edits, a local
+knob never committed): samples in the two reattach scans 1.8k + 1.0k on the control, 7.6k + 7.0k
+on the branch, about 0.4 ms per edit at 8 threads, the whole rise; the walking proof
+(`prove_complete`) has no samples (no edit, undo or toggle reaches it: only a worker's trip
+scratch prepares it). Nothing RB3a changed is on these paths. Fix: the three scans go through
+`scan_agents` (`economy/agents/remap.rs`): a parallel pass over fixed 4096-agent chunks, each a
+plain loop, collected in agent order, so the selected agents and their order are the same as
+before and the loop does not depend on that inlining. Profile of the fix: 1.7k / 1.7k / 1.0k
+samples (the invalidation scan, 6.5k on both older builds, drops too).
+
+Acceptance record (round RB3b2, fresh, 00:13-00:15; release library test binaries of `dev`
+`7843de33` (control), the branch `e4293062` and the branch with the fix, each with R8's
+uncommitted probe on the branch builds; P-cores, `RAYON_NUM_THREADS=8`, `.run.lock` and the
+exclusive timing lock, 1-minute load 1.37 at the start, no Godot running; runs C B F F B C C B F;
+logs in `$ARTIFACTS`). `populated_median_edit_scaling`, local products identical at every tier,
+p50 ms ranges over 3 runs, 0/1k/10k/100k:
+
+| binary | verdict | commit | undo | crossing toggle |
+|---|---|---|---|---|
+| control `7843de33` | 0.29-1.91 / 0.29-0.39 / 0.37-0.42 / 0.36-0.43 | 0.92-1.36 / 0.75-0.88 / 0.95-0.98 / 1.57-1.58 | 0.25-0.46 / 0.27 / 0.39-0.42 / 1.04-1.06 | 0.60-0.71 / 0.56-0.66 / 0.75-0.82 / 1.33-1.43 |
+| branch `e4293062` | 0.29-0.48 / 0.36-0.42 / 0.28-0.36 / 0.36-0.39 | 1.42-2.60 / 0.77-0.97 / 0.96-1.07 / 1.90-2.01 | 0.40-0.74 / 0.27-0.33 / 0.49 / 1.39-1.46 | 0.66-1.12 / 0.51-1.27 / 0.86-0.91 / 1.68-1.72 |
+| branch + `scan_agents` | 0.27-0.49 / 0.42-1.11 / 0.33-0.36 / 0.29-0.41 | 0.74-2.05 / 0.79-0.93 / 0.87-0.94 / 1.37-1.40 | 0.22-0.54 / 0.23-0.28 / 0.32-0.37 / 0.86-0.88 | 0.67-2.47 / 0.56-0.63 / 0.74-0.79 / 1.11-1.26 |
+
+At 100k the fix is 0.2 ms below the control on all three; 0/1k/10k are unchanged within the
+spread (the empty tier's first samples are noisy on every binary). The passes are still
+`O(A / P)`; making them local needs an index of the agents on each edge's lanes, which this round
+did not build.
+
 The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
-R3 lane steppers and Median rows): the usable types, the selected road's marked from
-`get_edge_cross_section`'s `road_type`, or a disabled "Custom layout" when no type has its
-cross-section (duplicate layouts resolve to the first type in list order). A pick asks the
-in-place check (`preview_edge_cross_section` through the select tool) and shows the verdict
-beside Apply, which commits through `set_edge_cross_section` (Ctrl+Z undoes it once the window
-no longer has focus: a focused tool window keeps the HUD keys). Every in-place refusal shows with
+R3 lane steppers and Median rows): the usable types, each line with its speed and Rust's build
+cost per metre ("4-Lane Road (50 km/h, 27 / m)"), the selected road's marked from
+`get_edge_cross_section`'s `road_type` (section, sidewalks and speed; zoning is not matched), or
+a disabled "Custom layout" when no type has its cross-section (duplicate layouts resolve to the
+first type in list order). A pick asks the in-place check (`preview_edge_cross_section` through
+the select tool) with the type's lanes, median, speed, sidewalks and zoning for every selected
+road (round RB3c; a walkway sends the built-ins' 50 km/h with sidewalks), sums the verdicts'
+`buildings_removed` and `cost_delta`, and shows the verdict beside Apply, which reads
+"Apply (+1,230)" with the cost difference and commits through `set_edge_cross_section` (Ctrl+Z
+undoes it once the window no longer has focus: a focused tool window keeps the HUD keys). When
+the type's zoning off would demolish buildings, Apply first asks in a `ConfirmationDialog`:
+"Apply removes N buildings. This cannot be undone." (round RB3b2: undo restores the road and its
+emptied parcels, never the buildings); Cancel leaves the roads as they are. A zoning-off Apply
+refreshes the no-build overlay, as the "No buildings" checkbox does. Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
 shows. The type's kerbside parking (`PARK-05`) travels with its lanes and median, and a Parking
@@ -10393,17 +10492,20 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
   `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
   style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
-  (2.5 m kerbside parking lane next to a sidewalk, `PARK-05`,
+  (2.5 m kerbside parking lane at a kerb: next to a sidewalk, or outermost without them, `PARK-05`,
   [`traffic.md`](traffic.md#kerbside-parking-lanes-park-05)). One check
   (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
-  (fwd, bkw, median) or a refusal with its key: a sidewalk at each end and none inside, backward
+  (fwd, bkw, median, sidewalks) or a refusal with its key: a sidewalk at each end or none at
+  all, none inside (`layout_sidewalks`, round RB3a), backward
   lanes left of forward ones (right-hand traffic), the median between the two directions, at
   least one car lane, at most 4 per direction, a median only on a two-way layout. A layout is
   never auto-sorted. The built-ins are one table (`BUILTIN_ROAD_TYPES`): Walkway, 2-Lane Road
   (1 + 1), 4-Lane Road (2 + 2), One-Way 1L, One-Way 2L, as the Roads menu's buttons were.
 - **Library**: one file per user, shared by every city, `user://road_types.json`
-  (`{"format": "metrum-road-types", "version": 1, "next_id", "types": [...]}`, pretty JSON,
-  median styles stored by name). Read on first use, re-read before every write, written
+  (`{"format": "metrum-road-types", "version": 2, "next_id", "types": [...]}`, pretty JSON,
+  median styles stored by name; version 2 (round RB3a) adds each entry's `speed_kmh` and
+  `zoning`: a version 1 file loads with 50 km/h and zoning and is written as version 2 on its
+  next write, an older game lists a version 2 file read-only). Read on first use, re-read before every write, written
   atomically. A file that does not parse is left byte-identical, the list shows the built-ins and
   `library_unreadable`, and every write is refused until it is fixed or removed; a newer
   `version` is read-only; an entry that fails a rule is listed unusable with its reason and
@@ -10414,19 +10516,22 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   before; no type id reaches the graph or a save, so a save loads without the library, and
   editing or deleting a type changes new strokes only.
 - **Godot API** (`network_api/road_types.rs`): `get_road_types()` (every type with its parts,
-  per-part and total widths, `usable` / `invalid_reason`; built-ins first, then the file's
-  entries; the library `error`), `check_road_layout(parts)` (verdict, widths, suggested name),
-  `create_road_type(name, parts)`, `update_road_type(id, name, parts)`,
+  per-part and total widths, `usable` / `invalid_reason`, `speed_kmh`, `sidewalks`, `zoning`,
+  `build_per_m`, `upkeep_per_m_day`; built-ins first, then the file's entries; the library
+  `error`; `speeds`, the speed grid), `check_road_layout(parts, speed_kmh, zoning)` (verdict,
+  widths, cost, suggested name), `create_road_type(name, parts, speed_kmh, zoning)`,
+  `update_road_type(id, name, parts, speed_kmh, zoning)`,
   `delete_road_type(id)`, and `get_edge_cross_section`'s `road_type` (the first usable type,
   built-ins first, whose cross-section equals the edge's exactly, else ""). For the road
   builder (RB2): `check_road_type_name(name, id)` (the write's name verdict, `name_*` keys, for
   a new type with `id` empty or as custom type `id`'s name) and `reload_road_types()` (re-reads
   the file, so a library fixed or edited by hand lists without a restart; writes always re-read
   first).
-- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes and median from
-  `get_road_types()` and sets them through the existing inputs (lanes per call,
-  `set_road_tool_median`), so a built-in type sends exactly the arguments the old buttons did and
-  the `road_attempt` record and its replay are unchanged. There is no Rust "pick type" call. R
+- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes, median and
+  attributes from `get_road_types()` and sets them through the existing inputs (lanes per call,
+  `set_road_tool_median`, `set_road_tool_attributes`, each re-asserted per preview), so a
+  built-in type sends exactly the arguments the old buttons did (50 km/h, sidewalks, zoning; the
+  Walkway too) and the `road_attempt` record carries the attributes, which its replay sets. There is no Rust "pick type" call. R
   draws the last road type picked (2-Lane Road at first), X the Walkway. `set_lanes` and
   `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
   `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
@@ -10440,12 +10545,70 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   types).
 - **Road Properties**: a road-type picker (below); it relists the types after a library edit.
 
+#### Road-type attributes and costs (ROAD-101, rounds RB3a-RB3c)
+
+Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), RB3c (the game),
+2026-11-03/04. The user's decisions of 2026-11-03 are binding: sidewalks none or both,
+independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
+
+- **Attributes.** A type has `speed_kmh` (20-120 in steps of 10, `speed_out_of_range` off the
+  grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (both sides or none) and
+  `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
+  preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
+  only with sidewalks, `speed_limit = speed_kmh / 3.6` (50 bitwise the old default) and
+  `no_building_spawn = !zoning`. A split stroke keeps them on every piece. Type matching
+  (`road_type`) compares the section, sidewalks and speed, never zoning, so "No buildings" stays
+  a per-road override.
+- **The sidewalk rule.** A car road's layout has a sidewalk at both ends or none; without them
+  the roadbed draws its 0.75 m shoulder each side (`layout_widths` counts it in the total), the
+  corridor and parcel checks reach the shoulder, and a building fronting the road probes the
+  shoulder for its door, so it is a car-only destination. Sidewalks and zoning are independent:
+  a road without sidewalks may zone (a rural road with driveways; every agent owns a car), and
+  the road builder warns "No sidewalks: buildings here are reached by car only". The walking
+  proof checks only the edges walkers cross, so such a road keeps it (round RB3a; open question
+  17's evidence above).
+- **Walkers at a junction with a sidewalk-less arm (design D2 (a)).** That arm gets no zebra, no
+  crossing toggle and no corner walk; walkers use the other arms' zebras. A T whose stem has no
+  sidewalks cuts the through road's near-side sidewalk: a walker passing the stem crosses both
+  through-arm zebras and walks the far kerb (`a_t_whose_stem_has_no_sidewalks_is_crossed_by_the_far_side`,
+  `road_mixed_junction_test`). Through-crossings over such an arm are the follow-up RB3d
+  (`ROAD-101` row).
+- **Street lights (round RB3e, 2026-11-04).** A type has `street_lights` too (the user's
+  decisions: a "Street lights" checkbox in the builder, ticked by default; every built-in lit; no
+  cost change; Road Properties changes it; save format 113). The edge stores
+  `no_street_lights` (`ROAD-59`'s placement gives such an edge no rule, so it has no lights and
+  ends its neighbours' streets, each lit evenly on its own). The library reads an entry without
+  the field as lit, within version 2, and writes it back as it was until it is edited;
+  `get_road_types`, `check_road_layout` and `get_edge_cross_section` report it; the stroke,
+  commit, attempt and prepared-input records carry it inside `RoadAttributes`; a split keeps it
+  on every piece; `road_type` matches it. In place the change re-spaces the lights of the road's
+  street and of the streets meeting it, in every chunk they cross (the publication's street
+  closure, [street lights](#street-lights-road-59)); lanes, routing, walking and the economy do
+  not change (`street_lights_turned_off_in_place_relight_the_street_and_undo`). The builder's
+  description and the type's tooltip say "no street lights"; the picker lines do not.
+- **The 80 km/h rules are gone** (D5): neither creation nor load sets `no_building_spawn` from
+  the speed; 80 km/h is only the builder's once-only zoning suggestion
+  ([`zoning.md`](zoning.md#8-road-no-build-flag)).
+- **Costs.** One rule weights build and upkeep per metre by lanes, speed, median, sidewalks and
+  structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
+  difference-charged, never-refunded type change are in
+  [`economy.md`](economy.md#road-costs-road-101). The stroke preview's `build_cost`, the builder's
+  cost line, every type's tooltip and the Road Properties picker read it from Rust.
+- **In place** (Road Properties): the full spec, its walkers and entrances, zoning-off
+  demolition and the charge are in [in-place edits](#in-place-cross-section-edits-road-80)
+  (round RB3b) with the 100k edit-rise record (round RB3b2). Round RB3c's fix: the verdict's
+  `buildings_removed` count ran a parallel pass outside every Rayon pool, which panicked from
+  Godot ("The global thread pool has not been initialized") and poisoned the core lock; it now
+  runs in `thread_pools::install`. The coordinator's review then made the count local (the
+  road's 512 m chunks; the whole city only while the chunk index is stale).
+- **Saves**: format 112 (the weighted upkeep roll); no older save loads.
+
 #### The road builder (ROAD-101, round RB2)
 
 "Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
 (`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,
 library column and glyphs are views). It is a persistent, movable, resizable, non-exclusive
-`Window` (960 x 360 at the 1920 x 1080 reference, minimum 760 x 300,
+`Window` (960 x 440 at the 1920 x 1080 reference, minimum 760 x 400,
 `UIStyle.set_persistent_window_layout`, `WindowResizeHandles`): the camera and the road tool keep
 working, as under Road Properties (a focused window holds the HUD keys until the map is clicked).
 Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
@@ -10457,7 +10620,8 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
   sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
   width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
-  cannot be moved, removed or opened. Every change asks `check_road_layout`; an invalid layout is
+  cannot be moved, removed or opened. Without sidewalks (round RB3c) each end is the roadbed's
+  0.75 m shoulder band, drawn as gravel between edge lines, never a part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
 - **Parts in.** Six tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
   median (each median at its style's default width) and Parking lane (`PARK-05`); no footpath
@@ -10468,6 +10632,16 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
 - **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
   Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
   None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
+- **Attributes** (round RB3c). Under the strip: **Sidewalks** (both ends together; the type
+  without them sends lanes and medians only), **Speed** (a stepper on Rust's grid,
+  `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
+  speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
+  speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
+  Zoning checkbox; an edited type keeps its own. Under
+  them Rust's description ("1 + 1 lanes, 100 km/h, no sidewalks, 8.5 m wide"), Rust's cost line
+  from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type without sidewalks
+  that zones, "No sidewalks: buildings here are reached by car only". Create and Save send the
+  controls' speed, zoning and street lights: an edited type keeps its own.
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
   until the player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
@@ -10486,9 +10660,13 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   `MainUI.refresh_road_types()` relists the Roads row and Road Properties and re-picks the road
   tool's type, so an edited type draws its new layout from the next stroke on. Library edits
   have no undo, and roads already built keep their own layout (decision 4).
-- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn;
-  `road_types_test` checks the row at 1280 x 720 with thirteen custom types.
-- Not in v1: speed limits per type, parking, bike, bus or tram lanes, one-sided sidewalks, lane
+- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn,
+  the attributes and cost line included; `road_types_test` checks the row at 1280 x 720 with
+  thirteen custom types and a type without sidewalks at 80 km/h drawn and read back;
+  `road_lane_edit_test` applies a 100 km/h type without sidewalks or zoning in place, its cost
+  on Apply and the demolition confirmation's two buttons; `road_mixed_junction_test` the T with
+  a sidewalk-less stem.
+- Not in v1: parking, bike, bus or tram lanes, one-sided sidewalks, lane
   widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
   type discards the layout being built).
 
@@ -11955,13 +12133,51 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
   Before/after: `screenshots/2026-10-09-roads/lights-width-change-*.png`.
 - One-sided streets (1 + 1) keep one side of the world along the whole chain; wider roads get
   both sides, paired. The pole stands 0.35 m inside the back of the sidewalk on its surface, arm
-  over the road; without a sidewalk, 0.75 m beyond the kerb or shoulder on the terrain; beside a
-  footpath, 0.5 m beyond its edge.
+  over the road; without a sidewalk, 0.75 m beyond the kerb or shoulder on the drawn ground; beside
+  a footpath, 0.5 m beyond its edge, also on the drawn ground. The drawn ground (`verge.rs`, shared
+  with road signs beside a road without sidewalks) is a grounded road's top where one holds the
+  point, else the graded ground the terrain renders (`TERRAIN-07-F`), from one graded point query
+  per pole on a scratch warm for the whole placement pass: allocation-free per pole. The query
+  grades by the roadbed and terrain only, without building sites: a road chunk is emitted again
+  when its roadbed or terrain changes, never when a building appears, so a height that read the
+  sites would depend on when the chunk was last emitted; this way every rebuild agrees. Where a
+  building pad grades the ground beside a verge, the pole follows the road's grading. Until
+  `ROAD-101` RB3e these poles took the base heightmap's raw sample, without its 20x height
+  scale: on ground above a few metres the pole stood under the terrain with its lamp, so a road
+  without sidewalks was dark near the camera while the far lamp map (plan positions only) still
+  lit it.
 - Kinds: 8 m galvanised steel (residential), wooden pole with an older sodium-coloured luminaire
   (residential edges whose cosmetic age is above 0.65), 10 m main-road pole (more than two lanes),
   post-top path light (footpaths). Spacing belongs to the family: 30 m residential (minimum 12 m),
   36 m main (14 m), 20 m path (8 m). A twin-arm median pole exists for divided roads. Spacings and
   offsets are look-dev defaults, not a lighting calculation.
+- A local publication (after an edit) emits again its changed chunks and also every chunk the
+  lights and signs of the edit may move (`furniture_dependents`, `ROAD-101` RB3e): the whole
+  degree-two street through each rebuilt edge or node, and the streets meeting it at its two
+  ends, one ring (an end pole depends on the arms ranked above it at its node and on their far
+  ends' degree, never on another node's resolution). Before, a road widened in place from 1 + 1
+  to 2 + 2 split its residential street, and the street's chunks away from the edit kept the old
+  spacing until a full emission. `O(pieces in the changed chunks)` plus the streets walked; no
+  city scan. Test `a_family_change_in_place_republishes_its_whole_street`.
+- Timing (`ROAD-101` RB3e, 2026-11-04, one session): `.run.lock` and the exclusive timing lock,
+  `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, 1-minute load 1.80 at the start, no game
+  running; release builds of the branch (`ecf23071`) and of its base `068d1f1d` with the same bench
+  row and harness timing applied, runs C B B C. `road_chunk_benchmark` (`$BENCH_BINARY --bench
+  chunk_emit_only`), Criterion medians in µs, control / branch: `chunk_emit_only` /1 197.6 209.0 /
+  241.8 221.1, /64 236.8 221.1 / 222.4 206.0, /256 228.4 187.0 / 227.1 224.7, /1024 215.6 228.1 /
+  215.2 191.7; bridge /1024 288.4 288.8 / 273.9 271.3; tunnel /1024 279.6 283.1 / 292.0 290.4;
+  divided /1024 304.6 318.7 / 288.9 285.7: within the runs' spread. The new
+  `shoulder_chunk_emit_only` (the local road without sidewalks: two verge lights) /1 55.4 54.9 /
+  53.4 52.7, /1024 55.1 55.1 / 54.0 53.7: no rise, because lights and signs are placed on their half
+  of the emission's `rayon::join` beside about 50 µs of pieces. Measured directly (a release scratch
+  test, not kept; one thread): one warm verge query 1.1-1.3 µs on flat ground beside a road; placing
+  that street's two lights 3.5 µs against 0.2 µs with sidewalks, the scratch's first-query warm-up
+  included. `populated_road_type_edit_scaling` (the T's side road made 80 km/h without sidewalks, 0
+  / 1k / 10k / 100k remote buildings), now also timing the local publication after each commit with
+  the city's chunks acknowledged, p50 ms control / branch: commit 1.14 0.68 / 1.09 0.68, 2.25 0.46 /
+  2.21 1.89, 0.75 1.07 / 0.86 1.25, 0.97 1.00 / 1.00 0.99; publication 1.78 1.10 / 1.70 1.18, 3.37
+  0.75 / 4.03 3.36, 1.21 1.70 / 1.14 1.86, 0.99 0.94 / 1.08 1.01; one chunk published at every tier
+  on both (the T's streets lie in it), flat in the remote city; local products identical per tier.
 - Each light is routed to its render chunk like a triangle and travels in the chunk payload as
   five floats (chunk-local x, y, z, yaw, kind). Godot keeps them outside the chunk meshes, which
   junction previews hide, and batches them per 64 m cell, model and level of detail into

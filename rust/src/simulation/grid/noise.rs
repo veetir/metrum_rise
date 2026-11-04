@@ -169,6 +169,7 @@ mod tests {
             ],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
@@ -248,6 +249,7 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,

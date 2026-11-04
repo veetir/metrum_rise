@@ -307,6 +307,7 @@ pub(super) fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         Instant::now(),

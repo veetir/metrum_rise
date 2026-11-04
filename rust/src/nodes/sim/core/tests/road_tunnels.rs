@@ -45,6 +45,7 @@ fn request(core: &SimCore, points: &[Vector3], tunnel: bool) -> RoadPreviewReque
         tunnel,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     }
 }
 
@@ -80,6 +81,7 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
             tunnel,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -118,7 +120,7 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
     let edges = edges.into_iter().map(|(_, edge)| edge).collect();
     ProbeResult {
         quick: reason(quick.is_valid, quick.invalid_reason),
-        quick_heights: quick_points.iter().map(|point| point.y).collect(),
+        quick_heights: quick_points.points.iter().map(|point| point.y).collect(),
         exact: reason(exact.is_valid, exact.invalid_reason),
         committed: if outcome.committed {
             "committed".to_owned()
@@ -514,6 +516,7 @@ fn a_junction_in_a_tunnel_approach_trench_is_refused() {
                 tunnel: false,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1035,6 +1038,7 @@ fn the_lining_closes_buried_ends_and_bends() {
             tunnel: true,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -1292,6 +1296,7 @@ fn the_lining_shell_stands_a_thickness_out() {
             tunnel: true,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),

@@ -4,8 +4,11 @@
 ## (after the roadbed's asphalt, sidewalk paving, grass and median paving) and its `_draw()`
 ## glyph: an arrow for a lane's direction (up runs the way the road is drawn), 45-degree
 ## hatching for a painted median, a grass fill, a paving fill, a pedestrian on a band for a
-## sidewalk and a parking sign over painted bay lines for a parking lane (`PARK-05`). Shared by the strip and the part tiles; no assets. A part is Rust's part dictionary
-## (`kind`, `forward`, `style`, `width_m`), as `check_road_layout` takes it.
+## sidewalk and a parking sign over painted bay lines for a parking lane (`PARK-05`). Shared by
+## the strip and the part tiles; no assets. A part is Rust's part dictionary (`kind`, `forward`,
+## `style`, `width_m`), as `check_road_layout` takes it, or the builder's `shoulder` end (a road
+## without sidewalks: the roadbed's 0.75 m shoulder band, never sent to Rust), drawn as gravel
+## with the carriageway's edge line.
 extends RefCounted
 
 ## Median style codes, as Rust's `get_median_styles` keys them.
@@ -17,6 +20,7 @@ const ASPHALT := Color(0.22, 0.22, 0.24)
 const SIDEWALK := Color(0.58, 0.56, 0.52)
 const GRASS_FILL := Color(0.29, 0.47, 0.22)
 const PAVING_FILL := Color(0.63, 0.59, 0.52)
+const SHOULDER_FILL := Color(0.42, 0.40, 0.36)
 const MARKING := Color(0.92, 0.92, 0.88)
 const KERB := Color(0.78, 0.77, 0.74)
 const INK := Color(0.95, 0.95, 0.95)
@@ -27,6 +31,8 @@ static func part_name(part: Dictionary) -> String:
 	match String(part.get("kind", "")):
 		"sidewalk":
 			return "Sidewalk"
+		"shoulder":
+			return "Shoulder"
 		"footpath":
 			return "Footpath"
 		"parking":
@@ -47,9 +53,11 @@ static func part_name(part: Dictionary) -> String:
 static func part_hint(part: Dictionary) -> String:
 	match String(part.get("kind", "")):
 		"sidewalk":
-			return "Every car road has a sidewalk on both sides"
+			return "A sidewalk on both sides, or none (the Sidewalks checkbox)"
 		"parking":
-			return "Cars park along the kerb, next to a sidewalk"
+			return "Cars park along the kerb"
+		"shoulder":
+			return "No sidewalks: a shoulder each side that walkers do not use"
 		"car_lane":
 			if bool(part.get("forward", true)):
 				return "Traffic runs the way the road is drawn (right of the median)"
@@ -69,6 +77,8 @@ static func surface_color(part: Dictionary) -> Color:
 	match String(part.get("kind", "")):
 		"sidewalk", "footpath":
 			return SIDEWALK
+		"shoulder":
+			return SHOULDER_FILL
 		"median":
 			match int(part.get("style", 0)):
 				GRASS:
@@ -92,6 +102,8 @@ static func draw_surface(canvas: CanvasItem, rect: Rect2, part: Dictionary) -> v
 		_paving(canvas, rect)
 	elif kind == "parking":
 		_bay_lines(canvas, rect)
+	elif kind == "shoulder":
+		_gravel(canvas, rect)
 	# Kerbed medians and sidewalks show their kerb as a light edge.
 	if kind == "sidewalk" or (kind == "median" and style != PAINTED):
 		canvas.draw_rect(Rect2(rect.position, Vector2(2.0, rect.size.y)), KERB)
@@ -108,7 +120,7 @@ static func draw_glyph(canvas: CanvasItem, rect: Rect2, part: Dictionary) -> voi
 		"car_lane":
 			canvas.draw_rect(box, ASPHALT)
 			_arrow(canvas, box.grow(-side * 0.18), bool(part.get("forward", true)))
-		"median":
+		"median", "shoulder":
 			draw_surface(canvas, box, part)
 		"parking":
 			_parking_sign(canvas, box)
@@ -141,6 +153,22 @@ static func _grass(canvas: CanvasItem, rect: Rect2) -> void:
 			x += step
 		y += step
 		row += 1
+
+# Gravel dots between two edge lines, one each side of the band.
+static func _gravel(canvas: CanvasItem, rect: Rect2) -> void:
+	var stone := SHOULDER_FILL.lightened(0.25)
+	var step := 5.0
+	var y := rect.position.y + 3.0
+	var row := 0
+	while y < rect.end.y - 1.0:
+		var x := rect.position.x + 2.0 + (row % 2) * step * 0.5
+		while x < rect.end.x - 1.0:
+			canvas.draw_rect(Rect2(x, y, 1.5, 1.5), stone)
+			x += step
+		y += step
+		row += 1
+	canvas.draw_line(rect.position, Vector2(rect.position.x, rect.end.y), MARKING, 1.5)
+	canvas.draw_line(Vector2(rect.end.x, rect.position.y), rect.end, MARKING, 1.5)
 
 static func _paving(canvas: CanvasItem, rect: Rect2) -> void:
 	var joint := PAVING_FILL.darkened(0.25)

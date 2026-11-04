@@ -2,7 +2,6 @@
 
 //! Road graph and lane connection serialization.
 
-use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::validate::{
@@ -46,7 +45,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -80,6 +79,7 @@ pub(super) fn save_network(
                 vehicle_frontage_access_to_i64(edge.vehicle_frontage_access),
                 i64::from(RoadMedian::style_code(edge.median)),
                 edge.median.map_or(0.0, |median| median.width_m),
+                i64::from(edge.no_street_lights),
                 edge.parking.code()
             ])?;
         }
@@ -219,7 +219,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, parking FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, parking FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -231,8 +231,8 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 )));
             }
             let speed_limit = row.get(9)?;
-            let no_building_spawn =
-                row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+            // The saved flag is the road's own (`ROAD-101`: a fast road may zone).
+            let no_building_spawn = row.get::<_, i64>(14)? != 0;
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
             let allowed_types = i64_to_u8(row.get(4)?)?;
@@ -247,7 +247,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 .map_err(|reason| {
                     SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
                 })?;
-            let parking = RoadParking::from_code(row.get(18)?)
+            let parking = RoadParking::from_code(row.get(19)?)
                 .ok_or("parking_code_out_of_range")
                 .and_then(|parking| {
                     Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking)
@@ -278,6 +278,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 physical_geometry: physical_geometry.remove(&eid).unwrap_or_default(),
                 deleted: false,
                 no_building_spawn,
+                no_street_lights: row.get::<_, i64>(18)? != 0,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
                 median,
                 parking,

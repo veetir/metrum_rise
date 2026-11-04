@@ -10,15 +10,20 @@
 //! A part crosses the bridge as a dictionary: `{"kind": "sidewalk"}`, `{"kind": "car_lane",
 //! "forward": bool}`, `{"kind": "median", "style": 1 painted | 2 kerbed grass | 3 kerbed paving,
 //! "width_m": float}`, `{"kind": "parking"}` (a kerbside parking lane, `PARK-05`) or
-//! `{"kind": "footpath"}` (a walkway's single part). The tool's parking goes to
-//! `set_road_tool_parking`.
+//! `{"kind": "footpath"}` (a walkway's single part). A car road has a sidewalk part at both ends
+//! or none. A type also has `speed_kmh` (20 to 120 in steps of 10; 0 for a walkway), `zoning`
+//! and `street_lights`; the tool draws them through `set_road_tool_attributes`, and its parking
+//! through `set_road_tool_parking`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
-use crate::simulation::network::road_types::library::RoadTypeLibrary;
+use crate::simulation::network::road_types::cost as road_cost;
+use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal, check_layout, layout_widths, type_of,
+    DEFAULT_SPEED_KMH, MAX_SPEED_KMH, MIN_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart,
+    RoadType, RoadTypeRefusal, SPEED_STEP_KMH, layout_widths, type_of,
 };
+use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
 
 const LIBRARY_PATH: &str = "user://road_types.json";
@@ -37,11 +42,18 @@ impl SimulationNode {
         f(library)
     }
 
-    /// The id of the first usable road type, built-ins first, whose layout builds `section`, or
-    /// the empty string for a layout no type has (Road Properties' "Custom layout").
-    pub(crate) fn road_type_of(&self, section: RoadCrossSection) -> GString {
+    /// The id of the first usable road type, built-ins first, whose layout builds `section` at
+    /// `speed_kmh` with `street_lights`, or the empty string for a road no type has (Road
+    /// Properties' "Custom layout"). Zoning is not matched ([`type_of`]).
+    pub(crate) fn road_type_of(
+        &self,
+        section: RoadCrossSection,
+        speed_kmh: u16,
+        street_lights: bool,
+    ) -> GString {
         self.with_road_types(|library| {
-            type_of(library.types(), section).map_or_else(GString::new, |ty| ty.id.as_str().into())
+            type_of(library.types(), section, speed_kmh, street_lights)
+                .map_or_else(GString::new, |ty| ty.id.as_str().into())
         })
     }
 }
@@ -52,9 +64,14 @@ impl SimulationNode {
     /// player's in library order, and `error` with `error_detail`: empty, `library_unreadable`
     /// (the file does not parse; it is left untouched and edits are refused until it is fixed)
     /// or `library_newer_version` (read-only). Each type is a dictionary of `id`, `name`,
-    /// `builtin`, `usable`, `parts` (see the module docs) and the fields of
-    /// [`Self::check_road_layout`] but `suggested_name`: an unusable type (kept in the file,
-    /// never drawn) carries its `invalid_reason`. `O(types x parts)`; the file is read once.
+    /// `builtin`, `usable`, `parts` (see the module docs), `speed_kmh` (0 for a walkway),
+    /// `zoning`, `street_lights` and the fields of [`Self::check_road_layout`] but `suggested_name` (so also
+    /// `build_per_m` and `upkeep_per_m_day`, 0 for an unusable type): an unusable
+    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` is the speed
+    /// grid every car road type takes, for the road builder's stepper: `min_kmh`, `max_kmh`,
+    /// `step_kmh`, `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
+    /// suggests zoning off once a new type reaches it; the type's flag decides). `O(types x
+    /// parts)`; the file is read once.
     #[func]
     pub fn get_road_types(&self) -> VarDictionary {
         self.with_road_types(|library| {
@@ -63,37 +80,71 @@ impl SimulationNode {
                 types.push(&type_to_variant(ty).to_variant());
             }
             let error = library.error();
+            let speeds = vdict! {
+                "min_kmh": i64::from(MIN_SPEED_KMH),
+                "max_kmh": i64::from(MAX_SPEED_KMH),
+                "step_kmh": i64::from(SPEED_STEP_KMH),
+                "default_kmh": i64::from(DEFAULT_SPEED_KMH),
+                "no_zoning_from_kmh": i64::from(RoadAttributes::speed_kmh_of(
+                    crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS,
+                )),
+            };
             vdict! {
                 "types": types,
+                "speeds": speeds,
                 "error": error.as_ref().map_or("", |error| error.reason),
                 "error_detail": error.as_ref().map_or("", |error| error.detail.as_str()),
             }
         })
     }
 
-    /// Checks a layout, an array of part dictionaries left to right along the road's forward
-    /// direction (`ROAD-101`): `is_valid`; `invalid_reason` and `detail` (`part <index>`) when
-    /// refused (`layout_unknown_part` for a dictionary that is not a part, else the layout
-    /// check's keys); the cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`,
-    /// `median_style` (0 none), `median_width` and `parking` (bit 0 left, bit 1 right);
-    /// `part_widths_m` (one per part, refused
-    /// layouts included), `carriageway_m` (the road's width between its sidewalks) and
-    /// `total_m` (sidewalks included); and `suggested_name`, a free name for a new type of a
-    /// valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus the
-    /// name lookup's `O(types)`.
+    /// Checks a road type, a layout (an array of part dictionaries left to right along the
+    /// road's forward direction) at `speed_kmh` with `zoning` and `street_lights` (`ROAD-101`):
+    /// `is_valid`;
+    /// `invalid_reason` and `detail` (`part <index>`) when refused (`layout_unknown_part` for a
+    /// dictionary that is not a part, else the layout check's keys, then `speed_out_of_range`
+    /// outside 20 to 120 km/h in steps of 10; a walkway's speed is not checked); the
+    /// cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`, `median_style` (0 none),
+    /// `median_width`, `parking` (bit 0 left, bit 1 right) and `sidewalks`; `speed_kmh` (as
+    /// checked; 0 for a walkway), `zoning` and `street_lights` (as given; they change no cost);
+    /// `part_widths_m` (one per part, refused layouts included), `carriageway_m` (the road's
+    /// width between its sidewalks) and `total_m` (sidewalks, or without them the two 0.75 m
+    /// shoulders, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
+    /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
+    /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
+    /// of a valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus
+    /// the name lookup's `O(types)`.
     #[func]
-    pub fn check_road_layout(&self, parts: VarArray) -> VarDictionary {
+    pub fn check_road_layout(
+        &self,
+        parts: VarArray,
+        speed_kmh: i32,
+        zoning: bool,
+        street_lights: bool,
+    ) -> VarDictionary {
         let parts = match parts_from_variant(&parts) {
             Ok(parts) => parts,
             Err(refusal) => {
                 let mut result = layout_to_variant(&[], Err(&refusal));
                 result.set("is_valid", false);
+                result.set("speed_kmh", speed_kmh);
+                result.set("zoning", zoning);
+                result.set("street_lights", street_lights);
+                set_cost(&mut result, None);
                 result.set("suggested_name", "");
                 return result;
             }
         };
-        let verdict = check_layout(&parts).map_err(RoadTypeRefusal::from);
-        let mut result = layout_to_variant(&parts, verdict.as_ref());
+        let checked = check_type(&parts, speed_kmh.into()).map_err(RoadTypeRefusal::from);
+        let verdict = checked.as_ref().map(|(section, _)| *section);
+        let mut result = layout_to_variant(&parts, verdict.as_ref().map_err(|refusal| *refusal));
+        let checked_speed = checked
+            .as_ref()
+            .map_or(i64::from(speed_kmh), |(_, speed)| i64::from(*speed));
+        result.set("speed_kmh", checked_speed);
+        result.set("zoning", zoning);
+        result.set("street_lights", street_lights);
+        set_cost(&mut result, checked.as_ref().ok().copied());
         result.set("is_valid", verdict.is_ok());
         let name = verdict.map_or_else(
             |_| String::new(),
@@ -103,15 +154,31 @@ impl SimulationNode {
         result
     }
 
-    /// Adds a road type to the player's library (`ROAD-101`): `{id}` when written, else
-    /// `{invalid_reason, detail}`: the layout check's keys, `layout_unknown_part`,
-    /// `name_empty`, `name_too_long`, `name_invalid_characters`, `name_taken` (any type,
-    /// built-ins included, ignoring case), `library_unreadable`, `library_newer_version` or
+    /// Adds a road type to the player's library (`ROAD-101`), its layout `parts` at
+    /// `speed_kmh` with `zoning` and `street_lights`: `{id}` when written, else `{invalid_reason, detail}`: the
+    /// layout check's keys, `layout_unknown_part`, `speed_out_of_range`, `name_empty`,
+    /// `name_too_long`, `name_invalid_characters`, `name_taken` (any type, built-ins included,
+    /// ignoring case), `library_unreadable`, `library_newer_version` or
     /// `library_write_failed`. Library edits are not undoable and never change a built road.
     #[func]
-    pub fn create_road_type(&self, name: GString, parts: VarArray) -> VarDictionary {
+    pub fn create_road_type(
+        &self,
+        name: GString,
+        parts: VarArray,
+        speed_kmh: i32,
+        zoning: bool,
+        street_lights: bool,
+    ) -> VarDictionary {
         let created = parts_from_variant(&parts).and_then(|parts| {
-            self.with_road_types(|library| library.create(&name.to_string(), &parts))
+            self.with_road_types(|library| {
+                library.create(
+                    &name.to_string(),
+                    &parts,
+                    speed_kmh.into(),
+                    zoning,
+                    street_lights,
+                )
+            })
         });
         match created {
             Ok(id) => vdict! { "id": id.as_str() },
@@ -139,15 +206,30 @@ impl SimulationNode {
             .map_or_else(GString::new, |refusal| refusal.reason.into())
     }
 
-    /// Renames custom road type `id` to `name` and gives it `parts` (pass the current values
-    /// for what stays) (`ROAD-101`). Returns the empty string when written, else the refusal
-    /// key: those of [`Self::create_road_type`], `road_type_builtin` or `road_type_unknown`.
-    /// Roads already built keep their own layout.
+    /// Renames custom road type `id` to `name` and gives it `parts`, `speed_kmh`, `zoning` and
+    /// `street_lights` (pass the current values for what stays) (`ROAD-101`). Returns the empty string when
+    /// written, else the refusal key: those of [`Self::create_road_type`],
+    /// `road_type_builtin` or `road_type_unknown`. Roads already built keep their own layout.
     #[func]
-    pub fn update_road_type(&self, id: GString, name: GString, parts: VarArray) -> GString {
+    pub fn update_road_type(
+        &self,
+        id: GString,
+        name: GString,
+        parts: VarArray,
+        speed_kmh: i32,
+        zoning: bool,
+        street_lights: bool,
+    ) -> GString {
         let updated = parts_from_variant(&parts).and_then(|parts| {
             self.with_road_types(|library| {
-                library.update(&id.to_string(), &name.to_string(), &parts)
+                library.update(
+                    &id.to_string(),
+                    &name.to_string(),
+                    &parts,
+                    speed_kmh.into(),
+                    zoning,
+                    street_lights,
+                )
             })
         });
         updated
@@ -179,12 +261,26 @@ fn type_to_variant(ty: &RoadType) -> VarDictionary {
     result.set("name", ty.name.as_str());
     result.set("builtin", ty.builtin);
     result.set("usable", ty.verdict.is_ok());
+    result.set("speed_kmh", i64::from(ty.speed_kmh));
+    result.set("zoning", ty.zoning);
+    result.set("street_lights", ty.street_lights);
+    set_cost(&mut result, ty.usable().map(|section| (section, ty.speed_kmh)));
     let mut parts = VarArray::new();
     for part in &ty.parts {
         parts.push(&part_to_variant(*part).to_variant());
     }
     result.set("parts", parts);
     result
+}
+
+// A usable type's cost on the ground (`ROAD-101`): `build_per_m` and `upkeep_per_m_day` (a bridge
+// costs three times, a tunnel five), 0 for an unusable one.
+fn set_cost(result: &mut VarDictionary, usable: Option<(RoadCrossSection, u16)>) {
+    let weight = usable.map_or(0.0, |(section, speed_kmh)| {
+        road_cost::road_weight(section, speed_kmh, EdgeClass::Standard)
+    });
+    result.set("build_per_m", road_cost::build_per_m(weight));
+    result.set("upkeep_per_m_day", road_cost::upkeep_per_m_day(weight));
 }
 
 // The verdict and widths of a layout, shared by the list and the check.
@@ -206,6 +302,7 @@ fn layout_to_variant(
         "median_style": i64::from(RoadMedian::style_code(median)),
         "median_width": median.map_or(0.0, |median| median.width_m),
         "parking": section.map_or(0, |section| i64::from(section.parking.code())),
+        "sidewalks": section.is_some_and(|section| section.sidewalks),
         "part_widths_m": PackedFloat32Array::from(widths.as_slice()),
         "carriageway_m": carriageway_m,
         "total_m": total_m,

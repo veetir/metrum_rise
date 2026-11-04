@@ -26,6 +26,7 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -59,6 +60,7 @@ fn prepare_with_lanes(
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     )
 }
@@ -205,6 +207,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
     assert_eq!(rebuilt.status(&core), "ready");
@@ -259,6 +262,7 @@ fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -286,6 +290,7 @@ fn preview_validation(
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         })
         .validation
 }
@@ -1825,6 +1830,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
                 tunnel: false,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             });
             assert!(
                 validation.is_valid,
@@ -1882,6 +1888,7 @@ fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),

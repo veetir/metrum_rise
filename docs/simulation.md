@@ -238,16 +238,30 @@ load fails on a median no stroke could build ([`roads.md`](roads.md#medians-road
 fixture is re-recorded in format 111; only the version and the two columns at their defaults
 change (`sqldiff`).
 
-Save format 113 (`PARK-01`/`PARK-02`, merged with `ROAD-80`, 2026-11-03) retains the complete format-111
-gridlock state alongside parking ownership, custody, claims, itinerary/recovery state and economy
-endpoint quote stamps ([`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)). It is
-`dev` 111 + 2 (the parking branch had used 110–112), current-only, with no migration. The existing Kuopio recorder re-records the pinned
-fixture with both parking and gridlock state.
+Save format 112 (`ROAD-101`, round RB3b, 2026-11-03) renames the five `scheduler_state` columns of
+the rolling road sum to `road_upkeep_front_m`, `road_upkeep_back_mm`, `road_upkeep_edges`,
+`road_upkeep_next_edge` and `road_upkeep_measured`: the sweep now folds each edge's length times
+its cost weight (2-lane-equivalent millimetres; exactly its length for the 2-Lane Road at 50 km/h
+on the ground), so daily upkeep follows each road's type. The Kuopio fixture is re-recorded in
+format 112 with `record_kuopio_reference_save`; only the version and the renamed table change
+(`sqldiff`: the scheduler row's values and every table's row count are unchanged).
 
-Save format 114 (`PARK-05`, 2026-11-03) adds `network_edges.parking`, the edge's kerbside
-parking lanes as a bit set (bit 0 left, bit 1 right, looking along the edge; 0 without any); a
-load fails on any other value. Each parking lane is included in the stored `width`. Current-only,
-no migration; the Kuopio fixture is re-recorded with the column at its default.
+Save format 113 (`ROAD-101`, round RB3e, 2026-11-04) adds `network_edges.no_street_lights` (0 or
+1; a road type with street lights off sets it,
+[`roads.md`](roads.md#road-type-attributes-and-costs-road-101-rounds-rb3a-rb3c)). No older save
+loads. The Kuopio fixture is re-recorded in format 113 with
+`record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
+edges, and every table's row count is unchanged; `placements.json` is re-pinned.
+
+Save format 114 (`PARK-01`/`PARK-02`/`PARK-05`, merged with `ROAD-101` on 2026-11-04) is `dev`
+113 + 1 (the parking branch had used 110–114), current-only, with no migration. It adds the
+`parking_state` table (parking ownership, custody, claims, itinerary/recovery state and economy
+endpoint quote stamps, [`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)) and
+`network_edges.parking` after `no_street_lights`: the edge's kerbside parking lanes as a bit set
+(bit 0 left, bit 1 right, looking along the edge; 0 without any); a load fails on any other value.
+Each parking lane is included in the stored `width`. The Kuopio fixture is re-recorded in format
+114 with `record_kuopio_reference_save`: every table's row count matches both parents' fixtures,
+the column is 0 on every edge, and `placements.json` is re-pinned.
 
 ## Scheduler
 

@@ -4,7 +4,14 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
-use crate::simulation::network::road_edit::plan_road_edit;
+use crate::simulation::network::road_edit::{PreparedRoadInput, plan_road_edit};
+use crate::simulation::network::road_types::cost as road_cost;
+use crate::simulation::network::types::EdgeClass;
+
+// A lane count from Godot, as the stroke's checks clamp it.
+fn lanes_u8(count: i32) -> u8 {
+    count.clamp(0, i32::from(u8::MAX)) as u8
+}
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -46,6 +53,32 @@ impl SimulationNode {
                 GString::new()
             }
             None => "parking_code_out_of_range".into(),
+        }
+    }
+
+    /// Sets the road tool's road-type attributes (`ROAD-101`) for every later hover check,
+    /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
+    /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
+    /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way)
+    /// `zoning` (lots and buildings along the road) and `street_lights` (visual only). Returns
+    /// the empty string when set, else `speed_out_of_range`, keeping the previous attributes.
+    /// The built-in types send (50, true, true, true): the edge every stroke built before road
+    /// types.
+    #[func]
+    pub fn set_road_tool_attributes(
+        &mut self,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
+        street_lights: bool,
+    ) -> GString {
+        use crate::simulation::network::road_types::RoadAttributes;
+        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights) {
+            Ok(attributes) => {
+                self.road_tool_attributes = attributes;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
         }
     }
 
@@ -95,7 +128,7 @@ impl SimulationNode {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
-        let (surface_generation, (prepared_points, validation)) = {
+        let (surface_generation, (prepared, validation)) = {
             let query = self.road_tool.view.read().unwrap();
             let validated = query.validate(&RoadPreviewRequest {
                 surface_generation: query.surface_generation,
@@ -106,10 +139,12 @@ impl SimulationNode {
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
             });
             (query.surface_generation, validated)
         };
         let validation = &validation;
+        let prepared_points = &prepared.points;
         if road_debug {
             debug_log!(
                 "road",
@@ -132,9 +167,9 @@ impl SimulationNode {
 
         let result = self.road_candidate_validation_to_variant(
             validation,
-            &prepared_points,
-            fwd_lanes,
-            bkw_lanes,
+            prepared_points,
+            (fwd_lanes, bkw_lanes),
+            prepared.class,
         );
         let mut dict = result.to::<VarDictionary>();
         dict.set(
@@ -160,14 +195,17 @@ impl SimulationNode {
         let points = points.to_vec();
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let (prepared_points, validation, surface_generation) = {
+        let (prepared_input, validation, surface_generation) = {
             let query = self.road_tool.view.read().unwrap();
             let (prepared_input, validation, _) = plan_road_edit(
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                self.road_tool_median,
-                self.road_tool_parking,
+                (
+                    self.road_tool_median,
+                    self.road_tool_parking,
+                    self.road_tool_attributes,
+                ),
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -181,8 +219,10 @@ impl SimulationNode {
                 &query.water,
                 validation,
             );
-            (prepared_input.points, validation, query.surface_generation)
+            (prepared_input, validation, query.surface_generation)
         };
+        let class = prepared_input.class;
+        let prepared_points = prepared_input.points;
         if road_debug {
             debug_log!(
                 "road",
@@ -207,8 +247,8 @@ impl SimulationNode {
             .road_candidate_validation_to_variant(
                 &validation,
                 &prepared_points,
-                fwd_lanes,
-                bkw_lanes,
+                (fwd_lanes, bkw_lanes),
+                class,
             )
             .to::<VarDictionary>();
         dict.set(
@@ -266,6 +306,7 @@ impl SimulationNode {
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -305,6 +346,7 @@ impl SimulationNode {
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -321,9 +363,11 @@ impl SimulationNode {
                 context.view.road_mesh_surface_generation,
             )
         };
+        let prepared = preview.plan.prepared();
         let mut dict = Self::road_candidate_validation_to_dictionary(
             &preview.validation,
-            &preview.plan.prepared().points,
+            &prepared.points,
+            Self::stroke_cost_weight((fwd_lanes, bkw_lanes), prepared),
         );
         let generation = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
         let fingerprint = &preview.fingerprint;
@@ -547,19 +591,29 @@ impl SimulationNode {
         &self,
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
-        fwd_lanes: i32,
-        bkw_lanes: i32,
+        lanes: (i32, i32),
+        class: EdgeClass,
     ) -> Variant {
+        let (fwd_lanes, bkw_lanes) = lanes;
+        let weight = road_cost::stroke_weight(
+            (lanes_u8(fwd_lanes), lanes_u8(bkw_lanes)),
+            self.road_tool_median,
+            self.road_tool_attributes,
+            class,
+        );
         let dict = self
             .road_candidate_dictionary_with_parcel_clearance(
                 validation,
                 prepared_points,
-                fwd_lanes,
-                bkw_lanes,
+                lanes,
+                weight,
             )
             .unwrap_or_else(|| {
-                let mut pending =
-                    Self::road_candidate_validation_to_dictionary(validation, prepared_points);
+                let mut pending = Self::road_candidate_validation_to_dictionary(
+                    validation,
+                    prepared_points,
+                    weight,
+                );
                 pending.set("is_valid", false);
                 pending.set("is_pending", true);
                 pending
@@ -571,20 +625,21 @@ impl SimulationNode {
         &self,
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
-        fwd_lanes: i32,
-        bkw_lanes: i32,
+        lanes: (i32, i32),
+        weight: f64,
     ) -> Option<VarDictionary> {
-        let mut dict = Self::road_candidate_validation_to_dictionary(validation, prepared_points);
+        let mut dict =
+            Self::road_candidate_validation_to_dictionary(validation, prepared_points, weight);
         if validation.is_valid {
             // Query the existing parcel chunk index locally. Never copy city-wide zoning into
             // a preview snapshot or wait on the simulation lock from the mouse-hover path.
             let clearance = RoadCorridorClearance::evaluate(
                 &*self.try_lock_core()?,
                 prepared_points,
-                fwd_lanes,
-                bkw_lanes,
+                lanes,
                 self.road_tool_median,
                 self.road_tool_parking,
+                self.road_tool_attributes,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }
@@ -615,9 +670,12 @@ impl SimulationNode {
         }
     }
 
+    // The validation with the prepared points, the stroke's build length and its cost at the
+    // road type's `weight` (`ROAD-101`).
     fn road_candidate_validation_to_dictionary(
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
+        weight: f64,
     ) -> VarDictionary {
         let mut dict = Self::road_preview_validation_to_dictionary(validation);
         dict.set(
@@ -626,8 +684,19 @@ impl SimulationNode {
         );
         let build_length_m = Self::road_build_length_m(prepared_points);
         dict.set("build_length_m", build_length_m);
-        dict.set("build_cost", build_length_m * ROAD_BUILD_COST_PER_METER);
+        dict.set("build_cost", build_length_m * road_cost::build_per_m(weight));
         dict
+    }
+
+    // A previewed stroke's cost weight: its lanes, and the median, attributes and class its
+    // prepared input carries.
+    fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
+        road_cost::stroke_weight(
+            (lanes_u8(lanes.0), lanes_u8(lanes.1)),
+            prepared.median,
+            prepared.attributes,
+            prepared.class,
+        )
     }
 
     fn road_build_length_m(points: &[Vector3]) -> f64 {

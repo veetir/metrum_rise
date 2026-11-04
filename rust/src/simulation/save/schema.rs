@@ -186,11 +186,11 @@ CREATE TABLE scheduler_state(
     next_spawn_id INTEGER NOT NULL,
     logistics_hour_ticks INTEGER NOT NULL,
     agent_settlement_days INTEGER NOT NULL,
-    road_length_front_m REAL NOT NULL,
-    road_length_back_mm INTEGER NOT NULL,
-    road_length_edges INTEGER NOT NULL,
-    road_length_next_edge INTEGER NOT NULL,
-    road_length_measured INTEGER NOT NULL,
+    road_upkeep_front_m REAL NOT NULL,
+    road_upkeep_back_mm INTEGER NOT NULL,
+    road_upkeep_edges INTEGER NOT NULL,
+    road_upkeep_next_edge INTEGER NOT NULL,
+    road_upkeep_measured INTEGER NOT NULL,
     environment_building_handles INTEGER NOT NULL,
     environment_edges INTEGER NOT NULL,
     environment_next_edge INTEGER NOT NULL,
@@ -268,6 +268,7 @@ CREATE TABLE network_edges(
     vehicle_frontage_access INTEGER NOT NULL DEFAULT 1,
     median_style INTEGER NOT NULL DEFAULT 0,
     median_width REAL NOT NULL DEFAULT 0,
+    no_street_lights INTEGER NOT NULL DEFAULT 0,
     parking INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE network_edge_geometry(

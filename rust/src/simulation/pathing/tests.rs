@@ -27,6 +27,7 @@ fn test_slope_cost_calculation() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -86,6 +87,7 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -116,6 +118,7 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -151,6 +154,7 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -202,6 +206,7 @@ fn test_bidirectional_walkway_pathing() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -254,6 +259,7 @@ fn test_car_uturn_allowed() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -311,6 +317,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
@@ -377,6 +384,7 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -400,6 +408,7 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -425,6 +434,7 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -502,6 +512,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             physical_geometry: vec![p0, p1],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
@@ -625,6 +636,7 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,

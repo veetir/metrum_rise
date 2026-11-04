@@ -81,6 +81,7 @@ fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview 
         tunnel: false,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     })
 }
 
@@ -94,6 +95,7 @@ fn commit(core: &mut SimCore, points: &[Vector3], preview: Option<Arc<RoadPrevie
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
         std::time::Instant::now(),
@@ -242,6 +244,7 @@ pub(crate) fn drag(
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         });
         let span = span(called);
         frames.push(match preview.pieces.as_ref() {
@@ -291,6 +294,7 @@ fn click(core: &mut SimCore, drag: Drag, [fwd_lanes, bkw_lanes]: [i32; 2]) -> se
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: Some(Arc::new(drag.preview)),
         },
         called,
@@ -769,6 +773,7 @@ fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
         tunnel: true,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     };
     let mut pose = context.preview_road(request(&context));
     let pieces = pose.pieces.as_mut().expect("the tunnel's pieces");
@@ -797,6 +802,7 @@ fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
                 tunnel: true,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview,
             },
             std::time::Instant::now(),

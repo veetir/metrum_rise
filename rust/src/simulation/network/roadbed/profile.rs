@@ -8,15 +8,17 @@
 use crate::config;
 use crate::simulation::network::build_surface_edge;
 use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking};
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use godot::prelude::Vector3;
 
 /// Height of raised bands (curb, shoulder, sidewalk) above the carriageway, in metres.
 pub const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
-// Lateral widths of the raised bands beside the carriageway.
+// Lateral widths of the raised bands beside the carriageway; a car road without sidewalks has
+// only the shoulder (`ROAD-101`'s road types say so in their widths).
 const CURB_BAND_WIDTH_M: f32 = 0.15;
-const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
+pub(crate) const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 // A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
 pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
 /// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's
@@ -258,8 +260,24 @@ pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
     RoadProfile::for_edge(edge).half_width_m()
 }
 
+/// The raised band outside each side of `edge`'s carriageway, as [`RoadProfile::for_edge`]
+/// builds it: `config::SIDEWALK_WIDTH` for a car road with sidewalks, the 0.75 m shoulder for
+/// one without, 0 for a walkway (its footpath is its whole width). The building door probes and
+/// the parcel collision read it so a building on a road without sidewalks fronts the shoulder's
+/// outer edge, not the carriageway's. `O(1)`.
+pub(crate) fn side_band_width_m(edge: &Edge) -> f32 {
+    if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
+        0.0
+    } else if edge.allowed_types & TransitFlags::FOOT != 0 {
+        config::SIDEWALK_WIDTH
+    } else {
+        SHOULDER_BAND_WIDTH_M
+    }
+}
+
 /// Returns the visible roadbed half-width for one not-yet-committed road candidate with
-/// `median` (`ROAD-80`: the median widens the corridor every stroke check reads).
+/// `median` (`ROAD-80`: the median widens the corridor every stroke check reads) and its road
+/// type's `attributes` (`ROAD-101`: a road without sidewalks has only its shoulders).
 pub(crate) fn preview_candidate_roadbed_half_width_m(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
@@ -267,12 +285,15 @@ pub(crate) fn preview_candidate_roadbed_half_width_m(
     bkw_lanes: u8,
     median: Option<RoadMedian>,
     parking: RoadParking,
+    attributes: RoadAttributes,
 ) -> f32 {
     let points = match (prepared_points.first(), prepared_points.last()) {
         (Some(first), Some(last)) => vec![*first, *last],
         _ => Vec::new(),
     };
-    let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class, median, parking);
+    let edge = build_surface_edge(
+        0, 1, points, fwd_lanes, bkw_lanes, edge_class, median, parking, attributes,
+    );
     visual_roadbed_half_width_m(&edge)
 }
 

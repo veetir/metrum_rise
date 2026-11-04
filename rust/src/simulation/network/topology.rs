@@ -1119,6 +1119,7 @@ pub fn split_edge(
     let speed_limit = old_edge.speed_limit;
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
+    let no_street_lights = old_edge.no_street_lights;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
     let parking = old_edge.parking;
@@ -1159,6 +1160,7 @@ pub fn split_edge(
         class,
         deleted: false,
         no_building_spawn,
+        no_street_lights,
         vehicle_frontage_access,
         median,
         parking,
@@ -1380,6 +1382,7 @@ mod tests {
                 EdgeClass::Standard,
                 None,
                 Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             );
             // Physical stations differ from the materialized control support stations.
             edge.physical_geometry = vec![
@@ -1447,6 +1450,7 @@ mod tests {
                 EdgeClass::Standard,
                 None,
                 Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
         graph.remove_from_spatial_index(0);
@@ -1490,6 +1494,7 @@ mod tests {
                     EdgeClass::Standard,
                     None,
                     Default::default(),
+                    crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 ));
             }
             graph.rebuild_adjacency_list();
@@ -1540,6 +1545,7 @@ mod tests {
                 EdgeClass::Standard,
                 None,
                 Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
             graph.rebuild_adjacency_list();
             let junction = graph.add_node(Vector3::new(-4200.0, 0.0, 600.0), NodeType::Junction);
@@ -1593,6 +1599,7 @@ mod tests {
                 EdgeClass::Standard,
                 None,
                 Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
         let row: Vec<_> = (0..=40)
@@ -1609,6 +1616,7 @@ mod tests {
             EdgeClass::Standard,
             None,
             Default::default(),
+            crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         ));
         graph.rebuild_adjacency_list();
         process_intersections(

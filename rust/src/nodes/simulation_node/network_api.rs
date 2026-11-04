@@ -5,6 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
+use crate::simulation::network::road_types::RoadAttributes;
 
 mod road_tool;
 mod road_types;
@@ -71,8 +72,11 @@ impl SimulationNode {
             bkw_lanes,
             snap_to_existing_roads,
             self.road_tool_tunnel,
-            self.road_tool_median,
-            self.road_tool_parking,
+            (
+                self.road_tool_median,
+                self.road_tool_parking,
+                self.road_tool_attributes,
+            ),
         );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
@@ -88,6 +92,7 @@ impl SimulationNode {
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,
@@ -464,9 +469,12 @@ impl SimulationNode {
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
     /// `parking` (`PARK-05`: bit 0 left kerb, bit 1 right),
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
-    /// change) and `road_type` (`ROAD-101`: the id of the first usable road type, built-ins
-    /// first, whose layout builds exactly this cross-section, else empty). Empty for an id that
-    /// is not a live edge.
+    /// change), `ROAD-101`'s `sidewalks` (a car road's two sidewalks; false for a walkway),
+    /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
+    /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
+    /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
+    /// these street lights, else empty; zoning is not matched). Empty for an id that is not a
+    /// live edge.
     #[func]
     pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
         let (mut result, section) = {
@@ -479,7 +487,7 @@ impl SimulationNode {
             else {
                 return VarDictionary::new();
             };
-            let result = vdict! {
+            let mut result = vdict! {
                 "fwd_lanes": i64::from(edge.fwd_lanes),
                 "bkw_lanes": i64::from(edge.bkw_lanes),
                 "width": edge.width,
@@ -496,26 +504,36 @@ impl SimulationNode {
                     )
                     .is_ok(),
             };
-            let section = crate::simulation::network::road_types::RoadCrossSection {
-                fwd_lanes: edge.fwd_lanes,
-                bkw_lanes: edge.bkw_lanes,
-                median: edge.median,
-                parking: edge.parking,
-            };
-            (result, section)
+            let section =
+                crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
+            let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
+            result.set("sidewalks", section.sidewalks);
+            result.set("speed_kmh", i64::from(speed_kmh));
+            result.set("zoning", !edge.no_building_spawn);
+            result.set("street_lights", !edge.no_street_lights);
+            (result, (section, speed_kmh, !edge.no_street_lights))
         };
         // The library is matched without the core lock.
-        result.set("road_type", self.road_type_of(section));
+        result.set(
+            "road_type",
+            self.road_type_of(section.0, section.1, section.2),
+        );
         result
     }
 
-    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes and
-    /// the median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
-    /// `median_width` metres and kerbside `parking` (`PARK-05`: bit 0 left kerb, bit 1 right) in
-    /// place, without applying it: `is_valid`, and when refused
-    /// `invalid_reason` (stable key) and `detail`. The same check as
-    /// [`Self::set_edge_cross_section`] (`ROAD-80`).
+    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes, the
+    /// median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
+    /// `median_width` metres, kerbside `parking` (`PARK-05`: bit 0 left kerb, bit 1 right), and
+    /// a road type's `speed_kmh` (20 to 120 in steps of 10),
+    /// `sidewalks`, `zoning` and `street_lights` in place (`ROAD-80`, `ROAD-101`; pass the road's own values from
+    /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
+    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
+    /// confirmation), `demolition_permanent` (true with any `buildings_removed`: undo restores
+    /// the road and its empty parcels, never the buildings) and `cost_delta` (what Apply charges: the build-cost difference over the
+    /// road's length, never negative); when refused `invalid_reason` (stable key) and `detail`.
+    /// The same check as [`Self::set_edge_cross_section`].
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn preview_edge_cross_section(
         &mut self,
         edge_id: i32,
@@ -524,28 +542,31 @@ impl SimulationNode {
         median_style: i32,
         median_width: f32,
         parking: i32,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
+        street_lights: bool,
     ) -> VarDictionary {
-        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        let refusal = match (
-            RoadMedian::from_tool(median_style, median_width),
-            RoadParking::from_code(parking),
-        ) {
-            (Ok(median), Some(parking)) => self.lock_core().preview_edge_cross_section_internal(
-                edge_id,
-                lanes(fwd),
-                lanes(bkw),
-                median,
-                parking,
-            ),
-            (Err(reason), _) => Some(RoadRejection::new(reason, "the median's style or width")),
-            (_, None) => Some(RoadRejection::new(
-                "parking_code_out_of_range",
-                format!("parking code {parking}"),
-            )),
-        };
-        match refusal {
-            None => vdict! { "is_valid": true },
-            Some(rejection) => vdict! {
+        let attributes = (speed_kmh, sidewalks, zoning, street_lights);
+        let verdict = cross_section_spec(median_style, median_width, parking, attributes)
+            .and_then(|(median, parking, attributes)| {
+                self.lock_core().preview_edge_cross_section_internal(
+                    edge_id,
+                    lanes_u8(fwd),
+                    lanes_u8(bkw),
+                    median,
+                    parking,
+                    attributes,
+                )
+            });
+        match verdict {
+            Ok(verdict) => vdict! {
+                "is_valid": true,
+                "buildings_removed": verdict.buildings_removed as i64,
+                "demolition_permanent": verdict.demolition_permanent,
+                "cost_delta": verdict.cost_delta,
+            },
+            Err(rejection) => vdict! {
                 "is_valid": false,
                 "invalid_reason": rejection.reason,
                 "detail": rejection.detail,
@@ -554,12 +575,15 @@ impl SimulationNode {
     }
 
     /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes, the median `median_style` of
-    /// `median_width` metres and kerbside `parking` in place (`ROAD-80`, `PARK-05`), with an
-    /// undo record that
-    /// restores the whole road; its pieces publish now, as a crossing toggle's do. Returns
-    /// whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
+    /// `median_width` metres, kerbside `parking` (`PARK-05`) and a road type's `speed_kmh`,
+    /// `sidewalks`, `zoning` and `street_lights` in place
+    /// (`ROAD-80`, `ROAD-101`), with an undo record that restores the whole road (buildings that
+    /// zoning off demolished stay demolished, as with the "No buildings" checkbox); its pieces
+    /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
+    /// Returns whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
     /// changes nothing.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn set_edge_cross_section(
         &mut self,
         edge_id: i32,
@@ -568,22 +592,26 @@ impl SimulationNode {
         median_style: i32,
         median_width: f32,
         parking: i32,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
+        street_lights: bool,
     ) -> bool {
-        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        let Ok(median) = RoadMedian::from_tool(median_style, median_width) else {
-            return false;
-        };
-        let Some(parking) = RoadParking::from_code(parking) else {
+        let attributes = (speed_kmh, sidewalks, zoning, street_lights);
+        let Ok((median, parking, attributes)) =
+            cross_section_spec(median_style, median_width, parking, attributes)
+        else {
             return false;
         };
         let (snapshot, publication) = {
             let mut core = self.lock_core();
             if !core.set_edge_cross_section_internal(
                 edge_id,
-                lanes(fwd),
-                lanes(bkw),
+                lanes_u8(fwd),
+                lanes_u8(bkw),
                 median,
                 parking,
+                attributes,
             ) {
                 return false;
             }
@@ -636,4 +664,29 @@ impl SimulationNode {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
     }
+}
+
+// A lane count from Godot; out of range saturates, so the edit's check refuses it.
+fn lanes_u8(count: i32) -> u8 {
+    u8::try_from(count).unwrap_or(u8::MAX)
+}
+
+// An in-place edit's median, kerbside parking code and road-type attributes (speed in km/h,
+// sidewalks, zoning, street lights) from Godot's arguments, or the refusal
+// (`unknown_median_style`, `median_width_out_of_range`, `parking_code_out_of_range`,
+// `speed_out_of_range`).
+fn cross_section_spec(
+    median_style: i32,
+    median_width: f32,
+    parking: i32,
+    (speed_kmh, sidewalks, zoning, street_lights): (i32, bool, bool, bool),
+) -> Result<(Option<RoadMedian>, RoadParking, RoadAttributes), RoadRejection> {
+    let median = RoadMedian::from_tool(median_style, median_width)
+        .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
+    let parking = RoadParking::from_code(parking).ok_or_else(|| {
+        RoadRejection::new("parking_code_out_of_range", format!("parking code {parking}"))
+    })?;
+    let attributes = RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights)
+        .map_err(|reason| RoadRejection::new(reason, format!("{speed_kmh} km/h")))?;
+    Ok((median, parking, attributes))
 }

@@ -3,8 +3,9 @@
 ## The road builder's strip (`ROAD-101`): the layout seen across the road, left to right looking
 ## the way it is drawn, drawn to scale with a floor of MIN_PART_PX per part so a 0.5 m painted
 ## median stays clickable. Rows, top to bottom: a "+" slot marker on every boundary a part may be
-## inserted at (between the sidewalks), each part's glyph, its surface, and its width. An invalid
-## layout is tinted red. Clicking a slot selects it and clicking a part (not a sidewalk) asks for
+## inserted at (between the two ends: the sidewalks, or for a road without sidewalks its shoulder
+## bands), each part's glyph, its surface, and its width. An invalid
+## layout is tinted red. Clicking a slot selects it and clicking a part (not an end) asks for
 ## its popup; parts drag along the strip to move, off it to be removed, and the palette's tiles
 ## drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures
 ## through its signals; the builder edits the layout and asks Rust's check.
@@ -71,7 +72,7 @@ func set_layout(layout: Array, part_widths_m: PackedFloat32Array, is_valid: bool
 	selected_slot = clampi(selected_slot, 1, maxi(1, parts.size() - 1))
 	_relayout()
 
-## Selects insert slot `slot` (clamped to the slots between the sidewalks).
+## Selects insert slot `slot` (clamped to the slots between the two ends).
 func set_slot(slot: int) -> void:
 	selected_slot = clampi(slot, 1, maxi(1, parts.size() - 1))
 	queue_redraw()
@@ -84,7 +85,8 @@ func part_rect(index: int) -> Rect2:
 func slot_position(slot: int) -> Vector2:
 	return Vector2(_xs[slot], SLOT_Y)
 
-## Whether part `index` may be moved, removed or opened (everything but the sidewalks).
+## Whether part `index` may be moved, removed or opened (everything but the two ends and any
+## sidewalk).
 func is_interior(index: int) -> bool:
 	return index > 0 and index < parts.size() - 1 and String(parts[index].get("kind", "")) != "sidewalk"
 
@@ -131,7 +133,7 @@ func _draw() -> void:
 		RoadPartGlyph.draw_surface(self, rect, parts[index])
 		var glyph_x := rect.get_center().x - GLYPH_SIZE * 0.5
 		RoadPartGlyph.draw_glyph(self, Rect2(glyph_x, GLYPH_TOP, GLYPH_SIZE, GLYPH_SIZE), parts[index])
-		var label := "%.1f" % _metres(index)
+		var label := _width_text(_metres(index))
 		var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
 		draw_string(font, Vector2(rect.get_center().x - label_width * 0.5, LABEL_TOP + 14.0), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.85, 0.85, 0.85))
@@ -154,6 +156,10 @@ func _draw() -> void:
 	if _drop_slot >= 1:
 		var x := _xs[_drop_slot]
 		draw_line(Vector2(x, SLOT_Y - SLOT_RADIUS), Vector2(x, SURFACE_TOP + SURFACE_HEIGHT + 4.0), ACCENT, 3.0)
+
+# A width with one decimal, or two where one would round it (a 0.75 m shoulder).
+static func _width_text(metres: float) -> String:
+	return "%.1f" % metres if is_equal_approx(metres * 10.0, roundf(metres * 10.0)) else "%.2f" % metres
 
 ## The interior slot nearest strip x `x`.
 func slot_at(x: float) -> int:
@@ -205,7 +211,7 @@ func _get_tooltip(at_position: Vector2) -> String:
 		return "Click a + to choose where a clicked part goes" if _slot_under(at_position) >= 1 else ""
 	var hint := "Click to change, move or remove it; drag it along the road or off it" if is_interior(index) \
 		else RoadPartGlyph.part_hint(parts[index])
-	return "%s, %.1f m\n%s" % [RoadPartGlyph.part_name(parts[index]), _metres(index), hint]
+	return "%s, %s m\n%s" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index)), hint]
 
 func _get_drag_data(at_position: Vector2) -> Variant:
 	var index := part_at(at_position)

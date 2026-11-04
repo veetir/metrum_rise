@@ -105,6 +105,7 @@ fn reset_and_commit(core: &mut SimCore, fixture: usize, rise_m: f32) {
                 tunnel: false,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),

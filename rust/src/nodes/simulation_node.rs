@@ -114,9 +114,8 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RenderSnapshot, RoadPreviewRequest,
-    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
-    run_sim_thread,
+    DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolQuerySnapshot,
+    RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;
@@ -211,6 +210,9 @@ pub struct SimulationNode {
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
     pub(crate) road_tool_parking: crate::simulation::network::graph::RoadParking,
+    /// The road tool's road-type attributes (`ROAD-101`: speed, sidewalks, zoning), copied into
+    /// every request the tool sends; the built-ins' until a type sets others.
+    pub(crate) road_tool_attributes: crate::simulation::network::road_types::RoadAttributes,
     /// The player's road types (`ROAD-101`), read from `user://road_types.json` on first use:
     /// tool configuration, never in `SimCore`, a save or the undo stack.
     pub(crate) road_types:
@@ -443,6 +445,7 @@ impl INode3D for SimulationNode {
             road_tool_tunnel: false,
             road_tool_median: None,
             road_tool_parking: Default::default(),
+            road_tool_attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),

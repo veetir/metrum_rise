@@ -90,6 +90,7 @@ fn preview_with(
         snap_to_existing_roads: true,
         tunnel: false,
         median,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     })
 }
 
@@ -117,6 +118,7 @@ fn commit_with(
             snap_to_existing_roads: true,
             tunnel: false,
             median,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
         std::time::Instant::now(),
@@ -541,6 +543,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             tunnel: false,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
         let view_chunks = context.view.road_mesh_chunks.clone();
@@ -553,6 +556,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 tunnel: false,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: Some(Arc::clone(&preview)),
             },
             std::time::Instant::now(),
@@ -894,7 +898,14 @@ fn drawn_medians_survive_widening_and_cross_junction_splits() {
             .unwrap();
         assert_eq!(core.region_graph.edge(edge).median, median);
         assert!(
-            core.set_edge_cross_section_internal(edge as i32, 2, 2, median, Default::default()),
+            core.set_edge_cross_section_internal(
+                edge as i32,
+                2,
+                2,
+                median,
+                Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT
+            ),
             "style {style}: widened in place"
         );
         // The pieces publish as the Godot call publishes them, before the next stroke plans.
@@ -934,6 +945,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
             snap_to_existing_roads: true,
             tunnel: false,
             median,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         assert_eq!(snapshot.validate(&request).1.invalid_reason, reason);
         let outcome = core.commit_road(
@@ -945,6 +957,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1015,6 +1028,7 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),

@@ -163,7 +163,14 @@ fn a_parking_lane_turned_on_in_place_publishes_its_bays_and_undo_takes_them_away
         left: false,
         right: true,
     };
-    assert!(c.set_edge_cross_section_internal(edge as i32, 1, 1, None, right));
+    assert!(c.set_edge_cross_section_internal(
+        edge as i32,
+        1,
+        1,
+        None,
+        right,
+        crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+    ));
     c.finalize_network_render_products();
     assert_eq!(c.region_graph.get_edge(edge).unwrap().parking, right);
     let bays = side(&c, edge, true);

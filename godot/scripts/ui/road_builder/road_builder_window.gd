@@ -7,8 +7,15 @@
 ## Left: the library column (built-ins to duplicate; the player's types to edit, duplicate or
 ## delete, unusable ones greyed with their reason; the library error when the file cannot be
 ## written). Right: six part tiles, the strip with the layout to scale (sidewalks fixed at both
-## ends), the lane split and widths, Rust's verdict under it, and a footer with the name (Rust's
-## suggestion until the player types one), Cancel and Create road (Save when editing). Parts go
+## ends, or without sidewalks a 0.75 m shoulder band each side, drawn but not a part), the lane
+## split and widths, the type's attributes (a "Sidewalks" checkbox for both sides together, a
+## "Speed" stepper on Rust's grid, hidden for a footpath, a "Zoning" checkbox and a "Street
+## lights" checkbox, ticked for a new type), Rust's
+## verdict under them with the type's cost per metre from Rust and a warning when a road without
+## sidewalks zones (buildings reached by car only), and a footer with the name (Rust's
+## suggestion until the player types one), Cancel and Create road (Save when editing). A new
+## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
+## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
 ## in by clicking a "+" slot and then a tile, or by dragging a tile into the strip; a click on a
 ## part opens its popup (median style and width, Move left / right, Remove); parts drag along
 ## the strip and off it. Every change asks Rust's `check_road_layout`; Create is enabled only
@@ -35,9 +42,12 @@ const RoadBuilderStrip = preload("res://scripts/ui/road_builder/road_builder_str
 const RoadPartPopup = preload("res://scripts/ui/road_builder/road_part_popup.gd")
 const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_library_list.gd")
 
-const DEFAULT_SIZE := Vector2i(960, 360)
-const MIN_SIZE := Vector2i(760, 300)
+const DEFAULT_SIZE := Vector2i(960, 440)
+const MIN_SIZE := Vector2i(760, 400)
 const SIDEWALK := {"kind": "sidewalk"}
+## A layout's end without sidewalks: the roadbed's shoulder band, drawn on the strip, never sent
+## to Rust.
+const SHOULDER := {"kind": "shoulder"}
 ## A new layout: the 2-Lane Road's.
 const NEW_LAYOUT := [
 	{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
@@ -46,6 +56,9 @@ const NEW_LAYOUT := [
 const STATUS_REFUSED := Color(1.0, 0.45, 0.38)
 const STATUS_NAME := Color.YELLOW
 const STATUS_READY := Color(0.55, 0.95, 0.55)
+const STATUS_COST := Color(0.85, 0.85, 0.85)
+## The warning for a type without sidewalks that zones (design D1).
+const CAR_ONLY_WARNING := "No sidewalks: buildings here are reached by car only"
 
 var window: Window
 var library_list: RoadTypeLibraryList
@@ -56,13 +69,26 @@ var header_label: Label
 var lanes_label: Label
 var widths_label: Label
 var status_label: Label
+var cost_label: Label
+var warning_label: Label
+var sidewalks_check: CheckBox
+var speed_box: SpinBox
+var speed_row: Control
+var zoning_check: CheckBox
+var street_lights_check: CheckBox
 var name_edit: LineEdit
 var cancel_button: Button
 var create_button: Button
 var delete_dialog: ConfirmationDialog
 
-## The layout being built, left to right (Rust's part dictionaries).
+## The layout being built, left to right (Rust's part dictionaries; without sidewalks its two
+## ends are SHOULDER, which `rust_parts` leaves out).
 var parts: Array = []
+## The type's speed limit in km/h, whether it zones (lots and buildings along it) and whether it
+## has street lights.
+var speed_kmh := 50
+var zoning := true
+var street_lights := true
 ## The custom type being edited, or empty for a new one.
 var editing_id := ""
 ## Rust's verdict on `parts` (`check_road_layout`).
@@ -76,6 +102,10 @@ var _name_typed := false
 # The part whose popup is open, or -1.
 var _popup_index := -1
 var _pending_delete: Dictionary = {}
+# Rust's speed grid (`get_road_types().speeds`).
+var _speeds: Dictionary = {}
+# The player set the Zoning checkbox, or the 80 km/h suggestion was made: no further suggestion.
+var _zoning_settled := false
 
 func setup(simulation_node: Node) -> void:
 	_simulation_node = simulation_node
@@ -110,7 +140,7 @@ func _build_window() -> void:
 	library_list = RoadTypeLibraryList.new()
 	library_list.type_selected.connect(_on_type_selected)
 	library_list.new_requested.connect(func(): _start(NEW_LAYOUT, "", ""))
-	library_list.duplicate_requested.connect(func(type: Dictionary): _start(type.get("parts", []), "", ""))
+	library_list.duplicate_requested.connect(func(type: Dictionary): _start(type.get("parts", []), "", "", type))
 	library_list.delete_requested.connect(_on_delete_requested)
 	columns.add_child(library_list)
 	columns.add_child(VSeparator.new())
@@ -140,8 +170,14 @@ func _build_window() -> void:
 	strip_row.add_child(summary)
 	lanes_label = _label(summary, 22)
 	widths_label = _label(summary, 13)
+	editor.add_child(_build_attributes())
 	status_label = _label(editor, 13)
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cost_label = _label(editor, 13)
+	cost_label.add_theme_color_override("font_color", STATUS_COST)
+	warning_label = _label(editor, 13)
+	warning_label.add_theme_color_override("font_color", STATUS_NAME)
+	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -194,6 +230,50 @@ func _build_tiles() -> Control:
 		tile.picked.connect(func(picked: Dictionary): insert_part(picked, _click_slot(picked)))
 		row.add_child(tile)
 		tiles.append(tile)
+	return row
+
+# The type's attributes: Sidewalks (both sides together), Speed, Zoning and Street lights.
+func _build_attributes() -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 18)
+	sidewalks_check = CheckBox.new()
+	sidewalks_check.text = "Sidewalks"
+	sidewalks_check.focus_mode = Control.FOCUS_NONE
+	sidewalks_check.tooltip_text = "A sidewalk on both sides, or none: a 0.75 m shoulder each side that walkers do not use"
+	UIStyle.set_font_size(sidewalks_check, 14)
+	sidewalks_check.toggled.connect(set_sidewalks)
+	row.add_child(sidewalks_check)
+	var speed := HBoxContainer.new()
+	speed.add_theme_constant_override("separation", 6)
+	var label := _label(speed, 14)
+	label.text = "Speed"
+	speed_box = SpinBox.new()
+	speed_box.suffix = "km/h"
+	speed_box.rounded = true
+	# Wide enough for "120 km/h": a narrower line edit scrolls to the text's end ("0 km/h").
+	speed_box.custom_minimum_size.x = 118.0
+	speed_box.tooltip_text = "The speed limit cars drive at; faster roads cost more and are louder"
+	UIStyle.set_font_size(speed_box.get_line_edit(), 14)
+	speed_box.value_changed.connect(func(value: float): set_speed(int(value)))
+	speed.add_child(speed_box)
+	speed_row = speed
+	row.add_child(speed)
+	zoning_check = CheckBox.new()
+	zoning_check.text = "Zoning"
+	zoning_check.focus_mode = Control.FOCUS_NONE
+	zoning_check.tooltip_text = "Lots and buildings along the road; off for roads nothing is built on"
+	UIStyle.set_font_size(zoning_check, 14)
+	zoning_check.toggled.connect(func(on: bool):
+		_zoning_settled = true
+		set_zoning(on))
+	row.add_child(zoning_check)
+	street_lights_check = CheckBox.new()
+	street_lights_check.text = "Street lights"
+	street_lights_check.focus_mode = Control.FOCUS_NONE
+	street_lights_check.tooltip_text = "Lamp posts along the road, lit at night; they cost nothing"
+	UIStyle.set_font_size(street_lights_check, 14)
+	street_lights_check.toggled.connect(set_street_lights)
+	row.add_child(street_lights_check)
 	return row
 
 func _build_footer() -> Control:
@@ -260,20 +340,87 @@ func is_open() -> bool:
 	return window.visible
 
 # Starts editing `layout`: a new type when `id` is empty (its name follows Rust's suggestion),
-# else custom type `id` named `type_name`. A layout without parts gets bare sidewalks.
-func _start(layout: Array, id: String, type_name: String) -> void:
+# else custom type `id` named `type_name`; `from` is the `get_road_types` entry it starts from
+# (its speed, zoning and street lights), or empty for the built-ins' 50 km/h with zoning and
+# street lights. A layout without parts
+# gets bare sidewalks; one without sidewalks gets its shoulder ends.
+func _start(layout: Array, id: String, type_name: String, from: Dictionary = {}) -> void:
 	_close_popup()
-	parts = layout.duplicate(true) if not layout.is_empty() else [SIDEWALK.duplicate(), SIDEWALK.duplicate()]
+	var start: Array = layout.duplicate(true) if not layout.is_empty() else [SIDEWALK.duplicate(), SIDEWALK.duplicate()]
+	if not start.any(func(part: Dictionary): return String(part.get("kind", "")) in ["sidewalk", "footpath"]):
+		start = [SHOULDER.duplicate()] + start + [SHOULDER.duplicate()]
+	parts = start
 	editing_id = id
 	_name_typed = not id.is_empty()
 	name_edit.text = type_name
 	_refresh_library()
+	# A walkway lists speed 0 (it has none): the stepper then shows the default, hidden.
+	var speed := int(from.get("speed_kmh", 0))
+	speed_kmh = speed if speed > 0 else int(_speeds.get("default_kmh", 50))
+	zoning = bool(from.get("zoning", true))
+	street_lights = bool(from.get("street_lights", true))
+	_zoning_settled = false
+	speed_box.set_value_no_signal(speed_kmh)
+	zoning_check.set_pressed_no_signal(zoning)
+	street_lights_check.set_pressed_no_signal(street_lights)
 	strip.set_slot(parts.size() - 1)
 	_layout_changed()
 
 func _refresh_library() -> void:
 	_library = _simulation_node.get_road_types()
+	_speeds = _library.get("speeds", {})
+	speed_box.min_value = int(_speeds.get("min_kmh", 20))
+	speed_box.max_value = int(_speeds.get("max_kmh", 120))
+	speed_box.step = int(_speeds.get("step_kmh", 10))
 	library_list.show_library(_library, editing_id)
+
+## The layout as Rust takes it: `parts` without the shoulder ends.
+func rust_parts() -> Array:
+	return parts.filter(func(part: Dictionary): return String(part.get("kind", "")) != "shoulder")
+
+## Whether the layout has sidewalks (its ends are sidewalks, not shoulders).
+func has_sidewalks() -> bool:
+	return parts.is_empty() or String(parts[0].get("kind", "")) != "shoulder"
+
+# A footpath layout (a walkway, only from a hand-written entry): no speed and no sidewalks.
+func _is_footpath() -> bool:
+	return parts.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath")
+
+## Gives the layout sidewalks on both sides (`on`) or a shoulder each side: the two ends are
+## replaced together, the parts between keep their places.
+func set_sidewalks(on: bool) -> void:
+	var body := parts.duplicate()
+	for end in [0, -1]:
+		if not body.is_empty() and String(body[end].get("kind", "")) in ["sidewalk", "shoulder"]:
+			body.remove_at(end if end == 0 else body.size() - 1)
+	var cap: Dictionary = SIDEWALK if on else SHOULDER
+	parts = [cap.duplicate()] + body + [cap.duplicate()]
+	_close_popup()
+	strip.set_slot(strip.selected_slot)
+	_layout_changed()
+
+## Sets the type's speed (Rust checks the grid). A new type reaching `no_zoning_from_kmh` gets
+## zoning off once, unless the player set the Zoning checkbox.
+func set_speed(kmh: int) -> void:
+	speed_kmh = kmh
+	if editing_id.is_empty() and not _zoning_settled and kmh >= int(_speeds.get("no_zoning_from_kmh", 80)):
+		_zoning_settled = true
+		zoning = false
+		zoning_check.set_pressed_no_signal(false)
+	speed_box.set_value_no_signal(kmh)
+	_layout_changed()
+
+## Sets whether the type zones.
+func set_zoning(on: bool) -> void:
+	zoning = on
+	zoning_check.set_pressed_no_signal(on)
+	_layout_changed()
+
+## Sets whether the type has street lights.
+func set_street_lights(on: bool) -> void:
+	street_lights = on
+	street_lights_check.set_pressed_no_signal(on)
+	_layout_changed()
 
 func _library_writable() -> bool:
 	return String(_library.get("error", "")).is_empty()
@@ -344,11 +491,23 @@ func set_median(index: int, style: int, width_m: float) -> void:
 	parts[index] = {"kind": "median", "style": style, "width_m": width_m}
 	_layout_changed()
 
-# Asks Rust's verdict on the layout and shows it.
+# Asks Rust's verdict on the layout and shows it. Without sidewalks the strip draws a shoulder
+# band each side, (total - carriageway) / 2 from Rust's widths.
 func _layout_changed() -> void:
-	check = _simulation_node.check_road_layout(parts)
+	check = _simulation_node.check_road_layout(rust_parts(), speed_kmh, zoning, street_lights)
 	var valid := bool(check.get("is_valid", false))
-	strip.set_layout(parts, check.get("part_widths_m", PackedFloat32Array()), valid)
+	var widths: PackedFloat32Array = check.get("part_widths_m", PackedFloat32Array())
+	if not has_sidewalks():
+		var shoulder := 0.5 * (float(check.get("total_m", 0.0)) - float(check.get("carriageway_m", 0.0)))
+		var drawn := PackedFloat32Array([shoulder])
+		drawn.append_array(widths)
+		drawn.append(shoulder)
+		widths = drawn
+	strip.set_layout(parts, widths, valid)
+	var footpath := _is_footpath()
+	sidewalks_check.set_pressed_no_signal(has_sidewalks())
+	sidewalks_check.disabled = footpath
+	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
 	lanes_label.text = "%d + %d" % [int(check.get("fwd_lanes", 0)), int(check.get("bkw_lanes", 0))] if valid else "-"
 	widths_label.text = "Road %.1f m\nTotal %.1f m" % [float(check.get("carriageway_m", 0.0)), float(check.get("total_m", 0.0))]
@@ -376,6 +535,8 @@ func _update_actions() -> void:
 	var valid := bool(check.get("is_valid", false))
 	var name_reason: String = _simulation_node.check_road_type_name(name_edit.text, editing_id)
 	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
+	cost_label.text = RoadTypeMenu.cost_text(check) if valid else ""
+	warning_label.text = CAR_ONLY_WARNING if valid and zoning and not has_sidewalks() and not _is_footpath() else ""
 	if not valid:
 		_status(RoadReasonText.text(check, "This layout cannot be built"), STATUS_REFUSED)
 	elif not _library_writable():
@@ -397,11 +558,13 @@ func create() -> void:
 	var created_id := ""
 	var refusal := ""
 	if editing_id.is_empty():
-		var created: Dictionary = _simulation_node.create_road_type(name_edit.text, parts)
+		var created: Dictionary = _simulation_node.create_road_type(name_edit.text, rust_parts(), speed_kmh, zoning,
+			street_lights)
 		created_id = String(created.get("id", ""))
 		refusal = String(created.get("invalid_reason", ""))
 	else:
-		refusal = _simulation_node.update_road_type(editing_id, name_edit.text, parts)
+		refusal = _simulation_node.update_road_type(editing_id, name_edit.text, rust_parts(), speed_kmh, zoning,
+			street_lights)
 	if not refusal.is_empty():
 		# Another game may have changed the file since it was listed.
 		_refresh_library()
@@ -416,11 +579,11 @@ func _on_type_selected(type: Dictionary) -> void:
 			_status("The walkway is not built in the road builder", STATUS_NAME)
 			return
 		# A built-in is a template: its layout starts a new type.
-		_start(type.get("parts", []), "", "")
+		_start(type.get("parts", []), "", "", type)
 		library_list.select_id(String(type.get("id", "")))
 		header_label.text = "New road type from %s" % String(type.get("name", ""))
 		return
-	_start(type.get("parts", []), String(type.get("id", "")), String(type.get("name", "")))
+	_start(type.get("parts", []), String(type.get("id", "")), String(type.get("name", "")), type)
 
 func _on_delete_requested(type: Dictionary) -> void:
 	if type.is_empty() or bool(type.get("builtin", false)):

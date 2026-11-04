@@ -25,6 +25,7 @@ enum Measured {
     Divided,
     LaneEdit,
     MedianEdit,
+    TypeEdit,
 }
 
 // The median of the divided measurements (`ROAD-80`).
@@ -125,6 +126,20 @@ fn populated_median_edit_scaling() {
     );
 }
 
+// `ROAD-101` locality: the T's side road given a rural road type's attributes in place: its
+// sidewalks off and 80 km/h (lanes rebuilt without sidewalks, the routing cost recomputed).
+#[test]
+#[ignore = "unprofiled in-place road type edit locality; run alone with --release --ignored --nocapture"]
+fn populated_road_type_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::TypeEdit,
+    );
+}
+
 #[test]
 #[ignore = "unprofiled in-place lane edit locality; run alone with --release --ignored --nocapture"]
 fn populated_lane_edit_scaling() {
@@ -214,7 +229,10 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
-    let in_place = matches!(measured, Measured::LaneEdit | Measured::MedianEdit);
+    let in_place = matches!(
+        measured,
+        Measured::LaneEdit | Measured::MedianEdit | Measured::TypeEdit
+    );
     if in_place {
         road_terrain_plan::commit_ready(
             &mut core,
@@ -244,6 +262,7 @@ fn measure_populated_road_plan_scaling(
                 tunnel,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             Instant::now(),
@@ -424,11 +443,13 @@ fn measure_populated_road_plan_scaling(
             continue;
         }
         if in_place {
-            // Widened to 2 + 2, or given the grass median at 1 + 1.
-            let section = if measured == Measured::LaneEdit {
-                (2, 2, None)
-            } else {
-                (1, 1, Some(GRASS))
+            // Widened to 2 + 2, given the grass median at 1 + 1, or 1 + 1 without sidewalks at
+            // 80 km/h.
+            use crate::simulation::network::road_types::RoadAttributes;
+            let section = match measured {
+                Measured::LaneEdit => (2, 2, None, RoadAttributes::DEFAULT),
+                Measured::MedianEdit => (1, 1, Some(GRASS), RoadAttributes::DEFAULT),
+                _ => (1, 1, None, RoadAttributes::new(80, false, true)),
             };
             let products =
                 measure_lane_edit(&mut core, remote_buildings, background_roads, section);
@@ -509,7 +530,7 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(0.0, 0.0, -210.0),
                 Vector3::new(0.0, 6.0, -150.0),
             ],
-            Measured::LaneEdit | Measured::MedianEdit => {
+            Measured::LaneEdit | Measured::MedianEdit | Measured::TypeEdit => {
                 unreachable!("measured by measure_lane_edit")
             }
         };
@@ -522,6 +543,7 @@ fn measure_populated_road_plan_scaling(
             snap_to_existing_roads: true,
             tunnel,
             median: (measured == Measured::Divided).then_some(GRASS),
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -536,7 +558,8 @@ fn measure_populated_road_plan_scaling(
                 measured == Measured::JoinBridge
             );
             let preview_start = Instant::now();
-            let (prepared_points, validation) = snapshot.validate(&request());
+            let (prepared, validation) = snapshot.validate(&request());
+            let prepared_points = prepared.points;
             let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
             assert!(validation.is_valid);
             if let Some(previous) = &previous_preview {
@@ -578,8 +601,9 @@ fn measure_populated_road_plan_scaling(
     }
 }
 
-// `ROAD-80`: the T's side road (south of the T) given `(fwd, bkw, median)` in place: widened
-// from 1+1 to 2+2, or given a median. Times the verdict (the check, run and put back) over 100
+// `ROAD-80`: the T's side road (south of the T) given `(fwd, bkw, median, attributes)` in place:
+// widened from 1+1 to 2+2, given a median, or (`ROAD-101`) a road type's attributes. Times the
+// verdict (the check, run and put back) over 100
 // samples, then 20 commits each followed by its undo, then 20 toggles of the side arm's
 // crossing (`ROAD-74`) with their undos; returns the local products after a commit: the T's span
 // and node pieces and the side road's lanes, which must not depend on the remote city. The
@@ -588,7 +612,12 @@ fn measure_lane_edit(
     core: &mut SimCore,
     remote_buildings: usize,
     remote_roads: usize,
-    (fwd, bkw, median): (u8, u8, Option<crate::simulation::network::graph::RoadMedian>),
+    (fwd, bkw, median, attributes): (
+        u8,
+        u8,
+        Option<crate::simulation::network::graph::RoadMedian>,
+        crate::simulation::network::road_types::RoadAttributes,
+    ),
 ) -> String {
     // The fixture commits without lanes; the edit rebuilds the lanes it touches, so they exist
     // before the first one, as in a game (setup, not timed). No agent is on a lane.
@@ -623,26 +652,40 @@ fn measure_lane_edit(
     let mut verdicts = Vec::new();
     for iteration in 0..103 {
         let start = Instant::now();
-        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median, Default::default());
+        let verdict =
+            core.preview_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes);
         let ms = start.elapsed().as_secs_f64() * 1000.0;
-        assert!(verdict.is_none(), "{verdict:?}");
+        assert!(verdict.is_ok(), "{verdict:?}");
         if iteration >= 3 {
             verdicts.push(ms);
         }
     }
     let (mut commits, mut undos) = (Vec::new(), Vec::new());
+    // The commit's chunk publication, as in the game: Godot acknowledged the city's chunks, so
+    // it republishes the edit's chunks and those of the streets whose lights it re-spaces.
+    let (mut publishes, mut published_chunks) = (Vec::new(), 0);
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
     let before = local(core);
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
-        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, Default::default()));
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        let start = Instant::now();
         core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        published_chunks = core.pending_road_mesh_chunks.len();
+        acknowledge(core);
         products = local(core);
         let start = Instant::now();
         assert!(core.undo_action_internal());
         undos.push(start.elapsed().as_secs_f64() * 1000.0);
         core.precompute_road_mesh_data();
+        acknowledge(core);
         assert_eq!(local(core), before, "undo restores the T");
     }
     // The side arm's crossing toggled off and undone: its lanes rebuild locally too.
@@ -661,9 +704,11 @@ fn measure_lane_edit(
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
             "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
+            "sidewalks": attributes.sidewalks, "speed_ms": attributes.speed_ms,
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),
+            "publish_p50_ms": p50(&mut publishes), "published_chunks": published_chunks,
             "commit_samples": commits.len(), "identical_local_products": true,
         })
     );

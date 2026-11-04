@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection, ReservedOverlap,
+    RoadEditPlan, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
@@ -18,6 +18,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, plan_road_edit,
     validate_road_candidate_fast, validate_road_edit,
@@ -384,7 +385,7 @@ impl SimCore {
         });
     }
 
-    fn run_building_allocator_maintenance_internal(&mut self) {
+    pub(super) fn run_building_allocator_maintenance_internal(&mut self) {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         // Main-thread edits run maintenance, whose removals reach parallel rebuilds (CODE-17).
@@ -1210,6 +1211,7 @@ impl SimCore {
                     tunnel: false,
                     median: None,
                     parking: crate::simulation::network::graph::RoadParking::NONE,
+                    attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 },
             ))
         } else {
@@ -1255,8 +1257,11 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                None,
-                Default::default(),
+                (
+                    None,
+                    Default::default(),
+                    crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                ),
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1396,7 +1401,10 @@ impl SimCore {
             prepared_input.median,
             prepared_input.parking,
         );
-        let corridor_half_width_m = road_width_m * 0.5 + config::SIDEWALK_WIDTH;
+        let corridor_half_width_m = road_width_m * 0.5
+            + prepared_input
+                .attributes
+                .corridor_side_m(fwd_lanes_u8 == 0 && bkw_lanes_u8 == 0);
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1446,6 +1454,14 @@ impl SimCore {
                 (dx * dx + dy * dy + dz * dz).sqrt()
             })
             .sum();
+        // The road type's cost weight on the stroke's prepared class (`ROAD-101`): exactly 1.0,
+        // so 15 / m, for the 2-Lane Road at 50 km/h on the ground.
+        let build_weight = road_cost::stroke_weight(
+            (fwd_lanes_u8, bkw_lanes_u8),
+            prepared_input.median,
+            prepared_input.attributes,
+            prepared_input.class,
+        );
 
         let t_topo = Instant::now();
         // A bulk load keeps every edge it has dirtied until `finalize_bulk_load`; hold those
@@ -1474,8 +1490,11 @@ impl SimCore {
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                prepared_input.median,
-                prepared_input.parking,
+                (
+                    prepared_input.median,
+                    prepared_input.parking,
+                    prepared_input.attributes,
+                ),
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,
@@ -1526,7 +1545,7 @@ impl SimCore {
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
         RoadAddOutcome {
             committed: true,
-            build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
+            build_cost: build_length_m * road_cost::build_per_m(build_weight),
             finalized_geometry,
             stage_ms: RoadAddStageTimes {
                 undo_ms: dt_undo_ms as f64 / 1000.0,
@@ -2745,6 +2764,7 @@ mod tests {
             physical_geometry: vec![start, end],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
@@ -2793,6 +2813,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
@@ -2964,6 +2985,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
@@ -3709,6 +3731,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
@@ -3764,6 +3787,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,

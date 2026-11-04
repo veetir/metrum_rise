@@ -14,6 +14,8 @@ use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::road_mesh_seams::open_road_edges_where;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{PieceId, RoadVec3};
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use godot::prelude::Vector2;
@@ -265,6 +267,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         tunnel: class == EdgeClass::Tunnel,
                         median: None,
                         parking: crate::simulation::network::graph::RoadParking::NONE,
+                        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                         preview: None,
                     },
                     std::time::Instant::now(),
@@ -302,22 +305,137 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
     }
 }
 
-// `ROAD-68` open question 17, roads without sidewalks: the walking planner's whole-network proof
-// requires foot lanes both ways on every edge, so one road without sidewalks withdraws it
-// whatever its junctions do. The T with sidewalks keeps it.
+// A rural road type's attributes (`ROAD-101`): 100 km/h, no sidewalks, zoning off.
+fn rural() -> RoadAttributes {
+    RoadAttributes::from_tool(100, false, false, true).unwrap()
+}
+
+// Commits one 1 + 1 stroke between `ends` through the road tool's path with `attributes`.
+fn commit_with(core: &mut SimCore, ends: [Vector2; 2], attributes: RoadAttributes) {
+    let points = ends
+        .map(|point| Vector3::new(point.x, core.get_world_surface_height_internal(point), point.y))
+        .to_vec();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+}
+
+// The live edges with a node at `x` = 0 off the through road: the cross stroke's pieces.
+fn cross_pieces(core: &SimCore) -> Vec<usize> {
+    let graph = &core.region_graph;
+    (0..graph.edge_count())
+        .filter(|&id| {
+            let edge = graph.edge(id);
+            !edge.deleted
+                && [edge.start_node, edge.end_node].iter().all(|&node| {
+                    graph.node(graph.get_valid_node(node)).pos.x.abs() < 1e-3
+                })
+        })
+        .collect()
+}
+
+// `ROAD-101` (risk 2 of its design): a stroke drawn with a road type's attributes carries them
+// on its edge, and on every piece when an existing road splits it at a crossing, never a split
+// default; the crossed road's pieces keep their own. FOOT clear means no sidewalk lane.
 #[test]
-fn a_road_without_sidewalks_withdraws_the_walking_proof() {
+fn a_split_stroke_keeps_its_road_type_attributes_on_every_piece() {
+    let mut core = committed(&[THROUGH], &[0], false);
+    let cross = [Vector2::new(0.0, -ARM_M), Vector2::new(0.0, ARM_M)];
+    commit_with(&mut core, cross, rural().lit(false));
+    let pieces = cross_pieces(&core);
+    assert_eq!(pieces.len(), 2, "the through road splits the stroke");
+    let speed = (100.0_f32 * crate::config::KMH_TO_MPS).to_bits();
+    let lanes = &core.transit_network.lane_system;
+    for &piece in &pieces {
+        let edge = core.region_graph.edge(piece);
+        assert_eq!(edge.allowed_types, TransitFlags::CAR, "piece {piece}");
+        assert_eq!(edge.speed_limit.to_bits(), speed, "piece {piece}");
+        assert!(edge.no_building_spawn, "piece {piece}");
+        assert!(edge.no_street_lights, "piece {piece}");
+        let foot = lanes.edge_lanes[&piece]
+            .iter()
+            .filter(|&&lane| lanes.lanes[lane].lane_type == LaneType::Foot)
+            .count();
+        assert_eq!(foot, 0, "piece {piece} has no sidewalk lane");
+        assert!(lanes.edge_lanes[&piece].len() >= 2, "piece {piece} keeps its car lanes");
+    }
+    let graph = &core.region_graph;
+    let through: Vec<_> = (0..graph.edge_count())
+        .filter(|&id| !graph.edge(id).deleted && !pieces.contains(&id))
+        .collect();
+    assert_eq!(through.len(), 2, "the stroke splits the through road");
+    for id in through {
+        let edge = graph.edge(id);
+        assert_ne!(edge.allowed_types & TransitFlags::FOOT, 0);
+        assert_eq!(
+            edge.speed_limit.to_bits(),
+            crate::config::DEFAULT_URBAN_ROAD_SPEED_MS.to_bits()
+        );
+        assert!(!edge.no_building_spawn);
+        assert!(!edge.no_street_lights);
+    }
+}
+
+// `ROAD-101` cost rule: a stroke is charged its road type's weight per metre on its prepared
+// class, the 2-Lane Road exactly the old 15 / m; the rural type (1 + 1 at 100 km/h, no sidewalks)
+// weighs 0.8 x 2.0 = 1.6, so 24 / m, with or without street lights (they cost nothing).
+#[test]
+fn a_stroke_is_charged_its_road_types_cost() {
+    use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, stroke_weight};
+    for (attributes, per_m) in [
+        (RoadAttributes::DEFAULT, 15.0),
+        (rural(), 24.0),
+        (rural().lit(false), 24.0),
+    ] {
+        let mut core = committed(&[THROUGH], &[0], false);
+        core.benchmark_mode = false;
+        let before = core.treasury.lifetime_build_cost;
+        commit_with(&mut core, SIDE.0, attributes);
+        let side = core.region_graph.edge(edge_ending_at(&core, SIDE.0[1]));
+        let weight = stroke_weight((1, 1), None, attributes, EdgeClass::Standard);
+        assert!((BUILD_COST_PER_M * weight - per_m).abs() < 1e-9);
+        assert_eq!(side.cost_weight().to_bits(), weight.to_bits());
+        // The charge is the stroke's polyline length at that rate (the edge is clipped at the
+        // through road's mouth, so it is no longer than the stroke).
+        let charged = core.treasury.lifetime_build_cost - before;
+        assert!(
+            (charged - ARM_M as f64 * per_m).abs() < 1e-3 * per_m,
+            "{attributes:?}: charged {charged}"
+        );
+    }
+}
+
+// `ROAD-68` open question 17, roads without sidewalks (`ROAD-101`): the walking planner's
+// whole-network proof checks the edges walkers can cross, so a T whose side road has no
+// sidewalks keeps it, as the T with sidewalks does.
+#[test]
+fn a_road_without_sidewalks_keeps_the_walking_proof() {
     use crate::simulation::economy::agents::tick::TripQueryScratch;
-    for rural in [false, true] {
-        let mut core = committed(&[THROUGH, SIDE], &[0, 1], false);
-        if rural {
-            let side = edge_ending_at(&core, SIDE.0[1]);
-            without_sidewalks(&mut core, &[side]);
-        }
+    for side in [RoadAttributes::DEFAULT, rural()] {
+        let mut core = committed(&[THROUGH], &[0], false);
+        commit_with(&mut core, SIDE.0, side);
+        let side_edge = edge_ending_at(&core, SIDE.0[1]);
+        assert_eq!(
+            core.region_graph.edge(side_edge).allowed_types & TransitFlags::FOOT != 0,
+            side.sidewalks
+        );
         let mut graph = core.region_graph.clone();
         core.transit_network.lane_system.rebuild(&mut graph);
         let mut scratch = TripQueryScratch::default();
         scratch.prepare(&core.transit_network, &graph);
-        assert_eq!(scratch.walking_proof_complete_for_test(), !rural);
+        assert!(scratch.walking_proof_complete_for_test(), "{side:?}");
     }
 }
