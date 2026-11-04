@@ -1,18 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## City status notch hanging from the menu bar: clock, speed, treasury, agents and demand. It
-## takes the menu bar's own background so it reads as part of the bar, not a separate island.
+## City status in the middle of the menu bar: clock, speed, treasury, agents and demand. It moves
+## into the bar's own layer once the menu exists, so it is part of the bar, not an island below.
 extends Control
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
-const BUTTON_SIDE := 32.0
+const BUTTON_SIDE := 26.0
 var clock_label: Label
 var city_status_panel: Control
 var demand_meter: Control
 var _notch: PanelContainer
-var _style: StyleBoxFlat
 var _pause_button: Button
 var _speed_label: Label
 
@@ -20,16 +19,8 @@ func build(input_manager: Node) -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	offset_top = TopMenu.BAR_HEIGHT
-	_style = StyleBoxFlat.new()
-	_style.bg_color = Color(0.04, 0.04, 0.05, 1.0)
-	_style.corner_radius_bottom_left = 12
-	_style.corner_radius_bottom_right = 12
-	_style.content_margin_left = 16
-	_style.content_margin_right = 16
-	_style.content_margin_top = 2
-	_style.content_margin_bottom = 4
 	_notch = PanelContainer.new()
-	_notch.add_theme_stylebox_override("panel", _style)
+	_notch.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
 	_notch.add_to_group("debug_console_keep_clear")
 	# Centred on this zero-width anchor whatever its content width.
 	_notch.resized.connect(func(): _notch.position.x = -_notch.size.x * 0.5)
@@ -98,16 +89,19 @@ func _divider() -> Control:
 	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return line
 
-# MainScene attaches TopMenu after child _ready calls: hang from its bottom edge and take its
-# background, which follows the editor theme mode.
-func _bind_menu() -> void:
+# MainScene attaches TopMenu after child _ready calls. The bar is a higher CanvasLayer, so the
+# status row joins that layer (drawn above the bar's background) and takes the bar's height.
+func _bind_menu(attempts_left: int = 30) -> void:
 	for control in get_tree().get_nodes_in_group("debug_console_keep_clear"):
 		if control.get_parent().get_parent() is TopMenu:
+			reparent(control.get_parent(), false)
+			set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 			var follow := func():
-				offset_top = control.get_global_rect().end.y
-				var bar := control.get_theme_stylebox("panel") as StyleBoxFlat
-				if bar:
-					_style.bg_color = Color(bar.bg_color, 1.0)
+				_notch.custom_minimum_size.y = control.size.y
+				_notch.position.y = control.position.y
 			control.resized.connect(follow)
 			follow.call()
 			return
+	# The menu may attach a few frames later; give up quietly in scenes without one.
+	if attempts_left > 0:
+		get_tree().process_frame.connect(_bind_menu.bind(attempts_left - 1), CONNECT_ONE_SHOT)

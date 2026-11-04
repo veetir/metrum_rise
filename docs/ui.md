@@ -252,17 +252,18 @@ Sub-menus expand upward above the toolbar row. The menu cluster has:
 
 - one transparent layout wrapper around the menu stack
 - separate translucent panels for the category row and road controls
-- a status notch hanging from the menu bar, in the bar's own background, for the clock, speed,
+- a status row centred inside the menu bar (it joins the bar's layer) for the clock, speed,
   city status and R/C/I bars
 
-Gameplay HUD status widgets share the notch. Speed is pause/resume (Space), slower, the current
+Gameplay HUD status widgets share that row. Speed is pause/resume (Space), slower, the current
 speed ("4x" or "Paused") and faster, stepping through Rust's existing steps with the existing
 handler. Zoning and Services keep one palette row each: opening a zone's profiles or a service
 class widens the row instead of stacking another panel above it. Tooltips name the control and
 show its shortcut as a keycap; data tooltips (road types, assets, profiles) keep their figures.
 Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terrain panel) and
 switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
-from the left: treasury, agents and each zone's project count with Rust's growth reasons.
+from the left: treasury, agents and per zone its project count, Rust's growth figures as icon
+chips (named on hover; zero free lots warns) and the constraint notes the figures cannot show.
 The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts
@@ -795,7 +796,7 @@ ui/debug_console/        DebugConsole autoload controller, widget view, events L
 core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
 editors/world_editor.gd WorldEditor shell, tool UI, world load/save flow, camera policy owner
 editors/world_editor_camera_input.gd  WorldEditor camera input wrapper and UI-capture gating
-SimulationNode.get_growth_overview  Cached hourly project counts and decision explanations; O(1) in city size
+SimulationNode.get_growth_overview  Cached hourly project counts, figures, constraint notes and full text; O(1) in city size
 SimulationNode.get_treasury_balance  HUD treasury source, snapshot-backed for paused-state edits
 SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
 ```

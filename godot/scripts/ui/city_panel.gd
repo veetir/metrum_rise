@@ -6,6 +6,7 @@
 extends Control
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const Tooltip = preload("res://scripts/ui/hud_tooltip.gd")
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
 const ZONES := ["residential", "commercial", "industrial"]
@@ -14,6 +15,19 @@ const ZONE_COLORS := {
 	"commercial": UIStyle.ZONE_COMMERCIAL,
 	"industrial": UIStyle.ZONE_INDUSTRIAL,
 }
+# Rust's growth figures (`get_growth_overview().figures`) -> icon and hover name. Unknown keys
+# still show, with a generic icon and their key as the name.
+const FIGURES := {
+	"selected": ["selected", "Newly selected"],
+	"queued": ["queued", "Queued"],
+	"constructing": ["constructing", "Under construction"],
+	"housing_needed": ["housing_needed", "Household places needed"],
+	"vacant_homes": ["residential", "Vacant homes"],
+	"job_slots": ["job_slots", "Open jobs for arrivals"],
+	"free_lots": ["free_lots", "Free zoned lots"],
+	"candidates": ["candidates", "Buildable sites"],
+}
+const WARN := Color(0.95, 0.75, 0.35)
 const WIDTH := 340.0
 const SLIDE_S := 0.16
 
@@ -48,10 +62,7 @@ func _ready() -> void:
 
 	var header := HBoxContainer.new()
 	column.add_child(header)
-	var title := _label("City", 18, UIStyle.TEXT_PRIMARY)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title)
-	header.add_child(_label("Tab", 11, UIStyle.TEXT_DIM))
+	header.add_child(_label("City", 18, UIStyle.TEXT_PRIMARY))
 
 	var stats := HBoxContainer.new()
 	stats.add_theme_constant_override("separation", 8)
@@ -105,18 +116,20 @@ func set_growth(growth: Dictionary) -> void:
 		var projects := maxi(0, int(entry.get("projects", 0)))
 		row.count.text = "%d project%s" % [projects, "" if projects == 1 else "s"]
 		row.fill.anchor_right = float(projects) / float(scale)
-		var lines := str(entry.get("detail", "")).split("\n", false)
+		var chips: HFlowContainer = row.chips
+		for child in chips.get_children():
+			chips.remove_child(child)
+			child.queue_free()
+		var figures: Dictionary = entry.get("figures", {})
+		for key in figures:
+			chips.add_child(_chip(str(key), int(figures[key])))
 		var body: VBoxContainer = row.body
 		for child in body.get_children():
 			body.remove_child(child)
 			child.queue_free()
-		for line in lines:
-			# Rust's first line is the "Latest hourly assessment" heading; the counts follow.
-			if line.begins_with("Latest hourly"):
-				continue
-			var label := _label(line, 12, UIStyle.TEXT_DIM)
-			label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			body.add_child(label)
+		# Before the first assessment the only note is "Waiting…", not a warning.
+		for note in PackedStringArray(entry.get("notes", PackedStringArray())):
+			body.add_child(_note(note, not figures.is_empty()))
 
 func _zone_card(zone: String) -> Control:
 	var color := Color(ZONE_COLORS[zone], 1.0).lightened(0.3)
@@ -140,11 +153,43 @@ func _zone_card(zone: String) -> Control:
 	fill.anchor_bottom = 1.0
 	fill.anchor_right = 0.0
 	track.add_child(fill)
+	var chips := HFlowContainer.new()
+	chips.add_theme_constant_override("h_separation", 14)
+	chips.add_theme_constant_override("v_separation", 4)
+	card.add_child(chips)
 	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 2)
+	body.add_theme_constant_override("separation", 4)
 	card.add_child(body)
-	_zone_rows[zone] = {"count": count, "fill": fill, "body": body}
+	_zone_rows[zone] = {"count": count, "fill": fill, "chips": chips, "body": body}
 	return card
+
+# An icon and a count; the hover names the figure. Zero dims, except zero free lots, which warns.
+func _chip(key: String, value: int) -> Control:
+	var spec: Array = FIGURES.get(key, ["asset", key.capitalize()])
+	var chip := HBoxContainer.new()
+	chip.add_theme_constant_override("separation", 5)
+	chip.mouse_filter = Control.MOUSE_FILTER_STOP
+	var color := UIStyle.TEXT_PRIMARY if value > 0 else UIStyle.TEXT_DIM
+	if key == "free_lots" and value == 0:
+		color = WARN
+	chip.add_child(_icon(str(spec[0]), color))
+	chip.add_child(_label(CityStatusPanel.format_count(value), 13, color))
+	Tooltip.new().attach(chip, str(spec[1]))
+	return chip
+
+func _note(text: String, warning: bool) -> Control:
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 6)
+	if warning:
+		var icon := _icon("warning", WARN)
+		icon.custom_minimum_size = Vector2(14, 14)
+		icon.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		line.add_child(icon)
+	var label := _label(text, 12, UIStyle.TEXT_DIM)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.add_child(label)
+	return line
 
 func _section(text: String) -> Label:
 	return _label(text.to_upper(), 11, UIStyle.TEXT_SECTION)
