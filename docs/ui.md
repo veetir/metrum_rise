@@ -269,7 +269,8 @@ chips (named on hover; zero free lots warns) and the constraint notes the figure
 While Roads or Zoning is open, 1-9 act on its tiles, each showing its digit in a small disc at
 its bottom-right corner (`HudIcons.set_number`; `MainUI.handle_number_key`); a key press plays
 the tile's click animation (`HudIcons.activate`). Roads: the five built-in types, new
-custom road, the custom-roads tile (each press picks the next custom type), Cul-De-Sac, Edit
+custom road (6 again closes the builder; digits typed in the builder reach the palette unless a
+text field has focus), the custom-roads tile (each press picks the next custom type), Cul-De-Sac, Edit
 roads. Zoning: Residential, Commercial, Industrial (again: that zone's next profile), the
 cells/parcels switch (its digit sits on the workflow it switches to), the four cell shapes,
 Erase. The zone palette sits left of the cell tools so the digits read left to right.

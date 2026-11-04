@@ -365,6 +365,7 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_builder)
 	road_type_menu.road_builder_requested.connect(road_builder.open)
 	road_builder.road_types_changed.connect(_on_road_types_changed)
+	road_builder.number_key.connect(func(digit: int): handle_number_key(digit))
 
 func _create_bottom_strip_shell(
 	content: Control,
@@ -1151,12 +1152,16 @@ func handle_number_key(digit: int) -> bool:
 		action.call()
 	return true
 
-# [tile, action] per digit from 1: built-in types, new custom road, the custom roads tile (which
-# cycles the player's types), cul-de-sac, edit roads.
+# [tile, action] per digit from 1: built-in types, new custom road (its digit closes the open
+# builder again), the custom roads tile (which cycles the player's types), cul-de-sac, edit roads.
 func _road_number_slots() -> Array:
 	var slots: Array = []
 	for tile in road_type_menu.number_tiles():
-		var action := road_type_menu.pick_next_custom if tile == road_type_menu.custom_menu else HudIcons.activate.bind(tile)
+		var action := HudIcons.activate.bind(tile)
+		if tile == road_type_menu.custom_menu:
+			action = road_type_menu.pick_next_custom
+		elif tile == road_type_menu.builder_tile():
+			action = _toggle_road_builder
 		slots.append([tile, action])
 	slots.append([_cul_de_sac_btn, HudIcons.activate.bind(_cul_de_sac_btn)])
 	slots.append([select_main_btn, HudIcons.activate.bind(select_main_btn)])
@@ -1172,6 +1177,13 @@ func _zoning_number_slots() -> Array:
 	for tile in zoning_combined_hbox.cell_controls.number_tiles():
 		slots.append([tile, HudIcons.activate.bind(tile)])
 	return slots
+
+func _toggle_road_builder() -> void:
+	if road_builder and road_builder.is_open():
+		road_builder.close()
+		HudIcons.pulse(road_type_menu.builder_tile())
+	else:
+		HudIcons.activate(road_type_menu.builder_tile())
 
 func _number_zone_type(zone_type: String) -> void:
 	var profiles: Array = _zoning_profiles_by_zone_type.get(zone_type, [])

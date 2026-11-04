@@ -144,6 +144,10 @@ func number_tiles() -> Array[Button]:
 	tiles.append(custom_menu)
 	return tiles
 
+## The "New custom road" tile.
+func builder_tile() -> Button:
+	return _builder
+
 ## Picks the custom type after the marked one, wrapping (the first when a built-in is marked);
 ## with no custom types, opens the drop-down, which offers the road builder.
 func pick_next_custom() -> void:

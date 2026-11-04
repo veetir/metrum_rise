@@ -31,6 +31,9 @@ extends Node
 ## The library changed (created, saved or deleted); `created_id` is the new type's id after a
 ## create, else empty. The host refreshes the Roads row and the road tool.
 signal road_types_changed(created_id: String)
+## Digit `digit` (1-9) was pressed while the builder had focus but no text field did: the host's
+## Roads palette numbers apply, so 6 closes the builder again.
+signal number_key(digit: int)
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
@@ -613,5 +616,14 @@ func _on_window_input(event: InputEvent) -> void:
 		return
 	if key.keycode == KEY_ESCAPE:
 		close()
+	elif key.keycode >= KEY_1 and key.keycode <= KEY_9 and not _typing() \
+			and not (key.ctrl_pressed or key.alt_pressed or key.meta_pressed or key.shift_pressed):
+		window.set_input_as_handled()
+		number_key.emit(key.keycode - KEY_0)
 	elif (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and window.gui_get_focus_owner() != name_edit:
 		create()
+
+# Whether a text field (the name, the speed box, a median width) holds the builder's focus.
+func _typing() -> bool:
+	var owner := window.gui_get_focus_owner()
+	return owner is LineEdit or owner is TextEdit or owner is SpinBox

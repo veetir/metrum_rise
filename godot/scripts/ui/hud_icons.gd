@@ -90,6 +90,10 @@ static func activate(button: Button) -> void:
 	if button.toggle_mode and not (button.button_group and button.button_pressed):
 		button.button_pressed = not button.button_pressed
 	button.pressed.emit()
+	pulse(button)
+
+## Plays the click animation without pressing, for a key that acts on the tile's behalf.
+static func pulse(button: Button) -> void:
 	var feedback: HoverFeedback = button.get_node_or_null(NodePath(FEEDBACK))
 	if feedback:
 		feedback.pulse()
