@@ -258,8 +258,11 @@ Sub-menus expand upward above the toolbar row. The menu cluster has:
 Gameplay HUD status widgets share the notch. Speed is pause/resume (Space), slower, the current
 speed ("4x" or "Paused") and faster, stepping through Rust's existing steps with the existing
 handler. Zoning and Services keep one palette row each: opening a zone's profiles or a service
-class widens the row instead of stacking another panel above it. Tooltips show a key's shortcut
-as a keycap beside the title and say nothing for categories without one.
+class widens the row instead of stacking another panel above it. Tooltips name the control and
+show its shortcut as a keycap; data tooltips (road types, assets, profiles) keep their figures.
+Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terrain panel) and
+switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
+from the left: treasury, agents and each zone's project count with Rust's growth reasons.
 The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts

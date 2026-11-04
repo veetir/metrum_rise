@@ -29,7 +29,7 @@ func build() -> void:
 	row.add_child(HudIcons.shell(palette))
 	mode_menu = HBoxContainer.new()
 	palette.add_child(mode_menu)
-	options_button = HudIcons.icon_button("gear", "Parcel options", "Parcel width, depth and gap")
+	options_button = HudIcons.icon_button("gear", "Parcel options", "")
 	mode_menu.add_child(options_button)
 	options_button.hide()
 	type_menu = HBoxContainer.new()

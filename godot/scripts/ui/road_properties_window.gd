@@ -131,7 +131,7 @@ func _build_window() -> void:
 	root_vbox.add_child(settings)
 	for i in range(3):
 		var title: String = ["Standard", "Bridge", "Tunnel"][i]
-		var button := HudIcons.icon_button(["road", "bridge", "tunnel"][i], title, title + " road class", 36)
+		var button := HudIcons.icon_button(["road", "bridge", "tunnel"][i], title, "", 36)
 		button.toggle_mode = true
 		button.pressed.connect(_on_class_button_pressed.bind(i))
 		settings.add_child(button)

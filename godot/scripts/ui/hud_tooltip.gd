@@ -8,6 +8,8 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const DELAY := 0.15
 ## Control meta holding the shortcut key drawn as a keycap; see HudIcons.set_shortcut.
 const SHORTCUT_META := &"hud_shortcut"
+## Control meta replacing tooltip_text as the card's body ("" for a title-only card).
+const BODY_META := &"hud_tooltip_body"
 
 var _button: Control
 var _title := ""
@@ -41,7 +43,8 @@ func _show() -> void:
 	var viewport_size := _button.get_viewport_rect().size
 	var width := minf(UIStyle.scaled_px(310), viewport_size.x - 60)
 	var title: String = _button.text if _button is Button else _title
-	_card = view(title, _button.tooltip_text, width, str(_button.get_meta(SHORTCUT_META, "")))
+	var body := str(_button.get_meta(BODY_META, _button.tooltip_text))
+	_card = view(title, body, width, str(_button.get_meta(SHORTCUT_META, "")))
 	_card.visible = false
 	_card.resized.connect(_place, CONNECT_DEFERRED)
 	_layer.add_child(_card)

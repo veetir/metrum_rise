@@ -44,7 +44,7 @@ static func class_icon(class_id: String) -> String:
 		"police", "fire", "healthcare", "education", "transit", "parks", "government", "field", "extractor"] else "asset"
 
 static func class_tile(class_id: String, title: String) -> Button:
-	var button := HudIcons.icon_button(class_icon(class_id), title, "Choose " + title.to_lower() + " assets", 64)
+	var button := HudIcons.icon_button(class_icon(class_id), title, "", 64)
 	button.toggle_mode = true
 	return button
 

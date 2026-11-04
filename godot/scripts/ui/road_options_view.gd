@@ -18,9 +18,9 @@ func _init() -> void:
 	modes.alignment = BoxContainer.ALIGNMENT_CENTER
 	add_child(modes)
 	straight_btn = HudIcons.icon_button(
-		"straight", "Straight", "Draw a straight road between its ends.", 38)
+		"straight", "Straight", "", 38)
 	spline_btn = HudIcons.icon_button(
-		"spline", "Spline", "Draw a curved road using control points.", 38)
+		"spline", "Spline", "", 38)
 	for button in [straight_btn, spline_btn]:
 		button.toggle_mode = true
 		modes.add_child(button)
@@ -28,12 +28,8 @@ func _init() -> void:
 	var options := HBoxContainer.new()
 	options.add_theme_constant_override("separation", 10)
 	add_child(options)
-	snap_btn = HudIcons.icon_button("snap_to_grid", "Snap to zoning grid",
-		"Snap near parallel or perpendicular cell lines; draw other angles freely. "
-		+ "Accounts for road widths. Existing road connections take priority. Straight mode only.", 38)
-	tunnel_btn = HudIcons.icon_button("tunnel", "Tunnel",
-		"Keep the drawn height through the ground. "
-		+ "Place both ends outside the hill; the stretch under 5 m of ground becomes a tunnel.", 38)
+	snap_btn = HudIcons.icon_button("snap_to_grid", "Snap to zoning grid", "", 38)
+	tunnel_btn = HudIcons.icon_button("tunnel", "Tunnel", "", 38)
 	HudIcons.set_shortcut(tunnel_btn, "T")
 	for entry in [["Snapping", snap_btn], ["Structure", tunnel_btn]]:
 		var column := VBoxContainer.new()

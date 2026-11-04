@@ -27,9 +27,16 @@ func _ready() -> void:
 	_treasury_label = _make_value_label()
 	add_child(_treasury_label)
 
+	var agents_icon := TextureRect.new()
+	agents_icon.texture = load("res://assets/ui/icons/agents.svg")
+	agents_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	agents_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	agents_icon.custom_minimum_size = Vector2(16, 16)
+	agents_icon.modulate = UIStyle.TEXT_DIM
+	add_child(agents_icon)
 	_agents_label = _make_value_label()
 	add_child(_agents_label)
-	UIStyle.set_font_size(_agents_label, 10)
+	UIStyle.set_font_size(_agents_label, 12)
 	_agents_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 
 	set_stats(0.0, 0)
@@ -42,8 +49,8 @@ func set_stats(treasury_balance: float, agent_count: int) -> void:
 	_displayed_treasury = rounded_treasury
 	_displayed_agents = agent_count
 
-	_treasury_label.text = _format_currency(rounded_treasury)
-	_agents_label.text = "Agents  %s" % _format_int_with_commas(agent_count)
+	_treasury_label.text = format_currency(rounded_treasury)
+	_agents_label.text = format_count(agent_count)
 
 func _make_value_label() -> Label:
 	var label := Label.new()
@@ -53,13 +60,15 @@ func _make_value_label() -> Label:
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	return label
 
-func _format_currency(value: float) -> String:
+## "1,234,567" (the coin icon carries the currency), "-1,234" when negative.
+static func format_currency(value: float) -> String:
 	var abs_rounded := int(round(absf(value)))
-	var digits := _format_int_with_commas(abs_rounded)
+	var digits := format_count(abs_rounded)
 	# The coin icon carries the currency.
 	return "-%s" % digits if value < 0.0 else digits
 
-func _format_int_with_commas(value: int) -> String:
+## "1,234,567".
+static func format_count(value: int) -> String:
 	var negative := value < 0
 	var digits := str(abs(value))
 	var parts: Array[String] = []

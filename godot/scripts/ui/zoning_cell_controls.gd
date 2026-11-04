@@ -17,17 +17,17 @@ func _ready() -> void:
 	alignment = BoxContainer.ALIGNMENT_CENTER
 	add_theme_constant_override("separation", 6)
 	_workflow = IconChoice.new()
-	_workflow.add_item("cells", "Cells", "Paint zoning cells")
-	_workflow.add_item("parcel", "Parcels", "Place parcels with width, depth and spacing options")
+	_workflow.add_item("cells", "Cells", "")
+	_workflow.add_item("parcel", "Parcels", "")
 	_workflow.item_selected.connect(func(index: int): zoning_tool.set_cell_workflow(index == 0))
 	add_child(_workflow)
 	add_child(VSeparator.new())
 	_shape = IconChoice.new()
 	for label in ["Cell", "Marquee", "Fill", "Brush"]:
-		_shape.add_item(label.to_lower(), label, label + " selection")
+		_shape.add_item(label.to_lower(), label, "")
 	_shape.item_selected.connect(func(index: int): zoning_tool.cell_shape = index)
 	add_child(_shape)
-	_erase = HudIcons.icon_button("erase", "Erase", "Remove zoning with the selected shape")
+	_erase = HudIcons.icon_button("erase", "Erase", "")
 	_erase.toggle_mode = true
 	_erase.toggled.connect(func(pressed: bool): zoning_tool.cell_erase = pressed)
 	add_child(_erase)

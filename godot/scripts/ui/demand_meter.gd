@@ -7,6 +7,10 @@
 extends VBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const Tooltip = preload("res://scripts/ui/hud_tooltip.gd")
+
+## A click opens the city panel, which lists the reasons behind each bar.
+signal pressed
 
 const BAR_ORDER := ["residential", "commercial", "industrial"]
 const BAR_COLORS := {
@@ -56,7 +60,11 @@ func _ready() -> void:
 		_chart.add_child(track)
 		_tracks.append(track)
 		track.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	preload("res://scripts/ui/hud_tooltip.gd").new().attach(self, "City growth")
+	# The hover names the meter; the reasons (tooltip_text) live in the Tab city panel.
+	Tooltip.new().attach(self, "City growth")
+	set_meta(Tooltip.BODY_META, "")
+	set_meta(Tooltip.SHORTCUT_META, "Tab")
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 
 	_baseline = ColorRect.new()
 	_baseline.color = Color(0.82, 0.86, 0.92, 0.55)
@@ -74,6 +82,12 @@ func _ready() -> void:
 
 	_layout_chart()
 	_update_tooltip()
+
+func _gui_input(event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click and click.pressed and click.button_index == MOUSE_BUTTON_LEFT:
+		pressed.emit()
+		accept_event()
 
 func _get_tooltip(_at_position: Vector2) -> String:
 	return ""

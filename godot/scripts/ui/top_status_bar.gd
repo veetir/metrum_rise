@@ -7,7 +7,7 @@ extends Control
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
-const BUTTON_SIDE := 26.0
+const BUTTON_SIDE := 32.0
 var clock_label: Label
 var city_status_panel: Control
 var demand_meter: Control
@@ -43,18 +43,18 @@ func build(input_manager: Node) -> void:
 	var speed := HBoxContainer.new()
 	speed.add_theme_constant_override("separation", 2)
 	row.add_child(speed)
-	_pause_button = HudIcons.icon_button("pause", "Pause", "Pause or resume the simulation.", BUTTON_SIDE)
+	_pause_button = HudIcons.icon_button("pause", "Pause", "", BUTTON_SIDE)
 	HudIcons.set_shortcut(_pause_button, "Space")
 	_pause_button.pressed.connect(input_manager._toggle_pause)
 	speed.add_child(_pause_button)
-	var slower := HudIcons.icon_button("slower", "Slower", "Step down one simulation speed.", BUTTON_SIDE)
+	var slower := HudIcons.icon_button("slower", "Slower", "", BUTTON_SIDE)
 	slower.pressed.connect(func(): input_manager.step_simulation_speed(-1))
 	speed.add_child(slower)
 	_speed_label = _label("Paused", 12, UIStyle.TEXT_PRIMARY)
 	_speed_label.custom_minimum_size.x = UIStyle.scaled_px(48)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	speed.add_child(_speed_label)
-	var faster := HudIcons.icon_button("fast", "Faster", "Step up one simulation speed.", BUTTON_SIDE)
+	var faster := HudIcons.icon_button("fast", "Faster", "", BUTTON_SIDE)
 	faster.pressed.connect(func(): input_manager.step_simulation_speed(1))
 	speed.add_child(faster)
 

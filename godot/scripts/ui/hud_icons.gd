@@ -187,7 +187,8 @@ class HoverFeedback extends Node:
 			road.paint(button, rect.grow(-8.0))
 		else:
 			# The scale-aware font size is already refreshed by Accessibility; no settings I/O.
-			var side := minf(2.0 * button.get_theme_font_size("font_size"), rect.size.x - 12.0)
+			# Small buttons (the status notch) keep the icon at about 60 % of their face.
+			var side := minf(2.0 * button.get_theme_font_size("font_size"), rect.size.x * 0.62)
 			var box := Rect2(rect.get_center() - Vector2.ONE * side * 0.5, Vector2.ONE * side)
 			button.draw_texture_rect(texture, box, false, paint)
 		var accent := UIStyle.HUD_ACCENT

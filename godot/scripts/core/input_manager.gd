@@ -316,6 +316,10 @@ func _unhandled_input(event):
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
+			KEY_TAB:
+				if main_ui:
+					main_ui.toggle_city_panel()
+					get_viewport().set_input_as_handled()
 			KEY_L:
 				if event.ctrl_pressed:
 					_handle_load_game()

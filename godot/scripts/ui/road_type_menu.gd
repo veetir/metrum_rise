@@ -44,13 +44,14 @@ var _grid := GridContainer.new()
 func _init() -> void:
 	add_theme_constant_override("separation", 10)
 	_grid.columns = 5
+	_grid.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_grid.add_theme_constant_override("h_separation", 6)
 	_grid.add_theme_constant_override("v_separation", 6)
 	add_child(_grid)
-	var builder := HudIcons.icon_button("plus", "New custom road", "Open the road builder to create or edit road types.", HudIcons.TILE_SIZE)
+	var builder := HudIcons.icon_button("plus", "New custom road", "", HudIcons.TILE_SIZE)
 	builder.pressed.connect(func(): road_builder_requested.emit())
 	add_child(builder)
-	custom_menu = HudIcons.menu_tile(CUSTOM_ROADS, "Your road types and the road builder")
+	custom_menu = HudIcons.menu_tile(CUSTOM_ROADS, "")
 	custom_menu.get_popup().id_pressed.connect(_on_custom_item)
 	add_child(custom_menu)
 

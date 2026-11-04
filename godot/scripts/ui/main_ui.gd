@@ -11,6 +11,7 @@
 extends CanvasLayer
 
 const TopStatusBar = preload("res://scripts/ui/top_status_bar.gd")
+const CityPanel = preload("res://scripts/ui/city_panel.gd")
 const ZoningPanel = preload("res://scripts/ui/zoning_panel.gd")
 const AssetPanel = preload("res://scripts/ui/asset_panel.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
@@ -29,6 +30,7 @@ const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 
 var bottom_panel: Control
 var _top_status: TopStatusBar
+var _city_panel: CityPanel
 var main_toolbar: HBoxContainer
 
 var road_main_btn: Button
@@ -220,14 +222,13 @@ func _build_ui():
 	road_sub_menu.add_child(road_type_menu)
 	road_sub_menu.add_child(VSeparator.new())
 
-	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "Place a turning circle at a road end.", HudIcons.TILE_SIZE)
+	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "", HudIcons.TILE_SIZE)
 	HudIcons.set_shortcut(_cul_de_sac_btn, "C")
 	_cul_de_sac_btn.toggle_mode = true
 	road_sub_menu.add_child(_cul_de_sac_btn)
 	_cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	# The select tool edits built roads (type, lanes, junctions), so it lives with the roads.
-	select_main_btn = HudIcons.icon_button("edit_road", "Edit roads",
-		"Click a built road to change its type, lanes or junctions.", HudIcons.TILE_SIZE)
+	select_main_btn = HudIcons.icon_button("edit_road", "Edit roads", "", HudIcons.TILE_SIZE)
 	HudIcons.set_shortcut(select_main_btn, "V")
 	select_main_btn.toggle_mode = true
 	road_sub_menu.add_child(select_main_btn)
@@ -235,6 +236,9 @@ func _build_ui():
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
 	road_combined_hbox.add_child(sub_panel)
+	# Each panel keeps its own height, bottom-aligned, rather than stretching to the taller one.
+	options_panel.size_flags_vertical = Control.SIZE_SHRINK_END
+	sub_panel.size_flags_vertical = Control.SIZE_SHRINK_END
 	
 	# --- Terrain Sub Menu ---
 	terrain_sub_menu = HBoxContainer.new()
@@ -284,7 +288,7 @@ func _build_ui():
 	zoning_view.hide()
 	for entry in ZONING_MAIN_TYPES:
 		var zone_type := str(entry.id)
-		var button := ZoningPanel.tile(zone_type, str(entry.label), "Choose a zoning profile")
+		var button := ZoningPanel.tile(zone_type, str(entry.label), "")
 		button.pressed.connect(func(): _toggle_zoning_zone_type(zone_type))
 		zoning_type_menu.add_child(button)
 		_zoning_type_buttons[zone_type] = button
@@ -312,12 +316,12 @@ func _build_ui():
 	main_toolbar.add_theme_constant_override("separation", 6)
 	main_toolbar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	# Bindings mirror InputManager._unhandled_input; R/Y select tools, not the category panel.
-	road_main_btn = HudIcons.icon_button("road", "Roads", "Draw roads; X draws a walkway.")
-	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "Paint residential, commercial and industrial zones.")
-	services_main_btn = HudIcons.icon_button("services", "Services", "Parking, power and other city services.")
-	industry_main_btn = HudIcons.icon_button("industry", "Industry", "Fields, extraction and production.")
-	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "Raise and lower the ground; trees and forests.")
-	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "Remove roads and buildings.")
+	road_main_btn = HudIcons.icon_button("road", "Roads", "")
+	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "")
+	services_main_btn = HudIcons.icon_button("services", "Services", "")
+	industry_main_btn = HudIcons.icon_button("industry", "Industry", "")
+	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "")
+	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "")
 	for entry in [[road_main_btn, "R"], [zoning_main_btn, "Z"], [terrain_main_btn, "Y"], [bulldoze_btn, "B"]]:
 		HudIcons.set_shortcut(entry[0], entry[1])
 	for button in [road_main_btn, zoning_main_btn, services_main_btn, industry_main_btn, terrain_main_btn]:
@@ -346,6 +350,9 @@ func _build_ui():
 	clock_label = _top_status.clock_label
 	city_status_panel = _top_status.city_status_panel
 	demand_meter = _top_status.demand_meter
+	_city_panel = CityPanel.new()
+	root.add_child(_city_panel)
+	demand_meter.pressed.connect(toggle_city_panel)
 
 func _build_auxiliary_windows() -> void:
 	road_properties_panel = RoadPropertiesWindow.new()
@@ -469,6 +476,7 @@ func _activate_vegetation(mode: int) -> void:
 
 func _connect_signals():
 	input_manager.tool_changed.connect(_refresh_hud_marks)
+	input_manager.tool_changed.connect(_follow_tool)
 	for panel in [road_combined_hbox, zoning_combined_hbox, services_combined_hbox, industry_combined_hbox, terrain_sub_menu]:
 		panel.visibility_changed.connect(_refresh_hud_marks)
 	_refresh_hud_marks()
@@ -494,6 +502,41 @@ func _refresh_hud_marks(_tool: int = 0) -> void:
 	HudIcons.mark(terrain_main_btn, terrain_sub_menu.visible or tool in [InputManager.Tool.SCULPT, InputManager.Tool.VEGETATION])
 	HudIcons.mark(select_main_btn, tool == InputManager.Tool.SELECT)
 	HudIcons.mark(bulldoze_btn, tool == InputManager.Tool.BULLDOZE)
+
+const _ROAD_PANEL_TOOLS := [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC, InputManager.Tool.SELECT]
+const _TERRAIN_PANEL_TOOLS := [InputManager.Tool.SCULPT, InputManager.Tool.VEGETATION]
+
+# Keyboard tools (R, X, C, V, Y) open their dock panel like a click on the category does,
+# and switching the tool off closes the panel it belongs to.
+var _last_tool := InputManager.Tool.NONE
+
+func _follow_tool(tool: int) -> void:
+	if tool == InputManager.Tool.NONE:
+		# Switching tools passes through NONE; only a tool that stays off closes its panel.
+		_close_idle_tool_panel.call_deferred(_last_tool)
+		_last_tool = InputManager.Tool.NONE
+		return
+	_last_tool = tool
+	if tool in _ROAD_PANEL_TOOLS and not road_combined_hbox.visible:
+		_show_only_panel(road_combined_hbox)
+	elif tool in _TERRAIN_PANEL_TOOLS and not terrain_sub_menu.visible:
+		_show_only_panel(terrain_sub_menu)
+
+func _close_idle_tool_panel(previous: int) -> void:
+	if input_manager.current_tool != InputManager.Tool.NONE:
+		return
+	if previous in _ROAD_PANEL_TOOLS:
+		road_combined_hbox.visible = false
+		get_meta("options_panel").visible = false
+		get_meta("road_sep").visible = false
+	elif previous in _TERRAIN_PANEL_TOOLS:
+		terrain_sub_menu.visible = false
+
+func _show_only_panel(panel: Control) -> void:
+	for other in [road_combined_hbox, terrain_sub_menu, zoning_combined_hbox, services_combined_hbox, industry_combined_hbox]:
+		if other != panel:
+			other.visible = false
+	panel.visible = true
 
 func _on_road_main_pressed():
 	terrain_sub_menu.visible = false
@@ -794,7 +837,7 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 		zoning_profile_menu.add_child(button)
 		_zoning_profile_buttons[runtime_id] = button
 
-	var clear_btn := HudIcons.icon_button("erase", "Free", "Remove parcel zoning", 64)
+	var clear_btn := HudIcons.icon_button("erase", "Free", "", 64)
 	clear_btn.toggle_mode = true
 	clear_btn.pressed.connect(func(): _select_zoning_profile(zone_type, 0))
 	zoning_profile_menu.add_child(clear_btn)
@@ -1067,6 +1110,8 @@ func _refresh_demand_display() -> void:
 		return
 	var growth: Dictionary = simulation_node.get_growth_overview()
 	demand_meter.set_growth(growth)
+	if _city_panel and _city_panel.is_open():
+		_city_panel.set_growth(growth)
 
 func _refresh_city_status_display() -> void:
 	if not city_status_panel or not simulation_node:
@@ -1081,6 +1126,15 @@ func _refresh_city_status_display() -> void:
 	_display_agent_count = agent_count
 	if city_status_panel.has_method("set_stats"):
 		city_status_panel.set_stats(treasury, agent_count)
+	if _city_panel and _city_panel.is_open():
+		_city_panel.set_stats(treasury, agent_count)
+
+## Tab, or a click on the demand bars: the city status panel with each zone's growth reasons.
+func toggle_city_panel() -> void:
+	_city_panel.toggle()
+	if _city_panel.is_open() and simulation_node:
+		_city_panel.set_stats(_display_treasury, _display_agent_count)
+		_city_panel.set_growth(simulation_node.get_growth_overview())
 
 func set_sim_speed_display(speed: float):
 	_display_speed = speed
