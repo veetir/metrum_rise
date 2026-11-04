@@ -46,13 +46,13 @@ func _ready() -> void:
 		_counts[key] = label
 
 	_chart = Control.new()
-	_chart.custom_minimum_size = Vector2(60, 30)
+	_chart.custom_minimum_size = Vector2(48, 22)
 	_chart.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_chart)
 	# Empty tracks distinguish a zero assessment from a missing/broken chart.
 	for i in range(3):
 		var track := ColorRect.new()
-		track.color = Color(BAR_COLORS[BAR_ORDER[i]], 0.18)
+		track.color = Color(_meter_bar_color(BAR_ORDER[i]), 0.28)
 		_chart.add_child(track)
 		_tracks.append(track)
 		track.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -98,7 +98,7 @@ func _layout_chart() -> void:
 	_baseline.position = Vector2(0, baseline_y - 1.0)
 	_baseline.size = Vector2(chart_size.x, 2.0)
 
-	var gap := 6.0
+	var gap := 4.0
 	var bar_width := floorf((chart_size.x - gap * float(BAR_ORDER.size() - 1)) / float(BAR_ORDER.size()))
 	bar_width = maxf(bar_width, 8.0)
 	var used_width := bar_width * float(BAR_ORDER.size()) + gap * float(BAR_ORDER.size() - 1)

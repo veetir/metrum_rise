@@ -22,14 +22,14 @@ func _ready() -> void:
 	icon.texture = load("res://assets/ui/icons/money.svg")
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.custom_minimum_size = Vector2(22, 22)
+	icon.custom_minimum_size = Vector2(18, 18)
 	add_child(icon)
 	_treasury_label = _make_value_label()
 	add_child(_treasury_label)
 
 	_agents_label = _make_value_label()
 	add_child(_agents_label)
-	UIStyle.set_font_size(_agents_label, 11)
+	UIStyle.set_font_size(_agents_label, 10)
 	_agents_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 
 	set_stats(0.0, 0)
@@ -47,7 +47,7 @@ func set_stats(treasury_balance: float, agent_count: int) -> void:
 
 func _make_value_label() -> Label:
 	var label := Label.new()
-	UIStyle.set_font_size(label, 14)
+	UIStyle.set_font_size(label, 12)
 	label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -56,7 +56,8 @@ func _make_value_label() -> Label:
 func _format_currency(value: float) -> String:
 	var abs_rounded := int(round(absf(value)))
 	var digits := _format_int_with_commas(abs_rounded)
-	return "-$%s" % digits if value < 0.0 else "$%s" % digits
+	# The coin icon carries the currency.
+	return "-%s" % digits if value < 0.0 else digits
 
 func _format_int_with_commas(value: int) -> String:
 	var negative := value < 0

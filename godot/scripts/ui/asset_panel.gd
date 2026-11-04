@@ -8,23 +8,36 @@ var asset_panel: PanelContainer
 var asset_menu: HBoxContainer
 var category_menu: HBoxContainer
 
+# One row: [classes | assets of the open class], so opening a class widens the palette
+# instead of stacking a second panel above it. Industry has only the asset tiles.
 func build(with_categories: bool) -> void:
 	size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	add_theme_constant_override("separation", 8)
-	asset_menu = HBoxContainer.new()
-	asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
-	asset_menu.add_theme_constant_override("separation", 6)
-	asset_panel = HudIcons.shell(asset_menu)
-	add_child(asset_panel)
+	var palette := HBoxContainer.new()
+	palette.add_theme_constant_override("separation", 6)
+	var shell := HudIcons.shell(palette)
+	shell.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	add_child(shell)
 	category_menu = HBoxContainer.new()
 	category_menu.alignment = BoxContainer.ALIGNMENT_CENTER
 	category_menu.add_theme_constant_override("separation", 6)
+	var assets_row := HBoxContainer.new()
+	assets_row.add_theme_constant_override("separation", 6)
+	asset_menu = HBoxContainer.new()
+	asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
+	asset_menu.add_theme_constant_override("separation", 6)
+	asset_panel = PanelContainer.new()
+	asset_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	asset_panel.add_child(assets_row)
 	if with_categories:
-		add_child(HudIcons.shell(category_menu))
+		palette.add_child(category_menu)
+		assets_row.add_child(VSeparator.new())
 		asset_panel.hide()
 	else:
 		category_menu.free()
 		category_menu = null
+	assets_row.add_child(asset_menu)
+	palette.add_child(asset_panel)
 
 static func class_icon(class_id: String) -> String:
 	return class_id if class_id in ["parking", "power", "water", "waste", "sewage",
@@ -37,12 +50,13 @@ static func class_tile(class_id: String, title: String) -> Button:
 
 static func asset_tile(asset: Dictionary, class_id: String) -> Button:
 	var title := str(asset.get("display_name", asset.get("asset_id", "Asset")))
-	var details := PackedStringArray([str(asset.get("asset_id", ""))])
+	var details := PackedStringArray()
 	if asset.has("resource_id"):
 		details.append("Resource: " + str(asset.resource_id).capitalize())
 	if asset.has("lot_width_cells") and asset.has("lot_depth_cells"):
 		details.append("Lot: %d × %d cells" % [asset.lot_width_cells, asset.lot_depth_cells])
-	if asset.has("worker_capacity"):
+	# Lots and other unstaffed assets have no jobs to report.
+	if int(asset.get("worker_capacity", 0)) > 0:
 		details.append("Workers: %d" % int(asset.worker_capacity))
 	# Only show economics supplied by the bridge; today's asset index has none.
 	if asset.has("build_cost"):

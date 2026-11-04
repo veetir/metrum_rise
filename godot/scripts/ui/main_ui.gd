@@ -220,10 +220,17 @@ func _build_ui():
 	road_sub_menu.add_child(road_type_menu)
 	road_sub_menu.add_child(VSeparator.new())
 
-	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "C — cul-de-sac tool", HudIcons.TILE_SIZE)
+	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "Place a turning circle at a road end.", HudIcons.TILE_SIZE)
+	HudIcons.set_shortcut(_cul_de_sac_btn, "C")
 	_cul_de_sac_btn.toggle_mode = true
 	road_sub_menu.add_child(_cul_de_sac_btn)
 	_cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
+	# The select tool edits built roads (type, lanes, junctions), so it lives with the roads.
+	select_main_btn = HudIcons.icon_button("edit_road", "Edit roads",
+		"Click a built road to change its type, lanes or junctions.", HudIcons.TILE_SIZE)
+	HudIcons.set_shortcut(select_main_btn, "V")
+	select_main_btn.toggle_mode = true
+	road_sub_menu.add_child(select_main_btn)
 	
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
@@ -271,8 +278,8 @@ func _build_ui():
 		zoning_options_popup.hide()
 		_refresh_zoning_profile_button_states())
 	var cell_shell := HudIcons.shell(cell_controls)
-	zoning_view.add_child(cell_shell)
-	zoning_view.move_child(cell_shell, 1)
+	zoning_view.row.add_child(cell_shell)
+	zoning_view.row.move_child(cell_shell, 0)
 	vbox.add_child(zoning_view)
 	zoning_view.hide()
 	for entry in ZONING_MAIN_TYPES:
@@ -305,14 +312,15 @@ func _build_ui():
 	main_toolbar.add_theme_constant_override("separation", 6)
 	main_toolbar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	# Bindings mirror InputManager._unhandled_input; R/Y select tools, not the category panel.
-	road_main_btn = HudIcons.icon_button("road", "Roads", "R — road tool · X — walkway")
-	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "Z — zoning")
-	services_main_btn = HudIcons.icon_button("services", "Services", "No keyboard shortcut")
-	industry_main_btn = HudIcons.icon_button("industry", "Industry", "No keyboard shortcut")
-	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "Y — raise/lower terrain")
-	select_main_btn = HudIcons.icon_button("inspect", "Inspect", "V — inspect tool")
-	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "B — bulldoze tool")
-	for button in [road_main_btn, zoning_main_btn, services_main_btn, industry_main_btn, terrain_main_btn, select_main_btn]:
+	road_main_btn = HudIcons.icon_button("road", "Roads", "Draw roads; X draws a walkway.")
+	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "Paint residential, commercial and industrial zones.")
+	services_main_btn = HudIcons.icon_button("services", "Services", "Parking, power and other city services.")
+	industry_main_btn = HudIcons.icon_button("industry", "Industry", "Fields, extraction and production.")
+	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "Raise and lower the ground; trees and forests.")
+	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "Remove roads and buildings.")
+	for entry in [[road_main_btn, "R"], [zoning_main_btn, "Z"], [terrain_main_btn, "Y"], [bulldoze_btn, "B"]]:
+		HudIcons.set_shortcut(entry[0], entry[1])
+	for button in [road_main_btn, zoning_main_btn, services_main_btn, industry_main_btn, terrain_main_btn]:
 		button.toggle_mode = true
 		main_toolbar.add_child(button)
 	main_toolbar.add_child(VSeparator.new())
@@ -479,7 +487,7 @@ func _connect_signals():
 func _refresh_hud_marks(_tool: int = 0) -> void:
 	var tool: int = input_manager.current_tool
 	HudIcons.mark(_cul_de_sac_btn, tool == InputManager.Tool.CUL_DE_SAC)
-	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC])
+	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC, InputManager.Tool.SELECT])
 	HudIcons.mark(zoning_main_btn, zoning_combined_hbox.visible or tool == InputManager.Tool.ZONING)
 	HudIcons.mark(services_main_btn, services_combined_hbox.visible or tool == InputManager.Tool.SERVICES)
 	HudIcons.mark(industry_main_btn, industry_combined_hbox.visible or tool == InputManager.Tool.INDUSTRY)
@@ -598,7 +606,6 @@ func _set_draw_mode(mode: int):
 		road_tool.draw_mode = mode
 
 func _on_select_main_pressed():
-	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
 	services_combined_hbox.visible = false
@@ -781,7 +788,7 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 		var profile: Dictionary = entry
 		var button := ZoningPanel.tile(zone_type,
 			str(profile.get("display_name", zone_type.capitalize())), str(profile.get("ui_description", "")),
-			str(profile.get("ui_color", "")))
+			str(profile.get("ui_color", "")), str(profile.get("density", "")))
 		var runtime_id := int(profile.get("runtime_id", 0))
 		button.pressed.connect(func(): _select_zoning_profile(zone_type, runtime_id))
 		zoning_profile_menu.add_child(button)

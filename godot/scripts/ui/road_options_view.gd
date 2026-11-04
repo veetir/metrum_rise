@@ -32,8 +32,9 @@ func _init() -> void:
 		"Snap near parallel or perpendicular cell lines; draw other angles freely. "
 		+ "Accounts for road widths. Existing road connections take priority. Straight mode only.", 38)
 	tunnel_btn = HudIcons.icon_button("tunnel", "Tunnel",
-		"T — while drawing a road\nKeep the drawn height through the ground. "
+		"Keep the drawn height through the ground. "
 		+ "Place both ends outside the hill; the stretch under 5 m of ground becomes a tunnel.", 38)
+	HudIcons.set_shortcut(tunnel_btn, "T")
 	for entry in [["Snapping", snap_btn], ["Structure", tunnel_btn]]:
 		var column := VBoxContainer.new()
 		options.add_child(column)

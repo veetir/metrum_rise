@@ -67,6 +67,16 @@ static func decorate(button: Button, icon_name: String, side: float) -> void:
 	feedback.attach()
 	Tooltip.new().attach(button)
 
+## Swaps the artwork, e.g. pause/resume.
+static func set_icon(button: Button, icon_name: String) -> void:
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.texture = load(ICON_DIR + icon_name + ".svg") as Texture2D
+	button.queue_redraw()
+
+## The key the tooltip shows as a keycap beside the title. Buttons without a binding show none.
+static func set_shortcut(button: Control, key: String) -> void:
+	button.set_meta(Tooltip.SHORTCUT_META, key)
+
 ## Tints artwork without tinting the shared shell or selected accent underline.
 static func tint(button: Button, color: Color) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))

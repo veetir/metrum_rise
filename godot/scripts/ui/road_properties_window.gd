@@ -14,7 +14,8 @@
 ## the roads). When zoning off would demolish buildings, Apply first asks in a confirmation
 ## ("Apply removes N buildings. This cannot be undone.": undo brings back the road, never the
 ## buildings); Cancel leaves the roads as they are. The picker stays enabled on a walkway so the
-## refusal (walkway <-> road) shows with its text. The window opens tall enough for every row.
+## refusal (walkway <-> road) shows with its text. The window leads with the selected road (its
+## thumbnail, name and lanes); "Change road type" unfolds the other types, the verdict and Apply.
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -45,7 +46,12 @@ var _type_picker: OptionButton
 var _type_grid: GridContainer
 var _type_tiles: Dictionary = {}
 var _type_scroll: ScrollContainer
-var _type_title: Label
+# The selected road: its type's thumbnail and name above the lanes line.
+var _current_tile: Button
+var _name_label: Label
+# "Change road type" reveals the other types, the verdict and Apply.
+var _change_button: Button
+var _change_box: VBoxContainer
 var _body: PanelContainer
 var _layout_label: Label
 var _verdict_label: Label
@@ -90,9 +96,29 @@ func _build_window() -> void:
 	body.add_child(margin)
 
 	var root_vbox := VBoxContainer.new()
-	root_vbox.add_theme_constant_override("separation", 8)
-	root_vbox.add_child(UIStyle.inspector_heading("Road Properties"))
+	root_vbox.add_theme_constant_override("separation", 10)
 	margin.add_child(root_vbox)
+
+	var current := HBoxContainer.new()
+	current.add_theme_constant_override("separation", 12)
+	root_vbox.add_child(current)
+	_current_tile = HudIcons.road_tile({}, "")
+	_current_tile.toggle_mode = false
+	_current_tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	current.add_child(_current_tile)
+	var names := VBoxContainer.new()
+	names.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	names.alignment = BoxContainer.ALIGNMENT_CENTER
+	current.add_child(names)
+	_name_label = Label.new()
+	_name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UIStyle.set_font_size(_name_label, 16)
+	names.add_child(_name_label)
+	_layout_label = Label.new()
+	_layout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_layout_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(_layout_label, 13)
+	names.add_child(_layout_label)
 
 	_warning_label = Label.new()
 	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -100,57 +126,64 @@ func _build_window() -> void:
 	UIStyle.set_font_size(_warning_label, 13)
 	root_vbox.add_child(_warning_label)
 
-	var classes := HBoxContainer.new()
-	classes.add_theme_constant_override("separation", 2)
-	root_vbox.add_child(classes)
+	var settings := HBoxContainer.new()
+	settings.add_theme_constant_override("separation", 2)
+	root_vbox.add_child(settings)
 	for i in range(3):
 		var title: String = ["Standard", "Bridge", "Tunnel"][i]
-		var button := HudIcons.icon_button(["road", "bridge", "tunnel"][i], title, title + " road class")
+		var button := HudIcons.icon_button(["road", "bridge", "tunnel"][i], title, title + " road class", 36)
 		button.toggle_mode = true
 		button.pressed.connect(_on_class_button_pressed.bind(i))
-		classes.add_child(button)
+		settings.add_child(button)
 		_class_buttons.append(button)
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	settings.add_child(gap)
+	_no_build_check = CheckButton.new()
+	_no_build_check.focus_mode = Control.FOCUS_NONE
+	_no_build_check.text = "No buildings"
+	_no_build_check.tooltip_text = "Keep buildings from spawning along this road."
+	UIStyle.set_font_size(_no_build_check, 13)
+	_no_build_check.toggled.connect(_on_no_build_toggled)
+	settings.add_child(_no_build_check)
 
-	_type_title = UIStyle.inspector_heading("Road type", true)
-	root_vbox.add_child(_type_title)
+	_change_button = Button.new()
+	_change_button.text = "Change road type"
+	_change_button.toggle_mode = true
+	_change_button.focus_mode = Control.FOCUS_NONE
+	_change_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	UIStyle.set_font_size(_change_button, 13)
+	_change_button.toggled.connect(_show_change)
+	root_vbox.add_child(_change_button)
+
+	_change_box = VBoxContainer.new()
+	_change_box.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(_change_box)
 	_type_picker = OptionButton.new()
 	_type_picker.item_selected.connect(_on_type_selected)
-	root_vbox.add_child(_type_picker)
+	_change_box.add_child(_type_picker)
 	_type_picker.hide()
 	_type_scroll = ScrollContainer.new()
 	_type_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_type_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root_vbox.add_child(_type_scroll)
+	_change_box.add_child(_type_scroll)
 	_type_grid = GridContainer.new()
 	_type_grid.columns = 5
 	_type_grid.add_theme_constant_override("h_separation", 4)
 	_type_grid.add_theme_constant_override("v_separation", 4)
 	_type_scroll.add_child(_type_grid)
-	_layout_label = Label.new()
-	_layout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(_layout_label, 13)
-	root_vbox.add_child(_layout_label)
-
 	_verdict_label = Label.new()
 	_verdict_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_verdict_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UIStyle.set_font_size(_verdict_label, 13)
-	root_vbox.add_child(_verdict_label)
+	_change_box.add_child(_verdict_label)
 	_apply_button = Button.new()
 	_apply_button.text = "Apply"
 	_apply_button.disabled = true
 	UIStyle.style_primary_button(_apply_button)
 	_apply_button.pressed.connect(_on_apply_pressed)
-	root_vbox.add_child(_apply_button)
-
-	root_vbox.add_child(HSeparator.new())
-
-	_no_build_check = CheckButton.new()
-	_no_build_check.focus_mode = Control.FOCUS_NONE
-	_no_build_check.text = "No buildings"
-	UIStyle.set_font_size(_no_build_check, 14)
-	_no_build_check.toggled.connect(_on_no_build_toggled)
-	root_vbox.add_child(_no_build_check)
+	_change_box.add_child(_apply_button)
+	_show_change(false)
 
 	_demolish_dialog = ConfirmationDialog.new()
 	_demolish_dialog.title = "Remove buildings"
@@ -184,6 +217,11 @@ func _close_selection() -> void:
 	if _select_tool:
 		_select_tool.clear_selection()
 	close_window()
+
+# The other types, the verdict and Apply stay folded until the player asks to change the type.
+func _show_change(open: bool) -> void:
+	_change_box.visible = open
+	_change_button.text = "Hide road types" if open else "Change road type…"
 
 func _fit_columns() -> void:
 	if _type_grid:
@@ -271,19 +309,24 @@ func _refresh_type() -> void:
 		_type_picker.add_item(RoadTypeMenu.picker_text(type))
 		_type_picker.set_item_metadata(_type_picker.item_count - 1, type)
 		var index := _type_picker.item_count - 1
+		if String(type.get("id", "")) == current:
+			_type_picker.select(index)
+			continue
 		var tile := HudIcons.road_tile(type, RoadTypeMenu.tooltip(type))
 		tile.pressed.connect(func():
 			_type_picker.select(index)
 			_type_picker.item_selected.emit(index))
 		_type_grid.add_child(tile)
 		_type_tiles[index] = tile
-		if String(type.get("id", "")) == current:
-			_type_picker.select(_type_picker.item_count - 1)
 	if current.is_empty():
 		_type_picker.select(0)
-	_type_title.text = "Road type — " + CUSTOM_LAYOUT if current.is_empty() else "Road type"
 	_mark_type_tiles()
+	var current_type := _picked_type()
+	_name_label.text = String(current_type.get("name", CUSTOM_LAYOUT))
+	HudIcons.set_road(_current_tile, current_type)
 	_layout_label.text = RoadTypeMenu.describe(first, false)
+	_change_button.set_pressed_no_signal(false)
+	_show_change(false)
 	_verdict_label.text = ""
 	_verdict_label.hide()
 	_verdict = {}

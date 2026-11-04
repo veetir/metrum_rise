@@ -232,12 +232,11 @@ measurements appear only during a placement. See [road interaction](roads.md).
 
 | Button  | Activates |
 |---------|-----------|
-| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks", "no street lights", "No zoning" and Rust's cost), Cul-De-Sac; with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid) and Structure (Tunnel) |
-| Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
+| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks", "no street lights", "No zoning" and Rust's cost), Cul-De-Sac, Edit roads (`SelectTool`, V: click a built road for Road Properties; a building opens the Building Inspector); with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid) and Structure (Tunnel) |
+| Zoning  | Zoning sub-menu in one row: the cell/parcel tool options on the left, then Residential / Commercial / Industrial family tiles; a family's profiles (low, medium and high density each with its own silhouette) open to their right after clicking the family, which also selects its first profile |
 | Services | Service-building asset palette for explicit civic / utility placement |
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
 | Terrain | Terrain sub-menu for gameplay terrain tools |
-| Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
 
 Bulldoze sits after a separator at the right end of the category row. Its icon button
 activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
@@ -253,10 +252,14 @@ Sub-menus expand upward above the toolbar row. The menu cluster has:
 
 - one transparent layout wrapper around the menu stack
 - separate translucent panels for the category row and road controls
-- a separate slim top status shell for the clock, speed steps, city status and R/C/I bars
+- a status notch hanging from the menu bar, in the bar's own background, for the clock, speed,
+  city status and R/C/I bars
 
-Gameplay HUD status widgets share one top row. Speed icons select Rust's existing steps
-(0, 0.5, 1, 2, 4, 8, 16 and 32×) through the existing handler, with small value captions.
+Gameplay HUD status widgets share the notch. Speed is pause/resume (Space), slower, the current
+speed ("4x" or "Paused") and faster, stepping through Rust's existing steps with the existing
+handler. Zoning and Services keep one palette row each: opening a zone's profiles or a service
+class widens the row instead of stacking another panel above it. Tooltips show a key's shortcut
+as a keycap beside the title and say nothing for categories without one.
 The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts

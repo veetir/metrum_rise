@@ -6,6 +6,8 @@ extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const DELAY := 0.15
+## Control meta holding the shortcut key drawn as a keycap; see HudIcons.set_shortcut.
+const SHORTCUT_META := &"hud_shortcut"
 
 var _button: Control
 var _title := ""
@@ -39,7 +41,7 @@ func _show() -> void:
 	var viewport_size := _button.get_viewport_rect().size
 	var width := minf(UIStyle.scaled_px(310), viewport_size.x - 60)
 	var title: String = _button.text if _button is Button else _title
-	_card = view(title, _button.tooltip_text, width)
+	_card = view(title, _button.tooltip_text, width, str(_button.get_meta(SHORTCUT_META, "")))
 	_card.visible = false
 	_card.resized.connect(_place, CONNECT_DEFERRED)
 	_layer.add_child(_card)
@@ -69,7 +71,7 @@ func _hide() -> void:
 	_card = null
 
 ## Builds a wrapped, scale-aware card; road cost/upkeep (the last line) receives emphasis.
-static func view(title: String, body: String, width: float) -> PanelContainer:
+static func view(title: String, body: String, width: float, key: String = "") -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := UIStyle.panel_style(
@@ -86,12 +88,18 @@ static func view(title: String, body: String, width: float) -> PanelContainer:
 	column.add_theme_constant_override("separation", 8)
 	column.custom_minimum_size.x = width
 	panel.add_child(column)
-	_label(column, title, 16, UIStyle.TEXT_PRIMARY)
+	var heading := HBoxContainer.new()
+	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	heading.add_theme_constant_override("separation", 10)
+	column.add_child(heading)
+	_label(heading, title, 16, UIStyle.TEXT_PRIMARY).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if not key.is_empty():
+		heading.add_child(_keycap(key))
 	for line in body.split("\n", false):
 		_label(column, line, 13, UIStyle.HUD_ACCENT if line.contains("upkeep") else UIStyle.TEXT_DIM)
 	return panel
 
-static func _label(parent: Control, text: String, font_size: int, color: Color) -> void:
+static func _label(parent: Control, text: String, font_size: int, color: Color) -> Label:
 	var label := Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -99,3 +107,19 @@ static func _label(parent: Control, text: String, font_size: int, color: Color) 
 	UIStyle.set_font_size(label, font_size)
 	label.add_theme_color_override("font_color", color)
 	parent.add_child(label)
+	return label
+
+# A small raised key: light rim, darker face, a thicker bottom edge like a physical key.
+static func _keycap(key: String) -> PanelContainer:
+	var cap := PanelContainer.new()
+	cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var style := UIStyle.panel_style(Color(1, 1, 1, 0.10), 5, Color(1, 1, 1, 0.45))
+	style.border_width_bottom = 3
+	style.content_margin_left = 7
+	style.content_margin_right = 7
+	style.content_margin_top = 1
+	style.content_margin_bottom = 1
+	cap.add_theme_stylebox_override("panel", style)
+	_label(cap, key, 12, UIStyle.TEXT_PRIMARY).autowrap_mode = TextServer.AUTOWRAP_OFF
+	return cap
