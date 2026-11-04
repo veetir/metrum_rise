@@ -19,6 +19,8 @@ extends Node
 
 ## Emitted when a loaded world is handed over to the player (is_world_ready()).
 signal world_ready
+## Lets HUD views follow keyboard, click and cancellation transitions without polling.
+signal tool_changed(tool: int)
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -42,7 +44,11 @@ var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
-var current_tool: Tool = Tool.NONE
+var current_tool: Tool = Tool.NONE:
+	set(value):
+		if current_tool != value:
+			current_tool = value
+			tool_changed.emit(value)
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5

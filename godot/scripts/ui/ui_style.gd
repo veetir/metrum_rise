@@ -23,6 +23,7 @@ const BG_SUBMENU := Color(0.15, 0.15, 0.15, 0.70)
 const BG_HUD_SHELL := Color(0.07, 0.07, 0.07, 0.72)
 const BG_HUD_GROUP := Color(0.07, 0.07, 0.07, 0.56)
 const BORDER_ACCENT := Color(0.30, 0.30, 0.45, 0.60)
+const HUD_ACCENT := Color(0.38, 0.80, 0.88)
 const TEXT_PRIMARY := Color.WHITE
 const TEXT_DIM := Color(0.72, 0.72, 0.72)
 const TEXT_SECTION := Color(0.65, 0.65, 0.90)

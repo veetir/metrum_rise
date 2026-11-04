@@ -16,6 +16,8 @@ const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
+const RoadOptionsView = preload("res://scripts/ui/road_options_view.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
 const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
@@ -25,10 +27,9 @@ const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 @onready var simulation_node = $"../SimulationNode"
 
 var bottom_panel: Control
-# The bottom row's three independently anchored layers, kept so the toolbar can be laid out
-# clear of the side strips (_layout_bottom_toolbar).
+# Independent status and tool layers; the centred toolbar rises above the status strip
+# when the viewport is too narrow for them to share a row.
 var _left_bottom_strip: Control
-var _right_bottom_strip: Control
 var _toolbar_margin: MarginContainer
 var _toolbar_shell: Control
 var _toolbar_layout_pending := false
@@ -46,14 +47,15 @@ var terrain_sub_menu: HBoxContainer
 # Road items
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
 var road_type_menu: RoadTypeMenu
+var _cul_de_sac_btn: Button
 ## The road builder window (`ROAD-101`).
 var road_builder: RoadBuilderWindow
 
 # Road options
 var straight_btn: Button
 var spline_btn: Button
-var zoning_grid_snap_check: CheckBox
-var tunnel_check: CheckBox
+var zoning_grid_snap_check: Button
+var tunnel_check: Button
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
@@ -113,9 +115,6 @@ const ZONING_PARCEL_GAP_DEFAULT_M := 0.0
 const CLOCK_PANEL_WIDTH := 220.0
 const CITY_STATUS_PANEL_WIDTH := 170.0
 const DEMAND_METER_WIDTH := 92.0
-
-func _toolbar_button_height() -> float:
-	return maxf(1.0, minf(UIStyle.HUD_BUTTON_HEIGHT, UIStyle.HUD_STRIP_HEIGHT - float(UIStyle.HUD_SHELL_PAD_Y * 2)))
 
 func _ready():
 	_build_ui()
@@ -177,11 +176,12 @@ func _build_ui():
 	toolbar_stack.add_child(toolbar_center)
 
 	var main_vbox = VBoxContainer.new()
-	main_vbox.mouse_filter = Control.MOUSE_FILTER_STOP
+	main_vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	main_vbox.alignment = BoxContainer.ALIGNMENT_END
 	
 	# VBox to hold the stack of menus (options on top, then sub-menu, then main toolbar)
 	var vbox = VBoxContainer.new()
+	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	vbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vbox.add_theme_constant_override("separation", 10)
@@ -195,11 +195,10 @@ func _build_ui():
 	vbox.add_child(road_combined_hbox)
 	
 	# Road options: implemented tool modes and snapping controls.
-	road_options_menu = VBoxContainer.new()
+	var road_options := RoadOptionsView.new()
+	road_options_menu = road_options
 	var options_panel = PanelContainer.new()
-	var op_style = StyleBoxFlat.new()
-	op_style.bg_color = Color(0.15, 0.15, 0.15, 0.7)
-	op_style.set_corner_radius_all(10)
+	var op_style := UIStyle.submenu_style()
 	options_panel.add_theme_stylebox_override("panel", op_style)
 	
 	var options_padding = MarginContainer.new()
@@ -210,52 +209,14 @@ func _build_ui():
 	options_panel.add_child(options_padding)
 	options_padding.add_child(road_options_menu)
 	
-	var mode_row := HBoxContainer.new()
-	var mode_label := Label.new()
-	mode_label.text = "Tool mode"
-	mode_label.custom_minimum_size.x = 92.0
-	mode_row.add_child(mode_label)
-	road_options_menu.add_child(mode_row)
-	straight_btn = Button.new()
-	straight_btn.text = "Straight"
-	straight_btn.toggle_mode = true
-	straight_btn.focus_mode = Control.FOCUS_NONE
-	straight_btn.button_pressed = true 
-	mode_row.add_child(straight_btn)
-
-	spline_btn = Button.new()
-	spline_btn.text = "Spline"
-	spline_btn.toggle_mode = true
-	spline_btn.focus_mode = Control.FOCUS_NONE
-	mode_row.add_child(spline_btn)
-	
-	var snap_row := HBoxContainer.new()
-	var snap_label := Label.new()
-	snap_label.text = "Snapping"
-	snap_label.custom_minimum_size.x = 92.0
-	snap_row.add_child(snap_label)
-	zoning_grid_snap_check = CheckBox.new()
-	zoning_grid_snap_check.text = "Snap to zoning grid"
-	zoning_grid_snap_check.focus_mode = Control.FOCUS_NONE
-	zoning_grid_snap_check.tooltip_text = "Snap near parallel or perpendicular cell lines; draw other angles freely. Accounts for road widths. Existing road connections take priority."
+	straight_btn = road_options.straight_btn
+	spline_btn = road_options.spline_btn
+	zoning_grid_snap_check = road_options.snap_btn
+	tunnel_check = road_options.tunnel_btn
 	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
-	snap_row.add_child(zoning_grid_snap_check)
-	road_options_menu.add_child(snap_row)
-
-	var tunnel_row := HBoxContainer.new()
-	var tunnel_label := Label.new()
-	tunnel_label.text = "Structure"
-	tunnel_label.custom_minimum_size.x = 92.0
-	tunnel_row.add_child(tunnel_label)
-	tunnel_check = CheckBox.new()
-	tunnel_check.text = "Tunnel (T)"
-	tunnel_check.focus_mode = Control.FOCUS_NONE
-	tunnel_check.tooltip_text = "Keep the drawn height through the ground: a straight road runs level between its ends. Place both ends outside the hill; the stretch under 5 m of ground becomes a tunnel."
 	tunnel_check.toggled.connect(func(enabled: bool): road_tool.set_tunnel(enabled))
 	if road_tool:
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
-	tunnel_row.add_child(tunnel_check)
-	road_options_menu.add_child(tunnel_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)
@@ -289,12 +250,10 @@ func _build_ui():
 	road_sub_menu.add_child(road_type_menu)
 	road_sub_menu.add_child(VSeparator.new())
 
-	var cul_de_sac_btn = Button.new()
-	cul_de_sac_btn.text = "Cul-De-Sac"
-	cul_de_sac_btn.custom_minimum_size = Vector2(100, 0)
-	cul_de_sac_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(cul_de_sac_btn)
-	cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
+	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "C — cul-de-sac tool", HudIcons.TILE_SIZE)
+	_cul_de_sac_btn.toggle_mode = true
+	road_sub_menu.add_child(_cul_de_sac_btn)
+	_cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
@@ -495,63 +454,22 @@ func _build_ui():
 	
 	# 1. Main Toolbar (Bottom stack layer)
 	main_toolbar = HBoxContainer.new()
-	main_toolbar.add_theme_constant_override("separation", 15)
+	main_toolbar.add_theme_constant_override("separation", 6)
 	main_toolbar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	var toolbar_button_height := _toolbar_button_height()
-	
-	road_main_btn = Button.new()
-	road_main_btn.text = "Roads"
-	road_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
-	road_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(road_main_btn)
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color(0.2, 0.2, 0.2, 0.8)
-	style.corner_radius_top_left = 25
-	style.corner_radius_top_right = 25
-	style.corner_radius_bottom_left = 25
-	style.corner_radius_bottom_right = 25
-	road_main_btn.add_theme_stylebox_override("normal", style)
-	main_toolbar.add_child(road_main_btn)
-
-	zoning_main_btn = Button.new()
-	zoning_main_btn.text = "Zoning"
-	zoning_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
-	zoning_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(zoning_main_btn)
-	zoning_main_btn.add_theme_stylebox_override("normal", style.duplicate())
-	main_toolbar.add_child(zoning_main_btn)
-
-	services_main_btn = Button.new()
-	services_main_btn.text = "Services"
-	services_main_btn.custom_minimum_size = Vector2(110, toolbar_button_height)
-	services_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(services_main_btn)
-	services_main_btn.add_theme_stylebox_override("normal", style.duplicate())
-	main_toolbar.add_child(services_main_btn)
-
-	industry_main_btn = Button.new()
-	industry_main_btn.text = "Industry"
-	industry_main_btn.custom_minimum_size = Vector2(110, toolbar_button_height)
-	industry_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(industry_main_btn)
-	industry_main_btn.add_theme_stylebox_override("normal", style.duplicate())
-	main_toolbar.add_child(industry_main_btn)
-
-	terrain_main_btn = Button.new()
-	terrain_main_btn.text = "Terrain"
-	terrain_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
-	terrain_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(terrain_main_btn)
-	terrain_main_btn.add_theme_stylebox_override("normal", style.duplicate())
-	main_toolbar.add_child(terrain_main_btn)
-	
-	select_main_btn = Button.new()
-	select_main_btn.text = "Inspect"
-	select_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
-	select_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(select_main_btn)
-	select_main_btn.add_theme_stylebox_override("normal", style.duplicate())
-	main_toolbar.add_child(select_main_btn)
+	# Bindings mirror InputManager._unhandled_input; R/Y select tools, not the category panel.
+	road_main_btn = HudIcons.icon_button("road", "Roads", "R — road tool · X — walkway")
+	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "Z — zoning")
+	services_main_btn = HudIcons.icon_button("services", "Services", "No keyboard shortcut")
+	industry_main_btn = HudIcons.icon_button("industry", "Industry", "No keyboard shortcut")
+	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "Y — raise/lower terrain")
+	select_main_btn = HudIcons.icon_button("inspect", "Inspect", "V — inspect tool")
+	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "B — bulldoze tool")
+	for button in [road_main_btn, zoning_main_btn, services_main_btn, industry_main_btn, terrain_main_btn, select_main_btn]:
+		button.toggle_mode = true
+		main_toolbar.add_child(button)
+	main_toolbar.add_child(VSeparator.new())
+	bulldoze_btn.toggle_mode = true
+	main_toolbar.add_child(bulldoze_btn)
 
 	# Wrapper to center main toolbar
 	var hbox_main_center = HBoxContainer.new()
@@ -559,7 +477,9 @@ func _build_ui():
 	hbox_main_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox_main_center.add_child(main_toolbar)
 
-	vbox.add_child(_create_bottom_strip_shell(hbox_main_center, 0.0, UIStyle.hud_clear_style()))
+	var category_shell := _create_bottom_strip_shell(hbox_main_center)
+	category_shell.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	vbox.add_child(category_shell)
 	_toolbar_shell = _create_bottom_group_shell(main_vbox)
 	toolbar_center.add_child(_toolbar_shell)
 
@@ -573,42 +493,9 @@ func _build_ui():
 	demand_meter = DemandMeter.new()
 	left_bottom_strip.add_child(_create_bottom_strip_shell(demand_meter, DEMAND_METER_WIDTH))
 
-	# --- Bottom-right Tool Strip ---
-	var right_strip_margin := MarginContainer.new()
-	right_strip_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	right_strip_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	right_strip_margin.add_theme_constant_override("margin_right", int(UIStyle.HUD_LEFT_MARGIN))
-	right_strip_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN))
-	bottom_panel.add_child(right_strip_margin)
-
-	var right_strip_stack := VBoxContainer.new()
-	right_strip_stack.alignment = BoxContainer.ALIGNMENT_END
-	right_strip_stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right_strip_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	right_strip_margin.add_child(right_strip_stack)
-
-	var right_bottom_strip := HBoxContainer.new()
-	right_bottom_strip.alignment = BoxContainer.ALIGNMENT_END
-	right_bottom_strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right_bottom_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	right_strip_stack.add_child(right_bottom_strip)
-
-	bulldoze_btn = Button.new()
-	bulldoze_btn.text = "⌫"
-	bulldoze_btn.tooltip_text = "Bulldoze"
-	bulldoze_btn.custom_minimum_size = Vector2(52, toolbar_button_height)
-	bulldoze_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(bulldoze_btn)
-	var bulldoze_style := StyleBoxFlat.new()
-	bulldoze_style.bg_color = Color(0.45, 0.08, 0.06, 0.86)
-	bulldoze_style.set_corner_radius_all(8)
-	bulldoze_btn.add_theme_stylebox_override("normal", bulldoze_style)
-	right_bottom_strip.add_child(_create_bottom_strip_shell(bulldoze_btn, 82.0))
-
 	_left_bottom_strip = left_bottom_strip
-	_right_bottom_strip = right_bottom_strip
 	_toolbar_margin = toolbar_margin
-	for control in [bottom_panel, left_bottom_strip, right_bottom_strip, _toolbar_shell]:
+	for control in [bottom_panel, left_bottom_strip, _toolbar_shell]:
 		control.resized.connect(_queue_bottom_toolbar_layout)
 	_queue_bottom_toolbar_layout()
 
@@ -617,30 +504,18 @@ func _queue_bottom_toolbar_layout() -> void:
 		_toolbar_layout_pending = true
 		call_deferred("_layout_bottom_toolbar")
 
-# The toolbar stays centred on the screen while that clears both side strips. When it would
-# overlap one, it shifts just far enough sideways; when the gap between the strips is too
-# narrow for it, it rises above them instead.
+# Keep the icons centred. At narrow resolutions the whole palette rises above the status
+# strip instead of letting either control overlap the other. Only resize events relayout it.
 func _layout_bottom_toolbar() -> void:
 	_toolbar_layout_pending = false
 	var width := bottom_panel.size.x
 	var gap := UIStyle.HUD_PANEL_GAP
 	var left_edge := UIStyle.HUD_LEFT_MARGIN + _left_bottom_strip.get_combined_minimum_size().x + gap
-	var right_edge := width - UIStyle.HUD_LEFT_MARGIN - _right_bottom_strip.get_combined_minimum_size().x - gap
 	var toolbar_width := _toolbar_shell.get_combined_minimum_size().x
 	var start := (width - toolbar_width) * 0.5
-	var shift := 0.0
 	var rise := 0.0
-	if toolbar_width > right_edge - left_edge:
-		rise = maxf(_left_bottom_strip.get_combined_minimum_size().y,
-			_right_bottom_strip.get_combined_minimum_size().y) + gap
-	elif start < left_edge:
-		shift = left_edge - start
-	elif start + toolbar_width > right_edge:
-		shift = right_edge - (start + toolbar_width)
-	# The CenterContainer centres within the margins, so a margin of twice the shift moves the
-	# toolbar's centre by the shift.
-	_toolbar_margin.add_theme_constant_override("margin_left", int(maxf(0.0, 2.0 * shift)))
-	_toolbar_margin.add_theme_constant_override("margin_right", int(maxf(0.0, -2.0 * shift)))
+	if start < left_edge:
+		rise = _left_bottom_strip.get_combined_minimum_size().y + gap
 	_toolbar_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN + rise))
 
 func _build_auxiliary_windows() -> void:
@@ -726,9 +601,10 @@ func _create_bottom_strip_shell(
 func _create_bottom_group_shell(content: Control) -> PanelContainer:
 	var shell := PanelContainer.new()
 	shell.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	shell.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
+	shell.add_theme_stylebox_override("panel", UIStyle.hud_clear_style())
 
 	var padding := MarginContainer.new()
+	padding.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	padding.add_theme_constant_override("margin_left", UIStyle.HUD_SHELL_PAD_X)
 	padding.add_theme_constant_override("margin_right", UIStyle.HUD_SHELL_PAD_X)
 	padding.add_theme_constant_override("margin_top", UIStyle.HUD_SHELL_PAD_Y)
@@ -738,15 +614,6 @@ func _create_bottom_group_shell(content: Control) -> PanelContainer:
 	content.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	padding.add_child(content)
 	return shell
-
-func _apply_hud_toolbar_text_style(button: Button) -> void:
-	button.focus_mode = Control.FOCUS_NONE
-	UIStyle.set_font_size(button, UIStyle.HUD_TEXT_SIZE)
-	button.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	button.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
-	button.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
-	button.add_theme_color_override("font_focus_color", UIStyle.TEXT_PRIMARY)
-	button.add_theme_color_override("font_disabled_color", UIStyle.TEXT_DIM)
 
 ## Vegetation controls share the existing Terrain submenu and forward settings to its tool.
 ##
@@ -809,6 +676,10 @@ func _activate_vegetation(mode: int) -> void:
 	input_manager.vegetation_tool.mode = mode
 
 func _connect_signals():
+	input_manager.tool_changed.connect(_refresh_hud_marks)
+	for panel in [road_combined_hbox, zoning_combined_hbox, services_combined_hbox, industry_combined_hbox, terrain_sub_menu]:
+		panel.visibility_changed.connect(_refresh_hud_marks)
+	_refresh_hud_marks()
 	road_main_btn.pressed.connect(_on_road_main_pressed)
 	terrain_main_btn.pressed.connect(_on_terrain_main_pressed)
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
@@ -821,6 +692,18 @@ func _connect_signals():
 	spline_btn.pressed.connect(func(): _set_draw_mode(1))
 	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
 	speed_up_btn.pressed.connect(func(): input_manager.step_simulation_speed(1))
+
+# Both menu visibility and input transitions are event-driven, including keyboard/Esc paths.
+func _refresh_hud_marks(_tool: int = 0) -> void:
+	var tool: int = input_manager.current_tool
+	HudIcons.mark(_cul_de_sac_btn, tool == InputManager.Tool.CUL_DE_SAC)
+	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC])
+	HudIcons.mark(zoning_main_btn, zoning_combined_hbox.visible or tool == InputManager.Tool.ZONING)
+	HudIcons.mark(services_main_btn, services_combined_hbox.visible or tool == InputManager.Tool.SERVICES)
+	HudIcons.mark(industry_main_btn, industry_combined_hbox.visible or tool == InputManager.Tool.INDUSTRY)
+	HudIcons.mark(terrain_main_btn, terrain_sub_menu.visible or tool in [InputManager.Tool.SCULPT, InputManager.Tool.VEGETATION])
+	HudIcons.mark(select_main_btn, tool == InputManager.Tool.SELECT)
+	HudIcons.mark(bulldoze_btn, tool == InputManager.Tool.BULLDOZE)
 
 func _on_road_main_pressed():
 	terrain_sub_menu.visible = false

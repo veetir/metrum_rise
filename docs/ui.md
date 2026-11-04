@@ -202,18 +202,27 @@ Deterministic rule:
 ### 2. Bottom Toolbar
 
 **Nodes:** Procedural bottom-strip layout rooted under a full-screen `Control`. The left
-gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
-tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
-shell so the submenu stack can read as one cluster while the actual toolbar row still matches
-the clock / city-status / RCI strip height. The three layers are anchored independently, so
-`_layout_bottom_toolbar()` keeps the toolbar centred only while that clears the side strips: on
-overlap it shifts sideways just enough, and when the gap between the strips is narrower than
-the toolbar (large UI scale, small window, a wide submenu) it rises above them.
+gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The category row
+has its own compact translucent shell, with independent submenu panels above it and road
+options to the left. A transparent layout wrapper groups them. Status and tool layers are
+anchored independently: `_layout_bottom_toolbar()` keeps the icons centred and raises the
+palette above the status strip when they would overlap.
 **Script:** `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
-Road guiding lines and the G shortcut are removed. The road-options checkbox controls
+The `u01` demo slice uses hand-authored white SVG category/tool icons, one `UIStyle.HUD_ACCENT`,
+72 px road tiles and names on hover. `hud_icons.gd` owns the icon/tile factories and 0.12 s
+ease-out hover/press feedback; `hud_tooltip.gd` shows wrapped name/detail/cost cards after
+150 ms. `hud_road_thumbnail.gd` paints Rust's `parts` and `part_widths_m` through the existing
+road-part glyphs. Built-ins occupy a five-column grid; a `+` tile opens the builder and the
+fixed-width custom menu tile previews the selected custom layout. Other submenu contents
+remain unchanged. `road_options_view.gd` owns the compact toggle layout. InputManager emits
+tool transitions for persistent marks; no new per-frame callback is added. Accessibility
+refreshes the fonts and icon ink size; tile footprints remain bounded at 1280×720.
+Standalone syntax/lint checks passed; engine regressions and in-game visual review are pending.
+
+Road guiding lines and the G shortcut are removed. The road-options icon toggle controls
 zoning-grid snapping; road-connection snapping remains available. Distance and angle
 measurements appear only during a placement. See [road interaction](roads.md).
 
@@ -227,8 +236,8 @@ measurements appear only during a placement. See [road interaction](roads.md).
 | Terrain | Terrain sub-menu for gameplay terrain tools |
 | Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
 
-Bulldoze is intentionally separate from the centered construction toolbar: a bottom-right icon
-button activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
+Bulldoze sits after a separator at the right end of the category row. Its icon button
+activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
 footprints before road edges; left click deletes one target; right click or Esc exits the tool.
 
 Road previews expose full readiness only for the exact current pointer input with a staged
@@ -237,10 +246,10 @@ resources remain visibly provisional (`terrain preview pending`). Cancelling or 
 paired preview restores the original road and terrain resources without changing simulation state.
 The complete backend and presentation contract is owned by [`roads.md`](roads.md#preview-commit-undo-and-load); `ROAD-68-E` removes the coarse ribbon and provisional older poses.
 
-Sub-menus expand upward above the toolbar row, the same as today. In the current
-implementation the right-side menu cluster has:
-- one outer translucent group wrapper around the whole menu stack
-- one transparent inner layout shell for the actual toolbar row
+Sub-menus expand upward above the toolbar row. The menu cluster has:
+
+- one transparent layout wrapper around the menu stack
+- separate translucent panels for the category row and road controls
 - fixed-height bottom HUD shells for the clock, city-status panel, and R/C/I meter
 
 Gameplay HUD status widgets: the clock / simulation-speed panel remains anchored at bottom-left,

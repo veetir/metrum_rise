@@ -6,6 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+The `u01` icon HUD demo on `feat/icon-ui` replaces category labels and road controls with
+icons, procedural road thumbnails and quick styled tooltips. Engine tests and visual review
+are pending; other menu contents are unchanged ([HUD contract](ui.md#2-bottom-toolbar)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup
