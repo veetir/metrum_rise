@@ -95,7 +95,9 @@ def rounded_panel(name, mat, width, height, radius, y_front, depth, centre_up):
     bpy.ops.object.transform_apply(scale=True)
     bm = bmesh.new()
     bm.from_mesh(ob.data)
-    bmesh.ops.bevel(bm, geom=list(bm.verts), offset=radius, segments=6, affect="VERTICES")
+    # bmesh's bevel profile defaults to 0, a square notch; 0.5 is a round corner.
+    bmesh.ops.bevel(bm, geom=list(bm.verts), offset=radius, segments=6, profile=0.5,
+                    affect="VERTICES")
     bm.to_mesh(ob.data)
     bm.free()
     # The plane lies in Blender XY; stand it up to face Blender -Y (game +Z), then give it depth.
