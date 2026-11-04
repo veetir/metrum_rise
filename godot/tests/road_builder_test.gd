@@ -249,6 +249,26 @@ func _run() -> void:
 	_expect(_builder.widths_label.text == "Road %.1f m\nTotal %.1f m" % [9.5 + grass_m, 12.5 + grass_m], "parking widths: %s" % _builder.widths_label.text)
 	_drag_part_off(1)
 	_expect(_builder.parts == built, "parking dragged off: %s" % [_builder.parts])
+	# A clicked Parking tile always lands at a kerb: the selected slot's side, the other kerb when
+	# that one parks. Picking a part selects the slot on its kerb side, so the popup's closing
+	# (a click outside it hides it) does not lose the choice.
+	_click_slot(2)
+	_tile(TILE_PARKING)
+	_expect(_builder.parts == [SW, PARK, BACK, grass, AHEAD, SW], "a click left of centre parks the left kerb: %s" % [_builder.parts])
+	_tile(TILE_PARKING)
+	_expect(_builder.parts == [SW, PARK, BACK, grass, AHEAD, PARK, SW] and int(_builder.check.parking) == 3,
+		"a second click parks the free right kerb: %s" % [_builder.parts])
+	_drag_part_off(5)
+	_drag_part_off(1)
+	_click_slot(1)
+	await _click_part(3)
+	_expect(_builder.strip.selected_slot == 4, "picking the forward lane selects its kerb-side slot: %d" % _builder.strip.selected_slot)
+	popup.hide()
+	await process_frame
+	_tile(TILE_PARKING)
+	_expect(_builder.parts == [SW, BACK, grass, AHEAD, PARK, SW], "with the forward lane picked, parking goes right: %s" % [_builder.parts])
+	_drag_part_off(4)
+	_expect(_builder.parts == built, "parking dragged off again: %s" % [_builder.parts])
 
 	# The median popup: width and style, Move left / right.
 	await _click_part(2)
