@@ -271,6 +271,9 @@ func _input(event):
 func _handle_camera_controls():
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
+	var menu := _top_menu()
+	if menu and menu.has_method("is_overlay_open") and menu.is_overlay_open():
+		return
 	
 	# WASD Panning
 	var pan_dir = Vector3.ZERO

@@ -36,16 +36,16 @@ func _build_ui() -> void:
 	add_theme_constant_override("separation", 14)
 
 	var title := Label.new()
-	title.text = "Graphics"
-	UIStyle.set_font_size(title, 18)
-	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	title.text = "GRAPHICS"
+	UIStyle.set_font_size(title, 11)
+	title.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
 	add_child(title)
 
 	_fullscreen_check = _add_check("Fullscreen", GameSettings.KEY_FULLSCREEN, "")
 	_vsync_check = _add_check("V-Sync", GameSettings.KEY_VSYNC,
 		"Waits for the display refresh before showing a frame, which prevents tearing.")
 	_show_fps_check = _add_check("Show FPS", GameSettings.KEY_SHOW_FPS,
-		"Shows frames per second and frame time in the top-right corner.")
+		"Shows frames per second and frame time at the right end of the menu bar.")
 
 	var grid := GridContainer.new()
 	grid.columns = 2

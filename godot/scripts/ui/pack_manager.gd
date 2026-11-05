@@ -40,10 +40,11 @@ func _build_ui() -> void:
 	var header := HBoxContainer.new()
 	add_child(header)
 	var title_lbl := Label.new()
-	title_lbl.text = "Installed Packs"
+	title_lbl.text = "INSTALLED PACKS"
 	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UIStyle.set_font_size(title_lbl, 18)
-	title_lbl.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	title_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	UIStyle.set_font_size(title_lbl, 11)
+	title_lbl.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
 	header.add_child(title_lbl)
 	importer = PackImport.new(self)
 	importer.pack_in_use = _pack_in_use

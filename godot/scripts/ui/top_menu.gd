@@ -9,7 +9,7 @@ extends CanvasLayer
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const EconomyOverviewWindow = preload("res://scripts/ui/economy_overview.gd")
-const OptionsWindow = preload("res://scripts/ui/options_window.gd")
+const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
 const DayCycleConfig = preload("res://scripts/core/day_cycle.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 const PauseMenu = preload("res://scripts/ui/pause_menu.gd")
@@ -77,7 +77,7 @@ var scene_kind: String = SCENE_GAMEPLAY
 
 var _scene_root: Node
 var _windows: Dictionary = {}
-var _options_window = null
+var _options_menu = null
 var _shell: PanelContainer
 var _bar_margin: MarginContainer
 var _bar_row: HBoxContainer
@@ -338,7 +338,7 @@ func _on_file_menu_pressed(id: int) -> void:
 			if _scene_root and _scene_root.has_method("menu_return_to_game"):
 				_scene_root.menu_return_to_game()
 		ActionId.FILE_OPTIONS:
-			_open_options_window()
+			_open_options_menu()
 		ActionId.FILE_MAIN_MENU:
 			if _scene_root and _scene_root.has_method("menu_main_menu"):
 				_scene_root.menu_main_menu()
@@ -620,6 +620,10 @@ func _build_pause_menu() -> void:
 func is_pause_menu_open() -> bool:
 	return _pause_menu != null and _pause_menu.visible
 
+## Whether the pause menu or Options covers the game; the camera then stays put.
+func is_overlay_open() -> bool:
+	return is_pause_menu_open() or (_options_menu != null and _options_menu.is_open())
+
 ## Opens the pause menu and stops the clock, or closes it and restarts the clock at its speed.
 func toggle_pause_menu() -> void:
 	if _pause_menu == null:
@@ -642,11 +646,11 @@ func _on_pause_action(id: int) -> void:
 	if id != PauseMenu.RESUME:
 		_on_file_menu_pressed(id)
 
-func _open_options_window() -> void:
-	if not _options_window:
-		_options_window = OptionsWindow.new()
-		add_child(_options_window)
-	_options_window.popup_options(OptionsWindow.CONTEXT_GAMEPLAY)
+func _open_options_menu() -> void:
+	if not _options_menu:
+		_options_menu = OptionsMenu.new()
+		add_child(_options_menu)
+	_options_menu.popup_options(OptionsMenu.CONTEXT_GAMEPLAY)
 
 func _detect_scene_kind() -> String:
 	var simulation_node := _scene_root.get_node_or_null("SimulationNode")

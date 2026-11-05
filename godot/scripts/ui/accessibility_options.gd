@@ -27,9 +27,9 @@ func _build_ui() -> void:
 	add_theme_constant_override("separation", 14)
 
 	var title := Label.new()
-	title.text = "Accessibility"
-	UIStyle.set_font_size(title, 18)
-	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	title.text = "INTERFACE"
+	UIStyle.set_font_size(title, 11)
+	title.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
 	add_child(title)
 
 	var row := HBoxContainer.new()

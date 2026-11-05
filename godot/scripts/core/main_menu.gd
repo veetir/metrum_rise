@@ -6,14 +6,14 @@
 extends Control
 
 const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
-const OptionsWindow = preload("res://scripts/ui/options_window.gd")
+const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
 
-var _options_window = null
+var _options_menu = null
 var _new_game_dialog: Window = null
 
 func _enter_tree() -> void:
@@ -110,10 +110,10 @@ func _on_world_editor_pressed() -> void:
 		push_error("Failed to launch world editor.")
 
 func _on_options_pressed() -> void:
-	if not _options_window:
-		_options_window = OptionsWindow.new()
-		add_child(_options_window)
-	_options_window.popup_options(OptionsWindow.CONTEXT_MAIN_MENU)
+	if not _options_menu:
+		_options_menu = OptionsMenu.new()
+		add_child(_options_menu)
+	_options_menu.popup_options(OptionsMenu.CONTEXT_MAIN_MENU)
 
 func _on_quit_pressed() -> void:
 	get_tree().quit()

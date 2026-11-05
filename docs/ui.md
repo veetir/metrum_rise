@@ -127,29 +127,32 @@ Loading an upward debug view in normal mode clamps its pitch to the normal downw
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `WorldEditor`).
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
-### Options Window
+### Options
 
-**Node:** draggable Godot `Window`.
-**Script:** `scripts/ui/options_window.gd` *(implemented)*.
+**Node:** `CanvasLayer` overlay (layer 120) drawn in the game's own UI over a dimmed screen.
+**Script:** `scripts/ui/options_menu.gd` *(implemented)*.
 
-The same options window is launched from `MainMenu` and from gameplay `File -> Options...`.
-It uses a left category rail and right content pane with footer-level `Reset Defaults`,
-`Cancel`, and `Apply` actions. General options state is persisted through
-`user://settings.cfg` via `scripts/core/game_settings.gd`; the window currently remembers its
-last active category plus size and position. The same settings file also stores reusable
-`layout/<id>` sections for player-adjusted floating-window sizes, positions where appropriate,
-and split-panel offsets such as Economy Overview's budget/service/policy panes. `Accessibility`
-owns the runtime-safe `UI Scale`
+The same Options overlay opens from `MainMenu`, gameplay `File -> Options...` and the pause
+menu. A header holds the title, two tabs and a close button: `Display` (Graphics, then
+Interface) and `Mods` (installed packs). Placeholder categories are gone until they have
+settings. The footer keeps `Reset Defaults` (the active tab's panels), `Cancel` and `Apply`;
+Esc and Cancel discard pending edits, and the overlay takes the keyboard while open (the
+camera stays put). The card is 860 x 580 at 100% UI scale, at most 92% of the screen, and its
+tabs scroll. General options state is persisted through `user://settings.cfg` via
+`scripts/core/game_settings.gd`; Options remembers its last tab. The same settings file also
+stores reusable `layout/<id>` sections for player-adjusted floating-window sizes, positions where
+appropriate, and split-panel offsets such as Economy Overview's budget/service/policy panes.
+Interface (`accessibility_options.gd`) owns the runtime-safe `UI Scale`
 setting, bounded to `80%..200%` in `5%` increments and applied immediately to
 scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Building Inspector,
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
-sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
+sizes through `UIStyle`, so window defaults and minimums grow with the UI scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
 layout values. They also refit whenever the viewport they open on is resized (`UI-02`): leaving
 fullscreen shrinks the game window, and a window sized for the fullscreen viewport would otherwise
 hang off its edges with its footer out of reach. The refit keeps the player's size where it fits,
 holds it to 92% of the viewport and moves it back inside. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
-(a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
+(a frame rate and frame time readout at the right end of the gameplay menu bar, `scripts/core/fps_overlay.gd`), `Max FPS`
 (Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap, and nothing else sets the cap outside benchmarks: a world starting up once reset it to 60, `UI-06`), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
 also turns off the screen-space AA pass), `Shadows` (High, or Low: plain PCF, two cascades, no
 cascade blending), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
@@ -494,10 +497,9 @@ Both inspectors use `UIStyle.keep_keyboard_with_game` and shared title/section/a
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
-| Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
-| Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
-| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
-| Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
+| Options | MainMenu `Options`, gameplay `File -> Options...` or the pause menu | `scripts/ui/options_menu.gd` *(implemented)* | In-UI overlay with Display and Mods tabs, footer-level apply/reset/cancel actions, and the last tab persisted through `user://settings.cfg`. |
+| Graphics | Options → Display | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Interface (UI Scale) | Options → Display | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
 | Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane, route and latest trip failure (`DEBUG-06`). Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |
 | Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`): library column (built-ins, the player's types, unusable entries with reasons, the library error), five part tiles, the layout strip to scale (click a + then a tile, or drag and drop), a part popup (median style and width, Move, Remove), the type's attributes (Sidewalks for both sides, else 0.75 m shoulder bands drawn on the strip; a Speed stepper on Rust's 20-120 km/h grid in steps of 10, hidden for a footpath; Zoning, off once by default when a new type reaches 80 km/h; Street lights, ticked by default), Rust's cost line ("15 / m, upkeep 0.10 / m / day"), the warning for no sidewalks with zoning, the name field with Rust's suggestion, Cancel and Create road / Save. Persistent, resizable, non-exclusive `Window` (960 x 440, min 760 x 400); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
@@ -778,9 +780,9 @@ godot/
       city_status_panel.gd        Compact treasury + agent-count HUD panel
       demand_meter.gd             Compact R/C/I HUD demand meter
       top_menu.gd                 MenuBar + PopupMenu tree, menu action dispatch
-      options_window.gd           Shared Options window category shell
-      graphics_options.gd         Embedded Options -> Graphics settings panel
-      accessibility_options.gd    Embedded Options -> Accessibility settings panel
+      options_menu.gd             In-UI Options overlay: Display and Mods tabs
+      graphics_options.gd         Options -> Display graphics section
+      accessibility_options.gd    Options -> Display interface (UI Scale) section
       pack_manager.gd             Embedded Options -> Mods content-pack panel
       road_properties_window.gd   Floating road-properties editor window
       building_inspector.gd       Floating building stats window manager
