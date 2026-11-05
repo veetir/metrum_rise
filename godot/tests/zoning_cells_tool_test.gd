@@ -143,6 +143,11 @@ func _test_cell_bridge() -> void:
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return
 	var initial := await _cell_chunk(0, 0)
+	var uvs: PackedVector2Array = initial.uvs
+	_expect(uvs.size() == initial.vertices.size(), "Each vertex carries a cell-local UV")
+	for index in range(0, uvs.size(), 6):
+		_expect(uvs.slice(index, index + 6) == PackedVector2Array([Vector2.ZERO, Vector2.RIGHT, Vector2.ONE, Vector2.ZERO, Vector2.ONE, Vector2.DOWN]), "Each quad restarts its edge coordinates")
+		_expect(initial.colors[index].a == 0.5, "Unzoned cells carry the outline-only flag")
 	var remote := await _cell_chunk(0, -1)
 	var unchanged := await _cell_chunk(0, 0, initial.version)
 	_expect(unchanged.get("unchanged", false) and not unchanged.has("vertices"), "Unchanged chunk uploads no geometry")
@@ -152,6 +157,9 @@ func _test_cell_bridge() -> void:
 	_expect(not simulation.apply_zoning_cells_preview(preview.cells, preview.dependencies, 2), "Consumed preview cannot repaint stale cells")
 	var painted := await _cell_chunk(0, 0, initial.version)
 	_expect(not painted.get("unchanged", true) and painted.colors != initial.colors, "Paint changes only the affected chunk payload")
+	_expect(painted.uvs == initial.uvs and painted.vertices == initial.vertices, "Painting changes style without moving the full cell geometry")
+	for color: Color in painted.colors:
+		_expect(color.a == 1.0, "Vacant painted cells carry the fill flag")
 	var endpoint := simulation.get_closest_node(Vector3(96, 0, 0), 1.0)
 	_expect(endpoint >= 0, "Move fixture resolves the road endpoint")
 	if endpoint >= 0:

@@ -132,8 +132,8 @@ impl SimulationNode {
         }
         let mut vertices = PackedVector3Array::new();
         let mut colors = PackedColorArray::new();
-        let mut lines = PackedVector3Array::new();
-        let mut line_colors = PackedColorArray::new();
+        let mut uvs = PackedVector2Array::new();
+        let cell_uvs = [Vector2::ZERO, Vector2::RIGHT, Vector2::ONE, Vector2::DOWN];
         let mut keys = Vec::new();
         core.zoning
             .cells
@@ -146,20 +146,36 @@ impl SimulationNode {
                 .frame(key.grid)
                 .expect("indexed cell frame");
             let corners = frame.corners(key.x, key.y);
-            let centre = (corners[0] + corners[2]) * 0.5;
-            let color =
-                zoning_parcel_color(&core, core.zoning.cells.profile(key).unwrap_or(0), false);
-            // A visual inset leaves visible grid lines without altering authority or picking.
+            let profile = core.zoning.cells.profile(key).unwrap_or(0);
+            // Both lookups use existing indexed stores. Parcel occupancy changes stamp every
+            // intersected chunk's version, including lots crossing cell ownership boundaries.
+            let occupied = core
+                .zoning
+                .cells
+                .lot(key)
+                .and_then(|id| {
+                    core.zoning
+                        .parcels
+                        .get(crate::simulation::zoning::ParcelId::from_raw(id))
+                })
+                .is_some_and(|parcel| parcel.occupied_building().is_some());
+            let mut color = zoning_parcel_color(&core, profile, false);
+            // Alpha is a shader style flag: occupied=0, unpainted=0.5, painted=1.
+            color.a = if occupied {
+                0.0
+            } else if profile == 0 {
+                0.5
+            } else {
+                1.0
+            };
             let corners = core.graded_surface_corners(
-                corners.map(|p| {
-                    let p = centre + (p - centre) * 0.94;
-                    Vector2::new(p.x as f32, p.y as f32)
-                }),
+                corners.map(|p| Vector2::new(p.x as f32, p.y as f32)),
                 0.04,
             );
             for index in [0, 1, 2, 0, 2, 3] {
                 vertices.push(corners[index]);
                 colors.push(color);
+                uvs.push(cell_uvs[index]);
             }
         }
         let bounds = CellStore::chunk_bounds(chunk);
@@ -177,26 +193,23 @@ impl SimulationNode {
                 {
                     return;
                 }
-                let color = zoning_parcel_color(
-                    &core,
-                    parcel.zone_profile_runtime_id(),
-                    parcel.occupied_building().is_some(),
-                );
+                let mut color = zoning_parcel_color(&core, parcel.zone_profile_runtime_id(), false);
+                color.a = if parcel.occupied_building().is_some() {
+                    0.0
+                } else {
+                    1.0
+                };
                 let corners = core.graded_surface_corners(parcel.corners(), 0.04);
                 for index in [0, 1, 2, 0, 2, 3] {
                     vertices.push(corners[index]);
                     colors.push(color);
-                }
-                for index in 0..4 {
-                    lines.extend([corners[index], corners[(index + 1) % 4]]);
-                    line_colors.extend([Color::from_rgba(color.r, color.g, color.b, 0.9); 2]);
+                    uvs.push(cell_uvs[index]);
                 }
             },
         );
         result.set("vertices", vertices);
         result.set("colors", colors);
-        result.set("lines", lines);
-        result.set("line_colors", line_colors);
+        result.set("uvs", uvs);
         result
     }
 

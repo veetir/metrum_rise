@@ -7,7 +7,7 @@ extends Node3D
 var simulation_node: Node
 var _chunks: Dictionary = {}
 var _versions: Dictionary = {}
-var _material: StandardMaterial3D
+var _material: ShaderMaterial
 var _span: float
 var _reported_visible := false
 const VIEW_DISTANCE_M := 2000.0
@@ -18,12 +18,8 @@ func full_refresh() -> void:
 
 func _ready() -> void:
 	_span = simulation_node.get_zoning_cell_chunk_span()
-	_material = StandardMaterial3D.new()
-	_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_material.vertex_color_use_as_albedo = true
-	_material.no_depth_test = true
+	_material = ShaderMaterial.new()
+	_material.shader = preload("res://scripts/shaders/zoning_cells.gdshader")
 	top_level = true
 
 func _process(_delta: float) -> void:
@@ -89,13 +85,9 @@ func _replace_chunk(key: Vector2i, payload: Dictionary) -> void:
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV] = payload.get("uvs", PackedVector2Array())
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var lines: PackedVector3Array = payload.get("lines", PackedVector3Array())
-	if not lines.is_empty():
-		arrays[Mesh.ARRAY_VERTEX] = lines
-		arrays[Mesh.ARRAY_COLOR] = payload.get("line_colors", PackedColorArray())
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
 	instance.mesh = mesh
 
 func _visible_chunks() -> Array[Vector2i]:

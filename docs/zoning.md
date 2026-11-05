@@ -1376,8 +1376,19 @@ chunks per frame. Each full cell and authored parcel belongs to its centre's 512
 lots are represented by their cells, so they do not cause a second whole-city parcel mesh upload.
 Parcel insert/remove/rezone/occupancy operations maintain versions beside the existing parcel
 chunk index. Idle polling is `O(visible chunks)`; payload work visits only changed chunks' cell
-blocks and parcel candidates. The 6% cell inset is visual only; selection and reservations retain
-the complete canonical square. Height changes refresh only chunks whose 512 m region (plus a
+blocks and parcel candidates.
+
+The overlay is drawn by `scripts/shaders/zoning_cells.gdshader`, after opaque geometry and
+without the engine depth test. Instead it compares its own view depth with the scene depth and
+fades out where something stands more than 1.1-1.4 m in front of it, so buildings, trees and
+vehicles hide the zones while terrain bulging through a flat four-corner cell (measured up to
+0.54 m) leaves no holes. Each cell has a 30% fill and thin brighter edges from per-cell UVs;
+edges fade between 180 and 650 m. Vertex alpha carries the style: painted 1 (fill and edge),
+unpainted 0.5 and occupied 0 (edges only). Occupancy comes from the cell's lot claim and its
+parcel during the chunk export, so it rides the existing parcel chunk versions. Cost: one depth
+read and fixed arithmetic per overlay fragment, only while zoning is shown. No-build guide lines
+use the same occlusion (`zoning_lines.gdshader`). Drawing the zones into the ground surface,
+as the roads do, remains the exact long-term option. Height changes refresh only chunks whose 512 m region (plus a
 96 m draping margin) changed samples; see
 [road-commit overlay latency](#road-commit-cell-overlay-latency--2026-09-30).
 Rendering memory acceptance remains outstanding.
@@ -3567,3 +3578,4 @@ A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps it
 not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
 usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
 before.
+

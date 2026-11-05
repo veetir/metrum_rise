@@ -268,8 +268,9 @@ func _mesh_bytes(mesh: Mesh) -> Dictionary:
 	var buffers := 0
 	for surface in range(mesh.get_surface_count()):
 		var arrays := mesh.surface_get_arrays(surface)
-		# The native payload contains only Vector3 positions and float Color values.
+		# Packed positions, style-bearing colors and per-cell UVs; no separate edge surface.
 		packed += arrays[Mesh.ARRAY_VERTEX].size() * 12 + arrays[Mesh.ARRAY_COLOR].size() * 16
+		packed += arrays[Mesh.ARRAY_TEX_UV].size() * 8
 		var raw := RenderingServer.mesh_get_surface(mesh.get_rid(), surface)
 		for field in ["vertex_data", "attribute_data", "skin_data", "index_data", "blend_shape_data"]:
 			buffers += raw.get(field, PackedByteArray()).size()
