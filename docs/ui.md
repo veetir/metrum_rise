@@ -111,8 +111,17 @@ worlds. It is drawn like Options: the dimmed screen, one centred 760 px column, 
 from faded out. It lists one folder's `.sqlite` files only, newest first, each as a row with its
 name without the extension, when it was saved ("Today 08:03", "Yesterday 21:10", else the date)
 and its size. There is no path bar and no folder browsing; `Open folder` shows the folder in the
-file manager. Load and New Game select the newest row; a click selects, a double click or Enter
-confirms, Up/Down move. Save has a `Save as` name field filled with the current save's name:
+file manager. Clicking a column header (Name, Saved, Size) sorts by it, Name A-Z and the others
+largest first; clicking it again reverses it, and the active header shows its arrow. A search
+line sits under the title: in Load and New Game it holds the keyboard from the start, so typing
+filters at once, and it stays barely drawn (a faint magnifier and placeholder) until it holds
+text, then lights with the accent underline. The search is fuzzy (`scripts/ui/fuzzy_match.gd`):
+the typed letters must appear in the name in order, case-insensitive, not necessarily together,
+and matches at word starts and in runs rank higher, so `bigint` finds `big-intersection` first.
+A search lists the best match first, with the matched letters in the accent colour; clicking a
+header then sorts the matches by that column. Esc clears a search before it cancels. Load and
+New Game select the top row, also after each keystroke, so Enter takes the best match; a click
+selects, a double click or Enter confirms, Up/Down move through the shown rows. Save has a `Save as` name field filled with the current save's name:
 clicking a row fills it in, a name that matches an existing save turns the button into `Replace`,
 and an empty name or one with `: / \ ? * " | % < >` disables it with the reason on the status
 line. Esc cancels. While it is open, keys and the wheel stay with it (TopMenu reports it as an
@@ -808,6 +817,7 @@ godot/
       options_menu.gd             In-UI Options overlay: Display and Mods tabs
       options_rows.gd             Options row, heading, value cycler and slider helpers
       save_browser.gd             In-UI Save / Load / New Game file lists
+      fuzzy_match.gd              Fuzzy subsequence scoring for list search
       graphics_options.gd         Options -> Display graphics section
       accessibility_options.gd    Options -> Display interface (UI Scale) section
       pack_manager.gd             Embedded Options -> Mods content-pack panel
