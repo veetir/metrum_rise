@@ -149,7 +149,10 @@ the mouse. A hovered row's description shows in a hint line above the footer. Ch
 and On/Off settings are two-value cyclers, so the overlay opens no drop-down popups. UI scale
 is a short slider with its percentage. The footer is text: `Reset Defaults` (the active tab's
 panels), the status, `Cancel` and `Apply` in the accent colour. Esc and Cancel discard pending
-edits, and the overlay takes the keyboard while open (the camera stays put). General options state is persisted through `user://settings.cfg` via
+edits, and the overlay takes the keyboard while open (the camera stays put, and the wheel
+scrolls the page instead of zooming, as under the pause menu). The menu it opened from (main
+menu or pause menu, group `covered_by_options`) fades out while it is open, so its text does
+not show through beside the rows. General options state is persisted through `user://settings.cfg` via
 `scripts/core/game_settings.gd`; Options remembers its last tab. The same settings file also
 stores reusable `layout/<id>` sections for player-adjusted floating-window sizes, positions where
 appropriate, and split-panel offsets such as Economy Overview's budget/service/policy panes.

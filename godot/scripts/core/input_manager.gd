@@ -236,7 +236,8 @@ func _input(event):
 			get_viewport().set_input_as_handled()
 			return
 		_last_gesture = key
-	if _ui_has_modal_popup():
+	# The pause menu and Options cover the city: the wheel scrolls them, it does not zoom.
+	if _ui_has_modal_popup() or _overlay_open():
 		_cancel_camera_motion()
 		return
 	var camera := get_viewport().get_camera_3d() as CameraNode
@@ -268,11 +269,15 @@ func _input(event):
 	elif event is InputEventMagnifyGesture:
 		camera.zoom(log(event.factor) / log(camera.zoom_speed))
 
+# The pause menu or Options is up over the city.
+func _overlay_open() -> bool:
+	var menu := _top_menu()
+	return menu != null and menu.has_method("is_overlay_open") and menu.is_overlay_open()
+
 func _handle_camera_controls():
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
-	var menu := _top_menu()
-	if menu and menu.has_method("is_overlay_open") and menu.is_overlay_open():
+	if _overlay_open():
 		return
 	
 	# WASD Panning

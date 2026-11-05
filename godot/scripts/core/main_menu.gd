@@ -51,6 +51,7 @@ func _build_ui() -> void:
 	content.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	content.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	content.add_theme_constant_override("separation", int(UIStyle.scaled_px(4)))
+	content.add_to_group(OptionsMenu.COVERED_GROUP)
 	frame.add_child(content)
 
 	# Inset by the entries' text margin, so the title lines up with their text.
