@@ -674,11 +674,20 @@ Color constants
   TEXT_PRIMARY  = Color.WHITE
   TEXT_DIM      = Color(0.72, 0.72, 0.72)
   TEXT_SECTION  = Color(0.65, 0.65, 0.90)        # section headers
-  TEXT_ALERT    = Color(1.00, 0.40, 0.30)
+  TEXT_ALERT    = Color(0.96, 0.36, 0.40)        # errors, broken states (sign red lifted for text)
+  SIGN_YELLOW   = Color(1.00, 0.808, 0.020)      # warnings
+  SIGN_RED      = Color(0.886, 0.118, 0.184)     # removal tools' selected state, warning edges
+  SIGN_BLACK    = Color(0.07, 0.07, 0.07)        # text on a yellow plate
   HUD_TEXT_SIZE = 16
   ZONE_RESIDENTIAL = Color(0.20, 0.45, 0.25, 0.75)
   ZONE_COMMERCIAL  = Color(0.20, 0.34, 0.62, 0.75)
   ZONE_INDUSTRIAL  = Color(0.55, 0.47, 0.14, 0.75)
+
+The `SIGN_*` colours are the Finnish traffic sign colours, used only with the signs' meanings:
+yellow warns (city panel warnings, the yellow alerts in the building inspector, and the gridlock
+and stranded-walker notices as yellow plates with a red edge); red forbids or removes (Bulldoze,
+zoning Erase and Free light red when selected, through `HudIcons.set_accent`, and broken states
+read in `TEXT_ALERT`).
 
 Corner radii
   CORNER_WINDOW = 8     # floating windows

@@ -330,6 +330,7 @@ func _build_ui():
 		main_toolbar.add_child(button)
 	main_toolbar.add_child(VSeparator.new())
 	bulldoze_btn.toggle_mode = true
+	HudIcons.set_accent(bulldoze_btn, UIStyle.SIGN_RED)
 	main_toolbar.add_child(bulldoze_btn)
 
 	# Wrapper to center main toolbar
@@ -842,6 +843,7 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 
 	var clear_btn := HudIcons.icon_button("erase", "Free", "", 64)
 	clear_btn.toggle_mode = true
+	HudIcons.set_accent(clear_btn, UIStyle.SIGN_RED)
 	clear_btn.pressed.connect(func(): _select_zoning_profile(zone_type, 0))
 	zoning_profile_menu.add_child(clear_btn)
 	_zoning_profile_buttons[0] = clear_btn

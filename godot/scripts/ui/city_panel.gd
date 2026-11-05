@@ -27,7 +27,7 @@ const FIGURES := {
 	"free_lots": ["free_lots", "Free zoned lots"],
 	"candidates": ["candidates", "Buildable sites"],
 }
-const WARN := Color(0.95, 0.75, 0.35)
+const WARN := UIStyle.SIGN_YELLOW
 const WIDTH := 340.0
 const SLIDE_S := 0.16
 

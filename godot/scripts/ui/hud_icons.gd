@@ -126,6 +126,13 @@ static func set_road(button: Button, type: Dictionary) -> void:
 		feedback.road.setup(type)
 	button.queue_redraw()
 
+## Colours the selected state (fill, icon, underline, key disc) with `color` instead of the
+## HUD accent, e.g. sign red for the tools that remove things.
+static func set_accent(button: Button, color: Color) -> void:
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.accent = color
+	button.queue_redraw()
+
 ## Sets a persistent mark without triggering selection handlers (also works for a MenuButton).
 static func mark(button: Button, selected: bool) -> void:
 	if button is MenuButton:
@@ -142,6 +149,7 @@ class HoverFeedback extends Node:
 	var texture: Texture2D
 	var ink := UIStyle.TEXT_PRIMARY
 	var tinted := false
+	var accent := UIStyle.HUD_ACCENT
 	var road: RoadThumbnail
 	var menu_selected := false
 	var number := ""
@@ -210,11 +218,11 @@ class HoverFeedback extends Node:
 		button.draw_set_transform(button.size * 0.5 * (1.0 - zoom), 0.0, Vector2.ONE * zoom)
 		_style.bg_color = UIStyle.BG_HUD_GROUP.lerp(UIStyle.BG_SUBMENU.lightened(0.16), amount)
 		if selected:
-			_style.bg_color = _style.bg_color.lerp(UIStyle.HUD_ACCENT.darkened(0.65), 0.65)
+			_style.bg_color = _style.bg_color.lerp(accent.darkened(0.65), 0.65)
 		button.draw_style_box(_style, rect)
 		var paint := ink
 		if selected:
-			paint = ink.lightened(0.18) if tinted else UIStyle.HUD_ACCENT
+			paint = ink.lightened(0.18) if tinted else accent
 		if button.disabled:
 			paint = Color(UIStyle.TEXT_DIM, 0.4)
 		if road != null:
@@ -225,13 +233,13 @@ class HoverFeedback extends Node:
 			var side := minf(2.0 * button.get_theme_font_size("font_size"), rect.size.x * 0.75)
 			var box := Rect2(rect.get_center() - Vector2.ONE * side * 0.5, Vector2.ONE * side)
 			button.draw_texture_rect(texture, box, false, paint)
-		var accent := UIStyle.HUD_ACCENT
-		accent.a = 1.0 if selected else amount * 0.75
+		var line := accent
+		line.a = 1.0 if selected else amount * 0.75
 		if button.disabled:
-			accent.a *= 0.35
+			line.a *= 0.35
 		button.draw_line(
 			Vector2(rect.position.x + 12, rect.end.y - 3),
-			Vector2(rect.end.x - 12, rect.end.y - 3), accent, 2.0, true)
+			Vector2(rect.end.x - 12, rect.end.y - 3), line, 2.0, true)
 		button.draw_set_transform(Vector2.ZERO)
 		if not number.is_empty():
 			_draw_number(rect, selected)
@@ -243,7 +251,7 @@ class HoverFeedback extends Node:
 		var font_size := maxi(8, roundi(button.get_theme_font_size("font_size") * 0.8))
 		var radius := font_size * 0.72
 		var center := rect.end - Vector2.ONE * (radius + 1.0)
-		var disc := UIStyle.HUD_ACCENT if selected else Color(0.92, 0.93, 0.95)
+		var disc := accent if selected else Color(0.92, 0.93, 0.95)
 		if button.disabled:
 			disc.a = 0.35
 		button.draw_circle(center, radius + 1.0, Color(0, 0, 0, 0.45))

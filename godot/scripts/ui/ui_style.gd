@@ -27,7 +27,13 @@ const HUD_ACCENT := Color(0.38, 0.80, 0.88)
 const TEXT_PRIMARY := Color.WHITE
 const TEXT_DIM := Color(0.72, 0.72, 0.72)
 const TEXT_SECTION := Color(0.65, 0.65, 0.90)
-const TEXT_ALERT := Color(1.00, 0.40, 0.30)
+# Finnish traffic sign colours, used with the signs' own meanings so the HUD and the street
+# signs agree: yellow warns, red forbids or removes.
+const SIGN_YELLOW := Color(1.00, 0.808, 0.020)
+const SIGN_RED := Color(0.886, 0.118, 0.184)
+const SIGN_BLACK := Color(0.07, 0.07, 0.07)
+# Sign red lifted for small text on the dark panels, where the plate red reads too dark.
+const TEXT_ALERT := Color(0.96, 0.36, 0.40)
 const HUD_TEXT_SIZE := 16
 const ZONE_RESIDENTIAL := Color(0.20, 0.45, 0.25, 0.75)
 const ZONE_COMMERCIAL := Color(0.20, 0.34, 0.62, 0.75)

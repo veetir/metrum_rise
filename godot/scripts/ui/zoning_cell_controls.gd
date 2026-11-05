@@ -29,6 +29,7 @@ func _ready() -> void:
 	add_child(_shape)
 	_erase = HudIcons.icon_button("erase", "Erase", "")
 	_erase.toggle_mode = true
+	HudIcons.set_accent(_erase, UIStyle.SIGN_RED)
 	_erase.toggled.connect(func(pressed: bool): zoning_tool.cell_erase = pressed)
 	add_child(_erase)
 	_radius = SpinBox.new()

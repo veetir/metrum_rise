@@ -326,21 +326,21 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				stock_text += " (%.1f %s/day at full operation)" % [float(item["daily_input_units"]), unit]
 			_add_row(stats_body, _resource_label(str(item.get("name", "?"))), stock_text)
 
-	var flags: Array[String] = []
+	var flags: Array = []
 	if info.get("broken", false):
-		flags.append("Asset broken")
+		flags.append(["Asset broken", true])
 	if info.get("economy_broken", false):
-		flags.append("Economy broken")
+		flags.append(["Economy broken", true])
 	if info.get("is_deserted", false):
-		flags.append("Deserted")
+		flags.append(["Deserted", false])
 	if info.get("pending_redevelopment", false):
-		flags.append("Rezone (%d d grace)" % info.get("rezone_grace_days", 0))
+		flags.append(["Rezone (%d d grace)" % info.get("rezone_grace_days", 0), false])
 	if info.get("under_construction", false):
-		flags.append("Under construction")
+		flags.append(["Under construction", false])
 	if flags.size() > 0:
 		_add_section(stats_body, "Alerts")
 		for flag in flags:
-			_add_alert(stats_body, flag)
+			_add_alert(stats_body, flag[0], flag[1])
 
 func _zone_label(zone: String) -> String:
 	match zone:
@@ -591,9 +591,10 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 	value.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar_holder.add_child(value)
 
-func _add_alert(stats_body: VBoxContainer, text: String) -> void:
+# Broken states read in red, the rest (deserted, rezoning, construction) as warnings in yellow.
+func _add_alert(stats_body: VBoxContainer, text: String, broken: bool) -> void:
 	var label := Label.new()
 	label.text = "! " + text
-	label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
+	label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT if broken else UIStyle.SIGN_YELLOW)
 	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	stats_body.add_child(label)
