@@ -197,7 +197,7 @@ godot_import_signature_records() {
     done < <(
         find "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap" -type f \
             \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
-            -o -iname '*.exr' -o -iname '*.hdr' \
+            -o -iname '*.exr' -o -iname '*.hdr' -o -iname '*.svg' \
             -o -iname '*.glb' -o -iname '*.gltf' \) \
             -print0
     )
@@ -391,7 +391,7 @@ godot_import_cache_needs_repair() {
         done < <(
             find "$root" -type f \
                 \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
-                -o -iname '*.exr' -o -iname '*.hdr' \
+                -o -iname '*.exr' -o -iname '*.hdr' -o -iname '*.svg' \
                 -o -iname '*.glb' -o -iname '*.gltf' \) \
                 -print0
         )
