@@ -261,7 +261,9 @@ handler. Zoning and Services keep one palette row each: opening a zone's profile
 class widens the row instead of stacking another panel above it. Tooltips name the control and
 show its shortcut as a keycap in a compact label; data tooltips (road types, assets, profiles)
 keep their figures in a wider card. Show FPS draws its readout at the right end of the gameplay
-menu bar.
+menu bar. Esc with nothing left to cancel or close opens the pause menu (`pause_menu.gd`,
+owned by TopMenu): it stops the clock and restores the speed on Resume, and offers Save, Load,
+Options, Main Menu and Quit; leaving asks first, as nothing tracks unsaved changes.
 Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terrain panel) and
 switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
 from the left: treasury, agents and per zone its project count, Rust's growth figures as icon
@@ -390,7 +392,7 @@ Current WorldEditor shortcuts:
 | Y          | Toggle Terrain Sculpt |
 | Space      | Pause / unpause |
 | , / .      | Slower / faster (also keypad - / +) |
-| Escape     | Cancel active tool |
+| Escape     | Cancel active tool; then close the open panel; then the pause menu |
 | Ctrl+Z     | Undo |
 | F12        | Add 1,000,000 money and enable the private growth cheat |
 | 1 / 2 / 3  | Zoning: Residential / Commercial / Industrial (when no palette is open) |

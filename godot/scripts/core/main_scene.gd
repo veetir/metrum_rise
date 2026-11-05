@@ -49,6 +49,9 @@ func menu_save() -> void:
 	if input_manager:
 		input_manager.menu_save_game()
 
+func menu_main_menu() -> void:
+	get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
+
 func menu_load() -> void:
 	if input_manager:
 		input_manager.menu_load_game()

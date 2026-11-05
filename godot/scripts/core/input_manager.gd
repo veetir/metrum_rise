@@ -287,6 +287,12 @@ func _unhandled_input(event):
 		return
 	if _ui_captures_keyboard_input():
 		return
+	if event is InputEventKey and event.pressed and not event.echo and _pause_menu_open():
+		# The pause menu takes the keyboard: Esc resumes, nothing else reaches the city.
+		if event.keycode == KEY_ESCAPE:
+			_top_menu().toggle_pause_menu()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		# An open Roads or Zoning palette takes 1-9 for its numbered tiles.
 		if event.keycode >= KEY_1 and event.keycode <= KEY_9 and not event.ctrl_pressed \
@@ -409,6 +415,19 @@ func _handle_escape():
 		get_viewport().set_input_as_handled()
 	elif junction_debug_overlay and junction_debug_overlay.unfocus():
 		get_viewport().set_input_as_handled()
+	elif main_ui and main_ui.has_method("close_open_panel") and main_ui.close_open_panel():
+		get_viewport().set_input_as_handled()
+	elif _top_menu() and _top_menu().has_method("toggle_pause_menu"):
+		# Nothing left to cancel: the pause menu.
+		_top_menu().toggle_pause_menu()
+		get_viewport().set_input_as_handled()
+
+func _top_menu() -> Node:
+	return get_parent().get_node_or_null("TopMenu")
+
+func _pause_menu_open() -> bool:
+	var menu := _top_menu()
+	return menu != null and menu.has_method("is_pause_menu_open") and menu.is_pause_menu_open()
 
 func _toggle_agent_paths():
 	if agents_node:
@@ -610,6 +629,10 @@ func _finish_load_game_selection(path: String) -> void:
 func _toggle_pause():
 	var speed: float = 0.0 if _simulation_speed > 0.0 else 1.0
 	set_simulation_speed(speed)
+
+## The running simulation speed; 0 while paused.
+func simulation_speed() -> float:
+	return _simulation_speed
 
 func set_simulation_speed(speed: float):
 	# The clock stays stopped until the loaded world is handed over.

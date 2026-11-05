@@ -1212,6 +1212,22 @@ func _apply_number_badges() -> void:
 			HudIcons.set_number(tile, str(index + 1) if index < 9 else "")
 			_numbered.append(tile)
 
+## Closes the City panel or the open dock palette, one per call; false when none was open, so
+## Esc goes on to the pause menu.
+func close_open_panel() -> bool:
+	if _city_panel and _city_panel.is_open():
+		_city_panel.toggle()
+		return true
+	for panel in [road_combined_hbox, terrain_sub_menu, zoning_combined_hbox, services_combined_hbox, industry_combined_hbox]:
+		if panel.visible:
+			panel.visible = false
+			get_meta("options_panel").visible = false
+			get_meta("road_sep").visible = false
+			_collapse_zoning_profiles()
+			_refresh_hud_marks()
+			return true
+	return false
+
 func toggle_city_panel() -> void:
 	_city_panel.toggle()
 	if _city_panel.is_open() and simulation_node:

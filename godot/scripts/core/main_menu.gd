@@ -38,7 +38,7 @@ func _build_ui() -> void:
 	add_child(center)
 
 	var shell := PanelContainer.new()
-	shell.custom_minimum_size = Vector2(540.0, 420.0)
+	shell.custom_minimum_size = Vector2(440.0, 0.0)
 	shell.add_theme_stylebox_override("panel", UIStyle.window_body_style())
 	center.add_child(shell)
 
@@ -61,14 +61,6 @@ func _build_ui() -> void:
 	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	content.add_child(title)
 
-	var subtitle := Label.new()
-	subtitle.text = "Choose a world or save before entering gameplay."
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(subtitle, 16)
-	subtitle.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	content.add_child(subtitle)
-
 	var buttons := VBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 12)
 	content.add_child(buttons)
@@ -78,14 +70,6 @@ func _build_ui() -> void:
 	buttons.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
 	buttons.add_child(_make_main_button("Options", _on_options_pressed))
 	buttons.add_child(_make_main_button("Quit", _on_quit_pressed))
-
-	var footer := Label.new()
-	footer.text = "New Game loads worlds from user://worlds/\nLoad Game loads saves from user://saves/"
-	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(footer, 13)
-	footer.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	content.add_child(footer)
 
 func _make_main_button(label: String, callback: Callable) -> Button:
 	var button := Button.new()
