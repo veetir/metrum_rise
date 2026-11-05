@@ -150,7 +150,9 @@ func _build_ui() -> void:
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.add_theme_constant_override("margin_top", int(UIStyle.scaled_px(72)))
 	frame.add_theme_constant_override("margin_bottom", int(UIStyle.scaled_px(48)))
-	add_child(frame)
+	# Inside the backdrop: a click a row passes up ends at the backdrop instead of reaching
+	# the city as unhandled input.
+	backdrop.add_child(frame)
 	_column = VBoxContainer.new()
 	_column.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_column.add_theme_constant_override("separation", 0)

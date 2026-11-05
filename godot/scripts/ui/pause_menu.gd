@@ -33,7 +33,9 @@ func build(items: Array) -> void:
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.add_theme_constant_override("margin_left", int(UIStyle.scaled_px(96)))
 	frame.add_to_group(OptionsRows.COVERED_GROUP)
-	add_child(frame)
+	# Inside the backdrop: a click a row passes up ends at the backdrop instead of reaching
+	# the city as unhandled input.
+	backdrop.add_child(frame)
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	column.size_flags_vertical = Control.SIZE_SHRINK_CENTER
