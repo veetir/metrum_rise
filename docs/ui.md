@@ -75,7 +75,7 @@ MainMenu v1 actions:
 | New Game | Pick a `WorldDefinition` from `user://worlds/` and enter gameplay |
 | Load Game | Pick a city save from `user://saves/` and enter gameplay |
 | World Editor | Spawn a `--world-editor` instance |
-| Options | Open the shared options window |
+| Options | Open the shared Options overlay |
 | Quit | Exit the application |
 
 ### 1. Top Menu Bar
@@ -125,6 +125,11 @@ already includes terrain clearance and is restored without another terrain adjus
 Loading an upward debug view in normal mode clamps its pitch to the normal downward limit.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `WorldEditor`).
+The menu is plain uppercase text down the left side over a soft gradient: the title with a
+short accent rule, then the entries, dim at rest and white with an accent bar at their left
+edge under the mouse (`UIStyle.menu_text_button`). There is no card and no button boxes. The
+pause menu uses the same layout over the dimmed city.
+
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
 ### Options
@@ -133,12 +138,18 @@ It is not owned by `main_ui.gd`, because the editor scenes do not use the gamepl
 **Script:** `scripts/ui/options_menu.gd` *(implemented)*.
 
 The same Options overlay opens from `MainMenu`, gameplay `File -> Options...` and the pause
-menu. A header holds the title, two tabs and a close button: `Display` (Graphics, then
-Interface) and `Mods` (installed packs). Placeholder categories are gone until they have
-settings. The footer keeps `Reset Defaults` (the active tab's panels), `Cancel` and `Apply`;
-Esc and Cancel discard pending edits, and the overlay takes the keyboard while open (the
-camera stays put). The card is 860 x 580 at 100% UI scale, at most 92% of the screen, and its
-tabs scroll. General options state is persisted through `user://settings.cfg` via
+menu. It is one centred column, 760 px wide at 100% UI scale (at most 92% of the screen),
+with no card around it: the `OPTIONS` title, two text tabs underlined in the accent colour
+while active, `Display` (Screen, Graphics and Interface sections) and `Mods` (installed packs),
+then the active tab's rows, which scroll. Placeholder categories are gone until they have
+settings. Every setting is a row (`options_rows.gd`): its name at the left, its value in a
+fixed 240 px column at the right, a hairline below, the whole row lit with an accent edge under
+the mouse. A hovered row's description shows in a hint line above the footer. Choices are
+`‹ VALUE ›` cyclers: the arrows step back and forth and wrap, clicking the value steps forward,
+and On/Off settings are two-value cyclers, so the overlay opens no drop-down popups. UI scale
+is a short slider with its percentage. The footer is text: `Reset Defaults` (the active tab's
+panels), the status, `Cancel` and `Apply` in the accent colour. Esc and Cancel discard pending
+edits, and the overlay takes the keyboard while open (the camera stays put). General options state is persisted through `user://settings.cfg` via
 `scripts/core/game_settings.gd`; Options remembers its last tab. The same settings file also
 stores reusable `layout/<id>` sections for player-adjusted floating-window sizes, positions where
 appropriate, and split-panel offsets such as Economy Overview's budget/service/policy panes.
@@ -165,13 +176,11 @@ proposes defaults. Detail uses the shared screen-size LOD policy, not asset-auth
 bands; it changes neither simulation nor visibility. Gameplay benchmarks
 (`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults.
 These replace the former `METRUM_GFX` preset and its F8-F11 hotkeys.
-`Gameplay` owns `Road construction preview`: `Road only (faster)` (default) or `Road and
-terrain`. It persists `gameplay/road_preview_mode`; Apply updates active road tools immediately,
-Cancel discards pending edits and Reset proposes Road only. Full mode previews ground changes
-at additional runtime cost; both modes place the same final roads/terrain (`ROAD-29`).
 Display settings apply through the Options footer and on boot. `Mods` embeds the content-pack manager from
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
-`user://active_packs.cfg` and take effect after restart. The previous gameplay toolbar `Mods`
+`user://active_packs.cfg` and take effect after restart. Packs list as rows in the page's own
+scroll (a nested scroll area there collapsed to zero height); a pack the running city has
+loaded cannot be replaced or removed while Options is open in game. The previous gameplay toolbar `Mods`
 button is intentionally removed so content-pack management lives under global options rather than
 construction tools.
 

@@ -22,37 +22,33 @@ func build(items: Array) -> void:
 	layer = 110
 	visible = false
 	var backdrop := ColorRect.new()
-	backdrop.color = Color(0, 0, 0, 0.55)
+	backdrop.color = Color(0.02, 0.03, 0.04, 0.72)
 	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(backdrop)
-	var center := CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(center)
-	var card := PanelContainer.new()
-	var style := UIStyle.window_body_style()
-	style.content_margin_left = 28
-	style.content_margin_right = 28
-	style.content_margin_top = 22
-	style.content_margin_bottom = 24
-	card.add_theme_stylebox_override("panel", style)
-	center.add_child(card)
+	# Plain text entries down the left side, like the main menu.
+	var frame := MarginContainer.new()
+	frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.add_theme_constant_override("margin_left", int(UIStyle.scaled_px(96)))
+	add_child(frame)
 	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 10)
-	card.add_child(column)
+	column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	column.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	column.add_theme_constant_override("separation", int(UIStyle.scaled_px(4)))
+	frame.add_child(column)
+	var inset := MarginContainer.new()
+	inset.add_theme_constant_override("margin_left", 14)
+	inset.add_theme_constant_override("margin_bottom", int(UIStyle.scaled_px(24)))
+	column.add_child(inset)
 	var title := Label.new()
-	title.text = "Paused"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(title, 22)
+	title.text = "PAUSED"
+	UIStyle.set_font_size(title, 36)
 	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	column.add_child(title)
+	inset.add_child(title)
 	for item in items:
-		var button := Button.new()
-		button.text = str(item[0])
-		button.custom_minimum_size = Vector2(260, 44)
-		button.focus_mode = Control.FOCUS_NONE
-		UIStyle.set_font_size(button, 15)
+		var button := UIStyle.menu_text_button(str(item[0]), 20)
+		button.custom_minimum_size.y = UIStyle.scaled_px(44)
 		var id := int(item[1])
 		var ask := str(item[2])
 		button.pressed.connect(func():

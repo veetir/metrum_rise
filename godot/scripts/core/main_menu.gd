@@ -25,58 +25,64 @@ func _exit_tree() -> void:
 func _ready() -> void:
 	_build_ui()
 
+# Plain text entries down the left side over a soft gradient: no card, no button boxes.
 func _build_ui() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	var background := ColorRect.new()
+	var gradient := Gradient.new()
+	gradient.set_color(0, Color(0.09, 0.11, 0.14))
+	gradient.set_color(1, Color(0.025, 0.03, 0.04))
+	var fill := GradientTexture2D.new()
+	fill.gradient = gradient
+	fill.fill_from = Vector2(0.0, 0.0)
+	fill.fill_to = Vector2(0.9, 1.0)
+	var background := TextureRect.new()
+	background.texture = fill
+	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	background.stretch_mode = TextureRect.STRETCH_SCALE
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	background.color = Color(0.05, 0.06, 0.08, 1.0)
 	add_child(background)
 
-	var center := CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	add_child(center)
-
-	var shell := PanelContainer.new()
-	shell.custom_minimum_size = Vector2(440.0, 0.0)
-	shell.add_theme_stylebox_override("panel", UIStyle.window_body_style())
-	center.add_child(shell)
-
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 28)
-	margin.add_theme_constant_override("margin_right", 28)
-	margin.add_theme_constant_override("margin_top", 24)
-	margin.add_theme_constant_override("margin_bottom", 24)
-	shell.add_child(margin)
-
+	var frame := MarginContainer.new()
+	frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	frame.add_theme_constant_override("margin_left", int(UIStyle.scaled_px(96)))
+	add_child(frame)
 	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation", 18)
-	margin.add_child(content)
+	content.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	content.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	content.add_theme_constant_override("separation", int(UIStyle.scaled_px(4)))
+	frame.add_child(content)
 
+	# Inset by the entries' text margin, so the title lines up with their text.
+	var heading := VBoxContainer.new()
+	heading.add_theme_constant_override("separation", 6)
+	var inset := MarginContainer.new()
+	inset.add_theme_constant_override("margin_left", 14)
+	inset.add_child(heading)
+	content.add_child(inset)
 	var title := Label.new()
-	title.text = "Metrum Rise"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(title, 40)
+	title.text = "METRUM RISE"
+	UIStyle.set_font_size(title, 44)
 	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	content.add_child(title)
+	heading.add_child(title)
+	var rule := ColorRect.new()
+	rule.color = UIStyle.HUD_ACCENT
+	rule.custom_minimum_size = Vector2(UIStyle.scaled_px(56), 3)
+	rule.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	heading.add_child(rule)
+	var gap := Control.new()
+	gap.custom_minimum_size.y = UIStyle.scaled_px(36)
+	content.add_child(gap)
 
-	var buttons := VBoxContainer.new()
-	buttons.add_theme_constant_override("separation", 12)
-	content.add_child(buttons)
-
-	buttons.add_child(_make_main_button("New Game", _on_new_game_pressed))
-	buttons.add_child(_make_main_button("Load Game", _on_load_game_pressed))
-	buttons.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
-	buttons.add_child(_make_main_button("Options", _on_options_pressed))
-	buttons.add_child(_make_main_button("Quit", _on_quit_pressed))
+	content.add_child(_make_main_button("New Game", _on_new_game_pressed))
+	content.add_child(_make_main_button("Load Game", _on_load_game_pressed))
+	content.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
+	content.add_child(_make_main_button("Options", _on_options_pressed))
+	content.add_child(_make_main_button("Quit", _on_quit_pressed))
 
 func _make_main_button(label: String, callback: Callable) -> Button:
-	var button := Button.new()
-	button.text = label
-	button.custom_minimum_size = Vector2(320.0, 58.0)
-	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	UIStyle.set_font_size(button, 16)
+	var button := UIStyle.menu_text_button(label, 20)
+	button.custom_minimum_size.y = UIStyle.scaled_px(44)
 	button.pressed.connect(callback)
 	return button
 

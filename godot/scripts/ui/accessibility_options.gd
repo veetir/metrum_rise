@@ -7,6 +7,7 @@
 extends VBoxContainer
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 signal dirty_changed(has_pending_changes: bool)
@@ -23,43 +24,22 @@ func _ready() -> void:
 
 func _build_ui() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation", 14)
+	add_theme_constant_override("separation", 0)
+	add_child(OptionsRows.heading("Interface"))
 
-	var title := Label.new()
-	title.text = "INTERFACE"
-	UIStyle.set_font_size(title, 11)
-	title.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	add_child(title)
-
-	var row := HBoxContainer.new()
-	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_theme_constant_override("separation", 12)
-	add_child(row)
-
-	var label := Label.new()
-	label.text = "UI Scale"
-	label.custom_minimum_size.x = UIStyle.scaled_px(120.0)
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(label, 14)
-	label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	row.add_child(label)
-
-	_scale_slider = HSlider.new()
-	_scale_slider.min_value = GameSettings.MIN_UI_SCALE
-	_scale_slider.max_value = GameSettings.MAX_UI_SCALE
-	_scale_slider.step = GameSettings.UI_SCALE_STEP
-	_scale_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var value := HBoxContainer.new()
+	value.add_theme_constant_override("separation", 12)
+	_scale_slider = OptionsRows.slider(GameSettings.MIN_UI_SCALE, GameSettings.MAX_UI_SCALE, GameSettings.UI_SCALE_STEP)
 	_scale_slider.value_changed.connect(_on_scale_slider_changed)
-	row.add_child(_scale_slider)
-
+	value.add_child(_scale_slider)
 	_scale_value_label = Label.new()
-	_scale_value_label.custom_minimum_size.x = UIStyle.scaled_px(72.0)
+	_scale_value_label.custom_minimum_size.x = UIStyle.scaled_px(48.0)
 	_scale_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_scale_value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	UIStyle.set_font_size(_scale_value_label, 14)
-	_scale_value_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	row.add_child(_scale_value_label)
+	_scale_value_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	value.add_child(_scale_value_label)
+	add_child(OptionsRows.row("UI scale", value, "Scales text and panels. Applies when you press Apply."))
 
 func refresh() -> void:
 	_initial_ui_scale = GameSettings.get_ui_scale()

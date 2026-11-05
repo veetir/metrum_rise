@@ -386,3 +386,33 @@ static func hud_group_style() -> StyleBoxFlat:
 
 static func hud_clear_style() -> StyleBoxFlat:
 	return panel_style(Color(0.0, 0.0, 0.0, 0.0), HUD_SHELL_CORNER, BORDER_ACCENT, 0)
+
+## A menu entry drawn as plain uppercase text (main menu, pause menu, Options tabs and
+## footer): dim at rest, white under the mouse, with an accent bar at the left edge when `bar`.
+## A pressed toggle shows in the accent colour.
+static func menu_text_button(text: String, font_size: int, bar: bool = true) -> Button:
+	var button := Button.new()
+	button.text = text.to_upper()
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.focus_mode = Control.FOCUS_NONE
+	set_font_size(button, font_size)
+	var idle := StyleBoxFlat.new()
+	idle.bg_color = Color.TRANSPARENT
+	idle.content_margin_left = 14 if bar else 0
+	idle.content_margin_right = 14 if bar else 0
+	idle.content_margin_top = 4
+	idle.content_margin_bottom = 4
+	var lit: StyleBoxFlat = idle.duplicate()
+	if bar:
+		lit.border_width_left = 3
+		lit.border_color = HUD_ACCENT
+	for state in ["normal", "focus", "disabled", "pressed"]:
+		button.add_theme_stylebox_override(state, idle)
+	for state in ["hover", "hover_pressed"]:
+		button.add_theme_stylebox_override(state, lit)
+	button.add_theme_color_override("font_color", TEXT_DIM)
+	button.add_theme_color_override("font_hover_color", TEXT_PRIMARY)
+	button.add_theme_color_override("font_pressed_color", HUD_ACCENT)
+	button.add_theme_color_override("font_hover_pressed_color", HUD_ACCENT)
+	button.add_theme_color_override("font_disabled_color", Color(TEXT_DIM, 0.35))
+	return button
