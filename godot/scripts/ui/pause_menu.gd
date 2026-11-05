@@ -5,7 +5,7 @@
 ## runs it. Leaving the game (main menu, quit) asks first, as nothing tracks unsaved changes.
 extends CanvasLayer
 
-const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 ## Closes the menu; not a TopMenu action.
 const RESUME := -1
@@ -32,7 +32,7 @@ func build(items: Array) -> void:
 	frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.add_theme_constant_override("margin_left", int(UIStyle.scaled_px(96)))
-	frame.add_to_group(OptionsMenu.COVERED_GROUP)
+	frame.add_to_group(OptionsRows.COVERED_GROUP)
 	add_child(frame)
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN

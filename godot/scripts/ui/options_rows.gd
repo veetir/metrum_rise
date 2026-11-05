@@ -14,6 +14,23 @@ const VALUE_WIDTH := 240.0
 const ROW_HEIGHT := 40.0
 ## Group of the node that shows a hovered row's hint; it implements `show_hint(text)`.
 const HINT_GROUP := "options_hint"
+## Group of the menus that Options and the save browser open from (main menu, pause menu): their
+## text fades out under them, so it does not show through the dimmed backdrop beside the rows.
+const COVERED_GROUP := "covered_by_options"
+
+## Fades the covered menus to `alpha` (0 when an overlay opens, 1 when it closes).
+static func fade_covered(tree: SceneTree, alpha: float) -> void:
+	for node in tree.get_nodes_in_group(COVERED_GROUP):
+		var item := node as CanvasItem
+		item.create_tween().tween_property(item, "modulate:a", alpha, 0.12)
+
+## A full-width 1 px rule between the header, the list and the footer.
+static func hairline() -> ColorRect:
+	var line := ColorRect.new()
+	line.color = Color(1, 1, 1, 0.12)
+	line.custom_minimum_size.y = 1
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return line
 
 ## Uppercase section title with room above it.
 static func heading(text: String) -> Label:

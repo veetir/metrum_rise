@@ -13,6 +13,7 @@ const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
 const DayCycleConfig = preload("res://scripts/core/day_cycle.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 const PauseMenu = preload("res://scripts/ui/pause_menu.gd")
+const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 
 const BAR_HEIGHT := 28
 
@@ -620,9 +621,11 @@ func _build_pause_menu() -> void:
 func is_pause_menu_open() -> bool:
 	return _pause_menu != null and _pause_menu.visible
 
-## Whether the pause menu or Options covers the game; the camera then stays put.
+## Whether the pause menu, Options or the save browser covers the game; the camera then stays put.
 func is_overlay_open() -> bool:
-	return is_pause_menu_open() or (_options_menu != null and _options_menu.is_open())
+	var browser := get_node_or_null(SaveBrowser.NODE_NAME)
+	return (is_pause_menu_open() or (_options_menu != null and _options_menu.is_open())
+		or (browser != null and browser.is_open()))
 
 ## Opens the pause menu and stops the clock, or closes it and restarts the clock at its speed.
 func toggle_pause_menu() -> void:

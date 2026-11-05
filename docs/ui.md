@@ -59,8 +59,8 @@ Current deterministic rules:
   enabled; a saved empty enabled-pack list remains an explicit player choice
 - `MainMenu` contains no `SimulationNode`
 - `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
-- `New Game` opens a file picker rooted at `user://worlds/`
-- `Load Game` opens a file picker rooted at `user://saves/`
+- `New Game` opens the save browser's world list (`user://worlds/`), then the New Game dialog
+- `Load Game` opens the save browser's save list (`user://saves/`)
 - selecting a world or save stores the request in the `LaunchState` autoload and then enters
   `Main.tscn`
 - `Main.tscn` must consume that pending request on startup and load the selected world/save before
@@ -97,13 +97,26 @@ discoverable entry point. Shortcut-bearing items are currently rendered as plain
 text in the label itself (for example `Save [Ctrl+S]`) rather than using a separate
 accelerator column.
 
-Gameplay `New Game` still opens a file picker rooted at `user://worlds/` and loads the selected
+Gameplay `New Game` opens the save browser's world list and loads the selected
 `WorldDefinition` into the live scene. It resets the camera to the new world's centre and initial
 orbit, clears the previous city's save filename, and pauses after rebuilding the scene.
 Normal play and debug inspection use the same terrain-anchored focus, initial framing, movement,
 and zoom. Debug only extends the orbit pitch to look upward from beneath terrain; the focus
 continues to follow the ground while the camera may pass below it in that upward view.
-Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
+Gameplay `Save` and `Load` (also Ctrl+S, Ctrl+L and the pause menu) open the save browser on
+`user://saves/`.
+
+The save browser (`scripts/ui/save_browser.gd`) replaces Godot's `FileDialog` for saves and
+worlds. It is drawn like Options: the dimmed screen, one centred 760 px column, the menu it opened
+from faded out. It lists one folder's `.sqlite` files only, newest first, each as a row with its
+name without the extension, when it was saved ("Today 08:03", "Yesterday 21:10", else the date)
+and its size. There is no path bar and no folder browsing; `Open folder` shows the folder in the
+file manager. Load and New Game select the newest row; a click selects, a double click or Enter
+confirms, Up/Down move. Save has a `Save as` name field filled with the current save's name:
+clicking a row fills it in, a name that matches an existing save turns the button into `Replace`,
+and an empty name or one with `: / \ ? * " | % < >` disables it with the reason on the status
+line. Esc cancels. While it is open, keys and the wheel stay with it (TopMenu reports it as an
+overlay), and it hands its caller the file's native path.
 City and world-definition saves commit and close an adjacent temporary SQLite file before
 replacing the destination. A failed write leaves the previous save intact.
 Both city-save and world-definition replacement reset the speed display to paused and close
@@ -424,7 +437,7 @@ Current WorldEditor shortcuts:
 | Two-finger scroll (touchpad) | Zoom camera, in fractions of a step |
 | Pinch (touchpad) | Zoom camera by the pinch factor |
 
-W / A / S / D pan only while no embedded window, such as the save dialog or an open menu, is
+W / A / S / D pan only while no embedded window, such as a dialog or an open menu, is
 exclusive or holds focus; that window's own text fields are invisible to the game window's focus
 owner, so typing a save name also panned the camera (`UI-01`).
 
@@ -793,6 +806,8 @@ godot/
       demand_meter.gd             Compact R/C/I HUD demand meter
       top_menu.gd                 MenuBar + PopupMenu tree, menu action dispatch
       options_menu.gd             In-UI Options overlay: Display and Mods tabs
+      options_rows.gd             Options row, heading, value cycler and slider helpers
+      save_browser.gd             In-UI Save / Load / New Game file lists
       graphics_options.gd         Options -> Display graphics section
       accessibility_options.gd    Options -> Display interface (UI Scale) section
       pack_manager.gd             Embedded Options -> Mods content-pack panel

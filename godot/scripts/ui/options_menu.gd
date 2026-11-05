@@ -20,9 +20,6 @@ const CONTEXT_MAIN_MENU := "main_menu"
 const CONTEXT_GAMEPLAY := "gameplay"
 const TAB_DISPLAY := "display"
 const TAB_MODS := "mods"
-## Group of menus Options opens from (main menu, pause menu); their text fades out while it is
-## open, so it does not show through the dimmed backdrop beside the Options rows.
-const COVERED_GROUP := "covered_by_options"
 # The column's design width; it shrinks to 92 % of a narrower screen.
 const COLUMN_WIDTH := 760.0
 
@@ -61,7 +58,7 @@ func popup_options(next_context: String) -> void:
 	var screen := get_viewport().get_visible_rect().size
 	_column.custom_minimum_size.x = minf(UIStyle.scaled_px(COLUMN_WIDTH), screen.x * 0.92)
 	show_hint("")
-	_fade_covered(0.0)
+	OptionsRows.fade_covered(get_tree(), 0.0)
 	show()
 
 ## Shows a hovered setting's description under the list (OptionsRows calls it).
@@ -108,7 +105,7 @@ func _build_ui() -> void:
 	var tabs := HBoxContainer.new()
 	tabs.add_theme_constant_override("separation", int(UIStyle.scaled_px(28)))
 	_column.add_child(tabs)
-	_column.add_child(_hairline())
+	_column.add_child(OptionsRows.hairline())
 
 	var pages := MarginContainer.new()
 	pages.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -124,7 +121,7 @@ func _build_ui() -> void:
 	UIStyle.set_font_size(_hint, 13)
 	_hint.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	_column.add_child(_hint)
-	_column.add_child(_hairline())
+	_column.add_child(OptionsRows.hairline())
 
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", int(UIStyle.scaled_px(24)))
@@ -141,13 +138,6 @@ func _build_ui() -> void:
 	_apply_btn = _footer_button(footer, "Apply", _on_apply_pressed)
 	_apply_btn.add_theme_color_override("font_color", UIStyle.HUD_ACCENT)
 	_apply_btn.add_theme_color_override("font_hover_color", UIStyle.HUD_ACCENT.lightened(0.4))
-
-func _hairline() -> ColorRect:
-	var line := ColorRect.new()
-	line.color = Color(1, 1, 1, 0.12)
-	line.custom_minimum_size.y = 1
-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return line
 
 # One tab: its text button (underlined while active) and a scrolling page holding `panels`.
 func _add_tab(tabs: HBoxContainer, pages: Control, id: String, label: String, panels: Array) -> void:
@@ -211,13 +201,8 @@ func _on_reset_defaults_pressed() -> void:
 func _on_cancel_pressed() -> void:
 	_discard_pending_changes()
 	hide()
-	_fade_covered(1.0)
+	OptionsRows.fade_covered(get_tree(), 1.0)
 	closed.emit()
-
-func _fade_covered(alpha: float) -> void:
-	for node in get_tree().get_nodes_in_group(COVERED_GROUP):
-		var item := node as CanvasItem
-		item.create_tween().tween_property(item, "modulate:a", alpha, 0.12)
 
 func _on_apply_pressed() -> void:
 	var restart_required := false

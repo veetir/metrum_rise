@@ -7,6 +7,8 @@ extends Control
 
 const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
 const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
+const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
 
@@ -51,7 +53,7 @@ func _build_ui() -> void:
 	content.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	content.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	content.add_theme_constant_override("separation", int(UIStyle.scaled_px(4)))
-	content.add_to_group(OptionsMenu.COVERED_GROUP)
+	content.add_to_group(OptionsRows.COVERED_GROUP)
 	frame.add_child(content)
 
 	# Inset by the entries' text margin, so the title lines up with their text.
@@ -88,28 +90,10 @@ func _make_main_button(label: String, callback: Callable) -> Button:
 	return button
 
 func _on_new_game_pressed() -> void:
-	_ensure_dir(WORLDS_DIR)
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.sqlite ; WorldDefinition Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(WORLDS_DIR)
-	dialog.file_selected.connect(func(path: String): _on_new_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(self, SaveBrowser.MODE_WORLD, WORLDS_DIR, _open_new_game_options)
 
 func _on_load_game_pressed() -> void:
-	_ensure_dir(SAVES_DIR)
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(self, SaveBrowser.MODE_LOAD, SAVES_DIR, _finish_load_game_selection)
 
 func _on_world_editor_pressed() -> void:
 	var pid := OS.create_instance(["--", "--world-editor"])
@@ -125,23 +109,12 @@ func _on_options_pressed() -> void:
 func _on_quit_pressed() -> void:
 	get_tree().quit()
 
-func _on_new_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	# Deferred so the file dialog is gone before the options dialog takes exclusive focus.
-	call_deferred("_open_new_game_options", path)
-
 func _open_new_game_options(path: String) -> void:
 	if _new_game_dialog == null:
 		_new_game_dialog = NewGameDialog.new()
 		_new_game_dialog.start_requested.connect(_finish_new_game_selection)
 		add_child(_new_game_dialog)
 	_new_game_dialog.popup_for_world(path)
-
-func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_load_game_selection", path)
 
 func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
 	LaunchState.queue_new_game(path, vegetation)
@@ -150,6 +123,3 @@ func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
 func _finish_load_game_selection(path: String) -> void:
 	LaunchState.queue_load_game(path)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
-
-func _ensure_dir(path: String) -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path))

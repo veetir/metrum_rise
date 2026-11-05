@@ -60,6 +60,7 @@ const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # LEVEL_END_M); the farther patches stream on within the frame budget.
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
+const SaveBrowser := preload("res://scripts/ui/save_browser.gd")
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
@@ -550,9 +551,6 @@ func _default_save_name() -> String:
 		return _current_save_path.get_file()
 	return "savegame.sqlite"
 
-func _ensure_saves_dir() -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVES_DIR))
-
 func _refresh_after_world_load():
 	if road_tool and road_tool.current_state != 0:
 		road_tool.cancel_road()
@@ -588,41 +586,15 @@ func _refresh_after_world_load():
 	_await_world_ready()
 
 func _handle_save_game():
-	_ensure_saves_dir()
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
-	dialog.exclusive = true
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.current_file = _default_save_name()
-	dialog.file_selected.connect(func(path: String): _on_save_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_SAVE, SAVES_DIR, _finish_save_game_selection, _default_save_name())
 
 func _handle_load_game():
-	_ensure_saves_dir()
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.exclusive = true
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_LOAD, SAVES_DIR, _finish_load_game_selection)
 
-func _on_save_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_save_game_selection", path)
-
-func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_load_game_selection", path)
+# Under TopMenu the browser counts as an open overlay (no camera input, no shortcuts).
+func _browser_parent() -> Node:
+	var menu := _top_menu()
+	return menu if menu else self
 
 func _finish_save_game_selection(path: String) -> void:
 	if simulation_node.save_game(path):
