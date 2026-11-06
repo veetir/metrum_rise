@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::nodes::sim::CellToolPreview;
+use crate::nodes::sim::render::zoning_mask::{MaskRectangle, build_mask};
 use crate::simulation::zoning::cells::{CellKey, CellSelection, CellSelectionShape, CellStore};
 use glam::DVec2;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -55,8 +56,8 @@ impl SimulationNode {
     }
 
     /// Polls visible chunk metadata in one nonblocking call. Each input XZ pair has four output
-    /// values: cell revision, generation-complete flag, parcel revision and local height revision.
-    /// Height revisions are per chunk, so a local terrain or road edit re-exports only nearby chunks.
+    /// values: cell revision (including crossing owners), generation-complete flag, parcel
+    /// revision and world generation. Height alone never changes ground-mask geometry.
     #[func]
     pub fn try_get_zoning_cell_chunk_states(&self, chunks: PackedInt32Array) -> VarDictionary {
         let mut result = VarDictionary::new();
@@ -69,14 +70,9 @@ impl SimulationNode {
         }
         let mut states = PackedInt64Array::new();
         for chunk in chunks.as_slice().as_chunks::<2>().0 {
-            let (revision, generated) = core.zoning.cells.chunk_state((chunk[0], chunk[1]));
-            states.extend([
-                revision as i64,
-                i64::from(generated),
-                core.zoning.parcels.chunk_revision((chunk[0], chunk[1])) as i64,
-                core.heightmap
-                    .height_revision_for_chunk((chunk[0], chunk[1])) as i64,
-            ]);
+            let version = mask_version(&core, (chunk[0], chunk[1]));
+            let generated = core.zoning.cells.chunk_state((chunk[0], chunk[1])).1;
+            states.extend([version[0], i64::from(generated), version[1], version[2]]);
         }
         result.set("busy", false);
         result.set("states", states);
@@ -85,7 +81,8 @@ impl SimulationNode {
 
     /// Exports a ready visible chunk without waiting on a busy simulation. Cold/dirty inputs
     /// queue bounded preparation on the simulation thread and return busy for a later poll.
-    /// Unchanged chunks return only a version; centre ownership prevents duplicate uploads.
+    /// Unchanged chunks return only a version. Crossing rectangles occur in both masks,
+    /// clipped by the shader to the fragment's chunk; no ground fragment is drawn twice.
     #[func]
     pub fn try_get_zoning_cell_chunk_packed(
         &mut self,
@@ -119,36 +116,27 @@ impl SimulationNode {
             return result;
         }
         result.set("busy", false);
-        let version = [
-            core.zoning.cells.chunk_state(chunk).0 as i64,
-            core.zoning.parcels.chunk_revision(chunk) as i64,
-            core.heightmap.height_revision_for_chunk(chunk) as i64,
-        ];
+        let version = mask_version(&core, chunk);
         result.set("version", PackedInt64Array::from(version.as_slice()));
         let unchanged = known.as_slice() == version;
         result.set("unchanged", unchanged);
         if unchanged {
             return result;
         }
-        let mut vertices = PackedVector3Array::new();
-        let mut colors = PackedColorArray::new();
-        let mut uvs = PackedVector2Array::new();
-        let cell_uvs = [Vector2::ZERO, Vector2::RIGHT, Vector2::ONE, Vector2::DOWN];
+        let bounds = CellStore::chunk_bounds(chunk);
         let mut keys = Vec::new();
         core.zoning
             .cells
-            .visit_chunk_cells(chunk, |key| keys.push(key));
+            .visit_in_bounds(bounds, |key| keys.push(key));
         keys.sort_unstable();
+        let mut rectangles = Vec::with_capacity(keys.len());
         for key in keys {
             let frame = core
                 .zoning
                 .cells
                 .frame(key.grid)
                 .expect("indexed cell frame");
-            let corners = frame.corners(key.x, key.y);
             let profile = core.zoning.cells.profile(key).unwrap_or(0);
-            // Both lookups use existing indexed stores. Parcel occupancy changes stamp every
-            // intersected chunk's version, including lots crossing cell ownership boundaries.
             let occupied = core
                 .zoning
                 .cells
@@ -159,57 +147,52 @@ impl SimulationNode {
                         .get(crate::simulation::zoning::ParcelId::from_raw(id))
                 })
                 .is_some_and(|parcel| parcel.occupied_building().is_some());
-            let mut color = zoning_parcel_color(&core, profile, false);
-            // Alpha is a shader style flag: occupied=0, unpainted=0.5, painted=1.
-            color.a = if occupied {
+            let style = if occupied {
                 0.0
             } else if profile == 0 {
                 0.5
             } else {
                 1.0
             };
-            let corners = core.graded_surface_corners(
-                corners.map(|p| Vector2::new(p.x as f32, p.y as f32)),
-                0.04,
-            );
-            for index in [0, 1, 2, 0, 2, 3] {
-                vertices.push(corners[index]);
-                colors.push(color);
-                uvs.push(cell_uvs[index]);
-            }
+            rectangles.push(MaskRectangle {
+                corners: frame.corners(key.x, key.y),
+                color_style: mask_color(zoning_parcel_color(&core, profile, false), style),
+            });
         }
-        let bounds = CellStore::chunk_bounds(chunk);
-        let span = Self::get_zoning_cell_chunk_span();
+        // ParcelStore's query is indexed but not ordered. Stable IDs define render precedence.
+        let mut parcels = Vec::new();
         core.zoning.parcels.visit_in_bounds(
             Vector2::new(bounds.min.x as f32, bounds.min.y as f32),
             Vector2::new(bounds.max.x as f32, bounds.max.y as f32),
             |parcel| {
-                let center = parcel.center();
-                if parcel.cell_lot().is_some()
-                    || (
-                        (f64::from(center.x) / span).floor() as i32,
-                        (f64::from(center.y) / span).floor() as i32,
-                    ) != chunk
-                {
-                    return;
-                }
-                let mut color = zoning_parcel_color(&core, parcel.zone_profile_runtime_id(), false);
-                color.a = if parcel.occupied_building().is_some() {
-                    0.0
-                } else {
-                    1.0
-                };
-                let corners = core.graded_surface_corners(parcel.corners(), 0.04);
-                for index in [0, 1, 2, 0, 2, 3] {
-                    vertices.push(corners[index]);
-                    colors.push(color);
-                    uvs.push(cell_uvs[index]);
+                if parcel.cell_lot().is_none() {
+                    let style = if parcel.occupied_building().is_some() {
+                        0.0
+                    } else if parcel.zone_profile_runtime_id() == 0 {
+                        0.5
+                    } else {
+                        1.0
+                    };
+                    parcels.push((
+                        parcel.id(),
+                        MaskRectangle {
+                            corners: parcel
+                                .corners()
+                                .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
+                            color_style: mask_color(
+                                zoning_parcel_color(&core, parcel.zone_profile_runtime_id(), false),
+                                style,
+                            ),
+                        },
+                    ));
                 }
             },
         );
-        result.set("vertices", vertices);
-        result.set("colors", colors);
-        result.set("uvs", uvs);
+        parcels.sort_unstable_by_key(|(id, _)| *id);
+        rectangles.extend(parcels.into_iter().map(|(_, rectangle)| rectangle));
+        // Rasterization reads this immutable local snapshot, never holds the simulation lock.
+        drop(core);
+        export_mask(&mut result, chunk, &rectangles);
         result
     }
 
@@ -257,22 +240,31 @@ impl SimulationNode {
             return result;
         }
         let preview = core.preview_cell_selection_internal(shape, &path);
-        // The corners stand on the graded surface, which reads the site index.
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
         let mut corners = PackedVector3Array::new();
         let mut addresses = PackedInt64Array::new();
+        let mut masks: std::collections::BTreeMap<(i32, i32), Vec<MaskRectangle>> =
+            std::collections::BTreeMap::new();
+        let preview_color = mask_color(zoning_parcel_color(&core, profile, false), 2.0);
         for &key in &preview.selection.cells {
             let frame = core
                 .zoning
                 .cells
                 .frame(key.grid)
                 .expect("selected cell frame");
-            let points = frame
-                .corners(key.x, key.y)
-                .map(|corner| Vector2::new(corner.x as f32, corner.y as f32));
-            for corner in core.graded_surface_corners(points, 0.08) {
-                corners.push(corner);
+            let points = frame.corners(key.x, key.y);
+            for corner in points {
+                corners.push(Vector3::new(corner.x as f32, 0.0, corner.y as f32));
+            }
+            let bounds = crate::simulation::zoning::cells::CellBounds::from_points(points);
+            let min = (bounds.min / 512.0).floor();
+            let max = (bounds.max / 512.0).floor();
+            for z in min.y as i32..=max.y as i32 {
+                for x in min.x as i32..=max.x as i32 {
+                    masks.entry((x, z)).or_default().push(MaskRectangle {
+                        corners: points,
+                        color_style: preview_color,
+                    });
+                }
             }
             addresses.extend([key.grid as i64, i64::from(key.x), i64::from(key.y)]);
         }
@@ -289,6 +281,15 @@ impl SimulationNode {
         );
         result.set("corners", corners);
         result.set("colors", colors);
+        drop(core);
+        let mut chunks = Array::<VarDictionary>::new();
+        for (chunk, rectangles) in masks {
+            let mut payload = VarDictionary::new();
+            payload.set("chunk", Vector2i::new(chunk.0, chunk.1));
+            export_mask(&mut payload, chunk, &rectangles);
+            chunks.push(&payload);
+        }
+        result.set("masks", chunks);
         result
     }
 
@@ -322,6 +323,46 @@ impl SimulationNode {
         }
         applied
     }
+}
+
+// Cell and parcel revisions already stamp every intersected mask chunk. Terrain geometry
+// is the receiving surface, so only a whole-world reset contributes its epoch here.
+fn mask_version(core: &crate::nodes::sim::core::SimCore, chunk: (i32, i32)) -> [i64; 3] {
+    [
+        core.zoning.cells.chunk_state(chunk).0 as i64,
+        core.zoning.parcels.chunk_revision(chunk) as i64,
+        core.terrain_payload_global_generation as i64,
+    ]
+}
+
+fn mask_color(color: Color, style: f32) -> [f32; 4] {
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [linear(color.r), linear(color.g), linear(color.b), style]
+}
+
+fn export_mask(result: &mut VarDictionary, chunk: (i32, i32), rectangles: &[MaskRectangle]) {
+    result.set("rectangle_count", rectangles.len() as i64);
+    if rectangles.is_empty() {
+        return;
+    }
+    let mask = build_mask(
+        DVec2::new(f64::from(chunk.0), f64::from(chunk.1)) * 512.0,
+        rectangles,
+    );
+    result.set("mask", PackedByteArray::from(mask.indices.as_slice()));
+    let bytes: Vec<u8> = mask
+        .rows
+        .iter()
+        .flatten()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    result.set("rows", PackedByteArray::from(bytes.as_slice()));
 }
 
 fn selection_shape(shape: i32, radius_m: f64) -> Option<CellSelectionShape> {

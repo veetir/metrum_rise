@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Zoning overlay visibility and road eligibility; cell and parcel meshes use visible chunks.
+## Zoning view visibility and road eligibility; cells and parcels tint the ground surface.
 ##
 ## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),
 ##   try_get_zoning_parcels_overlay_packed(), try_get_no_building_spawn_lines()
@@ -164,3 +164,6 @@ func _rebuild_no_build_overlay() -> bool:
 	im.surface_end()
 	_no_build_mesh_instance.mesh = im
 	return true
+
+func set_cell_preview(payload: Dictionary) -> void:
+	_cell_chunks.set_preview(payload)
