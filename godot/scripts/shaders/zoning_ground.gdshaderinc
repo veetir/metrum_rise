@@ -26,7 +26,8 @@ vec4 zoning_rectangle(int row, int layer, vec2 point, float pixel_m, float dista
 	float aa = max(pixel_m, 0.0001);
 	float edge = (1.0 - smoothstep(0.12 - aa, 0.12 + aa, edge_m))
 		* min(1.0, 0.24 / aa) * (1.0 - smoothstep(400.0, 1800.0, distance_m));
-	float fill = extent.z > 1.5 ? 0.50 : (extent.z > 0.75 ? 0.30 : 0.015);
+	// Style: occupied=0 (quieter fill keeps the zone readable), unpainted=0.5, painted=1, preview=2.
+	float fill = extent.z > 1.5 ? 0.50 : (extent.z > 0.75 ? 0.30 : (extent.z > 0.25 ? 0.015 : 0.15));
 	vec3 color = zoning_row(row + 2, layer).rgb;
 	color = mix(color, min(color * 1.4 + vec3(0.12), vec3(1.0)), edge);
 	return vec4(color, mix(fill, extent.z < 0.25 ? 0.35 : 0.75, edge));

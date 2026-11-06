@@ -1443,8 +1443,8 @@ axis; extents, style and handedness; linear profile colour. A texel holds zero (
 u32 `2 * row + 1` (one rectangle) or an even `2 * row` (an interned candidate list, needed where
 rotated or sub-texel boundaries share a texel). The shader tests the exact rectangles, so edges
 are analytic at any zoom and the mask resolution never shows. Row layer zero maps world chunks to
-their committed and preview layers. Styles: painted 30 % fill, unpainted and occupied 1.5 %,
-preview 50 %; brighter edges from world-position derivatives, fading over 400–1800 m.
+their committed and preview layers. Styles: painted 30 % fill, occupied 15 % (zone stays readable
+under buildings), unpainted 1.5 %, preview 50 %; brighter edges from world-position derivatives, fading over 400–1800 m.
 
 Refresh: cell, parcel/occupancy revisions and the world-reset epoch; height changes do not touch
 the mask. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
