@@ -162,7 +162,9 @@ impl SimulationNode {
     /// Sparse edits add one expected O(1) lookup per cell and O(A) authored output work.
     /// Indexed queries cost O(K * (log N + local hits)) for K bounded candidates
     /// after index preparation. A dirty building index can require one existing O(N) rebuild.
-    /// Never called per tick.
+    /// Render heights gather once per patch layer: O(P + K log K + T * (log I + K))
+    /// for local inputs P, gathered seams K, indexed tiles I and emitted plants T; previously
+    /// preparation was repeated per plant. Patch extent is bounded by 1024 m. Never per tick.
     #[func]
     pub fn get_decorative_tree_patch(
         &self,
@@ -614,80 +616,89 @@ pub(crate) fn scatter_layer(
     } else {
         Vec::new()
     };
-    let mut remaining = clearances.as_slice();
-    let mut packed = Vec::with_capacity(capacity);
-    // Flatten in cell/insertion order into one reserved payload. Only current terrain height is
-    // sampled for an authored plant's render Y; it keeps its authored position, yaw and scale.
-    for (generated, added) in &records {
-        // Both walks cover the same records in the same order, so this hands each cell exactly
-        // its own verdicts; a desynchronised pass would panic here rather than misplace one.
-        let (cell_clearances, rest) = remaining.split_at(added.len());
-        remaining = rest;
-        for (plant, clear, authored) in generated.iter().map(|plant| (plant, true, false)).chain(
-            added
-                .iter()
-                .zip(cell_clearances)
-                .map(|(p, &c)| (p, c, true)),
-        ) {
-            let &Plant {
-                x,
-                z,
-                yaw,
-                scale,
-                species,
-                variant,
-            } = plant;
-            if !clear {
-                continue;
-            }
-            if x < origin.x || z < origin.y || x >= origin.x + span || z >= origin.y + span {
-                continue;
-            }
-            // An authored plant stands on the visible surface (a yard's pad or a road deck
-            // where one owns the point); a generated plant, cleared off every such surface,
-            // stands on the graded ground (`TERRAIN-07-F`).
-            let height = |x: f32, z: f32| {
-                if authored {
-                    core.get_world_surface_height_internal(Vector2::new(x, z))
-                } else {
-                    ground_height(core, x, z)
-                }
-            };
-            let y = height(x, z);
-            // A tree's root flare is sunk to cover a slope; a clipped hedge or a yard shrub
-            // keeps its authored height and only settles into the lawn.
-            let sink = if brush::PlantClass::of(species, variant) == brush::PlantClass::Landscape {
-                0.05
-            } else {
-                0.25
-            };
-            // A hedge module is never scaled, so its scale lane carries the ground's rise along
-            // the row across its one metre instead, and the renderer shears the module to it.
-            // Without it every module sat level at its own centre and a row climbed in steps.
-            let lane_four = if brush::hedge_index(species, variant).is_some() {
-                let (dx, dz) = (yaw.cos() * 0.5, -yaw.sin() * 0.5);
-                height(x + dx, z + dz) - height(x - dx, z - dz)
-            } else {
-                scale
-            };
-            packed.extend_from_slice(&[
-                x,
-                y - sink,
-                z,
-                yaw,
-                lane_four,
-                pack_species_variant(species, variant),
-            ]);
-        }
+    // One gather for the patch, including a hedge endpoint's half-metre reach. The existing
+    // scratch remains borrowed through packing: calling a core height helper here would borrow
+    // that same thread-local scratch again. Use the prepared surface directly instead.
+    // Generation and clearance above remain parallel; this ordered flatten is the existing
+    // sequential payload boundary. Empty patches need no preparation.
+    if capacity == 0 {
+        return Vec::new();
     }
-    packed
-}
-
-// The graded ground the terrain renders at a point (`TERRAIN-07-F`). The site index must be
-// ready.
-fn ground_height(core: &SimCore, x: f32, z: f32) -> f32 {
     core.with_graded_surface(|surface, scratch| {
-        surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
+        let reach = f64::from(span) * 0.5;
+        surface.gather_near(
+            f64::from(origin.x) + reach,
+            f64::from(origin.y) + reach,
+            reach + 0.51,
+            scratch,
+        );
+        let mut remaining = clearances.as_slice();
+        let mut packed = Vec::with_capacity(capacity);
+        // Flatten in cell/insertion order into one reserved payload. Only current terrain height is
+        // sampled for an authored plant's render Y; it keeps its authored position, yaw and scale.
+        for (generated, added) in &records {
+            // Both walks cover the same records in the same order, so this hands each cell exactly
+            // its own verdicts; a desynchronised pass would panic here rather than misplace one.
+            let (cell_clearances, rest) = remaining.split_at(added.len());
+            remaining = rest;
+            for (plant, clear, authored) in generated.iter().map(|plant| (plant, true, false)).chain(
+                added
+                    .iter()
+                    .zip(cell_clearances)
+                    .map(|(p, &c)| (p, c, true)),
+            ) {
+                let &Plant {
+                    x,
+                    z,
+                    yaw,
+                    scale,
+                    species,
+                    variant,
+                } = plant;
+                if !clear {
+                    continue;
+                }
+                if x < origin.x || z < origin.y || x >= origin.x + span || z >= origin.y + span {
+                    continue;
+                }
+                // An authored plant stands on the visible surface (a yard's pad or a road deck
+                // where one owns the point); a generated plant, cleared off every such surface,
+                // stands on the graded ground (`TERRAIN-07-F`).
+                let mut height = |x: f32, z: f32| {
+                    if authored {
+                        surface.surface_height_near(f64::from(x), f64::from(z), scratch) as f32
+                    } else {
+                        surface.ground_height_near(f64::from(x), f64::from(z), scratch) as f32
+                    }
+                };
+                let y = height(x, z);
+                // A tree's root flare is sunk to cover a slope; a clipped hedge or a yard shrub
+                // keeps its authored height and only settles into the lawn.
+                let sink = if brush::PlantClass::of(species, variant) == brush::PlantClass::Landscape {
+                    0.05
+                } else {
+                    0.25
+                };
+                // A hedge module is never scaled, so its scale lane carries the ground's rise along
+                // the row across its one metre instead, and the renderer shears the module to it.
+                // Without it every module sat level at its own centre and a row climbed in steps.
+                let lane_four = if brush::hedge_index(species, variant).is_some() {
+                    let (dx, dz) = (yaw.cos() * 0.5, -yaw.sin() * 0.5);
+                    height(x + dx, z + dz) - height(x - dx, z - dz)
+                } else {
+                    scale
+                };
+                packed.extend_from_slice(&[
+                    x,
+                    y - sink,
+                    z,
+                    yaw,
+                    lane_four,
+                    pack_species_variant(species, variant),
+                ]);
+            }
+        }
+        packed
     })
 }
 

@@ -1813,3 +1813,72 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
         VegetationLayer::Understory
     ));
 }
+
+#[test]
+fn patch_heights_match_per_tree_queries_bitwise() {
+    let mut core = core();
+    // Nonplanar base across storage and GL0 tile boundaries, with a nearby grounded road.
+    let mut heights = core.heightmap.clone_source_dense();
+    let width = core.heightmap.width;
+    for (i, height) in heights.iter_mut().enumerate() {
+        *height += ((i % width) % 7) as f32 * 0.013 + ((i / width) % 5) as f32 * 0.017;
+    }
+    core.heightmap.replace_source_from_dense(&heights).unwrap();
+    prepare_sites(&mut core);
+    vegetation_test_path(
+        &mut core,
+        Vector2::new(-150.0, 0.0),
+        Vector2::new(150.0, 0.0),
+        1,
+    );
+    core.transit_network.roadbed.compile_dirty(&core.region_graph);
+    core.terrain_query_index
+        .rebuild_all(&core.transit_network.roadbed, &core.allocator);
+    assert!(line_at(
+        &mut core,
+        Vector2::new(-65.0, -70.0),
+        Vector2::new(-60.0, -70.0),
+        17,
+        0,
+    ) > 0);
+    let authored = authored(&core);
+    assert!(!authored.is_empty());
+    for span in [127.5, 510.0, 1024.0] {
+        let origin = Vector2::splat(-span * 0.5);
+        for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
+            let (cell_m, _) = grid(&core, layer);
+            let canopy = layer == VegetationLayer::Canopy;
+            let salt = if canopy { CANOPY_SALT } else { UNDERSTORY_SALT };
+            let packed = scatter_layer(&core, origin, span, cell_m, salt, canopy);
+            assert!(!packed.is_empty());
+            for record in packed.as_chunks::<6>().0 {
+                let (x, z) = (record[0], record[2]);
+                let is_authored = authored.iter().any(|plant| plant.x == x && plant.z == z);
+                let height = |x, z| {
+                    core.with_graded_surface(|surface, scratch| {
+                        if is_authored {
+                            surface.surface_height_at(f64::from(x), f64::from(z), scratch) as f32
+                        } else {
+                            surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
+                        }
+                    })
+                };
+                let packed_species = record[5] as u8;
+                let (species, variant) = (packed_species & 3, packed_species >> SPECIES_BITS);
+                let sink = if brush::PlantClass::of(species, variant) == brush::PlantClass::Landscape {
+                    0.05
+                } else {
+                    0.25
+                };
+                assert_eq!(record[1].to_bits(), (height(x, z) - sink).to_bits());
+                if brush::hedge_index(species, variant).is_some() {
+                    let (dx, dz) = (record[3].cos() * 0.5, -record[3].sin() * 0.5);
+                    assert_eq!(
+                        record[4].to_bits(),
+                        (height(x + dx, z + dz) - height(x - dx, z - dz)).to_bits(),
+                    );
+                }
+            }
+        }
+    }
+}

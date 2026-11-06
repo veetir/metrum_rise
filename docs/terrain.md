@@ -13862,3 +13862,27 @@ Optional later only:
 
 - richer river-path / channel authoring if the current water-tool workflow later proves
   insufficient for map making
+
+
+## Idle and moving-camera CPU (2026-11-06)
+
+- The water reflection plane vote (`water_reflection.gd` `_vote_planes`) keeps its last levels
+  while the camera pose, projection, viewport and the terrain/water revisions
+  (`get_water_reflection_sources`) are unchanged, and skips the ray march in a world with no
+  stored water depth (O(1) from the sparse grid's chunk count). A changed wet view still marches
+  O(rays * reach / 4 m) with the same result. Tree reflection proxies sync only when a mirror draws.
+- `SparseChunkGrid` hashes chunk keys with the crate's `foldhash` fixed state instead of SipHash.
+- `get_decorative_tree_patch` gathers the graded-surface query once per patch layer
+  (`gather_near`, then `ground_height_near` / `surface_height_near` per plant) instead of
+  preparing it per plant; heights are bitwise equal to the per-point path (test in
+  `vegetation_api/tests.rs`).
+- Matched release runs, M2 Pro, 1080p, Kuopio, weather off, two runs each, before -> after:
+  `pan_high` frame p99 20.3-26.1 -> 18.0-18.4 ms, max 33.4-34.4 -> 19.2-19.7 ms, frames over
+  33 ms 1-2 -> 0; `orbit_high` p99 27.9-29.0 -> 17.7-18.4 ms, max 33.5-34.4 -> 18.7-19.2 ms,
+  1-2 -> 0; frame p50 about 1.1 ms lower on both paths. Static `obl2500` and whole-map views are
+  unchanged (13.3 ms; 13.8-16.6 ms).
+- 30 FPS cap with vsync: Godot 4.7.2 sleeps to an integer `1000000 / max_fps` microsecond deadline
+  (`OS::add_frame_delay`) and Metal separately gets `1 / max_fps` as the minimum presentation
+  duration, so a late frame or the sleep phase can miss a display interval and frames alternate
+  between vsync counts. Not changed: the next step is to compare vsync with no cap against a
+  30 FPS cap with vsync off on the target display.

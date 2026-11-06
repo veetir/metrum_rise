@@ -6,6 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Reflection votes now skip unchanged views and dry worlds; vegetation patch heights reuse one
+graded query window per layer. Camera-motion bookkeeping and 30 FPS pacing remain under
+investigation ([CPU contracts and measurements](terrain.md#idle-and-moving-camera-cpu-2026-11-06)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup
