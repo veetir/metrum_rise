@@ -21,6 +21,7 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub(crate) mod cch_adoption;
+pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub(crate) mod road_types;
 pub mod topology;
@@ -101,6 +102,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         vehicle_frontage_access,
         median,
         parking,
+        pocket: None,
     }
 }
 
@@ -843,3 +845,5 @@ pub mod test_ped_junction;
 pub mod test_topology;
 /// Automated tests for vehicle U-turn constraints.
 pub mod test_uturn;
+#[cfg(test)]
+mod test_pockets;

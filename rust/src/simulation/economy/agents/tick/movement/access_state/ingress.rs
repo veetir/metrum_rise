@@ -227,6 +227,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     graph,
                     pathfind_count,
                     Some((i, "invalid-ingress-replan")),
+                    None,
                     slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),

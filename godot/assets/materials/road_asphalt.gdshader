@@ -6,6 +6,7 @@ render_mode cull_back, depth_draw_opaque;
 // junction asphalt carries world UVs and a zero COLOR.
 
 #include "res://scripts/shaders/ground_paving.gdshaderinc"
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
 #include "res://scripts/shaders/road_surface_finnish.gdshaderinc"
 
 uniform sampler2D detail_texture : filter_linear_mipmap_anisotropic, repeat_enable;
@@ -15,6 +16,8 @@ uniform float lane_width_m = 3.5;
 const float PARKING_LANE_WIDTH_M = 2.5;
 
 varying vec3 world_pos;
+// Sample cloud transmission once per fragment for both direct-light terms.
+varying float cloud_sun;
 // CUSTOM0 is zero on ordinary asphalt; crossings carry metres across/along, age+1, kerb distance.
 varying vec4 crossing;
 
@@ -26,6 +29,7 @@ void vertex() {
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
 void fragment() {
+	cloud_sun = weather_cloud_sun(world_pos);
 	// 8-bit channels arrive as exact integers; alpha >= 128 is road space. Red: forward lanes
 	// (bits 0-2), parking lanes on the left (bit 3) and right (bit 4) kerb, left-hand traffic
 	// (bit 5). Green: backward lanes (bits 0-2), the median's width in half metres (bits 3-7).
@@ -86,7 +90,9 @@ void fragment() {
 }
 
 void light() {
-	DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
-	SPECULAR_LIGHT += fr_sun_specular(NORMAL, LIGHT, VIEW, ROUGHNESS, LIGHT_COLOR, ATTENUATION)
+	// Match terrain and paving: clouds dim direct sun; weather_sun.w exempts moonlight.
+	float attenuation = ATTENUATION * (LIGHT_IS_DIRECTIONAL ? cloud_sun : 1.0);
+	DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, attenuation);
+	SPECULAR_LIGHT += fr_sun_specular(NORMAL, LIGHT, VIEW, ROUGHNESS, LIGHT_COLOR, attenuation)
 		* SPECULAR_AMOUNT;
 }

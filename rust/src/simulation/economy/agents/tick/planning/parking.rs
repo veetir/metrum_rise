@@ -99,6 +99,7 @@ impl ParkingLegQuote {
                             route.extend_from_slice(path);
                             Ok(())
                         },
+                        None,
                     )
                     .map_err(|_| 0_usize)?
                     .1

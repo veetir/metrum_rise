@@ -259,8 +259,17 @@ impl PieceMesh {
     }
 
     /// World positions of one triangle.
+    // The hottest leaf of a chunk emit's height queries (read per candidate triangle), called from
+    // other modules. Three plain reads with `#[inline]`: the `[u32; 3]::map` closure stayed an
+    // outlined call in some codegen partitions.
+    #[inline]
     pub fn triangle_points(&self, triangle: usize) -> [RoadVec3; 3] {
-        self.triangles[triangle].map(|vertex| self.positions[vertex as usize])
+        let [a, b, c] = self.triangles[triangle];
+        [
+            self.positions[a as usize],
+            self.positions[b as usize],
+            self.positions[c as usize],
+        ]
     }
 
     /// Footprint boundary chains.
@@ -702,7 +711,7 @@ const TIP_SHARED_SLOTS: usize = 4;
 
 impl RowLayout {
     // The ground slot `g` where a body layout's left carriageway ends, at the median's kerb.
-    fn median_ground_slot(&self) -> u8 {
+    pub(super) fn median_ground_slot(&self) -> u8 {
         let kinds = &self.kinds[..usize::from(self.band_count)];
         let median = kinds
             .iter()

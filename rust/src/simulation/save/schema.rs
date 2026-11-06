@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 114;
+pub const SAVE_VERSION: i64 = 116;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -269,6 +269,8 @@ CREATE TABLE network_edges(
     median_style INTEGER NOT NULL DEFAULT 0,
     median_width REAL NOT NULL DEFAULT 0,
     no_street_lights INTEGER NOT NULL DEFAULT 0,
+    pocket_end INTEGER NOT NULL DEFAULT 0,
+    pocket_roles INTEGER NOT NULL DEFAULT 0,
     parking INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE network_edge_geometry(
@@ -822,6 +824,7 @@ pub fn node_type_to_i64(value: NodeType) -> i64 {
         NodeType::Airport => 3,
         NodeType::Transfer => 4,
         NodeType::Border => 5,
+        NodeType::LaneTransition => 6,
     }
 }
 
@@ -833,6 +836,7 @@ pub fn node_type_from_i64(value: i64) -> Result<NodeType, SaveLoadError> {
         3 => Ok(NodeType::Airport),
         4 => Ok(NodeType::Transfer),
         5 => Ok(NodeType::Border),
+        6 => Ok(NodeType::LaneTransition),
         _ => Err(SaveLoadError::custom(format!(
             "unknown NodeType value {}",
             value

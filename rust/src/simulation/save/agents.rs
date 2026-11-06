@@ -457,10 +457,12 @@ pub(super) fn validate_loaded_agents(
             agents.target_building[i] = usize::MAX;
             clear = true;
         }
-        // A failed route retains its old cursor while waiting to retry. The empty path
-        // makes it inactive; preserving it keeps an ordinary continuation bit-identical.
+        // A failed route retains its old cursor while waiting to retry, and a walker with no
+        // trip left keeps its lane with the cursor one past its path. The empty path makes it
+        // inactive; preserving it keeps an ordinary continuation bit-identical.
         if agents.current_path_index[i] > agents.current_path[i].len()
             && !loaded_empty_network_path_has_replan_context(agents, i, graph)
+            && !loaded_walker_kept_at_path_end(agents, i)
         {
             clear = true;
         }
@@ -480,7 +482,9 @@ pub(super) fn validate_loaded_agents(
             clear_agent_access_plan(agents, i);
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state(agents, i, graph) {
+            if preserve_loaded_network_retry_state(agents, i, graph)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);
@@ -552,6 +556,27 @@ fn loaded_empty_network_path_has_replan_context(
         && agents.current_node[i] < graph.node_count() as u32
         && agents.current_edge[i] < graph.edge_count()
         && !graph.edge(agents.current_edge[i]).deleted
+}
+
+// A walker whose path ends short of its exit with no plan keeps its road lane and waits at its
+// end (`TRAFFIC-19`, `handle_lane_end`): the lane end has moved its cursor one past the path. Not
+// a stale route: clearing it took the walker off the sidewalk, and the orphan repair then sent it
+// home, which the running game does not (`PERF-13`).
+fn loaded_walker_kept_at_path_end(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit_mode[i] == MODE_WALK
+        && agents.transit[i] == TRANSIT_NETWORK
+        && agents.current_lane_id[i] != usize::MAX
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.current_path_index[i] == agents.current_path[i].len() + 1
+}
+
+// An agent indoors with no plan whose last departure failed waits out `BUILDING_REPLAN_DELAY_S`
+// (`next_replan_time`) before it plans again, a retry timer the running game keeps. Not plan
+// state: zeroing it made a game loaded mid-backoff retry at once.
+fn loaded_departure_backoff(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit[i] == TRANSIT_IN_BUILDING
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.next_replan_time[i] > 0.0
 }
 
 fn preserve_loaded_network_retry_state(
@@ -692,7 +717,9 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_d[i] = 0.0;
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state_without_graph(agents, i) {
+            if preserve_loaded_network_retry_state_without_graph(agents, i)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);

@@ -7,6 +7,10 @@
 ## (`ROAD-74`). Rust decides: hovering a toggle asks for the commit's verdict, and a click
 ## commits only a toggle that verdict accepted. The Road Properties window's lane steppers
 ## (`ROAD-80`) ask the same kind of verdict for the selected roads' lanes and commit on Apply.
+## A junction click also opens the Junction window (`junction_window.gd`) beside the click: its
+## Turn pockets rows (`ROAD-95`, round R5c2) edit each incoming road's pocket, and this tool draws
+## the highlighted row's road from the junction over the requested length and redraws the
+## junction's lanes after an edit or an undo.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -28,7 +32,7 @@ var active: bool = false:
 			selected_edges.clear()
 			_connected_nodes.clear()
 			_clear_node_visuals()
-			selected_node = -1
+			_select_node(-1)
 
 # Edge Selection
 var selected_edges: Array[int] = []
@@ -38,6 +42,10 @@ var _last_hovered: int = -1
 
 var _highlight_mi: MeshInstance3D = null
 var _highlight_tween: Tween = null
+# The Junction window's highlighted road: a strip from the junction over the pocket's length,
+# drawn with the selection highlight's material in its own colour.
+var _pocket_end_mi: MeshInstance3D = null
+const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
 
 # Node Selection
 var selected_node: int = -1
@@ -68,6 +76,14 @@ func _ready():
 	mat.render_priority = 100
 	_highlight_mi.material_override = mat
 	add_child(_highlight_mi)
+	_pocket_end_mi = MeshInstance3D.new()
+	_pocket_end_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var end_mat := mat.duplicate() as StandardMaterial3D
+	end_mat.albedo_color = POCKET_END_COLOR
+	end_mat.emission = Color(POCKET_END_COLOR, 1.0)
+	end_mat.render_priority = 101
+	_pocket_end_mi.material_override = end_mat
+	add_child(_pocket_end_mi)
 
 	drag_line_mesh = MeshInstance3D.new()
 	add_child(drag_line_mesh)
@@ -121,7 +137,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
 				var building_inspector = _get_building_inspector()
 				if edge_idx == -1 and building_inspector and building_inspector.try_inspect(pos, _last_click_screen_pos):
-					selected_node = -1
+					_select_node(-1)
 					_set_selection([])
 					_clear_node_visuals()
 					return
@@ -129,14 +145,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				if nearest_node != -1:
 					if building_inspector:
 						building_inspector.close_window()
-					selected_node = nearest_node
+					_select_node(nearest_node)
 					_set_selection([]) # Clear edge selection
 					_build_node_visuals(selected_node)
 					return
 			
 			# Otherwise we clicked an edge
 			_clear_node_visuals()
-			selected_node = -1
+			_select_node(-1)
 			if edge_idx != -1:
 				var building_inspector = _get_building_inspector()
 				if building_inspector:
@@ -572,3 +588,66 @@ func _clear_highlight() -> void:
 		_highlight_mi.mesh = null
 		var mat := _highlight_mi.material_override as StandardMaterial3D
 		if mat: mat.emission = Color(1, 1, 1)
+
+# ── Junction window (`ROAD-95` turn pockets) ────────────────────────────────
+
+# Selects junction `node` (-1: none) and opens the Junction window beside the click, or closes it.
+func _select_node(node: int) -> void:
+	selected_node = node
+	if not main_ui:
+		return
+	if node == -1:
+		main_ui.hide_junction_window()
+	else:
+		main_ui.show_junction_window(node, _last_click_screen_pos)
+
+## Commits the Junction window's pocket `left` / `right` / `length_m` at end `end` of road `edge`
+## (Rust's `set_road_pocket`, with its undo record: Ctrl+Z) and redraws the junction's lanes,
+## which the pocket changes. Returns whether Rust applied it.
+func set_junction_pocket(edge: int, end: int, left: bool, right: bool, length_m: float) -> bool:
+	if not simulation_node.set_road_pocket(edge, end, left, right, length_m):
+		return false
+	refresh_junction_visuals()
+	return true
+
+## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
+func refresh_junction_visuals() -> void:
+	if selected_node != -1:
+		_build_node_visuals(selected_node)
+
+## Highlights the stretch of `info`'s road (a Junction window row's arm: its polyline from the
+## junction outwards) a pocket of `length_m` takes from the junction, as wide as its widest edge.
+func show_pocket_end(info: Dictionary, length_m: float) -> void:
+	var road: PackedVector3Array = info.get("road", PackedVector3Array())
+	if road.size() < 2:
+		clear_pocket_end()
+		return
+	var half_w := float(info.get("width_m", 6.0)) * 0.5 + 1.5
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	var run := 0.0
+	for i in range(road.size() - 1):
+		var a: Vector3 = road[i]
+		var b: Vector3 = road[i + 1]
+		var step := Vector2(b.x - a.x, b.z - a.z).length()
+		if step <= 0.0:
+			continue
+		# The last segment is cut where the length runs out.
+		if run + step > length_m:
+			b = a.lerp(b, (length_m - run) / step)
+		a.y += 0.05
+		b.y += 0.05
+		var tang: Vector3 = (b - a).normalized()
+		var lat := Vector3(-tang.z, 0.0, tang.x) * half_w
+		im.surface_add_vertex(a - lat); im.surface_add_vertex(a + lat); im.surface_add_vertex(b + lat)
+		im.surface_add_vertex(a - lat); im.surface_add_vertex(b + lat); im.surface_add_vertex(b - lat)
+		run += step
+		if run >= length_m:
+			break
+	im.surface_end()
+	_pocket_end_mi.mesh = im
+
+## Removes that highlight.
+func clear_pocket_end() -> void:
+	if _pocket_end_mi:
+		_pocket_end_mi.mesh = null

@@ -148,18 +148,30 @@ impl RoadProfile {
         } else {
             Level::Ground
         };
-        // Outer offsets of the curb or shoulder and of the sidewalk, mirrored on the left.
-        let curb_m = half_carriageway + curb_width;
-        let sidewalk_m = half_carriageway + curb_width + sidewalk_width;
+        // The carriageway's edges: centred, or moved by a pocket's kerb shift (`ROAD-95`), which
+        // moves one kerb by a lane and keeps the other. The split between the two carriageway
+        // bands stays on the centreline (the shift is half a lane, under the half width), so
+        // each side keeps one core band.
+        let shift_m = edge.kerb_shift_m();
+        let (left_m, right_m) = if shift_m == 0.0 {
+            (-half_carriageway, half_carriageway)
+        } else {
+            (shift_m - half_carriageway, shift_m + half_carriageway)
+        };
+        // Offsets of the curb or shoulder and of the sidewalk outside each edge; a centred
+        // profile mirrors exactly.
+        let (left_curb_m, right_curb_m) = (left_m - curb_width, right_m + curb_width);
+        let (left_sidewalk_m, right_sidewalk_m) =
+            (left_curb_m - sidewalk_width, right_curb_m + sidewalk_width);
         if sidewalk_width > 0.0 {
-            push(BandKind::Sidewalk, -sidewalk_m, -curb_m, raised);
+            push(BandKind::Sidewalk, left_sidewalk_m, left_curb_m, raised);
         }
-        push(BandKind::CurbOrShoulder, -curb_m, -half_carriageway, raised);
-        push(BandKind::Carriageway, -half_carriageway, 0.0, Level::Ground);
-        push(BandKind::Carriageway, 0.0, half_carriageway, Level::Ground);
-        push(BandKind::CurbOrShoulder, half_carriageway, curb_m, raised);
+        push(BandKind::CurbOrShoulder, left_curb_m, left_m, raised);
+        push(BandKind::Carriageway, left_m, 0.0, Level::Ground);
+        push(BandKind::Carriageway, 0.0, right_m, Level::Ground);
+        push(BandKind::CurbOrShoulder, right_m, right_curb_m, raised);
         if sidewalk_width > 0.0 {
-            push(BandKind::Sidewalk, curb_m, sidewalk_m, raised);
+            push(BandKind::Sidewalk, right_curb_m, right_sidewalk_m, raised);
         }
         profile
     }
@@ -172,8 +184,17 @@ impl RoadProfile {
     /// has width for any width above zero and all three collapse onto the line at zero. The
     /// offsets mirror exactly: the edge reversed gives the mirrored profile bit for bit, so a
     /// pass-through pair's spans share their row. Only for an edge with a raised median.
-    /// `O(B)`, no allocation.
+    /// [`Self::body_for_edge_edges`] of [`MedianEdges::centred`]. `O(B)`, no allocation.
     pub fn body_for_edge(edge: &Edge, median_m: f32) -> Self {
+        Self::body_for_edge_edges(edge, MedianEdges::centred(edge.lane_group_offset(), median_m))
+    }
+
+    /// The body profile of a divided span whose raised median lies between `edges` (`ROAD-80`,
+    /// `ROAD-95`): [`Self::body_for_edge`]'s bands with the median's two edges anywhere, as a
+    /// left turn pocket's narrowing places them. The kerbs are [`MEDIAN_KERB_WIDTH_M`] wherever
+    /// the median is at least its authored width and scale with it below (a nose). Only for an
+    /// edge with a raised median. `O(B)`, no allocation.
+    pub fn body_for_edge_edges(edge: &Edge, edges: MedianEdges) -> Self {
         let mouth = Self::for_edge(edge);
         let authored_m = edge.median.map_or(0.0, |median| median.width_m);
         debug_assert!(
@@ -185,15 +206,17 @@ impl RoadProfile {
             .iter()
             .position(|band| band.kind == BandKind::Carriageway)
             .expect("a car road has a carriageway");
-        let centre_m = edge.lane_group_offset();
-        let half_m = median_m * 0.5;
+        let MedianEdges {
+            left_m,
+            right_m,
+            width_m,
+        } = edges;
         let kerb_m = if authored_m > 0.0 {
-            MEDIAN_KERB_WIDTH_M * (median_m / authored_m)
+            MEDIAN_KERB_WIDTH_M * (width_m / authored_m).min(1.0)
         } else {
             0.0
         };
         // Left to right: the inner edges of the two carriageways, then the median's own edges.
-        let (left_m, right_m) = (centre_m - half_m, centre_m + half_m);
         let (median_start_m, median_end_m) = (left_m + kerb_m, right_m - kerb_m);
         let mut profile = mouth;
         profile.len = 0;
@@ -244,6 +267,26 @@ impl RoadProfile {
             .fold(0.0, f32::max)
     }
 
+    /// Distances from the centerline to the outer carriageway boundary and to the outermost band
+    /// boundary on one side (`positive`: the positive lateral side), in metres; the carriageway
+    /// distance is zero for a footpath. Equal on both sides of a centred profile, apart on a
+    /// pocket edge's (`ROAD-95`).
+    pub fn side_half_widths_m(&self, positive: bool) -> (f32, f32) {
+        let reach = |band: &ProfileBand| {
+            if positive { band.end_m } else { -band.start_m }
+        };
+        let carriageway = self
+            .bands()
+            .iter()
+            .filter(|band| band.kind == BandKind::Carriageway)
+            .map(reach)
+            .fold(0.0, f32::max);
+        (
+            carriageway,
+            self.bands().iter().map(reach).fold(0.0, f32::max),
+        )
+    }
+
     /// Distance from the centerline to the outer carriageway boundary, in metres; zero for a
     /// footpath.
     pub fn carriageway_half_width_m(&self) -> f32 {
@@ -252,6 +295,100 @@ impl RoadProfile {
             .filter(|band| band.kind == BandKind::Carriageway)
             .map(|band| band.start_m.abs().max(band.end_m.abs()))
             .fold(0.0, f32::max)
+    }
+}
+
+/// Where a divided span's raised median lies in one section row, in the edge's forward frame
+/// (`ROAD-80`, `ROAD-95`): its left and right edges, kerbs included, and its width. Centred on
+/// the line between the lane groups everywhere except over a left turn pocket's narrowing,
+/// where one edge moves; the width is carried apart from the edges so a centred median's kerbs
+/// keep their bits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MedianEdges {
+    /// The median's left edge (the inner edge of the left carriageway), in metres.
+    pub left_m: f32,
+    /// The median's right edge, in metres.
+    pub right_m: f32,
+    /// The median's width, `right_m - left_m` up to rounding, in metres.
+    pub width_m: f32,
+}
+
+impl MedianEdges {
+    /// A median `width_m` wide centred on `centre_m`. `O(1)`.
+    pub fn centred(centre_m: f32, width_m: f32) -> Self {
+        let half_m = width_m * 0.5;
+        Self {
+            left_m: centre_m - half_m,
+            right_m: centre_m + half_m,
+            width_m,
+        }
+    }
+}
+
+/// Over how many metres from its transition a left turn pocket's span narrows the raised median
+/// by a lane (`ROAD-95`, D3): D4's shortest taper, on the pocket span alone, since a left
+/// pocket's transition passes through with no node piece to split it over.
+pub(crate) const LEFT_POCKET_TAPER_M: f32 = 12.0;
+
+/// A left turn pocket's median narrowing on its edge (`ROAD-95`, D3), for an edge whose raised
+/// median a pocket lane narrows (`Edge::median_pocket_lanes`): the end at its transition, the
+/// median's edges there (the base road's, in this edge's forward frame) and which edge moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PocketNarrowing {
+    /// The edge's end at the transition node, opposite the pocket's junction.
+    pub(crate) end: crate::simulation::network::roadbed::EdgeEnd,
+    /// The median at the transition: this edge's own, its moving edge a lane further out.
+    pub(crate) at_transition: MedianEdges,
+    /// Whether the moving edge is the right (positive) one.
+    pub(crate) right_moves: bool,
+}
+
+impl PocketNarrowing {
+    /// The narrowing of `edge`'s median, or `None` without a pocket lane in its median. `O(1)`.
+    pub(crate) fn of(edge: &Edge) -> Option<Self> {
+        use crate::simulation::network::roadbed::EdgeEnd;
+        if edge.median_pocket_lanes() == 0 {
+            return None;
+        }
+        let pocket = edge.pocket?;
+        let median = edge.median?;
+        // The inner lanes of the forward group lie towards the line between the groups from the
+        // driving side: the median's right edge under right-hand traffic, its left one for the
+        // backward group.
+        let forward = pocket.end == EdgeEnd::End;
+        let right_moves = forward != config::DRIVE_ON_LEFT;
+        let own = MedianEdges::centred(edge.lane_group_offset(), median.width_m);
+        let lane_m = f32::from(edge.median_pocket_lanes()) * config::LANE_WIDTH;
+        let at_transition = if right_moves {
+            MedianEdges {
+                right_m: own.right_m + lane_m,
+                width_m: median.width_m + lane_m,
+                ..own
+            }
+        } else {
+            MedianEdges {
+                left_m: own.left_m - lane_m,
+                width_m: median.width_m + lane_m,
+                ..own
+            }
+        };
+        Some(Self {
+            end: match pocket.end {
+                EdgeEnd::Start => EdgeEnd::End,
+                EdgeEnd::End => EdgeEnd::Start,
+            },
+            at_transition,
+            right_moves,
+        })
+    }
+
+    /// The narrowing `edge`'s span carries from its transition's mouth: [`Self::of`] where the
+    /// transition passes through (a left pocket alone). Beside a kerb pocket, whose kerb shift
+    /// lays the transition out, the transition's node piece narrows the median between its two
+    /// mouths instead, over the layout's taper, and the left pocket lane forks off there as the
+    /// kerb pocket's does (`ROAD-95` round R5b1a); the span keeps its own median. `O(1)`.
+    pub(crate) fn on_span(edge: &Edge) -> Option<Self> {
+        Self::of(edge).filter(|_| edge.kerb_shift_m() == 0.0)
     }
 }
 

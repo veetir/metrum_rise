@@ -4,15 +4,17 @@
 
 use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID,
-    ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
+    ACCESS_WALK_STRANDED, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
-use super::super::super::lane_nav::lane_terminal_node;
+use super::super::super::lane_nav::{lane_hosts_turn_preparation, lane_terminal_node};
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_immigration_trip, plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_border_network_replan,
+    plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
+use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
@@ -20,12 +22,16 @@ use super::walk_home::{give_up_trip, retry_home, retry_home_without_lane};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::traffic_log;
 use std::sync::atomic::AtomicU32;
 
 /// Runs the pre-movement replan gates and returns whether the agent may keep moving this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn prepare_network_replan(
     i: usize,
     sim_time: f32,
@@ -64,6 +70,9 @@ pub(super) unsafe fn prepare_network_replan(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn bootstrap_immigration_trip(
     i: usize,
     sim_time: f32,
@@ -127,6 +136,9 @@ unsafe fn bootstrap_immigration_trip(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn ensure_exact_access_plan(
     i: usize,
     sim_time: f32,
@@ -185,6 +197,7 @@ unsafe fn ensure_exact_access_plan(
             graph,
             pathfind_count,
             Some((i, "exact-access-replan")),
+            None,
             slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
@@ -224,6 +237,118 @@ unsafe fn ensure_exact_access_plan(
     }
 }
 
+/// Replans car `i` once after it followed a missed turn (`follow_missed_turn`), which leaves it
+/// with a valid plan and no node path on the connector or road lane that turn entered. It plans
+/// from that road's end, so it chooses the road's next lane early, and keeps driving: a
+/// destination car through `plan_network_replan` with its access flags kept, a freight car
+/// through `plan_border_network_replan`. Called by the lane-end handler after an entry, so only a
+/// car that entered with an empty path pays the checks: a zero-hop trip (its detach node at that
+/// road's end, or its detach lane on that road) is left alone. A failed replan sets the replan
+/// backoff and changes nothing else; the car drives on, and the empty-path replan at the next lane
+/// end stays the last resort. Cost: O(1) checks, one route query on a missed turn. Out of line:
+/// it runs only at lane ends.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(never)]
+pub(super) unsafe fn replan_after_missed_turn(
+    i: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let flags = *slices.access_flags.get(i);
+        if *slices.tmode.get(i) != MODE_CAR
+            || flags & ACCESS_PLAN_VALID == 0
+            || !slices.path.get(i).is_empty()
+            || sim_time < *slices.next_replan_time.get(i)
+        {
+            return;
+        }
+        // The road lane the car is on, or the one its connector leads onto.
+        let lanes = &transit_network.lane_system.lanes;
+        let mut lane_id = *slices.lane_id.get(i);
+        let Some(mut lane) = lanes.get(lane_id) else {
+            return;
+        };
+        if lane.edge_id == usize::MAX {
+            let Some(&road) = lane.next_lanes.first() else {
+                return;
+            };
+            (lane_id, lane) = (road, &lanes[road]);
+        }
+        let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
+            return;
+        };
+        // On a road too short to change lanes the route must leave the node on a road this
+        // lane reaches; a longer road lets the preparation choose the lane (`TRAFFIC-23`, S3).
+        let first_lane =
+            (!lane_hosts_turn_preparation(lane_id, transit_network)).then_some(lane_id);
+        let target_building = *slices.tgt_b.get(i);
+        let replanned = if target_building == usize::MAX {
+            let border = *slices.freight_target_border_node.get(i);
+            if flags & ACCESS_FREIGHT_BORDER_DESTINATION == 0 || node == border {
+                return;
+            }
+            plan_border_network_replan(
+                node,
+                lane.edge_id,
+                border,
+                graph,
+                transit_network,
+                pathfind_count,
+                first_lane,
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_some()
+        } else {
+            if node == *slices.planned_detach_n.get(i)
+                || transit_network
+                    .lane_system
+                    .lanes
+                    .get(*slices.planned_detach_lane.get(i) as usize)
+                    .is_some_and(|detach| detach.edge_id == lane.edge_id)
+            {
+                return;
+            }
+            plan_network_replan(
+                node,
+                lane.edge_id,
+                None,
+                target_building,
+                MODE_CAR,
+                flags,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                Some((i, "missed-turn-replan")),
+                first_lane,
+                slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_ok()
+        };
+        if !replanned {
+            *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+            traffic_log!(
+                "[MISSED_TURN_REPLAN_FAILED] agent={} node={} lane={} target_bldg={} retry_after_s={:.1}",
+                i,
+                node,
+                lane_id,
+                target_building,
+                NETWORK_REPLAN_DELAY_S,
+            );
+        }
+    }
+}
+
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn repair_stale_detach_plan(
     i: usize,
     sim_time: f32,
@@ -341,6 +466,7 @@ unsafe fn repair_stale_detach_plan(
             graph,
             pathfind_count,
             Some((i, "stale-detach-replan")),
+            None,
             slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {

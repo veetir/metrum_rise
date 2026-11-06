@@ -253,7 +253,7 @@ loads. The Kuopio fixture is re-recorded in format 113 with
 `record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
 edges, and every table's row count is unchanged; `placements.json` is re-pinned.
 
-Save format 114 (`PARK-01`/`PARK-02`/`PARK-05`, merged with `ROAD-101` on 2026-11-04) is `dev`
+On the parking branch, save format 114 (`PARK-01`/`PARK-02`/`PARK-05`, merged with `ROAD-101` on 2026-11-04) is `dev`
 113 + 1 (the parking branch had used 110–114), current-only, with no migration. It adds the
 `parking_state` table (parking ownership, custody, claims, itinerary/recovery state and economy
 endpoint quote stamps, [`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)) and
@@ -262,6 +262,33 @@ endpoint quote stamps, [`traffic.md`](traffic.md#resident-parking-trips-park-02-
 Each parking lane is included in the stored `width`. The Kuopio fixture is re-recorded in format
 114 with `record_kuopio_reference_save`: every table's row count matches both parents' fixtures,
 the column is 0 on every edge, and `placements.json` is re-pinned.
+
+On upstream, save format 114 (`ROAD-94`, round R4a1, 2026-11-04) changes no table: the default junction lane
+use builds one vehicle connector per allowed lane pair instead of every pair
+([`roads.md`](roads.md#default-junction-lane-use-road-94)), and a save stores its connectors in
+`saved_lanes`, so a format-113 save would load connectors the rebuild no longer makes. The
+version bump refuses it; there is no repair. The per-lane turn-preparation flag is derived on
+every lane rebuild and never saved. The Kuopio fixture is re-recorded in format 114: `sqldiff`
+shows the version and `saved_lanes` only (116 connector rows deleted at the nodes of its 17
+2+2 edges, 1,524 rows renumbered; 2,310 -> 2,194 rows), every other table identical
+(`lane_connections` 1,416 rows both); `placements.json` is re-pinned.
+
+Save format 115 (`ROAD-95`, round R5a1, 2026-11-04) adds two `network_edges` columns for a road's
+turn pocket, `pocket_end` (0 none, 1 start, 2 end) and `pocket_roles` (bit 1 left, bit 2 right),
+and node type 6, `LaneTransition` ([`roads.md`](roads.md#turn-pockets-road-95)). A pocket that
+`Edge::validate_pocket` refuses fails the load, as an invalid median does; there is no repair and
+no older save loads. The Kuopio fixture is re-recorded in format 115: `sqldiff` shows only the
+version and the two new columns (0 on all 70 edges), every table's row count is unchanged, and
+`placements.json` is re-pinned.
+
+The merged save format is 116, above both parents. It combines parking ownership, trips and
+quote state with upstream's default lane connectors and turn pockets. After `no_street_lights`,
+`network_edges` stores `pocket_end`, `pocket_roles`, then `parking`. Both parents supported only
+their current version and provided no migrations; 116 retains this policy and rejects older
+versions. The Kuopio fixture is re-recorded in format 116 with `record_kuopio_reference_save`:
+every table's row count matches upstream's format-115 fixture (`saved_lanes` 2,222), plus the
+parking branch's `parking_state` (1 row) and `building_detached_poses` (0 rows); `placements.json`
+is re-pinned.
 
 ## Scheduler
 

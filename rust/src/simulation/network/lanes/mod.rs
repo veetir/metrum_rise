@@ -16,6 +16,7 @@ mod bounds;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
+mod lane_use;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -26,7 +27,18 @@ pub mod vehicle_junctions;
 
 pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
+pub(crate) use lane_use::{
+    approach_arrow_masks, approach_group, approach_needs_lane_choice, approach_offers_turns,
+    lane_rank, pocket_fork_sources,
+};
+#[cfg(test)]
+pub(crate) use lane_use::transition_needs_lane_choice;
 pub use successors::LaneSuccessors;
+
+/// Length of the solid zone before a junction on an approach whose lanes serve different
+/// movements (`ROAD-94`): no lane change starts in its last this many metres, and its dividers
+/// are painted solid there.
+pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +127,11 @@ pub struct Lane {
     pub next_lanes: LaneSuccessors,
     /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
     pub node_id: usize,
+    /// Length in metres of the solid approach zone at the lane's end, where no lane change
+    /// starts: [`APPROACH_SOLID_LENGTH_M`] on a road lane approaching a node whose lanes serve
+    /// different movements (a car picks its lane before the node, `ROAD-94`), else 0. Written by
+    /// the connector builder on every rebuild, cleared on retired lanes, never saved.
+    pub solid_zone_m: f32,
 }
 
 impl Default for Lane {
@@ -131,6 +148,7 @@ impl Default for Lane {
             lane_type: LaneType::Vehicle,
             next_lanes: LaneSuccessors::default(),
             node_id: usize::MAX,
+            solid_zone_m: 0.0,
         }
     }
 }
@@ -187,6 +205,17 @@ impl LaneSystem {
         self.crosswalks.clear();
         self.surface_synced_len = 0;
         self.lifted_since = None;
+    }
+
+    /// Whether road lane `lane_id` approaches a node where its lanes serve different movements
+    /// (default lane use with a lane choice, or a multi-lane approach to a whitelisted node), so
+    /// a car must be on a lane that makes its turn before the node: its solid approach zone
+    /// ([`Lane::solid_zone_m`]) is not empty. `O(1)`.
+    #[inline]
+    pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
+        self.lanes
+            .get(lane_id)
+            .is_some_and(|lane| lane.solid_zone_m > 0.0)
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when

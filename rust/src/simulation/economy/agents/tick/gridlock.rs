@@ -577,6 +577,7 @@ impl AgentSystem {
                 graph,
                 network,
                 &self.pathfind_count,
+                None,
             )
         } else if agents.target_building[i] != usize::MAX {
             plan_network_replan(
@@ -590,6 +591,7 @@ impl AgentSystem {
                 network,
                 graph,
                 &self.pathfind_count,
+                None,
                 None,
                 // Keep the claimed driveway endpoint, including a bay away from the door.
                 parking.and_then(|p| {

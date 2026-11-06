@@ -25,7 +25,7 @@ use super::layout::{
     LayoutError, LayoutScratch,
 };
 use super::mesh::{SpanEnd, StripKind};
-use super::profile::{Level, ProfileBand, RoadProfile};
+use super::profile::{Level, MedianEdges, PocketNarrowing, ProfileBand, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -643,22 +643,67 @@ pub(super) fn pass_through_crossings(
 pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
 
 // Whether a pass-through node's two arms carry one median, raised when `raised` and painted
-// otherwise, that lines up across it (`ROAD-80`): equal style and width, the line between the
-// lane groups at one place (each arm's offset taken looking away from the node, so the other's
-// is its mirror), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+// otherwise, that lines up across it ([`medians_line_up`]), and both edges are at least
+// `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
 fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool {
-    let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
+    let [a, b] = arms.map(|key| (graph.edge(key.edge), key.end));
+    medians_line_up(a, b, raised)
+        && [a.0, b.0]
+            .iter()
+            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+}
+
+/// Whether two edges leaving one node at ends `a.1` and `b.1` carry one median there, raised
+/// when `raised` and painted otherwise, that lines up across it (`ROAD-80`): equal style and
+/// width, the line between the lane groups at one place (each arm's offset taken looking away
+/// from the node, so the other's is its mirror), or a left turn pocket's narrowing starting there
+/// (`ROAD-95`, [`pocket_narrowing_lines_up`]). A right pocket keeps its edge's lane-group line,
+/// since its kerb shift cancels the pocket lane in [`Edge::lane_group_offset`]. The edge rule of
+/// a node's arms, without their lengths; the pocket edit checks its planned pair by it. `O(1)`.
+pub(crate) fn medians_line_up(a: (&Edge, EdgeEnd), b: (&Edge, EdgeEnd), raised: bool) -> bool {
+    let ((a, a_end), (b, b_end)) = (a, b);
     let outward = |edge: &Edge, end: EdgeEnd| match end {
         EdgeEnd::Start => edge.lane_group_offset(),
         EdgeEnd::End => -edge.lane_group_offset(),
     };
-    a.median
+    let lines_up = a
+        .median
         .zip(b.median)
         .is_some_and(|(median, other)| median.is_raised() == raised && median == other)
-        && outward(a, a_end) == -outward(b, b_end)
-        && [a, b]
-            .iter()
-            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+        && outward(a, a_end) == -outward(b, b_end);
+    lines_up || raised && pocket_narrowing_lines_up([(a, a_end), (b, b_end)])
+}
+
+// Whether one arm is a left turn pocket's edge whose median narrowing starts at this node and
+// whose median there has exactly the other arm's edges (`ROAD-95`, D3): the pocket's transition,
+// where its median continues the base road's of one style, the edge on the far side in line and
+// the pocket side a lane further out, so both spans' shared row agrees bit for bit. The other
+// arm's median is its own, centred. `O(1)`.
+fn pocket_narrowing_lines_up(arms: [(&Edge, EdgeEnd); 2]) -> bool {
+    // A median's edges looking away from the node: mirrored at an edge's end.
+    let outward = |edges: MedianEdges, end: EdgeEnd| match end {
+        EdgeEnd::Start => (edges.left_m, edges.right_m),
+        EdgeEnd::End => (-edges.right_m, -edges.left_m),
+    };
+    let lines_up = |(pocket, pocket_end): (&Edge, EdgeEnd), (base, base_end): (&Edge, EdgeEnd)| {
+        let (Some(narrowing), Some(median), Some(base_median)) =
+            (PocketNarrowing::of(pocket), pocket.median, base.median)
+        else {
+            return false;
+        };
+        let (left, right) = outward(narrowing.at_transition, pocket_end);
+        let (base_left, base_right) = outward(
+            MedianEdges::centred(base.lane_group_offset(), base_median.width_m),
+            base_end,
+        );
+        narrowing.end == pocket_end
+            && base.median_pocket_lanes() == 0
+            && median.style == base_median.style
+            && base_median.is_raised()
+            && (left, right) == (-base_right, -base_left)
+    };
+    let [a, b] = arms;
+    lines_up(a, b) || lines_up(b, a)
 }
 
 /// Whether a raised median runs on through `node` without a nose (`ROAD-80`): a pass-through
@@ -683,6 +728,33 @@ fn median_runs_through(graph: &RegionGraph, node: u32, raised: bool) -> bool {
     })
 }
 
+/// Whether a raised median runs on through the node piece of lane transition `node` without a
+/// nose (`ROAD-95`): a laid-out transition (a right turn pocket's, its profiles differing by the
+/// pocket lane on the kerb side) whose two road arms carry one raised median that lines up
+/// ([`median_lines_up`]). Such a transition has no crossing (D6), so nothing opens the median;
+/// its piece carries the median between its two mouths' body rows, each span's own median, and
+/// both spans end there without a nose; beside a left pocket too, the piece narrows it by a
+/// lane ([`PocketNarrowing::on_span`]). A pass-through transition (a left pocket alone) is
+/// [`median_continues`]'s.
+/// `O(degree)`, `O(1)` at a node of any other type.
+pub(super) fn transition_median_through(graph: &RegionGraph, node: u32) -> bool {
+    if !graph.is_lane_transition(node) {
+        return false;
+    }
+    let Some(incidents) = node_incidents(graph, node) else {
+        return false;
+    };
+    match incidents[..] {
+        [(a, _), (b, _)] => {
+            !passes_through(graph, &incidents)
+                && is_road(graph, a)
+                && is_road(graph, b)
+                && median_lines_up(graph, [a, b], true)
+        }
+        _ => false,
+    }
+}
+
 /// Whether arm `edge` of `node` can cross, so its crossing can be turned on or off (`ROAD-74`):
 /// a car road with sidewalks at a node where two or more road arms meet, which at a pass-through
 /// node must also hold the strip on its span. Whether it crosses is the D8 rule's
@@ -693,7 +765,8 @@ pub(crate) fn crossing_arm_eligible(graph: &RegionGraph, node: u32, edge: usize)
     let Some(incidents) = node_incidents(graph, node) else {
         return false;
     };
-    if ends_a_structure(graph, &incidents) {
+    // A lane transition never crosses (`ROAD-95`, D6): the crossing would span a taper.
+    if ends_a_structure(graph, &incidents) || graph.is_lane_transition(node) {
         return false;
     }
     let span_owned = passes_through(graph, &incidents);
@@ -748,13 +821,21 @@ struct DegreeTwoCrossings {
 // the strip within the half of its edge the far node leaves it (`JunctionLayout` gives each end
 // at most half), or it is not eligible. A default crossing on a layout that cannot hold it moves
 // to the other eligible arm when that arm has no override, and is dropped when it has one
-// ([`NodeArms::layout`]).
+// ([`NodeArms::layout`]). A lane transition (`ROAD-95`, D6) has no crossing at all, overrides
+// included: as at a continuing raised median, a crossing would span the taper, and its arms are
+// not eligible for the toggle ([`crossing_arm_eligible`]).
 fn degree_two_crossings(
     graph: &RegionGraph,
     node: u32,
     arms: [(ArmKey, RoadVec2); 2],
     span_owned: bool,
 ) -> DegreeTwoCrossings {
+    if graph.is_lane_transition(node) {
+        return DegreeTwoCrossings {
+            crosses: [false; 2],
+            fallback: None,
+        };
+    }
     let overrides = &graph.node(node).crosswalk_overrides;
     let fits = |key: ArmKey| {
         !span_owned

@@ -664,6 +664,52 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
             uneven_star(&[(0.0, 2, 1), (90.0, 2, 1), (180.0, 2, 1), (270.0, 2, 1)]),
         ),
     ];
+    // `ROAD-95`: a T whose west arm has a right turn pocket (the junction is node 0, the
+    // transition node 1).
+    fixtures.push((
+        "t_right_pocket".to_string(),
+        super::super::roadbed::fixtures::t_right_pocket(),
+    ));
+    // Round R5b1: a divided four-way whose west arm has a left pocket in its median.
+    fixtures.push((
+        "four_way_2x2_left_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_left_pocket(),
+    ));
+    // Round R5b1a: a right pocket on a divided road, alone and beside a left one; the median
+    // runs through the laid-out transition.
+    fixtures.push((
+        "four_way_2x2_right_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_right_pocket(),
+    ));
+    fixtures.push((
+        "four_way_2x2_left_right_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_left_right_pocket(),
+    ));
+    // Round R5c1: left pockets on undivided roads: the oncoming lanes shift a full lane across
+    // the transition's piece.
+    {
+        use super::super::roadbed::fixtures as pockets;
+        for (name, graph) in [
+            (
+                "four_way_1x1_left_pocket",
+                pockets::four_way_1x1_left_pocket(),
+            ),
+            (
+                "four_way_1x1_left_right_pocket",
+                pockets::four_way_1x1_left_right_pocket(),
+            ),
+            (
+                "undivided_2x2_left_pocket",
+                pockets::undivided_2x2_left_pocket(),
+            ),
+            (
+                "undivided_2x2_left_right_pocket",
+                pockets::undivided_2x2_left_right_pocket(),
+            ),
+        ] {
+            fixtures.push((name.to_string(), graph));
+        }
+    }
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));
@@ -679,7 +725,13 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
         roadbed.compile_dirty(&graph);
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
-        let counts = measure_connectors(&graph, &roadbed, &lanes, [0], true);
+        // A pocket fixture's transition is measured too.
+        let nodes = if name.ends_with("_pocket") {
+            vec![0, 1]
+        } else {
+            vec![0]
+        };
+        let counts = measure_connectors(&graph, &roadbed, &lanes, nodes, true);
         assert!(counts.connectors > 0, "{name}: no connectors measured");
         clean &= counts.clean();
         report.push_str(&counts.report(&name));
@@ -688,4 +740,164 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
         }
     }
     assert!(clean, "junction connector violations:\n{report}");
+}
+
+// Every vehicle turn of `lanes`: (road lane, target road lane, through a connector).
+fn vehicle_turn_pairs(lanes: &LaneSystem) -> Vec<(usize, usize, bool)> {
+    let mut pairs = Vec::new();
+    for (id, lane) in lanes.lanes.iter().enumerate() {
+        if lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle {
+            continue;
+        }
+        for &next in &lane.next_lanes {
+            let successor = &lanes.lanes[next];
+            if successor.edge_id == usize::MAX {
+                pairs.push((id, successor.next_lanes[0], true));
+            } else {
+                pairs.push((id, next, false));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs
+}
+
+// The vehicle turns the connector builder made at `dev` `9f2808bc`, before the default lane use
+// (`ROAD-94`), at every fixture whose approaches have one lane: one lane makes every movement, and
+// the fans of a one-lane approach onto one-lane exits are 1:1, so the lane use keeps each of
+// them (and every U-turn at the arms' dead ends).
+type FixtureTurns = (&'static str, &'static [(usize, usize, bool)]);
+
+const PRE_LANE_USE_TURNS: [FixtureTurns; 7] = [
+    (
+        "four_way_1x1",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (1, 19, true),
+            (6, 0, true),
+            (6, 12, true),
+            (6, 19, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+            (13, 19, true),
+            (18, 0, true),
+            (18, 7, true),
+            (18, 12, true),
+            (19, 18, true),
+        ],
+    ),
+    (
+        "t_1x1",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (6, 0, true),
+            (6, 12, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+        ],
+    ),
+    (
+        "skew_60",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (1, 19, true),
+            (6, 0, true),
+            (6, 12, true),
+            (6, 19, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+            (13, 19, true),
+            (18, 0, true),
+            (18, 7, true),
+            (18, 12, true),
+            (19, 18, true),
+        ],
+    ),
+    (
+        "bend_45",
+        &[(0, 1, true), (1, 7, true), (6, 0, true), (7, 6, true)],
+    ),
+    (
+        "t_one_way",
+        &[(5, 0, true), (6, 5, true), (11, 0, true), (11, 6, true)],
+    ),
+    (
+        "t_beside_arm/false",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (6, 0, true),
+            (6, 12, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+        ],
+    ),
+    (
+        "through_road/false",
+        &[(0, 1, true), (1, 7, true), (6, 0, true), (7, 6, true)],
+    ),
+];
+
+#[test]
+fn single_lane_approaches_keep_every_turn_they_had_before_the_default_lane_use() {
+    let mut pinned = 0;
+    for (name, mut graph) in fixtures() {
+        let Some((_, expected)) = PRE_LANE_USE_TURNS.iter().find(|(pin, _)| *pin == name) else {
+            continue;
+        };
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        assert_eq!(vehicle_turn_pairs(&lanes), *expected, "{name}");
+        pinned += 1;
+    }
+    assert_eq!(pinned, PRE_LANE_USE_TURNS.len());
+}
+
+// Rank of a vehicle lane among its direction's lanes: 0 is the innermost.
+fn lane_rank(lane: &Lane) -> i16 {
+    if lane.lane_idx >= 0 {
+        i16::from(lane.lane_idx)
+    } else {
+        -i16::from(lane.lane_idx) - 1
+    }
+}
+
+#[test]
+fn two_lane_degree_two_continuations_map_lanes_one_to_one() {
+    // A shallow bend (straight sector), a right angle and a sharp bend: each arm offers its
+    // approach one movement, so every lane continues on the exit lane of its own rank.
+    for exit_deg in [30.0, 90.0, 300.0] {
+        let mut graph = star(&[(180.0, 2), (exit_deg, 2)]);
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let pairs = vehicle_turn_pairs(&lanes);
+        let at_hub: Vec<_> = pairs
+            .iter()
+            .filter(|&&(from, to, _)| lanes.lanes[from].edge_id != lanes.lanes[to].edge_id)
+            .collect();
+        assert_eq!(at_hub.len(), 4, "exit {exit_deg}: {pairs:?}");
+        for &&(from, to, _) in &at_hub {
+            assert_eq!(
+                lane_rank(&lanes.lanes[from]),
+                lane_rank(&lanes.lanes[to]),
+                "exit {exit_deg}: {from} -> {to}"
+            );
+            assert!(!lanes.needs_turn_preparation(from));
+        }
+    }
 }

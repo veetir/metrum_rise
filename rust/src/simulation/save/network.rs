@@ -3,7 +3,9 @@
 //! Road graph and lane connection serialization.
 
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
+use crate::simulation::network::graph::{
+    Edge, MedianStyle, RegionGraph, RoadMedian, RoadParking, RoadPocket,
+};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
@@ -45,7 +47,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -60,6 +62,7 @@ pub(super) fn save_network(
                 .get(&canonical_existing_node(graph, edge.end_node)?)
                 .copied()
                 .ok_or_else(|| SaveLoadError::custom("missing saved end node"))?;
+            let (pocket_end, pocket_roles) = RoadPocket::codes(edge.pocket);
             stmt.execute(params![
                 usize_to_i64(saved_id)?,
                 i64::from(start),
@@ -80,6 +83,8 @@ pub(super) fn save_network(
                 i64::from(RoadMedian::style_code(edge.median)),
                 edge.median.map_or(0.0, |median| median.width_m),
                 i64::from(edge.no_street_lights),
+                pocket_end,
+                pocket_roles,
                 edge.parking.code()
             ])?;
         }
@@ -219,7 +224,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, parking FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, parking FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -238,16 +243,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let allowed_types = i64_to_u8(row.get(4)?)?;
             let fwd_lanes = i64_to_u8(row.get(7)?)?;
             let bkw_lanes = i64_to_u8(row.get(8)?)?;
-            // A median loads only as a stroke or an edit could have built it (`ROAD-80`).
-            let median = RoadMedian::from_tool(row.get(16)?, row.get(17)?)
-                .and_then(|median| {
-                    Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, median)
-                        .map(|()| median)
-                })
-                .map_err(|reason| {
-                    SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
-                })?;
-            let parking = RoadParking::from_code(row.get(19)?)
+            let parking = RoadParking::from_code(row.get(21)?)
                 .ok_or("parking_code_out_of_range")
                 .and_then(|parking| {
                     Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking)
@@ -256,11 +252,27 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 .map_err(|reason| {
                     SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
                 })?;
+            let invalid_median = |reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
+            };
+            // Read as stored: a left pocket's edge carries its base road's median a lane
+            // narrower (`ROAD-95`), so the rules check the base road's below.
+            let median = match row.get::<_, i32>(16)? {
+                0 => None,
+                code => Some(RoadMedian {
+                    style: MedianStyle::from_code(code)
+                        .ok_or_else(|| invalid_median("unknown_median_style"))?,
+                    width_m: row.get(17)?,
+                }),
+            };
+            let pocket = RoadPocket::from_codes(row.get(19)?, row.get(20)?).map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
+            })?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
             }
-            graph.add_edge(Edge {
+            let edge = Edge {
                 start_node,
                 end_node,
                 primary_type: transit_type_from_i64(row.get(3)?)?,
@@ -282,7 +294,16 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
                 median,
                 parking,
-            });
+                pocket,
+            };
+            // A median loads only as a stroke or an edit could have built it (`ROAD-80`), and
+            // a pocket only as a pocket edit could have (`ROAD-95`).
+            Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, edge.base_median())
+                .map_err(invalid_median)?;
+            edge.validate_pocket().map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
+            })?;
+            graph.add_edge(edge);
         }
     }
 

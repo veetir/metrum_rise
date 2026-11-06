@@ -55,6 +55,20 @@ pub enum NodeType {
     /// functions as a spawn point if it has at least one non-deleted incident edge (i.e. the
     /// road is actually connected to the city network).
     Border,
+    /// The hidden degree-two node where a road gains a turn pocket (`ROAD-95`): one arm is the
+    /// base road, the other the short pocket edge (`Edge::pocket`). Authored only by the pocket
+    /// edit; every rule that reads it also checks that the node has exactly two live arms
+    /// (`RegionGraph::is_lane_transition`), so a stale type is inert.
+    LaneTransition,
+}
+
+impl NodeType {
+    /// Whether the junction profile solve lays a plane at a node of this type and pins its
+    /// arms to it: a junction, and a lane transition (`ROAD-95`), whose two arms of different
+    /// profiles meet in a laid-out node piece as a plain lane-count change does.
+    pub(crate) fn solves_junction_profile(self) -> bool {
+        matches!(self, Self::Junction | Self::LaneTransition)
+    }
 }
 
 /// Architectural classification of a road edge.

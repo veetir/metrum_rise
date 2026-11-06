@@ -26,8 +26,9 @@ mod walkways;
 
 pub(crate) use arms::{
     NodeArms, crossing_arm_eligible, directions_pass_through, edges_pass_through,
-    is_tunnel_approach, painted_median_continues,
+    is_tunnel_approach, medians_line_up, painted_median_continues,
 };
+pub(crate) use layout::CROSSWALK_DEPTH_M;
 pub(crate) use span::NOSE_CLEARANCE_M;
 pub(crate) use geometry::CoverageTriangle;
 #[cfg(test)]
@@ -44,9 +45,10 @@ pub use lining::{
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
-pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
+pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, MedianEdges, ProfileBand, RoadProfile};
 pub(crate) use profile::{
-    FOOTPATH_MIN_WIDTH_M, SHOULDER_BAND_WIDTH_M, preview_candidate_roadbed_half_width_m,
+    FOOTPATH_MIN_WIDTH_M, LEFT_POCKET_TAPER_M, PocketNarrowing, SHOULDER_BAND_WIDTH_M,
+    preview_candidate_roadbed_half_width_m,
     side_band_width_m, visual_roadbed_half_width_m,
 };
 pub(crate) use query::{GroundedPieceScratch, LocalSurfaceQuery};

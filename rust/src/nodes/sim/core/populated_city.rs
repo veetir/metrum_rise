@@ -375,19 +375,20 @@ fn street_grid_in_world(
     // Cross streets go in one block at a time, so a row meets existing junctions instead of
     // splitting a street that runs the whole city: every split recompiles the longer remainder's
     // span, which made the grid grow with rows × crosses × city side (`ROAD-52`).
+    let arterial = arterial_lanes();
     for i in 0..crosses {
         let x = i as f32 * CROSS_SPACING_M - half_x;
         for block in row_z.windows(2) {
-            add_road(&mut core, (x, block[0]), (x, block[1]));
+            add_road(&mut core, (x, block[0]), (x, block[1]), arterial);
         }
     }
     for (row, &z) in row_z.iter().enumerate() {
-        let (start, end) = match trunk_rows.iter().position(|&trunk| trunk == row) {
-            Some(k) if k % 2 == 0 => (-edge_x, half_x),
-            Some(_) => (-half_x, edge_x),
-            None => (-half_x, half_x),
+        let (start, end, lanes) = match trunk_rows.iter().position(|&trunk| trunk == row) {
+            Some(k) if k % 2 == 0 => (-edge_x, half_x, arterial),
+            Some(_) => (-half_x, edge_x, arterial),
+            None => (-half_x, half_x, 1),
         };
-        add_road(&mut core, (start, z), (end, z));
+        add_road(&mut core, (start, z), (end, z), lanes);
     }
     {
         let core = &mut core;
@@ -401,6 +402,9 @@ fn street_grid_in_world(
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // The grid's lanes, routing and roadbed settle below, with the pockets' pieces.
+    #[cfg(test)]
+    add_perf_pockets(&mut core);
     // The fixture admits households outside frames, so it installs the border connections'
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
@@ -412,11 +416,99 @@ fn street_grid_in_world(
     (core, row_z, half_x)
 }
 
-fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
+// Lanes per direction of the grid's arterials: every cross street and the border trunks. One
+// (the 2-Lane Road) unless a test sets `METRUM_PERF_ARTERIALS=4lane`, which gives them the
+// 4-Lane Road (2 + 2): the `ROAD-94` diagnosis variant, the one populated city whose approaches
+// have lanes to choose. Not a contract tier.
+fn arterial_lanes() -> i32 {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("METRUM_PERF_ARTERIALS") {
+        assert_eq!(value, "4lane", "METRUM_PERF_ARTERIALS is 4lane");
+        return 2;
+    }
+    1
+}
+
+// `METRUM_PERF_POCKETS=right`, `left` or `both` (test builds, `ROAD-95` rounds R5a3 and R5c1): once
+// the street grid is built and before it is zoned, as a player would add them before zoning, a
+// 40 m turn pocket of those roles on every arterial road's end at a junction (a left pocket on
+// these undivided roads moves the oncoming side out by a lane): the border trunks' approaches,
+// and the cross streets' 50 m blocks, which are too short for one (`pocket_road_too_short`).
+// Zoned parcels refuse the widening (`parcel_overlap`), so a built city takes none; and the 1+1
+// row streets get none: their pockets would cost the back-to-back lots behind them (with them the
+// wider grid housed 9,302 residents for 10,000). The requests are listed before the first edit, by edge id and then its
+// end node first, its start second: a pocket at the end keeps the road's id on the part that
+// still reaches its start junction. Prints the placed pockets and the refusals by reason on a
+// `PERF_POCKETS` line. Not a contract tier.
+#[cfg(test)]
+fn add_perf_pockets(core: &mut SimCore) {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use std::collections::BTreeMap;
+
+    let Ok(value) = std::env::var("METRUM_PERF_POCKETS") else {
+        return;
+    };
+    let (left, right) = match value.as_str() {
+        "right" => (false, true),
+        "left" => (true, false),
+        "both" => (true, true),
+        _ => panic!("METRUM_PERF_POCKETS is right, left or both"),
+    };
+    let graph = &core.region_graph;
+    let junction = |node: u32| graph.node_adjacency(graph.get_valid_node(node)).len() >= 3;
+    let requests: Vec<PocketRequest> = (0..graph.edge_count())
+        .filter(|&edge| {
+            let road = graph.edge(edge);
+            !road.deleted && road.fwd_lanes >= 2 && road.bkw_lanes >= 2
+        })
+        .flat_map(|edge| {
+            let road = graph.edge(edge);
+            [
+                (EdgeEnd::End, road.end_node),
+                (EdgeEnd::Start, road.start_node),
+            ]
+            .into_iter()
+            .filter(|&(_, node)| junction(node))
+            .map(move |(end, _)| PocketRequest {
+                edge,
+                end,
+                left,
+                right,
+                body_m: 40.0,
+            })
+        })
+        .collect();
+    let mut placed = 0;
+    let mut refused: BTreeMap<String, u32> = BTreeMap::new();
+    for request in requests {
+        if core.set_road_pocket_internal(request) {
+            placed += 1;
+        } else {
+            let reason = core
+                .last_road_rejection
+                .take()
+                .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+            *refused.entry(reason).or_default() += 1;
+        }
+    }
+    // Each edit rebuilt its lanes locally, appending lane ids; the grid's lanes are rebuilt whole,
+    // numbered as the bulk build and a load number them, so the prepared snapshot's continuation
+    // check compares like with like (it compares raw lane ids).
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    eprintln!(
+        "PERF_POCKETS {}",
+        serde_json::json!({"placed": placed, "refused": refused})
+    );
+}
+
+fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32), lanes: i32) {
     let outcome = core.add_road_internal(
         vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
-        1,
-        1,
+        lanes,
+        lanes,
     );
     assert!(
         outcome.committed,

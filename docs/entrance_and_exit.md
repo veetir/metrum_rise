@@ -485,8 +485,14 @@ Use this exact derived rule:
 
 - `same_side_car_lane_id = car_lane_fwd` and `opposite_side_car_lane_id = car_lane_bkw` when `side == -1`
 - `same_side_car_lane_id = car_lane_bkw` and `opposite_side_car_lane_id = car_lane_fwd` when `side == 1`
-- `same_side_cross_point = edge_pos + normal * (edge.width * 0.5)`
-- `opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5)`
+- `same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(side)`
+- `opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-side)`
+
+`Edge::frontage_half_width_m(side)` is the distance from the centreline to that side's kerb:
+`edge.width * 0.5` bit for bit on any road without a turn pocket; on a pocket edge, whose
+carriageway lies `kerb_shift_m` off its centreline, half the width moved by that shift, so both
+points stand on the true kerbs (`ROAD-95` round R5d3). The building's side offset, its lot's
+front gaps and its site's road tie-in probes read the same per-side kerb.
 
 Then:
 
@@ -934,6 +940,7 @@ Failed planning or replanning must:
   - `pos_x`, `pos_y = origin door_pos`
   - `transit = TRANSIT_ACCESS_EGRESS`
 - If that plan build fails, the agent stays in `IN_BUILDING`, keeps its requested destination/activity, and sets `next_replan_time = sim_time + BUILDING_REPLAN_DELAY_S`.
+- A save keeps that retry time: the loader recognises an agent in `IN_BUILDING` with no plan and `next_replan_time > 0` (`save/agents.rs::loaded_departure_backoff`) and keeps the timer while it clears the plan fields, so a game loaded mid-backoff retries at the same tick as the unsaved one (`SAVE-03`). Before, the loader zeroed the timer and the agent retried at once.
 
 #### `IMMIGRATING`
 

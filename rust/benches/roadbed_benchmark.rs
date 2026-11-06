@@ -11,13 +11,16 @@
 //! mouth sections, core CDT, strips, curb faces, chains, grid and footprint. Arms are 100 m
 //! two-lane roads with sidewalks and crosswalks, 12 m knots, on a 2.5% slope. Targets: a
 //! four-way in 0.1 ms and a six-way in 0.3 ms. `build/t_footpath` adds an 80 m footpath in one
-//! of the T's corners, at sidewalk height (D5). `publish/t_closure` marks a T's node dirty and
-//! compiles its closure: the node piece and its three incident spans.
+//! of the T's corners, at sidewalk height (D5). `build/transition_right_pocket` is a right turn
+//! pocket's laid-out lane transition on a 2+2 road (`ROAD-95`), `_divided` the same on a 5 m
+//! grass median, which its piece carries through (round R5b1a); `build/transition_left_pocket`
+//! a left pocket's on the undivided 2+2 road (round R5c1). `publish/t_closure` marks a T's
+//! node dirty and compiles its closure: the node piece and its three incident spans.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
-use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
+use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, EdgeEnd, RoadbedSystem};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -77,6 +80,14 @@ fn divided(edge: Edge) -> Edge {
     let mut edge = four_lane(edge);
     edge.median = RoadMedian::from_tool(2, 4.0).unwrap();
     edge.width = 18.0;
+    edge
+}
+
+// A 2+2 road with a 5 m kerbed grass median, wide enough for a left pocket (`ROAD-95`).
+fn divided_5m(edge: Edge) -> Edge {
+    let mut edge = four_lane(edge);
+    edge.median = RoadMedian::from_tool(2, 5.0).unwrap();
+    edge.width = 19.0;
     edge
 }
 
@@ -183,6 +194,7 @@ fn edge_through(start_node: u32, end_node: u32, points: Vec<Vector3>) -> Edge {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         parking: Default::default(),
+        pocket: None,
     }
 }
 
@@ -211,6 +223,40 @@ fn bench_roadbed_span(c: &mut Criterion) {
             b.iter(|| black_box(roadbed.build_span_piece(black_box(&graph), edge)))
         });
     }
+
+    // A left turn pocket's 100 m span (`ROAD-95`, D3): a 2+2 road on a 5 m grass median runs
+    // through a lane transition into the pocket edge, whose median narrows to 1.5 m over its
+    // first 12 m (six more rows than `span_100m_divided`'s); a nose at its free end.
+    let mut graph = RegionGraph::new();
+    let (base, body) = (
+        centerline(48.0, Shape::Straight, (10.0, 20.0)),
+        centerline(100.0, Shape::Straight, (58.0, 20.0)),
+    );
+    let start = graph.add_node(base[0], NodeType::Junction);
+    let transition = graph.add_node(body[0], NodeType::LaneTransition);
+    let end = graph.add_node(body[body.len() - 1], NodeType::Junction);
+    graph.add_edge(divided_5m(edge_through(start, transition, base)));
+    let pocket = graph.add_edge(divided_5m(edge_through(transition, end, body)));
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left: true,
+            right: false,
+        }),
+    );
+    let piece = roadbed
+        .build_span_piece(&graph, pocket)
+        .expect("span builds");
+    assert!(piece.mesh().top_triangle_count() > 0);
+    assert_eq!(
+        piece.start_mouth().profile.bands().len(),
+        9,
+        "the median continues through the transition"
+    );
+    group.bench_function(BenchmarkId::new("build", "span_100m_left_pocket"), |b| {
+        b.iter(|| black_box(roadbed.build_span_piece(black_box(&graph), pocket)))
+    });
 
     // Publish one 100 m arm of a T junction: closure, build, chunk index and generation.
     let mut graph = RegionGraph::new();
@@ -307,6 +353,52 @@ fn bench_roadbed_junction(c: &mut Criterion) {
         assert!(piece.expect("node has a piece").mesh().top_triangle_count() > 0);
         group.bench_function(BenchmarkId::new("build", name), |b| {
             b.iter(|| black_box(roadbed.build_node_piece(black_box(&graph), 0)))
+        });
+    }
+    // A right turn pocket's transition (`ROAD-95`): a 100 m base road into the transition node
+    // 0 and a 100 m pocket edge on, undivided and on a 5 m grass median; and a left pocket's on
+    // the undivided road, whose oncoming lanes and kerb move out by a lane (round R5c1).
+    for (name, edge, divided, left) in [
+        (
+            "transition_right_pocket",
+            four_lane as fn(Edge) -> Edge,
+            false,
+            false,
+        ),
+        ("transition_right_pocket_divided", divided_5m, true, false),
+        ("transition_left_pocket", four_lane, false, true),
+    ] {
+        let mut graph = RegionGraph::new();
+        let transition = graph.add_node(Vector3::ZERO, NodeType::LaneTransition);
+        let (base, body) = (
+            centerline(100.0, Shape::Straight, (-100.0, 0.0)),
+            centerline(100.0, Shape::Straight, (0.0, 0.0)),
+        );
+        let start = graph.add_node(base[0], NodeType::Junction);
+        let end = graph.add_node(body[body.len() - 1], NodeType::Junction);
+        graph.add_edge(edge(edge_through(start, transition, base)));
+        let pocket = graph.add_edge(edge(edge_through(transition, end, body)));
+        graph.set_edge_pocket(
+            pocket,
+            Some(RoadPocket {
+                end: EdgeEnd::End,
+                left,
+                right: !left,
+            }),
+        );
+        graph.rebuild_intersection_clips();
+        let piece = roadbed
+            .build_node_piece(&graph, transition)
+            .expect("node builds")
+            .expect("a laid-out transition");
+        let body_rows = piece
+            .mouths()
+            .iter()
+            .filter(|(_, mouth)| mouth.profile.bands().len() == 9)
+            .count();
+        assert_eq!(body_rows, 2 * usize::from(divided), "{name}: the median runs through");
+        group.bench_function(BenchmarkId::new("build", name), |b| {
+            b.iter(|| black_box(roadbed.build_node_piece(black_box(&graph), transition)))
         });
     }
 

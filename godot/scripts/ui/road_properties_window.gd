@@ -16,7 +16,8 @@
 ## never the buildings); Cancel leaves the roads as they are. The picker stays enabled on a
 ## walkway so the refusal (walkway <-> road) shows with its text. Kerbside parking (`PARK-05`)
 ## has its own Left and Right toggles, which change only that lane, in place, with the same
-## refusal text. The window opens tall enough for every row.
+## refusal text. The window opens tall enough for every row. Turn pockets are edited from the
+## Junction window (`junction_window.gd`, `ROAD-95`).
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -317,19 +318,10 @@ func show_verdict(verdict: Dictionary) -> void:
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
 	var cost := roundi(float(verdict.get("cost_delta", 0.0))) if ready else 0
-	_apply_button.text = "Apply (+%s)" % _thousands(cost) if cost > 0 else "Apply"
+	_apply_button.text = "Apply (+%s)" % UIStyle.thousands(cost) if cost > 0 else "Apply"
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
 	_verdict_label.text = RoadTypeMenu.describe(_picked_type(), false) if ready \
 		else RoadReasonText.text(verdict, "This road cannot change its type")
-
-# 1230 -> "1,230".
-static func _thousands(value: int) -> String:
-	var digits := str(absi(value))
-	var text := ""
-	while digits.length() > 3:
-		text = "," + digits.substr(digits.length() - 3) + text
-		digits = digits.substr(0, digits.length() - 3)
-	return ("-" if value < 0 else "") + digits + text
 
 ## The confirmation Apply asks for, or "" when the change demolishes nothing.
 func demolition_text() -> String:

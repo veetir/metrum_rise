@@ -776,6 +776,9 @@ impl SimCore {
         self.region_graph.edge_mut(edge_idx).deleted = true;
         self.zoning.remove_parcels_attached_to_edge(edge_idx);
         self.region_graph.rebuild_adjacency_list();
+        // A pocket pair's transition left with one arm is a road end (`ROAD-95`).
+        self.region_graph
+            .reset_stale_lane_transitions([start_node, end_node]);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
@@ -1092,6 +1095,18 @@ impl SimCore {
             2 => crate::simulation::network::types::EdgeClass::Tunnel,
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
+        // A turn pocket stays on the ground (`ROAD-95`, `pocket_requires_surface_road`): its
+        // pocket is removed first.
+        if class != crate::simulation::network::types::EdgeClass::Standard
+            && self.region_graph.edge(edge_idx).pocket.is_some()
+        {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason=pocket_edit_first",
+                edge_idx
+            );
+            return;
+        }
         if class == crate::simulation::network::types::EdgeClass::Standard {
             let edge = self.region_graph.edge(edge_idx);
             let points = if edge.physical_geometry.len() >= 2 {
@@ -2220,6 +2235,19 @@ impl SimCore {
         // no chunk is left marked for a second, synchronous rebuild.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
+    }
+
+    // A lane rule edit changes its node's arms' paint, which reads the whitelist: the solid
+    // approach zone (`ROAD-94`) and the turn arrows (`ROAD-75`). The node's closure recompiles
+    // with unchanged geometry and a new render generation re-emits its chunks, as a crossing
+    // toggle's does; undo marks the same closure from its record. O(node closure).
+    fn repaint_lane_rule_arms(&mut self, node_id: u32) {
+        if (node_id as usize) < self.region_graph.node_count() {
+            self.transit_network
+                .mark_surface_dirty_for_nodes(&self.region_graph, &HashSet::from([node_id]));
+            self.mark_local_network_render_dirty();
+        }
     }
 
     /// Clears all lane connections at a junction node.
@@ -2262,6 +2290,7 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
@@ -2299,6 +2328,7 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
     }
 
     /// Sets the crossing of arm `edge_id` at `node_id` on or off (`ROAD-74`): the node's override,
@@ -2768,6 +2798,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
         })
     }
 
@@ -2817,6 +2848,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2989,6 +3021,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3735,6 +3768,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3791,6 +3825,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

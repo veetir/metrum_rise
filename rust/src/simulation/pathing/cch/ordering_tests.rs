@@ -52,6 +52,7 @@ fn grid(side: u32) -> RegionGraph {
                     vehicle_frontage_access:
                         crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                     median: None,
+                    pocket: None,
                 });
             }
         }
@@ -891,7 +892,8 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
                             usize::MAX,
                             &graph,
                             mode,
-                            &mut paths
+                            &mut paths,
+                            None,
                         ),
                         expected
                             .as_ref()
@@ -1016,6 +1018,7 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
                                     &graph,
                                     mode,
                                     &mut paths,
+                                    None,
                                 )
                                 .map(|route| route.0);
                             assert_eq!(

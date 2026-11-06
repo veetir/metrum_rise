@@ -6,6 +6,7 @@ mod continuity;
 mod curves;
 mod support;
 
+use super::frontage_line::FrontageLine;
 use super::geometry::interiors_overlap;
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
@@ -142,7 +143,11 @@ impl<M: CellMaps> CellStore<M> {
                 if edge.deleted || edge.class != EdgeClass::Standard {
                     0.0
                 } else {
-                    f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
+                    // A pocket edge's corridor runs on its carriageway's axis (D17), up to its
+                    // kerb shift off the indexed centreline.
+                    f64::from(edge.width) * 0.5
+                        + f64::from(crate::config::SIDEWALK_WIDTH)
+                        + f64::from(edge.kerb_shift_m().abs())
                 }
             })
             .reduce(|| 0.0, f64::max)
@@ -428,8 +433,17 @@ fn edge_candidates(
     {
         return Vec::new();
     }
-    let points: Vec<_> = edge
-        .physical_geometry
+    // A turn pocket edge's carriageway is centred off its centreline (`ROAD-95`, D17): its
+    // cells front the carriageway's own axis, so both sides take the exact half-width. Every
+    // other road reads its centreline as before.
+    let shifted;
+    let source = if edge.kerb_shift_m() != 0.0 {
+        shifted = edge.carriageway_axis(&edge.physical_geometry);
+        &shifted
+    } else {
+        &edge.physical_geometry
+    };
+    let points: Vec<_> = source
         .iter()
         .map(|point| DVec2::new(f64::from(point.x), f64::from(point.z)))
         .collect();
@@ -448,6 +462,11 @@ fn edge_candidates(
             .iter()
             .all(|point| (point - points[0]).perp_dot(road_direction).abs() <= straight_precision);
     let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+    // A road without prepared frames takes its phase from its frontage line's junctions: its
+    // base road's, for a pocket piece (`ROAD-95` round R5d1).
+    let line = (straight && alignment.is_none())
+        .then(|| FrontageLine::of(graph, edge_id))
+        .flatten();
     let group_length = GROUP_COLUMNS * cell_m;
     let mut candidates = Vec::new();
     let mut station = 0.0;
@@ -505,13 +524,13 @@ fn edge_candidates(
                 // All groups on a straight edge share the endpoint's exact frontage phase.
                 // Recomputing it from each sampled chord accumulates independent rounding.
                 origin = points[0] + normal * half_width;
-                if alignment.is_none() {
+                if let Some(line) = &line {
                     if let Some((anchor, _)) =
-                        junction_anchor(graph, edge_id, tangent, normal, half_width)
+                        junction_anchor(graph, line, tangent, normal, half_width)
                     {
                         origin += tangent * tangent.dot(anchor - origin);
                     } else {
-                        origin += tangent * tangent.dot(points[0] - origin);
+                        origin += tangent * tangent.dot(line.first - origin);
                     }
                 }
             }
@@ -581,16 +600,23 @@ fn edge_candidates(
                 if partial_start || partial_end {
                     let a = start + tangent * along;
                     if !straight
-                        || !continuity::column_is_covered(graph, edge.width, a, tangent, cell_m)
+                        || !continuity::column_is_covered(
+                            graph, edge, a, tangent, normal, half_width, cell_m,
+                        )
                     {
                         boundary += 1;
                         continue;
                     }
                     // Project the actual shared endpoints into the canonical frame. Arc
                     // length subtraction rounds independently on each split child and can
-                    // leave a fractional hole in otherwise continuous frontage.
-                    let first = frame.local(points[0])[along_axis];
-                    let last = frame.local(points[points.len() - 1])[along_axis];
+                    // leave a fractional hole in otherwise continuous frontage. They are the
+                    // centreline's: a pocket edge's shifted axis (f32) ends a few micrometres
+                    // along from the transition its base road shares (`ROAD-95` round R5d1).
+                    let end_point =
+                        |point: Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
+                    let centreline = &edge.physical_geometry;
+                    let first = frame.local(end_point(centreline[0]))[along_axis];
+                    let last = frame.local(end_point(centreline[centreline.len() - 1]))[along_axis];
                     let cell_start = local[along_axis] - f64::from(along_sign < 0);
                     let endpoint_precision =
                         super::geometry::road_source_precision(source_bounds) / cell_m;
@@ -694,23 +720,32 @@ fn sample(points: &[DVec2], stations: &[f64], station: f64) -> DVec2 {
     )
 }
 
+// The first perpendicular road at the ends of `line`, start first: the curb phase it gives a
+// side of `line` (the neighbour's curb across it) and whether it leaves on that side. The
+// neighbour's curb is its base road's, and a pocketed base road is ordered among a node's arms
+// by its lowest piece id, so a pocket edit moves no anchor (`ROAD-95` round R5d1).
 fn junction_anchor(
     graph: &RegionGraph,
-    edge_id: usize,
+    line: &FrontageLine,
     tangent: DVec2,
     normal: DVec2,
     half_width: f64,
 ) -> Option<(DVec2, bool)> {
-    let edge = graph.edge(edge_id);
-    for (node_id, inward) in [(edge.start_node, tangent), (edge.end_node, -tangent)] {
+    for (node_id, inward) in [(line.ends[0], tangent), (line.ends[1], -tangent)] {
         let mut neighbors: Vec<_> = graph
             .node_adjacency(graph.get_valid_node(node_id))
             .iter()
             .copied()
-            .filter(|&id| id != edge_id)
+            .filter(|&id| !line.contains(id))
+            .map(|id| {
+                (
+                    FrontageLine::of(graph, id).map_or(id, |line| line.key()),
+                    id,
+                )
+            })
             .collect();
         neighbors.sort_unstable();
-        for id in neighbors {
+        for (_, id) in neighbors {
             let neighbor = graph.edge(id);
             if neighbor.deleted
                 || neighbor.physical_geometry.len() < 2
@@ -736,7 +771,7 @@ fn junction_anchor(
                 continue;
             }
             let neighbor_width =
-                f64::from(neighbor.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+                f64::from(neighbor.base_width_m()) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
             return Some((
                 node + normal * half_width + inward * neighbor_width,
                 direction.dot(normal) > 0.0,
@@ -746,19 +781,18 @@ fn junction_anchor(
     None
 }
 
-/// Computes a straight curb's junction phase in an already selected common basis.
-/// The boolean identifies a corner on this curb's side, rather than across the road.
+/// Computes a straight curb's junction phase in an already selected common basis, on the
+/// road's frontage line: a pocket piece's is its base road's (`ROAD-95` round R5d1), whose
+/// frame its curbs read moved by their kerbs' moves. The boolean identifies a corner on this
+/// curb's side, rather than across the road.
 pub(super) fn straight_frame(
     graph: &RegionGraph,
-    edge_id: usize,
+    line: &FrontageLine,
     basis: GridFrame,
     side: f64,
 ) -> (GridFrame, bool) {
-    let edge = graph.edge(edge_id);
-    let a = edge.physical_geometry[0];
-    let b = edge.physical_geometry[edge.physical_geometry.len() - 1];
-    let start = DVec2::new(f64::from(a.x), f64::from(a.z));
-    let direction = DVec2::new(f64::from(b.x) - start.x, f64::from(b.z) - start.y);
+    let start = line.first;
+    let direction = line.last - start;
     let (u, v) = basis.axes();
     let tangent = if direction.dot(u).abs() > direction.dot(v).abs() {
         u * direction.dot(u).signum()
@@ -766,9 +800,9 @@ pub(super) fn straight_frame(
         v * direction.dot(v).signum()
     };
     let normal = DVec2::new(tangent.y, -tangent.x) * side;
-    let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+    let half_width = f64::from(line.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
     let mut origin = start + normal * half_width;
-    let anchor = junction_anchor(graph, edge_id, tangent, normal, half_width);
+    let anchor = junction_anchor(graph, line, tangent, normal, half_width);
     if let Some((anchor, _)) = anchor {
         origin += tangent * tangent.dot(anchor - origin);
     }
@@ -885,9 +919,16 @@ fn overlaps_road_corridors_bounded(
             return;
         }
         let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+        // A pocket edge's corridor is its carriageway's, about the axis shifted by its kerb
+        // shift (`ROAD-95`, D17), segment by segment: exact on both sides, with no allocation.
+        let shift = f64::from(edge.kerb_shift_m());
         for segment in edge.physical_geometry.windows(2) {
-            let a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
-            let b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+            let mut a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
+            let mut b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+            if shift != 0.0 {
+                let lateral = (b - a).normalize_or_zero().perp() * shift;
+                (a, b) = (a + lateral, b + lateral);
+            }
             // The contracted corridor lies inside this full-width envelope. Rounding
             // disjoint coordinate intervals cannot create positive-area intersection.
             if !CellBounds::from_points([a, b])

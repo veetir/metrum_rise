@@ -54,6 +54,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         }
     }
 
@@ -95,6 +96,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
@@ -124,6 +126,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
@@ -153,6 +156,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
 
         g.rebuild_intersection_clips();
