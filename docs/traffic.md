@@ -2005,6 +2005,12 @@ rejected spot as a validation issue that blocks export, working from the asset a
 placed inspector can check the road-to-driveway segment and neighbouring structures, and it shows
 the building's valid-place count.
 
+Cars reach every bay from the building's frontage edge, so a frontage without cars (a walkway)
+publishes no bay, and the inspector says that parking needs a road cars can drive on. A parking
+lot (`service_class = "parking"`) is refused on such a frontage in its placement preview and
+commit (`NoCarAccess`), with the same words; another building with a few bays may still stand on a
+walkway, its bays unused. The check reads the frontage edge's car flag, O(1).
+
 The bundled `parking` pack follows Finnish practice: 2.5 × 5 m bays at right angles to a central
 7 m two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater
 post per pair of bays on the strip behind the kerb, and a P sign at the entrance. The small lot

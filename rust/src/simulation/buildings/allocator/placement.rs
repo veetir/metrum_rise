@@ -24,7 +24,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
     RoadbedSystem, side_band_width_m, widest_side_band_width_m,
 };
-use crate::simulation::network::types::EdgeClass;
+use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
     explicit_work_area_startup_budget, initial_work_area_scale, minimum_work_area_workers,
@@ -661,7 +661,7 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         // The sidewalk's refusal comes first: a shoulder's own site problems would only hide it.
-        let sidewalk = Self::validate_explicit_frontage_side(&placement, graph);
+        let sidewalk = self.validate_explicit_frontage(&placement, graph);
         // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
         let (preferred_height, connections) = self
             .resolve_site_support_connections(&placement, graph, road_surface)
@@ -795,7 +795,7 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
         zoning: &ZoningSystem,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
-        Self::validate_explicit_frontage_side(&placement, graph)?;
+        self.validate_explicit_frontage(&placement, graph)?;
         self.validate_explicit_zoning_reservation(&placement, zoning)?;
         self.validate_explicit_site_overlap(&placement)?;
         self.validate_explicit_site_road_overlap(&placement, graph)?;
@@ -814,6 +814,33 @@ impl BuildingAllocator {
             self.buildings[building_idx].support_height_m,
         );
         Ok(building_idx)
+    }
+
+    // The frontage's own refusals, through preview and commit alike: a side without a sidewalk,
+    // then a parking lot on a frontage cars cannot use. O(1).
+    fn validate_explicit_frontage(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        Self::validate_explicit_frontage_side(placement, graph)?;
+        self.validate_explicit_car_frontage(placement, graph)
+    }
+
+    // A parking lot fronts a street cars use: its cars enter and leave the bays from that edge
+    // (`parking::lots::lot_bays`), and a walkway carries none. Only a lot is refused: another
+    // building with a few bays stands on a walkway with them unused, as `lot_bays` reports.
+    fn validate_explicit_car_frontage(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        let lot = self.registry.service_class(&placement.asset_id) == Some("parking");
+        if lot && graph.edge(placement.edge_idx).allowed_types & TransitFlags::CAR == 0 {
+            Err(ExplicitServicePlacementRejection::NoCarAccess)
+        } else {
+            Ok(())
+        }
     }
 
     // Every placed building stands on a side with a sidewalk (`ROAD-109`), through preview and
