@@ -8,14 +8,20 @@ const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const MODEL_DIR := "res://assets/models/road_signs/"
 # Indexed by Rust RoadSignKind. B1/B6 are assets for later, never placed here. B5-D2 is B5.glb
-# with the D2 disc added under its triangle (`_add_roundabout_disc`).
+# with the D2 disc added under its triangle (`_add_roundabout_disc`); E1-B5-D2 is that with
+# E1-1.glb's plate raised above the triangle on the same pole (`_append_glb`).
 const MODELS: Array[String] = [
 	"E1-1", "E1-2", "C32-30", "C32-40", "C32-50", "C32-60", "C32-80",
 	"A1.1", "A1.2", "A2.1", "A2.2",
 	# Descents (A3.2: the car points down the slope), then ascents (A3.1).
 	"A3.2-8", "A3.2-10", "A3.2-12", "A3.2-14", "A3.2-16", "A3.2-18",
-	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9", "B5-D2",
+	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9", "B5-D2", "E1-B5-D2",
 ]
+# E1-B5-D2: E1-1's plate (2.0-2.6 m in its GLB) is raised to stand 6 cm above B5's triangle top
+# (2.789 m), and E1-1's pole base moves up to B5's pole top (2.671 m), so one pole runs through.
+const CROSSING_ON_RING_LIFT_M := 0.85
+const B5_POLE_TOP_M := 2.671
+const D2_BLUE_RADIUS_FRACTION := 0.95
 # GLB contract (validation.json/build.log and export_validation.json): metres, ground-origin
 # pole base, +Y up, +Z is the printed front. One mesh/surface and one embedded atlas material
 # per model, no authored LODs (E1: 72 triangles, C32: 216). No three-LOD light-model lookup.
@@ -76,42 +82,55 @@ static func _ensure_meshes() -> void:
 	if not _meshes.is_empty():
 		return
 	for model_name in MODELS:
-		var mesh: ArrayMesh
-		var source_name: String = "B5" if model_name == "B5-D2" else model_name
-		var scene := load(MODEL_DIR + source_name + ".glb") as PackedScene
-		if scene != null:
-			var model := scene.instantiate()
-			var node := model as MeshInstance3D
-			if node == null:
-				# Godot replaces "." in imported node names (A1.1 becomes A1_1).
-				node = model.find_child(source_name.validate_node_name(), true, false) as MeshInstance3D
-			if node != null:
-				mesh = ArrayMesh.new()
-				# Each GLB has one surface. Bake its node transform into the shared mesh once.
-				for surface in node.mesh.get_surface_count():
-					var arrays := node.mesh.surface_get_arrays(surface)
-					var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-					var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-					for i in vertices.size():
-						vertices[i] = node.transform * vertices[i]
-						if i < normals.size():
-							normals[i] = (node.transform.basis * normals[i]).normalized()
-					arrays[Mesh.ARRAY_VERTEX] = vertices
-					arrays[Mesh.ARRAY_NORMAL] = normals
-					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-					var material := node.get_active_material(surface) as BaseMaterial3D
-					if material != null:
-						# Shared scene-material factory; brightness zero gives the atlas no emission.
-						mesh.surface_set_material(surface, WindowMaterials.create(material, false, 0.0))
-			model.free()
-		if mesh == null:
-			push_error("road_signs: %s.glb lacks its sign mesh" % model_name)
-		if mesh != null and model_name == "B5-D2":
+		var mesh := ArrayMesh.new()
+		var ring := model_name.ends_with("B5-D2")
+		var loaded := _append_glb(mesh, "B5" if ring else model_name)
+		if loaded and ring:
 			_add_roundabout_disc(mesh)
+		if loaded and model_name == "E1-B5-D2":
+			loaded = _append_glb(mesh, "E1-1", CROSSING_ON_RING_LIFT_M, B5_POLE_TOP_M)
+		if not loaded:
+			push_error("road_signs: %s lacks its sign mesh" % model_name)
+			mesh = null
 		_meshes.append(mesh)
 
-# D2 sits below the B5 triangle on the same pole: a blue disc, three white arrows running
-# counterclockwise, on a grey plate that is its back from behind. Code-native geometry on the
+# Appends a sign GLB's one mesh to `mesh` with its node transform baked in. A positive `lift`
+# raises the sign by that much and moves its pole base (the vertices at the ground) to `pole_floor`.
+static func _append_glb(mesh: ArrayMesh, source_name: String, lift := 0.0, pole_floor := 0.0) -> bool:
+	var scene := load(MODEL_DIR + source_name + ".glb") as PackedScene
+	if scene == null:
+		return false
+	var model := scene.instantiate()
+	var node := model as MeshInstance3D
+	if node == null:
+		# Godot replaces "." in imported node names (A1.1 becomes A1_1).
+		node = model.find_child(source_name.validate_node_name(), true, false) as MeshInstance3D
+	if node == null:
+		model.free()
+		return false
+	# Each GLB has one surface. Bake its node transform into the shared mesh once.
+	for surface in node.mesh.get_surface_count():
+		var arrays := node.mesh.surface_get_arrays(surface)
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		for i in vertices.size():
+			vertices[i] = node.transform * vertices[i]
+			if lift > 0.0:
+				vertices[i].y = pole_floor if vertices[i].y < 0.001 else vertices[i].y + lift
+			if i < normals.size():
+				normals[i] = (node.transform.basis * normals[i]).normalized()
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var material := node.get_active_material(surface) as BaseMaterial3D
+		if material != null:
+			# Shared scene-material factory; brightness zero gives the atlas no emission.
+			mesh.surface_set_material(mesh.get_surface_count() - 1, WindowMaterials.create(material, false, 0.0))
+	model.free()
+	return true
+
+# D2 sits below the B5 triangle on the same pole: a blue disc inside a white rim, three white
+# arrows running counterclockwise, on a grey plate that is its back from behind. Code-native geometry on the
 # shared cloud-shadow material, as the atlas signs.
 static func _add_roundabout_disc(mesh: ArrayMesh) -> void:
 	var blue := SurfaceTool.new()
@@ -127,7 +146,12 @@ static func _add_roundabout_disc(mesh: ArrayMesh) -> void:
 		var b := TAU * float(step + 1) / 48.0
 		var rim_a := Vector3(cos(a), sin(a), 0) * 0.30
 		var rim_b := Vector3(cos(b), sin(b), 0) * 0.30
-		_sign_triangle(blue, origin, origin + rim_a, origin + rim_b)
+		# The white rim is 15 mm of the 600 mm disc, as on the printed sign.
+		var inner_a := rim_a * D2_BLUE_RADIUS_FRACTION
+		var inner_b := rim_b * D2_BLUE_RADIUS_FRACTION
+		_sign_triangle(blue, origin, origin + inner_a, origin + inner_b)
+		_sign_triangle(white, origin + inner_a, origin + rim_a, origin + rim_b)
+		_sign_triangle(white, origin + inner_a, origin + rim_b, origin + inner_b)
 		_sign_triangle(grey, back, back + rim_a, back + rim_b)
 	for arrow in 3:
 		var start := TAU * float(arrow) / 3.0
