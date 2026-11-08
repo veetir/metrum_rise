@@ -13627,8 +13627,9 @@ cosmetic: traffic ignores them.
   mouth or that crossing sign, away from street lights as any sign. That pole is placed after every
   crossing sign and outside the gap below, so it never drops one (the fork stood it first, 2 m from
   the mouth, and the gap lost the zebra's sign); later signs keep clear of either pole. D2 is not an
-  asset: the renderer adds a blue disc in a 15 mm white rim with its three white arrows to B5's
-  mesh, with a grey plate behind it, as model `B5-D2`; `E1-B5-D2` adds E1-1's plate 6 cm above the
+  asset: the renderer adds a disc in the atlas signs' blue (#005EB8) and finish, in a 15 mm white
+  rim with its three white arrows, 5 cm below B5's triangle tip, with a grey plate behind it, as
+  model `B5-D2`; `E1-B5-D2` adds E1-1's plate 6 cm above the
   triangle on the same pole.
 - Signs facing the same way on the same side keep 12 m apart along the street, in priority
   crossing, ring entry, speed, warning; a lower sign moves on, away from the junction, or is left out.

@@ -22,6 +22,13 @@ const MODELS: Array[String] = [
 const CROSSING_ON_RING_LIFT_M := 0.85
 const B5_POLE_TOP_M := 2.671
 const D2_BLUE_RADIUS_FRACTION := 0.95
+# D2's 0.30 m disc hangs 5 cm below B5's triangle tip (2.0 m in B5.glb), not over it.
+const D2_CENTRE_Y_M := 1.65
+# The atlas signs' own sign blue (Väylä's #005EB8), back grey and finish, so D2 matches E1 beside it.
+const SIGN_BLUE := Color8(0, 94, 184)
+const SIGN_BACK_GREY := Color8(154, 159, 160)
+const SIGN_METALLIC := 0.18
+const SIGN_ROUGHNESS := 0.46
 # GLB contract (validation.json/build.log and export_validation.json): metres, ground-origin
 # pole base, +Y up, +Z is the printed front. One mesh/surface and one embedded atlas material
 # per model, no authored LODs (E1: 72 triangles, C32: 216). No three-LOD light-model lookup.
@@ -139,7 +146,7 @@ static func _add_roundabout_disc(mesh: ArrayMesh) -> void:
 	blue.begin(Mesh.PRIMITIVE_TRIANGLES)
 	white.begin(Mesh.PRIMITIVE_TRIANGLES)
 	grey.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var origin := Vector3(0, 1.8, 0.012)
+	var origin := Vector3(0, D2_CENTRE_Y_M, 0.012)
 	var back := origin - Vector3(0, 0, 0.004)
 	for step in 48:
 		var a := TAU * float(step) / 48.0
@@ -170,11 +177,12 @@ static func _add_roundabout_disc(mesh: ArrayMesh) -> void:
 		var tangent := Vector3(-sin(angle), cos(angle), 0)
 		var radial := Vector3(cos(angle), sin(angle), 0)
 		_sign_triangle(white, tip + tangent * 0.09, tip - radial * 0.075 - tangent * 0.025, tip + radial * 0.075 - tangent * 0.025)
-	for entry: Array in [[blue, Color(0.015, 0.17, 0.55)], [white, Color.WHITE], [grey, Color(0.6, 0.62, 0.63)]]:
+	for entry: Array in [[blue, SIGN_BLUE], [white, Color.WHITE], [grey, SIGN_BACK_GREY]]:
 		var material := StandardMaterial3D.new()
 		material.albedo_color = entry[1]
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
-		material.roughness = 0.65
+		material.metallic = SIGN_METALLIC
+		material.roughness = SIGN_ROUGHNESS
 		entry[0].set_material(WindowMaterials.create(material, false, 0.0))
 		entry[0].commit(mesh)
 
