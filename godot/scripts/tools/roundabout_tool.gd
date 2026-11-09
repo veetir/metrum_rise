@@ -143,8 +143,14 @@ static func _size_keys() -> String:
 		]
 	return _size_keys_hint
 
-# The click re-reads the verdict at the pointer: never commit a pose that was not shown.
+# The click re-reads the verdict at the pointer: never commit a pose that was not shown. The
+# pointer is the click's own, waited for, not the last frame's, which is older while the
+# simulation thread holds the core (`CODE-25`).
 func _place() -> void:
+	if not _scripted_pointer_enabled:
+		var hit: Variant = get_terrain_interaction(true)
+		if hit != null:
+			_last_world_mouse_pos = hit
 	_key = []
 	_update_preview()
 	if not is_valid:

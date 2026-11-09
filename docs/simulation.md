@@ -1128,6 +1128,15 @@ moves its entities between the tiers' phase buckets.
 - **Metric:** core-mutex hold time per sim frame (`lock_held_ms` in the sim thread), including
   movement, slot work and snapshot build. Reported as max, p99, p99.9, and the count of frames
   over 8 ms and over 16.7 ms, across one full game day.
+- **Who gets the core between frames** (`CODE-25`). The sim thread takes the core through a
+  turnstile (`CoreTurnstile`) for every frame and every edit; a thread that waits for the core
+  (Godot's main thread in a click or any blocking bridge call) holds the turnstile while it
+  waits, so the sim thread cannot take the core again ahead of it and the wait ends with the
+  frame in progress. A frame that overruns its 16.7 ms interval is followed at once by the next
+  (no catch-up and no gap), so per-frame `try_lock` queries find the core busy until frames fit
+  again; hovers keep their last answer meanwhile ([Busy Core](debug.md#busy-core)). The turnstile
+  costs one uncontended mutex per acquisition, before `lock_held_ms` starts;
+  `perf07_frame_budget` steps the core on its own thread and never runs the sim thread's loop.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
   `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
   30k and 100k residents, at 1× and 32×.
@@ -1675,7 +1684,14 @@ RAYON_NUM_THREADS=8 python3 tools/sim02_gate.py envelope determinism perf07 \
   deliveries, households with an empty pantry, trip failures, building placements and
   removals, recorded outside-world money flows, burst shares and a semantic fingerprint. The
   baseline, its tolerance bands, fingerprints and burst shares are in
-  `tools/sim02_envelope_baseline.json`.
+  `tools/sim02_envelope_baseline.json`. Re-recorded with parking (`PARK-02`, `e0a75231`, the
+  user accepted the shift 2026-11-07) and with `ECON-28` round `E4` (2026-11-09, for the user's
+  review): admission's calendar families, their store-labour charge and the refill crew
+  (`ECON-24`) move the cities by fractions of a percent (residents per target +1.0% at 10k,
+  empty-pantry rate -2.9% at 10k and -4.5% at 30k, net income per resident -0.3% to -1.4%), and
+  one band missed: fiscal-stress 10k final employment 1.32% against [1.14%, 1.29%], more
+  working adults in the taxed-out city. Against the new bands the gate reads 0 notes on the
+  same binary.
 - **Tolerance bands.** Variants at 0.97×, 1.00× and 1.03× of each tier's residents. Metrics are
   normalised per resident, household or building. A band is the variant range widened by half
   the range, by at least 2% of the base value, and by an absolute floor for rare counts. Trip

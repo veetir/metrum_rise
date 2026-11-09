@@ -566,6 +566,24 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
+- **Refill crew (`ECON-24`):** a sales-scaled store (`store` kind in a commercial zone; of the
+  shipped profiles only `grocery_basic`) staffs the smallest whole crew whose staffed output
+  exceeds its sales (`sales_store_crew`), at the same activity. That is its sales rounded up to
+  whole workers, except where they land exactly on a whole crew: there the census funds one more
+  worker. Staffed to its sales alone, such a store holds its shelf where it is and never
+  recovers from a dip (round M1b: 12 of 15 grocery workers made exactly the 160 units a day of
+  160 residents, and the shelf sat near 16 against a target of 480). The extra worker refills the
+  shelf at the full staffed rate and, once the shelf holds its target, the store produces its
+  sales. It is an ordinary funded job: the census funds it only while the plan with it pays (every
+  smaller plan keeps the same activity, so a store that cannot pay it keeps the crew its sales
+  need), it opens and closes with the sales, never with the shelf, and the
+  [workforce calendar](demand.md#workforce-calendar) and new-store plans read it like any other
+  job. The refill goods are stock, not a recurring cost: the plan buys inputs for its sales. O(1)
+  per store. A crew a fraction of a worker above its sales still refills, in proportion to that
+  fraction (one resident short of a whole crew of the shipped grocery: 1 unit a day).
+  Round M1c's rule (one worker above the sales between the reorder line and the stock target)
+  opened and closed that job with the shelf; its worker's family then lost its wage, and the
+  calendar never charged the job, so the scarce-labour expansion ended one adult short.
 - **Customers:** each store, in stable building order, claims its output from the nearest
   reachable households with exact directed shopping access (`reserve_consumer_outputs` →
   `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
@@ -586,6 +604,12 @@ answer to "how much of this operation can run":
   length (`ECON-13-C`).
 - **City services:** they use their explicit fiscal funding limit. Unfinished and inactive
   private employers advertise no live jobs.
+- **Unfunded shoppers (`ECON-28`):** the households its copy holds and, from the same budget walk,
+  the residents of housed families with an adult whose wage it does not count (no job, or hired
+  since the family last counted its wages) whose basket the family's budget leaves unfunded. The
+  [workforce calendar](demand.md#workforce-calendar) charges their store labor, and that of
+  every family that arrived after the copy, until a census funds them. O(1) per household,
+  derived with each census and never saved.
 
 Hiring, daily payroll, worker shedding, store output, construction viability and household
 admission all read this census. Each census copies every building's funded jobs onto it
@@ -718,10 +742,11 @@ throughput = base_rate × staffing_factor × input_factor × output_headroom_fac
 - There is no utility factor. Missing utilities cost money through the
   [`OWA`](#utility-service-layer) fallback; they do not throttle production.
 - **Census activity bounds staffing and output.** A store or service store without census
-  activity produces nothing and holds no paid staff. Groceries refill their shelf at full staffed
-  rate up to `stock_target_days` of funded sales, then produce at their census share, so rounding
-  up to whole workers creates no surplus. Farms and mines staff to the exports and local buyers
-  they can finance.
+  activity produces nothing and holds no paid staff. Groceries staff their
+  [refill crew](#funding-census-econ-17), refill their shelf at full staffed rate up to
+  `stock_target_days` of funded sales, then produce at their census share, so the crew's whole
+  workers create no surplus. Farms and mines staff to the exports and local buyers they can
+  finance.
 
 Hourly production is O(buildings) with Rayon; area production follows the indexed site list.
 Input stock targets hold at least two minimum batches; reorder thresholds keep at least one.
@@ -941,9 +966,26 @@ It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
-Recovery warms the starter town up for 30 days, as it stops changing after its 10th day but for
-cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365, as at 30 and
-45 days one entrant ended below its 95% staffing bound (90.3%, 75.4%).
+Recovery and expansion warm the starter town up for 30 days, as it stops changing after its 10th
+day but for cash; recovery's report changed with `CODE-21` `T2` (2026-11-08). Expansion kept 365
+days until `ECON-28`: at 30 and 45 days one entrant ended below its 95% staffing bound (90.3%,
+75.4%), the workforce calendar's accounting gaps, fixed in `ECON-28` round `E2`, after which
+every warm-up from 10 to 200 days ends with all entrants at 99.7% or more. Two of them (115 and
+140 days) stopped instead on a parking assertion at the expansion's road commit (`PARK-11`);
+with that fixed and the [refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200
+days by 5 and 21-40 days by 1 all pass (worst entrant 99.74%). Round `E4` shortened it to 30
+days; the committed test with its warm-up swept over 21-40 days by 1 passes all 20 (worst
+entrant 99.74%).
+The 100 ha start places a mechanized farm or a labour-intensive coal mine (500 jobs) west of the
+town in a 4 km world and runs 90 days: the farm must trade at a profit, the mine must lose money
+on its owner's capital without fresh equity or advertising full staffing it cannot fund. The
+farm keeps the starter town; the mine's town has residential paint on the west cross street
+only (44 homes). With both streets the mine broke even near 128 working adults and the town's
+84 homes brought 113-132 by their applicants' draw, so the expected loss was a coin toss on the
+seed (3 of 24 shifted seeds profited, the case's own seed too once `ECON-28` admitted the
+calendar's families). Over 25 applicant seeds the one-street town brings 57-72 adults and the
+mine loses 237,064-305,201 over the 90 days on `ECON-28`'s branch (`dev`: 375,533-492,962, three
+seeds bankrupt by day 90), so the case tests a labour-starved mine, not a draw (round `E4`).
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare
@@ -1064,6 +1106,23 @@ binary SHA-256 `f2844c4154fbf7b2`, `RAYON_NUM_THREADS=8`): `perf_contract_prepar
 continuation check and publishes at 10k, 30k and 100k (25, 93 and 459 s) and
 `perf_contract_fiscal_prepare` at 10k and 30k (12 and 39 s). The fixture revision moved, because
 it hashes `populated_city.rs`, which gained the test-only `METRUM_PERF_ROUNDABOUTS` knob.
+Prepared 2026-11-09 for fixture revision v8 with `ECON-28` (round `E4`, branch `econ-28` on `dev`
+`e7787837`, release test binary SHA-256 `989b2db93fc6a2a5`, `RAYON_NUM_THREADS=8`), whose
+admission, store-labour charge and refill crew (`ECON-24`) change every generated city:
+`perf_contract_prepare` passes its continuation check at 10k, 30k and 100k (generation 43, 154
+and 564 s) and `perf_contract_fiscal_prepare` at 10k and 30k (16 and 42 s). They replace the
+published snapshots when the branch lands.
+The contract on them ran in one session against an `e7787837` control (2026-11-09, P-cores,
+`RAYON_NUM_THREADS=8`, control and branch alternating, two runs each; the control on the
+published snapshots): every prepare reused its snapshot. Day hourly 0.87-0.89 ms at 10k and
+3.28-3.30 at 30k (control 0.90 and 3.29-3.36), fiscal 6.44-6.50 and 13.24-13.38 (control
+7.03-7.08 and 15.85-15.93); the isolated phases match the control within 0.2 ms except execution
+at 30k (0.89 against 0.72-0.75). The control exits 1 on four parked work-scaling limits
+(`buyer_sites_built`, `supplier_searches`, `supplier_routes`, `job_search_keys`), the branch on
+the same four plus `staffing_trials`: 43,774 at 10k and 178,647 at 30k (4.08×, limit 3.28×)
+against the control's 62,293 and 191,429 (3.07×). The branch's 10k day places no building, so
+the denominator drops while the 30k count falls too. The user accepted this on 2026-11-09 as a measurement effect of
+the smaller 10k denominator, not a work regression; the 3.28× limit itself is unchanged.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
