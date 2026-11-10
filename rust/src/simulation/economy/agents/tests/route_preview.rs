@@ -6,6 +6,19 @@ use super::support::*;
 use super::*;
 use crate::simulation::economy::agents::tick::{RouteEnd, planned_route};
 
+// Whether `lane_id` turns into `edge` at its node, through a connector or straight on: the
+// default lane use (`ROAD-94`) gives each lane of a multi-lane approach only some turns.
+fn reaches_edge(lane_id: usize, edge: usize, network: &TransitNetwork) -> bool {
+    let lanes = &network.lane_system.lanes;
+    lanes[lane_id].next_lanes.iter().any(|&next| {
+        lanes[next].edge_id == edge
+            || lanes[next]
+                .next_lanes
+                .first()
+                .is_some_and(|&target| lanes[target].edge_id == edge)
+    })
+}
+
 // Nodes of `build_4way_junction`: centre, then the W, E, N and S arm ends.
 const CENTER: u32 = 0;
 const WEST: u32 = 1;
@@ -59,6 +72,17 @@ fn driven_lanes(
             break;
         }
         if driven.last() != Some(&now) {
+            let origin = agents.lane_change_from_lane_id[idx] as usize;
+            if origin != u32::MAX as usize
+                && driven.last().is_some_and(|&previous| {
+                    network.lane_system.lanes[previous].edge_id
+                        != network.lane_system.lanes[now].edge_id
+                })
+            {
+                // Connector exit and a reserved frontage change can share a tick. The
+                // retained S-curve origin proves the intermediate physical road lane.
+                driven.push(origin);
+            }
             driven.push(now);
         }
         if now == last {
@@ -97,6 +121,10 @@ fn planned_route_is_the_lanes_the_car_drives_through_a_junction() {
         for arm_end in ARM_ENDS {
             let (mut network, mut graph, arms) = build_4way_junction(2, 2);
             let lane_id = arms[0][lane_slot];
+            let edge = graph.get_edge_between_nodes(CENTER, arm_end).unwrap();
+            if !reaches_edge(lane_id, edge, &network) {
+                continue;
+            }
             let lane_d = network.lane_system.lanes[lane_id].length - 5.0;
             let mut agents = AgentSystem::new();
             let idx = car_on_lane(&mut agents, lane_id, lane_d, vec![WEST, CENTER, arm_end]);
@@ -130,6 +158,10 @@ fn planned_route_takes_the_connector_the_car_picks_among_equal_ones() {
             let (mut network, mut graph, arms) = build_4way_junction(2, 2);
             let originals = twin_connectors(&mut network, CENTER);
             let lane_id = arms[0][lane_slot];
+            let edge = graph.get_edge_between_nodes(CENTER, arm_end).unwrap();
+            if !reaches_edge(lane_id, edge, &network) {
+                continue;
+            }
             let lane_d = network.lane_system.lanes[lane_id].length - 5.0;
             let mut agents = AgentSystem::new();
             let idx = car_on_lane(&mut agents, lane_id, lane_d, vec![WEST, CENTER, arm_end]);
@@ -161,12 +193,19 @@ fn planned_route_enters_the_detach_lane_the_car_enters_and_ends_at_the_door() {
     // make the crossing a seeded choice, which also depends on the held path index.
     let north_edge = 2;
     let door = Vector2::new(0.0, -105.0);
+    let mut cases = 0;
     for lane_slot in 0..2 {
         for detach_slot in 0..2 {
             let (mut network, mut graph, arms) = build_4way_junction(2, 2);
             twin_connectors(&mut network, CENTER);
             let lane_id = arms[0][lane_slot];
             let detach_lane = bkw_vehicle_lanes(&network, north_edge)[detach_slot];
+            // A lane whose turn reaches the north arm on the other lane enters it there and
+            // changes onto the detach lane on the frontage (`ROAD-94` detach-edge connector).
+            if !reaches_edge(lane_id, north_edge, &network) {
+                continue;
+            }
+            cases += 1;
             let mut allocator = BuildingAllocator::new();
             allocator
                 .buildings
@@ -174,7 +213,7 @@ fn planned_route_enters_the_detach_lane_the_car_enters_and_ends_at_the_door() {
             allocator.entrances.push(BuildingEntrance {
                 edge_idx: north_edge,
                 side: -1,
-                entrance_s_m: 5.0,
+                entrance_s_m: 70.0,
                 door_pos: door,
                 curb_pos: Vector2::new(0.0, -100.0),
                 car_lane_bkw: detach_lane,
@@ -188,7 +227,7 @@ fn planned_route_enters_the_detach_lane_the_car_enters_and_ends_at_the_door() {
             agents.access_flags[idx] = ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH;
             agents.planned_detach_node[idx] = CENTER;
             agents.planned_detach_lane_id[idx] = detach_lane as u32;
-            agents.planned_detach_lane_d[idx] = 5.0;
+            agents.planned_detach_lane_d[idx] = 70.0;
 
             let route = planned_route(&agents, idx, &allocator, &network, &graph);
             assert_eq!(route.end, RouteEnd::Destination);
@@ -213,6 +252,7 @@ fn planned_route_enters_the_detach_lane_the_car_enters_and_ends_at_the_door() {
             );
         }
     }
+    assert!(cases > 0, "no lane turns into a detach lane");
 }
 
 #[test]

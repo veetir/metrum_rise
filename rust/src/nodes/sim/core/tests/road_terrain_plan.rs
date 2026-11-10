@@ -25,6 +25,7 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -58,6 +59,7 @@ fn prepare_with_lanes(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     )
@@ -204,6 +206,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
@@ -212,8 +215,11 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     assert!(core.undo_stack.is_empty());
 }
 
+// A parcel in a ready plan's corridor keeps the plan ready (`ZONE-09`): the player's commit
+// takes it (decision D1). A caller that adds the road unstaged, which takes no land, is still
+// refused by the parcel, with the graph unchanged.
 #[test]
-fn new_parcel_rejects_ready_plan_without_consuming_it() {
+fn new_parcel_keeps_a_ready_plan_and_the_stroke_takes_it() {
     let mut core = test_core();
     core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
     core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
@@ -233,17 +239,18 @@ fn new_parcel_rejects_ready_plan_without_consuming_it() {
         .zoning
         .place_or_rezone_default_parcel_at(0.0, -20.0, profile, &core.region_graph)
         .unwrap();
-    assert_eq!(plan.status(&core), "invalid");
+    assert_eq!(plan.status(&core), "ready");
     let before = core.region_graph.edge_count();
     assert!(
         !core
-            .add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan))
+            .add_road_internal_with_snap_and_validation(points.clone(), 1, 1, true, Some(&plan))
             .committed
     );
     assert_eq!(core.region_graph.edge_count(), before);
-    core.zoning
-        .remove_parcels_by_raw_ids(&std::collections::HashSet::from([parcel.raw()]));
-    assert_eq!(plan.status(&core), "ready");
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_some());
+    assert_eq!(commit_stroke(&mut core, &points), "");
+    assert!(core.region_graph.edge_count() > before);
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_none());
 }
 
 // Commits one stroke through the player's path and returns its rejection reason, empty when
@@ -258,6 +265,7 @@ fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -276,7 +284,10 @@ fn preview_validation(
     core.precompute_road_mesh_data();
     core.refresh_road_terrain_inputs();
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
-    RoadPreviewContext::capture(view)
+    let mut context = RoadPreviewContext::capture(view);
+    // The land the road tool's preview takes, as the simulation publishes it (`ZONE-09`).
+    context.land = core.current_road_tool_land();
+    context
         .preview_road(RoadPreviewRequest {
             surface_generation: core.road_tool_surface_generation,
             points: points.to_vec(),
@@ -285,6 +296,7 @@ fn preview_validation(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         })
         .validation
@@ -374,27 +386,6 @@ fn a_road_up_to_one_in_three_commits_and_a_steeper_one_is_refused() {
     let edges = core.region_graph.edge_count();
     assert_eq!(commit_stroke(&mut core, &points), "road_too_steep");
     assert_eq!(core.region_graph.edge_count(), edges);
-}
-
-// A node edit may not steepen a road past 1:3 either; one that keeps it within commits
-// (`ROAD-68` open question 37).
-#[test]
-fn a_node_move_that_steepens_a_road_past_one_in_three_is_refused() {
-    let (mut core, points) = fall_line_stroke_at(0.10);
-    assert_eq!(commit_stroke(&mut core, &points), "");
-    let end = core
-        .region_graph
-        .find_node_within(points[1], crate::config::SNAP_TOLERANCE)
-        .unwrap();
-    let at = core.region_graph.node(end).pos;
-    // The move deforms the road with a smoothstep over its 180 m, so 60 m adds up to 50%.
-    assert!(!core.move_network_node_internal(end as i32, at + Vector3::new(0.0, 60.0, 0.0)));
-    assert_eq!(
-        core.last_road_rejection.as_ref().map(|rejection| rejection.reason.as_str()),
-        Some("road_too_steep")
-    );
-    assert_eq!(core.region_graph.node(end).pos, at);
-    assert!(core.move_network_node_internal(end as i32, at + Vector3::new(0.0, 0.5, 0.0)));
 }
 
 // A terrain edit may not leave a road steeper than 1:3 and steeper than before either
@@ -526,11 +517,14 @@ fn a_field_in_a_junction_corner_refuses_the_road() {
     assert_reservation_refuses(&mut core, &side, "field_overlap");
 }
 
+// Painted cells keep a ready plan ready (`ZONE-09`): the commit erases the paint of the cells its
+// pieces cover, and undo paints them again.
 #[test]
-fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
+fn painted_cells_keep_a_ready_road_plan_and_the_stroke_erases_them() {
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
     let mut core = test_core();
+    core.benchmark_mode = false;
     commit_ready(
         &mut core,
         vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
@@ -549,12 +543,19 @@ fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
     let point = DVec2::new(0.0, -25.0);
     let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
     assert!(!selection.cells.is_empty());
-    core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
-    assert_reservation_refuses(&mut core, &points, "zoning_cell_overlap");
-    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
-    core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
-    assert_eq!(preview_refusal(&mut core, &points), "");
+    let painted = core.zoning.paint_cells(&selection, 1, |_| false).unwrap().paint;
+    assert_eq!(plan.status(&core), "ready");
     assert_eq!(commit_stroke(&mut core, &points), "");
+    for &(key, _) in &painted.previous {
+        assert!(
+            core.zoning.cells.profile(key).is_none_or(|profile| profile == 0),
+            "{key:?} is erased"
+        );
+    }
+    assert!(core.undo_action_internal());
+    for &(key, _) in &painted.previous {
+        assert_eq!(core.zoning.cells.profile(key), Some(1), "{key:?} is painted again");
+    }
 }
 
 #[test]
@@ -1824,6 +1825,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             });
             assert!(
@@ -1881,6 +1883,7 @@ fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },

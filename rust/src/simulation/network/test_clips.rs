@@ -33,6 +33,7 @@ mod tests {
 
     fn road_edge(start_node: u32, end_node: u32, start: Vector3, end: Vector3, width: f32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -53,6 +54,9 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     }
 
@@ -68,6 +72,7 @@ mod tests {
 
         // Edge 0: Left to Center (-X to 0) (Horizontal Main Road Part 1)
         g.add_edge(Edge {
+            parking: Default::default(),
             start_node: n_left,
             end_node: n_center,
             primary_type: TransitType::Road,
@@ -93,9 +98,13 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
+            parking: Default::default(),
             start_node: n_center,
             end_node: n_right,
             primary_type: TransitType::Road,
@@ -121,9 +130,13 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
+            parking: Default::default(),
             start_node: n_bot,
             end_node: n_center,
             primary_type: TransitType::Road,
@@ -149,6 +162,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
 
         g.rebuild_intersection_clips();

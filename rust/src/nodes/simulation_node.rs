@@ -56,7 +56,7 @@
 //! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `world_editor.gd`, `terrain.gd` (authored base) |
-//! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
+//! | | `get_world_surface_height` | `road_tool.gd` |
 //! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd`, `input_manager.gd` |
 //! | **Water** | `is_water_dirty` | `water.gd` |
 //! | | `acknowledge_water_patches` | `water.gd` |
@@ -114,8 +114,9 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolQuerySnapshot,
-    RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
+    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest,
+    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
+    run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;
@@ -150,6 +151,7 @@ mod graded_tiles_api;
 mod gridlock_api;
 mod junction_debug_api;
 mod network_api;
+mod parking_api;
 mod system_api;
 mod terrain_api;
 #[cfg(test)]
@@ -185,6 +187,8 @@ const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 pub struct SimulationNode {
     /// All simulation state — ticked by the background thread.
     pub(crate) core: Arc<Mutex<SimCore>>,
+    /// Puts a call that waits for the core ahead of the sim thread's next frame (`CODE-25`).
+    pub(crate) core_turnstile: Arc<CoreTurnstile>,
     /// Latest pre-computed rendering data from the sim thread.
     pub(crate) snapshot: Arc<RwLock<RenderSnapshot>>,
     /// Background sim thread handle.
@@ -207,6 +211,8 @@ pub struct SimulationNode {
     pub(crate) road_tool_tunnel: bool,
     /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
+    pub(crate) road_tool_parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`: speed, sidewalks, zoning), copied into
     /// every request the tool sends; the built-ins' until a type sets others.
     pub(crate) road_tool_attributes: crate::simulation::network::road_types::RoadAttributes,
@@ -254,14 +260,23 @@ pub struct SimulationNode {
 impl SimulationNode {
     // ── Lifecycle ──
 
-    /// Acquires the sim-core mutex.
+    /// Acquires the sim-core mutex: at once when it is free, else when the sim thread's frame
+    /// or edit in progress ends, ahead of its next one (`CODE-25`, [`CoreTurnstile`]).
     ///
     /// Poisoning is an authoritative simulation failure: callers must not expose
     /// potentially partial state after a failed phase.
     #[inline]
     fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
-        self.core
-            .lock()
+        Self::wait_for_shared_core(&self.core_turnstile, &self.core)
+    }
+
+    /// [`Self::lock_core`] for a caller that holds its own reference to the core.
+    fn wait_for_shared_core<'a>(
+        turnstile: &CoreTurnstile,
+        core: &'a Mutex<SimCore>,
+    ) -> std::sync::MutexGuard<'a, SimCore> {
+        turnstile
+            .wait_for(core)
             .expect("simulation core lock poisoned by a failed authoritative phase")
     }
 
@@ -272,6 +287,21 @@ impl SimulationNode {
     #[inline]
     fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
         Self::try_lock_shared_core(&self.core)
+    }
+
+    /// [`Self::lock_core`] when `wait`, else [`Self::try_lock_core`]: a per-frame query that
+    /// one-shot callers (a click, a test reading the answer) ask to wait for the core
+    /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
+    #[inline]
+    fn lock_core_if(
+        &self,
+        wait: bool,
+    ) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
+        if wait {
+            Some(self.lock_core())
+        } else {
+            self.try_lock_core()
+        }
     }
 
     fn try_lock_shared_core(core: &Mutex<SimCore>) -> Option<std::sync::MutexGuard<'_, SimCore>> {
@@ -318,25 +348,29 @@ impl SimulationNode {
     fn start_sim_thread(&mut self) {
         if let Some(rx) = self.cmd_rx.take() {
             let core = Arc::clone(&self.core);
+            let turnstile = Arc::clone(&self.core_turnstile);
             let snap = Arc::clone(&self.snapshot);
             let road_query = Arc::clone(&self.road_tool);
             self.sim_thread = Some(std::thread::spawn(move || {
-                run_sim_thread(core, snap, road_query, rx);
+                run_sim_thread(core, turnstile, snap, road_query, rx);
             }));
         }
     }
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let (snapshot, road_tool_publication) = {
+        let (snapshot, road_tool_publication, road_tool_land) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
             let road_tool_publication = core.publish_road_tool_view();
-            (snapshot, road_tool_publication)
+            (snapshot, road_tool_publication, core.refresh_road_tool_land())
         };
         *self.snapshot.write().unwrap() = snapshot;
         if let Some(publication) = road_tool_publication {
             self.road_tool.publish(publication);
+        }
+        if let Some(land) = road_tool_land {
+            self.road_tool.publish_land(land);
         }
     }
 }
@@ -431,6 +465,7 @@ impl INode3D for SimulationNode {
 
         Self {
             core: core_arc,
+            core_turnstile: Default::default(),
             snapshot,
             sim_thread: None,
             cmd_tx,
@@ -441,6 +476,7 @@ impl INode3D for SimulationNode {
             road_tool,
             road_tool_tunnel: false,
             road_tool_median: None,
+            road_tool_parking: Default::default(),
             road_tool_attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,

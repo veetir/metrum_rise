@@ -50,8 +50,10 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Water crossing requires a bridge"
 		"field_overlap":
 			return "Road overlaps a farm field"
-		"zoning_cell_overlap":
-			return "Road overlaps painted zoning cells"
+		"extraction_area_overlap":
+			return "Road overlaps a mine's extraction area"
+		"plotted_building_overlap":
+			return "Road overlaps a placed building's lot"
 		"surface_geometry_invalid":
 			return "Road surface compilation failed"
 		"terrain_clip_missing_outer_boundary_owner":
@@ -110,10 +112,67 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A road cannot become a walkway"
 		"cross_section_unchanged":
 			return "No change"
+		"sidewalk_under_door":
+			return "A building's door is on this sidewalk: remove the building first"
 		"edit_tunnel_width":
 			return "Widen a tunnel by drawing it again"
 		"cross_section_too_wide_for_curve":
 			return "Too wide for this curve"
+		# Turn pockets (`ROAD-95`): the pocket edit and the strokes and edits it refuses.
+		"pocket_road_too_short":
+			return "Road too short for a pocket here"
+		"pocket_movement_missing":
+			return "The junction has no such turn from this road"
+		"pocket_junction_whitelisted":
+			return "Clear the junction's turn rules first"
+		"pocket_median_gap":
+			return "The median cannot continue past a pocket here"
+		"pocket_requires_surface_road":
+			return "Turn pockets are for roads on the ground"
+		"pocket_lane_limit":
+			return "At most 4 lanes in each direction, the pocket included"
+		"pocket_requires_wide_median":
+			return "A left turn pocket needs a raised median at least 3.8 m wide"
+		"invalid_pocket_dimensions":
+			return "Pocket length 20 to 300 m, in steps of 10"
+		"pocket_unchanged":
+			return "No change"
+		"pocket_transition_changed":
+			return "The pocket's road has changed: remove the pocket and add it again"
+		"pocket_edit_first":
+			return "Remove the turn pocket first"
+		"stroke_splits_pocket":
+			return "Roads cannot cross or join a turn pocket: remove it first"
+		"roundabout_fixed":
+			return "A roundabout's ring cannot be changed"
+		"roundabout_crossed":
+			return "Roads cannot cross a roundabout: end the road on its ring"
+		"roundabout_island":
+			return "Roads cannot go on a roundabout's island"
+		"roundabout_arm_node_taken":
+			return "This point of the roundabout already has a road"
+		"roundabout_neighbour_nodes":
+			return "A road cannot link two neighbouring points of a roundabout"
+		"roundabout_arms_too_close":
+			return "Arms need more room. Increase the diameter"
+		"roundabout_overlaps_road":
+			return "Another road occupies this site"
+		"roundabout_requires_three_to_six_arms":
+			return "Choose a junction with three to six roads"
+		"roundabout_requires_ordinary_surface_arms":
+			return "Every road here must be an ordinary surface road"
+		"roundabout_has_lane_restrictions":
+			return "Remove the junction's lane rules first"
+		"roundabout_arm_has_pocket":
+			return "Remove the turn pockets at this junction first"
+		"roundabout_arm_too_short":
+			return "A road here is too short for this diameter"
+		"roundabout_replacement_too_large":
+			return "A junction takes a roundabout of at most 60 m"
+		"invalid_roundabout_junction":
+			return "This junction no longer exists"
+		"invalid_roundabout_dimensions":
+			return "This diameter does not suit this roundabout"
 		"median_requires_both_directions":
 			return "A median needs lanes in both directions"
 		"median_requires_vehicle_road":
@@ -126,7 +185,9 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"layout_footpath_alone":
 			return "A footpath is a walkway on its own"
 		"layout_sidewalks":
-			return "Sidewalks at both ends or none"
+			return "A sidewalk goes at an end of the road"
+		"sidewalks_out_of_range":
+			return "Unknown sidewalk sides"
 		"layout_two_medians":
 			return "One median at most"
 		"layout_lane_order":
@@ -137,6 +198,15 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A median sits between the two directions, not inside one"
 		"layout_median_at_edge":
 			return "A median sits between the two directions"
+		# Kerbside parking (`PARK-05`).
+		"layout_parking_at_kerb":
+			return "A parking lane goes at the kerb, the outermost part of the road"
+		"layout_parking_needs_sidewalk":
+			return "A parking lane needs a sidewalk on its side"
+		"parking_requires_vehicle_road":
+			return "Only roads with lanes can have parking"
+		"parking_code_out_of_range":
+			return "Unknown parking setting"
 		"layout_unknown_part":
 			return "Unknown road part"
 		"speed_out_of_range":

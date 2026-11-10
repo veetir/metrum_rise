@@ -36,9 +36,11 @@ impl AgentSystem {
             });
         self.movement_serial_query
             .prepare_routes(transit_network, graph);
+        self.parking_work.quotes.sync(transit_network);
     }
 
     /// Dispatches the parallel per-agent movement state machine.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_movement_pass(
         &mut self,
         allocator: &BuildingAllocator,
@@ -47,6 +49,7 @@ impl AgentSystem {
         delta: f32,
         time: &TimeSystem,
         n: usize,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) {
         self.prepare_lane_claims(allocator, transit_network, graph, delta, n);
         // Before the movement slices borrow the agent columns.
@@ -58,6 +61,8 @@ impl AgentSystem {
         }
 
         let mut slices = MovementSlices::new(&mut self.agents);
+        slices.parking = parking;
+        slices.parking_quotes = Some(&self.parking_work.quotes);
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;
@@ -78,6 +83,7 @@ impl AgentSystem {
             |i| unsafe {
                 if movement_claim_modes[i] == MovementClaimMode::HeldEntry {
                     *slices.speed.get_mut(i) = 0.0;
+                    slices.note_frozen_parking_agent(i);
                     return;
                 }
                 if movement_claim_modes[i] == MovementClaimMode::Dynamic {

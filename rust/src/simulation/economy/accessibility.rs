@@ -1212,6 +1212,17 @@ fn unite(i: usize, j: usize, parent: &mut [usize]) {
 }
 
 #[cfg(test)]
+crate::exact_hash_fields! {
+    ModeComponentIndex { component_by_node }
+    BuildingModeComponents { components, count }
+    ReachableBucketIndex { by_component, components, buckets, available }
+    ReachableReservation { bucket, position }
+    ComponentBuckets { by_chunk, min_chunk, max_chunk, available, counted, counted_units,
+        units_dirty, query_counts, query_mask }
+    BucketItems { component, items, available, leaves, bounds, query_masks }
+}
+
+#[cfg(test)]
 mod reservation_tests {
     use super::*;
 
@@ -1229,6 +1240,7 @@ mod reservation_tests {
             start_node: start,
             end_node: end,
             allowed_types: TransitFlags::FOOT | TransitFlags::CAR,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             speed_limit: 0.5,
             base_cost: 140.0 / crate::config::MIN_ROUTE_SPEED_MS,
             physical_length: 140.0,

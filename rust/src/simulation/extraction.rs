@@ -6,6 +6,7 @@
 //! live simulation state: a placed building owns one player-drawn polygon, a
 //! reserve snapshot derived from the deposit grid, and a depletion counter.
 
+use crate::simulation::agriculture::{PolygonFootprint, work_area_clearance};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
@@ -14,6 +15,7 @@ use crate::simulation::economy::households::{
     OPERATIONAL_HOURS_PER_DAY, building_operation_factors, consume_hourly_production_inputs,
     scaled_output_buffer_capacity_units_for_building,
 };
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::work_area::{
     explicit_work_area_scale, remove_work_area_owner, top_up_explicit_work_area_startup_budget,
@@ -71,6 +73,9 @@ pub(crate) struct ExtractorSiteSummary {
     pub(crate) total_reserve_units: f32,
     /// Reserve units remaining after any previous depletion.
     pub(crate) remaining_reserve_units: f32,
+    /// The mine's index after the commit: the land an area takes may demolish buildings, whose
+    /// swap-removes move it (`ZONE-11`).
+    pub(crate) building_idx: usize,
 }
 
 /// Runtime extraction state for all explicit industry extractor buildings.
@@ -141,13 +146,21 @@ impl ResourceExtractionSystem {
         }
     }
 
-    /// Restores extractor sites affected by undoing one swap-remove building deletion.
+    /// Restores extractor sites affected by undoing one swap-remove building deletion, and their
+    /// polygons in the allocator's extraction-area index.
     pub(crate) fn restore_sites_after_building_removal_undo(
         &mut self,
         restored_building_idx: usize,
         last_building_idx_before_remove: usize,
         restored_sites: Vec<ExtractorSite>,
+        allocator: &mut BuildingAllocator,
     ) {
+        let index = allocator.extraction_clearance_mut();
+        index.set(restored_building_idx, &[]);
+        index.set(last_building_idx_before_remove, &[]);
+        for site in &restored_sites {
+            index.set(site.building_idx, &site.polygon_world);
+        }
         self.sites.retain(|site| {
             site.building_idx != restored_building_idx
                 && site.building_idx != last_building_idx_before_remove
@@ -157,14 +170,22 @@ impl ResourceExtractionSystem {
         self.bump_visual_revision();
     }
 
-    /// Commits or replaces the extraction polygon for one placed extractor building.
-    pub(crate) fn commit_site(
-        &mut self,
+    /// Validates an extraction polygon for one placed extractor building without changing
+    /// anything, and returns the site it would commit: the resource, the geometry, the link to
+    /// the building, then `land` on the polygon (`ZONE-11`: plotted land refuses; the answer is
+    /// the buildings the area will demolish, descending), then the building sites and roads it
+    /// may not cover ([`crate::simulation::agriculture::work_area_clearance`], decision
+    /// D-extraction-rules), then the reserve.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn validate_site(
+        &self,
         building_idx: usize,
         polygon_world: Vec<Vector2>,
         deposits: &ResourceDepositSystem,
-        allocator: &mut BuildingAllocator,
-    ) -> Result<ExtractorSiteSummary, String> {
+        allocator: &BuildingAllocator,
+        roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
+    ) -> Result<ExtractorSite, String> {
         let building = allocator
             .buildings
             .get(building_idx)
@@ -185,11 +206,13 @@ impl ResourceExtractionSystem {
             "extractor",
             EXTRACTOR_POLYGON_LINK_DISTANCE_M,
         )?;
+        let footprint = PolygonFootprint::new(&polygon_world);
+        let taken = land(&footprint)?;
+        work_area_clearance(&footprint, "extraction area", allocator, roads, &taken)?;
 
         let position = self
             .sites
             .binary_search_by_key(&building_idx, |site| site.building_idx);
-        let had_site = position.is_ok();
         let reserve_density_kg_per_m2 = position
             .ok()
             .map_or(COAL_UNITS_PER_FULL_RICHNESS_M2, |idx| {
@@ -209,7 +232,7 @@ impl ResourceExtractionSystem {
         // let a later expansion grant that same reserve again.
         let total_reserve_units = sampled_reserve_units.max(extracted_units);
         validate_extractor_reserve(total_reserve_units, extracted_units)?;
-        let site = ExtractorSite {
+        Ok(ExtractorSite {
             building_idx,
             resource_id,
             polygon_world,
@@ -217,8 +240,43 @@ impl ResourceExtractionSystem {
             total_reserve_units,
             reserve_density_kg_per_m2,
             extracted_units,
+        })
+    }
+
+    /// Commits or replaces the extraction polygon for one placed extractor building, validated
+    /// as [`Self::validate_site`] does with `land`; nothing is written on a refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_site(
+        &mut self,
+        building_idx: usize,
+        polygon_world: Vec<Vector2>,
+        deposits: &ResourceDepositSystem,
+        allocator: &mut BuildingAllocator,
+        roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
+    ) -> Result<ExtractorSiteSummary, String> {
+        let site = self.validate_site(
+            building_idx,
+            polygon_world,
+            deposits,
+            allocator,
+            roads,
+            land,
+        )?;
+        let position = self
+            .sites
+            .binary_search_by_key(&building_idx, |site| site.building_idx);
+        let had_site = position.is_ok();
+        let summary = ExtractorSiteSummary {
+            area_m2: site.area_m2,
+            total_reserve_units: site.total_reserve_units,
+            remaining_reserve_units: site.total_reserve_units - site.extracted_units,
+            building_idx,
         };
         let area_scale = site.productive_area_scale();
+        allocator
+            .extraction_clearance_mut()
+            .set(building_idx, &site.polygon_world);
         match position {
             Ok(idx) => self.sites[idx] = site,
             Err(idx) => self.sites.insert(idx, site),
@@ -232,16 +290,17 @@ impl ResourceExtractionSystem {
             top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
         }
 
-        Ok(ExtractorSiteSummary {
-            area_m2,
-            total_reserve_units,
-            remaining_reserve_units: total_reserve_units - extracted_units,
-        })
+        Ok(summary)
     }
 
-    /// Rebuilds cached productive area from committed sites; depleted deposits have no capacity.
+    /// Rebuilds cached productive area and the allocator's extraction-area index from committed
+    /// sites; depleted deposits have no capacity.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
+        allocator.extraction_clearance_mut().clear();
         for site in &self.sites {
+            allocator
+                .extraction_clearance_mut()
+                .set(site.building_idx, &site.polygon_world);
             allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
         }
     }
@@ -628,7 +687,12 @@ mod tests {
                     .filter(|site| site.building_idx == removed || site.building_idx == 5)
                     .cloned()
                     .collect();
-                mines.restore_sites_after_building_removal_undo(removed, 5, restored);
+                mines.restore_sites_after_building_removal_undo(
+                    removed,
+                    5,
+                    restored,
+                    &mut BuildingAllocator::new(),
+                );
                 let reloaded = ResourceExtractionSystem::from_sites(original.clone());
                 assert_eq!(
                     mines
@@ -723,6 +787,9 @@ mod tests {
             .profile_for_id("coal_mine_basic")
             .unwrap()
             .runtime_id;
+        // West of the deposit, within the link distance: an area may not cover its own mine
+        // (`ZONE-11`, decision D-extraction-rules).
+        mine.center_x = -25.0;
         allocator.buildings.push(mine);
         allocator.push_building_site_client(0, 10.0);
         let polygon = |right| {
@@ -733,9 +800,10 @@ mod tests {
                 Vector2::new(-5.0, 5.0),
             ]
         };
+        let roads = RoadbedSystem::new(512.0);
         let mut extraction = ResourceExtractionSystem::new();
         let first = extraction
-            .commit_site(0, polygon(15.0), &deposits, &mut allocator)
+            .commit_site(0, polygon(15.0), &deposits, &mut allocator, &roads, |_| Ok(Vec::new()))
             .unwrap();
         assert_eq!(
             first.total_reserve_units,
@@ -749,7 +817,9 @@ mod tests {
         allocator.buildings[0].operating_budget = 1.0;
         for (right, expected_remaining) in [(15.0, 300.0), (5.0, 0.0), (15.0, 300.0)] {
             let summary = extraction
-                .commit_site(0, polygon(right), &deposits, &mut allocator)
+                .commit_site(0, polygon(right), &deposits, &mut allocator, &roads, |_| {
+                    Ok(Vec::new())
+                })
                 .unwrap();
             let site = extraction.site_for_building(0).unwrap();
             assert_eq!(
@@ -768,6 +838,24 @@ mod tests {
                 "edits cannot regrant startup funds"
             );
         }
+        // `ZONE-09`: the allocator indexes the committed area, a load rebuilds the index from
+        // the sites, and the undo of the building's removal puts it back.
+        let probe = [
+            Vector2::new(10.0, -1.0),
+            Vector2::new(12.0, -1.0),
+            Vector2::new(12.0, 1.0),
+            Vector2::new(10.0, 1.0),
+        ];
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
+        allocator.extraction_clearance_mut().clear();
+        extraction.apply_work_area_scales(&mut allocator);
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
+        let site = extraction.site_for_building(0).unwrap().clone();
+        allocator.extraction_clearance_mut().remove_and_remap(0, 0);
+        extraction.remove_building_after_swap_remove(0, 0);
+        assert!(!allocator.extraction_clearance.overlaps_polygon(&probe));
+        extraction.restore_sites_after_building_removal_undo(0, 0, vec![site], &mut allocator);
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
     }
 
     #[test]

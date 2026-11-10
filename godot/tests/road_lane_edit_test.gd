@@ -35,6 +35,10 @@ class UiStub extends Node:
 		pass
 	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
 		pass
+	func show_junction_window(_node: int, _point: Vector2) -> void:
+		pass
+	func hide_junction_window() -> void:
+		pass
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -147,7 +151,7 @@ func _run() -> void:
 	_expect(not window._apply_button.disabled, "an accepted change can be applied")
 	_expect(window._verdict_label.text == "2 + 2 lanes, 50 km/h", "the verdict: %s" % window._verdict_label.text)
 	var widening := roundi(float(window._verdict.get("cost_delta", 0.0)))
-	_expect(widening > 0 and window._apply_button.text == "Apply (+%s)" % window._thousands(widening),
+	_expect(widening > 0 and window._apply_button.text == "Apply (+%s)" % window.UIStyle.thousands(widening),
 		"Apply shows the cost difference: %s" % window._apply_button.text)
 	var generation := simulation.get_network_render_generation()
 	window._apply_button.pressed.emit()
@@ -175,18 +179,47 @@ func _run() -> void:
 	# in-place check still refuses it with its reason.
 	_expect(simulation.check_road_layout([{"kind": "sidewalk"}, {"kind": "median", "style": 2, "width_m": 3.0},
 		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true).get("invalid_reason", "") != "", "a one-way median layout is refused")
-	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 50, true, true, true))
+	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 0, 50, 3, true, true))
 	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
 	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
 	await _undo("the median")
 	_expect(int(simulation.get_edge_cross_section(edge).get("median_style", -1)) == 0, "undo removes the median")
 
 	# A layout no type has shows as "Custom layout", which cannot be picked.
-	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, true, true, true), "a 3 + 1 layout is set in place")
+	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 0, 50, 3, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
 	_expect(window._layout_label.text == "3 + 1 lanes, 50 km/h", "the custom layout's lanes: %s" % window._layout_label.text)
 	await _undo("the custom layout")
+
+	# Kerbside parking (`PARK-05`): the Right box adds a parking lane in place, keeping the lanes.
+	window.show_for_edges(selection)
+	var right_box: CheckButton = window._parking_checks[window.PARKING_RIGHT]
+	_expect(not right_box.button_pressed, "a plain road has no parking lane")
+	generation = simulation.get_network_render_generation()
+	right_box.button_pressed = true
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("parking", 0)) == window.PARKING_RIGHT and _lanes(edge) == Vector2i(1, 1), "the Right box parks the right kerb: %s" % section)
+	_expect(is_equal_approx(float(section.get("width", 0.0)), 9.5), "a 1 + 1 road with a parking lane is 9.5 m wide")
+	_expect(right_box.button_pressed and simulation.get_network_render_generation() > generation, "the box stays ticked and the edit publishes")
+	await _undo("the parking lane")
+	_expect(int(simulation.get_edge_cross_section(edge).get("parking", -1)) == 0, "undo removes the parking lane")
+
+	# A road with one sidewalk (`ROAD-107`): the box keeps its sidewalk sides, and a side without
+	# a sidewalk refuses the parking lane (D4) with its reason.
+	_expect(simulation.set_edge_cross_section(edge, 1, 1, 0, 0.0, 0, 50, 1, true, true), "the road gets one sidewalk, on the left")
+	window.show_for_edges(selection)
+	var parked_left: Dictionary = tool.set_selected_edge_parking_side(window.PARKING_LEFT, true)
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(parked_left.get("refused", -1)) == 0 and int(section.get("parking", 0)) == window.PARKING_LEFT, "the sidewalk side parks: %s" % section)
+	_expect(int(section.get("sidewalks", 0)) == 1, "a parking lane keeps the road's one sidewalk: %s" % section)
+	var parked_right: Dictionary = tool.set_selected_edge_parking_side(window.PARKING_RIGHT, true)
+	var refusal: Dictionary = parked_right.get("verdict", {})
+	_expect(int(parked_right.get("refused", 0)) == 1 and String(refusal.get("invalid_reason", "")) == "layout_parking_needs_sidewalk", "the shoulder side is refused: %s" % parked_right)
+	_expect(int(simulation.get_edge_cross_section(edge).get("parking", 0)) == window.PARKING_LEFT, "a refused side changes nothing")
+	await _undo("the one-sided parking lane")
+	await _undo("the one sidewalk")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", 0)) == 3, "undo restores both sidewalks")
 
 	# A 100 km/h type without sidewalks or zoning in place: nothing to demolish, applied at once.
 	var rural := String(simulation.create_road_type("Lane Edit Rural", [
@@ -203,8 +236,11 @@ func _run() -> void:
 	_expect(not dialog.visible and int(section.get("speed_kmh", 0)) == 100 and not bool(section.get("sidewalks", true))
 		and not bool(section.get("zoning", true)) and String(section.get("road_type", "")) == rural, "Apply makes it rural: %s" % section)
 	_expect(overlay.refreshed > refreshed and window._no_build_check.button_pressed, "zoning off refreshes the overlay and the checkbox")
+	_expect(window._no_build_check.disabled, "a road with no sidewalk disables the No buildings box")
 	_expect(_picked_text(window) == "Lane Edit Rural (100 km/h, 24 / m)", "the picker shows the rural type: %s" % _picked_text(window))
 	await _undo("the rural type")
+	window._refresh()
+	_expect(not window._no_build_check.disabled, "sidewalks back: the box works")
 	section = simulation.get_edge_cross_section(edge)
 	_expect(int(section.get("speed_kmh", 0)) == 50 and bool(section.get("sidewalks", false)) and bool(section.get("zoning", false)),
 		"undo restores 50 km/h, sidewalks and zoning: %s" % section)
@@ -253,6 +289,33 @@ func _run() -> void:
 		"undo lights it again: %s" % section)
 	_expect(simulation.delete_road_type(unlit).is_empty(), "the unlit type is deleted")
 
+	# One side (`ROAD-107`): the type is matched by its sides, picked and undone; a road no type
+	# has reads "Custom layout", and nothing makes it two-sided but a picked type.
+	var left_only := String(simulation.create_road_type("Lane Edit Left", [{"kind": "sidewalk"},
+		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 50, true, true).get("id", ""))
+	_expect(not left_only.is_empty(), "the left-only type is created")
+	window.show_for_edges(selection)
+	_pick(window, left_only)
+	_expect(not window._apply_button.disabled and window._verdict_label.text == "1 + 1 lanes, 50 km/h, sidewalk on the left",
+		"the left-only verdict: %s" % window._verdict_label.text)
+	window._apply_button.pressed.emit()
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("sidewalks", -1)) == 1 and String(section.get("road_type", "")) == left_only, "Apply removes one side: %s" % section)
+	_expect(_picked_text(window).begins_with("Lane Edit Left") and window._layout_label.text == "1 + 1 lanes, 50 km/h, sidewalk on the left",
+		"the window shows the one-sided road: %s / %s" % [_picked_text(window), window._layout_label.text])
+	_expect(simulation.delete_road_type(left_only).is_empty(), "the left-only type is deleted")
+	window.show_for_edges(selection)
+	_expect(_picked_text(window) == window.CUSTOM_LAYOUT, "no type has its sides: %s" % _picked_text(window))
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 1, "showing it changes nothing")
+	_pick(window, "builtin:road_2l")
+	_expect(not window._apply_button.disabled and window._verdict_label.text == "1 + 1 lanes, 50 km/h", "the 2-Lane Road adds the side back: %s" % window._verdict_label.text)
+	window._apply_button.pressed.emit()
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 3, "Apply adds the right side")
+	await _undo("the added side")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 1, "undo takes it off")
+	await _undo("the removed side")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 3, "undo restores both sides")
+
 	# A walkway keeps the picker enabled so the refusal shows.
 	var walkway: int = simulation.get_hovered_edge(0.0, -80.0)
 	_expect(walkway >= 0 and _lanes(walkway) == Vector2i(0, 0), "the walkway is found")
@@ -263,6 +326,10 @@ func _run() -> void:
 	_pick(window, "builtin:road_2l")
 	_expect(window._apply_button.disabled, "a walkway cannot become a road")
 	_expect(window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway refusal: %s" % window._verdict_label.text)
+	var walkway_right: CheckButton = window._parking_checks[window.PARKING_RIGHT]
+	walkway_right.button_pressed = true
+	_expect(not walkway_right.button_pressed and int(simulation.get_edge_cross_section(walkway).get("parking", -1)) == 0, "a walkway keeps no parking lane")
+	_expect(window._warning_label.visible and window._warning_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway parking refusal: %s" % window._warning_label.text)
 
 	# The median controls the road builder reuses step within the style's range.
 	var controls := MedianControls.new()

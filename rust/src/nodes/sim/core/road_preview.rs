@@ -12,12 +12,15 @@ use std::time::Instant;
 use godot::prelude::Vector3;
 
 use super::graded_stage::GradedPose;
-use super::road_edit_plan::{ReservedOverlap, RoadEditPlan};
+use super::road_edit_plan::{
+    CoreLand, PlottedOverlap, RoadEditPlan, RoadLandTake, first_plotted_overlap,
+};
+use super::road_tool_land::ViewLand;
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
@@ -25,7 +28,9 @@ use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
     validate_road_candidate_fast,
 };
-use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
+use crate::simulation::network::roadbed::{
+    PieceMesh, RoadbedDelta, RoadbedRestore, RoadbedSystem, SurfaceChunkKey,
+};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::water::WaterSystem;
@@ -43,55 +48,114 @@ pub(crate) struct RoadPreviewRequest {
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), part of the identity like `median`.
+    pub(crate) parking: RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`): part of the preview's and the plan's
     /// identity; the stroke's edge and its pieces carry them.
     pub(crate) attributes: RoadAttributes,
 }
 
-/// Corridor clearance of a stroke against live parcels and field reservations.
+/// Corridor clearance of a stroke against live parcels and plotted reservations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RoadCorridorClearance {
-    /// Parcels the corridor overlaps; any overlap refuses the stroke (`parcel_overlap`).
+    /// Parcels the corridor overlaps: informational, since a stroke takes zoned land
+    /// (`ZONE-09`, decision D8).
     pub(crate) overlapping_parcels: usize,
     /// Lowest overlapping parcel id, present when any parcel overlaps.
     pub(crate) first_overlapping_parcel: Option<u64>,
     /// Whether the corridor overlaps a committed field reservation (`field_overlap`).
     pub(crate) field_overlap: bool,
+    /// Whether the corridor overlaps a mine's extraction area (`extraction_area_overlap`).
+    pub(crate) extraction_overlap: bool,
+    /// Whether the corridor overlaps the lot of an explicitly placed building
+    /// (`plotted_building_overlap`).
+    pub(crate) plotted_overlap: bool,
     /// Zoning overlay revision the parcel query read.
     pub(crate) zoning_revision: u64,
     /// Agriculture field revision the field query read.
     pub(crate) field_revision: u64,
 }
 
+/// The pieces a stroke's plan installs and those it replaces, as its commit would install them
+/// on the road tool's view (`installed`, `replaced`).
+pub(crate) type StrokePieces<'a> = (&'a [&'a PieceMesh], &'a [&'a PieceMesh]);
+
 impl RoadCorridorClearance {
-    /// Queries the parcel chunk index and the field reservations along the corridor that the
-    /// lanes, the `median` and the sidewalks (or a road without them its shoulders,
-    /// `attributes`) cover. O(corridor segments × parcels and fields in the touched chunks).
+    /// Queries the parcel chunk index along the corridor that the lanes, the `median` and the
+    /// sidewalks (or a road without them its shoulders, `attributes`) cover, and the plotted
+    /// land: with the stroke's `pieces` the commit's own test of them against the live fields,
+    /// extraction areas and explicit sites, so a bridge's deck refuses nothing its commit
+    /// accepts (`ZONE-09` decisions D2, D8); without (no complete plan on the view) the
+    /// corridor's. O(corridor segments × parcels in the touched chunks) plus O(pieces ×
+    /// reservations in their bounds), or the corridor's O(segments × polygons and sites in the
+    /// touched chunks); every site is a candidate while the site query index is stale.
     pub(crate) fn evaluate(
         core: &SimCore,
         points: &[Vector3],
         (fwd_lanes, bkw_lanes): (i32, i32),
-        median: Option<RoadMedian>,
-        attributes: RoadAttributes,
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
+        pieces: Option<StrokePieces<'_>>,
     ) -> Self {
         let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
         let (fwd, bkw) = (lanes(fwd_lanes), lanes(bkw_lanes));
-        let half_width = Edge::cross_section_width_m(fwd, bkw, median) * 0.5
+        let half_width = Edge::cross_section_width_m(fwd, bkw, median, parking) * 0.5
             + attributes.corridor_side_m(fwd == 0 && bkw == 0);
         let parcels = core
             .zoning
             .parcel_ids_overlapping_road_corridor(points, half_width);
+        let (field_overlap, extraction_overlap, plotted_overlap) = match pieces {
+            Some((installed, replaced)) => {
+                let plotted = first_plotted_overlap(&CoreLand::of(core), installed, replaced);
+                (
+                    plotted == Some(PlottedOverlap::Field),
+                    plotted == Some(PlottedOverlap::ExtractionArea),
+                    matches!(plotted, Some(PlottedOverlap::Building(_))),
+                )
+            }
+            None => (
+                core.allocator
+                    .field_clearance
+                    .overlaps_road_corridor(points, half_width),
+                core.allocator
+                    .extraction_clearance
+                    .overlaps_road_corridor(points, half_width),
+                corridor_overlaps_explicit_site(core, points, half_width),
+            ),
+        };
         Self {
             overlapping_parcels: parcels.len(),
             first_overlapping_parcel: parcels.first().copied(),
-            field_overlap: core
-                .allocator
-                .field_clearance
-                .overlaps_road_corridor(points, half_width),
+            field_overlap,
+            extraction_overlap,
+            plotted_overlap,
             zoning_revision: core.zoning.overlay_revision(),
             field_revision: core.agriculture.visual_revision(),
         }
     }
+}
+
+// Whether a segment of the corridor of `half_width` along `points` overlaps an explicit site's
+// lot.
+fn corridor_overlaps_explicit_site(core: &SimCore, points: &[Vector3], half_width: f32) -> bool {
+    use crate::simulation::agriculture::PolygonFootprint;
+    use godot::prelude::Vector2;
+    let cell_m = core.config.zone_cell_m;
+    points.windows(2).any(|pair| {
+        let start = Vector2::new(pair[0].x, pair[0].z);
+        let end = Vector2::new(pair[1].x, pair[1].z);
+        let delta = end - start;
+        if delta.length_squared() <= f32::EPSILON {
+            return false;
+        }
+        let normal = Vector2::new(delta.y, -delta.x).normalized() * half_width;
+        let quad = [start - normal, end - normal, end + normal, start + normal];
+        let corridor = PolygonFootprint::new(&quad);
+        core.allocator
+            .first_explicit_site_lot(corridor.min, corridor.max, cell_m, None, |lot| {
+                corridor.overlaps(&PolygonFootprint::new(lot))
+            })
+            .is_some()
+    })
 }
 
 /// Immutable road-tool inputs from one published simulation generation.
@@ -117,9 +181,6 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// What the road-touched graded terrain reads besides the heightmap, per render patch;
     /// shared in `O(1)` (`ROAD-68-E`).
     pub(crate) terrain_inputs: RoadTerrainInputs,
-    /// Committed field reservations, shared in `O(1)`: the preview tests its pieces against
-    /// them as the commit does (`ROAD-68` open question 25).
-    pub(crate) fields: Arc<crate::simulation::agriculture::FieldClearanceIndex>,
     /// A persistent copy of the zoning cell store, shared in `O(1)` and brought up to date at
     /// each publication from the live store's write journal (open question 32): the preview
     /// tests its pieces against its reserved cells as the commit does (open question 25).
@@ -207,7 +268,6 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         road_mesh_generation: core.road_mesh_lane_generation,
         road_mesh_surface_generation: core.cached_road_mesh_generation,
         terrain_inputs: core.road_terrain_inputs.current(),
-        fields: Arc::clone(&core.allocator.field_clearance),
         cells: crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells),
         surface_generation: core.road_tool_surface_generation,
     })
@@ -278,9 +338,10 @@ pub(crate) struct RoadPreviewPieces {
     /// nothing Godot shows. `None` if the view's chunks are not of its roadbed's generation or
     /// a published run has no owner.
     pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
-    /// The field or painted cells the delta's pieces newly cover, by the commit's own test
-    /// against the view's indices (`ROAD-68` open question 25).
-    pub(crate) overlap: Option<ReservedOverlap>,
+    /// The land the delta's pieces take (`ZONE-09`), by the commit's own rules against the
+    /// view's cells and the road tool's land: a plotted reservation refuses the stroke, else the
+    /// lots it removes and the buildings (by handle) it demolishes.
+    pub(crate) take: RoadLandTake<u64>,
 }
 
 /// One synchronous road preview: the plan the click submits, the pieces the commit installs and
@@ -297,6 +358,7 @@ pub(crate) struct RoadPreview {
 
 impl RoadPreview {
     /// True when this preview was made for exactly this stroke.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
         points: &[Vector3],
@@ -304,7 +366,7 @@ impl RoadPreview {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
-        (median, attributes): (Option<RoadMedian>, RoadAttributes),
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
         request.points == points
@@ -313,6 +375,7 @@ impl RoadPreview {
             && request.snap_to_existing_roads == snap_to_existing_roads
             && request.tunnel == tunnel
             && request.median == median
+            && request.parking == parking
             && request.attributes == attributes
     }
 }
@@ -356,15 +419,15 @@ impl RoadPreviewContext {
             .is_valid
             .then(|| self.compile_plan_pieces(&plan, &mut times))
             .flatten();
-        let overlap = pieces.as_ref().and_then(|pieces| pieces.overlap);
-        if pieces.is_none() || overlap.is_some() {
+        let plotted = pieces.as_ref().and_then(|pieces| pieces.take.plotted);
+        if pieces.is_none() || plotted.is_some() {
             // A pose that draws no road (no pieces, or invalid) supersedes the last pose's
             // unstaged graded tiles and shows no preview terrain (T60 (2)).
             self.graded.supersede();
         }
-        // The commit would refuse the overlap; the preview shows it before the click.
-        let validation = match overlap {
-            Some(overlap) => validation.with_invalid_reason(overlap.reason()),
+        // The commit would refuse plotted land; the preview shows it before the click.
+        let validation = match plotted {
+            Some(plotted) => validation.with_invalid_reason(plotted.reason()),
             None => validation,
         };
         RoadPreview {
@@ -393,15 +456,30 @@ impl RoadPreviewContext {
         Some(pose)
     }
 
-    // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
-    // chunks on the edited replica and restores it from the same local checkpoint the commit's
-    // undo record captures.
-    fn compile_plan_pieces(
+    /// The pieces `plan` installs and those they replace on the view, compiled on the replica
+    /// as a preview compiles them, handed to `check`; `None` without a complete topology. The
+    /// one-shot stroke checks judge plotted land on them (`ZONE-09` decision D8). No graded or
+    /// render work; `O(stroke + local excerpt + closure pieces)`.
+    pub(crate) fn with_plan_pieces<T>(
         &mut self,
         plan: &RoadEditPlan,
-        times: &mut RoadPreviewTimes,
-    ) -> Option<RoadPreviewPieces> {
-        let roadbed_start = Instant::now();
+        check: impl FnOnce(StrokePieces<'_>) -> T,
+    ) -> Option<T> {
+        let compiled = self.compile_on_replica(plan)?;
+        let before: Vec<_> = compiled.restore.replaced_pieces().collect();
+        let installed: Vec<_> = compiled
+            .roadbed
+            .installed_pieces(&compiled.restore)
+            .collect();
+        let result = check((&installed, &before));
+        self.replica.restore_undo_delta_local(&compiled.checkpoint);
+        Some(result)
+    }
+
+    // Applies the plan's topology to the replica and compiles what it dirtied into an `O(1)`
+    // copy of the view's roadbed with the delta installed. The caller restores the replica from
+    // the returned checkpoint, the one the commit's undo record captures.
+    fn compile_on_replica(&mut self, plan: &RoadEditPlan) -> Option<CompiledPose> {
         let topology = plan.topology_for(&self.replica)?;
         let (edges, nodes) = topology.source_topology_ids();
         let checkpoint = self.replica.capture_undo_for_local_topology(edges, nodes);
@@ -413,14 +491,39 @@ impl RoadPreviewContext {
         applied.mark_pieces(&mut roadbed);
         let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
         let (changed_chunks, restore) = roadbed.install(&delta);
-        // The commit's reservation test on the same installed and replaced pieces.
+        Some(CompiledPose {
+            checkpoint,
+            delta,
+            roadbed,
+            changed_chunks,
+            restore,
+        })
+    }
+
+    // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
+    // chunks on the edited replica and restores it from the same local checkpoint the commit's
+    // undo record captures.
+    fn compile_plan_pieces(
+        &mut self,
+        plan: &RoadEditPlan,
+        times: &mut RoadPreviewTimes,
+    ) -> Option<RoadPreviewPieces> {
+        let roadbed_start = Instant::now();
+        let CompiledPose {
+            checkpoint,
+            delta,
+            mut roadbed,
+            changed_chunks,
+            restore,
+        } = self.compile_on_replica(plan)?;
+        // The commit's land take on the same installed and replaced pieces.
         let before: Vec<_> = restore.replaced_pieces().collect();
-        let overlap = ReservedOverlap::first(
-            &self.view.fields,
-            &self.view.cells,
-            roadbed.installed_pieces(&restore),
-            &before,
-        );
+        let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
+        let take = ViewLand {
+            land: &self.land,
+            cells: &self.view.cells,
+        }
+        .take(&installed, &before);
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_changes = roadbed.take_terrain_changes();
         let graded_start = Instant::now();
@@ -487,7 +590,17 @@ impl RoadPreviewContext {
             changed_chunks,
             graded,
             chunks,
-            overlap,
+            take,
         })
     }
+}
+
+// One pose compiled on the replica: the replica's checkpoint, the delta, the view's roadbed
+// with it installed, the changed chunks and the install's restore.
+struct CompiledPose {
+    checkpoint: crate::simulation::network::graph::RegionGraphUndoDelta,
+    delta: RoadbedDelta,
+    roadbed: RoadbedSystem,
+    changed_chunks: Vec<SurfaceChunkKey>,
+    restore: RoadbedRestore,
 }

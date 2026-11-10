@@ -269,15 +269,41 @@ measurements appear only during a placement. See [road interaction](roads.md).
 
 | Button  | Activates |
 |---------|-----------|
-| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks", "no street lights", "No zoning" and Rust's cost), Cul-De-Sac, Edit roads (`SelectTool`, V: click a built road for Road Properties; a building opens the Building Inspector); with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid) and Structure (Tunnel) |
+| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks" or "sidewalk on the left" / "right", "no street lights", "No zoning" for a type that does not zone or has no sidewalks, "Buildings on the sidewalk side only" with one, and Rust's cost), then the Roundabout tile (key O, `ROAD-62`) and Edit roads (`SelectTool`, V: click a built road for Road Properties, a junction for the Junction window; a building opens the Building Inspector); with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid), Structure (Tunnel) and, while the roundabout tool is on, Diameter (a slider in 1 m steps over the range Rust gives for the site, with the size and lanes read-only, "36 m, 1 lane"; the two keys right of P, `[` `]` on a US layout and Å ¨ on a Nordic one, step 2 m, held at the ends). O opens the Roads menu when it is closed. The tool's outline is blue when it would build, red with the reason when not; see [`roads.md`](roads.md#roundabouts-road-62) |
 | Zoning  | Zoning sub-menu in one row: the cell/parcel tool options on the left, then Residential / Commercial / Industrial family tiles; a family's profiles (low, medium and high density each with its own silhouette) open to their right after clicking the family, which also selects its first profile |
-| Services | Service-building asset palette for explicit civic / utility placement |
+| Services | Service-building asset palette for explicit civic / utility placement; beside a road side without a sidewalk the preview turns red and the click is refused with "buildings need a sidewalk on their side of the road" (`ROAD-109`), as in Industry |
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
 | Terrain | Terrain sub-menu for gameplay terrain tools |
 
 Bulldoze sits after a separator at the right end of the category row. Its icon button
 activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
 footprints before road edges; left click deletes one target; right click or Esc exits the tool.
+A ring is one target (`ROAD-62`): the hover shows the whole ring and names it beside the pointer,
+"Roundabout, 4 arms".
+
+**Demolition previews** (`ZONE-09`-`ZONE-11`, branch `roads-over-zoning`; rules in
+[`zoning.md`](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+Roads, road edits and explicit placements take the zoned land they cover. Every tool that can
+take land outlines the lots it would remove with the bulldoze hover's red fill and line
+(`scripts/renderers/highlight_mesh.gd`, extracted from `bulldoze_tool.gd`; unshaded, from Rust's
+`demolish_lots`, four corners per lot, built or empty) and names the buildings on them from Rust's
+`demolish_count`; plotted land (a placed building's lot, a farm field, a mine's extraction area)
+turns the preview red with its reason and outlines nothing. Wording, all "demolishes N
+building(s)" unless noted:
+
+| Tool | Where the count shows |
+| --- | --- |
+| Road tool | the HUD measurement line, after the cost |
+| Roundabout tool | the label beside the ring |
+| Road Properties | the selected roads' widenings outlined; Apply asks "Apply removes N building(s). This cannot be undone." |
+| Junction window | the pocket row's verdict ("..., demolishes N building(s)") and the row's take outlined |
+| Services and Industry building placement | the price label; while the core is busy the hover keeps its last ghost, outline and label |
+| Industry extraction polygon | the quote label; the close click takes the land |
+| Edit Field | the hint line; refusals name the plotted land ("field overlaps a placed building's lot") |
+
+The outline colour and the wording are the user's decisions, not yet taken (built with the
+bulldoze red and the texts above). Undo of a road edit restores the road and the paint, never the
+buildings; placements have no undo (`ZONE-12`).
 
 Road previews expose full readiness only for the exact current pointer input with a staged
 canonical road/terrain pair. Coarse ribbons, retained older poses and missing resident terrain
@@ -309,7 +335,7 @@ While Roads or Zoning is open, 1-9 act on its tiles, each showing its digit in a
 its bottom-right corner (`HudIcons.set_number`; `MainUI.handle_number_key`); a key press plays
 the tile's click animation (`HudIcons.activate`). Roads: the five built-in types, new
 custom road (6 again closes the builder; digits typed in the builder reach the palette unless a
-text field has focus), the custom-roads tile (each press picks the next custom type), Cul-De-Sac, Edit
+text field has focus), the custom-roads tile (each press picks the next custom type), Roundabout, Edit
 roads. Zoning: Residential, Commercial, Industrial (again: that zone's next profile), the
 cells/parcels switch (its digit sits on the workflow it switches to), the four cell shapes,
 Erase. The zone palette sits left of the cell tools so the digits read left to right.
@@ -422,10 +448,9 @@ Current WorldEditor shortcuts:
 |------------|--------|
 | R          | Toggle Road tool |
 | X          | Toggle Walkway tool |
+| O          | Toggle Roundabout tool (the two keys right of P, `[` `]` on a US layout, step its diameter) |
 | Z          | Toggle Zoning tool |
-| M          | Toggle Move tool |
 | V          | Toggle Select tool |
-| C          | Toggle Cul-De-Sac tool |
 | Y          | Toggle Terrain Sculpt |
 | Space      | Pause / unpause |
 | , / .      | Slower / faster (also keypad - / +) |
@@ -536,8 +561,9 @@ Both inspectors use `UIStyle.keep_keyboard_with_game` and shared title/section/a
 | Interface (UI Scale) | Options → Display | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
 | Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane, route and latest trip failure (`DEBUG-06`). Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |
-| Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`): library column (built-ins, the player's types, unusable entries with reasons, the library error), five part tiles, the layout strip to scale (click a + then a tile, or drag and drop), a part popup (median style and width, Move, Remove), the type's attributes (Sidewalks for both sides, else 0.75 m shoulder bands drawn on the strip; a Speed stepper on Rust's 20-120 km/h grid in steps of 10, hidden for a footpath; Zoning, off once by default when a new type reaches 80 km/h; Street lights, ticked by default), Rust's cost line ("15 / m, upkeep 0.10 / m / day"), the warning for no sidewalks with zoning, the name field with Rust's suggestion, Cancel and Create road / Save. Persistent, resizable, non-exclusive `Window` (960 x 440, min 760 x 400); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
-| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout"; `ROAD-101`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the type's zoning off demolishes), No Buildings flag, and slope warnings for the current selection. Uses a content-sized, draggable window beside the selection: segmented class icons, a bounded scrollable road-thumbnail grid, verdict, accent Apply and a No buildings toggle. The native picker remains its selection/metadata model for existing test drivers. |
+| Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`): library column (built-ins, the player's types, unusable entries with reasons, the library error), six part tiles (the sixth a kerbside Parking lane, `PARK-05`), the layout strip to scale (click a + then a tile, or drag and drop), a part popup (median style and width, Move, Remove), the type's attributes (Left sidewalk and Right sidewalk, one per end as the road is drawn, a 0.75 m shoulder band drawn on the strip at an end without one; a Speed stepper on Rust's 20-120 km/h grid in steps of 10, hidden for a footpath; Zoning, off once by default when a new type reaches 80 km/h and disabled with no sidewalk on either side, `ROAD-109`; Street lights, ticked by default), Rust's cost line ("15 / m, upkeep 0.10 / m / day"), the warning with zoning for no sidewalks ("No sidewalks: nothing is built along this road") or per side ("No sidewalk on the right: nothing is built on that side"), `ROAD-109`, the name field with Rust's suggestion, Cancel and Create road / Save. Persistent, resizable, non-exclusive `Window` (960 x 440, min 760 x 400); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
+| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout", matched by sidewalk sides too, left and right as the road was drawn; `ROAD-101`, `ROAD-107`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the change demolishes: the type's zoning off, or the lots a widening takes, which are outlined (`ZONE-10`); a type that would take a sidewalk from under a building's door is refused with that reason, `ROAD-109`), a Parking lane row with Left and Right switches, each switching one kerb in place (`PARK-05`; a side without a sidewalk refuses, with the reason in the warning line), No Buildings flag (disabled on roads with no sidewalk on either side, `ROAD-109`) and slope warnings for the current selection (turn pockets are edited from the Junction window). Uses a content-sized, draggable window beside the selection: the selected road first (thumbnail, name, lanes), segmented class icons with the No buildings toggle, the Parking lane row, then "Change road type" unfolds a bounded scrollable road-thumbnail grid, the verdict and accent Apply. The native picker remains its selection/metadata model for existing test drivers. |
+| Junction | Click a junction with `SelectTool` | `scripts/ui/junction_window.gd` *(implemented)*, rows in `scripts/ui/junction_pocket_row.gd` | Opens beside the click (never over the junction; a moved window stays unless it would cover the click), movable and resizable; keeps the game's keyboard so Ctrl+Z undoes with it open; the lane spheres and crosswalk toggles stay in the world. "Turn pockets" (`ROAD-95`): one row per incoming car road from Rust's `get_junction_pockets`, clockwise from north, "From west · 2-Lane Road" with what its end has, Left / Right (a side the road cannot carry disabled with Rust's reason), the length from the junction (20-300 m by 10: arrows, or click the number and type, Enter), Rust's verdict and "Apply (+N)"; the hovered (else last changed) row's road highlighted cyan from the junction over the length (every control in a row passes the mouse on, so the hover holds across the row's check boxes, length box and Apply); after an Apply or an undo the rows are read again, keeping unapplied requests. No pocket section at a pocket's lane transition or a node without incoming car roads. Opens at 460 x 600 (four rows without scrolling); see [`roads.md`](roads.md#the-turn-pocket-tool-round-r5b2). |
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
 | Economy Overview | City → Economy Overview | `scripts/ui/economy_overview.gd` *(implemented)* | Live fiscal budget, services, and policy overview with persisted window layout and split-panel offsets. |
@@ -553,7 +579,8 @@ Farm inspectors provide **Edit Field** for committed polygons. `field_edit_tool.
 the existing vertex handles, previews each drag through Rust validation, and commits on release.
 Accepted releases refresh the field overlay and merge Rust's updated area, worker capacity and
 production ratio into the open inspector immediately. Rejected moves restore the last accepted
-shape and display the conflict. Escape/right-click finishes editing; switching tools or loading
+shape and display the conflict. A drag over zoned land outlines the lots it takes and the hint
+names the buildings; the release demolishes them (`ZONE-11`, no undo). Escape/right-click finishes editing; switching tools or loading
 a world also cancels an unfinished drag. No field geometry or economy decisions live in GDScript.
 During initial field drawing and resizing, a yellow outline shows the farm lot and a red outline
 with translucent fill marks the building/yard footprint the field must avoid. A visible legend
@@ -749,7 +776,6 @@ godot/
     asset_editor.gd
     building_preview.gd
     buildings.gd
-    cul_de_sac_tool.gd
     economy_editor.gd
     economy_graph_canvas.gd
     editor_camera_input.gd
@@ -758,7 +784,6 @@ godot/
     lane_tool.gd
     launch_router.gd
     main_ui.gd
-    move_tool.gd
     network_renderer.gd
     network_tool.gd
     pack_manager.gd
@@ -799,9 +824,7 @@ godot/
       editor_camera_input.gd      AssetEditor sandbox camera pan / orbit / zoom
     tools/                        Player-facing placement and editing tools
       road_tool.gd
-      move_tool.gd
       select_tool.gd
-      cul_de_sac_tool.gd
       network_tool.gd
       zoning_tool.gd
     renderers/                    Thin render bridges — read Rust state, update meshes

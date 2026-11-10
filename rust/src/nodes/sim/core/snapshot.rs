@@ -37,6 +37,21 @@ pub(crate) fn access_phase_target(
     agent_idx: usize,
     egress: bool,
 ) -> Option<Vector3> {
+    let trip = core.agents.parking_trip[agent_idx];
+    if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn) {
+        let (place, lane, distance) = if egress {
+            (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])
+        } else { (trip.destination,core.agents.planned_detach_lane_id[agent_idx],core.agents.planned_detach_lane_d[agent_idx]) };
+        let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress)?;
+        let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);
+        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,&path).map(|i| path.points[i])?;
+        return Some(Vector3::new(target.x,0.0,target.y));
+    }
+    if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::WalkToDoor) {
+        let entrance = core.parking.trip_entrance(trip, egress, &core.allocator, &core.transit_network, &core.region_graph)?;
+        let point = if egress { entrance.curb_pos } else { entrance.door_pos };
+        return Some(Vector3::new(point.x, 0.0, point.y));
+    }
     let building_id = if egress {
         core.agents.current_building[agent_idx]
     } else {
@@ -131,6 +146,9 @@ pub(crate) enum SimulationRuntimeSnapshot {
     VegetationEdit(VegetationEditUndo),
     /// Previous designations and affected lots of one gesture; buildings are never snapshotted.
     CellZoningEdit(crate::simulation::zoning::CellZoningEdit),
+    /// The buildings and occupancy a turn pocket edit moved between its pair of edges
+    /// (`ROAD-95`), restored after its graph checkpoint.
+    RoadDependents(crate::simulation::network::pockets::PocketDependentsUndo),
 }
 
 /// Bounded inverse journal for one vegetation brush stroke.
@@ -247,6 +265,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) graded: Option<super::GradedUndo>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
+    /// The cell paint a road stroke erased under its pieces (`ZONE-09`); undo restores it.
+    pub(crate) cells: Option<crate::simulation::zoning::CellPaintUndo>,
     /// Building/economy runtime state.
     pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
 }
@@ -283,6 +303,11 @@ impl SimCore {
 /// The Godot main thread converts these `Vec<f32>` buffers to `PackedFloat32Array`
 /// when the `#[func]` render getters are called.
 pub struct RenderSnapshot {
+    /// Parked chunks of the custody state `car_transforms` was built from: a car entering or
+    /// leaving a bay is in exactly one of them, in every snapshot.
+    pub(crate) parked: crate::simulation::parking::ParkedPublication,
+    /// World identity of the coherent vehicle frame.
+    pub(crate) vehicle_world_epoch: u64,
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
     /// Per `(vehicle_type * 10 + color_variant)` → flat 12-float `Transform3D` buffer.
@@ -394,6 +419,8 @@ pub struct RenderSnapshot {
 impl Default for RenderSnapshot {
     fn default() -> Self {
         Self {
+            parked: Default::default(),
+            vehicle_world_epoch: 0,
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
@@ -470,8 +497,7 @@ impl SimCore {
         full_pose: &mut RenderSnapshot,
     ) -> (std::time::Duration, std::time::Duration) {
         crate::thread_pools::install(|| {
-            self.allocator
-                .prepare_building_site_query_index(self.config.zone_cell_m);
+            self.prepare_site_queries();
             for snapshot in [&mut *culled, &mut *full_pose] {
                 snapshot
                     .pedestrian_transforms
@@ -507,9 +533,10 @@ impl SimCore {
     }
 
     fn build_snapshot_in_pool(&mut self, mut snapshot: RenderSnapshot) -> RenderSnapshot {
-        // Repair derived site/index state once, never via a full-store fallback per agent.
-        self.allocator
-            .prepare_building_site_query_index(self.config.zone_cell_m);
+        // Repair derived site/index state once, never via a full-store fallback per agent. The
+        // snapshot is built outside the simulation's order (after every frame and edit in the
+        // game, never headless): only the site part of a stale index (`ALLOC-05`).
+        self.prepare_site_queries();
         for buffer in snapshot.pedestrian_transforms.values_mut() {
             buffer.clear();
         }
@@ -526,6 +553,8 @@ impl SimCore {
         // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
         // interpolation identity contract (`SIM-02-K`).
         self.build_agent_instances(&mut snapshot);
+        self.publish_parked_chunks(&mut snapshot.parked);
+        snapshot.vehicle_world_epoch = self.world_epoch;
 
         let node_positions = self.network_node_positions_snapshot();
 

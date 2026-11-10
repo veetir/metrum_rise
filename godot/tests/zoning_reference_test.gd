@@ -150,7 +150,25 @@ func _reference(fixture: Dictionary) -> void:
 	road.remove_child(road.road_mesh_root)
 	scene.add_child(road.road_mesh_root)
 	var road_chunks := road._road_chunk_instances.size()
-	scene.add_child(await _capture_terrain())
+	var water := Node3D.new()
+	water.name = "Water"
+	scene.add_child(water)
+	var terrain := TerrainScript.new()
+	terrain.name = "Terrain"
+	scene.add_child(terrain)
+	# The ack is the renderer's, which only tries the core (`CODE-25`): on a loaded machine the
+	# simulation thread can hold it (the commit's lot plan), and an unacknowledged network keeps
+	# the terrain renderer from taking its dirty patches. No renderer retries it here, so retry.
+	var acked := simulation.acknowledge_network_render(generation)
+	var ack_deadline := Time.get_ticks_msec() + 20000
+	while not acked and Time.get_ticks_msec() < ack_deadline:
+		await process_frame
+		acked = simulation.acknowledge_network_render(generation)
+	_expect(acked, "%s: the committed road chunks are acknowledged" % fixture.name)
+	var terrain_deadline := Time.get_ticks_msec() + 20000
+	while simulation.is_terrain_dirty() and Time.get_ticks_msec() < terrain_deadline:
+		await process_frame
+	_expect(not simulation.is_terrain_dirty(), "Production terrain must settle")
 	var overlay := OverlayScript.new()
 	scene.add_child(overlay)
 	overlay.set_tool_active(true)
@@ -158,18 +176,29 @@ func _reference(fixture: Dictionary) -> void:
 	var cell_meshes := 0
 	var uploaded_cells := 0
 	var palette := {}
-	for instance: MeshInstance3D in overlay._cell_chunks._chunks.values():
-		if instance.mesh == null:
+	var unique := {}
+	var repeated_in_chunk := 0
+	for chunk: Vector2i in overlay._cell_chunks._chunks:
+		var payload: Dictionary = overlay._cell_chunks._chunks[chunk]
+		if not payload.has("rows"):
 			continue
 		cell_meshes += 1
-		var arrays := instance.mesh.surface_get_arrays(0)
-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
-		uploaded_cells += vertices.size() / 6
-		for index in range(0, colors.size(), 6):
-			var key := colors[index].to_html(true)
+		uploaded_cells += int(payload.rectangle_count)
+		var rows: PackedByteArray = payload.rows
+		for index in int(payload.rectangle_count):
+			# Row 0 holds the chunk-local origin and axis; a crossing cell repeats in each chunk.
+			var frame := index * 3 * 16
+			var origin := Vector2(chunk) * 512.0 + Vector2(rows.decode_float(frame), rows.decode_float(frame + 4))
+			if not _add_unique_rectangle(unique, origin, Vector2(rows.decode_float(frame + 8), rows.decode_float(frame + 12)), chunk):
+				repeated_in_chunk += 1
+			var offset := (index * 3 + 2) * 16
+			var color := Color(rows.decode_float(offset), rows.decode_float(offset + 4), rows.decode_float(offset + 8))
+			var key := color.to_html(true)
 			palette[key] = palette.get(key, 0) + 1
-	_expect(uploaded_cells == cell_count, "Visible chunks must upload every cell exactly once")
+	var unique_cells := 0
+	for bucket: Array in unique.values():
+		unique_cells += bucket.size()
+	_expect(unique_cells == cell_count and repeated_in_chunk == 0, "Visible masks must carry every cell exactly once, a crossing cell once per chunk it crosses: %d unique of %d uploaded, %d cells, %d repeated within a chunk" % [unique_cells, uploaded_cells, cell_count, repeated_in_chunk])
 	if fixture.get("paint", false):
 		_expect(palette.size() == 4, "Paint reference must show three profiles and empty cells")
 	for frame in range(5):
@@ -185,6 +214,24 @@ func _reference(fixture: Dictionary) -> void:
 	road.free()
 	viewport.free()
 	await process_frame
+
+# Buckets world-space rectangle origins on a 0.5 m grid. A crossing cell's copies in two chunks
+# differ only by float rounding, so a match within 1 mm and the same axis is the same rectangle.
+# Returns false when the rectangle is already in `chunk`'s mask.
+func _add_unique_rectangle(buckets: Dictionary, origin: Vector2, axis: Vector2, chunk: Vector2i) -> bool:
+	var bucket := Vector2i((origin / 0.5).floor())
+	for x in range(bucket.x - 1, bucket.x + 2):
+		for y in range(bucket.y - 1, bucket.y + 2):
+			for entry: Array in buckets.get(Vector2i(x, y), []):
+				if entry[0].distance_to(origin) < 0.001 and entry[1].dot(axis) > 0.9999:
+					if entry[2].has(chunk):
+						return false
+					entry[2].append(chunk)
+					return true
+	if not buckets.has(bucket):
+		buckets[bucket] = []
+	buckets[bucket].append([origin, axis, [chunk]])
+	return true
 
 func _settle_cell_overlay(overlay: Node) -> void:
 	var deadline := Time.get_ticks_msec() + 20000

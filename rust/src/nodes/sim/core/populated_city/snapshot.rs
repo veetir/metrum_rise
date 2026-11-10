@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 // Bump when the revision inputs or their hashing algorithm changes. The source and bootstrap
 // manifests are hashed below; simulation changes that alter a fixture must also touch one of the
 // included sources or bump this marker explicitly. The save format is checked independently.
-const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v5";
+const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v8";
 // Both tiers exercise rebuilding in the following day; day 7 had no execution census.
 const SNAPSHOT_DAY: u32 = 12;
 const SNAPSHOT_MINUTE: u16 = 0;
@@ -176,19 +176,15 @@ fn load_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Populated
     load_snapshot_from_path(residents, &path, fixture)
 }
 
+// Every fixture's name carries its revision, so binaries with different keys share one cache
+// directory without overwriting each other's cities; a control and a candidate timed in one
+// session each keep their own (the commit city's revision includes the binary).
 fn snapshot_path(residents: u32, cache_dir: &Path, fixture: Fixture) -> PathBuf {
-    match fixture {
-        // Each binary's commit cities sit beside the others', so a control and a candidate
-        // timed in one session each keep their own.
-        Fixture::CommitCity => cache_dir.join(format!(
-            "{}_{residents}_{}.sqlite",
-            fixture.name(),
-            &fixture.revision()[..16]
-        )),
-        Fixture::Baseline | Fixture::FiscalStress => {
-            cache_dir.join(format!("{}_{residents}.sqlite", fixture.name()))
-        }
-    }
+    cache_dir.join(format!(
+        "{}_{residents}_{}.sqlite",
+        fixture.name(),
+        &fixture.revision()[..16]
+    ))
 }
 
 fn temporary_snapshot_path(residents: u32, cache_dir: &Path, fixture: Fixture) -> PathBuf {
@@ -348,7 +344,8 @@ fn read_departures(path: &Path, residents: u32, fixture: Fixture) -> (u32, (i64,
     )
 }
 
-fn fixture_revision() -> String {
+/// The revision the baseline and fiscal fixtures are keyed and named by (prepare reports print it).
+pub(super) fn fixture_revision() -> String {
     fixture_revision_at(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
 }
 

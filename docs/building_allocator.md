@@ -141,6 +141,35 @@ on demolition undo (`ECON-07`; see [`economy.md`](economy.md#field-placement-and
 The bulldoze command retains the actual footprint center for revalidation: an offset imported
 building footprint need not contain the logical lot center.
 
+**Roads, road edits and explicit placements as callers** (`ZONE-09`-`ZONE-11`, branch
+`roads-over-zoning`; rules in
+[`zoning.md`](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+A road stroke, a graph edit or an explicit placement (building, field, extraction area) that takes
+zoned land demolishes the growable buildings on the lots it removes through
+`SimCore::demolish_for_road` (`nodes/sim/editing.rs`), with no undo record (road undo returns the
+paint, never the buildings). One batch per edit, in descending index order so the remaining
+indices survive the swap-removes:
+
+1. one parallel scan for the agents naming any building of the batch
+   (`agents_referencing_any_building`) and one for the households
+   (`households_referencing_any_building`), rescanned only if a removal renumbered agents;
+2. every building of the batch evacuated before the first removal, its households rehoused
+   outside the batch (`claim_available_home_except` takes the excluded set), so no evacuee is
+   rehoused into a building about to go and the zone index is not rebuilt per removed home;
+3. `remove_building_for_road` per building (the lifecycle's removal: parcel occupancy, households,
+   logistics, electricity, the swap remap through agents, households, logistics, parcel occupancy,
+   the field and extraction indices and production sites);
+4. once: `publish_pending_building_site_changes`, terrain dirty bounds, flow fields dirty.
+
+The agent scan, O(agents / P) per demolishing edit, is decision D11 (`PERF-20`). Building, parcel
+and cell products are bitwise equal across 0 / 10k / 30k background (`benchmark_commit_locality`);
+the removals take 0.15-0.48 ms for four housed homes and the site publication 6.6-20 ms, flat with
+the city. Which home an evacuee gets can differ from per-building evacuation. Explicit placements
+call the same path after their checks: `prepare_explicit_placement` (sidewalk, land, roads, support;
+the support's neighbour-height test skips the buildings the take demolishes), the take, then
+`place_explicit_site`; fields and extraction areas follow their owner by handle across the
+removals (`take_land_for_work_area`) and return its new index to Godot.
+
 ## Build-Site Model
 
 In the live runtime, a build site is one frontage-attached roadside candidate footprint. It is not a
@@ -196,7 +225,12 @@ inputs before claiming anything; queued actions are not permission to use stale 
 
 Zoning reserves the entire explicit-building lot, including land outside the imported structure's
 flat support footprint. This check shares the existing lot query used by placement neighbors and
-converts its cached cell radius using the live world's cell size. Surface-height, terrain and
+converts its cached cell radius using the live world's cell size. Since `ZONE-11` an explicit
+lot over zoned land takes it (the lots and authored parcels it covers are removed with their
+buildings, the covered paint erased) and only plotted land refuses: explicit sites refuse each
+other by exact lot polygons, shared edges allowed (`SiteOverlap`, "building lot overlaps a placed
+building's lot"), fields and extraction areas by their polygons; the old axis-aligned box loop over
+every building site and `validate_explicit_zoning_reservation` are gone. Surface-height, terrain and
 bulldoze queries retain their support-footprint bounds. Both use the same building chunk index.
 
 Committing placement appends the building and derived site, marks `dirty`, `dirty_index`,
@@ -383,12 +417,67 @@ agent remap scans every agent when a removed carrier renumbered agents meanwhile
 production-site terrain boxes are render state: they refresh one a light slot later while the
 zone index and site clients are current, and a load recomputes them whole.
 
+**A hover readies only the site part** (`ZONE-11` round RZ11b). A placement hover runs outside
+the simulation's order, so it must not rebuild the order-carrying lists: on a stale index every
+site query (`lot_candidate_indices_for_bounds`, `site_at`, `site_candidate_indices_for_bounds`)
+would otherwise enumerate all B sites, several times per hover. `prepare_site_query_chunks`
+rebuilds the site part alone (chunk lists, chunk bounds, the maxima with their counts, the explicit
+sites; `rebuild_zone_index` is split into `rebuild_site_chunks` and the zone/vacancy fill, outputs
+unchanged) behind its own flag, `site_chunks_current`; the three site queries read the chunks
+whenever `site_chunks_ready()`. The zone, vacancy and admission lists and the stale flag are left
+to their next reader, so a hover changes no simulation order; every stale mark and every
+swap-remove clears the flag. Cost: O(1) when ready, else O(B/p + chunks) plus an O(B) fill once per
+stale episode, not per hover (0.07 / 0.10 / 0.19 ms at 0 / 10k / 30k background in
+`benchmark_preview_locality`'s `lot_stale` row; a prepared hover 0.06-0.10 ms). The field
+editor's check and the industry area quote use the same refresh.
+
+**Only the simulation rebuilds the order** (`ALLOC-05`). The order-carrying lists (zone, vacancy,
+admission order) of a stale index are rebuilt by the simulation's own readers, where they read
+them: its steps (the frame's start, admission, rehousing, spawns, level changes, planning), the
+player's edits and loading (`prepare_building_site_query_index`, `rebuild_zone_index`). Every
+reader outside that order readies only the site part, through `SimCore::prepare_site_queries`
+(with the roadbed compile: `prepare_site_and_road_reads`): the render snapshot the simulation
+thread builds after every frame and edit (never in a headless run), the pointer's
+`hover_world_surface`, `intersect_world_surface` and `get_world_surface_height`,
+`try_get_building_site_frame`, the graded tiles' inputs, the vegetation, water and parcel-overlay
+queries, the agent inspector, the building LOD view, the bulldoze hover, the cell overlay's chunks
+(requested and stale), the cell gesture and parcel previews, and the building pick below.
+`building_site_query_index_ready()` accepts the site part, which is all a site query reads
+(`graded_site_snapshot`, the vehicle ground solve, the cell mask request, `has_explicit_cell_sites`,
+the explicit-site snapshot); an edit's graded stage prepares the whole index without asking it, so
+whether its rebuild runs never depends on a query. A building-removal undo, which writes the
+building store directly, marks the index stale, so a site part readied since the removal is not
+read. Cost: a reader on a current index pays O(1) as before. In the game the render snapshot's
+whole rebuild after an edit that leaves the index stale became the site refresh, O(B/p + B), and
+the simulation's next reader rebuilds the index where a headless run does, O(B/p + B): one more
+chunk fill and parallel derivation per stale episode, not per frame (in the starter town's three
+days every stale episode began with an edit; its frames ended with the index current). Reusing a current site part in that rebuild was tried and dropped: it holds only while
+every write to the building store marks the index stale, which the undo above did not, and
+nothing enforces it.
+
+On `dev` `da5ede14` these readers rebuilt the whole index, so after an edit that left the index
+stale the lists, their positions and the stale flag differed from a headless game's until the next
+frame's start. No day diverged: the frame's start rebuilds a stale index before any order-sensitive
+work, and the edits between frames that read the order rebuild it first, so a query's earlier
+rebuild gave the same lists. The order between frames still depended on Godot, and nothing kept
+the next order-sensitive change from landing in that gap. `query_cases.rs` holds the evidence:
+`godot_queries_leave_the_days_and_their_records` plays the starter town twice in lockstep for three
+days with the same edits every other game hour (a parking lot west of the town, the first occupied
+home bulldozed), asks Godot's queries of one after every frame and edit, and compares the order
+lists after each, the products at each day's close (the day record, every building and household)
+and a save after an edit that leaves the index stale; on `da5ede14` it fails at the first edit
+(frame 58 of 7,258) with the products and the save equal.
+`each_godot_reader_leaves_a_stale_index_to_its_next_reader` pins the lists, positions, admission
+order and stale flag across each reader on an index whose rebuild would reorder them.
+
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.
 Non-finite points return no hit. A clean query examines at most four existing 512 m chunks,
 uses constant auxiliary storage and costs O(buildings in those chunks); it does not allocate or
-sort a candidate list. Dirty indices are rebuilt once before querying using the existing
-allocator maintenance path. Broken and unfinished placed buildings remain inspectable.
+sort a candidate list. A stale index readies only its site part first
+(`prepare_site_query_chunks`, `ALLOC-05`), so a pick, which the inspector asks outside the
+simulation's order, never moves the order. Broken and unfinished placed buildings remain
+inspectable.
 Household detail aggregation is a separate bridge path and remains under audit.
 
 `AUDIT-01-B1` locality validation runs the ignored release test

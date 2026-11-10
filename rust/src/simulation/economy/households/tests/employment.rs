@@ -8,11 +8,11 @@ use super::*;
 #[test]
 #[ignore = "matched workplace cache publication/lookup timing; excludes setup"]
 fn benchmark_workplace_route_cache_hashing() {
-    use super::super::employment::WorkplaceRouteCache;
+    use super::super::employment::{WorkplaceRouteCache, WorkplaceCommute};
     use std::{collections::HashMap, hash::BuildHasher, hint::black_box, time::Instant};
-    type Entry = ((usize, usize, bool), Option<u16>);
+    type Entry = ((usize, usize, bool), WorkplaceCommute);
     fn sample<S: BuildHasher>(
-        cache: &mut HashMap<(usize, usize, bool), Option<u16>, S>,
+        cache: &mut HashMap<(usize, usize, bool), WorkplaceCommute, S>,
         entries: &[Entry],
     ) -> (f64, f64, u64) {
         cache.clear();
@@ -26,7 +26,7 @@ fn benchmark_workplace_route_cache_hashing() {
         for _ in 0..8 {
             for &(key, _) in entries {
                 let value = cache.get(black_box(&key)).unwrap();
-                checksum += value.map_or(1, |value| u64::from(value) + 2);
+                checksum += value.seconds.map_or(1, |value| u64::from(value) + 2);
             }
         }
         let lookup_ns = begin.elapsed().as_nanos() as f64 / (entries.len() * 8) as f64;
@@ -42,7 +42,7 @@ fn benchmark_workplace_route_cache_hashing() {
                     let value = (home + work) % 7 != 0;
                     (
                         (home, work * 491, home % 2 == 0),
-                        value.then_some(((home * 5 + work) % 65536) as u16),
+                        WorkplaceCommute::legacy(value.then_some(((home * 5 + work) % 65536) as u16)),
                     )
                 })
             })
@@ -54,7 +54,7 @@ fn benchmark_workplace_route_cache_hashing() {
         let fast_capacity = fast.capacity();
         let expected: u64 = entries
             .iter()
-            .map(|&(_, value)| value.map_or(1, |value| u64::from(value) + 2))
+            .map(|&(_, value)| value.seconds.map_or(1, |value| u64::from(value) + 2))
             .sum::<u64>()
             * 8;
         for pair in 0..11 {
@@ -2869,6 +2869,48 @@ fn consumer_market_reserves_transfers_once_and_excludes_temporary_income() {
 }
 
 #[test]
+fn census_budgets_record_the_shopping_wageless_adults_will_fund() {
+    // ECON-28: a family whose adults earn no counted wage buys nothing a store is staffed for.
+    // The census records the residents their wages will fund, and the workforce calendar
+    // charges their store labour.
+    use crate::simulation::economy::customers::ConsumerBudgets;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    let mut allocator = BuildingAllocator::new();
+    let home = register_test_asset(
+        &mut allocator,
+        "test",
+        "wageless_home",
+        ZoneClass::Residential,
+    );
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+    let wages = |mut family: Household, employed: u16, wages: f32| {
+        family.employed_adults = employed;
+        family.gross_daily_wages = wages;
+        family
+    };
+    let families = [
+        // Two adults without a job: neither's basket is funded.
+        make_household(0, 2, 0.0, 0.0),
+        // A couple one wage funds: the other adult's job adds nothing.
+        wages(make_household(0, 2, 0.0, 0.0), 1, 300.0),
+        // A funded single worker.
+        wages(make_household(0, 1, 0.0, 0.0), 1, 100.0),
+        // A family of three hired since it last counted its wages.
+        wages(make_household(0, 3, 0.0, 0.0), 3, 0.0),
+        // Unhoused: no budget.
+        make_household(usize::MAX, 3, 0.0, 0.0),
+    ];
+    let mut customers = ConsumerBudgets::default();
+    customers.reset(&families, &allocator, &catalog, &tuning, &policy, 100_000.0);
+    assert_eq!(customers.affordable_residents(), 3.0);
+    assert_eq!(customers.unfunded_wageless_residents(), 5.0);
+}
+
+#[test]
 fn consumer_reservations_keep_family_money_quantities_and_exact_rollback_separate() {
     use crate::simulation::economy::customers::ConsumerBudgets;
     let catalog = load_runtime_economy_catalog().unwrap();
@@ -3173,7 +3215,7 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
             &graph
         ),
         0.0,
-        "car-only frontage cannot serve a family without a car"
+        "a door no walk reaches cannot serve a family without a car"
     );
     let builds = customers.index_builds_for_test();
     families[0].shopping_has_car = true;
@@ -3225,10 +3267,13 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     // A proposed forward-only door is reachable outward along the shared frontage,
     // but cannot return to the home's forward-only door through the dead-end road.
     graph.edge_mut(0).bkw_lanes = 0;
-    graph.edge_mut(0).allowed_types = TransitFlags::CAR;
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    for entrance in &mut allocator.entrances {
+        entrance.foot_lane_fwd = usize::MAX;
+        entrance.foot_lane_bkw = usize::MAX;
+    }
     customers.reset(
         &families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph,
     );
@@ -3260,6 +3305,49 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
         0.0,
         "one outward trip cannot promise a shopping round trip"
     );
+}
+
+// `ROAD-107` (D1 per side): a 1 + 1 road with its only sidewalk on the left (side 1). The houses
+// front the sidewalk: their doors have foot lanes and a walking resident of one reaches the
+// other. The right side takes no buildings (`ROAD-109`).
+#[test]
+fn a_one_sided_road_is_walked_to_on_its_sidewalk_side() {
+    use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut graph, mut network) = simple_work_graph();
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::LEFT);
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "one_sided", ZoneClass::Residential);
+    // The left of a road running +x is -z.
+    let house = |x: f32, side: i8| {
+        let mut building = make_building(x, ZoneType::Residential, &asset, 0.0);
+        building.center_y = -12.0 * f32::from(side);
+        building.facing_dir = Vector2::new(0.0, f32::from(side));
+        building.side = side;
+        building
+    };
+    allocator.buildings.push(house(0.0, 1));
+    allocator.buildings.push(house(100.0, 1));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    for entrance in &allocator.entrances {
+        assert!(entrance.foot_lane_fwd != usize::MAX && entrance.foot_lane_bkw != usize::MAX);
+        assert!(entrance.car_lane_fwd != usize::MAX || entrance.car_lane_bkw != usize::MAX);
+    }
+    let trip = |target: usize, has_car: bool| {
+        estimate_building_origin_trip_seconds(
+            0,
+            target,
+            has_car,
+            &allocator,
+            &network,
+            &graph,
+            &std::sync::atomic::AtomicU32::new(0),
+            None,
+        )
+    };
+    assert!(trip(1, false).is_some(), "a walk along the sidewalk");
 }
 
 #[test]
@@ -3601,15 +3689,12 @@ fn shopping_car_census_uses_eligible_residents_and_resets_removed_access() {
     assert!(households.households[0].shopping_has_car);
     agents.age_group[0] = AGE_ELDER;
     households.households[0].shopping_has_car = false;
-    households.rebuild_household_shopping_access(&agents);
+    households.recount_every_household(&agents, &allocator);
     assert!(
         households.households[0].shopping_has_car,
-        "the load census must include elders without relying on saved household flags"
+        "the recount must include elders"
     );
     agents.assign_household_id(0, usize::MAX);
-    households.rebuild_household_shopping_access(&agents);
-    assert!(!households.households[0].shopping_has_car);
-    households.households[0].shopping_has_car = true;
     households.recount_every_household(&agents, &allocator);
     assert!(
         !households.households[0].shopping_has_car,
@@ -3691,7 +3776,7 @@ fn workplace_quotes_expire_a_day_of_passes_after_they_were_added() {
         0,
         0,
         0,
-        vec![((0, 1, false), Some(60), 0), ((1, 0, true), None, 3)],
+        vec![((0, 1, false), super::super::employment::WorkplaceCommute::legacy(Some(60)), 0), ((1, 0, true), super::super::employment::WorkplaceCommute::legacy(None), 3)],
         3,
     );
     for _ in 0..20 {
@@ -3789,4 +3874,201 @@ fn a_job_board_swept_over_an_hour_equals_one_built_at_once() {
         missed.advance(slot, &allocator, &catalog);
     }
     assert!(missed.saved().front.is_none() && missed.saved().sweep.is_none());
+}
+
+// `ECON-23` market: a home, a 60-wage job next door and a 90-wage job down the road, one funded
+// job at each unless `far_funded` closes the far one, and one adult household member.
+struct CarryMarket {
+    households: HouseholdSystem,
+    allocator: BuildingAllocator,
+    agents: AgentSystem,
+    adult: usize,
+    graph: RegionGraph,
+    network: TransitNetwork,
+}
+
+const CARRY_NEAR: usize = 1;
+const CARRY_FAR: usize = 2;
+
+impl CarryMarket {
+    fn new(adults: u16, children: u16, far_funded: u32) -> Self {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let mut allocator = BuildingAllocator::new();
+        let home = register_test_asset(&mut allocator, "test", "carry_home", ZoneClass::Residential);
+        let shop = register_test_asset(&mut allocator, "test", "carry_shop", ZoneClass::Commercial);
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+        for (x, profile, funded) in [
+            (20.0, "personal_service_small", 1),
+            (200.0, "grocery_basic", far_funded),
+        ] {
+            let mut job = make_building(x, ZoneType::Commercial, &shop, 0.0);
+            job.economy_profile_runtime_id = catalog.profile_for_id(profile).unwrap().runtime_id;
+            job.funded_job_capacity = funded;
+            allocator.buildings.push(job);
+        }
+        let (graph, network) = simple_work_graph();
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, adults + children, 5.0, 5.0);
+        household.adult_count = adults;
+        household.child_count = children;
+        households.households.push(household);
+        let mut agents = AgentSystem::new();
+        let adult = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.assign_household_id(adult, 0);
+        agents.transit[adult] = TRANSIT_IN_BUILDING;
+        agents.current_building[adult] = 0;
+        Self {
+            households,
+            allocator,
+            agents,
+            adult,
+            graph,
+            network,
+        }
+    }
+
+    // The adult already holds the 60-wage job, its lock run out.
+    fn on_the_near_job(mut self) -> Self {
+        self.agents.assign_work_building(self.adult, CARRY_NEAR, 0);
+        self.allocator.buildings[CARRY_NEAR].worker_count = 1;
+        self.households.households[0].employed_adults = 1;
+        self.households.households[0].gross_daily_wages = 60.0;
+        self
+    }
+
+    fn search(mut self) -> usize {
+        self.households.assign_agent_workplaces_from_census(
+            &mut self.agents,
+            &mut self.allocator,
+            &self.network,
+            &self.graph,
+            420,
+        );
+        self.agents.work_building[self.adult]
+    }
+}
+
+#[test]
+fn a_family_passes_a_job_that_cannot_carry_it_while_one_that_can_is_open() {
+    assert_eq!(CarryMarket::new(1, 1, 1).search(), CARRY_FAR);
+    assert_eq!(
+        CarryMarket::new(1, 0, 1).search(),
+        CARRY_NEAR,
+        "the same wage carries a single adult, who takes the shorter commute"
+    );
+}
+
+#[test]
+fn a_family_with_no_carrying_job_open_still_takes_the_job() {
+    assert_eq!(CarryMarket::new(1, 1, 0).search(), CARRY_NEAR);
+}
+
+#[test]
+fn a_family_on_a_job_that_cannot_carry_it_moves_when_one_opens() {
+    assert_eq!(
+        CarryMarket::new(1, 1, 1).on_the_near_job().search(),
+        CARRY_FAR
+    );
+    assert_eq!(
+        CarryMarket::new(1, 1, 0).on_the_near_job().search(),
+        CARRY_NEAR,
+        "with nothing better open the family keeps the job"
+    );
+    assert_eq!(
+        CarryMarket::new(1, 0, 1).on_the_near_job().search(),
+        CARRY_NEAR,
+        "a single adult whose wage carries it stays"
+    );
+}
+
+#[test]
+fn a_second_adult_counts_the_first_adults_wage() {
+    // Alone, the 60 wage would have to carry half of a family of five: too little.
+    assert_eq!(CarryMarket::new(2, 3, 1).search(), CARRY_FAR);
+    // Beside a 90 wage it is enough, so the shorter commute wins.
+    let mut market = CarryMarket::new(2, 3, 1);
+    market.households.households[0].employed_adults = 1;
+    market.households.households[0].gross_daily_wages = 90.0;
+    assert_eq!(market.search(), CARRY_NEAR);
+}
+
+// One grocery whose 160 customers' sales need exactly 12 of its 15 workers, importing from a
+// border, at `stock` units on its shelf; its census's funded jobs and activity, and the store.
+fn exact_store_census(stock: f32) -> (u32, f32, Building) {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let shop = register_test_asset(&mut allocator, "test", "crew_shop", ZoneClass::Commercial);
+    let home = register_test_asset(&mut allocator, "test", "crew_home", ZoneClass::Residential);
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let mut store = make_building(60.0, ZoneType::Commercial, &shop, 0.0);
+    store.operating_budget = 100_000.0;
+    store.set_inventory_units(profile.outputs[0].resource_runtime_id, stock);
+    store.set_inventory_units(profile.inputs[0].resource_runtime_id, 400.0);
+    allocator.buildings.push(store);
+    allocator
+        .buildings
+        .push(make_building(80.0, ZoneType::Residential, &home, 0.0));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut customer = make_household(1, 160, 100.0, 1.0);
+    customer.gross_daily_wages = 100_000.0;
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    funding.refresh(
+        &allocator,
+        &[customer],
+        &mut ShipmentSystem::new(),
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        100_000.0,
+        420,
+    );
+    let store = allocator.buildings.swap_remove(0);
+    (funding.capacities[0], funding.activities()[0], store)
+}
+
+#[test]
+fn a_store_whose_sales_land_on_a_whole_crew_funds_its_refill_worker() {
+    // ECON-24: 12 of the grocery's 15 workers make exactly the 160 units a day its customers
+    // buy, so staffed to its sales alone its shelf never recovers from a dip. The census funds
+    // one worker above them at the same activity.
+    use crate::simulation::economy::households::metrics::{
+        building_operation_factors_with_floor_scale, sales_store_crew,
+    };
+    assert_eq!(sales_store_crew(15, 0.8), 13);
+    assert_eq!(sales_store_crew(15, 159.0 / 200.0), 12, "rounded-up sales keep their crew");
+    assert_eq!(sales_store_crew(15, 1.0), 15);
+    assert_eq!(sales_store_crew(15, 0.0), 0);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    // Three days of 160 units a day, 480, is the shelf's target.
+    let (funded, activity, mut store) = exact_store_census(16.0);
+    assert_eq!((funded, activity), (13, 0.8));
+    store.worker_count = funded;
+    let factors = |store: &Building| {
+        building_operation_factors_with_floor_scale(&catalog, store, profile, activity)
+    };
+    assert_eq!(factors(&store).active_worker_capacity, 13, "the refill worker is staffed");
+    assert_eq!(
+        factors(&store).output_capacity_factor,
+        13.0 / 15.0,
+        "below its target the crew refills the shelf at the full staffed rate"
+    );
+    store.set_inventory_units(profile.outputs[0].resource_runtime_id, 500.0);
+    assert_eq!(factors(&store).output_capacity_factor, 0.8, "above it, it makes the sales");
+    assert_eq!(
+        exact_store_census(500.0).0,
+        13,
+        "a full shelf keeps the crew: no job opens and closes with the shelf"
+    );
 }

@@ -664,7 +664,11 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                         .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
                 "topology" => {
-                    market.graph.edge_mut(0).allowed_types = TransitFlags::CAR;
+                    // Every door stands on the left: the right sidewalk's lanes go.
+                    market
+                        .graph
+                        .edge_mut(0)
+                        .set_sidewalks(crate::simulation::network::graph::SidewalkSides::LEFT);
                     market.graph.rebuild_adjacency_list();
                     market.network.lane_system.rebuild(&mut market.graph);
                     market.network.rebuild_cch_and_check(&market.graph);
@@ -858,6 +862,7 @@ fn freight_connectivity_and_frontage_prices_revalidate_populated_markets() {
 
     let mut bridge = make_road_edge(1, 2, 400.0, 924.0);
     bridge.allowed_types = TransitFlags::CAR;
+    bridge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     let bridge = market.graph.add_edge(bridge);
     let rebuild = |market: &mut MarketFixture| {
         market.graph.rebuild_adjacency_list();

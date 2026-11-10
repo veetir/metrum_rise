@@ -9,7 +9,7 @@ use super::definitions::{
 };
 use super::fiscal::{CityFiscalPolicy, daily_property_tax};
 use super::households::{
-    Household, local_utility_service_costs, output_area_scale_for_building,
+    Household, local_utility_service_costs, operation_crew, output_area_scale_for_building,
     physical_worker_capacity_for_profile, service_funded_worker_capacity,
 };
 use super::logistics::{
@@ -51,6 +51,9 @@ pub(crate) struct JobFunding {
     pub(crate) capacities: Vec<u32>,
     // One bit per copied row: complete, not under construction, when the census copied it.
     saw_operating: Vec<u64>,
+    // The shoppers the census left unfunded, recorded with its consumer budgets; `None` before
+    // a census recorded them.
+    unfunded_shoppers: Option<UnfundedShoppers>,
     /// Complete closure attempts in the latest census, for exact scaling diagnostics.
     #[cfg(test)]
     pub(crate) closure_passes: usize,
@@ -138,6 +141,19 @@ pub(crate) struct JobFunding {
     // line.
     #[cfg(test)]
     household_detail: [f64; 3],
+}
+
+/// The households a census's consumer budgets cover and the shopping among them that no store is
+/// staffed for yet (`ECON-28`): the workforce calendar charges store labour for those residents
+/// and for every family that arrived after the census's copy, until a census funds them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct UnfundedShoppers {
+    /// Households in the census's copy; live households at later indices arrived after it.
+    pub(crate) copied_households: usize,
+    /// Residents of copied housed families with an adult whose wage the census does not count
+    /// (no job yet, or hired since the family last counted its wages) whose basket its budgets
+    /// do not pay for: the shopping that wage will fund.
+    pub(crate) wageless_residents: f64,
 }
 
 // Unique per book state: drawn afresh for every new or cloned book, by every run of the
@@ -625,6 +641,18 @@ impl JobFunding {
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
     }
 
+    /// The shoppers the census left unfunded (`ECON-28`); `None` for a book no census filled
+    /// (cleared books, hand-built test censuses). O(1).
+    pub(crate) fn unfunded_shoppers(&self) -> Option<UnfundedShoppers> {
+        self.unfunded_shoppers
+    }
+
+    /// Test fixtures with hand-built censuses: the census left `shoppers` unfunded.
+    #[cfg(test)]
+    pub(crate) fn set_unfunded_shoppers_for_test(&mut self, shoppers: UnfundedShoppers) {
+        self.unfunded_shoppers = Some(shoppers);
+    }
+
     /// Test fixtures with hand-built censuses: the census saw `buildings` as they are now.
     #[cfg(test)]
     pub(crate) fn see_operating_for_test(&mut self, buildings: &[Building]) {
@@ -697,6 +725,7 @@ impl JobFunding {
     pub(crate) fn clear(&mut self) {
         self.set_published(None);
         self.saw_operating.clear();
+        self.unfunded_shoppers = None;
         self.import_plans.clear();
         self.market_revision = None;
         self.capacities.clear();
@@ -1231,7 +1260,10 @@ fn funded_private_operation(
             .fold(0.0, f32::max)
     })
     .min(activity_ceiling);
-    let desired = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
+    // A sales-scaled store's crew includes its refill worker when its sales land exactly on a
+    // whole crew (`ECON-24`); every smaller plan keeps the same activity, so a store that cannot
+    // pay that worker keeps the crew its sales alone need.
+    let desired = operation_crew(building, profile, physical, market_activity).min(ceiling);
     if desired == 0 {
         return (0, 0.0);
     }

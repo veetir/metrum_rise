@@ -259,8 +259,17 @@ impl PieceMesh {
     }
 
     /// World positions of one triangle.
+    // The hottest leaf of a chunk emit's height queries (read per candidate triangle), called from
+    // other modules. Three plain reads with `#[inline]`: the `[u32; 3]::map` closure stayed an
+    // outlined call in some codegen partitions.
+    #[inline]
     pub fn triangle_points(&self, triangle: usize) -> [RoadVec3; 3] {
-        self.triangles[triangle].map(|vertex| self.positions[vertex as usize])
+        let [a, b, c] = self.triangles[triangle];
+        [
+            self.positions[a as usize],
+            self.positions[b as usize],
+            self.positions[c as usize],
+        ]
     }
 
     /// Footprint boundary chains.
@@ -416,6 +425,15 @@ impl PieceMesh {
     /// tunnels meet, the pieces that carry a lining. Its top lies in the hill under the ground.
     pub fn buried(&self) -> bool {
         !self.lining.triangles.is_empty()
+    }
+
+    /// Whether the piece stands on the ground: it hangs skirts (`TERRAIN-07-B`), a standard span
+    /// or a node piece where a standard edge meets, a bridge's approach and mouth among them. A
+    /// bridge's deck and a node piece where only structures meet stand above the ground, a
+    /// buried piece lies under it: neither covers the land beneath, which keeps its fields,
+    /// sites, lots and cells (`ZONE-09`, decision D2). `O(1)`.
+    pub fn grounded(&self) -> bool {
+        self.strips == Some(StripKind::Skirt)
     }
 
     /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
@@ -702,7 +720,7 @@ const TIP_SHARED_SLOTS: usize = 4;
 
 impl RowLayout {
     // The ground slot `g` where a body layout's left carriageway ends, at the median's kerb.
-    fn median_ground_slot(&self) -> u8 {
+    pub(super) fn median_ground_slot(&self) -> u8 {
         let kinds = &self.kinds[..usize::from(self.band_count)];
         let median = kinds
             .iter()

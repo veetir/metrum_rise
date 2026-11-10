@@ -40,24 +40,41 @@ impl SimulationNode {
         }
     }
 
+    /// Sets the road tool's kerbside parking (`PARK-05`) for every later hover check, preview,
+    /// commit and refusal report of the tool: `code` bit 0 the left kerb, bit 1 the right, looking
+    /// along the stroke. Returns the empty string when set, else `parking_code_out_of_range`,
+    /// keeping the previous setting. Whether the stroke's lanes may carry it is the stroke's
+    /// check (`parking_requires_vehicle_road`, `layout_parking_needs_sidewalk`).
+    #[func]
+    pub fn set_road_tool_parking(&mut self, code: i32) -> GString {
+        match crate::simulation::network::graph::RoadParking::from_code(code) {
+            Some(parking) => {
+                self.road_tool_parking = parking;
+                GString::new()
+            }
+            None => "parking_code_out_of_range".into(),
+        }
+    }
+
     /// Sets the road tool's road-type attributes (`ROAD-101`) for every later hover check,
     /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
     /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
-    /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way)
-    /// `zoning` (lots and buildings along the road) and `street_lights` (visual only). Returns
-    /// the empty string when set, else `speed_out_of_range`, keeping the previous attributes.
-    /// The built-in types send (50, true, true, true): the edge every stroke built before road
-    /// types.
+    /// (`ROAD-107`: the sides of a car road with one in the stroke's direction, 0 none, 1 left,
+    /// 2 right, 3 both, a shoulder on a side without; a walkway is walked either way), `zoning`
+    /// (lots and buildings along the road) and `street_lights` (visual only). Returns the empty
+    /// string when set, else `speed_out_of_range` or `sidewalks_out_of_range`, keeping the
+    /// previous attributes. The built-in types send (50, 3, true, true): the edge every stroke
+    /// built before road types.
     #[func]
     pub fn set_road_tool_attributes(
         &mut self,
         speed_kmh: i32,
-        sidewalks: bool,
+        sidewalks: i32,
         zoning: bool,
         street_lights: bool,
     ) -> GString {
         use crate::simulation::network::road_types::RoadAttributes;
-        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights) {
+        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights) {
             Ok(attributes) => {
                 self.road_tool_attributes = attributes;
                 GString::new()
@@ -86,10 +103,7 @@ impl SimulationNode {
         styles
     }
 
-    /// Returns cheap synchronous hover feedback for a road-tool candidate.
-    ///
-    /// Returns prepared points and validation; the road tool's display comes from
-    /// [`Self::preview_road`].
+    /// [`Self::validate_road_candidate_with_snap`] with snapping to existing roads.
     #[func]
     pub fn validate_road_candidate(
         &self,
@@ -100,7 +114,11 @@ impl SimulationNode {
         self.validate_road_candidate_with_snap(points, fwd_lanes, bkw_lanes, true)
     }
 
-    /// Returns cheap synchronous hover feedback with optional existing-road snapping.
+    /// Checks a road-tool stroke once: the hover checks (profile, endpoints, water) on the road
+    /// tool's published view, then a valid stroke's corridor against the live parcels and field
+    /// reservations, waiting for the core for that (`ROAD-102`). Returns the prepared points and
+    /// the validation; a stroke that is not valid always names its `invalid_reason`. The road
+    /// tool's own hover is [`Self::preview_road`], which takes no core.
     #[func]
     pub fn validate_road_candidate_with_snap(
         &self,
@@ -122,6 +140,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             });
             (query.surface_generation, validated)
@@ -153,6 +172,17 @@ impl SimulationNode {
             prepared_points,
             (fwd_lanes, bkw_lanes),
             prepared.class,
+            RoadPreviewRequest {
+                surface_generation,
+                points: points.to_vec(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
+                parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
+            },
         );
         let mut dict = result.to::<VarDictionary>();
         dict.set(
@@ -163,7 +193,8 @@ impl SimulationNode {
     }
 
     /// Validates a road-tool candidate against the committed graph's local edit plan, including
-    /// the `ROAD-54` junction and curve limits, with optional snapping.
+    /// the `ROAD-54` junction and curve limits, with optional snapping; a valid stroke's corridor
+    /// clearance waits for the core as [`Self::validate_road_candidate_with_snap`]'s does.
     #[func]
     pub fn validate_road_candidate_for_commit_with_snap(
         &self,
@@ -184,7 +215,11 @@ impl SimulationNode {
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                (self.road_tool_median, self.road_tool_attributes),
+                (
+                    self.road_tool_median,
+                    self.road_tool_parking,
+                    self.road_tool_attributes,
+                ),
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -228,6 +263,17 @@ impl SimulationNode {
                 &prepared_points,
                 (fwd_lanes, bkw_lanes),
                 class,
+                RoadPreviewRequest {
+                    surface_generation,
+                    points,
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    tunnel: self.road_tool_tunnel,
+                    median: self.road_tool_median,
+                    parking: self.road_tool_parking,
+                    attributes: self.road_tool_attributes,
+                },
             )
             .to::<VarDictionary>();
         dict.set(
@@ -284,6 +330,7 @@ impl SimulationNode {
                 snap: snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
@@ -308,12 +355,22 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
-        let (preview, span_m, origin, view_terrain, graded_epoch, road_mesh_generation) = {
+        let land = self.road_tool.land();
+        let (
+            preview,
+            span_m,
+            origin,
+            view_terrain,
+            graded_epoch,
+            road_mesh_generation,
+            demolish_lots,
+        ) = {
             let mut context = self
                 .road_tool
                 .context
                 .lock()
                 .expect("road tool context lock poisoned");
+            context.land = land;
             let surface_generation = context.view.surface_generation;
             let preview = Arc::new(context.preview_road(RoadPreviewRequest {
                 surface_generation,
@@ -323,12 +380,18 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
                 .graded
                 .take_shown_changes(&mut graded_tiles, &mut graded_removed);
+            let demolish_lots = preview
+                .pieces
+                .as_ref()
+                .map(|pieces| Self::demolish_lot_outlines(&context, &pieces.take))
+                .unwrap_or_default();
             let roadbed = &context.view.roadbed;
             let (origin_x, origin_z) = roadbed.chunk_origin_m();
             (
@@ -338,6 +401,7 @@ impl SimulationNode {
                 Arc::clone(&context.view.terrain),
                 context.graded.epoch(),
                 context.view.road_mesh_surface_generation,
+                demolish_lots,
             )
         };
         let prepared = preview.plan.prepared();
@@ -415,7 +479,25 @@ impl SimulationNode {
         );
         dict.set("has_pieces", preview.pieces.is_some());
         dict.set("changed_chunks", chunks);
+        // What the stroke takes (`ZONE-09`): the buildings it demolishes and the outlines of
+        // the lots it removes, four corners each.
+        let demolish_count = preview
+            .pieces
+            .as_ref()
+            .map_or(0, |pieces| pieces.take.buildings.len());
+        dict.set("demolish_count", demolish_count as i64);
+        dict.set("demolish_lots", demolish_lots);
         dict
+    }
+
+    // The outlines of the lots a preview's take removes, on the view's graded ground
+    // ([`lot_outlines`]). A lot the land does not hold (published a frame apart from the cells)
+    // has none.
+    fn demolish_lot_outlines(
+        context: &crate::nodes::sim::core::RoadPreviewContext,
+        take: &crate::nodes::sim::core::RoadLandTake<u64>,
+    ) -> PackedVector3Array {
+        view_lot_outlines(context, take)
     }
 
     /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-07-E`,
@@ -564,68 +646,84 @@ impl SimulationNode {
         i64::try_from(query.surface_generation).unwrap_or(i64::MAX)
     }
 
+    // The validation as a dictionary; a valid stroke's corridor and pieces are checked once,
+    // waiting for the core (`ROAD-102`). `request` is the stroke as the road tool would preview
+    // it.
     fn road_candidate_validation_to_variant(
         &self,
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
         lanes: (i32, i32),
         class: EdgeClass,
+        request: RoadPreviewRequest,
     ) -> Variant {
         let (fwd_lanes, bkw_lanes) = lanes;
         let weight = road_cost::stroke_weight(
             (lanes_u8(fwd_lanes), lanes_u8(bkw_lanes)),
             self.road_tool_median,
+            self.road_tool_parking,
             self.road_tool_attributes,
             class,
         );
-        let dict = self
-            .road_candidate_dictionary_with_parcel_clearance(
-                validation,
-                prepared_points,
-                lanes,
-                weight,
-            )
-            .unwrap_or_else(|| {
-                let mut pending = Self::road_candidate_validation_to_dictionary(
-                    validation,
-                    prepared_points,
-                    weight,
-                );
-                pending.set("is_valid", false);
-                pending.set("is_pending", true);
-                pending
-            });
-        dict.to_variant()
-    }
-
-    fn road_candidate_dictionary_with_parcel_clearance(
-        &self,
-        validation: &RoadPreviewValidation,
-        prepared_points: &[Vector3],
-        lanes: (i32, i32),
-        weight: f64,
-    ) -> Option<VarDictionary> {
         let mut dict =
             Self::road_candidate_validation_to_dictionary(validation, prepared_points, weight);
         if validation.is_valid {
-            // Query the existing parcel chunk index locally. Never copy city-wide zoning into
-            // a preview snapshot or wait on the simulation lock from the mouse-hover path.
-            let clearance = RoadCorridorClearance::evaluate(
-                &*self.try_lock_core()?,
-                prepared_points,
-                lanes,
+            // Query the existing parcel chunk index locally; never copy city-wide zoning into a
+            // preview snapshot. Every caller asks once (tests, the road benchmark's fixture
+            // search, the debug replay), so the check waits for the core: with `try_lock` it
+            // answered "pending" (not valid, no reason) while the simulation held the core, which
+            // its callers read as a refusal without a reason (`ROAD-102`).
+            // Plotted land is judged on the stroke's pieces, compiled on the road tool's context
+            // as its preview compiles them, so a bridge's deck refuses nothing its commit
+            // accepts (`ZONE-09` decisions D2, D8). The context is locked before the core, as
+            // everywhere (the simulation publishes to it without the core).
+            let stroke = (
                 self.road_tool_median,
+                self.road_tool_parking,
                 self.road_tool_attributes,
             );
+            let evaluate = |pieces: Option<crate::nodes::sim::core::StrokePieces<'_>>| {
+                RoadCorridorClearance::evaluate(
+                    &self.lock_core(),
+                    prepared_points,
+                    lanes,
+                    stroke,
+                    pieces,
+                )
+            };
+            let mut context = self
+                .road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned");
+            let plan = crate::nodes::sim::core::RoadEditPlan::compile_from(
+                &context.view.terrain,
+                &context.replica,
+                &context.view.roadbed,
+                request,
+            );
+            let clearance = context
+                .with_plan_pieces(&plan, |pieces| evaluate(Some(pieces)))
+                .unwrap_or_else(|| evaluate(None));
+            drop(context);
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }
-        Some(dict)
+        dict.to_variant()
     }
 
+    // Plotted reservations refuse the stroke; parcels are reported only, since the commit
+    // takes zoned land (`ZONE-09`, decision D8).
     fn apply_corridor_clearance(dict: &mut VarDictionary, clearance: &RoadCorridorClearance) {
-        if clearance.field_overlap {
+        let refusal = [
+            (clearance.field_overlap, "field_overlap"),
+            (clearance.extraction_overlap, "extraction_area_overlap"),
+            (clearance.plotted_overlap, "plotted_building_overlap"),
+        ]
+        .into_iter()
+        .find_map(|(overlap, reason)| overlap.then_some(reason));
+        if let Some(reason) = refusal {
             dict.set("is_valid", false);
-            dict.set("invalid_reason", "field_overlap");
+            dict.set("invalid_reason", reason);
         }
         dict.set(
             "zoning_revision",
@@ -633,8 +731,6 @@ impl SimulationNode {
         );
         dict.set("field_revision", clearance.field_revision as i64);
         if let Some(first) = clearance.first_overlapping_parcel {
-            dict.set("is_valid", false);
-            dict.set("invalid_reason", "parcel_overlap");
             dict.set(
                 "overlapping_parcel_count",
                 clearance.overlapping_parcels as i64,
@@ -664,12 +760,13 @@ impl SimulationNode {
         dict
     }
 
-    // A previewed stroke's cost weight: its lanes, and the median, attributes and class its
-    // prepared input carries.
+    // A previewed stroke's cost weight: its lanes, and the median, parking, attributes and class
+    // its prepared input carries.
     fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
         road_cost::stroke_weight(
             (lanes_u8(lanes.0), lanes_u8(lanes.1)),
             prepared.median,
+            prepared.parking,
             prepared.attributes,
             prepared.class,
         )
@@ -806,4 +903,55 @@ impl SimulationNode {
         dict.set("required_clearance_m", validation.required_clearance_m);
         dict
     }
+}
+
+// The outlines of the lots a take removes (`ZONE-09`, `ZONE-10`), one packer for every verdict
+// that shows them: four corners per lot, front-left, front-right, rear-right, rear-left, on
+// `surface`'s graded ground a little above it, as the bulldoze highlight lies. `corners` finds
+// a lot by its id and a point inside it; a lot it does not find has none. O(lots * ground
+// queries).
+fn lot_outlines<B>(
+    surface: &crate::simulation::terrain::graded::GradedSurface<'_>,
+    scratch: &mut crate::simulation::terrain::graded::QueryScratch,
+    take: &crate::nodes::sim::core::RoadLandTake<B>,
+    corners: impl Fn(u64, glam::DVec2) -> Option<[Vector2; 4]>,
+) -> PackedVector3Array {
+    let mut outlines = PackedVector3Array::new();
+    for (&lot, &at) in take.lots.iter().zip(&take.lot_points) {
+        let Some(corners) = corners(lot, at) else {
+            continue;
+        };
+        for corner in corners {
+            let ground = surface.ground_height_at(f64::from(corner.x), f64::from(corner.y), scratch);
+            outlines.push(Vector3::new(
+                corner.x,
+                ground as f32 + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                corner.y,
+            ));
+        }
+    }
+    outlines
+}
+
+/// [`lot_outlines`] on the road tool's context: the view's graded ground and the published land's
+/// parcels. No core lock.
+pub(crate) fn view_lot_outlines<B>(
+    context: &crate::nodes::sim::core::RoadPreviewContext,
+    take: &crate::nodes::sim::core::RoadLandTake<B>,
+) -> PackedVector3Array {
+    context.view.with_graded_surface(|surface, scratch| {
+        lot_outlines(surface, scratch, take, |lot, at| context.land.lot_corners(lot, at))
+    })
+}
+
+/// [`lot_outlines`] on the live core, before the take: its graded ground and its parcels.
+pub(crate) fn core_lot_outlines(
+    core: &SimCore,
+    take: &crate::nodes::sim::core::RoadLandTake,
+) -> PackedVector3Array {
+    core.with_graded_surface(|surface, scratch| {
+        lot_outlines(surface, scratch, take, |lot, _| {
+            Some(core.zoning.parcel_by_raw_id(lot)?.corners())
+        })
+    })
 }

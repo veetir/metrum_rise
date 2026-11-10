@@ -356,6 +356,7 @@ fn road_test_edge(
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     crate::simulation::network::graph::Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Road,
@@ -377,6 +378,9 @@ fn road_test_edge(
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -650,12 +654,13 @@ fn nearest_road_sample_on_a_road(sidewalks: bool) {
     let edge_idx = graph.edge_count() - 1;
     if !sidewalks {
         graph.edge_mut(edge_idx).allowed_types = crate::simulation::network::types::TransitFlags::CAR;
+        graph.edge_mut(edge_idx).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         network.roadbed.mark_edge_dirty(edge_idx);
     }
     network.roadbed.compile_dirty(&graph);
 
     let edge = graph.edge(edge_idx);
-    let offset_m = building_site_road_connection_lateral_offset_m(edge);
+    let offset_m = building_site_road_connection_lateral_offset_m(edge, 1);
     let band_m = if sidewalks { crate::config::SIDEWALK_WIDTH } else { 0.75 };
     assert!(
         (offset_m - (edge.width * 0.5 + band_m - 0.05)).abs() < 1e-5,
@@ -665,7 +670,7 @@ fn nearest_road_sample_on_a_road(sidewalks: bool) {
     let center = BuildingAllocator::sample_pos_on_edge(&graph, edge_idx, 0.5);
     let tangent = BuildingAllocator::sample_tangent_on_edge(&graph, edge_idx, 0.5);
     let normal = Vector2::new(tangent.y, -tangent.x).normalized();
-    let road_edge_probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
+    let road_edge_probe = center + normal * building_site_road_connection_lateral_offset_m(edge, 1);
     let apron_probe = road_edge_probe + normal * 0.5;
     let expected_height_m = network
         .roadbed

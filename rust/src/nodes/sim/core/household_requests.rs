@@ -35,6 +35,7 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
             self.fiscal_policy.household_vat_rate,
+            Some(&self.parking),
         );
         let mut shoppers = std::mem::take(&mut self.households.held_shoppers);
         for household in shoppers.drain(..) {
@@ -56,6 +57,7 @@ impl SimCore {
             &mut self.allocator,
             &self.transit_network,
             &self.region_graph,
+            Some(&self.parking),
         );
         let mut visitors = std::mem::take(&mut self.households.held_visitors);
         for visitor in visitors.drain(..) {
@@ -76,6 +78,8 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
             minute_of_day,
+            Some(&self.parking),
+            &self.fiscal_policy,
         );
     }
 
@@ -97,6 +101,7 @@ impl SimCore {
             &self.allocator,
             &self.transit_network,
             &self.region_graph,
+            Some(&self.parking),
         );
     }
 }

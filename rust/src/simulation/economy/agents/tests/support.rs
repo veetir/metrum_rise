@@ -71,6 +71,7 @@ pub(super) fn register_test_asset(
 
 pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -92,6 +93,9 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -296,6 +300,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
     let make = |s: u32, e: u32, x0: f32, x1: f32| Edge {
+        parking: Default::default(),
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -317,6 +322,9 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -342,6 +350,7 @@ pub(super) fn build_4way_junction(
     let nn = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
     let ns = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
     let arm = |s: u32, e: u32, sx: f32, sz: f32, ex: f32, ez: f32| Edge {
+        parking: Default::default(),
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -363,6 +372,9 @@ pub(super) fn build_4way_junction(
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     // One-way crosses need outgoing arms as well as incoming arms.
@@ -397,6 +409,107 @@ pub(super) fn build_4way_junction(
         },
     ];
     (network, graph, arm_lanes)
+}
+
+/// A 2+2 street running south (+z) through three junctions `junctions[k]` spaced `link_m`
+/// apart, with 1+1 cross-street arms: `arms[k] = (west length, east length)` in metres, an arm
+/// left out at 0. Heading south, east is the left turn and west the right turn. Street edges run
+/// south (their forward lanes head south, lane index 0 the inner one), each arm edge from its
+/// junction outwards. `TRAFFIC-23`'s short-block city in miniature: with `link_m = 50` the
+/// street's lanes between junctions are about 30 m, too short for any lane change.
+pub(super) struct ShortBlockStreet {
+    pub network: TransitNetwork,
+    pub graph: RegionGraph,
+    /// The street's junction nodes, north to south.
+    pub junctions: [u32; 3],
+    /// Street edges: north end -> junction 0, then junction k -> k + 1, then junction 2 -> south end.
+    pub street: [usize; 4],
+    /// `(west, east)` arm edges at each junction, `usize::MAX` where left out.
+    pub arms: [(usize, usize); 3],
+}
+
+pub(super) fn build_short_block_street(link_m: f32, arms: [(f32, f32); 3]) -> ShortBlockStreet {
+    let mut graph = RegionGraph::new();
+    let node = |graph: &mut RegionGraph, x: f32, z: f32| {
+        graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction)
+    };
+    let edge = |graph: &mut RegionGraph, s: u32, e: u32, lanes: u8| {
+        let (a, b) = (graph.node(s).pos, graph.node(e).pos);
+        graph.add_edge(Edge {
+            start_node: s,
+            end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: f32::from(lanes) * 2.0 * 3.5,
+            fwd_lanes: lanes,
+            bkw_lanes: lanes,
+            speed_limit: 14.0,
+            base_cost: a.distance_to(b) / 14.0,
+            physical_length: a.distance_to(b),
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![a, b],
+            physical_geometry: vec![a, b],
+            deleted: false,
+            no_building_spawn: false,
+            no_street_lights: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
+            parking: Default::default(),
+        })
+    };
+    let north = node(&mut graph, 0.0, -100.0);
+    let junctions = [0.0, link_m, 2.0 * link_m].map(|z| node(&mut graph, 0.0, z));
+    let south = node(&mut graph, 0.0, 2.0 * link_m + 100.0);
+    let street = [
+        edge(&mut graph, north, junctions[0], 2),
+        edge(&mut graph, junctions[0], junctions[1], 2),
+        edge(&mut graph, junctions[1], junctions[2], 2),
+        edge(&mut graph, junctions[2], south, 2),
+    ];
+    let mut arm_edges = [(usize::MAX, usize::MAX); 3];
+    for (k, &(west, east)) in arms.iter().enumerate() {
+        let z = graph.node(junctions[k]).pos.z;
+        if west > 0.0 {
+            let end = node(&mut graph, -west, z);
+            arm_edges[k].0 = edge(&mut graph, junctions[k], end, 1);
+        }
+        if east > 0.0 {
+            let end = node(&mut graph, east, z);
+            arm_edges[k].1 = edge(&mut graph, junctions[k], end, 1);
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    ShortBlockStreet {
+        network,
+        graph,
+        junctions,
+        street,
+        arms: arm_edges,
+    }
+}
+
+/// The vehicle lane of `edge` with lane index `lane_idx` (forward lanes `0, 1, ..`, backward
+/// lanes `-1, -2, ..`).
+pub(super) fn vehicle_lane(network: &TransitNetwork, edge: usize, lane_idx: i8) -> usize {
+    network.lane_system.edge_lanes[&edge]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+                && lane.lane_idx == lane_idx
+        })
+        .expect("vehicle lane")
 }
 
 // ── Scenario helpers ──────────────────────────────────────────────────────────
@@ -491,7 +604,26 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
             for queue_idx in 0..5 {
-                let destination = arm_nodes[k ^ 1];
+                // The opposite arm when this lane goes straight on there (`ROAD-94`), else the
+                // lane's first turn.
+                let lane_system = &network.lane_system;
+                let preferred = arm_edges[k ^ 1];
+                let outgoing = lane_system.lanes[lane_id]
+                    .next_lanes
+                    .iter()
+                    .copied()
+                    .map(|conn| lane_system.lanes[conn].next_lanes[0])
+                    .find(|&id| lane_system.lanes[id].edge_id == preferred)
+                    .unwrap_or_else(|| {
+                        lane_system.lanes[lane_system.lanes[lane_id].next_lanes[0]].next_lanes[0]
+                    });
+                let exit = &lane_system.lanes[outgoing];
+                let exit_edge = graph.edge(exit.edge_id);
+                let destination = if exit.is_fwd {
+                    exit_edge.end_node
+                } else {
+                    exit_edge.start_node
+                };
                 let idx = agents.spawn_border_arrival_agent(usize::MAX, arm_nodes[k], 0.0, 0.0);
                 agents.transit[idx] = TRANSIT_NETWORK;
                 agents.transit_mode[idx] = MODE_CAR;
@@ -502,7 +634,7 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
                 agents.speed[idx] = 14.0;
                 agents.current_path[idx] = vec![arm_nodes[k], nc, destination];
                 agents.current_path_index[idx] = 1;
-                expected_exits.push((idx, arm_edges[k ^ 1]));
+                expected_exits.push((idx, exit.edge_id));
             }
         }
     }

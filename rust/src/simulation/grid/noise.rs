@@ -143,6 +143,7 @@ mod tests {
         let n1 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
         let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
         graph.add_edge(crate::simulation::network::graph::Edge {
+            parking: Default::default(),
             start_node: n1,
             end_node: n2,
             primary_type: TransitType::Road,
@@ -172,6 +173,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
 
         // 2. Tick once - source cells should be positive
@@ -230,6 +234,7 @@ mod tests {
         let n1_l = graph_low.add_node(Vector3::ZERO, NodeType::Junction);
         let n2_l = graph_low.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         graph_low.add_edge(crate::simulation::network::graph::Edge {
+            parking: Default::default(),
             start_node: n1_l,
             end_node: n2_l,
             speed_limit: 40.0 * KMH_TO_MPS, // Low speed
@@ -251,6 +256,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
 
         let mut graph_high = graph_low.clone();

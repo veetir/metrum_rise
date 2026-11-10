@@ -151,6 +151,15 @@ pub(super) unsafe fn replan_from_lane(
             graph,
             pathfind_count,
             Some((i, "walk-witness")),
+            None,
+            slices.parking.and_then(|p| {
+                p.replan_entrance(
+                    *slices.parking_trip.get(i),
+                    allocator,
+                    transit_network,
+                    graph,
+                )
+            }),
         ) {
             Ok(replan) => {
                 if let Some(cause) = cause {

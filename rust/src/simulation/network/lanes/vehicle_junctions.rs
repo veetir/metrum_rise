@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Vehicle junction connectors (`TRAFFIC-12`): one connector lane per allowed turn, from the
-//! incoming lane's end to the outgoing lane's start. Both ends are the lanes' points on their
-//! arms' mouth frames ([`MouthFrame`]), and the connector leaves and joins along the arms'
-//! directions there, never along a lane polyline's end piece. Its curve is [`VehicleTurn`].
+//! Vehicle junction connectors (`TRAFFIC-12`): one connector lane per allowed turn (the node's
+//! whitelist, or else the default lane use of `ROAD-94`), from the incoming lane's end to the
+//! outgoing lane's start. Both ends are the lanes' points on their arms' mouth frames
+//! ([`MouthFrame`]), and the connector leaves and joins along the arms' directions there, never
+//! along a lane polyline's end piece, a ring lane's excepted (`ring_lane_outward`). Its curve is
+//! [`VehicleTurn`].
 //! Each connector is checked against the node's kerb corners once per lane rebuild; a
 //! violation is logged on the `traffic` debug channel, and nothing repairs the curve.
 
 use super::super::graph::{Edge, RegionGraph};
 use super::super::roadbed::{ArmKey, Corner, EdgeEnd, MouthFrame, RoadVec2};
 use super::geometry::build_cum_dist;
+use super::lane_use::DefaultLaneUse;
 use super::rebuild::vehicle_lane_offset;
-use super::{Lane, LaneSuccessors, LaneType};
+use super::{APPROACH_SOLID_LENGTH_M, Lane, LaneSuccessors, LaneType, RingEntry};
 use godot::prelude::*;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 mod turn;
 
@@ -23,6 +27,8 @@ pub(crate) use turn::VehicleTurn;
 
 const VEHICLE_DIRECT_PASS_THROUGH_EPS_M: f32 = 0.05;
 const VEHICLE_DIRECT_PASS_THROUGH_DOT: f32 = 0.98;
+// A ring lane's direction at its end is taken over at least this distance.
+const RING_LANE_DIRECTION_PIECE_M: f64 = 0.01;
 
 /// Where a vehicle lane meets the node: its point on its arm's mouth frame and the arm's
 /// direction away from the node there. The lane rebuild ends the lane exactly at `point`.
@@ -75,14 +81,38 @@ pub(crate) fn vehicle_lane_end(
     }
 }
 
-/// Builds vehicle intersection connection lanes at a single node. `kerb_corners` are its
-/// layout's fitted kerb corners (`NodeWalkways::collect_with_kerbs`), empty without a layout.
+// The direction of `lane` away from the node at its end there: from the tip to the first lane
+// point at least `RING_LANE_DIRECTION_PIECE_M` off. A ring lane (`ROAD-62`) is a polygon of 1 m
+// sides turning about 4 degrees at each, which a frame's direction, interpolated between two
+// knots, leaves by up to half of that: a connector on the frame's direction would steer against
+// the ring on leaving or joining the lane. `None` for a degenerate lane. `O(lane points)` at worst.
+fn ring_lane_outward(lane: &Lane, leaves: bool) -> Option<RoadVec2> {
+    let flat = |p: &Vector3| RoadVec2::new(f64::from(p.x), f64::from(p.z));
+    let from_tip = |points: &mut dyn Iterator<Item = &Vector3>| {
+        let tip = flat(points.next()?);
+        points
+            .map(|point| flat(point) - tip)
+            .find(|piece| piece.length() >= RING_LANE_DIRECTION_PIECE_M)
+            .map(RoadVec2::normalize)
+    };
+    if leaves {
+        from_tip(&mut lane.geometry.iter())
+    } else {
+        from_tip(&mut lane.geometry.iter().rev())
+    }
+}
+
+/// Builds vehicle intersection connection lanes at a single node: one connector per allowed
+/// pair of an inbound and an outbound lane, under the node's whitelist or else the default lane
+/// use (`ROAD-94`). Writes every inbound lane's solid approach zone (`Lane::solid_zone_m`). `kerb_corners` are its layout's fitted kerb corners
+/// (`NodeWalkways::collect_with_kerbs`), empty without a layout.
 pub(crate) fn build_vehicle_connections_at_node(
     lanes: &mut Vec<Lane>,
     lane_map: &HashMap<(usize, bool, i8), usize>,
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
+    ring_entries: &mut Vec<RingEntry>,
     kerb_corners: &[Corner],
 ) {
     // (edge, lane index, lane id, its end at the node).
@@ -118,8 +148,13 @@ pub(crate) fn build_vehicle_connections_at_node(
                     let Some(&lid) = lane_map.get(&(e_idx, is_fwd, lane_idx)) else {
                         continue;
                     };
-                    let lane_end = vehicle_lane_end(&frame, end, edge, lane_idx);
+                    let mut lane_end = vehicle_lane_end(&frame, end, edge, lane_idx);
                     let leaves = is_fwd == (end == EdgeEnd::Start);
+                    if edge.roundabout.is_some()
+                        && let Some(outward) = ring_lane_outward(&lanes[lid], leaves)
+                    {
+                        lane_end.outward = outward;
+                    }
                     let list = if leaves { &mut outbound } else { &mut inbound };
                     list.push((e_idx, lane_idx, lid, lane_end));
                 }
@@ -130,36 +165,45 @@ pub(crate) fn build_vehicle_connections_at_node(
     let lane_conns = &graph.node(node_id as u32).lane_connections;
     let node_has_any_vehicle_conn = node_whitelists_vehicle_turns(graph, node_id);
     let node_allows_direct_pass_through = vehicle_deg == 2 && !node_has_any_vehicle_conn;
+    // Dead ends allow the U-turn at an open node; the router reads the same edge-level rule.
+    let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
 
     for &(in_edge_id, in_lane_idx, in_lane_id, in_end) in &inbound {
-        let mut allowed: Option<Vec<(usize, i8)>> =
-            lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
-
         // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
-        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
-        // Nodes with no user connections remain fully open (allow all non-U-turns).
-        if allowed.is_none() && !node_has_any_vehicle_conn {
-            // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
-            // The router reads the same rule.
-            let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
-            let mut defaults = Vec::new();
-            for &(out_edge_id, out_lane_idx, _, _) in &outbound {
-                if out_edge_id != in_edge_id || allows_u_turn {
-                    defaults.push((out_edge_id, out_lane_idx));
-                }
-            }
-            if !defaults.is_empty() {
-                allowed = Some(defaults);
-            }
-        }
-        // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
-        // None → no junction connection lanes created → turn is blocked.
+        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted; an arm
+        // without an explicit connection gets no connector. Nodes with no user connections are
+        // open: every turn into another arm that the default lane use (`ROAD-94`) gives this
+        // lane.
+        let explicit = lane_conns.get(&(in_edge_id, in_lane_idx));
+        let defaults = (explicit.is_none() && !node_has_any_vehicle_conn)
+            .then(|| DefaultLaneUse::new(graph, in_edge_id, node_id as u32));
+        // A multi-lane approach to a whitelisted node needs its lane chosen too.
+        let needs_lane_choice = defaults.as_ref().map_or_else(
+            || {
+                let edge = graph.edge(in_edge_id);
+                let count = if lanes[in_lane_id].is_fwd {
+                    edge.fwd_lanes
+                } else {
+                    edge.bkw_lanes
+                };
+                count > 1
+            },
+            DefaultLaneUse::needs_lane_choice,
+        ) || (defaults.is_some()
+            && super::lane_use::transition_needs_lane_choice(graph, in_edge_id, node_id as u32));
+        lanes[in_lane_id].solid_zone_m = if needs_lane_choice {
+            APPROACH_SOLID_LENGTH_M
+        } else {
+            0.0
+        };
 
         for &(out_edge_id, out_lane_idx, out_lid, out_end) in &outbound {
-            if !allowed
-                .as_ref()
-                .is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx)))
-            {
+            let allowed = match &defaults {
+                Some(_) if out_edge_id == in_edge_id => allows_u_turn,
+                Some(defaults) => defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx),
+                None => explicit.is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx))),
+            };
+            if !allowed {
                 continue;
             }
             let (p0, p3) = (in_end.point, out_end.point);
@@ -210,9 +254,58 @@ pub(crate) fn build_vehicle_connections_at_node(
                 lane_type: LaneType::Vehicle,
                 next_lanes: LaneSuccessors::one(out_lid),
                 node_id,
+                solid_zone_m: 0.0,
+                ring_entry: None,
             });
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);
+        }
+    }
+
+    mark_ring_entries(lanes, ring_entries, graph, &inbound);
+}
+
+// Writes `Lane::ring_entry` on the connectors from an arm onto a ring lane at this node: each
+// gives way to the circulating connector into the same ring lane and the ring lane it leaves
+// (`ROAD-62`). A ring lane's next lanes at a ring node are connectors, as an arm makes the node a
+// junction; a whitelist that drops the circulating movement leaves its entries with nothing to
+// give way to. `O(inbound x connectors)`, a node without a ring returns at once.
+fn mark_ring_entries(
+    lanes: &mut [Lane],
+    ring_entries: &mut Vec<RingEntry>,
+    graph: &RegionGraph,
+    inbound: &[(usize, i8, usize, VehicleLaneEnd)],
+) {
+    let on_ring = |edge: usize| graph.edge(edge).roundabout.is_some();
+    let ring_ins = || inbound.iter().filter(|lane| on_ring(lane.0));
+    if ring_ins().next().is_none() {
+        return;
+    }
+    // The ring lane `connector` leads to, if it is a connector and leads to one.
+    let ring_lane_of = |lanes: &[Lane], connector: usize| {
+        let lane = &lanes[connector];
+        let target = *lane.next_lanes.first()?;
+        (lane.edge_id == usize::MAX && on_ring(lanes[target].edge_id)).then_some(target)
+    };
+    for &(_, _, entry_lane, _) in inbound.iter().filter(|lane| !on_ring(lane.0)) {
+        for slot in 0..lanes[entry_lane].next_lanes.len() {
+            let connector = lanes[entry_lane].next_lanes[slot];
+            let Some(ring_out) = ring_lane_of(lanes, connector) else {
+                continue;
+            };
+            let entry = ring_ins().find_map(|&(_, _, ring_in, _)| {
+                let successors = lanes[ring_in].next_lanes.iter().copied();
+                let mut circulating =
+                    successors.filter(|&next| ring_lane_of(lanes, next) == Some(ring_out));
+                circulating.next().map(|circulating| RingEntry {
+                    circulating: circulating as u32,
+                    ring_in: ring_in as u32,
+                })
+            });
+            if let Some(entry) = entry {
+                ring_entries.push(entry);
+                lanes[connector].ring_entry = NonZeroU32::new(ring_entries.len() as u32);
+            }
         }
     }
 }

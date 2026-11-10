@@ -25,13 +25,14 @@ pub(crate) use tests::support::indexed_test_building;
 pub(crate) use admission_order::ChunkBounds;
 pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
+    main_entrance_anchor,
 };
 pub(crate) use index::SavedVacancyOrder;
 #[cfg(test)]
 pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
-pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::{ExplicitPlacementKind, ExplicitServicePlacementPreview};
 pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
@@ -112,6 +113,10 @@ pub(crate) enum ExplicitServicePlacementRejection {
     FieldProfileUnavailable,
     /// No road frontage near the requested point can accept the building footprint.
     RoadFrontageUnavailable,
+    /// The nearest road frontage is a side without a sidewalk (`ROAD-109`).
+    NoSidewalk,
+    /// The asset is a parking lot, but the nearest frontage carries no cars (a walkway).
+    NoCarAccess,
     /// A driveway anchor could not resolve an adjacent road surface height.
     DrivewayRoadSurfaceMissing,
     /// Multiple driveway anchors required incompatible flat-site heights.
@@ -124,12 +129,15 @@ pub(crate) enum ExplicitServicePlacementRejection {
     NeighborSiteHeightConflict,
     /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
     SiteSupportTieInInvalid,
-    /// The selected footprint overlaps an existing building site.
+    /// The selected lot overlaps the lot of a placed (explicit) building (`ZONE-11`: a
+    /// growable building's lot is taken instead).
     SiteOverlap,
     /// The selected footprint overlaps an existing road corridor.
     RoadOverlap,
     /// The selected footprint overlaps a committed agricultural field.
     FieldOverlap,
+    /// The selected lot overlaps a mine's extraction area (`ZONE-11`).
+    ExtractionAreaOverlap,
 }
 
 /// The applicant seeds of buildings placed outside the demand queue (`SIM-02-I`): this bit
@@ -463,6 +471,11 @@ pub struct BuildingAllocator {
     /// with the road tool's view in `O(1)` (`ROAD-68-E`), so writers go through
     /// [`Self::field_clearance_mut`].
     pub(crate) field_clearance: std::sync::Arc<FieldClearanceIndex>,
+    /// Derived extraction-area polygons, kept by ResourceExtractionSystem as the fields are by
+    /// AgricultureSystem, in the same index type: a road stroke refuses land they cover
+    /// (`ZONE-09`, `extraction_area_overlap`). Unlike fields they block no cell or placement.
+    /// Writers go through [`Self::extraction_clearance_mut`].
+    pub(crate) extraction_clearance: std::sync::Arc<FieldClearanceIndex>,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
@@ -531,6 +544,8 @@ pub struct BuildingAllocator {
     /// The graded terrain's site-change outbox (`TERRAIN-07-C`), filled with the legacy one
     /// above: one record per site before or after each change, with its support height.
     pub(crate) graded_site_changes: Vec<SiteChange>,
+    /// Stable owners changed by the site journal; consumed by physical parking publication.
+    pub(crate) parking_site_changes: Vec<Handle<Building>>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
@@ -542,6 +557,10 @@ pub struct BuildingAllocator {
     index_scratch: index::IndexScratch,
     // What a zone index kept across the removal queue's swap-removes still owes (`SIM-02-K`).
     kept_index: index::KeptIndex,
+    // The site queries' part of a stale zone index (chunk lists, chunk bounds, maxima, explicit
+    // sites) was rebuilt for a hover since the index was last marked stale
+    // ([`Self::prepare_site_query_chunks`], `ZONE-11`); derived, never saved.
+    site_chunks_current: bool,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -853,11 +872,23 @@ impl BuildingAllocator {
         std::sync::Arc::make_mut(&mut self.field_clearance)
     }
 
-    // A swap removal's field update: drops the removed building's field and rebinds the moved
-    // last building's, copying a shared index only when either holds a field.
+    /// The extraction-area polygons for writing, copied first while shared, as
+    /// [`Self::field_clearance_mut`].
+    pub(crate) fn extraction_clearance_mut(&mut self) -> &mut FieldClearanceIndex {
+        std::sync::Arc::make_mut(&mut self.extraction_clearance)
+    }
+
+    // A swap removal's field and extraction-area update: drops the removed building's polygon
+    // and rebinds the moved last building's, copying a shared index only when either holds one.
     fn remap_field_clearance(&mut self, removed: usize, last: usize) {
         if self.field_clearance.has_field(removed) || self.field_clearance.has_field(last) {
             self.field_clearance_mut().remove_and_remap(removed, last);
+        }
+        if self.extraction_clearance.has_field(removed)
+            || self.extraction_clearance.has_field(last)
+        {
+            self.extraction_clearance_mut()
+                .remove_and_remap(removed, last);
         }
     }
 
@@ -894,6 +925,7 @@ impl BuildingAllocator {
             max_building_support_m: f32::NEG_INFINITY,
             max_building_support_count: 0,
             field_clearance: Default::default(),
+            extraction_clearance: Default::default(),
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
             next_applicant_seed: 0,
@@ -924,11 +956,13 @@ impl BuildingAllocator {
             site_cells: site::SiteCells::default(),
             building_site_dirty_bounds: Vec::new(),
             graded_site_changes: Vec::new(),
+            parking_site_changes: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             border_arrival: Default::default(),
             index_scratch: Default::default(),
             kept_index: Default::default(),
+            site_chunks_current: false,
             registry: AssetRegistry::new(),
         }
     }
@@ -1152,6 +1186,7 @@ impl BuildingAllocator {
         self.buildings.clear();
         self.building_handles.clear();
         self.field_clearance_mut().clear();
+        self.extraction_clearance_mut().clear();
         self.pending_production_site_removals.clear();
         self.pending_construction.clear();
         self.removal_requests.clear();
@@ -1179,10 +1214,12 @@ impl BuildingAllocator {
         self.max_site_radius_count = 0;
         self.building_site_dirty_bounds.clear();
         self.graded_site_changes.clear();
+        self.parking_site_changes.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;
         self.kept_index = Default::default();
+        self.site_chunks_current = false;
         self.entrances.clear();
         self.entrances_dirty = false;
         if had_buildings || had_sites {

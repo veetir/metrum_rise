@@ -106,6 +106,10 @@ pub(crate) struct CellStore<M: CellMaps = LiveMaps> {
     painted_count: usize,
     claimed_count: usize,
     revision: u64,
+    // Advances whenever a cell may newly stand unpainted, unclaimed and generated: a chunk's
+    // generation completes or a lot releases its claim. A road edit's paint inheritance skips a
+    // pass while it is unchanged (`ZONE-14` round RL2).
+    eligibility_epoch: u64,
 }
 
 // Only the live kind has a default, so `CellStore::default()` names the live store; the view's
@@ -282,6 +286,7 @@ impl<M: CellMaps> CellStore<M> {
             painted_count: 0,
             claimed_count: 0,
             revision: 0,
+            eligibility_epoch: 0,
         }
     }
 
@@ -539,6 +544,13 @@ impl<M: CellMaps> CellStore<M> {
         self.revision
     }
 
+    /// The epoch that advances whenever a cell may newly stand unpainted, unclaimed and in
+    /// generated chunks: a chunk's generation completed or a lot released its claim. While it is
+    /// unchanged, no cell became such a cell. O(1).
+    pub(crate) fn eligibility_epoch(&self) -> u64 {
+        self.eligibility_epoch
+    }
+
     /// Constant-time idle/empty-world check used before scheduling asset-driven lot work.
     pub(crate) fn has_paint(&self) -> bool {
         self.painted_count != 0
@@ -706,6 +718,25 @@ impl<M: CellMaps> CellStore<M> {
         self.mark_cell_chunk_changed(key);
     }
 
+    /// Paints `keys`, valid cells that are unpainted and unclaimed, with `profile` in one batch,
+    /// on either map kind: a lot plan handing a road stroke's erased paint on to its new cells
+    /// (`ZONE-09`). False, with nothing written, when a key is no such cell or `profile` is zero.
+    /// O(keys).
+    pub(crate) fn paint_free_cells(&mut self, keys: &[CellKey], profile: u16) -> bool {
+        if profile == 0
+            || !keys
+                .iter()
+                .all(|&key| self.profile(key) == Some(0) && self.lot(key) == Some(0))
+        {
+            return false;
+        }
+        for &key in keys {
+            self.set_profile(key, profile);
+        }
+        self.bump_revision();
+        true
+    }
+
     /// Invalidates outstanding selections after an authoritative batch of cell mutations.
     pub(super) fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
@@ -726,6 +757,9 @@ impl<M: CellMaps> CellStore<M> {
                 block.refresh_reservation(offset);
                 self.journal.blocks.push(key.block());
             }
+        }
+        if parcel_id == 0 {
+            self.eligibility_epoch = self.eligibility_epoch.wrapping_add(1);
         }
         self.bump_revision();
     }
@@ -863,10 +897,20 @@ impl<M: CellMaps> CellStore<M> {
 
     /// Queries only paint/lot reservations; generated empty cells deliberately do not block land.
     pub(crate) fn overlaps_reserved(&self, polygon: &[DVec2]) -> bool {
+        self.overlaps_reserved_except(polygon, |_| false)
+    }
+
+    /// [`Self::overlaps_reserved`] without the reserved cells `skip` names: those an edit is
+    /// about to release (`ZONE-09`'s road undo, the inherited cells).
+    pub(crate) fn overlaps_reserved_except(
+        &self,
+        polygon: &[DVec2],
+        skip: impl Fn(CellKey) -> bool,
+    ) -> bool {
         let bounds = CellBounds::from_points(polygon.iter().copied());
         let mut overlaps = false;
-        self.visit_reserved_footprints_in_bounds(bounds, |_, corners| {
-            if !overlaps {
+        self.visit_reserved_footprints_in_bounds(bounds, |key, corners| {
+            if !overlaps && !skip(key) {
                 overlaps = super::geometry::interiors_overlap(&corners, polygon);
             }
         });

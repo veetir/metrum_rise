@@ -9,7 +9,7 @@ use crate::nodes::sim::core::{
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::zoning::ZoningParcelRemovalUndo;
+use crate::simulation::zoning::{CellPaintUndo, ZoningParcelRemovalUndo};
 use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -30,6 +30,7 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
         });
     }
@@ -83,6 +84,7 @@ impl SimCore {
                 None
             },
             zoning: None,
+            cells: None,
             runtime: if inc_runtime {
                 Some(SimulationRuntimeSnapshot::PendingDemandSpawns(
                     self.pending_demand_spawns.clone(),
@@ -98,7 +100,7 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_polyline(points, margin_m);
-        self.push_network_undo_delta(graph, None);
+        self.push_network_undo_delta(graph, None, None);
     }
 
     /// Captures a known local graph mutation set plus its incident junction ring.
@@ -110,7 +112,7 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_local_topology(edge_ids, node_ids);
-        self.push_network_undo_delta(graph, None);
+        self.push_network_undo_delta(graph, None, None);
     }
 
     /// Captures a local road-removal inverse plus only parcels attached to that road.
@@ -124,13 +126,16 @@ impl SimCore {
             .region_graph
             .capture_undo_for_local_topology(edge_ids, node_ids);
         let zoning = self.zoning.capture_parcel_removal_undo(removed_edge_idx);
-        self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning));
+        self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning), None);
     }
 
+    /// Pushes a graph edit's undo record: its local graph checkpoint, the parcels it removed and
+    /// the paint its land take erased (`ZONE-10`).
     pub(crate) fn push_network_undo_delta(
         &mut self,
         graph: RegionGraphUndoDelta,
         zoning: Option<ZoningParcelRemovalUndo>,
+        cells: Option<CellPaintUndo>,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
@@ -139,6 +144,7 @@ impl SimCore {
             water: None,
             trans_graph: Some(graph),
             zoning,
+            cells,
             runtime: None,
         });
     }
@@ -170,11 +176,12 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
         });
     }
 
-    fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
+    pub(super) fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
         // Every edit adopts a commit's deferred lots before it records its undo (`ROAD-68-G`
         // part 7), so the record holds them.
         debug_assert!(!self.cell_lots_pending());
@@ -208,7 +215,7 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
-        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None);
+        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None, None);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
     }
 
@@ -234,6 +241,7 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
                 runtime,
             ))),
@@ -421,6 +429,24 @@ impl SimCore {
                 self.undo_stack.push_back(state);
                 return false;
             }
+            // The paint a road stroke erased comes back only onto free land (`ZONE-09`, D5).
+            if let Some(cells) = &state.cells
+                && !self.can_restore_road_cell_paint(cells)
+            {
+                self.undo_stack.push_back(state);
+                return false;
+            }
+            // A building placed since may stand on the sidewalk this would take back (`ROAD-109`).
+            if let Some(graph) = &state.trans_graph
+                && graph.restored_sidewalks().any(|(edge, sidewalks)| {
+                    edge < self.region_graph.edge_count()
+                        && !self.region_graph.edge(edge).deleted
+                        && self.door_on_lost_sidewalk(edge, sidewalks).is_some()
+                })
+            {
+                self.undo_stack.push_back(state);
+                return false;
+            }
             let SimulationSnapshot {
                 terrain,
                 water,
@@ -428,11 +454,13 @@ impl SimCore {
                 roadbed,
                 graded,
                 zoning,
+                cells,
                 runtime,
             } = state;
             let restored_dense_terrain = terrain.is_some();
             let mut sync_trans_graph = false;
             let mut restored_topology_scope = None;
+            let mut fronting = Vec::new();
 
             if let Some(t_data) = terrain {
                 self.heightmap
@@ -455,6 +483,16 @@ impl SimCore {
                 if let Some((edge_ids, _)) = &restored_topology_scope {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+                    // Read while the edges the restore takes away still have their geometry.
+                    fronting = self
+                        .allocator
+                        .attachment_repair_candidates(
+                            &self.region_graph,
+                            edge_ids,
+                            [],
+                            self.config.zone_cell_m,
+                        )
+                        .unwrap_or_default();
                 }
                 // `O(delta records * log edges)`; the same records as the full restore.
                 self.region_graph.restore_undo_delta_local(&tr_graph);
@@ -467,6 +505,14 @@ impl SimCore {
             if let Some(zoning) = zoning {
                 self.zoning.restore_parcel_removal_undo(zoning);
             }
+            // The paint the new cells inherited goes, with its empty lots; lots re-derive from the
+            // restored paint (D6); the demolished buildings stay gone.
+            if let Some(cells) = cells
+                && self.zoning.restore_cell_paint_undo(cells) > 0
+            {
+                // Pending spawns resolve their parcel when they start; ids are never reused.
+                self.allocator.dirty = true;
+            }
             if let Some(runtime) = runtime {
                 match runtime {
                     SimulationRuntimeSnapshot::CellZoningEdit(_) => {
@@ -478,6 +524,11 @@ impl SimCore {
                     }
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
                         self.restore_building_removal_undo(*removal);
+                    }
+                    // The graph is restored above; the entrances follow in the local lane
+                    // rebuild below, which covers the restored roads.
+                    SimulationRuntimeSnapshot::RoadDependents(dependents) => {
+                        dependents.restore(&mut self.allocator);
                     }
                     SimulationRuntimeSnapshot::VegetationEdit(journal) => {
                         // Every cell restores independently and every patch revision only has
@@ -516,6 +567,7 @@ impl SimCore {
                         &node_ids,
                         roadbed.as_ref(),
                         graded,
+                        Some(&fronting),
                     );
                 }
             }
@@ -599,13 +651,15 @@ impl SimCore {
     // when nothing rebuilt them since (`ROAD-68-E`), so it holds the pre-edit pieces themselves;
     // otherwise it rebuilds the restored owners' pieces from the restored graph. With the edit's
     // graded record the restored roadbed is published now and the graded tiles staged from the
-    // kept ones (`TERRAIN-07-E`).
+    // kept ones (`TERRAIN-07-E`). `fronting` is an undo's: the buildings that fronted the edges
+    // it restored. A staged rollback has none, its journal having put them back already.
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
         restore: Option<&crate::simulation::network::roadbed::RoadbedRestore>,
         graded: Option<crate::nodes::sim::core::GradedUndo>,
+        fronting: Option<&[usize]>,
     ) {
         let before = graded
             .as_ref()
@@ -620,6 +674,18 @@ impl SimCore {
         if let (Some(before), Some(graded)) = (before, graded) {
             self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
+        }
+        // A cached surface restore can reconcile now. A dirty owner fallback keeps its
+        // existing deferred compile contract; the road-tool publication reconciles its bays.
+        if self.transit_network.roadbed.is_current() {
+            // Buildings first: a split moved them onto an edge the restore took away, and their
+            // lots, kerb blockers and door lists are read from that attachment (`PARK-10`).
+            if let Some(fronting) = fronting {
+                let cache_current = self.entrance_cache_current();
+                let lots = self.prepare_cell_lots_internal();
+                self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
+            }
+            self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
         }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
@@ -719,6 +785,7 @@ impl SimCore {
                 .iter()
                 .any(|(idx, building)| *idx == undo.building_idx && building.parcel_id == 0);
             if self.allocator.field_clearance.overlaps(&footprint, None)
+                || self.allocator.extraction_clearance.overlaps(&footprint, None)
                 || (explicit_site && self.zoning.overlaps_reservation(&footprint))
             {
                 return false;
@@ -731,6 +798,7 @@ impl SimCore {
         {
             let footprint = PolygonFootprint::new(&field.polygon_world);
             if self.allocator.field_clearance.overlaps(&footprint, None)
+                || self.allocator.extraction_clearance.overlaps(&footprint, None)
                 || self.zoning.overlaps_reservation(&footprint)
             {
                 return false;
@@ -800,6 +868,9 @@ impl SimCore {
                 *target = building;
             }
         }
+        // The store changed under the zone index: a site part a query readied since the
+        // removal (`ALLOC-05`) is stale too until the rebuild below.
+        self.allocator.mark_index_stale();
 
         if building_idx < undo.original_site_count {
             let last_site_idx = undo.original_site_count - 1;
@@ -838,6 +909,7 @@ impl SimCore {
                 building_idx,
                 last_idx,
                 undo.extractor_sites,
+                &mut self.allocator,
             );
         // Only the removed field changes land coverage. The swap-moved field keeps its
         // polygon, so restoring its owner index must not invalidate distant cells or plants.
@@ -864,7 +936,8 @@ impl SimCore {
         // Each carrier returns to its old dense slot with a new handle; the agent it displaces
         // keeps its handle at the end of the store.
         let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
-        for (carrier_idx, carrier) in undo.removed_carriers {
+        for (carrier_idx, mut carrier) in undo.removed_carriers {
+            carrier.parking_trip.prepare_route_buffer(&mut carrier.current_path);
             let current_len = self.agents.agents.len();
             let handle = self
                 .agents
@@ -875,20 +948,23 @@ impl SimCore {
                 self.agents.agents.push(carrier);
                 continue;
             }
-            let moved = self
+            let mut moved = self
                 .agents
                 .agents
                 .get(carrier_idx)
                 .expect("restored carrier slot")
                 .to_owned();
+            moved.parking_trip.prepare_route_buffer(&mut moved.current_path);
             self.agents.agents.push(moved);
             self.agents.agents.replace(carrier_idx, carrier);
         }
-        for (agent_idx, agent) in undo.agents {
+        for (agent_idx, mut agent) in undo.agents {
+            agent.parking_trip.prepare_route_buffer(&mut agent.current_path);
             self.agents.agents.replace(agent_idx, agent);
         }
         // Restored records and the agents they displaced changed slots directly.
         self.agents.rebuild_household_members();
+        self.agents.rebuild_parking_work();
         self.agents.invalidate_lane_bucket_snapshot();
 
         self.households.restore_building_undo(undo.households);
@@ -914,8 +990,19 @@ impl SimCore {
         self.allocator.bump_building_ref_revision();
         self.allocator.entrance_ref_revision = self.allocator.entrance_ref_revision.wrapping_add(1);
         self.rebuild_building_entrances_internal();
+        self.allocator
+            .parking_site_changes
+            .push(self.allocator.building_handles.handle(building_idx));
+        self.publish_parking_sites();
         if let Some(bounds) = undo.dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
+            // The restored client above records no site change, so the journal's records never
+            // see this ground come back.
+            let (min_x, min_z, max_x, max_z) = bounds;
+            self.invalidate_parked_ground(
+                [[min_x, min_z, max_x, max_z].map(f64::from)],
+                crate::simulation::terrain::graded::GRADED_CHANGE_REACH_M,
+            );
         }
         // The bulldoze took the yard's hedge with it; restoring the building lays it again,
         // skipping whatever of it still stands.

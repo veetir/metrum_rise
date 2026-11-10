@@ -119,6 +119,7 @@ impl SimCore {
         };
         let graph = Arc::clone(inputs.graph);
         let fields = Arc::clone(&self.allocator.field_clearance);
+        let extraction = Arc::clone(&self.allocator.extraction_clearance);
         let sites = self.allocator.explicit_site_snapshot();
         let sizes = self.cached_cell_lot_sizes().to_vec();
         let cell_m = self.config.zone_cell_m;
@@ -133,7 +134,7 @@ impl SimCore {
                 std::thread::sleep(delay);
             }
             let planned = deferred.plan(&graph, |corners| {
-                footprint_blocked(&fields, &sites, &roadbed, cell_m, corners)
+                footprint_blocked(&fields, &extraction, &sites, &roadbed, cell_m, corners)
             });
             routing.start();
             planned
@@ -166,14 +167,14 @@ impl SimCore {
         // The entrance cache's state before the plan, as the commit read it.
         let cache_current = self.entrance_cache_current();
         let lap = std::time::Instant::now();
-        let lots = self.zoning.adopt_planned_cell_lots(planned);
+        let mut lots = self.zoning.adopt_planned_cell_lots(planned);
         let plan_install_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let lap = std::time::Instant::now();
-        self.attach_regenerated_cell_lots(&lots);
+        self.attach_regenerated_cell_lots(&mut lots);
         let reattach_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let lap = std::time::Instant::now();
         crate::thread_pools::install(|| {
-            self.repair_commit_entrances(&pending.dirty, cache_current, &lots)
+            self.repair_commit_entrances(&pending.dirty, cache_current, &lots, &[])
         });
         let repair_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let install_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -208,7 +209,7 @@ impl SimCore {
     }
 
     // Whether the entrance cache covers every building and nothing marked it dirty.
-    pub(super) fn entrance_cache_current(&self) -> bool {
+    pub(in crate::nodes::sim) fn entrance_cache_current(&self) -> bool {
         let allocator = &self.allocator;
         !allocator.entrances_dirty && allocator.entrances.len() == allocator.buildings.len()
     }
@@ -221,12 +222,14 @@ impl SimCore {
     // repair finds the same set. A cache already stale before the plan (`cache_current`)
     // rebuilds whole. A parallel test of the buildings in the 512 m chunks the edit reaches
     // plus the local work: `O(local)`, independent of the city's size, except while the
-    // building chunk index is stale, when the test is the whole city's `O(B / P)`.
-    pub(super) fn repair_commit_entrances(
+    // building chunk index is stale, when the test is the whole city's `O(B / P)`. An undo's
+    // `fronting` adds the buildings of edges that no longer exist, which no live edge reaches.
+    pub(in crate::nodes::sim) fn repair_commit_entrances(
         &mut self,
         dirty: &HashSet<usize>,
         cache_current: bool,
         lots: &CellLotGeneration,
+        fronting: &[usize],
     ) {
         let closure =
             crate::simulation::network::lanes::LaneSystem::incremental_rebuild_edge_closure(
@@ -240,7 +243,8 @@ impl SimCore {
             &closure,
             lots.reattached
                 .iter()
-                .filter_map(|&parcel| parcels.get(parcel)?.occupied_building()),
+                .filter_map(|&parcel| parcels.get(parcel)?.occupied_building())
+                .chain(fronting.iter().copied()),
             self.config.zone_cell_m,
         );
         let mut changed = self.allocator.repair_road_attachments_that_may_act(

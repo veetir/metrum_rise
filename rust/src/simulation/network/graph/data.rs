@@ -3,7 +3,7 @@
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
-use super::RoadMedian;
+use super::{RoadMedian, RoadParking, RoadPocket, RoundaboutRing, SidewalkSides};
 use godot::prelude::*;
 use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -44,7 +44,7 @@ impl PointDistance for EdgeEntry {
 pub struct Node {
     /// World-space 3-D position (metres). Y component reflects terrain height.
     pub pos: Vector3,
-    /// Classification of the node (regular junction, cul-de-sac end, highway border, etc.).
+    /// Classification of the node (junction or road end, border connection, lane transition, etc.).
     pub node_type: NodeType,
     /// Turn restriction table for vehicles at this junction.
     ///
@@ -99,7 +99,8 @@ pub struct Edge {
     pub deleted: bool,
     /// When `true` the building allocator will not place buildings along this edge.
     /// Set by a road type with zoning off (`ROAD-101`; never from the speed) and
-    /// player-toggleable in the road inspector.
+    /// player-toggleable in the road inspector. A side without a sidewalk takes no buildings
+    /// whatever this says ([`Edge::zones_side`], `ROAD-109`).
     pub no_building_spawn: bool,
     /// When `true` the road has no street lights (`ROAD-59`): set by a road type with street
     /// lights off (`ROAD-101`). Visual only: no simulation system reads it.
@@ -108,9 +109,42 @@ pub struct Edge {
     pub vehicle_frontage_access: VehicleFrontageAccess,
     /// The median between the two lane groups, if any (`ROAD-80`).
     pub median: Option<RoadMedian>,
+    /// Kerbside parking lanes (`PARK-05`), included in `width`.
+    pub parking: RoadParking,
+    /// The turn pocket at one of the edge's ends, if any (`ROAD-95`); its lanes are counted in
+    /// `fwd_lanes` / `bkw_lanes` and `width`.
+    pub pocket: Option<RoadPocket>,
+    /// The sides of a car road that carry a sidewalk (`ROAD-107`); `FOOT` is set exactly when it
+    /// has one ([`Edge::set_sidewalks`]). `NONE` on a walkway and on a road without sidewalks.
+    pub sidewalks: SidewalkSides,
+    /// The roundabout ring this edge belongs to, if any (`ROAD-62`). A ring edge is one-way in
+    /// the ring's sense of travel, carries its sidewalk on the outer side only and keeps its
+    /// shape: only the roundabout's own edits change it (`network::roundabouts`).
+    pub roundabout: Option<RoundaboutRing>,
 }
 
+// Routing and lanes read edges in bulk: growth here costs them all.
+const _: () = assert!(std::mem::size_of::<Edge>() == 120);
+
 impl Edge {
+    /// Whether a door on `side` (1 left, -1 right) is reached on foot (`ROAD-109`): that side of
+    /// a road has a sidewalk, and a walkway is its own path on both. `O(1)`.
+    pub(crate) fn walked_on_side(&self, side: i8) -> bool {
+        self.primary_type == TransitType::Foot || self.sidewalk_sides().on_building_side(side)
+    }
+
+    /// Whether `side` (1 left, -1 right) of this edge zones (`ROAD-109`): it is walked
+    /// ([`Self::walked_on_side`]) and the road is not closed to buildings. Cells, lots and
+    /// [`RegionGraph::takes_buildings`] all read this. `O(1)`.
+    pub(crate) fn zones_side(&self, side: i8) -> bool {
+        !self.no_building_spawn && self.walked_on_side(side)
+    }
+
+    /// Whether either side zones ([`Self::zones_side`]). `O(1)`.
+    pub(crate) fn zones_any_side(&self) -> bool {
+        self.zones_side(1) || self.zones_side(-1)
+    }
+
     /// Returns permitted traversal modes in one direction of a live edge.
     /// Walking is bidirectional; every other mode requires a lane in that direction.
     #[inline]
@@ -215,6 +249,15 @@ pub(crate) struct RegionGraphUndoDelta {
 }
 
 impl RegionGraphUndoDelta {
+    /// The live roads this inverse keeps, each with the sidewalks it would give them back: what
+    /// an undo must check against the doors on them (`ROAD-109`). O(records).
+    pub(crate) fn restored_sidewalks(&self) -> impl Iterator<Item = (usize, SidewalkSides)> + '_ {
+        self.edges
+            .iter()
+            .filter(|(_, edge)| !edge.deleted)
+            .map(|(id, edge)| (*id, edge.sidewalk_sides()))
+    }
+
     /// Returns every topology ID whose pre-edit record is stored by this inverse.
     pub(crate) fn stored_topology_ids(&self) -> (HashSet<usize>, HashSet<u32>) {
         let edge_ids = self
@@ -286,11 +329,11 @@ impl RegionGraph {
             })
     }
 
-    /// Whether a building may front `edge_idx`: it fronts the ground ([`Self::fronts_ground`])
-    /// and the player has not closed it to buildings. The one rule lots, parcels, explicit
-    /// sites, attachment repair and road-side connections read.
-    pub fn takes_buildings(&self, edge_idx: usize) -> bool {
-        !self.edge(edge_idx).no_building_spawn && self.fronts_ground(edge_idx)
+    /// Whether a building may stand on `side` of `edge_idx` (`ROAD-109`): that side zones
+    /// ([`Edge::zones_side`]) and the road fronts the ground ([`Self::fronts_ground`]). The one
+    /// rule lots, parcels, explicit sites, attachment repair and road-side connections read.
+    pub fn takes_buildings(&self, edge_idx: usize, side: i8) -> bool {
+        self.edge(edge_idx).zones_side(side) && self.fronts_ground(edge_idx)
     }
 
     /// Creates a new, empty road graph.
@@ -637,6 +680,37 @@ impl RegionGraph {
     pub fn remove_lane_connection(&mut self, node_id: u32, key: (usize, i8)) {
         if let Some(node) = self.nodes.get_mut(node_id as usize) {
             node.lane_connections.remove(&key);
+        }
+    }
+
+    /// Moves node `node_id`'s turn rules from arm `old_edge` to `new_edge`, in their keys and
+    /// targets, lane indices kept: a split whose second half `new_edge` now reaches the node in
+    /// the old edge's direction (`ROAD-103`). `new_edge` must not be an arm of the node yet.
+    /// O(rules at the node); allocates only when a rule names `old_edge`.
+    pub(crate) fn move_node_rules_to_edge(
+        &mut self,
+        node_id: u32,
+        old_edge: usize,
+        new_edge: usize,
+    ) {
+        let rules = &mut self.nodes[node_id as usize].lane_connections;
+        let names_old = |rules: &HashMap<(usize, i8), Vec<(usize, i8)>>| {
+            rules
+                .iter()
+                .any(|(key, targets)| key.0 == old_edge || targets.iter().any(|t| t.0 == old_edge))
+        };
+        if !names_old(rules) {
+            return;
+        }
+        let moved: Vec<_> = rules.drain().collect();
+        for ((from, lane), mut targets) in moved {
+            for target in &mut targets {
+                if target.0 == old_edge {
+                    target.0 = new_edge;
+                }
+            }
+            let from = if from == old_edge { new_edge } else { from };
+            rules.insert((from, lane), targets);
         }
     }
 

@@ -6,6 +6,42 @@ The target audience is future work on `simulation/economy/agents/` and `simulati
 
 This document is now intended to be a deterministic implementation spec for the entrance/exit rewrite. If the implementation changes, update this file and `docs/project.md` together so they stay aligned.
 
+## Parking rounds
+
+[`PARK-01`](traffic.md#parking-supply-park-01) owns public supply, persistent parked cars, edit
+towing and the standalone lot. [`PARK-02`](traffic.md#the-itinerary-park-02) implements resident
+ownership/custody and `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` in the existing access FSM. The two
+pedestrian legs end at the actual bay and door respectively. The drive joins/leaves at the lot's
+driveway curb; pull-out uses the ordinary lane-entry claim/hold and pull-in uses
+`try_network_detach`. Retained swept-path interpolation connects each bay and driveway outside
+the network. Only `WalkToDoor` enters the destination building; a debug assertion rejects a
+resident or move-in car arrival at a door.
+
+Move-ins choose car ownership at their paced departure using the saved mobility seed,
+housing density and stable carrier identity (the household record does not yet exist). This
+decision and the same vehicle are adopted by the household at materialization, without rerolling.
+A free home-catchment bay is reserved before entry: `Drive → PullIn → WalkToDoor`. If none
+is free, the household walks from the external connection and its car stays unavailable off-map.
+Carless households use that same pedestrian arrival. Freight retains its previous itinerary.
+Stored cars use a separate carrier with the same `Drive → PullIn` legs from an external
+connection. It reserves before entry, commits occupancy only at the bay and retires there;
+there is no walking driver or building arrival. Supply events consider at most eight cars,
+then schedule a continuation; parked and off-map cars have no polling pass. Loading preserves
+in-flight custody and scheduled wake cursors, and cannot fill a free bay instantly.
+
+Destination reservations commit at departure in deterministic agent order. Origin occupancy
+is released after lane entry, and pull-in converts destination reservation to occupancy in the
+same resource phase. Edits cancel removed reservations and recover from actual positions.
+Ownership, borrower, phase, reservations and scheduled retries survive save/load (format 118,
+no migration). Moving and parked cars come from one snapshot. Economy commute,
+shopping and service quotes use the same itinerary and actual custody; a proposed shopping
+return starts at the proposed parked bay. Destination parking is within 400 m walking time;
+the walk to the actual car has no additional distance cap. Returning home releases custody
+while retaining the car's last bay.
+
+The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight keeps its previous access behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
+function; parking does not add an alternate detach path.
+
 ## Current System
 
 Lane attachment and ingress rollback publish occupancy through the shared
@@ -447,8 +483,14 @@ Use this exact derived rule:
 
 - `same_side_car_lane_id = car_lane_fwd` and `opposite_side_car_lane_id = car_lane_bkw` when `side == -1`
 - `same_side_car_lane_id = car_lane_bkw` and `opposite_side_car_lane_id = car_lane_fwd` when `side == 1`
-- `same_side_cross_point = edge_pos + normal * (edge.width * 0.5)`
-- `opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5)`
+- `same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(side)`
+- `opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-side)`
+
+`Edge::frontage_half_width_m(side)` is the distance from the centreline to that side's kerb:
+`edge.width * 0.5` bit for bit on any road without a turn pocket; on a pocket edge, whose
+carriageway lies `kerb_shift_m` off its centreline, half the width moved by that shift, so both
+points stand on the true kerbs (`ROAD-95` round R5d3). The building's side offset, its lot's
+front gaps and its site's road tie-in probes read the same per-side kerb.
 
 Then:
 
@@ -896,6 +938,7 @@ Failed planning or replanning must:
   - `pos_x`, `pos_y = origin door_pos`
   - `transit = TRANSIT_ACCESS_EGRESS`
 - If that plan build fails, the agent stays in `IN_BUILDING`, keeps its requested destination/activity, and sets `next_replan_time = sim_time + BUILDING_REPLAN_DELAY_S`.
+- A save keeps that retry time: the loader recognises an agent in `IN_BUILDING` with no plan and `next_replan_time > 0` (`save/agents.rs::loaded_departure_backoff`) and keeps the timer while it clears the plan fields, so a game loaded mid-backoff retries at the same tick as the unsaved one (`SAVE-03`). Before, the loader zeroed the timer and the agent retried at once.
 
 #### `IMMIGRATING`
 
@@ -2354,7 +2397,7 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
 - `TransitNetwork::cch_current()` is false while a result waits to be installed or an edited
   chunk waits for a rebuild. Saved rolls, saved workplace quotes and border arrival costs treat
   that state as stale, as they treated dirty chunks.
-- Node moves, lane connection edits, crosswalk toggles, edge class changes and border
+- Lane connection edits, crosswalk toggles, edge class changes and border
   connections schedule the same job on a copy of the live graph (since `ROAD-68-G` part 2).
   The allocator's cache repair and a frame's marked chunks still rebuild synchronously; such a
   rebuild replaces a pending job's result with a build of the live graph, and the hold still
@@ -2731,7 +2774,9 @@ on mirrored uphill/downhill transitions, entry/exit, busy-core fallback and owne
 requires up to 0.4236 m origin lift above its centre surface, so it cannot pass with the earlier
 centre-only solve. The rendered run also checks actual MultiMesh transform readback. The test
 is included in `./run.sh --test`; headless mode checks cached uploaded poses, not dummy-renderer
-GPU readback. These are geometric regressions, not an exact replay of the screenshot's trip.
+GPU readback. Each model's contacts are its 8 distinct bottom corners; its 32 triangle corners
+repeat them, and checking each once cut the headless run from 150 s to 47 s (`CODE-21`). These
+are geometric regressions, not an exact replay of the screenshot's trip.
 
 Matched unprofiled snapshot comparison uses the same 76-position mixed-access workload above, Rust
 1.98.1, 24 Rayon workers and base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` plus working-tree

@@ -21,7 +21,7 @@ use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{
     LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
@@ -32,7 +32,7 @@ use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, grade_violation,
 };
 use crate::simulation::network::{
-    TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
+    TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, roundabouts, topology,
     topology::StrokeGrade,
 };
 use crate::simulation::terrain::TerrainSystem;
@@ -47,6 +47,11 @@ const PREVIEW_TUNNEL_APPROACH_REASON: &str = "tunnel_approach_too_short";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
+const STROKE_SPLITS_POCKET_REASON: &str = "stroke_splits_pocket";
+const ROUNDABOUT_CROSSED_REASON: &str = "roundabout_crossed";
+const ROUNDABOUT_ARM_NODE_TAKEN_REASON: &str = "roundabout_arm_node_taken";
+const ROUNDABOUT_ARMS_TOO_CLOSE_REASON: &str = "roundabout_arms_too_close";
+const ROUNDABOUT_NEIGHBOUR_NODES_REASON: &str = "roundabout_neighbour_nodes";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
 // The road tool's warning for a grade above its class's design tier, which it does not refuse.
@@ -287,7 +292,8 @@ fn profile_validation(
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
     }
     // The stroke's median takes the in-place edit's rule (`ROAD-80`, `ROAD-92`): a car road
-    // with both directions.
+    // with both directions. Kerbside parking needs a car road and its side's sidewalk
+    // (`PARK-05`).
     let allowed_types = if fwd_lanes > 0 || bkw_lanes > 0 {
         TransitFlags::CAR
     } else {
@@ -295,6 +301,15 @@ fn profile_validation(
     };
     if let Err(reason) =
         Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, prepared_input.median)
+            .and_then(|()| {
+                Edge::validate_parking(
+                    allowed_types,
+                    fwd_lanes,
+                    bkw_lanes,
+                    prepared_input.parking,
+                    prepared_input.attributes.sidewalks,
+                )
+            })
     {
         return validation.with_invalid_reason(reason);
     }
@@ -317,6 +332,7 @@ fn profile_validation(
             fwd_lanes,
             bkw_lanes,
             prepared_input.median,
+            prepared_input.parking,
             prepared_input.attributes,
         );
         let decks = grounded_decks_near(graph, prepared_points, half_width_m);
@@ -390,6 +406,7 @@ fn refuse_close_crossing(
         fwd_lanes,
         bkw_lanes,
         prepared_input.median,
+        prepared_input.parking,
         prepared_input.attributes,
     );
     let over_tunnel = (class == EdgeClass::Standard)
@@ -541,6 +558,13 @@ fn validate_against_graph(
         );
     }
 
+    let grounded = prepared_input.class == EdgeClass::Standard && !prepared_input.tunnel;
+    if let Some(reason) =
+        roundabouts::stroke_ring_refusal(existing_graph, prepared_points, grounded)
+    {
+        return (validation.with_invalid_reason(reason), None);
+    }
+
     // The profile check passed, so a tunnel stroke has its bore.
     let bore = prepared_input
         .tunnel
@@ -550,6 +574,7 @@ fn validate_against_graph(
                 fwd_lanes,
                 bkw_lanes,
                 prepared_input.median,
+                prepared_input.parking,
                 prepared_input.attributes,
             );
             let decks = grounded_decks_near(existing_graph, prepared_points, half_width_m);
@@ -575,7 +600,13 @@ fn validate_against_graph(
         prepared_points,
         prepared_input.class,
         prepared_input.grade(bore),
-        (fwd_lanes, bkw_lanes, prepared_input.median, prepared_input.attributes),
+        (
+            fwd_lanes,
+            bkw_lanes,
+            prepared_input.median,
+            prepared_input.parking,
+            prepared_input.attributes,
+        ),
         existing_graph,
         prepared_input.endpoint_snap_enabled,
         terrain,
@@ -588,8 +619,26 @@ fn validate_against_graph(
         || validation_graph.edge(new_edge_idx).deleted
         || required_edge_ids.is_empty()
     {
+        // The rule is the graph's; a road doubling a ring edge only gets its own words (D9).
+        let reason = validation_graph
+            .edges()
+            .get(new_edge_idx)
+            .filter(|edge| {
+                roundabouts::ring_neighbours(&validation_graph, edge.start_node, edge.end_node)
+            })
+            .map_or(PREVIEW_SURFACE_GEOMETRY_REASON, |_| {
+                ROUNDABOUT_NEIGHBOUR_NODES_REASON
+            });
+        return (validation.with_invalid_reason(reason), None);
+    }
+    if stroke_splits_pocket(
+        &validation_graph,
+        existing_graph,
+        &source_node_ids,
+        &source_edge_ids,
+    ) {
         return (
-            validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
+            validation.with_invalid_reason(STROKE_SPLITS_POCKET_REASON),
             None,
         );
     }
@@ -600,6 +649,9 @@ fn validate_against_graph(
         &required_edge_ids,
         &source_edge_ids,
     );
+    if let Some(reason) = ring_join_refusal(&validation_graph, &stroke) {
+        return (validation.with_invalid_reason(reason), None);
+    }
     if let Some(refused) = edit_geometry_violation(
         &validation_graph,
         existing_graph,
@@ -654,6 +706,82 @@ fn validate_against_graph(
     (validation, topology_plan)
 }
 
+// D9 (`ROAD-62`): the drawn road `stroke` joins a ring at one point. Two of its pieces at a ring
+// node run on through the ring (`roundabout_crossed`; a stroke through the island is
+// [`roundabouts::stroke_ring_refusal`]'s), and a ring node takes one arm
+// (`roundabout_arm_node_taken`: a second at one point never fits and is not a roundabout). The
+// excerpt has every arm of a node the stroke touches. `O(stroke pieces x degree)`.
+fn ring_join_refusal(local: &RegionGraph, stroke: &[usize]) -> Option<&'static str> {
+    stroke.iter().find_map(|&piece| {
+        let edge = local.edge(piece);
+        [edge.start_node, edge.end_node]
+            .into_iter()
+            .find_map(|node| {
+                let node = local.get_valid_node(node);
+                roundabouts::ring_at(local, node)?;
+                let (mut drawn, mut others) = (0, 0);
+                for &id in local.node_adjacency(node) {
+                    let arm = local.edge(id);
+                    if arm.deleted || arm.roundabout.is_some() {
+                        continue;
+                    }
+                    if stroke.contains(&id) {
+                        drawn += 1;
+                    } else {
+                        others += 1;
+                    }
+                }
+                if drawn > 1 {
+                    Some(ROUNDABOUT_CROSSED_REASON)
+                } else if others > 0 {
+                    Some(ROUNDABOUT_ARM_NODE_TAKEN_REASON)
+                } else {
+                    None
+                }
+            })
+    })
+}
+
+// D10 (`ROAD-95`): whether the stroke's excerpt split, merged or rerouted a turn pocket edge, or
+// gave a pocket's transition node a third arm (a crossing, an end snapped onto it or a node
+// captured on the stroke's line): a split would leave the pocket on a half that no longer reaches
+// its junction, and a third arm ends the transition. The pocket is removed or the road drawn
+// elsewhere first. The excerpt may hold only one of a transition's two arms (a pocket edge of a
+// junction the stroke's excerpt reaches, without its base road), so its arms are counted against
+// the existing arms the excerpt copied: a split of a copied arm keeps the count, a new arm raises
+// it. Order-independent over the excerpt's maps, O(excerpt records).
+fn stroke_splits_pocket(
+    local: &RegionGraph,
+    existing: &RegionGraph,
+    source_nodes: &HashMap<u32, u32>,
+    source_edges: &HashMap<usize, usize>,
+) -> bool {
+    let local_node = |source: u32| {
+        source_nodes
+            .get(&existing.get_valid_node(source))
+            .map(|&node| local.get_valid_node(node))
+    };
+    let edge_changed = source_edges.iter().any(|(&source, &copy)| {
+        let edge = existing.edge(source);
+        let copied = local.edge(copy);
+        edge.pocket.is_some()
+            && (copied.deleted
+                || Some(local.get_valid_node(copied.start_node)) != local_node(edge.start_node)
+                || Some(local.get_valid_node(copied.end_node)) != local_node(edge.end_node))
+    });
+    edge_changed
+        || source_nodes.iter().any(|(&source, &copy)| {
+            existing.is_lane_transition(source)
+                && (local.get_valid_node(copy) != copy
+                    || local.live_node_connection_count(copy)
+                        != existing
+                            .node_adjacency(source)
+                            .iter()
+                            .filter(|edge| source_edges.contains_key(edge))
+                            .count())
+        })
+}
+
 // The local post-edit graph of a prepared stroke, or the refusal: a stroke whose ends meet one
 // node or whose excerpt is incomplete is `surface_geometry_invalid`; a tunnel stroke's `bore`
 // (`ROAD-61`) is split at its portals and refused when it meets another road. The stroke meets
@@ -663,7 +791,13 @@ fn build_validation_graph(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
     grade: StrokeGrade,
-    (fwd_lanes, bkw_lanes, median, attributes): (u8, u8, Option<RoadMedian>, RoadAttributes),
+    (fwd_lanes, bkw_lanes, median, parking, attributes): (
+        u8,
+        u8,
+        Option<RoadMedian>,
+        RoadParking,
+        RoadAttributes,
+    ),
     existing_graph: &RegionGraph,
     endpoint_snap_enabled: bool,
     terrain: &TerrainSystem,
@@ -689,7 +823,7 @@ fn build_validation_graph(
 
     let existing_edge_ids = candidate_existing_edge_ids(
         prepared_points,
-        (fwd_lanes, bkw_lanes, median, attributes),
+        (fwd_lanes, bkw_lanes, median, parking, attributes),
         edge_class,
         existing_graph,
         start_existing,
@@ -708,20 +842,53 @@ fn build_validation_graph(
     // The spans the stroke's ends are snapped onto lie within the end-join tolerance of its
     // points, inside the excerpt's pad.
     let grade = grade.map_joined_spans(|span| copied_edges[&span]);
-    let start_node = validation_graph_endpoint_node(
-        &mut validation_graph,
-        existing_graph,
-        &mut node_map,
-        start_existing,
-        prepared_points[0],
-    );
-    let end_node = validation_graph_endpoint_node(
-        &mut validation_graph,
-        existing_graph,
-        &mut node_map,
-        end_existing,
-        *prepared_points.last().unwrap(),
-    );
+    // D9 (`ROAD-62`): an end on a ring near a bare node takes that node's place.
+    let by_ring = validation_graph.edges().iter().any(|edge| edge.roundabout.is_some());
+    let half_width_m = if by_ring {
+        preview_candidate_roadbed_half_width_m(
+            prepared_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            median,
+            parking,
+            attributes,
+        )
+    } else {
+        0.0
+    };
+    let mut ring_edges = Vec::new();
+    let mut ring_splits = Vec::new();
+    let mut join_end = |graph: &mut RegionGraph, existing: Option<u32>, point, taken| {
+        let joins = by_ring && endpoint_snap_enabled && existing.is_none();
+        let join = joins
+            .then(|| roundabouts::join_near_bare_node(graph, point, half_width_m, taken))
+            .flatten()?;
+        ring_edges.extend(join.edges);
+        ring_splits.extend(join.splits);
+        Some(join.node)
+    };
+    let start_join = join_end(&mut validation_graph, start_existing, prepared_points[0], None);
+    let last_point = *prepared_points.last().unwrap();
+    let end_join = join_end(&mut validation_graph, end_existing, last_point, start_join);
+    let start_node = start_join.unwrap_or_else(|| {
+        validation_graph_endpoint_node(
+            &mut validation_graph,
+            existing_graph,
+            &mut node_map,
+            start_existing,
+            prepared_points[0],
+        )
+    });
+    let end_node = end_join.unwrap_or_else(|| {
+        validation_graph_endpoint_node(
+            &mut validation_graph,
+            existing_graph,
+            &mut node_map,
+            end_existing,
+            last_point,
+        )
+    });
     if start_node == end_node {
         return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
@@ -747,7 +914,8 @@ fn build_validation_graph(
         None => None,
     };
     let new_edge_idx = validation_graph.add_edge(build_surface_edge(
-        start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class, median, attributes,
+        start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class, median, parking,
+        attributes,
     ));
     let (base_cost, physical_length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(
@@ -755,13 +923,26 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let (finalized, splits) = process_validation_graph_intersections(
+    let (finalized, stroke_splits) = process_validation_graph_intersections(
         &mut validation_graph,
         new_edge_idx,
         grade,
         terrain,
         portals.as_ref(),
+        &ring_edges,
     )?;
+    // The bare nodes a join inserted split the ring before the stroke's own splits ran.
+    let splits: Vec<PlannedRoadSplit> = ring_splits
+        .into_iter()
+        .map(|(edge_id, halves): (usize, topology::SplitHalves)| PlannedRoadSplit {
+            edge_id,
+            new_edge_id: halves.new_edge_id,
+            far_node: halves.far_node,
+            first_length_m: halves.first_length_m,
+            second_length_m: halves.second_length_m,
+        })
+        .chain(stroke_splits)
+        .collect();
 
     let mut required_edge_ids = validation_graph
         .edges()
@@ -820,7 +1001,13 @@ fn build_validation_graph(
 #[allow(clippy::too_many_arguments)]
 fn candidate_existing_edge_ids(
     prepared_points: &[Vector3],
-    (fwd_lanes, bkw_lanes, median, attributes): (u8, u8, Option<RoadMedian>, RoadAttributes),
+    (fwd_lanes, bkw_lanes, median, parking, attributes): (
+        u8,
+        u8,
+        Option<RoadMedian>,
+        RoadParking,
+        RoadAttributes,
+    ),
     edge_class: EdgeClass,
     existing_graph: &RegionGraph,
     start_existing: Option<u32>,
@@ -845,6 +1032,7 @@ fn candidate_existing_edge_ids(
             fwd_lanes,
             bkw_lanes,
             median,
+            parking,
             attributes,
         );
     let mut edge_ids = existing_graph.get_edges_near_aabb(
@@ -855,6 +1043,18 @@ fn candidate_existing_edge_ids(
         push_incident_validation_edges(existing_graph, existing_node, &mut edge_ids);
     }
 
+    // A join may move any bare node of a ring (D9, `ROAD-62`): the excerpt holds the whole ring.
+    let rings: Vec<usize> = edge_ids
+        .iter()
+        .copied()
+        .filter(|&id| id < existing_graph.edge_count())
+        .filter(|&id| !existing_graph.edge(id).deleted)
+        .filter(|&id| existing_graph.edge(id).roundabout.is_some())
+        .collect();
+    for id in rings {
+        let walk = roundabouts::ring_walk(existing_graph, id);
+        edge_ids.extend(walk.iter().flatten().map(|&(_, edge)| edge));
+    }
     edge_ids.sort_unstable();
     edge_ids.dedup();
 
@@ -907,6 +1107,7 @@ fn process_validation_graph_intersections(
     grade: StrokeGrade,
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
+    moved_ring_edges: &[usize],
 ) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>), &'static str> {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
@@ -921,6 +1122,7 @@ fn process_validation_graph_intersections(
     network.bulk_load = true;
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
+    network.bulk_dirty_edges.extend(moved_ring_edges);
     topology::process_intersections_splitting_at(
         &mut network,
         validation_graph,
@@ -1204,10 +1406,16 @@ fn record_edit_grade(
 fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Option<&'static str> {
     let mut nodes: Vec<u32> = affected_nodes.iter().copied().collect();
     nodes.sort_unstable();
-    let error = nodes
+    let (node, error) = nodes
         .into_iter()
-        .find_map(|node| check_node(graph, node).err())?;
+        .find_map(|node| check_node(graph, node).err().map(|error| (node, error)))?;
     Some(match error {
+        // Bare nodes make way for a join (D9), so a ring's corner fails on arm against arm.
+        NodeError::Layout(LayoutError::CornerDoesNotFit { .. })
+            if roundabouts::ring_at(graph, node).is_some() =>
+        {
+            ROUNDABOUT_ARMS_TOO_CLOSE_REASON
+        }
         NodeError::Layout(LayoutError::CornerDoesNotFit { .. }) => PREVIEW_JUNCTION_CORNER_REASON,
         NodeError::Layout(LayoutError::CoreNotSimple) | NodeError::Triangulation => {
             PREVIEW_JUNCTION_CORE_REASON

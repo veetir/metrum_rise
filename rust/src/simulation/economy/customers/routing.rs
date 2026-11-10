@@ -194,6 +194,14 @@ impl ConsumerMarket {
         self.last_claim_direct
     }
 
+    /// Residents of housed families with an adult whose wage the refreshed budgets do not count
+    /// (no job yet, or hired since the family last counted its wages) whose basket they do not
+    /// pay for: the shopping that wage will fund, which no store is staffed for yet
+    /// (`ECON-28`). O(1).
+    pub(crate) fn unfunded_wageless_residents(&self) -> f64 {
+        self.budgets.unfunded_wageless_residents()
+    }
+
     /// Builds the direct-only quote key when no staged account mutation is pending.
     pub(crate) fn direct_quote_key(
         &self,
@@ -1341,10 +1349,11 @@ impl ConsumerMarket {
     #[cfg(test)]
     pub(crate) fn live_fingerprint_for_test(&self) -> Vec<(&'static str, u64)> {
         let b = &self.budgets;
-        crate::debug_fingerprint!("categories" => b.categories, "previous_categories" => b.previous_categories,
+        crate::exact_fingerprint!("categories" => b.categories, "previous_categories" => b.previous_categories,
             "category_by_resource" => b.category_by_resource, "households" => b.households, "funds" => b.funds,
             "staged_slots" => b.staged_slots, "committed" => b.committed, "owners" => b.owners,
             "free_receipt" => b.free_receipt, "affordable_residents" => b.affordable_residents.to_bits(),
+            "unfunded_wageless_residents" => b.unfunded_wageless_residents.to_bits(),
             "access" => self.access, "access_entrances" => self.access_entrances, "indices" => self.indices,
             "components" => self.components, "walking" => self.walking, "walking_revision" => self.walking_revision,
             "revision" => self.revision, "frontage_revision" => self.frontage_revision,
@@ -1434,4 +1443,10 @@ fn shares_walk_group(
                 group == target && from_nodes[origin] != to_nodes[destination]
             })
     })
+}
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    Access { home, has_car, can_shop, chunk, components, reservations, walk_origins,
+        walk_destinations, walk_nodes }
 }

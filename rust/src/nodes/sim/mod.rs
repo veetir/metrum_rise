@@ -12,6 +12,8 @@ pub mod editing;
 pub mod query;
 /// Rendering bridge sub-modules for Godot-Rust interaction.
 pub mod render;
+mod road_pockets;
+pub(crate) mod roundabouts;
 pub mod road_tool;
 pub mod save_load;
 pub mod undo;

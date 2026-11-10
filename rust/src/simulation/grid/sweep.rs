@@ -185,6 +185,7 @@ mod tests {
                 .map(|i| Vector3::new(-80.0 + 20.0 * i as f32, 0.0, z))
                 .collect();
             let edge = graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node: west,
                 end_node: east,
                 primary_type: TransitType::Road,
@@ -205,6 +206,9 @@ mod tests {
                 no_street_lights: false,
                 vehicle_frontage_access: VehicleFrontageAccess::BothSides,
                 median: None,
+                pocket: None,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+                roundabout: None,
             });
             graph.edge_mut(edge).deleted = deleted;
         }

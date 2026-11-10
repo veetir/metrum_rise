@@ -2,10 +2,10 @@
 
 //! Generation completeness and paint revisions on the existing cell spatial chunks.
 
+#[cfg(test)]
+use super::chunk_at;
 use super::maps::StoreMap;
-use super::{
-    CellBounds, CellKey, CellMaps, CellStore, DVec2, RegionGraph, chunk_at, chunks_for_bounds,
-};
+use super::{CellBounds, CellKey, CellMaps, CellStore, DVec2, RegionGraph, chunks_for_bounds};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::types::TransitType;
 use crate::simulation::zoning::cells::CELL_DEPTH;
@@ -45,7 +45,7 @@ impl<M: CellMaps> CellStore<M> {
         // A road's candidates lie within its half-width, the sidewalk and its rear rows.
         let mut chunks = BTreeSet::new();
         for (id, edge) in graph.edges().iter().enumerate() {
-            if edge.no_building_spawn
+            if !edge.zones_any_side()
                 || edge.primary_type != TransitType::Road
                 || !graph.fronts_ground(id)
                 || edge.physical_geometry.len() < 2
@@ -54,6 +54,7 @@ impl<M: CellMaps> CellStore<M> {
             }
             let reach = f64::from(edge.width) * 0.5
                 + f64::from(crate::config::SIDEWALK_WIDTH)
+                + f64::from(edge.kerb_shift_m().abs())
                 + (CELL_DEPTH + 2) as f64 * cell_m;
             let bounds = CellBounds::from_points(
                 edge.physical_geometry
@@ -94,6 +95,14 @@ impl<M: CellMaps> CellStore<M> {
             .map_or((0, false), |entry| (entry.revision, entry.generated))
     }
 
+    /// Whether every chunk `bounds` touches holds current generated cells: no pending
+    /// invalidation can regenerate (keep or drop) a cell inside it. A lot plan hands erased paint
+    /// on only to such cells (`ZONE-14`). O(touched chunks).
+    pub(crate) fn generation_current(&self, bounds: CellBounds) -> bool {
+        chunks_for_bounds(bounds)
+            .all(|chunk| self.chunks.get(&chunk).is_some_and(|entry| entry.generated))
+    }
+
     /// Returns a bounded batch of nearby dirty envelopes, or the full chunk for a cold cache.
     /// Warm batches never exceed one chunk's width/height. Ready lookup uses one hash query;
     /// dirty lookup uses at most nine more, with no allocation or city-wide traversal.
@@ -132,6 +141,7 @@ impl<M: CellMaps> CellStore<M> {
     /// Completes the requested chunk and warm neighbours whose entire dirty envelope was
     /// covered by the caller's generation bounds. Partly covered and cold neighbours stay dirty.
     pub(crate) fn complete_generated_chunk(&mut self, chunk: (i32, i32), bounds: CellBounds) {
+        self.eligibility_epoch = self.eligibility_epoch.wrapping_add(1);
         let entry = self.chunks.entry_or_default(chunk);
         entry.generated = true;
         entry.dirty_bounds = None;
@@ -201,7 +211,8 @@ impl<M: CellMaps> CellStore<M> {
         !self.chunks.is_empty()
     }
 
-    /// Assigns each full cell to its centre's chunk so packed overlay uploads contain no duplicates.
+    /// Visits centre-owned cells for ownership regression checks.
+    #[cfg(test)]
     pub(crate) fn visit_chunk_cells(&self, chunk: (i32, i32), mut visit: impl FnMut(CellKey)) {
         self.visit_in_bounds(chunk_bounds(chunk), |key| {
             if self.cell_chunk(key) == Some(chunk) {
@@ -210,6 +221,7 @@ impl<M: CellMaps> CellStore<M> {
         });
     }
 
+    #[cfg(test)]
     fn cell_chunk(&self, key: CellKey) -> Option<(i32, i32)> {
         let frame = self.frame(key.grid)?;
         Some(chunk_at(
@@ -217,11 +229,47 @@ impl<M: CellMaps> CellStore<M> {
         ))
     }
 
-    /// Stamps a changed full cell's single rendering owner after its authority epoch advances.
+    /// Stamps every ground-mask chunk intersecting a changed cell, after its authority epoch
+    /// advances. Uses the existing chunk index; O(intersected chunks), with no allocation.
     pub(super) fn mark_cell_chunk_changed(&mut self, key: CellKey) {
-        if let Some(chunk) = self.cell_chunk(key) {
+        let Some(frame) = self.frame(key.grid) else {
+            return;
+        };
+        for chunk in chunks_for_bounds(CellBounds::from_points(frame.corners(key.x, key.y))) {
             self.chunks.entry_or_default(chunk).revision = self.revision;
             self.journal.chunks.push(chunk);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::zoning::cells::{CellSelection, GridFrame};
+
+    #[test]
+    fn paint_stamps_all_crossed_mask_chunks_without_touching_remote_chunks() {
+        let mut cells = CellStore::default();
+        let grid = cells.register_frame(GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap());
+        for x in [51, -52] {
+            let key = CellKey { grid, x, y: 51 };
+            assert!(cells.insert(key));
+            let chunks = if x > 0 {
+                [(0, 0), (1, 0), (0, 1), (1, 1)]
+            } else {
+                [(-2, 0), (-1, 0), (-2, 1), (-1, 1)]
+            };
+            let before = chunks.map(|chunk| cells.chunk_state(chunk).0);
+            let remote = cells.chunk_state((8, 8));
+            let selection = CellSelection {
+                cells: vec![key],
+                revision: cells.revision(),
+            };
+            cells.paint(&selection, 1).unwrap();
+            for (chunk, revision) in chunks.into_iter().zip(before) {
+                assert!(cells.chunk_state(chunk).0 > revision, "{chunk:?}");
+            }
+            assert_eq!(cells.chunk_state((8, 8)), remote);
         }
     }
 }

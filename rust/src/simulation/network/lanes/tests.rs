@@ -17,6 +17,7 @@ fn test_lane_geometry_and_length() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -38,6 +39,9 @@ fn test_lane_geometry_and_length() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -79,6 +83,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
     let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -100,6 +105,9 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -150,6 +158,7 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
         end_node: n2,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         class: EdgeClass::Standard,
         width: 10.0,
         fwd_lanes: 1,
@@ -206,6 +215,7 @@ fn test_highway_no_sidewalks() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -227,6 +237,9 @@ fn test_highway_no_sidewalks() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -244,6 +257,60 @@ fn test_highway_no_sidewalks() {
     }
 }
 
+// `ROAD-107`: a road with one sidewalk builds that side's two foot lanes (one per direction,
+// lane 100 on the left, -100 on the right) and none on the shoulder side; the built side's lanes
+// lie exactly where a two-sided road's lanes of that side lie.
+#[test]
+fn a_one_sided_road_builds_foot_lanes_on_its_sidewalk_side_only() {
+    use crate::simulation::network::graph::SidewalkSides;
+    let foot_lanes = |sides: SidewalkSides| {
+        let mut graph = RegionGraph::new();
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        let mut edge = Edge {
+            start_node: n1,
+            end_node: n2,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.9,
+            base_cost: 1.0,
+            physical_length: 100.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        };
+        edge.set_sidewalks(sides);
+        graph.add_edge(edge);
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let mut found: Vec<_> = lanes
+            .lanes
+            .iter()
+            .filter(|lane| lane.edge_id == 0 && lane.lane_type == LaneType::Foot)
+            .map(|lane| (lane.lane_idx, lane.is_fwd, lane.geometry.clone()))
+            .collect();
+        found.sort_by_key(|(idx, fwd, _)| (*idx, *fwd));
+        found
+    };
+    let both = foot_lanes(SidewalkSides::BOTH);
+    assert_eq!(both.len(), 4);
+    for (sides, idx) in [(SidewalkSides::LEFT, 100), (SidewalkSides::RIGHT, -100)] {
+        let one = foot_lanes(sides);
+        let expected: Vec<_> = both.iter().filter(|lane| lane.0 == idx).cloned().collect();
+        assert_eq!(one.len(), 2, "{sides:?}");
+        assert_eq!(one, expected, "{sides:?}");
+    }
+    // The left sidewalk is on the negative lateral side: -z for a road along +x.
+    let left = foot_lanes(SidewalkSides::LEFT);
+    assert!(left.iter().all(|lane| lane.2.iter().all(|point| point.z < -3.5)));
+    assert!(foot_lanes(SidewalkSides::NONE).is_empty());
+}
+
 #[test]
 fn test_dedicated_footpath_centering() {
     let mut graph = RegionGraph::new();
@@ -251,6 +318,7 @@ fn test_dedicated_footpath_centering() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Foot,
@@ -272,6 +340,9 @@ fn test_dedicated_footpath_centering() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -320,6 +391,7 @@ fn build_pedestrian_junction(
         let start = graph.node(center).pos;
         let end = graph.node(arm).pos;
         edge_ids.push(graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: center,
             end_node: arm,
             primary_type: TransitType::Road,
@@ -341,6 +413,9 @@ fn build_pedestrian_junction(
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }));
     }
     graph.rebuild_adjacency_list();
@@ -596,6 +671,7 @@ fn test_rht_lane_offsets() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -617,6 +693,9 @@ fn test_rht_lane_offsets() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -668,6 +747,7 @@ fn one_way_and_uneven_lanes_sit_on_the_carriageway() {
             end_node: b,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             width: f32::from(fwd + bkw) * crate::config::LANE_WIDTH,
             fwd_lanes: fwd,
             bkw_lanes: bkw,
@@ -751,7 +831,8 @@ fn divided_lane_groups_sit_beside_the_median() {
             end_node: b,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            width: Edge::cross_section_width_m(fwd, bkw, median),
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            width: Edge::cross_section_width_m(fwd, bkw, median, Default::default()),
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median,
@@ -830,6 +911,7 @@ fn test_crosswalk_counts() {
     ];
     for (s, e) in edges {
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -851,6 +933,9 @@ fn test_crosswalk_counts() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
     }
     graph.rebuild_adjacency_list();
@@ -1177,6 +1262,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
             let p0 = graph.nodes[start_node as usize].pos;
             let p1 = graph.nodes[end_node as usize].pos;
             graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node,
                 end_node,
                 primary_type: TransitType::Road,
@@ -1198,6 +1284,9 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                 median: None,
+                pocket: None,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+                roundabout: None,
             })
         };
 
@@ -1369,6 +1458,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
     let p0 = graph.nodes[s as usize].pos;
     let p1 = graph.nodes[e as usize].pos;
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -1390,6 +1480,9 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 

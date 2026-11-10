@@ -9,16 +9,21 @@ mod zero_hop;
 
 pub(super) use walk::witness_lane;
 
-use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_WALK};
+use super::super::super::super::{
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK,
+};
 use super::super::super::claims::LaneClaimContext;
+use super::super::super::lane_nav::preferred_entry_lanes;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::super::walk_lanes::WalkFrom;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
+    network_trip_taken,
 };
 use super::apply_network_replan;
+use super::replan::replan_after_missed_turn;
 use super::walk_home::walker_lost;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -44,6 +49,9 @@ pub(super) struct WalkerStranded(FailureCause);
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn handle_lane_end(
     i: usize,
     lane_id: usize,
@@ -156,6 +164,23 @@ pub(super) unsafe fn handle_lane_end(
                     slices,
                 )
             });
+            // A car entering a multi-lane road takes the lane its route's next lane-selective
+            // movement needs (`preferred_entry_lanes`); O(1) when the road has one lane.
+            let prefer = (*s_tmode.get(i) == MODE_CAR)
+                .then(|| {
+                    preferred_entry_lanes(
+                        best_e,
+                        node,
+                        s_path.get(i),
+                        path_idx + 1,
+                        *s_access_flags.get(i),
+                        *slices.planned_detach_n.get(i),
+                        *slices.planned_detach_lane.get(i) as usize,
+                        transit_network,
+                        graph,
+                    )
+                })
+                .flatten();
             let entry = match walk_lane {
                 Some(None) => Err(WalkerStranded(FailureCause::NoTurnToEdge {
                     node,
@@ -178,8 +203,19 @@ pub(super) unsafe fn handle_lane_end(
                     lane_buckets,
                     lane_claims,
                     slices,
+                    prefer,
                 ),
             };
+            replan_if_missed_turn(
+                i,
+                lane_id,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
             return entry.unwrap_or_else(|WalkerStranded(cause)| {
                 walk::replan_from_lane(
                     i,
@@ -212,6 +248,16 @@ pub(super) unsafe fn handle_lane_end(
             lane_claims,
             slices,
         ) {
+            replan_if_missed_turn(
+                i,
+                lane_id,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
             return entry.unwrap_or_else(|WalkerStranded(cause)| {
                 walk::replan_from_lane(
                     i,
@@ -242,7 +288,8 @@ pub(super) unsafe fn handle_lane_end(
         );
         // A walker whose path ends short of its exit keeps its lane (`TRAFFIC-19`) and plans
         // again from its end: walks on, walks home or is stranded there. One with no plan waits
-        // there for its replan gate; one with a trip but no destination is lost (`walker_lost`).
+        // there for its replan gate; one with a trip but no destination is lost (`walker_lost`),
+        // and one with no trip at all walks home, or with no home waits (`TRAFFIC-24`).
         if *s_tmode.get(i) == MODE_WALK {
             if access_plan_valid {
                 return walk::replan_from_lane(
@@ -262,7 +309,9 @@ pub(super) unsafe fn handle_lane_end(
             }
             *slices.lane_d.get_mut(i) = lane.length;
             *remaining_dist = 0.0;
-            if has_recoverable_network_trip(i, slices) && *s_tgt_b.get(i) == usize::MAX {
+            if *s_tgt_b.get(i) != usize::MAX {
+                // Its replan gate plans from here.
+            } else if has_recoverable_network_trip(i, slices) {
                 walker_lost(
                     i,
                     FailureCause::NoPlan,
@@ -273,7 +322,27 @@ pub(super) unsafe fn handle_lane_end(
                     pathfind_count,
                     slices,
                 );
+            } else {
+                super::walk_home::head_home_without_trip(
+                    i,
+                    *s_cur_n.get(i),
+                    lane_id,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
             }
+            return LaneEndAction::Break;
+        }
+        // A car whose trip was taken on the way has no plan to go on with (`TRAFFIC-29`).
+        if !access_plan_valid
+            && network_trip_taken(i, slices)
+            && super::walk_home::car_trip_taken(i, lane.length, sim_time, allocator, slices)
+        {
+            *remaining_dist = 0.0;
             return LaneEndAction::Break;
         }
         s_path.get_mut(i).clear();
@@ -289,6 +358,7 @@ pub(super) unsafe fn handle_lane_end(
                         graph,
                         transit_network,
                         pathfind_count,
+                        None,
                     ) {
                         apply_network_replan(i, replan, slices);
                         traffic_log!(
@@ -335,6 +405,8 @@ pub(super) unsafe fn handle_lane_end(
                     graph,
                     pathfind_count,
                     Some((i, "network-junction")),
+                    None,
+                    slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => delay_or_recover_after_network_replan_failure(
@@ -355,6 +427,40 @@ pub(super) unsafe fn handle_lane_end(
             }
         }
         LaneEndAction::Break
+    }
+}
+
+// After a lane-end entry from road lane `lane_id`: a car that took a missed turn
+// (`enter::follow_missed_turn`) is on a new lane with its node path dropped, and replans now from
+// the road it entered. A zero-hop entry also has an empty path; `replan_after_missed_turn` leaves
+// it alone. O(1) for every other entry.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+unsafe fn replan_if_missed_turn(
+    i: usize,
+    lane_id: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        if *slices.tmode.get(i) == MODE_CAR
+            && slices.path.get(i).is_empty()
+            && *slices.lane_id.get(i) != lane_id
+        {
+            replan_after_missed_turn(
+                i,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
+        }
     }
 }
 

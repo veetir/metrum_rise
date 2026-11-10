@@ -46,6 +46,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
     let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let end = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -66,6 +67,9 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph
 }

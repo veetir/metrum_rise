@@ -4,6 +4,7 @@
 
 use godot::prelude::*;
 use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroU32;
 use std::time::Instant;
 
 use crate::simulation::network::graph::RegionGraph;
@@ -16,6 +17,7 @@ mod bounds;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
+mod lane_use;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -26,7 +28,18 @@ pub mod vehicle_junctions;
 
 pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
+pub(crate) use lane_use::{
+    approach_arrow_masks, approach_group, approach_needs_lane_choice, approach_offers_turns,
+    lane_rank, pocket_fork_sources,
+};
+#[cfg(test)]
+pub(crate) use lane_use::transition_needs_lane_choice;
 pub use successors::LaneSuccessors;
+
+/// Length of the solid zone before a junction on an approach whose lanes serve different
+/// movements (`ROAD-94`): no lane change starts in its last this many metres, and its dividers
+/// are painted solid there.
+pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +128,27 @@ pub struct Lane {
     pub next_lanes: LaneSuccessors,
     /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
     pub node_id: usize,
+    /// Length in metres of the solid approach zone at the lane's end, where no lane change
+    /// starts: [`APPROACH_SOLID_LENGTH_M`] on a road lane approaching a node whose lanes serve
+    /// different movements (a car picks its lane before the node, `ROAD-94`), else 0. Written by
+    /// the connector builder on every rebuild, cleared on retired lanes, never saved.
+    pub solid_zone_m: f32,
+    /// What this connector gives way to when it enters a roundabout ring (`ROAD-62`), one past
+    /// its index in the system's table ([`LaneSystem::ring_entry`]): set by the connector builder
+    /// on a connector from an arm onto a ring lane, `None` on every other lane. Few lanes are ring
+    /// entries, and this fits `Lane`'s padding where the two ids would grow every lane. Lanes are
+    /// rebuilt on load, so it is never saved; a retired connector clears it.
+    pub ring_entry: Option<NonZeroU32>,
+}
+
+/// The two lanes an entry onto a roundabout ring gives way to (`ROAD-62`), both at the entry's
+/// node: the shape `TRAFFIC-06` can later fill for priority roads and yield signs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingEntry {
+    /// The circulating connector into the same ring lane as the entry.
+    pub circulating: u32,
+    /// The ring lane that connector leaves.
+    pub ring_in: u32,
 }
 
 impl Default for Lane {
@@ -131,6 +165,8 @@ impl Default for Lane {
             lane_type: LaneType::Vehicle,
             next_lanes: LaneSuccessors::default(),
             node_id: usize::MAX,
+            solid_zone_m: 0.0,
+            ring_entry: None,
         }
     }
 }
@@ -145,6 +181,9 @@ pub struct LaneSystem {
     pub node_lanes: HashMap<usize, Vec<usize>>,
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
+    // What each ring entry gives way to (`Lane::ring_entry`). Retired connectors leave theirs until
+    // the next whole rebuild, as their lanes stay as tombstones.
+    ring_entries: Vec<RingEntry>,
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
@@ -171,11 +210,20 @@ impl LaneSystem {
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
+            ring_entries: Vec::new(),
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
             lifted_since: None,
         }
+    }
+
+    /// What connector `lane_id` gives way to, `None` unless it enters a roundabout ring
+    /// (`ROAD-62`). `O(1)`.
+    #[inline]
+    pub fn ring_entry(&self, lane_id: usize) -> Option<RingEntry> {
+        let index = self.lanes.get(lane_id)?.ring_entry?;
+        self.ring_entries.get(index.get() as usize - 1).copied()
     }
 
     /// Clears all lanes and structural mappings.
@@ -185,8 +233,20 @@ impl LaneSystem {
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
+        self.ring_entries.clear();
         self.surface_synced_len = 0;
         self.lifted_since = None;
+    }
+
+    /// Whether road lane `lane_id` approaches a node where its lanes serve different movements
+    /// (default lane use with a lane choice, or a multi-lane approach to a whitelisted node), so
+    /// a car must be on a lane that makes its turn before the node: its solid approach zone
+    /// ([`Lane::solid_zone_m`]) is not empty. `O(1)`.
+    #[inline]
+    pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
+        self.lanes
+            .get(lane_id)
+            .is_some_and(|lane| lane.solid_zone_m > 0.0)
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when

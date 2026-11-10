@@ -7,6 +7,7 @@ use super::*;
 const S: RoadPart = RoadPart::Sidewalk;
 const F: RoadPart = RoadPart::CarLane { forward: true };
 const B: RoadPart = RoadPart::CarLane { forward: false };
+const P: RoadPart = RoadPart::Parking;
 
 fn median(style: MedianStyle, width_m: f32) -> RoadPart {
     RoadPart::Median(RoadMedian { style, width_m })
@@ -32,11 +33,17 @@ fn every_layout_refusal_has_its_key_and_part() {
             Some(2),
         ),
         (&[], "layout_no_car_lane", None),
-        (&[S], "layout_sidewalks", None),
-        // One side only: none or both.
-        (&[B, F, S], "layout_sidewalks", None),
-        (&[S, B, F], "layout_sidewalks", None),
+        (&[S], "layout_no_car_lane", None),
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
+        (&[S, B, P, F, S], "layout_parking_at_kerb", Some(2)),
+        (&[S, P, P, F, S], "layout_parking_at_kerb", Some(2)),
+        // Per side: a parking lane needs its own side's sidewalk (D4).
+        (&[P, B, F], "layout_parking_needs_sidewalk", Some(0)),
+        (&[B, F, P], "layout_parking_needs_sidewalk", Some(2)),
+        (&[P, B, F, S], "layout_parking_needs_sidewalk", Some(0)),
+        (&[S, B, F, P], "layout_parking_needs_sidewalk", Some(3)),
+        (&[S, P, S], "layout_no_car_lane", None),
+        (&[S, P, P, S], "layout_no_car_lane", None),
         (&[B, S, F], "layout_sidewalks", Some(1)),
         (&[B, B, m, m, F], "layout_two_medians", Some(3)),
         (&[F, B], "layout_lane_order", Some(1)),
@@ -81,10 +88,15 @@ fn valid_layouts_build_their_cross_section() {
         fwd_lanes,
         bkw_lanes,
         median,
-        sidewalks: true,
+        parking: RoadParking::NONE,
+        sidewalks: SidewalkSides::BOTH,
+    };
+    let parked = |left, right| RoadCrossSection {
+        parking: RoadParking { left, right },
+        ..section(1, 1, None)
     };
     let bare = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
-        sidewalks: false,
+        sidewalks: SidewalkSides::NONE,
         ..section(fwd_lanes, bkw_lanes, median)
     };
     let cases: &[(&[RoadPart], RoadCrossSection)] = &[
@@ -101,6 +113,62 @@ fn valid_layouts_build_their_cross_section() {
             section(2, 2, Some(paving_median)),
         ),
         (&[S, B, B, B, B, F, F, F, F, S], section(4, 4, None)),
+        // One side only (`ROAD-107`): the end with the sidewalk names the side.
+        (
+            &[S, B, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..bare(1, 1, None)
+            },
+        ),
+        (
+            &[B, F, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..bare(1, 1, None)
+            },
+        ),
+        (
+            &[F, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..bare(1, 0, None)
+            },
+        ),
+        (
+            &[S, B, B, paving, F, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..bare(2, 2, Some(paving_median))
+            },
+        ),
+        (&[S, P, B, F, P, S], parked(true, true)),
+        (&[S, P, B, F, S], parked(true, false)),
+        (&[S, B, F, P, S], parked(false, true)),
+        (
+            &[S, P, B, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..parked(true, false)
+            },
+        ),
+        (
+            &[B, F, P, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..parked(false, true)
+            },
+        ),
+        (
+            &[S, F, P, S],
+            RoadCrossSection {
+                parking: RoadParking {
+                    left: false,
+                    right: true,
+                },
+                ..section(1, 0, None)
+            },
+        ),
     ];
     for (parts, expected) in cases {
         let section = check_layout(parts).unwrap();
@@ -119,21 +187,37 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
     let section = check_layout(&[S, B, B, grass(3.0), F, F, S]).unwrap();
     assert_eq!(
         carriageway,
-        Edge::cross_section_width_m(section.fwd_lanes, section.bkw_lanes, section.median)
+        Edge::cross_section_width_m(
+            section.fwd_lanes,
+            section.bkw_lanes,
+            section.median,
+            Default::default()
+        )
     );
     // A walkway is its footpath, as wide as a 0 + 0 edge.
     let (widths, carriageway, total) = layout_widths(&[RoadPart::Footpath]);
     assert_eq!((widths, carriageway, total), (vec![2.0], 2.0, 2.0));
-    assert_eq!(carriageway, Edge::cross_section_width_m(0, 0, None));
+    assert_eq!(
+        carriageway,
+        Edge::cross_section_width_m(0, 0, None, Default::default())
+    );
     // Refused layouts still have widths for the builder to draw.
     assert_eq!(layout_widths(&[S, F, B, S]).2, 10.0);
+    // One sidewalk (`ROAD-107`): the other end gets its shoulder.
+    assert_eq!(layout_widths(&[S, B, F]), (vec![1.5, 3.5, 3.5], 7.0, 9.25));
+    assert_eq!(layout_widths(&[B, F, S]), (vec![3.5, 3.5, 1.5], 7.0, 9.25));
     // Without sidewalks the roadbed builds a 0.75 m shoulder each side.
     let (widths, carriageway, total) = layout_widths(&[B, grass(3.0), F]);
     assert_eq!((widths, carriageway, total), (vec![3.5, 3.0, 3.5], 10.0, 11.5));
     let section = check_layout(&[B, grass(3.0), F]).unwrap();
     assert_eq!(
         carriageway,
-        Edge::cross_section_width_m(section.fwd_lanes, section.bkw_lanes, section.median)
+        Edge::cross_section_width_m(
+            section.fwd_lanes,
+            section.bkw_lanes,
+            section.median,
+            section.parking
+        )
     );
 }
 
@@ -158,7 +242,8 @@ fn the_builtins_build_todays_roads_menu() {
                 fwd_lanes,
                 bkw_lanes,
                 median: None,
-                sidewalks: fwd_lanes > 0,
+                parking: RoadParking::NONE,
+                sidewalks: SidewalkSides::both_or_none(fwd_lanes > 0),
             }
         );
         assert_eq!(ty.usable(), Some(section));
@@ -172,7 +257,7 @@ fn the_builtins_build_todays_roads_menu() {
     }
     assert_eq!(
         RoadAttributes::DEFAULT.speed_ms.to_bits(),
-        RoadAttributes::new(50, true, true).speed_ms.to_bits()
+        RoadAttributes::new(50, SidewalkSides::BOTH, true).speed_ms.to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(config::DEFAULT_URBAN_ROAD_SPEED_MS), 50);
     let types: Vec<RoadType> = BUILTIN_ROAD_TYPES
@@ -201,14 +286,14 @@ fn speeds_are_checked_on_the_10_kmh_grid() {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
-    let tool = RoadAttributes::from_tool(100, false, false, true).unwrap();
+    let tool = RoadAttributes::from_tool(100, 0, false, true).unwrap();
     assert_eq!(
         tool.speed_ms.to_bits(),
         (100.0_f32 * config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(tool.speed_ms), 100);
     assert_eq!(
-        RoadAttributes::from_tool(5, true, true, true),
+        RoadAttributes::from_tool(5, 3, true, true),
         Err("speed_out_of_range")
     );
 }
@@ -234,6 +319,21 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
     let painted = section(&[S, B, median(MedianStyle::Painted, 1.5), F, S]);
     assert_eq!(suggested_name(painted, |_| false), "1+1 Painted 1.5 m");
     assert_eq!(suggested_name(section(&[S, F, F, S]), |_| false), "2+0");
+    // A road with one sidewalk names its side (`ROAD-107`).
+    assert_eq!(suggested_name(section(&[S, B, F]), |_| false), "1+1 L");
+    assert_eq!(suggested_name(section(&[F, S]), |_| false), "1+0 R");
+    assert_eq!(
+        suggested_name(section(&[B, grass(3.0), F, S]), |_| false),
+        "1+1 R Grass 3 m"
+    );
+    assert_eq!(
+        suggested_name(section(&[S, P, B, F, P, S]), |_| false),
+        "1+1 Parking"
+    );
+    assert_eq!(
+        suggested_name(section(&[S, B, F, P, S]), |_| false),
+        "1+1 Parking R"
+    );
     let taken = ["2+2 grass 3 m", "2+2 Grass 3 m (2)"];
     let is_taken = |name: &str| taken.iter().any(|taken| same_name(taken, name));
     assert_eq!(suggested_name(divided, is_taken), "2+2 Grass 3 m (3)");

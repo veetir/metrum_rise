@@ -4047,6 +4047,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
     let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
     let e0 = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -4068,8 +4069,12 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     let e1 = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -4091,6 +4096,9 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -5275,7 +5283,12 @@ fn owa_export_keeps_the_one_day_buffer_for_a_later_local_buyer() {
 #[test]
 fn unreachable_local_input_need_does_not_hold_owa_export() {
     let (mut graph, mut network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    // The buyer stands on a walkway: its door is walked to, no truck reaches it.
+    graph.edge_mut(commercial_edge).primary_type =
+        crate::simulation::network::types::TransitType::Foot;
     graph.edge_mut(commercial_edge).allowed_types = TransitFlags::FOOT;
+    graph.edge_mut(commercial_edge).sidewalks =
+        crate::simulation::network::graph::SidewalkSides::NONE;
     graph.rebuild_adjacency_list();
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);

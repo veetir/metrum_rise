@@ -150,6 +150,16 @@ impl GridFrame {
         self
     }
 
+    /// This lattice moved `metres` along basis axis `axis` (0 or 1, as [`Self::axes`] orders
+    /// them), on the micrometre phase itself: the other phase keeps its bits, and moving back
+    /// gives the frame back exactly. A turn pocket's widened curb reads its base road's frame
+    /// moved by the kerb's move (`ROAD-95` round R5d1).
+    pub(super) fn moved(mut self, axis: usize, metres: f64) -> Self {
+        let delta = (metres * COORDINATE_SCALE).round() as i64;
+        self.key.phase[axis] = (self.key.phase[axis] + delta).rem_euclid(self.key.cell_micrometres);
+        self
+    }
+
     /// Compares phases only after two sources have explicitly selected the same basis.
     pub(super) fn phase_matches(self, other: Self, precision_m: f64) -> bool {
         if self.key.axis != other.key.axis
@@ -246,14 +256,15 @@ fn integer_point(point: DVec2) -> [i64; 2] {
 // x86-64-v2 rounds to integers in one instruction only toward zero, nearest-even or the
 // infinities. `value - trunc` is exact, zeros keep `trunc`'s sign, NaN and infinities pass
 // through. Every corner and overlap test of cell generation rounds eight coordinates.
+// The half step is a select, not a branch: whether a coordinate's fraction reaches the half
+// follows the data, so a branch on it mispredicted often (`CODE-28`: the curve refresh
+// benchmark ran a quarter faster without it). A zero step takes `value`'s sign, which
+// `trunc` kept, so adding it leaves `whole` bit for bit, its zero's sign included.
 #[inline]
 fn round_half_away(value: f64) -> f64 {
     let whole = value.trunc();
-    if (value - whole).abs() >= 0.5 {
-        whole + value.signum()
-    } else {
-        whole
-    }
+    let step = if (value - whole).abs() >= 0.5 { 1.0_f64 } else { 0.0 };
+    whole + step.copysign(value)
 }
 
 /// Tests convex interiors exactly on the canonical coordinate grid. Boundary contact is legal.
@@ -275,6 +286,54 @@ pub(crate) fn interiors_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
         return mapped_interiors_overlap(&left[..a.len()], &right[..b.len()], |point| point);
     }
     mapped_interiors_overlap(a, b, integer_point)
+}
+
+/// The area in square metres two counterclockwise convex quadrilaterals share, zero unless
+/// their interiors overlap ([`interiors_overlap`]): `b` clipped to each edge of `a`
+/// (Sutherland-Hodgman), then the clip's shoelace area, all relative to `a`'s first corner, so
+/// city coordinates cost no precision. A fixed sequence of `f64` operations, so equal inputs
+/// give bitwise equal areas. `O(1)`, without allocation.
+pub(crate) fn convex_overlap_area(a: &[DVec2; 4], b: &[DVec2; 4]) -> f64 {
+    if !interiors_overlap(a, b) {
+        return 0.0;
+    }
+    // Each clip adds at most one vertex per input vertex: 4 * 2^4 bounds the last.
+    const CAPACITY: usize = 64;
+    let origin = a[0];
+    let mut polygon = [DVec2::ZERO; CAPACITY];
+    let mut clipped = [DVec2::ZERO; CAPACITY];
+    for (target, &point) in polygon.iter_mut().zip(b) {
+        *target = point - origin;
+    }
+    let mut len = 4;
+    for index in 0..4 {
+        let start = a[index] - origin;
+        let edge = a[(index + 1) % 4] - origin - start;
+        // Positive on the edge's left, the inside of a counterclockwise polygon.
+        let side = |point: DVec2| edge.perp_dot(point - start);
+        let mut count = 0;
+        for current in 0..len {
+            let (p, q) = (polygon[(current + len - 1) % len], polygon[current]);
+            let (sp, sq) = (side(p), side(q));
+            if (sp >= 0.0) != (sq >= 0.0) {
+                clipped[count] = p + (q - p) * (sp / (sp - sq));
+                count += 1;
+            }
+            if sq >= 0.0 {
+                clipped[count] = q;
+                count += 1;
+            }
+        }
+        std::mem::swap(&mut polygon, &mut clipped);
+        len = count;
+        if len < 3 {
+            return 0.0;
+        }
+    }
+    let twice: f64 = (0..len)
+        .map(|index| polygon[index].perp_dot(polygon[(index + 1) % len]))
+        .sum();
+    (twice * 0.5).max(0.0)
 }
 
 fn mapped_interiors_overlap<T: Copy>(a: &[T], b: &[T], convert: impl Fn(T) -> [i64; 2]) -> bool {

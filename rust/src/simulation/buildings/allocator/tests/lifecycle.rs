@@ -198,6 +198,9 @@ fn rezoning_fixture() -> (BuildingAllocator, ZoningSystem, RegionGraph) {
     let edge = graph.add_edge(Edge {
         start_node: start,
         end_node: end,
+        allowed_types: crate::simulation::network::types::TransitFlags::CAR
+            | crate::simulation::network::types::TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         width: 7.0,
         physical_length: 100.0,
         geometry: points.clone(),
@@ -337,6 +340,45 @@ fn cell_partial_erase_uses_redevelopment_grace_and_compatible_repaint_cancels_it
         zoning.parcels.get(lots[1].1).unwrap().occupied_building(),
         Some(0)
     );
+}
+
+// `ROAD-109`: a lot on a side without a sidewalk takes no building, and a building found there
+// (a save from before the rule) goes at the next maintenance, as on a road closed to buildings.
+#[test]
+fn a_side_without_a_sidewalk_takes_no_zoned_building() {
+    use crate::simulation::economy::demand::DemandSpawnAction;
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
+    let profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let free = zoning
+        .place_or_rezone_default_parcel_at(50.0, -20.0, profile, &graph)
+        .unwrap();
+    let action = DemandSpawnAction {
+        parcel_id: free.raw(),
+        asset_id: allocator.buildings[0].asset_id.clone(),
+    };
+    assert!(!allocator.compatibility_expired(0, 1, &zoning, &graph));
+    // The lots stand on the left of a road running +x, at -z.
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::RIGHT);
+    let network = TransitNetwork::new();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    assert!(matches!(
+        allocator.execute_demand_spawn_action(
+            &action,
+            &mut zoning,
+            &graph,
+            &network.roadbed,
+            &flat_test_terrain(),
+            &catalog,
+            &tuning,
+        ),
+        Err(DemandSpawnPlacementRejection::SlotUnavailable)
+    ));
+    assert!(allocator.compatibility_expired(0, 1, &zoning, &graph));
 }
 
 #[test]
@@ -501,8 +543,17 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
     }
 }
 
-#[test]
-fn test_immigration_claims_vacant_home() {
+// One vacant home on a residential lot by a road from a border node, maintained once.
+struct ImmigrationTown {
+    allocator: BuildingAllocator,
+    agents: crate::simulation::economy::agents::AgentSystem,
+    households: HouseholdSystem,
+    network: crate::simulation::network::TransitNetwork,
+    logistics: ShipmentSystem,
+    graph: crate::simulation::network::graph::RegionGraph,
+}
+
+fn immigration_town() -> ImmigrationTown {
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::network::TransitNetwork;
@@ -585,6 +636,26 @@ fn test_immigration_claims_vacant_home() {
         &mut network,
         &mut graph,
     );
+    ImmigrationTown {
+        allocator,
+        agents,
+        households,
+        network,
+        logistics,
+        graph,
+    }
+}
+
+#[test]
+fn test_immigration_claims_vacant_home() {
+    let ImmigrationTown {
+        mut allocator,
+        mut agents,
+        mut households,
+        network,
+        mut logistics,
+        graph,
+    } = immigration_town();
     let mut rejected = 0;
     assert_eq!(
         allocator.execute_demand_household_admission_with_income(
@@ -691,6 +762,58 @@ fn test_immigration_claims_vacant_home() {
         allocator.buildings[0].occupancy, 1,
         "Building occupancy should match the admitted household count (1)"
     );
+}
+
+#[test]
+fn admission_offers_a_vacancy_the_calendar_family_first() {
+    // ECON-28: the workforce calendar credits a free place with the applicant at its ordinal
+    // in the home. Admission offered the hour's applicant instead, so projects claimed adults
+    // that never arrived.
+    use crate::simulation::economy::households::applicant_offer;
+    let town = immigration_town();
+    assert_eq!(town.allocator.buildings[0].occupancy, 0);
+    let (flat, seed) = (
+        town.allocator.flat_size_m2(0),
+        town.allocator.applicant_seed(0),
+    );
+    let applicant = |position| applicant_offer(flat, seed, position).unwrap();
+    // The families admission offers a batch of one starting at `next_household_id`, accepting
+    // the `accept`th offer.
+    let offered = |next_household_id: usize, accept: usize| {
+        let ImmigrationTown {
+            mut allocator,
+            mut agents,
+            network,
+            graph,
+            ..
+        } = immigration_town();
+        let mut offers = Vec::new();
+        let launched = allocator.execute_demand_household_admission_with_income(
+            1,
+            next_household_id,
+            &mut agents,
+            &network,
+            &graph,
+            |composition, size, _| {
+                offers.push((size, composition));
+                offers.len() == accept
+            },
+        );
+        assert_eq!(launched, 1);
+        assert_eq!(
+            agents.pending_household_composition(0),
+            offers[accept - 1].1
+        );
+        offers
+    };
+    // An hour whose applicant is not the calendar's family for the first free place.
+    let hour = (1..)
+        .find(|&position| applicant(position) != applicant(0))
+        .unwrap();
+    assert_eq!(offered(hour, 1), [applicant(0)]);
+    // Refused, the calendar's family is followed by the hour's applicant on the same vacancy,
+    // as the batch's next offer.
+    assert_eq!(offered(hour, 2), [applicant(0), applicant(hour + 1)]);
 }
 
 #[test]

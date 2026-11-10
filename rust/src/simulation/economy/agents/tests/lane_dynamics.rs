@@ -353,6 +353,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let na = graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction);
         let nb = graph.add_node(Vector3::new(x + 100.0, 0.0, 0.0), NodeType::Junction);
         let e = Edge {
+            parking: Default::default(),
             start_node: na,
             end_node: nb,
             primary_type: TransitType::Road,
@@ -374,6 +375,9 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         };
         edges.push(graph.add_edge(e));
     }

@@ -25,6 +25,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     for i in 0..3 {
         let geometry = vec![points[i], points[i + 1]];
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: nodes[i],
             end_node: nodes[i + 1],
             primary_type: TransitType::Road,
@@ -45,6 +46,9 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
     }
     // add_edge publishes a live edge regardless of the supplied deleted flag.
@@ -535,9 +539,15 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.next_replan_time[i], 0.0);
     assert_eq!(agents.network_replan_failures[i], 0);
 
-    // A legacy orphan with neither a destination nor a pending retry still gets home repair.
+    // A row the running game keeps loads as it stands, whatever it lacks (`TRAFFIC-29`).
     agents.target_building[i] = usize::MAX;
     agents.planned_target_building[i] = usize::MAX;
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.current_path_index[i], 1);
+    assert_eq!(agents.target_building[i], usize::MAX);
+
+    // A destination the save cannot restore is what a load repairs: the agent goes home.
+    agents.target_building[i] = 99;
     validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
     assert_eq!(agents.current_path_index[i], 0);
     assert_eq!(agents.target_building[i], 0);

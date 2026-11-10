@@ -250,7 +250,8 @@ fn route_enters_arm_asphalt(route: &[Vector3], arm: &SidewalkMouth) -> bool {
     })
 }
 
-fn segment_distance_xz(a0: Vector3, a1: Vector3, b0: Vector3, b1: Vector3) -> f32 {
+/// The XZ distance between two segments, zero where they cross. `O(1)`.
+pub(crate) fn segment_distance_xz(a0: Vector3, a1: Vector3, b0: Vector3, b1: Vector3) -> f32 {
     let side = |p: Vector3, q0: Vector3, q1: Vector3| {
         (q1.x - q0.x) * (p.z - q0.z) - (q1.z - q0.z) * (p.x - q0.x)
     };
@@ -548,6 +549,8 @@ fn append_pedestrian_connection(
         lane_type: LaneType::Foot,
         next_lanes: LaneSuccessors::one(end.out_id),
         node_id,
+        solid_zone_m: 0.0,
+        ring_entry: None,
     });
     if let Some(crosswalk) = crosswalk {
         crosswalks.insert(connection_id, crosswalk);
@@ -685,6 +688,8 @@ fn append_stationary_pedestrian_connection(
         lane_type: LaneType::Foot,
         next_lanes: LaneSuccessors::one(mouth.out_id),
         node_id,
+        solid_zone_m: 0.0,
+        ring_entry: None,
     });
     node_lanes.entry(node_id).or_default().push(connection_id);
     lanes[mouth.in_id].next_lanes.push(connection_id);

@@ -9,6 +9,10 @@
 //! driving in, which is the only step that bypasses the game. The city then runs frame by frame
 //! at maximum speed, so agents move and the trips the economy starts finish as in the game. See
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
+//!
+//! Residents' cars need somewhere to stand (`PARK-02`, F8): the cross streets carry a parking
+//! lane on both kerbs, the trunks none, and small lots stand along the rows between them. Each
+//! car starts parked near its home, like its household placed at home.
 
 #[cfg(test)]
 pub(super) mod census_churn;
@@ -22,6 +26,8 @@ mod envelope;
 mod frame_budget;
 #[cfg(test)]
 mod load_check;
+#[cfg(test)]
+mod parking_supply;
 #[cfg(test)]
 mod routing_benchmark;
 #[cfg(test)]
@@ -44,6 +50,8 @@ use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::economy::demand::DemandBuildingActionPlan;
+use crate::simulation::network::graph::RoadParking;
+use crate::simulation::network::road_types::RoadAttributes;
 
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::cells::CellSelectionShape;
@@ -78,6 +86,14 @@ const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
 const RESIDENTS_PER_BORDER: f32 = 10_000.0;
+// One small lot stands along every this many row blocks, a checkerboard of the grid: lots take
+// homes, and the floored grid must still house its tier (30k has about 2% to spare).
+const ROW_BLOCKS_PER_LOT: usize = 2;
+// How far off the row's centre line a lot is asked for: nearer its own row than the next.
+const LOT_REQUEST_OFFSET_M: f32 = 15.0;
+// The homes a grid must keep empty after admission, or it is built one block wider: a full city
+// takes no more households and reads smaller than its tier (10k kept 1.1% and 100k keeps 4.3%).
+const MIN_SPARE_HOMES: f32 = 0.02;
 
 /// Wall-clock cost of the fixed-slot systems at the start of one hour, as
 /// [`PopulatedCity::advance_hour`] and [`PopulatedCity::advance_hour_through_actions`] step it.
@@ -125,15 +141,16 @@ impl PopulatedCity {
     ///
     /// The grid floors its width to whole cross-street blocks. Where that loses more area than
     /// the side's headroom keeps, so the floored grid cannot house `residents` (1,300 and 13,000
-    /// residents, `ROAD-68-K24`), the city is built once more one block wider, covering its side;
-    /// a tier the floored grid houses is built exactly as before. Panics if the wider grid holds
-    /// too few homes as well, which means the sizing constants no longer match the bootstrap pack.
+    /// residents, `ROAD-68-K24`) or keeps too few homes spare to grow (10,000), the city is built
+    /// once more one block wider, covering its side; a tier the floored grid houses with room is
+    /// built exactly as before. Panics if the wider grid holds too few homes as well, which means
+    /// the sizing constants no longer match the bootstrap pack.
     pub fn build(residents: u32) -> Self {
         Self::build_timed(residents).0
     }
 
     /// [`Self::build`], also returning the wall-clock cost of each phase, summed over both
-    /// grids when the floored one could not house `residents`.
+    /// grids when the floored one was not wide enough.
     pub fn build_timed(residents: u32) -> (Self, PopulatedCityBuildTimes) {
         let side_m = side_m_for(residents);
         let floored = crosses_for(side_m);
@@ -144,6 +161,7 @@ impl PopulatedCity {
             let (mut core, row_z, half_x) = street_grid_with_crosses(side_m, crosses);
             times.street_grid += started.elapsed();
             let started = Instant::now();
+            add_parking_lots(&mut core, &row_z, half_x);
             paint_districts(&mut core, &row_z, half_x);
             times.zoning += started.elapsed();
             let started = Instant::now();
@@ -157,7 +175,7 @@ impl PopulatedCity {
             let started = Instant::now();
             housed = city.admit_households(residents);
             times.admission += started.elapsed();
-            if housed < residents {
+            if housed < residents || (crosses == floored && city.spare_homes() < MIN_SPARE_HOMES) {
                 continue;
             }
             let started = Instant::now();
@@ -259,6 +277,7 @@ impl PopulatedCity {
             // Carriers arrive at once instead of driving in from the border, and move in. One
             // that a swap-remove moved into the lane snapshot leaves it first (`ROAD-68-K24`).
             core.agents.held_arrivals.clear();
+            let first_new = core.households.households.len();
             for i in 0..core.agents.len() {
                 if core.agents.pending_household_size[i] > 0 {
                     core.agents.place_arrival_carrier_at_home(i);
@@ -269,10 +288,36 @@ impl PopulatedCity {
                     );
                 }
             }
+            self.core.publish_parking_households();
+            self.park_new_cars(first_new);
             self.advance_hour();
             let housed = self.core.daily_city_flow_diagnostics().resident_agents;
             if housed >= residents || launched == 0 {
                 return housed;
+            }
+        }
+    }
+
+    // The share of the city's homes still empty. O(1) over the day's diagnostics.
+    fn spare_homes(&self) -> f32 {
+        let city = self.core.daily_city_flow_diagnostics();
+        let vacant = city.vacant_household_slots as f32;
+        vacant / (vacant + city.active_households as f32)
+    }
+
+    // Cars arrive with their households, already parked near home: as the carriers skip the drive
+    // in, their cars skip the queue at the border, which would take days at a road's capacity for
+    // a whole city admitted at once. A car with no free bay near home stays stored and arrives
+    // as in the game. O(new households × local candidates).
+    fn park_new_cars(&mut self, first_new: usize) {
+        let core = &mut self.core;
+        let new = core.households.households.iter().enumerate().skip(first_new);
+        for (id, household) in new {
+            let owner = core.households.handles.handle(id).to_bits();
+            let car = core.parking.household_car(owner);
+            if !car.is_none() && core.parking.vehicle_place(car).is_none() {
+                let home = core.allocator.building_handles.handle(household.home_building_id);
+                core.parking.seed_fixture_car(car, home.to_bits());
             }
         }
     }
@@ -291,6 +336,7 @@ fn crosses_for(side_m: f32) -> usize {
 #[cfg(test)]
 pub(super) fn zoned_city(side_m: f32) -> SimCore {
     let (mut core, row_z, half_x) = street_grid(side_m);
+    add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
     fill_lots(&mut core);
     core
@@ -302,9 +348,79 @@ pub(super) fn zoned_city(side_m: f32) -> SimCore {
 fn zoned_city_in_world(side_m: f32, world_m: f32) -> SimCore {
     let (mut core, row_z, half_x) =
         street_grid_in_world(side_m, crosses_for(side_m), Some(world_m));
+    add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
     fill_lots(&mut core);
     core
+}
+
+// The bundled small lot, registered as the game imports it: a lot's surface comes from its
+// meshes' bounds, which only Godot reads. Returns its asset id.
+fn register_small_lot(core: &mut SimCore) -> String {
+    let mut manifest = crate::assets::AssetManifest::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+    )))
+    .expect("the bundled small lot parses");
+    for part in &mut manifest.mesh_parts {
+        part.imported_bounds = Some(match part.name.as_str() {
+            "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+            "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
+            _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
+        });
+    }
+    let id = manifest.qualified_id("parking");
+    core.allocator
+        .registry
+        .register("parking", manifest, String::new());
+    id
+}
+
+// A parking lane on both kerbs of every cross street, as a player's road type would have drawn
+// them; the rows run east-west, so a trunk gets none, and a row's back-to-back lots have no depth
+// to give. Runs on the bulk load's edges, before its one finalization lays them out; returns them.
+fn add_kerbside_lanes(core: &mut SimCore) -> Vec<usize> {
+    let graph = &mut core.region_graph;
+    let mut parked = Vec::new();
+    for edge in 0..graph.edge_count() {
+        let road = graph.edge(edge);
+        let (start, end) = (graph.node(road.start_node).pos, graph.node(road.end_node).pos);
+        if road.deleted || (start.x - end.x).abs() > 1.0 {
+            continue;
+        }
+        let (fwd, bkw, attributes) = (road.fwd_lanes, road.bkw_lanes, RoadAttributes::of_edge(road));
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        graph.set_edge_cross_section(edge, fwd, bkw, None, both, attributes);
+        parked.push(edge);
+    }
+    parked
+}
+
+// Publishes the kerbside bays of the laid-out grid: a bulk load runs no road commit, which would.
+fn publish_kerbside_bays(core: &mut SimCore, parked: Vec<usize>) {
+    core.transit_network.roadbed.compile_dirty(&core.region_graph);
+    core.reconcile_parking_frontages(&parked.into_iter().collect());
+}
+
+// A small lot at the middle of every `ROW_BLOCKS_PER_LOT`th row block, on alternating sides,
+// before the rows are zoned, as a player places a lot and zones around it. O(lots) placements.
+fn add_parking_lots(core: &mut SimCore, row_z: &[f32], half_x: f32) {
+    let lot = register_small_lot(core);
+    let blocks = (2.0 * half_x / CROSS_SPACING_M) as usize;
+    for (row, &z) in row_z.iter().enumerate() {
+        for block in 0..blocks {
+            if !(row + block).is_multiple_of(ROW_BLOCKS_PER_LOT) {
+                continue;
+            }
+            let x = -half_x + (block as f32 + 0.5) * CROSS_SPACING_M;
+            let side = if (row / 2).is_multiple_of(2) { 1.0 } else { -1.0 };
+            core.place_service_building_internal(&lot, x, z + side * LOT_REQUEST_OFFSET_M)
+                .unwrap_or_else(|error| panic!("lot at ({x}, {z}): {error:?}"));
+        }
+    }
 }
 
 // Zones every row street in the repeating district pattern with the player's brush.
@@ -374,24 +490,29 @@ fn street_grid_in_world(
     // Cross streets go in one block at a time, so a row meets existing junctions instead of
     // splitting a street that runs the whole city: every split recompiles the longer remainder's
     // span, which made the grid grow with rows × crosses × city side (`ROAD-52`).
+    let arterial = arterial_lanes();
     for i in 0..crosses {
         let x = i as f32 * CROSS_SPACING_M - half_x;
         for block in row_z.windows(2) {
-            add_road(&mut core, (x, block[0]), (x, block[1]));
+            add_road(&mut core, (x, block[0]), (x, block[1]), arterial);
         }
     }
     for (row, &z) in row_z.iter().enumerate() {
-        let (start, end) = match trunk_rows.iter().position(|&trunk| trunk == row) {
-            Some(k) if k % 2 == 0 => (-edge_x, half_x),
-            Some(_) => (-half_x, edge_x),
-            None => (-half_x, half_x),
+        let (start, end, lanes) = match trunk_rows.iter().position(|&trunk| trunk == row) {
+            Some(k) if k % 2 == 0 => (-edge_x, half_x, arterial),
+            Some(_) => (-half_x, edge_x, arterial),
+            None => (-half_x, half_x, 1),
         };
-        add_road(&mut core, (start, z), (end, z));
+        add_road(&mut core, (start, z), (end, z), lanes);
     }
+    let parked = add_kerbside_lanes(&mut core);
     {
         let core = &mut core;
         core.transit_network
             .finalize_bulk_load(&mut core.region_graph, &mut core.allocator);
+        // Their width is in the curb frames' source, as an in-place edit refreshes it.
+        core.zoning
+            .mark_cell_lots_for_roads(&core.region_graph, parked.iter().copied());
     }
     for (k, &row) in trunk_rows.iter().enumerate() {
         let (x, z) = (if k % 2 == 0 { -edge_x } else { edge_x }, row_z[row]);
@@ -400,6 +521,11 @@ fn street_grid_in_world(
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // The grid's lanes, routing and roadbed settle below, with the pockets' pieces.
+    #[cfg(test)]
+    add_perf_pockets(&mut core);
+    #[cfg(test)]
+    add_perf_roundabouts(&mut core);
     // The fixture admits households outside frames, so it installs the border connections'
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
@@ -408,14 +534,192 @@ fn street_grid_in_world(
     // does, not left to the player's first commit (`ROAD-68-D` part 6).
     core.subsume_world_scale_road_changes();
     core.bump_global_terrain_payload_generation();
+    publish_kerbside_bays(&mut core, parked);
     (core, row_z, half_x)
 }
 
-fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
+// Lanes per direction of the grid's arterials: every cross street and the border trunks. One
+// (the 2-Lane Road) unless a test sets `METRUM_PERF_ARTERIALS=4lane`, which gives them the
+// 4-Lane Road (2 + 2): the `ROAD-94` diagnosis variant, the one populated city whose approaches
+// have lanes to choose. Not a contract tier.
+fn arterial_lanes() -> i32 {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("METRUM_PERF_ARTERIALS") {
+        assert_eq!(value, "4lane", "METRUM_PERF_ARTERIALS is 4lane");
+        return 2;
+    }
+    1
+}
+
+// `METRUM_PERF_POCKETS=right`, `left` or `both` (test builds, `ROAD-95` rounds R5a3 and R5c1): once
+// the street grid is built and before it is zoned, as a player would add them before zoning, a
+// 40 m turn pocket of those roles on every arterial road's end at a junction (a left pocket on
+// these undivided roads moves the oncoming side out by a lane): the border trunks' approaches,
+// and the cross streets' 50 m blocks, which are too short for one (`pocket_road_too_short`).
+// Zoned parcels refuse the widening (`parcel_overlap`), so a built city takes none; and the 1+1
+// row streets get none: their pockets would cost the back-to-back lots behind them (with them the
+// wider grid housed 9,302 residents for 10,000). The requests are listed before the first edit, by edge id and then its
+// end node first, its start second: a pocket at the end keeps the road's id on the part that
+// still reaches its start junction. Prints the placed pockets and the refusals by reason on a
+// `PERF_POCKETS` line. Not a contract tier.
+#[cfg(test)]
+fn add_perf_pockets(core: &mut SimCore) {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use std::collections::BTreeMap;
+
+    let Ok(value) = std::env::var("METRUM_PERF_POCKETS") else {
+        return;
+    };
+    let (left, right) = match value.as_str() {
+        "right" => (false, true),
+        "left" => (true, false),
+        "both" => (true, true),
+        _ => panic!("METRUM_PERF_POCKETS is right, left or both"),
+    };
+    let graph = &core.region_graph;
+    let junction = |node: u32| graph.node_adjacency(graph.get_valid_node(node)).len() >= 3;
+    let requests: Vec<PocketRequest> = (0..graph.edge_count())
+        .filter(|&edge| {
+            let road = graph.edge(edge);
+            !road.deleted && road.fwd_lanes >= 2 && road.bkw_lanes >= 2
+        })
+        .flat_map(|edge| {
+            let road = graph.edge(edge);
+            [
+                (EdgeEnd::End, road.end_node),
+                (EdgeEnd::Start, road.start_node),
+            ]
+            .into_iter()
+            .filter(|&(_, node)| junction(node))
+            .map(move |(end, _)| PocketRequest {
+                edge,
+                end,
+                left,
+                right,
+                body_m: 40.0,
+            })
+        })
+        .collect();
+    let mut placed = 0;
+    let mut refused: BTreeMap<String, u32> = BTreeMap::new();
+    for request in requests {
+        if core.set_road_pocket_internal(request) {
+            placed += 1;
+        } else {
+            let reason = core
+                .last_road_rejection
+                .take()
+                .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+            *refused.entry(reason).or_default() += 1;
+        }
+    }
+    // Each edit rebuilt its lanes locally, appending lane ids; the grid's lanes are rebuilt whole,
+    // numbered as the bulk build and a load number them, so the prepared snapshot's continuation
+    // check compares like with like (it compares raw lane ids).
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    eprintln!(
+        "PERF_POCKETS {}",
+        serde_json::json!({"placed": placed, "refused": refused})
+    );
+}
+
+// `METRUM_PERF_ROUNDABOUTS=n` (test builds, `ROAD-62` round R7c, D17): once the street grid is
+// built and before it is zoned, as `METRUM_PERF_POCKETS` does, up to n junctions become rings at
+// the default diameter through the tool's own transaction, the highest degree first and in id
+// order. Every junction of the 1+1 city is 1+1; on `METRUM_PERF_ARTERIALS=4lane` each has a 2+2
+// arm, so its rings have two lanes. A junction the transaction refuses is passed over, a block's
+// neighbour of a ring most often. Prints the rings placed, the junctions they replace and the
+// refusals by reason on a `PERF_ROUNDABOUTS` line. Not a contract tier.
+#[cfg(test)]
+fn add_perf_roundabouts(core: &mut SimCore) {
+    use crate::simulation::network::roundabouts::{
+        RoundaboutRequest, RoundaboutSite, default_diameter_m,
+    };
+    use std::collections::BTreeMap;
+
+    let Ok(value) = std::env::var("METRUM_PERF_ROUNDABOUTS") else {
+        return;
+    };
+    let wanted: usize = value
+        .parse()
+        .expect("METRUM_PERF_ROUNDABOUTS must be an integer");
+    let graph = &core.region_graph;
+    let mut junctions: Vec<(usize, u32)> = (0..graph.node_count() as u32)
+        .map(|node| (graph.node_adjacency(node).len(), node))
+        .filter(|&(degree, _)| degree >= 3)
+        .collect();
+    junctions.sort_unstable_by_key(|&(degree, node)| (std::cmp::Reverse(degree), node));
+    // `METRUM_PERF_RINGS_SKIP_TRUNK` (round R7c2, a measurement): the junctions on a border trunk
+    // stay plain, so the rings stand where only the grid's own traffic crosses them. Off by
+    // default: D17's selection is unchanged.
+    let trunk_junctions: Vec<u32> = if std::env::var_os("METRUM_PERF_RINGS_SKIP_TRUNK").is_some() {
+        let mut borders = Vec::new();
+        crate::simulation::economy::logistics::collect_connected_border_nodes(
+            &core.region_graph,
+            &mut borders,
+        );
+        let neighbours = |&node: &u32| -> Vec<u32> {
+            let adjacent = core.region_graph.node_adjacency(node).iter();
+            adjacent
+                .map(|&edge| core.region_graph.edge(edge))
+                .map(|edge| {
+                    if edge.start_node == node {
+                        edge.end_node
+                    } else {
+                        edge.start_node
+                    }
+                })
+                .collect()
+        };
+        borders.iter().flat_map(neighbours).collect()
+    } else {
+        Vec::new()
+    };
+    let mut placed = Vec::new();
+    let mut refused: BTreeMap<String, u32> = BTreeMap::new();
+    for (_, node) in junctions {
+        if placed.len() == wanted {
+            break;
+        }
+        if trunk_junctions.contains(&node) {
+            continue;
+        }
+        let site = RoundaboutSite::Junction(node);
+        let diameter_m = default_diameter_m(site.lanes(&core.region_graph));
+        if core.place_roundabout_internal(RoundaboutRequest { site, diameter_m }) {
+            placed.push(node);
+        } else {
+            let reason = core
+                .last_road_rejection
+                .take()
+                .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+            *refused.entry(reason).or_default() += 1;
+        }
+    }
+    // A load drops the junctions the rings replaced and renumbers the nodes, and the prepared
+    // snapshot's continuation check compares raw ids: the grid goes through a save here, so the
+    // city is built on the ids a load gives it.
+    let path = std::env::temp_dir().join(format!("metrum_rings_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0)
+        .expect("the street grid saves");
+    core.load_game_internal(path_text)
+        .expect("the street grid loads");
+    let _ = std::fs::remove_file(&path);
+    eprintln!(
+        "PERF_ROUNDABOUTS {}",
+        serde_json::json!({"placed": placed.len(), "junctions": placed, "refused": refused})
+    );
+}
+
+fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32), lanes: i32) {
     let outcome = core.add_road_internal(
         vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
-        1,
-        1,
+        lanes,
+        lanes,
     );
     assert!(
         outcome.committed,

@@ -91,6 +91,10 @@ fn build_shared() -> SharedSetup {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: Default::default(),
+        pocket: None,
+        sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -201,6 +205,10 @@ fn create_access_edge(n0: u32, n1: u32) -> Edge {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: Default::default(),
+        pocket: None,
+        sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -487,6 +495,7 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         current_path_index: 0,
         walk_lanes: Vec::new(),
         has_car: true,
+        parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
@@ -551,6 +560,7 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         current_path_index: 0,
         walk_lanes: Vec::new(),
         has_car: true,
+        parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
@@ -654,6 +664,7 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         current_path_index: 0,
         walk_lanes: Vec::new(),
         has_car: true,
+        parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
@@ -722,6 +733,7 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         current_path_index: 1, // [0] = origin node, [1] = live target
         walk_lanes: Vec::new(),
         has_car: true,
+        parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,

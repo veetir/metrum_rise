@@ -52,7 +52,8 @@ its site preparation).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-07`), no code.
 Part 7 (acceptance) is done: `PERF-07` reports the frames another task preempted and accepts on
 the frames that were not (open question 7, decided 2026-10-22); 30k at both speeds and 100k at 1×
-pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22).
+pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22). Since
+2026-11-09 no 100k tier is measured ([Decisions (2026-11-09)](#decisions-2026-11-09)).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -115,7 +116,16 @@ even at 32×. The cost problem is the peak, not the total, at today's sizes.
   [Open questions](#open-questions), question 7.
 - **100k at 32× is deferred.** The decision is taken when players' cities start to approach 100k
   agents; until then it is tracked as `PERF-08` and `PERF-07` does not require it. See
-  [Open questions](#open-questions), question 6.
+  [Open questions](#open-questions), question 6. Superseded on 2026-11-09 (below).
+
+### Decisions (2026-11-09)
+
+- **No 100k tier.** The user removed the 100k city tier from every test, benchmark, fixture,
+  runner option and tool. The largest measured city is 30k: `PERF-07`'s acceptance, the
+  [economy contract](economy.md#performance-contract-perf-01perf-05), the K22 commit cities and
+  the populated-map locality checks stop at 30k. `PERF-08` is closed (no longer measured) and
+  `PERF-09` is not measured. The game's ≥1M population target is unchanged; 100k results in this
+  document are history.
 
 ## Time model
 
@@ -252,6 +262,51 @@ Save format 113 (`ROAD-101`, round RB3e, 2026-11-04) adds `network_edges.no_stre
 loads. The Kuopio fixture is re-recorded in format 113 with
 `record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
 edges, and every table's row count is unchanged; `placements.json` is re-pinned.
+
+Save format 114 (`ROAD-94`, round R4a1, 2026-11-04) changes no table: the default junction lane
+use builds one vehicle connector per allowed lane pair instead of every pair
+([`roads.md`](roads.md#default-junction-lane-use-road-94)), and a save stores its connectors in
+`saved_lanes`, so a format-113 save would load connectors the rebuild no longer makes. The
+version bump refuses it; there is no repair. The per-lane turn-preparation flag is derived on
+every lane rebuild and never saved. The Kuopio fixture is re-recorded in format 114: `sqldiff`
+shows the version and `saved_lanes` only (116 connector rows deleted at the nodes of its 17
+2+2 edges, 1,524 rows renumbered; 2,310 -> 2,194 rows), every other table identical
+(`lane_connections` 1,416 rows both); `placements.json` is re-pinned.
+
+Save format 115 (`ROAD-95`, round R5a1, 2026-11-04) adds two `network_edges` columns for a road's
+turn pocket, `pocket_end` (0 none, 1 start, 2 end) and `pocket_roles` (bit 1 left, bit 2 right),
+and node type 6, `LaneTransition` ([`roads.md`](roads.md#turn-pockets-road-95)). A pocket that
+`Edge::validate_pocket` refuses fails the load, as an invalid median does; there is no repair and
+no older save loads. The Kuopio fixture is re-recorded in format 115: `sqldiff` shows only the
+version and the two new columns (0 on all 70 edges), every table's row count is unchanged, and
+`placements.json` is re-pinned.
+
+Save format 116 (`ROAD-107`, round S1, 2026-11-05) adds the `network_edges` column `sidewalks`, a
+road's sidewalk sides (0 none, 1 left, 2 right, 3 both;
+[`roads.md`](roads.md#one-sided-sidewalks-road-107)). A code outside 0-3, sidewalks on an
+edge without cars, or a car road whose sides disagree with its `FOOT` flag fails the load
+(`Edge::validate_sidewalks`); there is no repair and no older save loads. The Kuopio fixture is
+re-recorded in format 116: `sqldiff` shows only the version and the new column (3 on all 70
+edges), every table's row count is unchanged, and `placements.json` is re-pinned.
+
+Save format 117 (`ROAD-62`, round R7a, 2026-11-06) adds the table `roundabout_edges` (`edge_id`,
+`centre_x`, `centre_z`, `radius_m`): the circle of each roundabout ring edge, sparse. A load refuses a
+ring edge no roundabout edit could have built. No older save loads. The Kuopio fixture is re-recorded
+in format 117: `sqldiff` shows only the version and the new, empty table.
+
+Save format 118 (`PARK-01`, `PARK-02`, `PARK-05`, landed on `dev` 2026-11-07)
+adds parking on top of 117 in one step, with no migration; no older save loads. `network_edges` gains `parking` after `sidewalks`: the edge's kerbside parking lanes
+as a bit set (bit 0 left, bit 1 right, looking along the edge; 0 without any; each lane is included
+in the stored `width`), and a load fails on any other value. New tables: `parking_state`, one
+JSON row with parking ownership, custody, claims, itinerary and recovery state and economy endpoint
+quote stamps ([`traffic.md`](traffic.md#parking-in-a-save)), and
+`building_detached_poses`. New columns: `agents.parking_trip`, `households.shopping_has_car` and
+`household_destinations.parking_components`. Workplace route caches move to the `WRC3` layout
+(48-byte entries) and scheduler payloads are stored as signed bits. The Kuopio fixture is re-recorded
+in format 118 with `record_kuopio_reference_save`, from neither parent's file: `sqldiff` shows the
+version, the `WRC3` header row, the four new columns and two new tables, `parking` 0 on all 70 edges,
+every other table's rows unchanged, `parking_state` 1 row, `building_detached_poses` 0 rows;
+`placements.json` is re-pinned.
 
 ## Scheduler
 
@@ -910,7 +965,7 @@ field diffusion and other read-only precomputation.
 - **Paused.** Every `step_frame` call counts, paused or not, so a paused game adopts on time;
   the flow fields follow the new build generation at the first running frame, as they did after
   a synchronous rebuild.
-- **A second edit inside the hold** (commit, undo, road bulldoze, node move, lane connection
+- **A second edit inside the hold** (commit, undo, road bulldoze, lane connection
   edit, crosswalk toggle, edge class change or border connection) supersedes the pending job
   and restarts the hold. A synchronous rebuild of the live graph (the allocator's cache repair,
   a frame's dirty chunks) supersedes it too; the hold still runs out.
@@ -1083,15 +1138,25 @@ moves its entities between the tiers' phase buckets.
 - **Metric:** core-mutex hold time per sim frame (`lock_held_ms` in the sim thread), including
   movement, slot work and snapshot build. Reported as max, p99, p99.9, and the count of frames
   over 8 ms and over 16.7 ms, across one full game day.
+- **Who gets the core between frames** (`CODE-25`). The sim thread takes the core through a
+  turnstile (`CoreTurnstile`) for every frame and every edit; a thread that waits for the core
+  (Godot's main thread in a click or any blocking bridge call) holds the turnstile while it
+  waits, so the sim thread cannot take the core again ahead of it and the wait ends with the
+  frame in progress. A frame that overruns its 16.7 ms interval is followed at once by the next
+  (no catch-up and no gap), so per-frame `try_lock` queries find the core busy until frames fit
+  again; hovers keep their last answer meanwhile ([Busy Core](debug.md#busy-core)). The turnstile
+  costs one uncontended mutex per acquisition, before `lock_held_ms` starts;
+  `perf07_frame_budget` steps the core on its own thread and never runs the sim thread's loop.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
-  `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
-  30k and 100k residents, at 1× and 32×.
-- **Acceptance (decided 2026-10-22):** at 30k at 1× and 32× and at 100k at 1×, the worst frame no
-  other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst preempted frame less
-  its wait (`max_preempted_less_wait_ms`) are each at most 8 ms. `tools/sim02_gate.py perf07`
-  checks it and fails a run that misses it or lacks the scheduler statistics. 100k at 32× is
-  reported but not required: it is deferred to `PERF-08`.
-- **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
+  `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k
+  and 30k residents, at 1× and 32× (100k as well until 2026-11-09).
+- **Acceptance (decided 2026-10-22; no 100k tier since 2026-11-09):** at 30k at 1× and
+  32×, the worst frame no other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst
+  preempted frame less its wait (`max_preempted_less_wait_ms`) are each at most 8 ms.
+  `tools/sim02_gate.py perf07` checks it and fails a run that misses it or lacks the scheduler
+  statistics. 30k is the largest measured city
+  ([Decisions (2026-11-09)](#decisions-2026-11-09)).
+- **Target (as first set, history):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k was the binding
   case: one
   complete 100k candidate run in `economy.md` averaged about 161 ms per hour and 328 ms per daily
   tick, about 4.2 s of CPU per game day, or about 1.6 ms per frame at 32× once spread.
@@ -1142,7 +1207,8 @@ moves its entities between the tiers' phase buckets.
   run, also kept in the report (`perf07_table`). The gate's "no worse" limits stay on the raw
   maximum and p99. The threshold and the overhead are measured in the part 7 results.
 
-- **Open regression (`PERF-09`, attributed 2026-10-28).** 100k 1× no longer meets the
+- **`PERF-09`, not measured (history, attributed 2026-10-28).** No 100k tier is measured since
+  2026-11-09, so nothing gates this regression; the record stays as history. 100k 1× no longer met the
   acceptance on `road`: on `d456913e` a full day measures a 6.32 ms mean frame (agent tick 5.04,
   slot work 0.18, snapshot 1.02 ms) and a 19.5 ms worst unpreempted frame (minute 0 after load,
   13.1 ms of hourly work), against 4.12 ms (3.10, 0.23, 0.73) and 14.5 ms on `93bfaf61`, the
@@ -1159,7 +1225,7 @@ moves its entities between the tiers' phase buckets.
   profile, IDM speeds, connector lookups and turn speeds, lane claims, access egress paths and the
   snapshot's car poses grow. This is a heavier workload caused by a correct fix, not a `ROAD-68`
   or `TERRAIN-07` regression; the populated-city fixture changes (`ROAD-68-K22`, `K24`) leave
-  the 100k city unchanged. The acceptance stands: the car workload must fit 8 ms.
+  the 100k city unchanged. The acceptance then stood: the car workload had to fit 8 ms.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -1204,6 +1270,200 @@ the efficiency cores at the lowest CPU and I/O priority (`taskset -c 16-23 nice 
 and their p99 by 14% and 28%. A 100k 1× run that overlapped another build read 15% slower per
 frame. Builds and tests therefore never run during `PERF-07` or `PERF-01`; the envelope,
 determinism checks and `./run.sh --test` are not timing runs and may share the machine.
+
+### Timing levels and the session runner (`PERF-19`)
+
+A round times at one of three levels (decided 2026-11-09). Timing has no 100k tier: the
+acceptance is 30k at 1× and 32×. The R and F rows are comparisons against a control, printed
+apart from acceptance. A whole 1× day is the cost (about 3.4 min at 30k against 20 s for a 32×
+day), so the levels differ in how many whole days they run.
+
+| Level | When | Rows |
+| --- | --- | --- |
+| R | slot-only and edit-only diffs (path rule below), every round with a speed claim or risk | the change's own benchmarks, 3 alternated rounds a side; `PERF-07` 30k 32× C B B C with the component comparison; K22 30k C B when an edit path changed |
+| F | any per-frame or unlisted path | R plus one 30k 1× B day; the control's 1× day comes from the cache under the calibration below, else it is timed; a second B day only when the first is within 5% of a limit or differs from the control beyond the one-run tolerance |
+| L | landing; merge (`--merge`) | 30k 32× C B B C and 1× B B (the acceptance); K22 30k and the economy contract `--diff` with full days, branch only, the control's rows from the cache. A merge times the control afresh: 30k 1× C B B C, K22 and contract C B |
+
+Diagnostics come from the acceptance run's own records (its 12 worst frames with their component
+split), not from extra attribution days. **Known exceptions:** an acceptance miss the user
+accepted on `dev` (today `PERF-17`, 30k 32×) is reported as "known exception" with its id, starts
+no second day and does not fail the session; its comparison against the control still runs. A
+second day near a limit means within 5% of it on either side; a clear miss gets none.
+
+**Path rule** (from `git diff --name-only <base>`; the runner prints its level beside the
+brief's and warns on a mismatch). R suffices when every changed source path is slot or edit
+work: `simulation/economy/{demand,households,logistics,hiring,customers,fiscal}`,
+`simulation/zoning`, `nodes/sim/core/{schedule,entity_phases,entity_days,demand_requests,household_requests}`,
+the edit paths `nodes/sim/{editing,undo,road_tool,road_pockets,roundabouts,zoning}`,
+`nodes/sim/core/{road_*,graded_*}` and `simulation/network/roadbed` (these add the K22 rows), and
+`simulation/save` (compare `load_s`; a `SAVE_VERSION` bump re-keys every snapshot). Per-frame
+paths are F: `nodes/sim/core/{frame,thread,snapshot,parking,lot_adoption,turnstile,trips,budget}`,
+`nodes/sim/render`, `simulation/economy/agents`, `simulation/network`, `simulation/pathing`,
+`simulation/parking`, `simulation/core/{time,scheduler}`, `simulation/buildings`,
+`thread_pools.rs`, `debug`, `lib.rs`, Cargo and toolchain files. Any other source path fails
+closed to F; docs, tools, tests and Godot need no timing. The rule cannot see a codegen change in
+an R path that also runs per frame; R's component comparison is the net for it.
+
+**Prepare before the locks.** The runner generates or verifies every snapshot each binary needs
+(baseline, fiscal and K22 commit cities) before the timed phase, then runs the prepares again: a
+second generation means two binaries overwrite one file, and the session stops. The timed phase
+never generates: a `PERF-07` row runs `perf07_frame_budget` alone, which only loads, after
+checking that its snapshot is the prepared file (same inode, size and key); a K22 or contract row
+that reports a generation fails. Since `PERF-19` every fixture's file name carries its revision
+(`populated_city_<residents>_<revision>.sqlite`), and the prepare reports print it, so binaries
+with different keys share one cache directory. Older builds use the unkeyed name and need their
+own cache when their keys differ.
+
+**Comparison.** For each tier and speed the runner compares the branch's mean against the
+control's on `mean_ms`, `p99_ms`, `p999_ms`, `max_unpreempted_ms`, the mean agent, snapshot, slot
+and pathing components and `load_s`, with the tolerance 2σ·√(1/n_ctl + 1/n_br) from the
+same-binary spread (σ per run: mean 0.7%, p99 1.7%, p99.9 4%, worst unpreempted frame 3%,
+components 1.25%, `load_s` 3.5%; at C B B C that is 1.4%, 3.4%, 8% and 6%). A run with more than
+twice the preempted frames of the quietest run of its group marks the group noisy: tolerances
+double and `--rerun <label>` times that row again. Raw maxima and over-8 counts are reported
+only.
+
+**Control reuse.** Every timed row is cached under a key of the binary's SHA-256, the snapshot
+key, benchmark, tier, speed, workers, CPU set, the measurement's `METRUM_*` variables, boot id,
+kernel release, CPU governor and EPP, and the hash of `sim02_gate.py`; the cache keeps one
+directory per boot and deletes the others. A control's 1× day (and its K22 and contract rows) is
+reused only when this session's first control 32× run is within 3% on the mean, 6% on p99 and 15%
+on p99.9 of the mean of the cached 32× rows, with preempted frames within 2× of theirs; otherwise
+the control's 1× day is timed and its cached rows are replaced (at L the K22 and contract control
+rows are cache-only and are skipped instead). Same-binary drift between two sessions of one boot
+reached +5% on the mean, so a cached day without this check is not evidence. A tier's cached 1× and 32× rows
+always come from one session. Rows recorded in a local no-cache window are not cached.
+
+**Running it.** The timed phase pins with `--cpus` (one thread per performance core on a hybrid
+CPU; skipped with a note where the OS has no affinity call), sets `RAYON_NUM_THREADS=8` and
+`METRUM_DEBUG=0`, unsets the display, refuses a binary whose SHA-256 changed since the plan, and
+holds each row while `godot`, `cargo` or `rustc` runs or a local quiet window would overlap it.
+Machine-specific settings (the CPU list, more busy processes, quiet and no-cache windows, and the
+lock commands wrapped around the prepare and timed phases) live in an untracked
+`timing-session.json` in the main checkout's Cargo target directory, or `$METRUM_TIMING_SETTINGS`.
+
+```bash
+./run.sh --timing --level R --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base dev \
+    --bench 'simulation::zoning::cells::tests::generation::lots::benchmark_cell_lot_derivation_locality;RAYON_NUM_THREADS=1;cpus=one' \
+    --artifacts "$ARTIFACTS"
+./run.sh --timing --level F ... --dry-run   # print the classification and the rows only
+./run.sh --timing --level L ...             # a landing; add --merge for a merge
+./run.sh --timing --artifacts "$ARTIFACTS" --rerun p07-3-br   # time one noisy row again
+```
+
+The session directory keeps today's layout: `p07-<n>-<side>/` with `perf07-<tier>-<speed>x.log`,
+`prepare-<tier>.log` and `report.json` (as `sim02_gate.py`'s), `bench-*`, `k22-*` and `contract-*`
+logs, `precheck.txt`, `postcheck.txt`, `binaries.sha256`, `plan.txt`, `session.json` and
+`summary.txt` with the row table, the calibration line ("reused from <session> <time>") and the
+comparison tables. Exit status 1 means a failed or refused row, 2 a branch acceptance miss that
+is not a known exception, 3 a comparison worse beyond tolerance (read the noisy flag first).
+
+**Measured** (`PERF-19`, 2026-11-09, one boot, eight workers pinned to the performance cores, the
+desktop in use). *Same numbers:* round `CODE-28`'s follow-up timing replayed with its two release
+test binaries rebuilt bit-identical (same SHA-256): every metric's mean of the runner's runs lies
+within the largest same-session pairwise spread of one binary (mean 4.5%, p99 5.9-7.6%, p99.9
+10-14%) of the round's own four runs a side and speed, except one branch 32× p99.9 run (10.1 ms
+against 7.97-8.99; the third-worst frame of 2,700); the 30k 1× means differ by +2.4%
+(control) and +1.4% (branch) with 42% and 10% more preempted frames. A landing-form session on
+`dev` read 30k 1× means 2.21-2.23 ms against 2.30-2.34 ms in the parking landing's session
+(`PARK-02`, another build and boot), 32× 4.36-4.50 against 4.59-4.61 ms. *Row walls:* 30k 32×
+day 20 s, 30k 1× day 200-206 s, K22 at 30k 11 s, economy contract 113 s a side, the
+`CODE-28` micro-benchmarks 17 s a side and round (14 s of it building a 10k city). *Sessions:* R
+3.4 min; F 10.0-10.2 min when the control's day is timed, about 6.7 min when it is reused; L
+13.6 min with the control's day timed (measured), about 10 min with it cached, a merge about 19 min
+(from the row walls). The parking landing's session took 42 min and the merge's final timing
+100 min. Prepare runs before the locks, concurrently per tier and fixture: none when the snapshots are cached,
+about 6-8 min for a new fixture key at 10k and 30k.
+
+### Parking frame and load acceptance (`PARK-02`)
+
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717`
+(`324d6dde` and later add docs only), release test binary SHA-256 `b629b932789054dd`. Exclusive
+locks, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, no Godot, no build, a browser open,
+each row run twice, the unmodified gate:
+
+```bash
+python3 tools/sim02_gate.py perf07 --perf07-tiers 30000 --perf07-speeds 1,32 \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS" --cpus 0,2,4,6,8,10,12,14
+```
+
+**`dev` was not run in this session (the user, 2026-11-07).** `dev` has no commits since this work
+began, so its column is round M7c's runs from the same boot, same binary, SHA-256 `139c9563`, from
+15:07 to 16:47 the same day. It is not a same-session control: a gap smaller than the run spread may be
+the machine. M7c's column is `port-park-merge` tree `7858eede` in those sessions.
+
+| Row | `dev`, two runs (M7c's) | M7c's tree, two runs | Final, two runs | Gate |
+| --- | --- | --- | --- | --- |
+| 30k 1×: unpreempted / p99.9 / preempted less wait, ms | 4.15, 4.04 / 3.41, 3.26 / 3.25, 3.35 | 8.45, 8.10 / 4.33, 4.39 / 4.14, 4.87 | 7.78, 7.52 / 4.38, 4.46 / 4.72, 6.03 | **Pass** |
+| 30k 32×: same | 7.16, 6.89 / 6.86, 6.80 / 4.99, 6.43 | 10.64, 9.98 / 9.03, 8.46 / 6.77, 7.34 | **9.91, 9.74** / **9.30, 8.44** / 7.72, 5.97 | **Fail** |
+| 30k 32×: frames over 8 ms, unpreempted + preempted | 0 + 0 | 7 + 0, 6 + 1 | 5 + 4, 6 + 0 | |
+| 100k 1×: unpreempted / p99.9 / preempted less wait | **17.42, 18.15** / **11.11, 11.45** / **15.47, 13.37** | 12.57, 12.74 / 11.16, 11.28 / 13.18, 13.17 | **12.14, 12.18** / **10.36, 10.42** / **12.58, 10.59** | **Fail on both** (`PERF-09`) |
+| 100k 1×: frames over 8 ms, unpreempted; p99; mean | 2,688, 2,297; 8.74, 8.70; 6.72, 6.78 | 8,710, 9,932; 9.80, 9.66; 7.14, 7.14 | 8,581, 9,207; 9.28, 9.27; 7.00, 7.05 | |
+| 100k 32×, reported (`PERF-08`), M7c's, not rerun: max / p99 / mean / over 16.7 ms | 26.4, 27.6 / 22.43, 22.19 / 13.49, 13.45 / 324, 330 | 29.0, 28.6 / 22.75, 22.72 / 15.60, 15.60 / 676, 696 | | Reported |
+
+Every row is within the spread [above](#frame-budget-perf-07) of M7c's, 25% on the maximum and 10% on
+the p99. Round M8's two fixes moved nothing.
+
+**Attribution, per frame.** The user's rule of 2026-11-07: a miss from `RENDER-27`/`RENDER-28`, so
+from walkers' pose, does not block this merge. A per-frame timer build of the final tree ran in this
+session and `dev`'s timer build in round M7c's; a frame's share is its `pose` stage less `dev`'s at
+the same frame index, and the frame's total is read from a build with no timers in the frame.
+
+| Reading | Frames over 8 ms, unpreempted | Pose | Still over 8 ms with the share out |
+| --- | --- | --- | --- |
+| 30k 1×, one run | **0**, worst 7.86 ms | | **0** (6.69 ms). Passes without the rule |
+| 30k 32×, six runs | 4 to 9 a run, 38 in all | 0.28 to 1.18 of share | **2 to 4 a run, 16 in all, up to 9.33 ms** |
+| 100k 1×, one run, M7c's, not rerun | 8,745 | 1.35 / 0.51 mean, final / `dev` | **1,703**, mean 9.11 ms; `dev` itself has 1,685 over 8 ms |
+
+With the share out, 30k 32× reads 8.59 to 9.33 ms unpreempted and 7.95 to 8.69 ms p99.9 over the six
+runs. The frames left are all building changes in minute 4 of the hour (`REMOVAL_WINDOW_START`): a
+site's spawn at 00:04, 13:04, 17:04 and 22:04, a removal at 08:04 and 21:04. Round M7c read four of
+these; 08:04 and 13:04 are the same frames, over by 0.08 and 0.32 ms in one run each. Frame 22:04 at
+32×, against `dev` at the same minute: slot 4.3 against 3.0 ms, of it the site's publication in `timed
+events` 4.5 against 0.5; agent 2.5 against 1.8; snapshot 2.8 against 1.0, pose 1.3 of it. A building's
+removal costs 2.9 to 3.8 ms in its own slot against 1.1 to 1.6 on `dev`. No census frame is among them:
+the census's own slot peaked at 2.2 ms in M7c's day. At 100k 1× (M7c's timers) the frames left sit in the
+shift hours, 05:xx, 06:xx, 13:xx, and what is added there is movement, 4.55 ms against 3.16, not pose.
+
+A site's door publication at 30k (timers, a quiet run, 22 in a day): 1.44 ms mean, 3.16 at most, about
+1,070 doors looked at and 167 edited; the whole publication 2.0 ms mean. It is most of the 3.6 ms of
+a spawn in that frame. The rest of that frame is the same frame's agent tick and snapshot.
+
+**The accepted exception (the user, 2026-11-07).** `PARK-02` landed with `PERF-07` missed at 30k 32×:
+building-change frames in minute 4 of the hour, nothing over 16.7 ms. The user accepted round M7c's
+measure, 2 or 3 such frames a run, up to 9.51 ms with walkers' pose out, with the 25% run spread on it,
+so a limit of 11.9 ms. The landing's six runs read 2 to 4 a run, up to 9.33 ms. The exception covers
+what was measured here and no more. `PERF-17` revisits the door publication in those frames.
+`tools/sim02_gate.py` does not change: the gate fails at 30k 32×. 100k 1× stays with `PERF-09`, as
+parking's cost: max better than `dev`, p99.9 lower, 3.2 to 4 times the frames over 8 ms, from walkers'
+movement.
+
+**Parking on the sim thread (timers build, day means; 30k this session, 100k round M7c's).**
+
+| Row | 30k 32× | 30k 1× | 100k 1× |
+| --- | --- | --- | --- |
+| Parked rebuild, mean / max ms | 0.23 / 1.96 | 0.02 / 0.90 | 0.07 / 4.08 |
+| Commit + prepared answers (D11), mean ms | 0.24 + 0.18 | 0.03 + 0.03 | 0.12 + 0.11 |
+| Their share of frame time | 9.2% | 2.6% | 3.1% |
+| Candidates a tick, mean / peak | 73 / 194 | 2.3 / 26 | 6.4 / 57 |
+
+**Movement pass** (`ROAD-94`; round M7b changed the lane end). 30k 32× mean agent tick 1.96 ms, p99
+2.85; round M6c, an earlier session, 1.96 and 3.04. 1× 1.18 against 1.15. Movement 1.30 ms on the
+timers build against M6c's 1.20 and `dev`'s 0.86 in round M7c's session: the lane end did not move it.
+What it pays over `dev` is walkers.
+
+**Midnight (`PERF-15`).** First frame 7.3 to 7.9 ms at 32× in six runs, past midnight before minute
+4 at most 8.20 (one frame at 00:03, one run, 7.71 with the pose share out; round M7c 7.30), at 1× frame 1
+3.79 ms. The burst stays gone.
+
+**100k load.** `load_s` 25.40, 25.43 s, from the 1× gate's own runs, against `dev`'s 17.20, 17.20
+(round M7c, `METRUM_PERF07_MINUTES=1`).
+The file is 305 MB, of it the JSON columns 94 MB (`parking_state` 64, `agents.parking_trip` 29), 0.3%
+of a load's cycles in both trees (`PARK-06`). Cycles of a load under `perf`, one run a side, 185 G
+against 100 G: cell generation 103 G against 64 G and its checks against the lots
+(`warm_loaded_cells`, `cell_footprint_overlaps_explicit_sites`, `lot_candidate_indices_for_bounds`)
+28 G against 4 G, so three quarters of the growth is the fixture's explicit lots (`PERF-16`). The
+catchment publication is 14 G, 17% of the growth, near the 0.73 s round M6a timed.
 
 ## GPU compute
 
@@ -1540,7 +1800,14 @@ RAYON_NUM_THREADS=8 python3 tools/sim02_gate.py envelope determinism perf07 \
   deliveries, households with an empty pantry, trip failures, building placements and
   removals, recorded outside-world money flows, burst shares and a semantic fingerprint. The
   baseline, its tolerance bands, fingerprints and burst shares are in
-  `tools/sim02_envelope_baseline.json`.
+  `tools/sim02_envelope_baseline.json`. Re-recorded with parking (`PARK-02`, `e0a75231`, the
+  user accepted the shift 2026-11-07) and with `ECON-28` round `E4` (2026-11-09, for the user's
+  review): admission's calendar families, their store-labour charge and the refill crew
+  (`ECON-24`) move the cities by fractions of a percent (residents per target +1.0% at 10k,
+  empty-pantry rate -2.9% at 10k and -4.5% at 30k, net income per resident -0.3% to -1.4%), and
+  one band missed: fiscal-stress 10k final employment 1.32% against [1.14%, 1.29%], more
+  working adults in the taxed-out city. Against the new bands the gate reads 0 notes on the
+  same binary.
 - **Tolerance bands.** Variants at 0.97×, 1.00× and 1.03× of each tier's residents. Metrics are
   normalised per resident, household or building. A band is the variant range widened by half
   the range, by at least 2% of the base value, and by an absolute floor for rare counts. Trip
@@ -3405,7 +3672,11 @@ on a fresh `$ARTIFACTS` directory.
   of the determinism check runs on the prepared scratch, against the continuous game whose
   scratch was prepared lazily. A new test loads one save twice, discards one game's slot and
   job-search scratch, and compares both games every frame for three hours
-  (`route_scratch_prepared_at_load_runs_as_cold_scratch_does`).
+  (`route_scratch_prepared_at_load_runs_as_cold_scratch_does`). It steps them on a Rayon pool
+  of its own (`CODE-22`): in a `cargo test` process every test shares the pool, and the frame's
+  thread, waiting inside a slot, can steal another test's job, which prepares the installed slot
+  scratch for that test's network. No result changes, but the test's last assertion reads that
+  scratch. In the game one simulation owns the pool.
 - **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
   --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one
   session with the second commit's binary as the control, both on copies of the same prepared
@@ -5530,7 +5801,8 @@ today, so it too needs (a) or (b).
 **Decided by the user (2026-10-22): deferred.** The option is chosen when players have built
 cities that start to approach 100k agents. Until then the target is tracked as `PERF-08`, outside
 `SIM-02`; `PERF-07`'s acceptance covers 30k at both speeds and 100k at 1×, and the gate keeps
-reporting 100k at 32× so the gap stays visible.
+reporting 100k at 32× so the gap stays visible. **Superseded (2026-11-09):** no 100k tier is
+measured; `PERF-08` is closed ([Decisions (2026-11-09)](#decisions-2026-11-09)).
 
 7. **`PERF-07` under preemption** (`SIM-02-K` part 7). The benchmark's eight pinned CPUs are
    shared with the rest of the machine, and another task keeps a pool worker or the frame's own
@@ -5560,8 +5832,8 @@ reporting 100k at 32× so the gap stays visible.
    does not depend on the threshold's exact value. (b) only if a raw maximum must be quoted.
 
    **Decided by the user (2026-10-22): (a).** `tools/sim02_gate.py perf07` checks it for 30k at
-   1× and 32× and 100k at 1×, and fails a run that misses it or lacks the scheduler statistics
-   (see [Frame budget](#frame-budget-perf-07)).
+   1× and 32× (and checked 100k at 1× until the tier's removal on 2026-11-09), and fails a run
+   that misses it or lacks the scheduler statistics (see [Frame budget](#frame-budget-perf-07)).
 
 ### Decided while unattended
 

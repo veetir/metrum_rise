@@ -16,6 +16,9 @@ use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 
 mod departure;
+pub(super) mod parking;
+mod parking_answers;
+mod parking_candidates;
 mod detach;
 mod junctions;
 mod lane_dynamics;
@@ -23,6 +26,7 @@ mod route_preview;
 mod support;
 mod trip_failures;
 mod trips;
+mod turn_lanes;
 mod u_turns;
 mod vehicle_flow;
 mod walk_home;

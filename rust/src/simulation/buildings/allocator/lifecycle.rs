@@ -30,6 +30,8 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 
+use super::geometry::frontage_side_offset_m;
+
 const REZONE_GRACE_DAYS: u8 = 3;
 const FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M: f32 = 50.0;
 const FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M: f32 = 20.0;
@@ -338,7 +340,7 @@ impl BuildingAllocator {
         let compatibility = {
             let b = &self.buildings[i];
             let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
-            if !edge_ok || !graph.takes_buildings(b.edge_idx) {
+            if !edge_ok || !graph.takes_buildings(b.edge_idx, b.side) {
                 None
             } else {
                 match self.registry.get(&b.asset_id) {
@@ -528,6 +530,8 @@ impl BuildingAllocator {
         // reserves income nor prevents another home/family from being considered.
         let attempt_limit = applicant_offer_limit(households_to_spawn);
         let mut cursor = next_household_id;
+        // Whether the vacancy at the cursor refused its calendar family this batch.
+        let mut place_refused = false;
         for attempt in 0..attempt_limit {
             if launched == households_to_spawn {
                 break;
@@ -539,7 +543,16 @@ impl BuildingAllocator {
             let position = cursor % vacancies.len();
             let home_idx = vacancies[position];
             cursor = position + 1;
-            let household_seed = next_household_id.saturating_add(attempt);
+            // A vacancy is offered first the applicant the workforce calendar credited its
+            // first free place with, so the families that arrive bring the adults and members
+            // projects claimed (`ECON-28`). Once that family is refused, the next offer brings
+            // the hour's applicant. Each offer is one of the batch's attempts.
+            let calendar_family = !std::mem::take(&mut place_refused);
+            let household_seed = if calendar_family {
+                self.buildings[home_idx].occupancy as usize
+            } else {
+                next_household_id.saturating_add(attempt)
+            };
             let Some((household_size, composition)) = applicant_offer(
                 self.flat_size_m2(home_idx),
                 self.applicant_seed(home_idx),
@@ -564,6 +577,11 @@ impl BuildingAllocator {
                 continue;
             };
             if !claim_income(composition, household_size, self.buildings[home_idx].level) {
+                if calendar_family {
+                    // The same vacancy is offered the hour's applicant next.
+                    place_refused = true;
+                    cursor = position;
+                }
                 continue;
             }
             // One household consumes 1 slot of household_capacity regardless of size.
@@ -876,6 +894,7 @@ impl BuildingAllocator {
             logistics,
             treasury_balance,
             Some(&candidates),
+            None,
         )
     }
 
@@ -938,6 +957,14 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
     ) -> Result<(), String> {
         for building in &mut self.buildings {
+            // An explicitly placed site can outlive its driveway road. Its saved rigid pose
+            // remains authoritative while disconnected; it offers no vehicle parking access.
+            if building.edge_idx == usize::MAX
+                && building.parcel_id == 0
+                && building.zone_type == ZoneType::None
+            {
+                continue;
+            }
             if building.edge_idx >= graph.edge_count() {
                 return Err(format!(
                     "building edge {} out of bounds for {} edges",
@@ -964,7 +991,7 @@ impl BuildingAllocator {
                 (
                     parcel.front_center() + parcel.normal() * (depth_m * 0.5),
                     parcel.normal(),
-                    edge.width * 0.5 + crate::config::SIDEWALK_WIDTH,
+                    frontage_side_offset_m(edge, building.side),
                 )
             } else {
                 // Explicit placement has no frontage grid cell. Its saved normalized
@@ -1081,6 +1108,97 @@ impl BuildingAllocator {
             self.record_building_changes(moved);
         }
         halves
+    }
+
+    /// [`Self::migrate_split_frontages`]'s inverse for two edges joined into `first`
+    /// (`ROAD-95`, a turn pocket removed or resized): the buildings fronting `second` front
+    /// `first` with their cell index offset by `offset_cells` (the first edge's cells), and
+    /// every building of either edge takes its frontage parameter along the joined edge,
+    /// `length_m` long. `undo` receives each moved row's previous edge, cell and frontage. Returns
+    /// the buildings moved. The rows are found among the 512 m chunk candidates of both edges'
+    /// geometry in `graph` (the retained geometry of a deleted `second` included), as the split's
+    /// are; `O(candidates log candidates)`, `O(B)` while the chunk index is stale.
+    pub(crate) fn migrate_join_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        [first, second]: [usize; 2],
+        offset_cells: usize,
+        length_m: f32,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32)>,
+    ) -> usize {
+        let edges = std::collections::HashSet::from([first, second]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+            };
+        debug_assert!(
+            self.buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| edges.contains(&b.edge_idx))
+                .map(|(idx, _)| idx)
+                .eq(fronting.iter().copied()),
+            "the join's chunk candidates hold every building fronting edges {first} and {second}"
+        );
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            if b.edge_idx == second {
+                b.edge_idx = first;
+                b.cell_x += offset_cells;
+            }
+            let half_cells = b.width_cells as f32 * 0.5;
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);
+        }
+        let moved = fronting.len();
+        if moved > 0 {
+            self.record_building_changes(fronting);
+        }
+        moved
+    }
+
+    /// The buildings fronting `edge` after a roundabout cut the arm to `length_m` (`ROAD-62`):
+    /// their cells shift down by the `dropped_cells` the cut took off its start and each takes
+    /// its frontage along the shorter arm. `undo` receives each row's previous edge, cell and
+    /// frontage. The rows are found as the split's are: `O(candidates log candidates)`, `O(B)`
+    /// while the chunk index is stale.
+    pub(crate) fn migrate_trim_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        edge: usize,
+        dropped_cells: usize,
+        length_m: f32,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32)>,
+    ) {
+        let edges = std::collections::HashSet::from([edge]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+            };
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            b.cell_x = b.cell_x.saturating_sub(dropped_cells);
+            let half_cells = b.width_cells as f32 * 0.5;
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);
+        }
+        if !fronting.is_empty() {
+            self.record_building_changes(fronting);
+        }
     }
 
     /// Puts back the rows [`Self::migrate_split_frontages`] moved, from its `undo` entries,
@@ -1208,9 +1326,13 @@ impl BuildingAllocator {
                 continue;
             };
             // A lot's centre, its frontage, the connection the test or the search measures,
-            // the edge's centreline under it.
-            let reach_m =
-                largest_lot_m + search_m.max(tolerance_m) + edge.width * 0.5 + SIDEWALK_WIDTH;
+            // the edge's centreline under it (a pocket edge's farther kerb, `ROAD-95`).
+            let reach_m = largest_lot_m
+                + search_m.max(tolerance_m)
+                + edge
+                    .frontage_half_width_m(1)
+                    .max(edge.frontage_half_width_m(-1))
+                + SIDEWALK_WIDTH;
             let ends;
             let points = if edge.physical_geometry.len() >= 2 {
                 edge.physical_geometry.as_slice()
@@ -1282,7 +1404,7 @@ impl BuildingAllocator {
             return false;
         };
 
-        let edge_width = graph.edge(projection.edge_idx).width;
+        let side_offset = frontage_side_offset_m(graph.edge(projection.edge_idx), projection.side);
         let building = &mut self.buildings[building_idx];
         let changed = building.edge_idx != projection.edge_idx
             || building.side != projection.side
@@ -1293,7 +1415,7 @@ impl BuildingAllocator {
         building.edge_idx = projection.edge_idx;
         building.side = projection.side;
         building.frontage_t = projection.t;
-        building.side_offset = edge_width * 0.5 + SIDEWALK_WIDTH;
+        building.side_offset = side_offset;
         true
     }
 
@@ -1340,7 +1462,7 @@ impl BuildingAllocator {
                 parcel.side(),
                 parcel.frontage_center_t(),
                 cell_lot,
-                edge.width,
+                edge,
             )
         })
     }
@@ -1465,7 +1587,7 @@ impl BuildingAllocator {
             target_side,
             target_frontage_t,
             cell_lot,
-            edge.width,
+            edge,
         ) {
             return repaired_parcel;
         }
@@ -1473,7 +1595,7 @@ impl BuildingAllocator {
         building.edge_idx = target_edge_idx;
         building.side = target_side;
         building.frontage_t = target_frontage_t;
-        building.side_offset = edge.width * 0.5 + SIDEWALK_WIDTH;
+        building.side_offset = frontage_side_offset_m(edge, target_side);
         let zone_cell_m = zoning.config.zone_cell_m;
         let half_m = |cells: u16| f32::from(cells) * zone_cell_m * 0.5;
         let front_gap_m = super::geometry::lot_front_gaps(
@@ -1551,7 +1673,8 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
-            if !graph.takes_buildings(edge_idx)
+            if !edge.zones_any_side()
+                || !graph.fronts_ground(edge_idx)
                 || edge.physical_geometry.len() < 2
                 || edge.physical_length <= 1e-6
             {
@@ -1597,7 +1720,7 @@ impl BuildingAllocator {
         edge_t: f32,
     ) -> Option<Vector2> {
         let edge = graph.get_edge(edge_idx)?;
-        if !graph.takes_buildings(edge_idx) || edge.physical_geometry.len() < 2 {
+        if !graph.takes_buildings(edge_idx, side) || edge.physical_geometry.len() < 2 {
             return None;
         }
         let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);
@@ -1606,7 +1729,7 @@ impl BuildingAllocator {
             return None;
         }
         let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
-        Some(center + normal * (edge.width * 0.5 + SIDEWALK_WIDTH))
+        Some(center + normal * frontage_side_offset_m(edge, side))
     }
 }
 
@@ -1888,7 +2011,8 @@ impl BuildingAllocator {
     // agents `AgentSystem::agents_referencing_buildings` found naming either before anything
     // else changed agents' references; eviction and the agent remap then visit them alone,
     // unless a cancelled shipment removed a carrier meanwhile (the remap then scans every
-    // agent).
+    // agent). The households are then `households_among`, found as the agents were, or found
+    // here by `HouseholdSystem::households_referencing_buildings`.
     #[allow(clippy::too_many_arguments)]
     fn remove_building_at_index(
         &mut self,
@@ -1899,6 +2023,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
         candidates: Option<&[usize]>,
+        households_among: Option<&[usize]>,
     ) -> bool {
         let Some((parcel_id, zone_type)) = self
             .buildings
@@ -1916,14 +2041,21 @@ impl BuildingAllocator {
         let last_idx = self.buildings.len().saturating_sub(1);
         // The households naming either building, found as the agents were: the invalidation
         // and the remap below change no other household.
-        let household_candidates =
-            candidates.map(|_| households.households_referencing_buildings(building_idx, last_idx));
+        let scanned;
+        let household_candidates = match (candidates, households_among) {
+            (Some(_), Some(among)) => Some(among),
+            (Some(_), None) => {
+                scanned = households.households_referencing_buildings(building_idx, last_idx);
+                Some(scanned.as_slice())
+            }
+            (None, _) => None,
+        };
         match candidates {
             Some(candidates) => agents.evict_building_among(building_idx, candidates),
             None => agents.evict_building(building_idx),
         }
         let agent_count = agents.agents.len();
-        match &household_candidates {
+        match household_candidates {
             Some(candidates) => {
                 households.invalidate_building_among(building_idx, candidates, self)
             }
@@ -1954,7 +2086,7 @@ impl BuildingAllocator {
                 }
                 _ => agents.remap_building_indices(&mapping),
             }
-            match &household_candidates {
+            match household_candidates {
                 Some(candidates) => {
                     households.remap_building_among(last_idx, building_idx, candidates)
                 }
@@ -1981,6 +2113,9 @@ impl BuildingAllocator {
         self.record_building_changes([building_idx, last_idx]);
         self.dirty = true;
         self.dirty_index = true;
+        // A kept swap-remove follows the chunk lists, an unkept one does not: a hover's site
+        // refresh (`prepare_site_query_chunks`) is due again either way.
+        self.site_chunks_current = false;
         if entrances_clean {
             // As `rebuild_entrance_cache` leaves it, without deriving every entrance again.
             self.entrances.swap_remove(building_idx);
@@ -1990,6 +2125,37 @@ impl BuildingAllocator {
             self.entrances_dirty = true;
         }
         true
+    }
+
+    /// Removes one building a road stroke takes (`ZONE-09`) through the lifecycle hooks of
+    /// [`Self::remove_building_for_bulldoze`], with `candidates` from
+    /// [`AgentSystem::agents_referencing_any_building`] and `households_among` from
+    /// [`HouseholdSystem::households_referencing_any_building`] over the batch, each taken after
+    /// any change that renumbered its store, so eviction, invalidation and the remaps visit
+    /// those alone. The caller evacuated the building first. O(candidates) plus the removal's
+    /// other remaps.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn remove_building_for_road(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+        candidates: &[usize],
+        households_among: &[usize],
+    ) -> bool {
+        self.remove_building_at_index(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+            Some(candidates),
+            Some(households_among),
+        )
     }
 
     /// Removes one building through the normal lifecycle hooks used by demand redevelopment.
@@ -2010,12 +2176,13 @@ impl BuildingAllocator {
             logistics,
             treasury_balance,
             None,
+            None,
         )
     }
 }
 
 // Whether aligning `building` to a parcel frontage on `edge_idx` would move it: a cell lot
-// takes the frontage exactly, with the side offset of the edge's `edge_width`; another parcel
+// takes the frontage exactly, with the side offset of `edge` on `side`; another parcel
 // tolerates a millimetre of `t`.
 fn parcel_attachment_differs(
     building: &crate::simulation::buildings::allocator::Building,
@@ -2023,13 +2190,13 @@ fn parcel_attachment_differs(
     side: i8,
     frontage_t: f32,
     cell_lot: bool,
-    edge_width: f32,
+    edge: &crate::simulation::network::graph::Edge,
 ) -> bool {
     building.edge_idx != edge_idx
         || building.side != side
         || if cell_lot {
             building.frontage_t != frontage_t
-                || building.side_offset != edge_width * 0.5 + SIDEWALK_WIDTH
+                || building.side_offset != frontage_side_offset_m(edge, side)
         } else {
             (building.frontage_t - frontage_t).abs() > 0.001
         }

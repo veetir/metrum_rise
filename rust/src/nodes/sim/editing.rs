@@ -5,19 +5,22 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    RoadEditPlan, RoadRejection, ReservedOverlap,
-    SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
+    CoreLand, RoadEditPlan, RoadEditSite, RoadLandTake, RoadRejection,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SimCore, TriedGraphEdit, compile_closure, edge_grade,
+    steepened_profile,
 };
+use crate::simulation::zoning::CellPaintUndo;
+use crate::simulation::zoning::cells::CellBounds;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
+use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::{
-    ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
+    ExplicitPlacementKind, ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, plan_road_edit,
@@ -26,16 +29,64 @@ use crate::simulation::network::road_edit::{
 use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
+use crate::simulation::network::roundabouts::ring_near_stroke;
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
 use std::time::Instant;
 
-const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
+pub(crate) const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
+
+// The land under an explicit building's lot (`ZONE-11`): its take, or the refusal of the
+// plotted land it holds.
+fn explicit_lot_take(
+    land: &CoreLand,
+    lot: &[Vector2; 4],
+) -> Result<RoadLandTake, ExplicitServicePlacementRejection> {
+    let take = RoadLandTake::of_footprint(land, &PolygonFootprint::new(lot), None);
+    match take.plotted {
+        Some(overlap) => Err(overlap.placement_rejection()),
+        None => Ok(take),
+    }
+}
+
+// The land under a field (`field`) or an extraction area of `owner` (`ZONE-11`): its take, the
+// owner's own polygon and lot excepted, or the refusal of the plotted land it holds.
+fn work_area_take(
+    land: &CoreLand,
+    footprint: &PolygonFootprint<'static>,
+    owner: usize,
+    field: bool,
+) -> Result<RoadLandTake, String> {
+    let take = RoadLandTake::of_footprint(land, footprint, Some(owner));
+    match take.plotted {
+        Some(overlap) => Err(overlap.work_area_refusal(field)),
+        None => Ok(take),
+    }
+}
+
+/// An explicit building's hover (`ZONE-11`): the allocator's preview and the zoned land the
+/// placement would take, as its commit takes it; empty when the preview is refused, as a
+/// refused placement takes nothing.
+pub(crate) struct ExplicitPlacementHover {
+    /// The pose, the lot's corners and the first refusal.
+    pub(crate) preview: ExplicitServicePlacementPreview,
+    /// The cells, lots and buildings the placement takes.
+    pub(crate) take: RoadLandTake,
+}
+
+/// A field's or extraction area's hover (`ZONE-11`): its area and the zoned land it would take,
+/// as its commit takes it.
+pub(crate) struct WorkAreaPreview {
+    /// The polygon's area in square metres.
+    pub(crate) area_m2: f32,
+    /// The cells, lots and buildings the polygon takes.
+    pub(crate) take: RoadLandTake,
+}
 
 /// Axis-aligned world bounds of one player polygon, or `None` for fewer than three points.
 pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vector2)> {
@@ -50,6 +101,11 @@ pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vecto
     }))
 }
 
+// The cell bounds of a [`polygon_world_bounds`] pair.
+fn vector_pair_bounds((min, max): (Vector2, Vector2)) -> CellBounds {
+    CellBounds::from_points([min, max].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))))
+}
+
 /// Result of a road placement attempt after synchronous input validation.
 #[derive(Clone, Debug)]
 pub(crate) struct RoadAddOutcome {
@@ -62,6 +118,9 @@ pub(crate) struct RoadAddOutcome {
     /// Wall-clock milliseconds of the undo record, the topology mutation (graph, parcels and
     /// adopted plan) and the cell-lot marks, for the commit breakdown (`ROAD-68-G`).
     pub(crate) stage_ms: RoadAddStageTimes,
+    /// The envelopes the cell-lot marks invalidated: the region the stroke regenerates, whose
+    /// free paint its land take releases (`ZONE-14`).
+    pub(crate) regeneration: Vec<CellBounds>,
 }
 
 /// Wall-clock cost of the stages of one accepted road addition.
@@ -79,27 +138,36 @@ impl RoadAddOutcome {
             build_cost: 0.0,
             finalized_geometry: None,
             stage_ms: RoadAddStageTimes::default(),
+            regeneration: Vec::new(),
         }
     }
 }
+
 impl SimCore {
     /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, &mut Default::default())
+        self.validate_staged_road_render_installing(None, None, &[], &mut Default::default())
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
-    /// apply (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells
-    /// (`ROAD-68` open question 1), and every node piece must build. No terrain failure rejects
-    /// the road (`TERRAIN-07-E`): an accepted edit stages its graded tiles, adopting the
-    /// preview's `graded` tiles whose inputs equal the committed ones. The undo record keeps
-    /// what the install replaced. True when the edit is accepted. `metrics` receives the
-    /// sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_graded_ms`).
+    /// apply (`ROAD-68-E`). The installed pieces must not newly cover a plotted reservation (a
+    /// field, an extraction area or an explicit building's lot), and every node piece must build;
+    /// either refusal rolls the staged edit back with nothing else changed. Then the zoned land
+    /// the pieces newly cover is taken (`ZONE-09`, [`RoadLandTake`]): the buildings on its lots
+    /// are demolished, the lots removed and the covered cells' paint erased, none of which can
+    /// refuse; with them the free paint of `regeneration`, the envelopes the stroke's marks
+    /// invalidated, is released to re-lay (`ZONE-14`). No terrain failure rejects the road
+    /// (`TERRAIN-07-E`): an accepted edit stages its
+    /// graded tiles, adopting the preview's `graded` tiles whose inputs equal the committed ones.
+    /// The undo record keeps what the install replaced and the erased paint. True when the edit
+    /// is accepted. `metrics` receives the sub-stages' times (`surface_roadbed_ms`,
+    /// `surface_overlap_ms`, `surface_land_ms`, `surface_graded_ms`).
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
         graded: Option<&crate::nodes::sim::core::GradedPose>,
+        regeneration: &[CellBounds],
         metrics: &mut RoadEditMetrics,
     ) -> bool {
         let roadbed_start = Instant::now();
@@ -108,14 +176,17 @@ impl SimCore {
         let (_, restore, _) = self.publish_network_surface(false, delta);
         metrics.surface_roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let overlap_start = Instant::now();
+        // The explicit sites are queried through the site index.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let roadbed = &self.transit_network.roadbed;
         let before: Vec<_> = restore.replaced_pieces().collect();
-        let overlap =
-            ReservedOverlap::first_in_core(self, roadbed.installed_pieces(&restore), &before);
+        let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
+        let take = RoadLandTake::in_core(self, &installed, &before);
         metrics.surface_overlap_ms = overlap_start.elapsed().as_secs_f64() * 1000.0;
-        if let Some(overlap) = overlap {
+        if let Some(overlap) = take.plotted {
             self.rollback_staged_road_edit(Some(&restore));
-            let rejection = overlap.rejection();
+            let rejection = overlap.rejection(self);
             self.last_road_timing = format!("rejected={}", rejection.reason);
             debug_log!(
                 "road",
@@ -146,6 +217,10 @@ impl SimCore {
             );
             return false;
         }
+        // Nothing below refuses the edit.
+        let land_start = Instant::now();
+        let erased_paint = self.take_land_for_edit(take, Some(regeneration));
+        metrics.surface_land_ms = land_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
         let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
         metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
@@ -159,9 +234,176 @@ impl SimCore {
         {
             record.roadbed = Some(restore);
             record.graded = graded;
+            record.cells = erased_paint;
         }
         self.accept_staged_road_edit();
         true
+    }
+
+    // Takes the zoned land of an accepted road edit, applied on the graph (`ZONE-09`; the
+    // in-place edits, `ZONE-10`; the placements, `ZONE-11`): demolishes the buildings on the
+    // lots it covers, removes those lots and the authored parcels it covers, then releases the
+    // free paint of `regeneration`, the envelopes the edit's marks invalidated, and of the
+    // covered cells' and removed authored parcels' halos, which the take invalidates
+    // (`ZONE-14`, PLAN-RL 2.1; `Some(&[])` those halos only: a crossing toggle, a class change
+    // off the ground; `None` nothing: a placement taking no zoned land): the empty lots there
+    // are removed, and one erase takes the covered cells' paint and the released cells', whose
+    // inverse it returns for the undo record. The edit's lot plan re-lays the released cells as
+    // unpainted ones and hands their paint on to the cells it lays over them. Lot regions around
+    // the removed lots and covered cells are queued for that plan. O(the take's buildings, lots
+    // and cells + reserved cells in the envelopes) plus one parallel agent scan per batch
+    // (`demolish_for_road`).
+    pub(super) fn take_land_for_edit(
+        &mut self,
+        take: RoadLandTake,
+        regeneration: Option<&[CellBounds]>,
+    ) -> Option<CellPaintUndo> {
+        debug_assert!(take.plotted.is_none());
+        self.last_land_release_ms = 0.0;
+        if take.is_empty()
+            && (regeneration.is_none_or(<[_]>::is_empty) || !self.zoning.cells.has_paint())
+        {
+            return None;
+        }
+        let start = Instant::now();
+        let [removals_ms, sites_ms] = self.demolish_for_road(&take.buildings);
+        // A removed authored parcel's halo is regenerated (`remove_parcels_under_road`), so it
+        // is released with the edit's own envelopes (round RL1's deviation 5: a road edit's
+        // envelopes contain it; a placement's lot or polygon marks need not).
+        let region = regeneration.map(|region| {
+            let mut region = region.to_vec();
+            region.extend(self.zoning.authored_parcel_halos(&take.lots));
+            region
+        });
+        let lots_start = Instant::now();
+        if !take.lots.is_empty() {
+            self.zoning.remove_parcels_under_road(&take.lots);
+            // Pending spawns resolve their parcel when they start, so a spawn queued for a
+            // removed lot is refused there (its door changed); ids are never reused.
+            self.allocator.dirty = true;
+        }
+        let covered = take
+            .cells
+            .iter()
+            .filter(|&&(_, profile)| profile != 0)
+            .map(|&(key, _)| key)
+            .collect::<Vec<_>>();
+        let release_start = Instant::now();
+        let (released, released_lots) = region.map_or_else(Default::default, |region| {
+            self.zoning.release_painted_cells(&region, &covered)
+        });
+        if self.zoning.remove_parcels_under_road(&released_lots) > 0 {
+            self.allocator.dirty = true;
+        }
+        let mut painted = covered.clone();
+        painted.extend(released);
+        painted.sort_unstable();
+        painted.dedup();
+        let erase_start = Instant::now();
+        self.last_land_release_ms = (erase_start - release_start).as_secs_f64() * 1000.0;
+        let erased = (!painted.is_empty())
+            .then(|| self.zoning.erase_cells_under_road(painted, covered))
+            .flatten();
+        debug_log!(
+            "road",
+            "road_commit_land buildings={} lots={} cells={} released_lots={} painted={} removals_ms={:.3} sites_ms={:.3} lots_ms={:.3} release_ms={:.3} erase_ms={:.3} total_ms={:.3}",
+            take.buildings.len(),
+            take.lots.len(),
+            take.cells.len(),
+            released_lots.len(),
+            erased.as_ref().map_or(0, |undo| undo.erased().len()),
+            removals_ms,
+            sites_ms,
+            (release_start - lots_start).as_secs_f64() * 1000.0,
+            (erase_start - release_start).as_secs_f64() * 1000.0,
+            erase_start.elapsed().as_secs_f64() * 1000.0,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        erased
+    }
+
+    // Demolishes `buildings` (descending indices) through the building lifecycle, as the
+    // bulldoze does but without undo records (a road undo does not restore them): every one is
+    // evacuated first, its households rehoused outside the batch while the zone index that finds
+    // their homes is current, then each is removed with its agents, households, shipments,
+    // electricity and parcel occupancy. In descending order no swap-remove moves a building
+    // still to be removed, so one parallel scan for the agents naming any of them or of the
+    // buildings their swap-removes move (the last `buildings.len()` indices) serves the batch,
+    // and one for the households; each is repeated only after a removal renumbered its store
+    // (no removal renumbers households). Then the site changes are published once (graded
+    // terrain, parking, production sites, yards) and the sites' terrain and lot regions are
+    // marked. The commit rebuilds the entrances. O(A/p + H/p) per batch plus the removals' own
+    // remaps. Returns the removals' and the site publication's times in ms, for the commit's
+    // log.
+    fn demolish_for_road(&mut self, buildings: &[usize]) -> [f64; 2] {
+        if buildings.is_empty() {
+            return [0.0; 2];
+        }
+        let start = Instant::now();
+        debug_assert!(buildings.windows(2).all(|pair| pair[0] > pair[1]));
+        let mut candidates = Vec::new();
+        let mut households_among = Vec::new();
+        let mut scanned = None;
+        let mut site_bounds = Vec::with_capacity(buildings.len());
+        let mut field_bounds = Vec::new();
+        for (position, &building_idx) in buildings.iter().enumerate() {
+            let stores = (self.agents.agents.len(), self.households.households.len());
+            if scanned != Some(stores) {
+                let remaining = &buildings[position..];
+                let count = self.allocator.buildings.len();
+                let mut named: Vec<usize> = remaining
+                    .iter()
+                    .copied()
+                    .chain(count.saturating_sub(remaining.len())..count)
+                    .collect();
+                named.sort_unstable();
+                named.dedup();
+                candidates = self.agents.agents_referencing_any_building(&named);
+                households_among = self.households.households_referencing_any_building(&named);
+                if scanned.is_none() {
+                    self.agents.evacuate_buildings_among(
+                        buildings,
+                        &candidates,
+                        &mut self.households,
+                        &mut self.allocator,
+                        &self.transit_network,
+                        &self.region_graph,
+                    );
+                }
+                scanned = Some(stores);
+            }
+            site_bounds.extend(self.allocator.site_dirty_bounds(building_idx));
+            field_bounds.extend(
+                self.agriculture
+                    .site_for_building(building_idx)
+                    .and_then(|site| polygon_world_bounds(&site.polygon_world)),
+            );
+            let removed = self.allocator.remove_building_for_road(
+                building_idx,
+                &mut self.zoning,
+                &mut self.agents,
+                &mut self.households,
+                &mut self.logistics,
+                &mut self.treasury.balance,
+                &candidates,
+                &households_among,
+            );
+            debug_assert!(removed, "a lot's occupant is a building");
+        }
+        let sites_start = Instant::now();
+        self.publish_pending_building_site_changes();
+        for bounds in field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
+        for bounds in site_bounds {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        self.transit_network.flow_fields.mark_all_dirty();
+        self.terrain_dirty = true;
+        [
+            (sites_start - start).as_secs_f64() * 1000.0,
+            sites_start.elapsed().as_secs_f64() * 1000.0,
+        ]
     }
 }
 
@@ -191,6 +433,8 @@ pub(crate) struct BulldozeTarget {
     center: Vector3,
     points: Vec<Vector3>,
     width_m: f32,
+    // What the hover calls the target, when it is more than its kind: a roundabout's ring.
+    label: String,
 }
 
 fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, Vector3) {
@@ -280,7 +524,7 @@ impl SimCore {
             .collect();
         let grades_before: std::collections::HashMap<usize, f32> = roads
             .iter()
-            .map(|&edge| (edge, self.edge_grade(edge)))
+            .map(|&edge| (edge, edge_grade(&self.region_graph, edge)))
             .collect();
         // The sync rebuilds every lane and renumbers them.
         let lane_identities = self
@@ -316,7 +560,7 @@ impl SimCore {
         }
         // Rolled back the same way from the undo record, which restores the source terrain
         // the sync and the lots read (`TERRAIN-07-E`).
-        if let Some(rejection) = self.steepened_profile(&roads, &grades_before) {
+        if let Some(rejection) = steepened_profile(&self.region_graph, &roads, &grades_before) {
             debug_log!(
                 "world-editor",
                 "terrain_edit_rolled_back reason={} {}",
@@ -411,7 +655,8 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> VarDictionary {
-        self.prepare_bulldoze_target_indices();
+        // A hover readies only the site part of a stale zone index (`ALLOC-05`).
+        self.prepare_site_queries();
         self.resolve_bulldoze_target(world_x, world_z)
             .map(|target| self.bulldoze_target_dict(&target, false))
             .unwrap_or_else(Self::empty_bulldoze_target_dict)
@@ -502,6 +747,7 @@ impl SimCore {
             center: Vector3::new(plant.x, height(plant.x, plant.z), plant.z),
             points,
             width_m: 0.0,
+            label: String::new(),
         })
     }
 
@@ -556,6 +802,7 @@ impl SimCore {
             ),
             points,
             width_m: 0.0,
+            label: String::new(),
         })
     }
 
@@ -607,8 +854,15 @@ impl SimCore {
                 0.0
             };
         let width_m = edge.width.max(config::LANE_WIDTH) + sidewalk_width * 2.0;
-        let mut points = Vec::with_capacity(edge.physical_geometry.len());
-        for point in &edge.physical_geometry {
+        // A ring goes whole (D15), so the hover shows and names all of it.
+        let (label, outline) = self.ring_hover(edge_idx).unwrap_or_default();
+        let hovered = if outline.is_empty() {
+            &edge.physical_geometry
+        } else {
+            &outline
+        };
+        let mut points = Vec::with_capacity(hovered.len());
+        for point in hovered {
             let y = self
                 .transit_network
                 .roadbed
@@ -636,6 +890,7 @@ impl SimCore {
             ),
             points,
             width_m,
+            label,
         })
     }
 
@@ -689,8 +944,7 @@ impl SimCore {
             }
             return false;
         }
-        self.publish_pending_production_site_removals();
-        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
+        self.publish_pending_building_site_changes();
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }
@@ -718,6 +972,9 @@ impl SimCore {
         if edge_idx >= self.region_graph.edge_count() || self.region_graph.edge(edge_idx).deleted {
             return false;
         }
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            return self.bulldoze_ring(edge_idx);
+        }
 
         let edge = self.region_graph.edge(edge_idx).clone();
         let edge_points = edge.physical_geometry.clone();
@@ -739,34 +996,55 @@ impl SimCore {
         }
 
         // A removal that leaves a node at either end without a layout or profile is refused,
-        // with nothing touched (`ROAD-68` open question 11 (c)).
+        // with nothing touched (`ROAD-68` open question 11 (c)); the zoned land the re-laid
+        // ends newly cover is taken (`ZONE-10`), read through the site index.
         let ends = HashSet::from([start_node, end_node]);
-        let tried = self.try_graph_edit(&affected_edges, &affected_nodes, |core| {
-            let graph = &mut core.region_graph;
-            graph.delete_edge_locally(edge_idx);
-            graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            graph.finalize_junction_endpoint_profiles(
-                &ends,
-                Some(&core.heightmap),
-                &mut HashSet::new(),
-            );
-            HashSet::new()
-        });
-        if let Err(rejection) = tried {
-            debug_log!(
-                "road",
-                "road_removal_rejected edge={} reason={} detail={}",
-                edge_idx,
-                rejection.reason,
-                rejection.detail
-            );
-            self.last_road_rejection = Some(rejection);
-            return false;
-        }
-
-        self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
-        self.zoning
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let tried = self.road_edit_site().try_graph_edit(
+            &affected_edges,
+            &affected_nodes,
+            &[],
+            |site| {
+                let graph = &mut *site.graph;
+                graph.delete_edge_locally(edge_idx);
+                graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+                graph.finalize_junction_endpoint_profiles(
+                    &ends,
+                    Some(site.terrain),
+                    &mut HashSet::new(),
+                );
+                HashSet::new()
+            },
+        );
+        let take = match tried {
+            Ok(TriedGraphEdit { take, .. }) => take,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "road_removal_rejected edge={} reason={} detail={}",
+                    edge_idx,
+                    rejection.reason,
+                    rejection.detail
+                );
+                self.last_road_rejection = Some(rejection);
+                return false;
+            }
+        };
+        // The region the removal regenerates, marked before the take releases its paint
+        // (`ZONE-14`): the removed road's rows lose their frontage.
+        let regeneration = self
+            .zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
+        // The zoned land the re-laid ends newly cover (`ZONE-10`), before the removed road's
+        // parcels are captured, so its undo never restores a taken lot onto erased paint, and
+        // while the lanes the evacuation reads are valid.
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
+        let erased_paint = erased.is_some();
+        self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
+        if let Some(record) = self.undo_stack.back_mut() {
+            record.cells = erased;
+        }
         self.transit_network
             .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
         for point in &edge_points {
@@ -777,6 +1055,9 @@ impl SimCore {
         self.region_graph.edge_mut(edge_idx).deleted = true;
         self.zoning.remove_parcels_attached_to_edge(edge_idx);
         self.region_graph.rebuild_adjacency_list();
+        // A pocket pair's transition left with one arm is a road end (`ROAD-95`).
+        self.region_graph
+            .reset_stale_lane_transitions([start_node, end_node]);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
@@ -817,6 +1098,10 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.reconcile_parking_frontages(&affected_edges.iter().copied().collect());
         // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
         // copy (`ROAD-68-E`).
         let routing_graph = self.schedule_cch_rebuild_of_live_graph();
@@ -824,6 +1109,9 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.mark_local_network_render_dirty();
         self.terrain_dirty = true;
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -848,6 +1136,7 @@ impl SimCore {
         dict.set("center", target.center);
         dict.set("points", points);
         dict.set("width_m", f64::from(target.width_m));
+        dict.set("label", GString::from(target.label.as_str()));
         dict
     }
 
@@ -1043,6 +1332,10 @@ impl SimCore {
             return;
         }
         let edge_idx = edge_idx as usize;
+        // A ring never zones (`ROAD-62`).
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            return;
+        }
         self.region_graph.edge_mut(edge_idx).no_building_spawn = enabled;
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
@@ -1089,6 +1382,27 @@ impl SimCore {
             2 => crate::simulation::network::types::EdgeClass::Tunnel,
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
+        // A ring edge keeps its class (`ROAD-62`, `roundabout_fixed`).
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason=roundabout_fixed",
+                edge_idx
+            );
+            return;
+        }
+        // A turn pocket stays on the ground (`ROAD-95`, `pocket_requires_surface_road`): its
+        // pocket is removed first.
+        if class != crate::simulation::network::types::EdgeClass::Standard
+            && self.region_graph.edge(edge_idx).pocket.is_some()
+        {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason=pocket_edit_first",
+                edge_idx
+            );
+            return;
+        }
         if class == crate::simulation::network::types::EdgeClass::Standard {
             let edge = self.region_graph.edge(edge_idx);
             let points = if edge.physical_geometry.len() >= 2 {
@@ -1112,8 +1426,11 @@ impl SimCore {
 
         let edge = self.region_graph.edge(edge_idx);
         let affected_nodes = HashSet::from([edge.start_node, edge.end_node]);
-        // A class whose pieces would not compile at either end, or would overlap fields or
-        // painted cells, is refused (`ROAD-68` open question 11 (c)).
+        // A class whose pieces would not compile at either end, or would cover plotted land, is
+        // refused (`ROAD-68` open question 11 (c), `ZONE-10`); the zoned land it newly covers is
+        // taken. The take reads the explicit sites through the site index.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let incident = affected_nodes
             .iter()
             .flat_map(|&node| {
@@ -1123,12 +1440,14 @@ impl SimCore {
             .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .chain([edge_idx])
             .collect();
-        let tried = self.try_graph_edit(&incident, &affected_nodes, |core| {
-            core.region_graph.edge_mut(edge_idx).class = class;
-            HashSet::new()
-        });
-        let checkpoint = match tried {
-            Ok(checkpoint) => checkpoint,
+        let tried = self
+            .road_edit_site()
+            .try_graph_edit(&incident, &affected_nodes, &[], |site| {
+                site.graph.edge_mut(edge_idx).class = class;
+                HashSet::new()
+            });
+        let TriedGraphEdit { checkpoint, take } = match tried {
+            Ok(tried) => tried,
             Err(rejection) => {
                 debug_log!(
                     "road",
@@ -1136,20 +1455,36 @@ impl SimCore {
                     edge_idx,
                     rejection.reason
                 );
+                self.last_road_rejection = Some(rejection);
                 return;
             }
         };
-        // The checkpoint holds the whole records the change touches: its undo record (R3-k).
-        self.push_network_undo_delta(checkpoint, None);
         self.region_graph.edge_mut(edge_idx).class = class;
-        self.zoning
+        let regeneration = self
+            .zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
+        // A deck brought down to the ground takes the zoned land it now covers (`ZONE-10`) and
+        // releases the paint of the region it regenerates (`ZONE-14`). A road lifted off the
+        // ground keeps its paint pinned, so the lots come back with the ground class (decision
+        // D-class, round RL1).
+        let regeneration = if class == crate::simulation::network::types::EdgeClass::Standard {
+            regeneration
+        } else {
+            Vec::new()
+        };
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
+        let erased_paint = erased.is_some();
+        // The checkpoint holds the whole records the change touches: its undo record (R3-k).
+        self.push_network_undo_delta(checkpoint, None, erased);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
 
         self.rebuild_building_entrances_internal();
         // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
         self.schedule_cch_rebuild_of_live_graph();
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
     }
 
     /// Adds a new road segment to the transit network.
@@ -1191,8 +1526,11 @@ impl SimCore {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         // Non-preview callers must also validate final junction geometry, not only the stroke.
+        // A join may move a ring's bare nodes (D9, `ROAD-62`), which only a plan does.
         let fallback_plan = if edit_plan.is_none()
-            && (!self.allocator.field_clearance.is_empty() || self.zoning.cells.has_reservations())
+            && (!self.allocator.field_clearance.is_empty()
+                || self.zoning.cells.has_reservations()
+                || ring_near_stroke(&self.region_graph, &points))
         {
             self.allocator
                 .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -1207,6 +1545,7 @@ impl SimCore {
                     // Plan-less callers draw without the tool's tunnel intent or median.
                     tunnel: false,
                     median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
                     attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 },
             ))
@@ -1253,7 +1592,11 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                (None, crate::simulation::network::road_types::RoadAttributes::DEFAULT),
+                (
+                    None,
+                    Default::default(),
+                    crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                ),
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1385,20 +1728,25 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
-        // Fields and painted cells are tested against the pieces the edit installs, in
-        // `validate_staged_road_render_installing` (`ROAD-68` open question 1).
+        // A staged edit's pieces take the land under them, or a plotted reservation refuses
+        // them, in `validate_staged_road_render_installing` (`ZONE-09`). An unstaged caller
+        // (bulk setup) never takes land, so parcels in its corridor still refuse it.
         let road_width_m = crate::simulation::network::graph::Edge::cross_section_width_m(
             fwd_lanes_u8,
             bkw_lanes_u8,
             prepared_input.median,
+            prepared_input.parking,
         );
         let corridor_half_width_m = road_width_m * 0.5
             + prepared_input
                 .attributes
                 .corridor_side_m(fwd_lanes_u8 == 0 && bkw_lanes_u8 == 0);
-        let overlapping_parcels = self
-            .zoning
-            .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
+        let overlapping_parcels = if self.transit_network.road_edit_is_staged() {
+            Vec::new()
+        } else {
+            self.zoning
+                .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m)
+        };
         if !overlapping_parcels.is_empty() {
             debug_log!(
                 "road",
@@ -1450,6 +1798,7 @@ impl SimCore {
         let build_weight = road_cost::stroke_weight(
             (fwd_lanes_u8, bkw_lanes_u8),
             prepared_input.median,
+            prepared_input.parking,
             prepared_input.attributes,
             prepared_input.class,
         );
@@ -1481,7 +1830,11 @@ impl SimCore {
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                (prepared_input.median, prepared_input.attributes),
+                (
+                    prepared_input.median,
+                    prepared_input.parking,
+                    prepared_input.attributes,
+                ),
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,
@@ -1503,7 +1856,7 @@ impl SimCore {
             .unwrap_or(&self.transit_network.bulk_dirty_edges);
         // An adopted plan names the dirty edges whose geometry changed (`ROAD-68-G`); the
         // others' cells change only near those, so they queue no lot regions of their own.
-        match finalized_geometry
+        let regeneration = match finalized_geometry
             .as_ref()
             .and_then(|geometry| geometry.changed_edges.as_ref())
         {
@@ -1515,7 +1868,7 @@ impl SimCore {
             None => self
                 .zoning
                 .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied()),
-        }
+        };
         let road_dirty_edges = std::mem::replace(
             &mut self.transit_network.bulk_dirty_edges,
             earlier_bulk_dirty_edges,
@@ -1539,27 +1892,19 @@ impl SimCore {
                 topology_ms: dt_topo_us as f64 / 1000.0,
                 zoning_ms,
             },
+            regeneration,
         }
     }
 
-    /// Returns a road-frontage snapped preview for one explicit service building asset.
+    /// Returns a road-frontage snapped preview for one explicit service building asset, with
+    /// the zoned land it would take (`ZONE-11`).
     pub(crate) fn get_service_building_placement_preview_internal(
-        &self,
+        &mut self,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.allocator.preview_explicit_service_placement(
-            asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-        )
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
+        self.explicit_placement_preview(ExplicitPlacementKind::Service, asset_id, world_x, world_z)
     }
 
     /// Places one explicit service building, charging its build cost to the city treasury.
@@ -1569,60 +1914,95 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let building_idx = self.allocator.execute_explicit_service_placement(
+        let building_idx = self.place_explicit_building(
+            ExplicitPlacementKind::Service,
             asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-            &tuning,
+            world_x,
+            world_z,
         )?;
-
         self.register_service_input_capacity(building_idx);
-
-        if !self.benchmark_mode
-            && let Some(building) = self.allocator.buildings.get(building_idx)
-        {
-            let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
-            self.treasury
-                .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
-        }
-        self.rebuild_building_entrances_internal();
-        self.publish_pending_building_site_changes();
+        self.finish_explicit_placement(building_idx);
         Ok(building_idx)
     }
 
-    /// Returns a road-frontage snapped preview for one explicit industry building asset.
+    /// Returns a road-frontage snapped preview for one explicit industry building asset, with
+    /// the zoned land it would take (`ZONE-11`).
     pub(crate) fn get_industry_building_placement_preview_internal(
-        &self,
+        &mut self,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.allocator.preview_explicit_industry_placement(
-            asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-        )
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
+        self.explicit_placement_preview(ExplicitPlacementKind::Industry, asset_id, world_x, world_z)
     }
 
     /// Places one explicit industry building, charging its build cost to the city treasury.
     pub(crate) fn place_industry_building_internal(
         &mut self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let building_idx = self.place_explicit_building(
+            ExplicitPlacementKind::Industry,
+            asset_id,
+            world_x,
+            world_z,
+        )?;
+        self.finish_explicit_placement(building_idx);
+        Ok(building_idx)
+    }
+
+    // The preview of an explicit building, judged as its commit judges it, with the land under
+    // its lot read from the live core: the take the commit would make, empty when the preview
+    // is refused (`ZONE-11`). The site queries' index is readied as a hover readies it
+    // (`prepare_site_query_chunks`: its site part only, never the lists that carry the
+    // simulation's order), so the site tests visit the chunks the lot touches. O(the
+    // placement's checks + the take), plus an O(B/p) site refresh once after the index is
+    // marked stale.
+    fn explicit_placement_preview(
+        &mut self,
+        kind: ExplicitPlacementKind,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.allocator
+            .prepare_site_query_chunks(self.config.zone_cell_m);
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        let preview = self.allocator.preview_explicit_placement(
+            kind,
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.roadbed,
+            &self.heightmap,
+            &catalog,
+            |lot| {
+                let take = explicit_lot_take(&land, lot)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        let take = taken.filter(|_| preview.valid).unwrap_or_default();
+        Ok(ExplicitPlacementHover { preview, take })
+    }
+
+    // Places an explicit building (`ZONE-11`): every check first, the land under its lot among
+    // them (plotted land refuses); then the zoned land under the lot is taken, demolishing the
+    // growable buildings on it, removing their lots and erasing the covered cells' paint with the
+    // free paint of the land that erase regenerates, the covered cells' halos (`ZONE-14`,
+    // D-placements (a)), and the site is placed. Nothing after the take refuses. A placement has
+    // no undo record (decision D-undo), so the erase is final. O(the placement's checks + the
+    // take).
+    fn place_explicit_building(
+        &mut self,
+        kind: ExplicitPlacementKind,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
@@ -1633,17 +2013,74 @@ impl SimCore {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let building_idx = self.allocator.execute_explicit_industry_placement(
+        // The explicit sites are queried through the site index.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        let prepared = self.allocator.prepare_explicit_placement(
+            kind,
             asset_id,
             Vector2::new(world_x, world_z),
-            &self.zoning,
+            self.config.zone_cell_m,
             &self.region_graph,
             &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
-            &tuning,
+            |lot| {
+                let take = explicit_lot_take(&land, lot)?;
+                let buildings = take.buildings.clone();
+                taken = Some((take, *lot));
+                Ok(buildings)
+            },
         )?;
+        // Nothing below refuses the placement. The lot's own mark is its site's publication,
+        // after the take: its envelope (the lot and 7 cells) lies within the covered cells'
+        // 12-cell halos for any lot up to 5 cells across, so the halos are its region.
+        if let Some((take, lot)) = taken {
+            self.take_land_for_placement(take, &[]);
+            debug_assert!(
+                explicit_lot_take(&CoreLand::of(self), &lot).is_ok_and(|take| take.is_empty()),
+                "the land under the lot was taken"
+            );
+        }
+        Ok(self
+            .allocator
+            .place_explicit_site(prepared, &catalog, &tuning))
+    }
 
+    // Marks the cell lots of a work area's `footprints` (its old and new polygon bounds) and
+    // returns the envelopes the marks invalidated: the region the area regenerates, marked
+    // before its take as the road edits mark theirs (`ZONE-14`). O(footprints).
+    fn mark_placement_footprints(
+        &mut self,
+        footprints: impl IntoIterator<Item = CellBounds>,
+    ) -> Vec<CellBounds> {
+        footprints
+            .into_iter()
+            .map(|bounds| self.zoning.mark_cell_lots_dirty(bounds))
+            .collect()
+    }
+
+    // A placement's take (`ZONE-11`) with the release of decision D-placements (a) (`ZONE-14`):
+    // the free paint of `region`, the envelopes its marks invalidated, and of the covered cells'
+    // and authored parcels' halos goes with the covered paint, so the lot plan re-lays that land
+    // around the lot or polygon. A placement that takes no zoned land releases nothing: over
+    // unpainted land it erases nothing. Returns the erase, `None` when no paint was erased.
+    fn take_land_for_placement(
+        &mut self,
+        take: RoadLandTake,
+        region: &[CellBounds],
+    ) -> Option<CellPaintUndo> {
+        let release = (!take.is_empty()).then_some(region);
+        self.take_land_for_edit(take, release)
+    }
+
+    // An explicit building's tail: its cost, the lot plan (the entrance rebuild's first step,
+    // which re-lays the land the take released around the site and hands its paint on,
+    // `ZONE-14`: no new cell inherits under the lot, which the site blocks), entrances and site
+    // publication.
+    fn finish_explicit_placement(&mut self, building_idx: usize) {
         if !self.benchmark_mode
             && let Some(building) = self.allocator.buildings.get(building_idx)
         {
@@ -1653,10 +2090,35 @@ impl SimCore {
         }
         self.rebuild_building_entrances_internal();
         self.publish_pending_building_site_changes();
-        Ok(building_idx)
     }
 
-    /// Commits or replaces a resource-extraction polygon for one placed industry building.
+    // Takes the zoned land a field or an extraction area of `owner` covers (`ZONE-11`), `take`
+    // computed on the land as it is, with the free paint of `region`, the envelopes the marks
+    // of its old and new polygons invalidated (`ZONE-14`): the take's buildings are demolished,
+    // which may swap-remove `owner` to a lower index. Returns the owner's index after the take
+    // and whether paint was erased (the edit then plans its lots: decision D-lot-plan). The
+    // erase has no undo record (decision D-undo).
+    fn take_land_for_work_area(
+        &mut self,
+        take: RoadLandTake,
+        owner: usize,
+        region: &[CellBounds],
+    ) -> (usize, bool) {
+        let handle = self.allocator.building_handles.handle(owner);
+        let erased = self.take_land_for_placement(take, region).is_some();
+        let owner = self
+            .allocator
+            .building_handles
+            .resolve(handle)
+            .expect("a work area's owner is plotted, never taken");
+        (owner, erased)
+    }
+
+    /// Commits or replaces a resource-extraction polygon for one placed industry building
+    /// (`ZONE-11`): validated with the land under it (plotted land refuses), then the zoned land
+    /// it covers is taken, demolishing the growable buildings there, and the area written;
+    /// nothing after the take refuses. The land of the old and new polygons is replanned, as the
+    /// area blocks cells (decision D-extraction-blocks).
     pub(crate) fn commit_extractor_polygon_internal(
         &mut self,
         building_idx: usize,
@@ -1664,18 +2126,68 @@ impl SimCore {
     ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let previous_area = self
+        self.prepare_field_polygon_validation(false)?;
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        self.resource_extraction.validate_site(
+            building_idx,
+            polygon_world.clone(),
+            &self.resource_deposits,
+            &self.allocator,
+            &self.transit_network.roadbed,
+            |footprint| {
+                let take = work_area_take(&land, footprint, building_idx, false)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        // Nothing below refuses the area. The land of the old and new polygons is replanned, as
+        // the area blocks cells; marked before the take, whose release follows the marks.
+        let previous = self
             .resource_extraction
             .site_for_building(building_idx)
-            .map_or(0.0, |site| site.area_m2);
-        let summary = self.resource_extraction.commit_site(
-            building_idx,
-            polygon_world,
-            &self.resource_deposits,
-            &mut self.allocator,
-        )?;
+            .map(|site| (site.area_m2, polygon_world_bounds(&site.polygon_world)));
+        let committed = polygon_world_bounds(&polygon_world);
+        let region = self.mark_placement_footprints(
+            [previous.and_then(|(_, bounds)| bounds), committed]
+                .into_iter()
+                .flatten()
+                .map(vector_pair_bounds),
+        );
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx, &region);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, false);
+        let summary = self
+            .resource_extraction
+            .commit_site(
+                building_idx,
+                polygon_world,
+                &self.resource_deposits,
+                &mut self.allocator,
+                &self.transit_network.roadbed,
+                |_| Ok(Vec::new()),
+            )
+            .expect("an area validated before its land was taken commits");
+        let previous_area = previous.map_or(0.0, |(area, _)| area);
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
+        if erased {
+            self.plan_lots_after_erase();
+        }
         Ok(summary)
+    }
+
+    // Debug builds: after a work area's take, the land under its polygon holds nothing more to
+    // take or refuse (`ZONE-11`). O(the take).
+    fn debug_assert_work_area_land_taken(&self, polygon: &[Vector2], owner: usize, field: bool) {
+        if cfg!(debug_assertions) {
+            let footprint = PolygonFootprint::new(polygon);
+            let fresh = work_area_take(&CoreLand::of(self), &footprint, owner, field);
+            debug_assert!(
+                fresh.is_ok_and(|take| take.is_empty()),
+                "the land under the area was taken"
+            );
+        }
     }
 
     /// Quotes the extra construction charge and all-import daily utilities for a valid area.
@@ -1742,29 +2254,88 @@ impl SimCore {
             .deduct_build_cost(profile.area_expansion_cost(previous_area, area));
     }
 
-    fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
+    // The live inputs a field or extraction area is validated against: the current roadbed and
+    // the site query index; a hover readies only the index's site part
+    // (`prepare_site_query_chunks`), so it leaves the simulation's order alone.
+    fn prepare_field_polygon_validation(&mut self, hover: bool) -> Result<(), String> {
         if !self.transit_network.roadbed.is_current() {
             return Err("road surfaces are updating; try again shortly".to_owned());
         }
-        self.allocator
-            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
+        let cell_m = self.zoning.config.zone_cell_m;
+        if hover {
+            self.allocator.prepare_site_query_chunks(cell_m);
+        } else {
+            self.allocator.prepare_building_site_query_index(cell_m);
+        }
         Ok(())
     }
 
+    /// Validates a field or an extraction area of `building_idx` as its commit will
+    /// ([`Self::commit_field_polygon_internal`], [`Self::commit_extractor_polygon_internal`]),
+    /// without writing anything: the area, or the commit's refusal, and the zoned land the
+    /// polygon would take (`ZONE-11`). A farm draws a field, any other owner an extraction area.
+    /// For the field editor's drag and the industry tool's polygon. O(the commit's checks +
+    /// the take), plus an O(B/p) site refresh once after the site index is marked stale.
+    pub(crate) fn preview_work_area_internal(
+        &mut self,
+        building_idx: usize,
+        polygon_world: &[Vector2],
+    ) -> Result<WorkAreaPreview, String> {
+        self.prepare_field_polygon_validation(true)?;
+        let field = self
+            .allocator
+            .buildings
+            .get(building_idx)
+            .is_some_and(|building| {
+                self.allocator
+                    .registry
+                    .field_resource(&building.asset_id)
+                    .is_some()
+            });
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        let land_test = |footprint: &PolygonFootprint<'static>| {
+            let take = work_area_take(&land, footprint, building_idx, field)?;
+            let buildings = take.buildings.clone();
+            taken = Some(take);
+            Ok(buildings)
+        };
+        let area_m2 = if field {
+            self.agriculture.validate_site(
+                building_idx,
+                polygon_world,
+                &self.allocator,
+                &self.zoning,
+                &self.transit_network.roadbed,
+                land_test,
+            )?
+        } else {
+            self.resource_extraction
+                .validate_site(
+                    building_idx,
+                    polygon_world.to_vec(),
+                    &self.resource_deposits,
+                    &self.allocator,
+                    &self.transit_network.roadbed,
+                    land_test,
+                )?
+                .area_m2
+        };
+        Ok(WorkAreaPreview {
+            area_m2,
+            take: taken.unwrap_or_default(),
+        })
+    }
+
     /// Validates a field preview without changing its saved polygon or work area.
+    #[cfg(test)]
     pub(crate) fn validate_field_polygon_internal(
         &mut self,
         building_idx: usize,
         polygon_world: &[Vector2],
     ) -> Result<f32, String> {
-        self.prepare_field_polygon_validation()?;
-        self.agriculture.validate_site(
-            building_idx,
-            polygon_world,
-            &self.allocator,
-            &self.zoning,
-            &self.transit_network.roadbed,
-        )
+        self.preview_work_area_internal(building_idx, polygon_world)
+            .map(|preview| preview.area_m2)
     }
 
     /// Replaces only the field and farm identity captured when the drag began.
@@ -1794,7 +2365,10 @@ impl SimCore {
         self.commit_field_polygon_internal(building_idx, polygon_world)
     }
 
-    /// Commits a validated field and immediately rebuilds its area and placement reservation.
+    /// Commits a validated field and immediately rebuilds its area and placement reservation
+    /// (`ZONE-11`): validated with the land under it (plotted land refuses, the farm's own lot
+    /// and old field excepted), then the zoned land it covers is taken, demolishing the
+    /// growable buildings there, and the field written; nothing after the take refuses.
     pub(crate) fn commit_field_polygon_internal(
         &mut self,
         building_idx: usize,
@@ -1802,33 +2376,61 @@ impl SimCore {
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        self.prepare_field_polygon_validation()?;
+        self.prepare_field_polygon_validation(false)?;
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        self.agriculture.validate_site(
+            building_idx,
+            &polygon_world,
+            &self.allocator,
+            &self.zoning,
+            &self.transit_network.roadbed,
+            |footprint| {
+                let take = work_area_take(&land, footprint, building_idx, true)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        // Nothing below refuses the field.
         let previous_area = self
             .agriculture
             .site_for_building(building_idx)
             .map_or(0.0, |site| site.area_m2);
         // Captured before the commit: a resize has to give back the ground the old polygon
-        // covered as well as take the ground the new one covers.
+        // covered as well as take the ground the new one covers. Marked before the take, whose
+        // release follows the marks.
         let previous = self
             .agriculture
             .site_for_building(building_idx)
             .and_then(|site| polygon_world_bounds(&site.polygon_world));
         let committed = polygon_world_bounds(&polygon_world);
-        let summary = self.agriculture.commit_site(
-            building_idx,
-            polygon_world,
-            &mut self.allocator,
-            &self.zoning,
-            &self.transit_network.roadbed,
-        )?;
+        let region = self.mark_placement_footprints(
+            [previous, committed]
+                .into_iter()
+                .flatten()
+                .map(vector_pair_bounds),
+        );
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx, &region);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, true);
+        let summary = self
+            .agriculture
+            .commit_site(
+                building_idx,
+                polygon_world,
+                &mut self.allocator,
+                &self.zoning,
+                &self.transit_network.roadbed,
+                |_| Ok(Vec::new()),
+            )
+            .expect("a field validated before its land was taken commits");
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
         for bounds in [previous, committed].into_iter().flatten() {
-            self.zoning.mark_cell_lots_dirty(
-                crate::simulation::zoning::cells::CellBounds::from_points(
-                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
-                ),
-            );
             self.invalidate_vegetation_over(bounds);
+        }
+        if erased {
+            self.plan_lots_after_erase();
         }
         Ok(summary)
     }
@@ -1886,243 +2488,14 @@ impl SimCore {
         true
     }
 
-    /// Repositions a network node. Unchanged moves leave authoritative state and undo history
-    /// untouched.
-    pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
-            let node_id = self.region_graph.get_valid_node(node_id as u32);
-            let old_pos = self.region_graph.node(node_id).pos;
-            if old_pos == pos {
-                return false;
-            }
-            let mut affected_edges: HashSet<usize> = self
-                .region_graph
-                .node_adjacency(node_id)
-                .iter()
-                .copied()
-                .filter(|&id| !self.region_graph.edge(id).deleted)
-                .collect();
-            let mut affected_nodes = HashSet::from([node_id]);
-            for &edge_idx in &affected_edges {
-                let edge = self.region_graph.edge(edge_idx);
-                affected_nodes.insert(edge.start_node);
-                affected_nodes.insert(edge.end_node);
-            }
-            // Endpoint deformation can change the clips of other approaches at either end.
-            // Keep their cell frontage, lane and surface dependents in the same transaction.
-            for &node in &affected_nodes {
-                affected_edges.extend(
-                    self.region_graph
-                        .node_adjacency(node)
-                        .iter()
-                        .copied()
-                        .filter(|&id| !self.region_graph.edge(id).deleted),
-                );
-            }
-
-            // The moved pieces must compile and keep clear of fields and painted cells
-            // (`ROAD-68` open questions 2 and 11 (c)).
-            let tried = self.try_graph_edit(&affected_edges, &affected_nodes, |core| {
-                core.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
-                HashSet::new()
-            });
-            let checkpoint = match tried {
-                Ok(checkpoint) => checkpoint,
-                Err(rejection) => {
-                    debug_log!(
-                        "road",
-                        "node_move_rejected node={} reason={} detail={}",
-                        node_id,
-                        rejection.reason,
-                        rejection.detail
-                    );
-                    self.last_road_rejection = Some(rejection);
-                    return false;
-                }
-            };
-            self.push_network_undo_delta(checkpoint, None);
-            // Invalidate both corridors; moving a node can leave its old cached cells behind.
-            self.zoning
-                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            self.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
-            self.zoning
-                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            self.agents.invalidate_lane_ids_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-            self.transit_network
-                .lane_system
-                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
-            self.agents.reattach_invalidated_lanes_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-            self.rebuild_building_entrances_internal();
-            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
-            self.schedule_cch_rebuild_of_live_graph();
-            self.transit_network.flow_fields.mark_all_dirty();
-            self.transit_network
-                .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
-            self.mark_local_network_render_dirty();
-            return true;
-        }
-        false
-    }
-
-    // Moves a node on the graph alone: its position, the clips at the affected nodes and the
-    // profiles the move reaches. Every edge the move deformed has both ends among the affected
-    // nodes, so the solve re-derives each profile whose pins the move can reach, from its
-    // control polyline (`ROAD-68` invariant 6); all of them are in the undo record.
-    fn apply_node_move(
-        &mut self,
-        node_id: u32,
-        pos: Vector3,
-        affected_edges: &HashSet<usize>,
-        affected_nodes: &HashSet<u32>,
-    ) {
-        self.region_graph.move_node(node_id, pos);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(affected_nodes);
-        let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            affected_nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
-        debug_assert!(changed.is_subset(affected_edges));
-    }
-
-    // Tries a graph-only edit that dirties nodes (`ROAD-68` open questions 2 and 11 (c)): applies
-    // it, compiles the closure of `edges`, `nodes` and the edges `apply` returns into a scratch
-    // roadbed, and puts the graph back from a local checkpoint of `edges` and `nodes`, which must
-    // cover every record `apply` changes. `Ok` with that checkpoint, the edit's undo record, when
-    // the closure compiles, keeps clear of fields and painted cells and steepens no profile past
-    // the 1:3 maximum grade; nothing outside the graph has changed either way. O(local records +
-    // closure pieces).
-    pub(super) fn try_graph_edit(
-        &mut self,
-        edges: &HashSet<usize>,
-        nodes: &HashSet<u32>,
-        apply: impl FnOnce(&mut Self) -> HashSet<usize>,
-    ) -> Result<RegionGraphUndoDelta, RoadRejection> {
-        let checkpoint = self
-            .region_graph
-            .capture_undo_for_local_topology(edges.clone(), nodes.clone());
-        let grades_before: std::collections::HashMap<usize, f32> = edges
-            .iter()
-            .filter(|&&edge| edge < self.region_graph.edge_count())
-            .map(|&edge| (edge, self.edge_grade(edge)))
-            .collect();
-        let changed = apply(self);
-        let dirty: HashSet<usize> = edges.iter().copied().chain(changed).collect();
-        let refusal = self
-            .closure_refusal(&dirty, nodes)
-            .or_else(|| self.steepened_profile(&dirty, &grades_before));
-        self.region_graph.restore_undo_delta_local(&checkpoint);
-        refusal.map_or(Ok(checkpoint), Err)
-    }
-
-    // The grade of one edge's profile by the one grade (`grade::steepest_grade`); zero
-    // without a graded segment.
-    fn edge_grade(&self, edge: usize) -> f32 {
-        crate::simulation::network::grade::steepest_grade(
-            crate::simulation::network::validate::centreline(self.region_graph.edge(edge)),
-        )
-        .map_or(0.0, |steepest| steepest.grade)
-    }
-
-    // The first of `edges`, in id order, whose profile a node edit made illegally steep
-    // (`ROAD-68` open question 37): above the 1:3 maximum and steeper than `before` held it. A
-    // profile already that steep is the existing road's, so editing beside it stays possible.
-    // O(points on `edges`).
-    fn steepened_profile(
-        &self,
-        edges: &HashSet<usize>,
-        before: &std::collections::HashMap<usize, f32>,
-    ) -> Option<RoadRejection> {
-        use crate::simulation::network::validate::{
-            RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
-        };
-        let graph = &self.region_graph;
-        let mut edges: Vec<usize> = edges
-            .iter()
-            .copied()
-            .filter(|&edge| edge < graph.edge_count())
-            .collect();
-        edges.sort_unstable();
-        let limits = RoadGeometryLimits::default();
-        edges.into_iter().find_map(|edge| {
-            let old = before.get(&edge).copied().unwrap_or(-1.0);
-            match grade_violation(graph, edge, &limits)? {
-                RoadGeometryViolation::Grade {
-                    measured,
-                    limit,
-                    tier: RoadGeometryTier::Illegal,
-                    ..
-                } if measured > old => Some(RoadRejection::new(
-                    "road_too_steep",
-                    format!(
-                        "edge {edge} would climb at {:.0}%, steeper than the {:.0}% (1:3) \
-                         maximum grade",
-                        measured * 100.0,
-                        limit * 100.0
-                    ),
-                )),
-                _ => None,
-            }
-        })
-    }
-
-    // Why the pieces of a node-dirtying edit cannot publish (`ROAD-68` open questions 2 and
-    // 11 (c)): a node of the closure fails its layout or profile solve, or a piece overlaps a
-    // field or painted cells. Compiles the closure of `edges` and `nodes` into an `O(1)` copy of
-    // the published roadbed, with the graph as it stands. O(closure pieces).
-    fn closure_refusal(
-        &self,
-        edges: &HashSet<usize>,
-        nodes: &HashSet<u32>,
-    ) -> Option<RoadRejection> {
-        let delta = self.compile_closure(edges, nodes);
-        if let Some((node, error)) = delta.failed_nodes().next() {
-            return Some(RoadRejection::new(
-                "node_piece_failed",
-                format!("node {node} fails its junction layout or profile solve: {error:?}"),
-            ));
-        }
-        let roadbed = &self.transit_network.roadbed;
-        let before: Vec<_> = delta
-            .pieces()
-            .filter_map(|(id, _)| roadbed.piece_mesh(id))
-            .collect();
-        ReservedOverlap::first_in_core(self, delta.pieces().filter_map(|(_, mesh)| mesh), &before)
-            .map(ReservedOverlap::rejection)
-    }
-
-    // The closure of `edges` and `nodes` compiled, unpublished, into an `O(1)` copy of the
-    // published roadbed with the graph as it stands; ids past the graph's records are skipped.
-    // O(closure pieces).
-    fn compile_closure(
-        &self,
-        edges: &HashSet<usize>,
-        nodes: &HashSet<u32>,
-    ) -> crate::simulation::network::roadbed::RoadbedDelta {
-        let graph = &self.region_graph;
-        let mut scratch = self.transit_network.roadbed.snapshot();
-        for &edge in edges.iter().filter(|&&edge| edge < graph.edge_count()) {
-            scratch.mark_edge_dirty(edge);
-        }
-        for &node in nodes
-            .iter()
-            .filter(|&&node| (node as usize) < graph.node_count())
-        {
-            scratch.mark_node_dirty(graph.get_valid_node(node));
-        }
-        scratch.compile_delta(graph)
+    // The end of an in-place edit whose take erased paint (`ZONE-10`, decision D-lot-plan): the
+    // edit plans its lots at once (the in-commit plan, whose products equal the deferred
+    // plan's; its site queries compile the edit's pieces first, which block the cells under
+    // them), so the new cells along the road inherit the paint into this edit's undo record
+    // before another edit erases any. An edit that erased nothing leaves its regions to the lot
+    // queue. O(closure pieces + the queued regions' plan).
+    pub(super) fn plan_lots_after_erase(&mut self) {
+        self.prepare_cell_lots_internal();
     }
 
     // Undo restores a graph that compiled when it was published, so its closure compiles again
@@ -2134,7 +2507,13 @@ impl SimCore {
         nodes: &HashSet<u32>,
     ) {
         if cfg!(debug_assertions) {
-            let delta = self.compile_closure(edges, nodes);
+            let delta = compile_closure(
+                &self.region_graph,
+                &self.transit_network.roadbed,
+                None,
+                edges,
+                nodes,
+            );
             let failed: Vec<_> = delta.failed_nodes().collect();
             debug_assert!(failed.is_empty(), "undo restored failing nodes: {failed:?}");
         }
@@ -2207,6 +2586,19 @@ impl SimCore {
         // no chunk is left marked for a second, synchronous rebuild.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
+    }
+
+    // A lane rule edit changes its node's arms' paint, which reads the whitelist: the solid
+    // approach zone (`ROAD-94`) and the turn arrows (`ROAD-75`). The node's closure recompiles
+    // with unchanged geometry and a new render generation re-emits its chunks, as a crossing
+    // toggle's does; undo marks the same closure from its record. O(node closure).
+    fn repaint_lane_rule_arms(&mut self, node_id: u32) {
+        if (node_id as usize) < self.region_graph.node_count() {
+            self.transit_network
+                .mark_surface_dirty_for_nodes(&self.region_graph, &HashSet::from([node_id]));
+            self.mark_local_network_render_dirty();
+        }
     }
 
     /// Clears all lane connections at a junction node.
@@ -2249,6 +2641,7 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
@@ -2286,6 +2679,7 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
         self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
+        self.repaint_lane_rule_arms(node_id);
     }
 
     /// Sets the crossing of arm `edge_id` at `node_id` on or off (`ROAD-74`): the node's override,
@@ -2309,8 +2703,13 @@ impl SimCore {
     ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let checkpoint = match self.try_crosswalk_toggle(node_id, edge_id, enabled) {
-            Ok(checkpoint) => checkpoint,
+        // The take reads the explicit sites through the site index, as a stroke's commit does.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let TriedGraphEdit { checkpoint, take } = match self
+            .try_crosswalk_toggle(node_id, edge_id, enabled)
+        {
+            Ok(tried) => tried,
             Err(rejection) => {
                 debug_log!(
                     "road",
@@ -2331,8 +2730,14 @@ impl SimCore {
             .copied()
             .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .collect();
-        self.push_network_undo_delta(checkpoint, None);
-        let changed = self.apply_crosswalk_toggle(node, edge_id, enabled);
+        let changed = self
+            .road_edit_site()
+            .apply_crosswalk_toggle(node, edge_id, enabled);
+        // The zoned land the moved mouths newly cover (`ZONE-10`), before the lanes rebuild. A
+        // toggle moves no frontage and marks nothing: it releases only around covered cells.
+        let erased = self.take_land_for_edit(take, Some(&[]));
+        let erased_paint = erased.is_some();
+        self.push_network_undo_delta(checkpoint, None, erased);
         let nodes = HashSet::from([node]);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
@@ -2350,6 +2755,9 @@ impl SimCore {
         // A new render generation, so the renderer fetches the node's chunks once their pieces
         // publish ([`Self::finalize_network_render_products`]).
         self.mark_local_network_render_dirty();
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -2375,7 +2783,7 @@ impl SimCore {
         node_id: u32,
         edge_id: i32,
         enabled: bool,
-    ) -> Result<RegionGraphUndoDelta, RoadRejection> {
+    ) -> Result<TriedGraphEdit, RoadRejection> {
         let edge = usize::try_from(edge_id).ok();
         let node = (node_id as usize) < self.region_graph.node_count();
         let Some(edge) = edge.filter(|&edge| {
@@ -2398,27 +2806,10 @@ impl SimCore {
             .filter(|&incident| !self.region_graph.edge(incident).deleted)
             .chain([edge])
             .collect();
-        self.try_graph_edit(&edges, &HashSet::from([node_id, node]), |core| {
-            core.apply_crosswalk_toggle(node, edge, enabled)
-        })
-    }
-
-    // Sets the override and re-lays the node out on the graph: its clips and the profile solve
-    // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
-    // profiles changed.
-    fn apply_crosswalk_toggle(&mut self, node: u32, edge: usize, enabled: bool) -> HashSet<usize> {
-        self.region_graph
-            .set_crosswalk_override(node, edge, enabled);
-        let nodes = HashSet::from([node]);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(&nodes);
-        let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            &nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
-        changed
+        self.road_edit_site()
+            .try_graph_edit(&edges, &HashSet::from([node_id, node]), &[], |site| {
+                site.apply_crosswalk_toggle(node, edge, enabled)
+            })
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
@@ -2688,6 +3079,25 @@ impl SimCore {
                 new_pos.z
             );
         }
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.reconcile_parking_frontages(&adj.into_iter().collect());
+    }
+}
+
+impl<L> RoadEditSite<'_, L> {
+    // Sets the override and re-lays the node out on the graph: its clips and the profile solve
+    // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
+    // profiles changed.
+    fn apply_crosswalk_toggle(&mut self, node: u32, edge: usize, enabled: bool) -> HashSet<usize> {
+        self.graph.set_crosswalk_override(node, edge, enabled);
+        let nodes = HashSet::from([node]);
+        self.graph.rebuild_intersection_clips_for_nodes(&nodes);
+        let mut changed = HashSet::new();
+        self.graph
+            .finalize_junction_endpoint_profiles(&nodes, Some(self.terrain), &mut changed);
+        changed
     }
 }
 
@@ -2750,6 +3160,10 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         })
     }
 
@@ -2798,6 +3212,10 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2969,6 +3387,10 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3176,6 +3598,9 @@ mod tests {
         assert_eq!(core.allocator.buildings[0].rezone_grace_days_remaining, 11);
     }
 
+    // The occupied lot keeps its claim and paint through the bulldoze and its undo; the free
+    // paint loses its road column with the road and goes (`ZONE-14`, D-removal), and the undo
+    // gives it back.
     #[test]
     fn curved_road_bulldoze_and_undo_keep_occupied_cell_claims_until_building_removal() {
         use crate::simulation::zoning::cells::{CellBounds, CellLotSize, CellSelectionShape};
@@ -3242,6 +3667,11 @@ mod tests {
                 core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
             }
             let paint = core.zoning.cells.saved_cells();
+            let claimed: Vec<_> = paint
+                .iter()
+                .copied()
+                .filter(|&(key, _)| lot.cells().any(|cell| cell == key))
+                .collect();
             assert!(core.bulldoze_road_edge(0));
             assert!(core.region_graph.edge(0).deleted);
             for undo in [false, true] {
@@ -3260,7 +3690,8 @@ mod tests {
                     lot.cells()
                         .all(|key| core.zoning.cells.lot(key) == Some(id.raw()))
                 );
-                assert_eq!(core.zoning.cells.saved_cells(), paint);
+                let expected = if undo { &paint } else { &claimed };
+                assert_eq!(&core.zoning.cells.saved_cells(), expected);
                 let building = &core.allocator.buildings[0];
                 assert_eq!(
                     (building.center_x, building.center_y, building.facing_dir),
@@ -3685,61 +4116,6 @@ mod tests {
     }
 
     #[test]
-    fn move_network_node_undo_restores_pre_move_graph_state() {
-        let mut core = test_core();
-        let n0 = core
-            .region_graph
-            .add_node(Vector3::new(-10.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = core
-            .region_graph
-            .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-        core.region_graph.add_edge(Edge {
-            start_node: n0,
-            end_node: n1,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 120.0,
-            physical_length: 20.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            no_street_lights: false,
-            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
-            median: None,
-        });
-        core.region_graph.rebuild_adjacency_list();
-
-        core.zoning
-            .mark_cell_lots_for_roads(&core.region_graph, [0]);
-        let frames = core.zoning.cells.saved_road_alignments();
-        assert_eq!(frames.len(), 1);
-        let revision = core.zoning.cell_external_revision();
-        core.move_network_node_internal(n0 as i32, Vector3::new(-20.0, 0.0, 0.0));
-        assert_eq!(core.region_graph.node(n0).pos.x, -20.0);
-        assert_ne!(core.zoning.cells.saved_road_alignments(), frames);
-        assert!(core.zoning.cell_external_revision() > revision);
-
-        assert!(core.undo_action_internal());
-        assert_eq!(
-            core.region_graph.node(n0).pos,
-            Vector3::new(-10.0, 0.0, 0.0)
-        );
-        assert_eq!(
-            core.region_graph.edge(0).physical_geometry[0],
-            Vector3::new(-10.0, 0.0, 0.0)
-        );
-        assert_eq!(core.zoning.cells.saved_road_alignments(), frames);
-    }
-
-    #[test]
     fn border_extension_keeps_the_road_grid_alignment_loadable() {
         let mut core = test_core();
         let n0 = core
@@ -3769,6 +4145,10 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

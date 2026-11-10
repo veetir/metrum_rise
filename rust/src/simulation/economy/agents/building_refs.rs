@@ -6,7 +6,8 @@ use super::data::AgentSystem;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_WALK,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
+    TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
+    age_group_can_work,
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::economy::households::HouseholdSystem;
@@ -39,6 +40,26 @@ impl AgentSystem {
                     self.building_columns()
                         .iter()
                         .any(|column| column[i] == first || column[i] == second)
+                })
+                .collect()
+        })
+    }
+
+    /// Agents any of whose building references name one of `buildings` (ascending, unique),
+    /// ascending, in one scan on the pool: the candidates of a batch of removals (`ZONE-09`'s
+    /// road demolition), which name every agent the batch's evacuations, evictions and remaps
+    /// change when `buildings` holds the removed buildings and every building their
+    /// swap-removes move. O(A/p * log buildings).
+    pub(crate) fn agents_referencing_any_building(&self, buildings: &[usize]) -> Vec<usize> {
+        debug_assert!(buildings.is_sorted());
+        let agents = &self.agents;
+        crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    self.building_columns()
+                        .iter()
+                        .any(|column| buildings.binary_search(&column[i]).is_ok())
                 })
                 .collect()
         })
@@ -156,13 +177,18 @@ impl AgentSystem {
             self.clear_route_and_lane_state(agent_idx);
         } else {
             let mut needs_replan = false;
+            let on_access = self.on_access_path(agent_idx);
             if old_home_live && self.agents.target_building[agent_idx] == old_home {
-                self.agents.target_building[agent_idx] = new_home;
-                needs_replan = true;
+                if on_access {
+                    self.agents.planned_target_building[agent_idx] = new_home;
+                } else {
+                    self.agents.target_building[agent_idx] = new_home;
+                    needs_replan = true;
+                }
             }
             if old_home_live && self.agents.planned_target_building[agent_idx] == old_home {
                 self.agents.planned_target_building[agent_idx] = new_home;
-                needs_replan = true;
+                needs_replan = !on_access;
             }
             let current = self.agents.current_building[agent_idx];
             let target = self.agents.target_building[agent_idx];
@@ -220,7 +246,8 @@ impl AgentSystem {
             self.clear_route_and_lane_state(agent_idx);
         } else {
             let mut needs_replan = false;
-            if self.agents.target_building[agent_idx] == old_home {
+            let on_access = self.on_access_path(agent_idx);
+            if self.agents.target_building[agent_idx] == old_home && !on_access {
                 self.agents.target_building[agent_idx] = usize::MAX;
                 needs_replan = true;
             }
@@ -231,7 +258,7 @@ impl AgentSystem {
                 if self.agents.activity[agent_idx] == ACTIVITY_SHOPPING {
                     self.agents.activity[agent_idx] = ACTIVITY_HOME;
                 }
-                needs_replan = true;
+                needs_replan = !on_access;
             }
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
@@ -243,6 +270,16 @@ impl AgentSystem {
             // home and is reported (`TRAFFIC-19`).
             self.note_waiting_for_home(agent_idx);
         }
+    }
+
+    // An agent on its access path keeps the trip it is on (`TRAFFIC-29`): off the road it has no
+    // lane to plan from, and a pull-in or a walk to a door ends at its own bay or door. Once
+    // inside, the ordinary schedule sends it on. O(1).
+    fn on_access_path(&self, agent_idx: usize) -> bool {
+        matches!(
+            self.agents.transit[agent_idx],
+            TRANSIT_ACCESS_EGRESS | TRANSIT_ACCESS_INGRESS
+        )
     }
 
     /// Assigns or clears an agent's workplace and invalidates derived work-trip caches.
@@ -268,8 +305,10 @@ impl AgentSystem {
                 let mut needs_replan = false;
                 // A farm can also be home: changing jobs must preserve a trip home from shopping.
                 let work_is_home = old_work == self.agents.home_building[agent_idx];
+                let on_access = self.on_access_path(agent_idx);
                 if self.agents.target_building[agent_idx] == old_work
                     && (!work_is_home || self.agents.activity[agent_idx] == 1)
+                    && !on_access
                 {
                     self.agents.target_building[agent_idx] = usize::MAX;
                     needs_replan = true;
@@ -278,12 +317,15 @@ impl AgentSystem {
                     && (!work_is_home || self.agents.planned_activity[agent_idx] == 1)
                 {
                     self.agents.planned_target_building[agent_idx] = usize::MAX;
-                    needs_replan = true;
+                    needs_replan = !on_access;
                 }
                 if needs_replan {
                     self.clear_access_plan_and_path(agent_idx);
                     self.agents.next_replan_time[agent_idx] = 0.0;
                     self.agents.network_replan_failures[agent_idx] = 0;
+                    // A homeless walker whose trip to work this cancelled waits at its lane end
+                    // for a home (`TRAFFIC-24`): report it as eviction does. Report-only.
+                    self.note_waiting_for_home(agent_idx);
                 }
                 if work_is_home
                     && self.agents.current_building[agent_idx] == old_work
@@ -379,6 +421,7 @@ impl AgentSystem {
         self.evacuate_referencing(
             building_id,
             referencing,
+            &[building_id],
             households,
             allocator,
             transit_network,
@@ -406,6 +449,7 @@ impl AgentSystem {
         self.evacuate_referencing(
             building_id,
             referencing,
+            &[building_id],
             households,
             allocator,
             transit_network,
@@ -413,11 +457,46 @@ impl AgentSystem {
         );
     }
 
-    // Evacuates the ascending `referencing` agents, every agent that names `building_id`.
+    /// [`Self::evacuate_building_among`] for each of a batch of removals' `buildings`
+    /// (`ZONE-09`'s road demolition), all before the first is removed: each household moves to
+    /// a home outside the batch, so the zone index that finds the homes stays current through
+    /// the batch instead of being rebuilt after each removal's swap-remove (`O(B)` each).
+    /// `candidates` are [`Self::agents_referencing_any_building`]'s over the batch.
+    /// O(candidates) per building plus the evacuees' trips.
+    pub(crate) fn evacuate_buildings_among(
+        &mut self,
+        buildings: &[usize],
+        candidates: &[usize],
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        for &building_id in buildings {
+            if building_id >= allocator.buildings.len() {
+                continue;
+            }
+            let referencing = self.referencing_among(building_id, candidates);
+            self.evacuate_referencing(
+                building_id,
+                referencing,
+                buildings,
+                households,
+                allocator,
+                transit_network,
+                graph,
+            );
+        }
+    }
+
+    // Evacuates the ascending `referencing` agents, every agent that names `building_id`, and
+    // rehouses its households in homes outside `excluded`, which holds `building_id`.
+    #[allow(clippy::too_many_arguments)]
     fn evacuate_referencing(
         &mut self,
         building_id: usize,
         referencing: Vec<usize>,
+        excluded: &[usize],
         households: &mut HouseholdSystem,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
@@ -435,7 +514,7 @@ impl AgentSystem {
             {
                 continue;
             }
-            let target_home = Self::claim_available_home_except(allocator, building_id);
+            let target_home = Self::claim_available_home_except(allocator, excluded);
             if let Some(home_idx) = target_home {
                 let household = &mut households.households[household_id];
                 household.home_building_id = home_idx;
@@ -475,7 +554,9 @@ impl AgentSystem {
                         building_id,
                         home_after_removal,
                         ACTIVITY_HOME,
-                        self.agents.has_car[agent_idx],
+                        // A displaced resident walks; its persistent car remains at its bay.
+                        // Freight/immigration keep the legacy carrier path until round 2b.
+                        self.agents.has_car[agent_idx] && self.agents.parking_trip[agent_idx].vehicle.is_none(),
                         allocator,
                         transit_network,
                         graph,
@@ -497,16 +578,24 @@ impl AgentSystem {
                         transit_network,
                         graph,
                     );
-                } else if let Some(plan) = border_plan
-                    .get_or_insert_with(|| {
-                        self.best_border_exit_plan_from_building(
-                            building_id,
-                            allocator,
-                            transit_network,
-                            graph,
-                        )
+                } else if let Some(plan) = self.agents.parking_trip[agent_idx]
+                    .vehicle
+                    .is_none()
+                    .then(|| {
+                        // A resident with a persistent car leaves it at its bay here too: the
+                        // shared exit plan drives, and a rehousing on the way ends it at a door.
+                        border_plan
+                            .get_or_insert_with(|| {
+                                self.best_border_exit_plan_from_building(
+                                    building_id,
+                                    allocator,
+                                    transit_network,
+                                    graph,
+                                )
+                            })
+                            .clone()
                     })
-                    .clone()
+                    .flatten()
                 {
                     if !self.start_building_origin_plan_on_network(
                         agent_idx,
@@ -668,6 +757,7 @@ impl AgentSystem {
         self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
         self.agents.speed[agent_idx] = 0.0;
+        self.agents.parking_trip[agent_idx].route_replaced(plan.current_path.len());
         self.agents.current_path[agent_idx] = plan.current_path;
         self.agents.walk_lanes[agent_idx].clear();
         self.agents.current_path_index[agent_idx] =
@@ -759,9 +849,10 @@ impl AgentSystem {
         }
     }
 
+    // Claims the first vacant home outside `excluded`, the buildings being removed.
     fn claim_available_home_except(
         allocator: &mut BuildingAllocator,
-        excluded_building: usize,
+        excluded: &[usize],
     ) -> Option<usize> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
         // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
@@ -771,7 +862,7 @@ impl AgentSystem {
         let building_idx = allocator.vacancy_index[residential_slot]
             .iter()
             .copied()
-            .find(|&idx| idx != excluded_building && idx < allocator.buildings.len())?;
+            .find(|&idx| !excluded.contains(&idx) && idx < allocator.buildings.len())?;
         allocator.claim_vacancy(building_idx);
         Some(building_idx)
     }
@@ -817,7 +908,7 @@ mod tests {
         Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass,
     };
     use crate::simulation::buildings::allocator::Building;
-    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ACCESS_EGRESS};
+    use crate::simulation::economy::agents::MODE_CAR;
     use crate::simulation::economy::definitions::{
         load_runtime_economy_catalog, load_runtime_economy_tuning,
     };
@@ -880,6 +971,7 @@ mod tests {
 
     fn create_test_edge(n0: u32, n1: u32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -901,6 +993,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     }
 
@@ -987,7 +1082,7 @@ mod tests {
         allocator.vacancy_index[0] = vec![1];
         allocator.dirty_index = true;
         assert_eq!(
-            AgentSystem::claim_available_home_except(&mut allocator, usize::MAX),
+            AgentSystem::claim_available_home_except(&mut allocator, &[]),
             Some(0)
         );
         assert!(!allocator.dirty_index);
@@ -1017,7 +1112,7 @@ mod tests {
         allocator.rebuild_zone_index();
 
         assert_eq!(
-            AgentSystem::claim_available_home_except(&mut allocator, 0),
+            AgentSystem::claim_available_home_except(&mut allocator, &[0]),
             Some(1),
             "forced relocation must not claim the building being removed"
         );
@@ -1084,8 +1179,6 @@ mod tests {
                     edge.physical_geometry = edge.geometry.clone();
                     edge.physical_length = 1_000.0;
                     edge.speed_limit = 14.0;
-                    // No sidewalk: the occupants must drive, and only vehicle lanes have gaps.
-                    edge.allowed_types = TransitFlags::CAR;
                     edge.bkw_lanes = 0;
                     graph.add_edge(edge);
                 }
@@ -1104,6 +1197,12 @@ mod tests {
                 }
                 allocator.rebuild_entrance_cache(&graph, &network.lane_system);
                 allocator.rebuild_zone_index();
+                // No walk from these doors: the occupants must drive, and only vehicle lanes
+                // have gaps.
+                for entrance in &mut allocator.entrances {
+                    entrance.foot_lane_fwd = usize::MAX;
+                    entrance.foot_lane_bkw = usize::MAX;
+                }
 
                 let mut agents = AgentSystem::new();
                 for road in 0..roads {
@@ -1190,6 +1289,51 @@ mod tests {
         let one = run_evacuated_egress_queue(80, 64, 40, 1);
         let eight = run_evacuated_egress_queue(80, 64, 40, 8);
         assert!(one == eight, "worker count changed the lane state");
+    }
+
+    // The door-leg panic of `PARK-02`: with no home left an evacuated resident took the shared
+    // border plan, which drives, though its persistent car stays in its bay.
+    #[test]
+    fn a_displaced_resident_with_a_persistent_car_and_no_home_left_walks() {
+        use crate::simulation::core::handles::Handle;
+        for (vehicle, mode) in [(Handle::default(), MODE_CAR), (Handle::from_bits(0), MODE_WALK)] {
+            let mut graph = RegionGraph::new();
+            let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+            let b = graph.add_node(Vector3::new(1_000.0, 0.0, 0.0), NodeType::Border);
+            let mut edge = create_test_edge(a, b);
+            edge.geometry = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(1_000.0, 0.0, 0.0)];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 1_000.0;
+            edge.bkw_lanes = 0;
+            graph.add_edge(edge);
+            graph.rebuild_adjacency_list();
+            let mut network = TransitNetwork::new();
+            network.lane_system.rebuild(&mut graph);
+            network.cch_graph = CchGraph::build(&graph);
+            let mut allocator = BuildingAllocator::new();
+            let asset_id = register_residential_test_asset(&mut allocator, "displaced_car");
+            allocator
+                .buildings
+                .push(create_test_building(0, &asset_id, 500.0, 0.5, 0));
+            allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+            allocator.rebuild_zone_index();
+            let mut agents = AgentSystem::new();
+            let resident = agents.spawn_housed_agent(0, 500.0, 0.0);
+            agents.agents.transit[resident] = TRANSIT_IN_BUILDING;
+            agents.agents.current_building[resident] = 0;
+            agents.agents.parking_trip[resident].vehicle = vehicle;
+
+            agents.evacuate_building_for_removal(
+                0,
+                &mut HouseholdSystem::new(),
+                &mut allocator,
+                &network,
+                &graph,
+            );
+
+            assert_eq!(agents.agents.transit[resident], TRANSIT_NETWORK);
+            assert_eq!(agents.agents.transit_mode[resident], mode);
+        }
     }
 
     #[test]

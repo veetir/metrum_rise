@@ -30,6 +30,7 @@ fn grid(side: u32) -> RegionGraph {
             {
                 let geometry = vec![graph.node(a).pos, graph.node(b).pos];
                 graph.add_edge(Edge {
+                    parking: Default::default(),
                     start_node: a,
                     end_node: b,
                     primary_type: TransitType::Road,
@@ -51,6 +52,9 @@ fn grid(side: u32) -> RegionGraph {
                     vehicle_frontage_access:
                         crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                     median: None,
+                    pocket: None,
+                    sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+                    roundabout: None,
                 });
             }
         }
@@ -193,6 +197,11 @@ fn shortcut_alternatives_survive_recustomization_modes_and_one_way_edits() {
             TransitFlags::FOOT
         } else {
             TransitFlags::FOOT | TransitFlags::CAR
+        };
+        edge.sidewalks = if id % 3 == 0 {
+            crate::simulation::network::graph::SidewalkSides::NONE
+        } else {
+            crate::simulation::network::graph::SidewalkSides::BOTH
         };
         edge.base_cost = 2.0 + (id % 7) as f32;
         if id % 4 == 0 {
@@ -509,6 +518,11 @@ fn costs_from_each_match_point_queries() {
             TransitFlags::FOOT
         } else {
             TransitFlags::FOOT | TransitFlags::CAR
+        };
+        edge.sidewalks = if id % 3 == 0 {
+            crate::simulation::network::graph::SidewalkSides::NONE
+        } else {
+            crate::simulation::network::graph::SidewalkSides::BOTH
         };
         edge.base_cost = 2.0 + (id % 7) as f32;
         edge.bkw_lanes = u8::from(id % 4 != 0);
@@ -890,7 +904,8 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
                             usize::MAX,
                             &graph,
                             mode,
-                            &mut paths
+                            &mut paths,
+                            None,
                         ),
                         expected
                             .as_ref()
@@ -1015,6 +1030,7 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
                                     &graph,
                                     mode,
                                     &mut paths,
+                                    None,
                                 )
                                 .map(|route| route.0);
                             assert_eq!(

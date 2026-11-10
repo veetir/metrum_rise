@@ -121,8 +121,7 @@ impl SimulationNode {
         );
         if known_site_revision != site_revision as i64 {
             // The debug probes read the graded surface, which reads the site index.
-            let cell_m = core.config.zone_cell_m;
-            core.allocator.prepare_building_site_query_index(cell_m);
+            core.prepare_site_queries();
             frame.set(
                 "site_mesh_data",
                 core.get_building_site_mesh_data_internal().to_variant(),
@@ -153,7 +152,11 @@ impl SimulationNode {
         use crate::simulation::zoning::ZoneType;
 
         let mut core = self.lock_core();
-        let Some(best_idx) = core.allocator.nearest_building_idx_at(world_x, world_z) else {
+        let cell_m = core.config.zone_cell_m;
+        let Some(best_idx) = core
+            .allocator
+            .nearest_building_idx_at(world_x, world_z, cell_m)
+        else {
             return VarDictionary::new();
         };
 
@@ -208,6 +211,10 @@ impl SimulationNode {
 
         let mut dict = VarDictionary::new();
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
+        let handle = core.allocator.building_handles.handle(best_idx).to_bits();
+        dict.set("parking_valid_places", core.parking.building_place_count(handle) as i64);
+        let rejected = core.parking.diagnostics.get(&handle).map(Vec::as_slice).unwrap_or_default();
+        dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
         dict.set("building_id", best_idx as i64);
         let asset_display_name = core
             .allocator

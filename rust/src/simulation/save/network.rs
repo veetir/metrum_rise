@@ -3,11 +3,15 @@
 //! Road graph and lane connection serialization.
 
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{
+    Edge, MedianStyle, RegionGraph, RoadMedian, RoadParking, RoadPocket, RoundaboutRing,
+    SidewalkSides,
+};
+use crate::simulation::network::roundabouts::validate_ring_edge;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
@@ -45,7 +49,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -60,6 +64,7 @@ pub(super) fn save_network(
                 .get(&canonical_existing_node(graph, edge.end_node)?)
                 .copied()
                 .ok_or_else(|| SaveLoadError::custom("missing saved end node"))?;
+            let (pocket_end, pocket_roles) = RoadPocket::codes(edge.pocket);
             stmt.execute(params![
                 usize_to_i64(saved_id)?,
                 i64::from(start),
@@ -79,7 +84,31 @@ pub(super) fn save_network(
                 vehicle_frontage_access_to_i64(edge.vehicle_frontage_access),
                 i64::from(RoadMedian::style_code(edge.median)),
                 edge.median.map_or(0.0, |median| median.width_m),
-                i64::from(edge.no_street_lights)
+                i64::from(edge.no_street_lights),
+                pocket_end,
+                pocket_roles,
+                i64::from(edge.sidewalks.bits()),
+                edge.parking.code()
+            ])?;
+        }
+    }
+
+    // Roundabout ring edges (`ROAD-62`), a sparse table.
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO roundabout_edges(edge_id, centre_x, centre_z, radius_m) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            let (Some(ring), Some(&saved_id)) =
+                (edge.roundabout, maps.edge_old_to_new.get(&old_id))
+            else {
+                continue;
+            };
+            stmt.execute(params![
+                usize_to_i64(saved_id)?,
+                ring.centre.x,
+                ring.centre.y,
+                ring.radius_m
             ])?;
         }
     }
@@ -218,7 +247,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -237,20 +266,39 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let allowed_types = i64_to_u8(row.get(4)?)?;
             let fwd_lanes = i64_to_u8(row.get(7)?)?;
             let bkw_lanes = i64_to_u8(row.get(8)?)?;
-            // A median loads only as a stroke or an edit could have built it (`ROAD-80`).
-            let median = RoadMedian::from_tool(row.get(16)?, row.get(17)?)
-                .and_then(|median| {
-                    Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, median)
-                        .map(|()| median)
+            let invalid_median = |reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
+            };
+            // Read as stored: a left pocket's edge carries its base road's median a lane
+            // narrower (`ROAD-95`), so the rules check the base road's below.
+            let median = match row.get::<_, i32>(16)? {
+                0 => None,
+                code => Some(RoadMedian {
+                    style: MedianStyle::from_code(code)
+                        .ok_or_else(|| invalid_median("unknown_median_style"))?,
+                    width_m: row.get(17)?,
+                }),
+            };
+            let pocket = RoadPocket::from_codes(row.get(19)?, row.get(20)?).map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
+            })?;
+            let sidewalks = SidewalkSides::from_bits(row.get(21)?).ok_or_else(|| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid sidewalk code"))
+            })?;
+            let parking = RoadParking::from_code(row.get(22)?)
+                .ok_or("parking_code_out_of_range")
+                .and_then(|parking| {
+                    Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking, sidewalks)
+                        .map(|()| parking)
                 })
                 .map_err(|reason| {
-                    SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
+                    SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
                 })?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
             }
-            graph.add_edge(Edge {
+            let edge = Edge {
                 start_node,
                 end_node,
                 primary_type: transit_type_from_i64(row.get(3)?)?,
@@ -271,7 +319,49 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 no_street_lights: row.get::<_, i64>(18)? != 0,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
                 median,
+                parking,
+                pocket,
+                sidewalks,
+                roundabout: None,
+            };
+            // A median loads only as a stroke or an edit could have built it (`ROAD-80`), a
+            // pocket only as a pocket edit could have (`ROAD-95`), and sidewalks only on a car
+            // road, which is walked exactly when it has one (`ROAD-107`).
+            Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, edge.base_median())
+                .map_err(invalid_median)?;
+            edge.validate_pocket().map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
+            })?;
+            edge.validate_sidewalks().map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} has invalid sidewalks ({reason})"))
+            })?;
+            graph.add_edge(edge);
+        }
+    }
+
+    // A ring edge loads only as a roundabout edit could have built it (`ROAD-62`), once every
+    // edge of its ring has its circle.
+    {
+        let mut stmt = conn.prepare(
+            "SELECT edge_id, centre_x, centre_z, radius_m FROM roundabout_edges ORDER BY edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut ring_edges = Vec::new();
+        while let Some(row) = rows.next()? {
+            let eid = i64_to_usize(row.get(0)?)?;
+            if eid >= graph.edge_count() {
+                return Err(SaveLoadError::custom("ring row names no edge"));
+            }
+            graph.edge_mut(eid).roundabout = Some(RoundaboutRing {
+                centre: Vector2::new(row.get(1)?, row.get(2)?),
+                radius_m: row.get(3)?,
             });
+            ring_edges.push(eid);
+        }
+        for eid in ring_edges {
+            validate_ring_edge(&graph, eid).map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} is an invalid ring edge ({reason})"))
+            })?;
         }
     }
 

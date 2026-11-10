@@ -425,15 +425,31 @@ impl BuildingAllocator {
             && (!self.building_site_query_index_ready() || !self.explicit_cell_sites.is_empty())
     }
 
-    /// Whether bounded site queries can run without rebuilding or scanning the building store.
-    /// Preview workers must defer unprepared inputs to normal allocator/terrain maintenance.
-    pub(crate) fn building_site_query_index_ready(&self) -> bool {
+    /// Whether the site queries can read the chunk lists, the chunk bounds and the largest lot:
+    /// the zone index is current, or its site part was readied for a hover since it was last
+    /// marked stale ([`Self::prepare_site_query_chunks`]). Else they scan every site, with the
+    /// same answers. O(1).
+    pub(crate) fn site_chunks_ready(&self) -> bool {
         self.building_sites.len() == self.buildings.len()
-            && (self.buildings.is_empty()
-                || (!self.dirty_index && !self.building_chunks.is_empty()))
+            && (!self.dirty_index || self.site_chunks_current)
+            && !self.building_chunks.is_empty()
     }
 
-    /// Rebuilds the derived site clients and shared building index when a site query needs them.
+    /// Whether bounded site queries can run without rebuilding or scanning the building store:
+    /// the site clients are current and so is the index's site part, with the whole index or
+    /// readied alone ([`Self::prepare_site_query_chunks`], `ALLOC-05`), which is all a site
+    /// query reads. Preview workers must defer unprepared inputs to normal allocator/terrain
+    /// maintenance. O(1).
+    pub(crate) fn building_site_query_index_ready(&self) -> bool {
+        self.building_sites.len() == self.buildings.len()
+            && (self.buildings.is_empty() || self.site_chunks_ready())
+    }
+
+    /// Rebuilds the derived site clients and the whole zone index when stale, for the
+    /// simulation's own readers: its steps, the player's edits and loading. The rebuild resets
+    /// the vacancy lists to building order, so a reader outside the simulation's order (a
+    /// renderer, hover, pointer, overlay or inspector) readies only the site part instead
+    /// ([`Self::prepare_site_query_chunks`], `ALLOC-05`).
     pub(crate) fn prepare_building_site_query_index(&mut self, zone_cell_m: f32) {
         if self.building_sites.len() != self.buildings.len() {
             self.rebuild_building_site_clients(zone_cell_m);
@@ -449,12 +465,6 @@ impl BuildingAllocator {
     /// `SIM-02-K`) waits until that reader has rebuilt it. O(1).
     pub(crate) fn zone_index_needs_rebuild(&self) -> bool {
         self.dirty_index || (self.building_chunks.is_empty() && !self.buildings.is_empty())
-    }
-
-    pub(crate) fn site_world_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {
-        self.building_sites
-            .get(building_idx)
-            .map(|site| site.lot_bounds())
     }
 
     /// Ground a site draws on: its lot and any paving run on past the lot line to the road.
@@ -502,6 +512,10 @@ impl BuildingAllocator {
             let [min_x, min_z, max_x, max_z] = change.bounds;
             (min_x, min_z, max_x, max_z)
         });
+        let handle = self.building_handles.handle(building_idx);
+        if !handle.is_none() {
+            self.parking_site_changes.push(handle);
+        }
         self.graded_site_changes.extend(change);
         self.accumulate_pending_site_dirty_bounds(bounds);
         if self.buildings.get(building_idx).is_some_and(|building| {
@@ -570,10 +584,7 @@ impl BuildingAllocator {
         pos: Vector2,
         probe: impl Fn(&BuildingSiteClient) -> Option<T>,
     ) -> Option<T> {
-        if self.dirty_index
-            || self.building_sites.len() != self.buildings.len()
-            || self.building_chunks.is_empty()
-        {
+        if !self.site_chunks_ready() {
             return self.building_sites.iter().find_map(probe);
         }
 
@@ -765,10 +776,7 @@ impl BuildingAllocator {
         max_x: f32,
         max_z: f32,
     ) -> Vec<usize> {
-        if self.dirty_index
-            || self.building_sites.len() != self.buildings.len()
-            || self.building_chunks.is_empty()
-        {
+        if !self.site_chunks_ready() {
             return (0..self.building_sites.len()).collect();
         }
 

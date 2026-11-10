@@ -330,6 +330,7 @@ Export dialog:
 - Writes into a chosen folder (default: the system Documents folder, then the last one used). When the archive name already exists there, the first Export press says so and a second press replaces it.
 - Offers a patch, minor or major version bump (default: none). A bump rewrites `pack.toml` atomically before the archive is built.
 - After export, shows the archive's SHA-256 with a copy action, so the creator can publish it through a separate channel.
+- The dialog fits its height to its wrapped text once laid out, by a deferred call. A dialog closed in the frame it opened is skipped there; until round `F1` (`CODE-20`) the call's typed argument refused the freed dialog with an engine error, which failed `asset_pack_export_test` under load (2 of 60 runs) when the inspection finished before its first frame.
 
 Pack settings:
 
@@ -549,7 +550,8 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 
 - `driveway`: vehicle connector pinned to the road-facing plot edge and pointing inward into the
   lot; requires `width_m`
-- `parking`: car stop/stand position inside the lot; requires `width_m` and `length_m`
+- `parking`: the entry edge of a bay inside the lot, which runs `length_m` along `forward`; requires
+  `width_m` and `length_m`
 - `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
   must lie on the frontage edge; the editor lets them slide along that edge and derives their
@@ -563,9 +565,9 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 
 Runtime use in v1:
 
-- `entrance/main` remains the only anchor consumed by the live entrance/exit system.
-- `driveway`, `parking`, and `loading_bay` anchors are semantic site-layout metadata only. They do
-  not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
+- `entrance/main` remains the only anchor consumed by the live entrance/exit system; a fitting
+  `parking` anchor is public supply ([anchor lots](traffic.md#anchor-lots-park-01)).
+- `driveway`, `parking`, and `loading_bay` anchors do not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
 - Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
   them as material/layout regions on the flat building-site support plane.
@@ -1085,8 +1087,9 @@ Anchor requirements by asset class:
 
 - Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
-  site-layout metadata in v1. They do not generate visual yard surfaces; vehicle parking and
-  freight stop behavior remain later runtime hooks.
+  site-layout metadata. They do not generate visual yard surfaces. A fitting `parking` anchor is
+  public supply ([anchor lots](traffic.md#anchor-lots-park-01)); freight stop behavior remains a
+  later runtime hook.
 - Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
   and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
   building-site support plane.
@@ -3541,3 +3544,8 @@ city-scale performance or a before/after gameplay improvement.
 Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as the canonical asset format. Start implementation from the v1 contract in this document: canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml` schemas, and the minimum preview-scene interactions required to author each asset class. Export manifest files directly into the pack output folder next to the asset files.
 
 For buildings specifically, plot size is required asset metadata from day one. `3x3` remains only a default preset, not a design limit, and fixed `ZONING_DEPTH` is retired in favor of dynamic per-edge zoning extents. Compatibility metadata, redirect handling, workspaces, cross-pack sharing, signing, and similar ecosystem features stay in the later section until the base importer actually exists.
+
+Parking anchors rejected by the shared Rust parking validator are marked red and labelled
+with the rejection reason next to the anchor. Anchor and surface edits recheck the preview.
+Road-to-driveway connection checks require a placed frontage; inspect the building in game
+for those diagnostics and its valid-place count.

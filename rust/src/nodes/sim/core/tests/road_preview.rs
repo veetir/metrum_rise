@@ -82,6 +82,7 @@ fn preview_with(
 ) -> RoadPreview {
     let surface_generation = context.view.surface_generation;
     context.preview_road(RoadPreviewRequest {
+        parking: Default::default(),
         surface_generation,
         points: points.to_vec(),
         fwd_lanes: 1,
@@ -110,6 +111,7 @@ fn commit_with(
 ) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
     let outcome = core.commit_road(
         RoadCommitRequest {
+            parking: Default::default(),
             points: points.to_vec(),
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -540,6 +542,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
@@ -552,6 +555,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: Some(Arc::clone(&preview)),
             },
@@ -899,6 +903,7 @@ fn drawn_medians_survive_widening_and_cross_junction_splits() {
                 2,
                 2,
                 median,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT
             ),
             "style {style}: widened in place"
@@ -932,6 +937,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
         ((0, 0), "median_requires_vehicle_road"),
     ] {
         let request = RoadPreviewRequest {
+            parking: Default::default(),
             surface_generation: snapshot.surface_generation,
             points: points.clone(),
             fwd_lanes: fwd,
@@ -944,6 +950,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
         assert_eq!(snapshot.validate(&request).1.invalid_reason, reason);
         let outcome = core.commit_road(
             RoadCommitRequest {
+                parking: Default::default(),
                 points: points.clone(),
                 fwd_lanes: fwd,
                 bkw_lanes: bkw,
@@ -1003,24 +1010,28 @@ fn only_a_kerbed_grass_median_draws_on_the_grass_layer() {
 // A painted median is paint (`ROAD-80`, R3-c): on a 1 + 1 street, whose lanes are unmarked,
 // every marking is the median's: within half its width of the line between the lane groups,
 // meeting on that line at both noses, reaching the full width between them, with diagonals
-// across. On a 2 + 2 road the lane dividers stay outside the hatched gap. Undivided, the street
-// has no marking at all.
+// across. On a 2 + 2 road the lane dividers stay outside the hatched gap. Undivided, a 40 km/h
+// street has no marking at all; a 50 km/h one (the built-in 2-Lane Road) has its centre line.
 #[test]
 fn a_painted_median_is_hatched_between_the_lane_groups() {
     use crate::simulation::network::render::road::RoadRenderer;
     let ends = [Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)];
-    let marking = |median: Option<RoadMedian>, lanes: i32| {
+    let marking_at = |median: Option<RoadMedian>, lanes: i32, speed_kmh: f32| {
         let mut core = committed(&[], &[], false);
         let points = stroke(&core, ends);
         let outcome = core.commit_road(
             RoadCommitRequest {
+                parking: Default::default(),
                 points,
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
-                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                attributes: crate::simulation::network::road_types::RoadAttributes {
+                    speed_ms: speed_kmh / 3.6,
+                    ..crate::simulation::network::road_types::RoadAttributes::DEFAULT
+                },
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1034,7 +1045,13 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
         );
         mesh.marking_vertices
     };
-    assert!(marking(None, 1).is_empty(), "an undivided 1 + 1 street is unmarked");
+    let marking = |median: Option<RoadMedian>, lanes: i32| marking_at(median, lanes, 40.0);
+    assert!(marking(None, 1).is_empty(), "an undivided 40 km/h 1 + 1 street is unmarked");
+    let centre = marking_at(None, 1, 50.0);
+    assert!(
+        !centre.is_empty() && centre.iter().all(|v| v.z.abs() <= 0.05 + 1.0e-3),
+        "a 50 km/h 1 + 1 road has its centre line, and nothing else"
+    );
     let painted = RoadMedian::from_tool(1, 2.0).unwrap();
     let half = 1.0;
     // Paint half width plus a line's half width, and float slack.
@@ -1075,4 +1092,286 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
         dividers.iter().all(|v| (v.z.abs() - (half + crate::config::LANE_WIDTH)).abs() <= 0.08),
         "the dividers lie a lane out from the gap"
     );
+}
+
+// The solid approach zone (`ROAD-94`) and the turn arrows (`ROAD-75`): on a 2 + 2 T every
+// approach's two lanes serve different movements, so the divider between them is solid over the
+// last `APPROACH_SOLID_LENGTH_M` before the junction and dashed before it; the dividers of the
+// lanes leaving the junction stay dashed, and the centre line between the 2 + 2 groups is a solid
+// no-crossing line over the whole span (several lanes one way, the user, 2026-11-05). Each approach lane carries arrows for
+// its movements, one glyph 12 m back from the mouth. A straight 2 + 2 road has no junction to
+// choose a lane for: no solid line, no arrow. The paint reads the graph alone, so the T's 2 + 2
+// preview composes its committed chunks, arrows included.
+#[test]
+fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction() {
+    use crate::config::{DRIVE_ON_LEFT, LANE_WIDTH};
+    use crate::simulation::network::lanes::APPROACH_SOLID_LENGTH_M;
+    use crate::simulation::network::render::road::RoadRenderer;
+    const SOLID: f32 = 2.0;
+    let wide = ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 2);
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    // Every marking triangle as (centroid, its station range, its pattern, vertices). A line's
+    // quad is two triangles, each spanning the quad's stations.
+    let triangles = |core: &SimCore| {
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.roadbed,
+        );
+        mesh.marking_vertices
+            .chunks(3)
+            .zip(mesh.marking_uvs.chunks(3))
+            .map(|(vertices, uvs)| {
+                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 3.0;
+                let (low, high) = uvs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), uv| {
+                    (lo.min(uv.x), hi.max(uv.x))
+                });
+                (centroid, high - low, uvs[0].y, vertices.to_vec())
+            })
+            .collect::<Vec<_>>()
+    };
+    let straight = triangles(&committed(&[wide], &[0], false));
+    assert!(!straight.is_empty(), "a 2 + 2 road is marked");
+    // The road runs along x: its centre line lies on z = 0, its lane dividers at +-LANE_WIDTH.
+    assert!(
+        straight
+            .iter()
+            .filter(|&&(_, _, pattern, _)| pattern == SOLID)
+            .all(|(centroid, ..)| centroid.z.abs() < 0.3),
+        "a road without a junction has no solid approach zone"
+    );
+    assert!(
+        straight
+            .iter()
+            .filter(|(centroid, ..)| centroid.z.abs() < 0.3)
+            .all(|&(_, _, pattern, _)| pattern == SOLID),
+        "the centre line of a 2 + 2 road is solid"
+    );
+
+    let mut core = committed(&[wide], &[0], false);
+    let points = stroke(&core, side);
+    let mut context = context(&mut core);
+    let view_chunks = context.view.road_mesh_chunks.clone();
+    let surface_generation = context.view.surface_generation;
+    let preview = Arc::new(context.preview_road(RoadPreviewRequest {
+        surface_generation,
+        points: points.clone(),
+        fwd_lanes: 2,
+        bkw_lanes: 2,
+        snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
+        parking: Default::default(),
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+    }));
+    let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
+            parking: Default::default(),
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview: Some(Arc::clone(&preview)),
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    assert_preview_composes_committed(&core, &view_chunks, pieces, "2 + 2 T");
+
+    let tee = triangles(&core);
+    // Each arm as (unit direction away from the junction, the lateral axis): a car approaching
+    // on it drives towards `-direction`, and under right-hand traffic its lanes lie on the right
+    // of that heading.
+    let hand = if DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+    // Each approach's [left, straight, right] arrows on its inner and outer lane: from the west
+    // the side road is a right turn, from the east a left one, the stem turns either way.
+    const S: bool = true;
+    const N: bool = false;
+    for (name, along, right_of_approach, expected) in [
+        (
+            "west",
+            Vector3::LEFT,
+            Vector3::BACK * hand,
+            [[N, S, N], [N, S, S]],
+        ),
+        (
+            "east",
+            Vector3::RIGHT,
+            Vector3::FORWARD * hand,
+            [[S, S, N], [N, S, N]],
+        ),
+        (
+            "south",
+            Vector3::BACK,
+            Vector3::RIGHT * hand,
+            [[S, N, N], [N, N, S]],
+        ),
+    ] {
+        let arm: Vec<_> = tee
+            .iter()
+            .map(|(centroid, length, pattern, vertices)| {
+                let flat = Vector3::new(centroid.x, 0.0, centroid.z);
+                let lateral = flat.dot(right_of_approach);
+                // The triangle's vertices as (distance from the junction, lateral).
+                let points: Vec<_> = vertices
+                    .iter()
+                    .map(|v| (v.dot(along), v.dot(right_of_approach)))
+                    .collect();
+                (flat.dot(along), lateral, *length, *pattern, points)
+            })
+            .filter(|(distance, lateral, ..)| *distance > 8.0 && lateral.abs() < 8.0)
+            .collect();
+        let line = |lateral: f32| {
+            arm.iter()
+                .filter(move |(_, at, ..)| (at - lateral).abs() < 0.3)
+        };
+        let solid: Vec<_> = line(LANE_WIDTH).filter(|q| q.3 == SOLID).collect();
+        let length = solid.iter().map(|q| q.2).sum::<f32>() * 0.5;
+        assert!(
+            (length - APPROACH_SOLID_LENGTH_M).abs() < 0.5,
+            "{name}: the approach divider is solid over {length} m"
+        );
+        let solid_far = solid.iter().map(|q| q.0).fold(f32::MIN, f32::max);
+        let dashed_near = line(LANE_WIDTH)
+            .filter(|q| q.3 != SOLID)
+            .map(|q| q.0)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            solid_far < dashed_near,
+            "{name}: the solid zone ends at the junction, the dashes lie before it"
+        );
+        // Lines lie on lane edges; any other paint is an arrow, solid, inside an approach lane.
+        // The centre line (lateral 0) is solid over the whole arm.
+        let on_line = |lateral: f32| {
+            [-LANE_WIDTH, LANE_WIDTH]
+                .iter()
+                .any(|&at| (lateral - at).abs() < 0.3)
+        };
+        assert!(
+            arm.iter().filter(|q| q.3 == SOLID && on_line(q.1)).count() == solid.len(),
+            "{name}: of the lane dividers only the approach divider is solid"
+        );
+        assert!(
+            line(0.0).all(|q| q.3 == SOLID),
+            "{name}: the centre line is solid"
+        );
+        assert!(line(0.0).count() > 0 && line(-LANE_WIDTH).count() > 0);
+        // The marking range ends where the solid zone does, at the mouth.
+        let mouth = solid
+            .iter()
+            .flat_map(|q| q.4.iter().map(|p| p.0))
+            .fold(f32::MAX, f32::min);
+        // Under left-hand traffic the inner lane is the rightmost.
+        let expected = if DRIVE_ON_LEFT {
+            [expected[1], expected[0]]
+        } else {
+            expected
+        };
+        for (lane, [left, straight, right]) in [(0.5, expected[0]), (1.5, expected[1])] {
+            let centre = lane * LANE_WIDTH;
+            // The style's triangle count and where its tail sits: right of the lane's centre
+            // beside a lone left branch, left of it beside a lone right one (`arrow_glyph`).
+            let triangles = match (left, straight, right) {
+                (false, true, false) => 3,
+                (_, true, _) => 16,
+                _ => 15,
+            };
+            let tail_side =
+                f32::from(u8::from(left && !right)) - f32::from(u8::from(right && !left));
+            let paint: Vec<_> = arm
+                .iter()
+                .filter(|q| !on_line(q.1) && (q.1 - centre).abs() < 1.5)
+                .collect();
+            // One glyph centred 12 m back from the mouth, 5 m long, and nothing else painted in
+            // the lane.
+            let back = 12.0;
+            let glyph: Vec<_> = paint
+                .iter()
+                .filter(|q| (q.0 - mouth - back).abs() <= 2.5)
+                .collect();
+            assert_eq!(
+                glyph.len(),
+                triangles,
+                "{name}: lane {lane} shows its movements {back} m back"
+            );
+            // Vertices in the driver's frame: `x` right of the lane's centre, `y` ahead.
+            let points: Vec<_> = glyph
+                .iter()
+                .flat_map(|q| q.4.iter())
+                .map(|&(distance, lateral)| ((lateral - centre) * hand, mouth + back - distance))
+                .collect();
+            assert!(
+                points.iter().all(|p| p.0.abs() <= 1.3 && p.1.abs() <= 2.55),
+                "{name}: lane {lane}'s arrow stays in its lane and its 5 m"
+            );
+            // The tail's middle, between its two corners.
+            let (low, high) = points
+                .iter()
+                .filter(|p| p.1 < -2.45)
+                .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                    (lo.min(p.0), hi.max(p.0))
+                });
+            let tail = (low + high) * 0.5;
+            assert!(
+                (tail - tail_side * tail.abs()).abs() < 1.0e-3
+                    && (tail_side == 0.0) == (tail.abs() < 0.05),
+                "{name}: lane {lane}'s tail sits at {tail}"
+            );
+            assert_eq!(
+                glyph.len(),
+                paint.len(),
+                "{name}: lane {lane} holds only its one glyph"
+            );
+        }
+    }
+}
+
+// `ROAD-75`: a lane rule edit repaints its node's arms. On a 1 + 1 T, whose arms carry only their
+// centre lines, whitelisting the side road's approach lane into the west arm paints a left-turn
+// arrow on it; the published chunks then hold what a full paint of the city holds, and undo takes
+// the arrow off again.
+#[test]
+fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
+    let (mut core, node, side, west) = super::road_crosswalks::t_junction();
+    core.benchmark_mode = false;
+    let painted = |core: &mut SimCore| {
+        core.precompute_road_mesh_data();
+        let chunks: usize = core
+            .cached_road_mesh_chunks
+            .values()
+            .map(|mesh| mesh.marking_vertices.len())
+            .sum();
+        let full = core
+            .transit_network
+            .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+            .expect("current roadbed")
+            .marking_vertices
+            .len();
+        assert_eq!(chunks, full, "the chunks hold the city's paint");
+        chunks
+    };
+    let centre_lines = painted(&mut core);
+    let graph = &core.region_graph;
+    let approach = if graph.edge(side).end_node == node {
+        0
+    } else {
+        -1
+    };
+    let leave = if graph.edge(west).start_node == node {
+        0
+    } else {
+        -1
+    };
+    core.set_lane_connection_internal(node, side as i32, approach, west as i32, leave);
+    assert!(
+        painted(&mut core) > centre_lines,
+        "the whitelisted lane carries its arrow"
+    );
+    assert!(core.undo_action_internal());
+    assert_eq!(painted(&mut core), centre_lines, "undo takes the arrow off");
 }

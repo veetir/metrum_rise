@@ -209,6 +209,12 @@ impl SimCore {
             .prepare_routes(&self.transit_network, &self.region_graph);
         self.households
             .prepare_job_search_scratch(&self.transit_network, &self.region_graph);
+        // The slots' parallel plans run on each worker's own scratch: unprepared, the first plan
+        // to land on a worker costs its slot about 3 ms at 30k (`PARK-02`).
+        let (network, graph) = (&self.transit_network, &self.region_graph);
+        crate::thread_pools::install(|| {
+            rayon::broadcast(|_| TripQueryScratch::prepare_thread(network, graph));
+        });
     }
 
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.
@@ -257,6 +263,9 @@ impl SimCore {
         adoption_start: Instant,
     ) -> FrameStepReport {
         let mut report = FrameStepReport::default();
+        // A commit's parking first: it needs the entrances the adoption above updated, and the
+        // hold leaves nothing else for this frame to do.
+        self.publish_deferred_parking_frontages();
         // Sites placed by tools since the last frame; demand places its own during slots.
         self.schedule_construction_completions();
         // D7 (`ROAD-68-G`): until a routing rebuild is adopted every phase of the frame would
@@ -271,6 +280,7 @@ impl SimCore {
         if adopting {
             report.adoption_ms = adoption_start.elapsed().as_secs_f64() * 1000.0;
         }
+        self.complete_parking_economy_publication();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {
             return report;
@@ -305,13 +315,19 @@ impl SimCore {
         let t_agent = Instant::now();
         record_crash_phase_for_core(self, "agent tick");
         run_sim_phase("agent tick", || {
-            self.agents.tick(
+            self.publish_parking_households();
+            self.publish_parking_custody();
+            self.agents.tick_with_parking(
                 &self.allocator,
                 &mut self.transit_network,
                 &mut self.region_graph,
                 dt,
                 &self.time,
+                &mut self.parking,
             );
+            self.schedule_parking_retries();
+            self.agents.remove_completed_parking_deliveries();
+            self.schedule_stored_parking_arrivals();
         });
         self.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
         report.agent_ms = self.last_agent_tick_us as f64 / 1000.0;

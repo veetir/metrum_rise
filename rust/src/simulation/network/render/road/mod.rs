@@ -733,13 +733,22 @@ impl NetworkMeshData {
 }
 
 // Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit
-// channels: forward and backward lane counts, the speed limit in km/h, and a cosmetic age in
-// the upper half of alpha. Junction asphalt keeps a zero alpha: it has no road space.
+// channels. Red: forward lanes (bits 0-2), parking lanes on the left (bit 3) and right (bit 4)
+// kerb (`PARK-05`), left-hand traffic (bit 5). Green: backward lanes (bits 0-2) and the median's
+// width in half metres (bits 3-7), so the shader knows the carriageway is wider than its lanes.
+// Blue: the speed limit in km/h. Alpha: a cosmetic age in its upper half. Junction asphalt keeps
+// a zero alpha: it has no road space.
 pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -> Color {
     let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    let red = edge.fwd_lanes.min(7)
+        | (u8::from(edge.parking.left) << 3)
+        | (u8::from(edge.parking.right) << 4)
+        | (u8::from(crate::config::DRIVE_ON_LEFT) << 5);
+    let median_halves = (edge.median_half_width() * 4.0).round().min(31.0) as u8;
+    let green = edge.bkw_lanes.min(7) | (median_halves << 3);
     Color::from_rgba(
-        channel(f32::from(edge.fwd_lanes)),
-        channel(f32::from(edge.bkw_lanes)),
+        channel(f32::from(red)),
+        channel(f32::from(green)),
         channel(edge.speed_limit * 3.6),
         channel(128.0 + 127.0 * cosmetic_road_age(edge)),
     )
@@ -803,10 +812,97 @@ pub(super) fn marking_dash_color() -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::marking_dash_color;
+    use super::{marking_dash_color, road_space_color};
+    use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking};
+    use godot::prelude::Color;
 
     #[test]
     fn lane_marking_colors_are_visible() {
         assert!(marking_dash_color().a > 0.0);
+    }
+
+    // F5 / D6, measured on real meshes: what `road_space_color` wrote before the repack (red the
+    // forward lanes, green the backward), against what it writes now, vertex by vertex. A road
+    // with no median and no parking stays bit for bit; a divided road moves green alone, on every
+    // carriageway vertex of its spans, by the median's width in half metres, and nothing else in
+    // the colour moves. Junction asphalt (zero alpha) is untouched.
+    #[test]
+    fn the_repack_moves_only_a_divided_roads_green_channel() {
+        use crate::simulation::network::render::road::RoadRenderer;
+        use crate::simulation::network::roadbed::RoadbedSystem;
+        use crate::simulation::network::roadbed::fixtures::{divided, grass, straight_pair};
+        use crate::simulation::terrain::TerrainSystem;
+        let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+        let before = |edge: &Edge| {
+            Color::from_rgba(
+                channel(f32::from(edge.fwd_lanes)),
+                channel(f32::from(edge.bkw_lanes)),
+                channel(edge.speed_limit * 3.6),
+                channel(128.0 + 127.0 * super::cosmetic_road_age(edge)),
+            )
+        };
+        let bits = |color: Color| [color.r, color.g, color.b, color.a].map(f32::to_bits);
+        let vertices = |graph: &crate::simulation::network::graph::RegionGraph| {
+            let mut roadbed = RoadbedSystem::new(64.0);
+            roadbed.compile_dirty(graph);
+            let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+            let mesh = RoadRenderer.generate_mesh_data_with_surface(graph, &terrain, &roadbed);
+            mesh.road_colors
+        };
+        // Every vertex's colour against the two edges' old colours: (span vertices, moved).
+        let compare = |graph: &crate::simulation::network::graph::RegionGraph, median_bits: u8| {
+            let old: Vec<_> = (0..2).map(|e| before(graph.edge(e))).collect();
+            let (mut spans, mut moved) = (0, 0);
+            for color in vertices(graph) {
+                if color.a == 0.0 {
+                    continue;
+                }
+                spans += 1;
+                let same = old.iter().any(|&was| bits(was) == bits(color));
+                let shifted = old.iter().any(|&was| {
+                    let green = channel(f32::from(
+                        (was.g * 255.0).round() as u8 | (median_bits << 3),
+                    ));
+                    bits(was)[0] == bits(color)[0]
+                        && green.to_bits() == color.g.to_bits()
+                        && bits(was)[2..] == bits(color)[2..]
+                });
+                assert!(same || shifted, "unexpected colour {color:?}");
+                moved += usize::from(!same);
+            }
+            (spans, moved)
+        };
+        let plain = straight_pair(|edge| divided(edge, 1, 1, None), |edge| divided(edge, 1, 1, None), false, false);
+        let (spans, moved) = compare(&plain, 0);
+        assert!(spans > 0);
+        assert_eq!(moved, 0, "no median, no parking: bitwise unchanged");
+        // 2 + 2 on a 3 m grass median: 6 half metres.
+        let median = |edge| divided(edge, 2, 2, grass(3.0));
+        let graph = straight_pair(median, median, false, false);
+        let (spans, moved) = compare(&graph, 6);
+        assert!(spans > 0);
+        assert_eq!(moved, spans, "every span vertex of a divided road moves its green");
+    }
+
+    // road_asphalt.gdshader widens the carriageway past its lanes by these bits; without them
+    // it paints a parking lane or the far side of a median as gravel shoulder.
+    #[test]
+    fn road_space_color_packs_parking_lanes_and_median_width_beside_the_lane_counts() {
+        let byte = |channel: f32| (channel * 255.0).round() as u8;
+        let mut edge = Edge {
+            fwd_lanes: 2,
+            bkw_lanes: 1,
+            ..Default::default()
+        };
+        let plain = road_space_color(&edge);
+        assert_eq!((byte(plain.r), byte(plain.g)), (2, 1));
+        edge.parking = RoadParking {
+            left: false,
+            right: true,
+        };
+        edge.median = Some(RoadMedian::from_tool(2, 3.0).unwrap().unwrap());
+        let color = road_space_color(&edge);
+        assert_eq!((byte(color.r), byte(color.g)), (2 | 16, 1 | (6 << 3)));
+        assert_eq!((color.b, color.a), (plain.b, plain.a));
     }
 }

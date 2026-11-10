@@ -7,7 +7,15 @@
 ## (`ROAD-74`). Rust decides: hovering a toggle asks for the commit's verdict, and a click
 ## commits only a toggle that verdict accepted. The Road Properties window's lane steppers
 ## (`ROAD-80`) ask the same kind of verdict for the selected roads' lanes and commit on Apply.
+## A junction click also opens the Junction window (`junction_window.gd`) beside the click: its
+## Turn pockets rows (`ROAD-95`, round R5c2) edit each incoming road's pocket, and this tool draws
+## the highlighted row's road from the junction over the requested length and redraws the
+## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
+## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
+## while that verdict is shown.
 extends Node3D
+
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var main_ui = $"../MainUI"
@@ -29,6 +37,12 @@ var _last_hovered: int = -1
 
 var _highlight_mi: MeshInstance3D = null
 var _highlight_tween: Tween = null
+# The Junction window's highlighted road: a strip from the junction over the pocket's length,
+# drawn with the selection highlight's material in its own colour.
+var _pocket_end_mi: MeshInstance3D = null
+const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
+# The lots the shown verdict takes (`ZONE-10`), in the bulldoze highlight.
+var _demolish_mi: MeshInstance3D = null
 
 # Node Selection
 var selected_node: int = -1
@@ -59,6 +73,14 @@ func _ready():
 	mat.render_priority = 100
 	_highlight_mi.material_override = mat
 	add_child(_highlight_mi)
+	_pocket_end_mi = MeshInstance3D.new()
+	_pocket_end_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var end_mat := mat.duplicate() as StandardMaterial3D
+	end_mat.albedo_color = POCKET_END_COLOR
+	end_mat.emission = Color(POCKET_END_COLOR, 1.0)
+	end_mat.render_priority = 101
+	_pocket_end_mi.material_override = end_mat
+	add_child(_pocket_end_mi)
 
 	drag_line_mesh = MeshInstance3D.new()
 	add_child(drag_line_mesh)
@@ -76,7 +98,7 @@ func clear_selection() -> bool:
 	selected_edges.clear()
 	_connected_nodes.clear()
 	_clear_node_visuals()
-	selected_node = -1
+	_select_node(-1)
 	return had_selection
 
 func _input(event: InputEvent) -> void:
@@ -105,7 +127,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cancel_gesture()
 			_mouse_pressed = true
 			_last_click_screen_pos = event.position
-			var pos = _world_position(event.position)
+			var pos = _world_position(event.position, true)
 			
 			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
@@ -128,7 +150,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
 				var building_inspector = _get_building_inspector()
 				if edge_idx == -1 and building_inspector and building_inspector.try_inspect(pos, _last_click_screen_pos):
-					selected_node = -1
+					_select_node(-1)
 					_set_selection([])
 					_clear_node_visuals()
 					return
@@ -136,14 +158,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				if nearest_node != -1:
 					if building_inspector:
 						building_inspector.close_window()
-					selected_node = nearest_node
+					_select_node(nearest_node)
 					_set_selection([]) # Clear edge selection
 					_build_node_visuals(selected_node)
 					return
 			
 			# Otherwise we clicked an edge
 			_clear_node_visuals()
-			selected_node = -1
+			_select_node(-1)
 			if edge_idx != -1:
 				var building_inspector = _get_building_inspector()
 				if building_inspector:
@@ -154,7 +176,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				
 		else:
 			if not _drag_source.is_empty():
-				var target_lane = _get_hovered_lane_sphere(_world_position(event.position))
+				var target_lane = _get_hovered_lane_sphere(_world_position(event.position, true))
 				if target_lane != null:
 					if target_lane.is_incoming and target_lane.edge_id == _drag_source.edge_id and target_lane.lane_id == _drag_source.lane_id:
 						simulation_node.clear_lane_source(selected_node, _drag_source.edge_id, _drag_source.lane_id)
@@ -333,15 +355,27 @@ func _preview_crosswalk(toggle: Dictionary) -> Dictionary:
 func _update_crosswalk_hover() -> void:
 	if crosswalk_toggles.is_empty():
 		return
-	var hovered = _get_hovered_cw_toggle(_world_position(get_viewport().get_mouse_position()))
+	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the labels keep the last hover.
+	if pos is bool:
+		return
+	var hovered = _get_hovered_cw_toggle(pos)
 	for c in crosswalk_toggles:
 		var preview: Dictionary = _preview_crosswalk(c) if c == hovered else {}
 		c.label_inst.text = _crosswalk_label(c.has_cw, preview)
 
-func _world_position(screen_position: Vector2):
+# The world point under a screen position, null for none. A click's query waits while the
+# simulation thread holds the core, else a click would deselect as if it hit nothing
+# (`CODE-20`); the per-frame one answers false then, and its hover keeps its last answer
+# (`CODE-25`).
+func _world_position(screen_position: Vector2, click := false):
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	return simulation_node.intersect_world_surface(camera.project_ray_origin(screen_position), camera.project_ray_normal(screen_position))
+	var origin = camera.project_ray_origin(screen_position)
+	var direction = camera.project_ray_normal(screen_position)
+	if click:
+		return simulation_node.intersect_world_surface(origin, direction, true)
+	return simulation_node.hover_world_surface(origin, direction)
 
 func _get_hovered_lane_sphere(pos):
 	if pos == null: return null
@@ -369,6 +403,9 @@ func _get_hovered_cw_toggle(pos):
 
 func _update_drag_line():
 	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the line keeps its last end.
+	if pos is bool:
+		return
 	if pos == null:
 		drag_line_mesh.mesh = null
 		return
@@ -459,6 +496,8 @@ func _is_connected(edge_idx: int) -> bool:
 
 func _hovered_edge() -> int:
 	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the last hovered edge stays.
+	if pos is bool: return _last_hovered
 	if pos == null: return -1
 	return simulation_node.get_hovered_edge(pos.x, pos.z)
 
@@ -475,37 +514,81 @@ func set_selected_edge_class(class_int: int) -> void:
 		get_node("../RoadTool").update_main_mesh()
 
 ## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
-## of `median_width` metres (`ROAD-80`) and a road type's `speed_kmh`, `sidewalks`, `zoning` and
-## `street_lights` (`ROAD-101`) in place: the first refusal (`invalid_reason`, `detail`), else `is_valid` with the
-## selection's totals of Rust's `buildings_removed` and `cost_delta`, and `demolition_permanent`
-## when any road's is. Each road is checked as it stands, as Apply commits them one by one.
-func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
-		speed_kmh: int, sidewalks: bool, zoning: bool, street_lights: bool) -> Dictionary:
-	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false}
+## of `median_width` metres (`ROAD-80`), kerbside `parking` (`PARK-05`: bit 0 left, bit 1 right)
+## and a road type's `speed_kmh`, `sidewalks` (Rust's side code in each road's own forward
+## direction, `ROAD-107`), `zoning` and `street_lights` (`ROAD-101`) in place: the first refusal
+## (`invalid_reason`, `detail`), else `is_valid` with the selection's totals of Rust's
+## `buildings_removed` and `cost_delta`, and `demolition_permanent` when any road's is, and the
+## lots the widenings take (`demolish_lots`), which this tool outlines. Each road is checked as it
+## stands, as Apply commits them one by one.
+func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> Dictionary:
+	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false,
+		"demolish_lots": PackedVector3Array()}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
-			speed_kmh, sidewalks, zoning, street_lights)
+			parking, speed_kmh, sidewalks, zoning, street_lights)
 		if not bool(verdict.get("is_valid", false)):
+			show_demolition(PackedVector3Array())
 			return verdict
 		total.buildings_removed += int(verdict.get("buildings_removed", 0))
 		total.cost_delta += float(verdict.get("cost_delta", 0.0))
 		total.demolition_permanent = total.demolition_permanent or bool(verdict.get("demolition_permanent", false))
+		total.demolish_lots.append_array(verdict.get("demolish_lots", PackedVector3Array()))
+	show_demolition(total.demolish_lots)
 	return total
 
-## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median and the type's
-## attributes, each with its undo record, and returns how many were refused. The edits publish
-## their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
-func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
-		speed_kmh: int, sidewalks: bool, zoning: bool, street_lights: bool) -> int:
+## Outlines `lots` (four corners each, as Rust packs them) with the bulldoze highlight; an empty
+## array hides it.
+func show_demolition(lots: PackedVector3Array) -> void:
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4)
+	if mesh != null and _demolish_mi == null:
+		_demolish_mi = HighlightMesh.instance()
+		add_child(_demolish_mi)
+	if _demolish_mi != null:
+		_demolish_mi.mesh = mesh
+		_demolish_mi.visible = mesh != null
+
+## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median, `parking` and the
+## type's attributes, each with its undo record, and returns how many were refused. The edits
+## publish their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
+func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> int:
 	var refused := 0
 	for idx in selected_edges:
-		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, speed_kmh, sidewalks,
-				zoning, street_lights):
+		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, parking, speed_kmh,
+				sidewalks, zoning, street_lights):
 			refused += 1
+	show_demolition(PackedVector3Array())
 	_rebuild_highlight()
 	if not zoning:
 		_refresh_no_build_overlay()
 	return refused
+
+## Turns the kerbside parking lane `side_bit` (1 left, 2 right, looking along each road's drawn
+## direction) on or off on every selected road, keeping its lanes, median and attributes (`PARK-05`), each
+## with its undo record. Returns `refused` (how many roads Rust refused) and `verdict`, the first
+## refusal, for the window to show.
+func set_selected_edge_parking_side(side_bit: int, enabled: bool) -> Dictionary:
+	var refused := 0
+	var first_refusal := {}
+	for idx in selected_edges:
+		var section: Dictionary = simulation_node.get_edge_cross_section(idx)
+		var code := int(section.get("parking", 0))
+		var wanted := (code | side_bit) if enabled else (code & ~side_bit)
+		if wanted == code:
+			continue
+		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
+			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)), wanted,
+			int(section.get("speed_kmh", 50)), int(section.get("sidewalks", 3)), bool(section.get("zoning", true)),
+			bool(section.get("street_lights", true))]
+		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
+		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):
+			refused += 1
+			if first_refusal.is_empty():
+				first_refusal = verdict
+	_rebuild_highlight()
+	return {"refused": refused, "verdict": first_refusal}
 
 func set_selected_edge_no_building_spawn(enabled: bool) -> void:
 	for idx in selected_edges:
@@ -546,6 +629,7 @@ func _rebuild_highlight() -> void:
 		_highlight_tween.tween_property(mat, "emission", Color(1.0, 1.0, 1.0), 0.5)
 
 func _clear_highlight() -> void:
+	show_demolition(PackedVector3Array())
 	if _highlight_tween:
 		_highlight_tween.kill()
 		_highlight_tween = null
@@ -553,3 +637,67 @@ func _clear_highlight() -> void:
 		_highlight_mi.mesh = null
 		var mat := _highlight_mi.material_override as StandardMaterial3D
 		if mat: mat.emission = Color(1, 1, 1)
+
+# ── Junction window (`ROAD-95` turn pockets) ────────────────────────────────
+
+# Selects junction `node` (-1: none) and opens the Junction window beside the click, or closes it.
+func _select_node(node: int) -> void:
+	selected_node = node
+	if not main_ui:
+		return
+	if node == -1:
+		main_ui.hide_junction_window()
+	else:
+		main_ui.show_junction_window(node, _last_click_screen_pos)
+
+## Commits the Junction window's pocket `left` / `right` / `length_m` at end `end` of road `edge`
+## (Rust's `set_road_pocket`, with its undo record: Ctrl+Z) and redraws the junction's lanes,
+## which the pocket changes. Returns whether Rust applied it.
+func set_junction_pocket(edge: int, end: int, left: bool, right: bool, length_m: float) -> bool:
+	if not simulation_node.set_road_pocket(edge, end, left, right, length_m):
+		return false
+	refresh_junction_visuals()
+	return true
+
+## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
+func refresh_junction_visuals() -> void:
+	if selected_node != -1:
+		_build_node_visuals(selected_node)
+
+## Highlights the stretch of `info`'s road (a Junction window row's arm: its polyline from the
+## junction outwards) a pocket of `length_m` takes from the junction, as wide as its widest edge.
+func show_pocket_end(info: Dictionary, length_m: float) -> void:
+	var road: PackedVector3Array = info.get("road", PackedVector3Array())
+	if road.size() < 2:
+		clear_pocket_end()
+		return
+	var half_w := float(info.get("width_m", 6.0)) * 0.5 + 1.5
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	var run := 0.0
+	for i in range(road.size() - 1):
+		var a: Vector3 = road[i]
+		var b: Vector3 = road[i + 1]
+		var step := Vector2(b.x - a.x, b.z - a.z).length()
+		if step <= 0.0:
+			continue
+		# The last segment is cut where the length runs out.
+		if run + step > length_m:
+			b = a.lerp(b, (length_m - run) / step)
+		a.y += 0.05
+		b.y += 0.05
+		var tang: Vector3 = (b - a).normalized()
+		var lat := Vector3(-tang.z, 0.0, tang.x) * half_w
+		im.surface_add_vertex(a - lat); im.surface_add_vertex(a + lat); im.surface_add_vertex(b + lat)
+		im.surface_add_vertex(a - lat); im.surface_add_vertex(b + lat); im.surface_add_vertex(b - lat)
+		run += step
+		if run >= length_m:
+			break
+	im.surface_end()
+	_pocket_end_mi.mesh = im
+
+## Removes that highlight, and the outline of the lots its verdict takes.
+func clear_pocket_end() -> void:
+	show_demolition(PackedVector3Array())
+	if _pocket_end_mi:
+		_pocket_end_mi.mesh = null

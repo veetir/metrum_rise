@@ -500,10 +500,9 @@ func _on_help_menu_pressed(id: int) -> void:
 				[
 					"R  Road tool",
 					"X  Walkway tool",
+					"O  Roundabout tool ([ and ] size)",
 					"Z  Zoning tool",
-					"M  Move tool",
 					"V  Select tool",
-					"C  Cul-de-sac tool",
 					"Y  Terrain sculpt",
 					"Space  Pause / unpause",
 					"Escape  Cancel active tool",

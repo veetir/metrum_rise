@@ -46,6 +46,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) tunnel: bool,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`).
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`), which a replay sets before it draws.
     pub(crate) attributes: RoadAttributes,
 }
@@ -136,8 +138,9 @@ impl RoadRejection {
             tunnel: attempt.tunnel,
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
+            parking: attempt.parking.code(),
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
-            sidewalks: attempt.attributes.sidewalks,
+            sidewalks: attempt.attributes.sidewalks.bits(),
             zoning: attempt.attributes.zoning,
             street_lights: attempt.attributes.street_lights,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
@@ -161,9 +164,12 @@ struct AttemptRecord<'a> {
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
-    // The road type's attributes as the road tool sets them (`set_road_tool_attributes`).
+    // Kerbside parking (`PARK-05`) as `RoadParking::code`: bit 0 left, bit 1 right.
+    parking: i32,
+    // The road type's attributes as the road tool sets them (`set_road_tool_attributes`):
+    // `sidewalks` is the side code (`ROAD-107`).
     speed_kmh: u16,
-    sidewalks: bool,
+    sidewalks: u8,
     zoning: bool,
     street_lights: bool,
     points: Vec<[f32; 3]>,
@@ -283,7 +289,43 @@ fn validation_detail(
             "a solved road centreline misses its junction plane by more than 1 mm".to_owned(),
             None,
         ),
+        "stroke_splits_pocket" => (
+            "the stroke would split or join a turn pocket or its transition (`ROAD-95`)".to_owned(),
+            None,
+        ),
+        "roundabout_crossed" => (
+            "the stroke would run on through a roundabout's ring (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
+        "roundabout_island" => (
+            "the stroke would end on or cross a roundabout's island (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
+        "roundabout_arms_too_close" => (
+            "two arms of a roundabout stand closer than their mouths need (`ROAD-62`, D9)"
+                .to_owned(),
+            None,
+        ),
+        "roundabout_neighbour_nodes" => (
+            "the road would join two neighbouring points of a roundabout's ring (`ROAD-62`, D9)"
+                .to_owned(),
+            None,
+        ),
+        "roundabout_arm_node_taken" => (
+            "the ring node already has its arm (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
         "field_overlap" => ("the road corridor overlaps a farm field".to_owned(), None),
+        "extraction_area_overlap" => (
+            "the road corridor overlaps a mine's extraction area".to_owned(),
+            None,
+        ),
+        "plotted_building_overlap" => (
+            "the road corridor overlaps the lot of a placed building (a service, farm, mine or \
+             plant); zoned lots are taken, placed buildings are not"
+                .to_owned(),
+            None,
+        ),
         "parcel_overlap" => ("the road corridor overlaps zoned parcels".to_owned(), None),
         "validation_unavailable" => (
             "the road check had no result for this stroke yet".to_owned(),
@@ -411,7 +453,8 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
-            attributes: RoadAttributes::from_tool(100, false, false, false).unwrap(),
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -434,7 +477,7 @@ mod tests {
         assert_eq!(record["snap"], true);
         assert_eq!(record["tunnel"], true);
         assert_eq!(record["speed_kmh"], 100);
-        assert_eq!(record["sidewalks"], false);
+        assert_eq!(record["sidewalks"], 1, "the side code, left only");
         assert_eq!(record["zoning"], false);
         assert_eq!(record["street_lights"], false);
         // Every coordinate parses back to the submitted f32.
@@ -493,6 +536,7 @@ mod tests {
             snap: false,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);

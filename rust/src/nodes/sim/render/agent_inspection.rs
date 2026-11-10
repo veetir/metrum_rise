@@ -431,6 +431,7 @@ mod tests {
         let p0 = graph.node(start).pos;
         let p1 = graph.node(end).pos;
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: start,
             end_node: end,
             primary_type: TransitType::Road,
@@ -451,6 +452,9 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         })
     }
 

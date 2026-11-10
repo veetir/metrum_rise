@@ -83,7 +83,7 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
     writeln!(report, "{header}").unwrap();
     for &(start, end, edge, mode) in &queries {
         let cost = cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs);
-        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths);
+        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths, None);
         assert_eq!(cost.map(f32::to_bits), path.as_ref().map(|p| p.0.to_bits()));
         writeln!(
             report,
@@ -109,6 +109,7 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
                         graph,
                         mode,
                         &mut paths,
+                        None,
                     ));
                 } else {
                     black_box(cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs));
@@ -740,7 +741,7 @@ fn profile_populated_boundaries(midnight: bool) {
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
         .map(|value| value.parse().unwrap())
-        .unwrap_or(100_000);
+        .unwrap_or(30_000);
     let mut city = PopulatedCity::build(residents);
     crate::debug::init();
     // Debug channels stay quiet outside the sampled boundary frames.
@@ -881,7 +882,7 @@ fn profile_populated_boundaries(midnight: bool) {
 }
 
 #[test]
-#[ignore = "release populated work-count attribution; compares 10k/100k growth"]
+#[ignore = "release populated work-count attribution; compares 10k/30k growth"]
 fn benchmark_populated_work_counts() {
     use crate::debug::work::{WORK_COUNT, WORK_NAMES, snapshot};
 
@@ -1049,6 +1050,7 @@ fn graded_drag(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -1355,6 +1357,7 @@ pub(super) fn profile_commits(
             "zoning_ms": m.zoning_ms, "add_ms": m.add_ms, "surface_ms": m.surface_ms,
             "surface_roadbed_ms": m.surface_roadbed_ms,
             "surface_overlap_ms": m.surface_overlap_ms,
+            "surface_land_ms": m.surface_land_ms,
             "surface_graded_ms": m.surface_graded_ms, "graded_select_ms": m.graded_select_ms,
             "graded_bake_ms": m.graded_bake_ms,
             "graded_adopted": m.graded_adopted, "graded_baked": m.graded_baked,
@@ -1539,8 +1542,8 @@ fn graded_site_removal(
         return None;
     }
     let building_idx = core.allocator.buildings.len() / 2;
+    // The removal publishes its own site change: the next publication replaces the record.
     assert!(core.bulldoze_building(building_idx), "the building is removed");
-    core.publish_pending_building_site_changes();
     prepare_graded_sites(core);
     let changes = core.last_site_terrain_changes.clone();
     assert!(!changes.is_empty(), "the removal records its site");
@@ -1673,6 +1676,7 @@ pub(super) fn commit_trunk_branch(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },

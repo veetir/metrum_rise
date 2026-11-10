@@ -3,7 +3,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, SelectTool, CulDeSacTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool,
+## SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool, RoundaboutTool,
 ## VegetationTool, FieldEditTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
@@ -28,12 +28,11 @@ signal tool_changed(tool: int)
 @onready var water_node = $"../Water"
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
-@onready var move_tool = $"../MoveTool"
-var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
 var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
+var roundabout_tool: Node3D
 @onready var vegetation_tool = $"../VegetationTool"
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
@@ -43,7 +42,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
 var current_tool: Tool = Tool.NONE:
 	set(value):
 		if current_tool != value:
@@ -86,13 +85,6 @@ func _ready():
 	var frame_camera := get_node_or_null("../CameraNode")
 	if frame_camera != null:
 		frame_camera.process_priority = CAMERA_SETTLE_PROCESS_PRIORITY
-	if not has_node("../CulDeSacTool"):
-		var rt = Node3D.new()
-		rt.name = "CulDeSacTool"
-		rt.set_script(load("res://scripts/tools/cul_de_sac_tool.gd"))
-		get_parent().call_deferred("add_child", rt)
-		cul_de_sac_tool = rt
-	
 	if not has_node("../SelectTool"):
 		var st = Node3D.new()
 		st.name = "SelectTool"
@@ -133,6 +125,15 @@ func _ready():
 	else:
 		bulldoze_tool = get_node("../BulldozeTool")
 
+	if not has_node("../RoundaboutTool"):
+		var rt = Node3D.new()
+		rt.name = "RoundaboutTool"
+		rt.set_script(load("res://scripts/tools/roundabout_tool.gd"))
+		get_parent().call_deferred("add_child", rt)
+		roundabout_tool = rt
+	else:
+		roundabout_tool = get_node("../RoundaboutTool")
+
 	if has_node("../BuildingInspector"):
 		building_inspector = get_node("../BuildingInspector")
 	else:
@@ -163,9 +164,6 @@ func _ready():
 	agent_inspector.building_requested.connect(_on_agent_building_requested)
 	get_parent().call_deferred("add_child", agent_inspector)
 
-	# Hide overlay mesh if exists in cul-de-sac tool
-	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
-		cul_de_sac_tool.get_node("PreviewMesh").visible = false
 	call_deferred("_configure_world_camera_policy")
 	add_to_group("graphics_settings")
 
@@ -311,12 +309,11 @@ func _unhandled_input(event):
 			get_viewport().set_input_as_handled()
 			return
 		match event.keycode:
-			KEY_M: _toggle_tool(Tool.MOVE)
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
-			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
+			KEY_O: _toggle_tool(Tool.ROUNDABOUT)
 			KEY_E:
 				if current_tool == Tool.VEGETATION:
 					vegetation_tool.toggle_mode()
@@ -481,7 +478,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	if enabled and tool_type != Tool.FIELD_EDIT and building_inspector:
 		building_inspector.close_window()
 	match tool_type:
-		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 			if road_tool:
@@ -500,9 +496,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				road_tool.active = enabled
 				if enabled:
 					road_tool.set_road_type(road_tool.WALKWAY_ROAD_TYPE)
-		Tool.CUL_DE_SAC:
-			if cul_de_sac_tool:
-				cul_de_sac_tool.active = enabled
 		Tool.AGENT: if agents_node: pass # Agents diag always available
 		Tool.ZONING:
 			if zoning_tool: zoning_tool.active = enabled
@@ -524,6 +517,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if vegetation_tool: vegetation_tool.active = enabled
 		Tool.BULLDOZE:
 			if bulldoze_tool: bulldoze_tool.active = enabled
+		Tool.ROUNDABOUT:
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+			if roundabout_tool: roundabout_tool.set_tool_active(enabled)
 		Tool.FIELD_EDIT:
 			if not enabled and field_edit_tool:
 				field_edit_tool.cancel_edit()
@@ -554,8 +550,6 @@ func _default_save_name() -> String:
 func _refresh_after_world_load():
 	if road_tool and road_tool.current_state != 0:
 		road_tool.cancel_road()
-	if move_tool and move_tool.current_state != 0:
-		move_tool.cancel_move()
 	_cancel_active_tool()
 	if building_inspector:
 		building_inspector.close_window()
@@ -734,9 +728,12 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 	var camera := get_viewport().get_camera_3d()
 	if not camera:
 		return
+	# The click waits for the core, so a click during a frame is not taken for one on nothing
+	# (`CODE-25`).
 	var pos = simulation_node.intersect_world_surface(
 		camera.project_ray_origin(mouse_pos),
-		camera.project_ray_normal(mouse_pos)
+		camera.project_ray_normal(mouse_pos),
+		true
 	)
 	if pos == null:
 		building_inspector.close_window()
@@ -757,8 +754,6 @@ func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> vo
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
 		road_tool.cancel_road()
-	elif current_tool == Tool.MOVE and move_tool.current_state != 0:
-		move_tool.cancel_move()
 	elif current_tool == Tool.SCULPT:
 		pass # Right click is used for lowering ground during sculpting
 

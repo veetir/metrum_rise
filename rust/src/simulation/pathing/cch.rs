@@ -371,6 +371,7 @@ mod tests {
         ];
 
         let edge_defaults = Edge {
+            parking: Default::default(),
             start_node: 0,
             end_node: 0,
             primary_type: TransitType::Road,
@@ -392,6 +393,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         };
 
         let edges = vec![

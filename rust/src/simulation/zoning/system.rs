@@ -15,15 +15,17 @@ mod validation;
 use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
 use super::{SharedParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::graph::SidewalkSides;
 use glam::DVec2;
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-pub(crate) use cell_editing::CellZoningEdit;
+pub(crate) use cell_editing::{CellPaintUndo, CellZoningEdit, RoadPaint};
 pub(crate) use cell_lots::{
     CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, PlannedCellLots,
 };
+pub(crate) use reservations::{footprint_newly_covers, road_piece_newly_covers};
 
 /// Road-aligned parcel zoning system.
 #[derive(Clone)]
@@ -39,6 +41,8 @@ pub struct ZoningSystem {
     cell_external_revision: u64,
     /// Cached compatible footprints, invalidated by the asset registry's explicit refresh hook.
     pub(crate) cell_lot_sizes: Option<Vec<super::cells::CellLotSize>>,
+    // The paint a road stroke erased, until its commit's lot plan takes it (`ZONE-09`).
+    road_paint_sources: Option<RoadPaint>,
     /// World configuration used for parcel bounds validation.
     pub config: WorldConfig,
     overlay_revision: u64,
@@ -62,6 +66,12 @@ impl ZoningParcelRemovalUndo {
     pub(crate) fn is_empty(&self) -> bool {
         self.parcels.is_empty()
     }
+
+    /// The raw ids of the parcels the undo restores, in capture order.
+    #[cfg(test)]
+    pub(crate) fn parcel_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.parcels.iter().map(|(_, parcel)| parcel.id().raw())
+    }
 }
 
 impl ZoningSystem {
@@ -76,6 +86,7 @@ impl ZoningSystem {
             cell_lot_queue: Default::default(),
             cell_external_revision: 0,
             cell_lot_sizes: None,
+            road_paint_sources: None,
             config: *config,
             overlay_revision: 0,
             overlay_occupancy_revision: 0,
@@ -93,14 +104,24 @@ impl ZoningSystem {
         self.cell_lot_queue.clear();
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         self.cell_lot_sizes = None;
+        self.road_paint_sources = None;
         if had_parcels {
             self.bump_overlay_revision();
         }
     }
 
     pub(crate) fn remove_parcels_attached_to_edge(&mut self, edge_idx: usize) -> usize {
+        self.remove_parcels_attached_to_edge_on_sides(edge_idx, SidewalkSides::BOTH)
+    }
+
+    /// [`Self::remove_parcels_attached_to_edge`] for the parcels on `sides` of the road only.
+    pub(crate) fn remove_parcels_attached_to_edge_on_sides(
+        &mut self,
+        edge_idx: usize,
+        sides: SidewalkSides,
+    ) -> usize {
         let cells = &mut self.cells;
-        let removed = self.parcels.remove_attached_to_edge(edge_idx, |parcel| {
+        let removed = self.parcels.remove_attached_to_edge(edge_idx, sides, |parcel| {
             if let Some(lot) = parcel.cell_lot() {
                 cells.release_lot(lot, parcel.id().raw());
             } else {
@@ -152,6 +173,67 @@ impl ZoningSystem {
         removed
     }
 
+    /// Removes the parcels `raw_ids` (ascending) a road stroke takes (`ZONE-09`), after their
+    /// buildings were demolished, or the empty lots on the cells its undo gives back: a cell lot
+    /// releases its claim and keeps its cells' paint, an authored parcel invalidates the
+    /// generated cells around it, as [`Self::remove_parcels_by_raw_ids`] does, but each record
+    /// is removed locally instead of rebuilding the parcel indices. Returns how many were
+    /// removed. O(ids * their chunks).
+    pub(crate) fn remove_parcels_under_road(&mut self, raw_ids: &[u64]) -> usize {
+        let mut removed = 0;
+        for &raw in raw_ids {
+            let id = crate::simulation::zoning::ParcelId::from_raw(raw);
+            let Some(parcel) = self.parcels.get(id) else {
+                continue;
+            };
+            debug_assert!(parcel.is_available(), "its building was demolished first");
+            match parcel.cell_lot() {
+                Some(lot) => {
+                    self.cells.release_lot(lot, raw);
+                }
+                None => {
+                    let halo = self.authored_parcel_halo(parcel);
+                    self.cells.invalidate_generated_cells(halo);
+                }
+            }
+            self.parcels.remove_local(id);
+            removed += 1;
+        }
+        if removed > 0 {
+            self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
+            self.bump_overlay_revision();
+        }
+        removed
+    }
+
+    /// The generated cells [`Self::remove_parcels_under_road`] will invalidate around the
+    /// authored parcels among `raw_ids`, for the release of the edit removing them (`ZONE-14`).
+    /// Cell lots invalidate nothing there. O(ids).
+    pub(crate) fn authored_parcel_halos(
+        &self,
+        raw_ids: &[u64],
+    ) -> impl Iterator<Item = super::cells::CellBounds> {
+        raw_ids.iter().filter_map(|&raw| {
+            let parcel = self
+                .parcels
+                .get(crate::simulation::zoning::ParcelId::from_raw(raw))?;
+            parcel
+                .cell_lot()
+                .is_none()
+                .then(|| self.authored_parcel_halo(parcel))
+        })
+    }
+
+    // An authored parcel's bounds and the rear rows its removal can free around it.
+    fn authored_parcel_halo(&self, parcel: &ZoningParcel) -> super::cells::CellBounds {
+        super::cells::CellBounds::from_points(
+            parcel
+                .corners()
+                .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
+        )
+        .expanded((super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m))
+    }
+
     pub(crate) fn parcel_ids_overlapping_road_corridor(
         &self,
         points: &[Vector3],
@@ -165,9 +247,18 @@ impl ZoningSystem {
     }
 
     pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {
+        self.capture_parcel_removal_undo_on_sides(edge_idx, SidewalkSides::BOTH)
+    }
+
+    /// [`Self::capture_parcel_removal_undo`] for the parcels on `sides` of the road only.
+    pub(crate) fn capture_parcel_removal_undo_on_sides(
+        &self,
+        edge_idx: usize,
+        sides: SidewalkSides,
+    ) -> ZoningParcelRemovalUndo {
         ZoningParcelRemovalUndo {
             original_parcel_count: self.parcels.parcels().len(),
-            parcels: self.parcels.capture_attached_to_edge(edge_idx),
+            parcels: self.parcels.capture_attached_to_edge(edge_idx, sides),
         }
     }
 

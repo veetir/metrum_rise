@@ -80,6 +80,29 @@ impl SimCore {
         })
     }
 
+    /// Replaces a model's support profile, false for a model that does not exist. Its contacts
+    /// decide its pose on every bay, so the parked poses go with it. O(bays), at mesh load.
+    pub(crate) fn set_vehicle_ground_support(
+        &mut self,
+        vehicle: usize,
+        profile: VehicleGroundSupport,
+    ) -> bool {
+        let Some(target) = self.vehicle_ground_support.get_mut(vehicle) else {
+            return false;
+        };
+        *target = profile;
+        self.parking.invalidate_all_ground();
+        true
+    }
+
+    /// The farthest any loaded model's contact lies from its origin, metres. O(models).
+    pub(crate) fn vehicle_contact_reach_m(&self) -> f32 {
+        self.vehicle_ground_support
+            .iter()
+            .map(|support| support.reach_m)
+            .fold(0.0, f32::max)
+    }
+
     /// Exact rigid support reference used near the camera and by non-render inspection/tests.
     pub(crate) fn vehicle_ground_pose_exact(
         &self,
@@ -99,6 +122,30 @@ impl SimCore {
             vehicle_support_pose(support, position, heading, |point| {
                 let (x, z) = (f64::from(point.x), f64::from(point.y));
                 surface.surface_height_near(x, z, scratch) as f32
+            })
+        })
+    }
+
+    /// [`Self::vehicle_ground_pose_exact`] for a parked car, on its own street or lot however
+    /// many decks pass over it (`PARK-05`): `level` as `GradedSurface::parked_height_near` reads
+    /// it. One gather and the same contacts, so O(contacts) as the exact solve.
+    pub(crate) fn vehicle_parked_pose(
+        &self,
+        vehicle: u8,
+        position: Vector2,
+        heading: Vector3,
+        level: Option<f32>,
+    ) -> (f32, [Vector3; 3]) {
+        let support = self
+            .vehicle_ground_support
+            .get(vehicle as usize)
+            .unwrap_or(&self.vehicle_ground_support[0]);
+        self.with_graded_surface(|surface, scratch| {
+            let (x, z) = (f64::from(position.x), f64::from(position.y));
+            surface.gather_near(x, z, f64::from(support.reach_m) + CONTACT_SLACK_M, scratch);
+            vehicle_support_pose(support, position, heading, |point| {
+                let (x, z) = (f64::from(point.x), f64::from(point.y));
+                surface.parked_height_near(x, z, level, scratch) as f32
             })
         })
     }

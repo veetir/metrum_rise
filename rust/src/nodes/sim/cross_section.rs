@@ -1,26 +1,33 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts and median,
-//! and its road type's attributes (`ROAD-101`: sidewalks, speed, zoning), changed on the
+//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts, median and
+//! kerbside parking (`PARK-05`), and its road type's attributes (`ROAD-101`: sidewalks, speed,
+//! zoning), changed on the
 //! crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
 //! applied to the graph, its two nodes are laid out again, their closure is compiled into a
-//! scratch roadbed (fields, painted cells, steepened profiles) and the graph is put back; a
-//! widening of the roadbed (lanes, a median, sidewalks added) is also checked against water,
-//! parcels and the curve radius. The preview runs the same check, so the select tool's verdict
-//! is the commit's, with the buildings a zoning-off change demolishes and the difference in
-//! build cost Apply charges; the commit pushes the check's local checkpoint (whole
-//! `Node`/`Edge` records) as its undo record and rebuilds lanes, cars and entrances locally, as
-//! an undo does. `O(closure pieces)` for the check, plus a parallel `O(B / P)` count when zoning
+//! scratch roadbed (plotted land, the zoned land it takes, steepened profiles) and the graph is
+//! put back; a widening of the roadbed (lanes, a median, a sidewalk added on either side,
+//! `ROAD-107`) is also checked against water and the curve radius, on the corridor a stroke of
+//! that type checks: the larger side, reached to both sides. The preview runs the same check, so
+//! the select tool's verdict is the commit's, with the buildings a zoning-off change or the land
+//! take (`ZONE-10`) demolishes and the difference in build cost Apply charges; the commit takes
+//! the land, pushes the check's local checkpoint (whole `Node`/`Edge` records) with the erased
+//! paint as its undo record and rebuilds lanes, cars and entrances locally, as an undo does. `O(closure pieces)` for the check, plus a parallel `O(B / P)` count when zoning
 //! goes off; the commit tail is `O(local lanes + invalidated)` plus the undo's parallel
 //! `O(A / P + B / P)` membership passes over agents and buildings, and when zoning goes off the
-//! "No buildings" checkbox's own maintenance pass.
+//! "No buildings" checkbox's own maintenance pass. A sidewalk stays while a building's door is on
+//! its side (`ROAD-109`): `O(segments + chunks + candidates log candidates)` through the chunk
+//! index, only when the edit removes a side; the side's empty lots go with it, in the same undo.
 
-use super::core::{RoadRejection, SimCore};
+use super::core::{RoadEditSite, RoadLandTake, RoadRejection, SimCore, TriedGraphEdit};
 use crate::debug_log;
-use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
+use crate::simulation::buildings::allocator::Building;
+use crate::simulation::network::graph::{
+    Edge, RoadMedian, RoadParking, SidewalkSides,
+};
 use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
 use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
-use crate::simulation::network::roadbed::{side_band_width_m, visual_roadbed_half_width_m};
+use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
@@ -30,29 +37,37 @@ use std::collections::HashSet;
 
 /// What an accepted in-place edit does beyond the road itself (`ROAD-101`), for the Road
 /// Properties window's confirmation and its Apply label.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CrossSectionVerdict {
-    /// Buildings fronting the road that a change to zoning off demolishes (as the "No buildings"
-    /// checkbox does); 0 otherwise.
+    /// Buildings the edit demolishes: those fronting the road that a change to zoning off
+    /// demolishes (as the "No buildings" checkbox does), and those on the lots a widening newly
+    /// covers (`ZONE-10`), each counted once.
     pub(crate) buildings_removed: usize,
     /// Whether that demolition is permanent (any `buildings_removed`): an undo restores the
-    /// road and its parcels, empty, but no undo path restores a road's demolished buildings
-    /// (the bulldoze journal restores one building per entry), so the confirmation says so.
+    /// road, its parcels, empty, and the erased paint, but no undo path restores a road's
+    /// demolished buildings (the bulldoze journal restores one building per entry), so the
+    /// confirmation says so.
     pub(crate) demolition_permanent: bool,
     /// What Apply charges: the new road type's build cost over the road's length less the
     /// current one's, floored at 0 (a cheaper type refunds nothing; `DESIGN-RB3` D10).
     pub(crate) cost_delta: f64,
+    /// The zoned land the widening's pieces newly cover (`ZONE-10`): the lots the window
+    /// outlines.
+    pub(crate) take: RoadLandTake,
 }
 
 impl SimCore {
-    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median` and the road
-    /// type's `attributes` in place (`ROAD-80`, `ROAD-101`), keeping its centreline, id and class.
+    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median`, `parking`
+    /// (`PARK-05`) and the road type's `attributes` in place (`ROAD-80`, `ROAD-101`), keeping
+    /// its centreline, id and class.
     /// Both end nodes are laid out again at the new width and the lanes of their arms rebuilt;
     /// cars and walkers on a lane that no longer exists reattach to the nearest rebuilt lane of
     /// their kind, or stay laneless on their edge (`TRAFFIC-19`), never moved. Zoning turned off
     /// removes the road's parcels and demolishes their buildings as the "No buildings" checkbox
-    /// does (its undo restores the parcels, empty). The [`CrossSectionVerdict::cost_delta`] is
-    /// charged outside `benchmark_mode`.
+    /// does (its undo restores the parcels, empty). A widening takes the zoned land its pieces
+    /// newly cover as a road stroke does (`ZONE-10`): the buildings on those lots demolished,
+    /// the lots removed and the covered cells' paint erased, which its undo gives back. The
+    /// [`CrossSectionVerdict::cost_delta`] is charged outside `benchmark_mode`.
     /// Returns whether the edit was applied, with an undo record and the render marked dirty; a
     /// refused edit ([`Self::preview_edge_cross_section_internal`]) changes nothing. The caller
     /// publishes the rebuilt pieces ([`Self::finalize_network_render_products`]), as after a
@@ -63,21 +78,26 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let (checkpoint, nodes, verdict) =
-            match self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes) {
+        // The take reads the explicit sites through the site index, as a stroke's commit does.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let (tried, nodes, verdict) =
+            match self.try_cross_section_edit(edge_id, fwd, bkw, median, parking, attributes) {
                 Ok(tried) => tried,
                 Err(rejection) => {
                     debug_log!(
                         "road",
-                        "cross_section_edit_rejected edge={} lanes={}+{} median={:?} attributes={:?} reason={}",
+                        "cross_section_edit_rejected edge={} lanes={}+{} median={:?} parking={:?} attributes={:?} reason={}",
                         edge_id,
                         fwd,
                         bkw,
                         median,
+                        parking,
                         attributes,
                         rejection.reason
                     );
@@ -86,15 +106,32 @@ impl SimCore {
             };
         let edge = edge_id as usize;
         let zoning_off = !self.region_graph.edge(edge).no_building_spawn && !attributes.zoning;
+        let lost = self
+            .region_graph
+            .edge(edge)
+            .sidewalk_sides()
+            .lost_in(attributes.sidewalks);
+        let TriedGraphEdit { checkpoint, take } = tried;
         let incident = self.live_edges_at(&nodes, edge);
-        let changed = self.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
+        let changed = self.road_edit_site().apply_edge_cross_section(
+            edge,
+            (fwd, bkw, median, parking, attributes),
+            &nodes,
+        );
         let affected: HashSet<usize> = incident
             .into_iter()
             .chain(changed.iter().copied())
             .collect();
-        // The frontage moves with the width: the edited road's lots and its neighbours' mouths.
-        self.zoning
+        // The frontage moves with the width: the edited road's lots and its neighbours' mouths,
+        // the region whose paint the take releases (`ZONE-14`).
+        let regeneration = self
+            .zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
+        // The land the wider pieces cover, before the lanes rebuild (its buildings' agents leave
+        // by the lanes they hold) and before the zoning-off parcels are captured, so that undo
+        // never restores a lot the take removed onto its erased paint (`ZONE-10`).
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
+        let erased_paint = erased.is_some();
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network
@@ -113,14 +150,24 @@ impl SimCore {
                 .filter(|parcels| !parcels.is_empty());
             self.zoning.remove_parcels_attached_to_edge(edge);
             self.allocator.dirty = true;
+        } else if lost.any() {
+            // A side that lost its sidewalk zones no more (`ROAD-109`): no door is left on it,
+            // so what remains there are empty lots. The undo record restores them.
+            parcels = Some(self.zoning.capture_parcel_removal_undo_on_sides(edge, lost))
+                .filter(|parcels| !parcels.is_empty());
+            self.zoning.remove_parcels_attached_to_edge_on_sides(edge, lost);
+            self.allocator.dirty = true;
         }
-        self.push_network_undo_delta(checkpoint, parcels);
+        self.push_network_undo_delta(checkpoint, parcels, erased);
         if !self.benchmark_mode && verdict.cost_delta > 0.0 {
             self.treasury.deduct_build_cost(verdict.cost_delta);
         }
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
         self.mark_local_network_render_dirty();
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -135,26 +182,28 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> Result<CrossSectionVerdict, RoadRejection> {
         self.adopt_pending_cell_lots();
-        self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes)
+        self.try_cross_section_edit(edge_id, fwd, bkw, median, parking, attributes)
             .map(|(_, _, verdict)| verdict)
     }
 
-    // The edit's check with its undo record, the edge's two (surviving) end nodes and its
-    // verdict. Cheap refusals first: a live road, a legal cross-section, a change, and no tunnel
-    // widened in place (R3-j: its cover was checked across the bore it was drawn with). Then the
-    // graph edit, whose closure must compile; a widening must also keep clear of water and
-    // parcels and fit its curves, checked on the applied graph.
+    // The edit's check with its undo record and land take, the edge's two (surviving) end nodes
+    // and its verdict. Cheap refusals first: a live road, a legal cross-section, a change, and no
+    // tunnel widened in place (R3-j: its cover was checked across the bore it was drawn with).
+    // Then the graph edit, whose closure must compile and cover no plotted land; a widening must
+    // also keep clear of water and fit its curves, checked on the applied graph.
     fn try_cross_section_edit(
         &mut self,
         edge_id: i32,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
-    ) -> Result<(RegionGraphUndoDelta, HashSet<u32>, CrossSectionVerdict), RoadRejection> {
+    ) -> Result<(TriedGraphEdit, HashSet<u32>, CrossSectionVerdict), RoadRejection> {
         let graph = &self.region_graph;
         let Some(edge) = usize::try_from(edge_id)
             .ok()
@@ -166,25 +215,45 @@ impl SimCore {
             ));
         };
         let current = graph.edge(edge);
+        // A pocket edge's lanes are its base road's plus the pocket's (`ROAD-95`): the pocket is
+        // removed first, and its base road edited.
+        if current.pocket.is_some() {
+            return Err(RoadRejection::new(
+                "pocket_edit_first",
+                format!("edge {edge} carries a turn pocket"),
+            ));
+        }
         current
-            .validate_cross_section(fwd, bkw, median)
+            .validate_cross_section(fwd, bkw, median, parking, attributes.sidewalks)
             .map_err(|reason| {
                 RoadRejection::new(
                     reason,
-                    format!("{fwd}+{bkw} lanes, median {median:?} on edge {edge}"),
+                    format!(
+                        "{fwd}+{bkw} lanes, median {median:?}, parking {parking:?} on edge {edge}"
+                    ),
                 )
             })?;
-        if (current.fwd_lanes, current.bkw_lanes, current.median) == (fwd, bkw, median)
+        if (
+            current.fwd_lanes,
+            current.bkw_lanes,
+            current.median,
+            current.parking,
+        ) == (fwd, bkw, median, parking)
             && attributes.same_as(RoadAttributes::of_edge(current))
         {
             return Err(RoadRejection::new(
                 "cross_section_unchanged",
                 format!(
-                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, {attributes:?}"
+                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, parking {parking:?}, {attributes:?}"
                 ),
             ));
         }
-        let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, attributes)
+        if let Some(rejection) = self.door_on_lost_sidewalk(edge, attributes.sidewalks) {
+            return Err(rejection);
+        }
+        // The roadbed's larger side, which a tunnel's bore and the corridor checks reach to both
+        // sides of it: a sidewalk added on a road's shoulder side leaves that unchanged.
+        let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, parking, attributes)
             > visual_roadbed_half_width_m(current);
         if widens && current.class == EdgeClass::Tunnel {
             return Err(RoadRejection::new(
@@ -192,25 +261,34 @@ impl SimCore {
                 "a tunnel is widened by drawing it again, which checks the cover across its bore",
             ));
         }
-        let verdict = self.cross_section_verdict(edge, fwd, bkw, median, attributes);
         let nodes: HashSet<u32> = [current.start_node, current.end_node]
             .into_iter()
             .map(|node| graph.get_valid_node(node))
             .collect();
         let edges = self.live_edges_at(&nodes, edge);
+        // A side given a sidewalk widens there whatever the larger side does (`ROAD-107`).
+        let check_corridor = widens || attributes.sidewalks.adds_to(current.sidewalk_sides());
         let mut corridor = None;
-        let tried = self.try_graph_edit(&edges, &nodes, |core| {
-            let changed =
-                core.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
-            if widens {
-                corridor = core.widened_corridor_refusal(edge);
-            }
-            changed
-        });
-        match corridor {
-            Some(rejection) => Err(rejection),
-            None => tried.map(|checkpoint| (checkpoint, nodes, verdict)),
+        let tried = self
+            .road_edit_site()
+            .try_graph_edit(&edges, &nodes, &[], |site| {
+                let changed = site.apply_edge_cross_section(
+                    edge,
+                    (fwd, bkw, median, parking, attributes),
+                    &nodes,
+                );
+                if check_corridor {
+                    corridor = site.widened_corridor_refusal(edge);
+                }
+                changed
+            });
+        if let Some(rejection) = corridor {
+            return Err(rejection);
         }
+        let tried = tried?;
+        let verdict =
+            self.cross_section_verdict(edge, (fwd, bkw, median, parking, attributes), &tried.take);
+        Ok((tried, nodes, verdict))
     }
 
     // The roadbed half-width `current` would have with the new spec, sidewalks or shoulders
@@ -221,39 +299,53 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> f32 {
-        visual_roadbed_half_width_m(&Edge {
+        let mut probe = Edge {
             primary_type: current.primary_type,
-            allowed_types: Edge::sidewalk_flags(current.allowed_types, attributes.sidewalks),
-            width: Edge::cross_section_width_m(fwd, bkw, median),
+            allowed_types: current.allowed_types,
+            width: Edge::cross_section_width_m(fwd, bkw, median, parking),
             ..Edge::default()
-        })
+        };
+        probe.set_sidewalks(attributes.sidewalks);
+        visual_roadbed_half_width_m(&probe)
     }
 
-    // What the edit does beyond the road (`ROAD-101`): the buildings fronting it that zoning
-    // off demolishes (every building whose road it is: none survives the checkbox's
-    // maintenance), and the build-cost difference over its length at its class, floored at 0.
-    // `O(1)`, plus the road's local building count (`buildings_fronting`) only when zoning goes
-    // off.
+    // What the edit does beyond the road (`ROAD-101`): the buildings it demolishes, those
+    // fronting it that zoning off demolishes (every building whose road it is: none survives the
+    // checkbox's maintenance) and those on the lots it takes (`ZONE-10`) that do not front it (a
+    // corner lot's on the cross street), and the build-cost difference over its length at its
+    // class, floored at 0. `O(take buildings)`, plus the road's local building count
+    // (`buildings_fronting`) only when zoning goes off.
     fn cross_section_verdict(
         &self,
         edge: usize,
-        fwd: u8,
-        bkw: u8,
-        median: Option<RoadMedian>,
-        attributes: RoadAttributes,
+        (fwd, bkw, median, parking, attributes): (
+            u8,
+            u8,
+            Option<RoadMedian>,
+            RoadParking,
+            RoadAttributes,
+        ),
+        take: &RoadLandTake,
     ) -> CrossSectionVerdict {
         let current = self.region_graph.edge(edge);
         let buildings_removed = if !current.no_building_spawn && !attributes.zoning {
-            self.buildings_fronting(edge)
+            let elsewhere = take
+                .buildings
+                .iter()
+                .filter(|&&building| self.allocator.buildings[building].edge_idx != edge)
+                .count();
+            self.buildings_fronting(edge, SidewalkSides::BOTH) + elsewhere
         } else {
-            0
+            take.buildings.len()
         };
         let section = RoadCrossSection {
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median,
+            parking,
             sidewalks: attributes.sidewalks,
         };
         let weight = road_weight(
@@ -269,16 +361,42 @@ impl SimCore {
             buildings_removed,
             demolition_permanent: buildings_removed > 0,
             cost_delta,
+            take: take.clone(),
         }
     }
 
-    // The buildings whose road is `edge`: those among the buildings of the 512 m chunks within
-    // its reach (`attachment_repair_candidates`, which hold every building fronting it, as the
-    // split's frontage move relies on), or a parallel count over the city while the chunk index
-    // is stale. Test builds check the count against the whole city's.
+    /// Why road `edge` cannot change to the sidewalks `after` (`ROAD-109`): a building's door is
+    /// on a side that would lose its sidewalk. `None` when no side goes, or no door is on it.
+    /// `O(1)` without a lost side, else as [`Self::buildings_fronting`].
+    pub(super) fn door_on_lost_sidewalk(
+        &self,
+        edge: usize,
+        after: SidewalkSides,
+    ) -> Option<RoadRejection> {
+        let lost = self.region_graph.edge(edge).sidewalk_sides().lost_in(after);
+        if !lost.any() {
+            return None;
+        }
+        let doors = self.buildings_fronting(edge, lost);
+        (doors > 0).then(|| {
+            RoadRejection::new(
+                "sidewalk_under_door",
+                format!("{doors} building door(s) on the sidewalk edge {edge} would lose"),
+            )
+        })
+    }
+
+    // The buildings whose road is `edge` on one of `sides` (`SidewalkSides::BOTH` for all): those
+    // among the buildings of the 512 m chunks within its reach (`attachment_repair_candidates`,
+    // which hold every building fronting it, as the split's frontage move relies on), or a
+    // parallel count over the city while the chunk index is stale. Test builds check the count
+    // against the whole city's.
     // `O(segments + chunks + candidates log candidates)`; stale, `O(B / P)`.
-    fn buildings_fronting(&self, edge: usize) -> usize {
+    fn buildings_fronting(&self, edge: usize, sides: SidewalkSides) -> usize {
         let buildings = &self.allocator.buildings;
+        let fronts = |building: &Building| {
+            building.edge_idx == edge && sides.on_building_side(building.side)
+        };
         let Some(candidates) = self.allocator.attachment_repair_candidates(
             &self.region_graph,
             &HashSet::from([edge]),
@@ -287,19 +405,16 @@ impl SimCore {
         ) else {
             // In the shared pool: a Godot call runs outside every Rayon pool.
             return crate::thread_pools::install(|| {
-                buildings
-                    .par_iter()
-                    .filter(|building| building.edge_idx == edge)
-                    .count()
+                buildings.par_iter().filter(|building| fronts(building)).count()
             });
         };
         let count = candidates
             .into_iter()
-            .filter(|&idx| buildings[idx].edge_idx == edge)
+            .filter(|&idx| fronts(&buildings[idx]))
             .count();
         debug_assert_eq!(
             count,
-            buildings.iter().filter(|b| b.edge_idx == edge).count(),
+            buildings.iter().filter(|b| fronts(b)).count(),
             "the chunk candidates hold every building fronting edge {edge}"
         );
         count
@@ -315,39 +430,42 @@ impl SimCore {
             .chain([edge])
             .collect()
     }
+}
 
+impl<L> RoadEditSite<'_, L> {
     // Sets the cross-section and attributes and re-lays out both end nodes on the graph, since
     // the width moves every mouth there: their clips and the profile solve that pins their arms
     // up to them. Returns the edges whose profiles changed.
     fn apply_edge_cross_section(
         &mut self,
         edge: usize,
-        (fwd, bkw, median, attributes): (u8, u8, Option<RoadMedian>, RoadAttributes),
+        (fwd, bkw, median, parking, attributes): (
+            u8,
+            u8,
+            Option<RoadMedian>,
+            RoadParking,
+            RoadAttributes,
+        ),
         nodes: &HashSet<u32>,
     ) -> HashSet<usize> {
-        self.region_graph
-            .set_edge_cross_section(edge, fwd, bkw, median, attributes);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(nodes);
+        self.graph
+            .set_edge_cross_section(edge, fwd, bkw, median, parking, attributes);
+        self.graph.rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
+        self.graph
+            .finalize_junction_endpoint_profiles(nodes, Some(self.terrain), &mut changed);
         changed
     }
 
     // Why widened `edge` (applied on the graph) cannot stay: a standard road over water (as the
-    // class change refuses one), a parcel inside its new corridor (the stroke's check and
-    // half-width: the frontage), or a curve tighter than the illegal radius at its new width.
-    // O(points + parcel hits).
+    // class change refuses one), or a curve tighter than the illegal radius at its new width.
+    // The land its pieces newly cover is the closure's take (`ZONE-10`). O(points).
     fn widened_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
-        let edge = self.region_graph.edge(edge_idx);
+        let edge = self.graph.edge(edge_idx);
         let points = centreline(edge);
         if edge.class == EdgeClass::Standard
             && self
-                .watermap
+                .water
                 .road_corridor_overlaps_visible_water(points, visual_roadbed_half_width_m(edge))
         {
             return Some(RoadRejection::new(
@@ -355,23 +473,9 @@ impl SimCore {
                 format!("widened edge {edge_idx} would reach visible water"),
             ));
         }
-        // The roadbed's own side band: a sidewalk, or a road without them its shoulder.
-        let parcels = self.zoning.parcel_ids_overlapping_road_corridor(
-            points,
-            edge.width * 0.5 + side_band_width_m(edge),
-        );
-        if let Some(first) = parcels.first() {
-            return Some(RoadRejection::new(
-                "parcel_overlap",
-                format!(
-                    "widened edge {edge_idx} would overlap {} parcel(s), first {first}",
-                    parcels.len()
-                ),
-            ));
-        }
         let mut violations = Vec::new();
         validate_edge(
-            &self.region_graph,
+            self.graph,
             edge_idx,
             &RoadGeometryLimits::default(),
             &mut violations,

@@ -256,7 +256,7 @@ impl BuildingAllocator {
             .solves
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let verdict = self
-            .prepare_site_support(p, graph, env.road_surface, env.terrain)
+            .prepare_site_support(p, &[], graph, env.road_surface, env.terrain)
             .map(|()| p.support_height_m);
         let dependencies = Arc::new(Dependencies::capture(self, p, env));
         let mut cache = self.site_feasibility.poses(key).lock().unwrap();
@@ -351,6 +351,7 @@ mod tests {
                 end_node: end,
                 primary_type: TransitType::Road,
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 width: 7.0,
                 fwd_lanes: 1,
                 bkw_lanes: 1,

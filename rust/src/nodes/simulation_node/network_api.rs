@@ -4,11 +4,12 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
-use crate::simulation::network::graph::RoadMedian;
+use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
 
-mod road_tool;
+pub(super) mod road_tool;
 mod road_types;
+mod roundabouts;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -72,7 +73,11 @@ impl SimulationNode {
             bkw_lanes,
             snap_to_existing_roads,
             self.road_tool_tunnel,
-            (self.road_tool_median, self.road_tool_attributes),
+            (
+                self.road_tool_median,
+                self.road_tool_parking,
+                self.road_tool_attributes,
+            ),
         );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
@@ -87,6 +92,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
                 enqueued_at: Instant::now(),
                 completion,
@@ -365,30 +371,10 @@ impl SimulationNode {
             .get_closest_node_internal(world_pos, max_dist)
     }
 
-    /// Placeholder for cul-de-sac tools.
-    #[func]
-    pub fn set_node_cul_de_sac(&mut self, _node_id: i32, _enabled: bool, _radius: f32) {}
-
-    /// Placeholder for cul-de-sac tools.
-    #[func]
-    pub fn has_cul_de_sac(&self, _node_id: i32) -> bool {
-        false
-    }
-
     /// Returns the number of road connections for a node.
     #[func]
     pub fn get_node_connection_count(&self, node_id: i32) -> i32 {
         self.lock_core().get_node_connection_count_internal(node_id)
-    }
-
-    /// Repositions a network node, returning false when reservations reject the move.
-    #[func]
-    pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) -> bool {
-        let moved = self.lock_core().move_network_node_internal(node_id, pos);
-        if moved {
-            self.refresh_snapshot_from_core();
-        }
-        moved
     }
 
     /// Returns all junction node positions, read from the pre-computed snapshot.
@@ -462,8 +448,10 @@ impl SimulationNode {
 
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
+    /// `parking` (`PARK-05`: bit 0 left kerb, bit 1 right),
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
-    /// change), `ROAD-101`'s `sidewalks` (a car road's two sidewalks; false for a walkway),
+    /// change), `sidewalks` (`ROAD-107`: the sides with one in the road's forward direction, 0
+    /// none, 1 left, 2 right, 3 both; 0 for a walkway),
     /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
     /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
     /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
@@ -488,14 +476,21 @@ impl SimulationNode {
                 "class": edge.class as i64,
                 "median_style": i64::from(RoadMedian::style_code(edge.median)),
                 "median_width": edge.median.map_or(0.0, |median| median.width_m),
+                "parking": i64::from(edge.parking.code()),
                 "editable": edge
-                    .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
+                    .validate_cross_section(
+                        edge.fwd_lanes,
+                        edge.bkw_lanes,
+                        edge.median,
+                        edge.parking,
+                        edge.sidewalk_sides(),
+                    )
                     .is_ok(),
             };
             let section =
                 crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
             let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
-            result.set("sidewalks", section.sidewalks);
+            result.set("sidewalks", i64::from(section.sidewalks.bits()));
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
@@ -511,13 +506,19 @@ impl SimulationNode {
 
     /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes, the
     /// median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
-    /// `median_width` metres, and a road type's `speed_kmh` (20 to 120 in steps of 10),
-    /// `sidewalks`, `zoning` and `street_lights` in place (`ROAD-80`, `ROAD-101`; pass the road's own values from
+    /// `median_width` metres, kerbside `parking` (`PARK-05`: bit 0 left kerb, bit 1 right), and
+    /// a road type's `speed_kmh` (20 to 120 in steps of 10),
+    /// `sidewalks` (`ROAD-107`: the road's forward frame, codes as in
+    /// [`Self::set_road_tool_attributes`]), `zoning` and `street_lights` in place (`ROAD-80`,
+    /// `ROAD-101`; pass the road's own values from
     /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
-    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
-    /// confirmation), `demolition_permanent` (true with any `buildings_removed`: undo restores
-    /// the road and its empty parcels, never the buildings) and `cost_delta` (what Apply charges: the build-cost difference over the
-    /// road's length, never negative); when refused `invalid_reason` (stable key) and `detail`.
+    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes and those
+    /// on the lots a widening takes, `ZONE-10`, for a confirmation), `demolition_permanent`
+    /// (true with any `buildings_removed`: undo restores the road and its empty parcels, never
+    /// the buildings), `cost_delta` (what Apply charges: the build-cost difference over the
+    /// road's length, never negative), `demolish_count` and `demolish_lots` (the widening's land
+    /// take: its buildings, and four corners per lot as the road preview's); when refused
+    /// `invalid_reason` (stable key) and `detail`.
     /// The same check as [`Self::set_edge_cross_section`].
     #[func]
     #[allow(clippy::too_many_arguments)]
@@ -528,19 +529,22 @@ impl SimulationNode {
         bkw: i32,
         median_style: i32,
         median_width: f32,
+        parking: i32,
         speed_kmh: i32,
-        sidewalks: bool,
+        sidewalks: i32,
         zoning: bool,
         street_lights: bool,
     ) -> VarDictionary {
         let attributes = (speed_kmh, sidewalks, zoning, street_lights);
-        let verdict = cross_section_spec(median_style, median_width, attributes)
-            .and_then(|(median, attributes)| {
-                self.lock_core().preview_edge_cross_section_internal(
+        let mut core = self.lock_core();
+        let verdict = cross_section_spec(median_style, median_width, parking, attributes)
+            .and_then(|(median, parking, attributes)| {
+                core.preview_edge_cross_section_internal(
                     edge_id,
                     lanes_u8(fwd),
                     lanes_u8(bkw),
                     median,
+                    parking,
                     attributes,
                 )
             });
@@ -550,6 +554,8 @@ impl SimulationNode {
                 "buildings_removed": verdict.buildings_removed as i64,
                 "demolition_permanent": verdict.demolition_permanent,
                 "cost_delta": verdict.cost_delta,
+                "demolish_count": verdict.take.buildings.len() as i64,
+                "demolish_lots": road_tool::core_lot_outlines(&core, &verdict.take),
             },
             Err(rejection) => vdict! {
                 "is_valid": false,
@@ -560,8 +566,8 @@ impl SimulationNode {
     }
 
     /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes, the median `median_style` of
-    /// `median_width` metres and a road type's `speed_kmh`, `sidewalks`, `zoning` and
-    /// `street_lights` in place
+    /// `median_width` metres, kerbside `parking` (`PARK-05`) and a road type's `speed_kmh`,
+    /// `sidewalks`, `zoning` and `street_lights` in place
     /// (`ROAD-80`, `ROAD-101`), with an undo record that restores the whole road (buildings that
     /// zoning off demolished stay demolished, as with the "No buildings" checkbox); its pieces
     /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
@@ -576,13 +582,15 @@ impl SimulationNode {
         bkw: i32,
         median_style: i32,
         median_width: f32,
+        parking: i32,
         speed_kmh: i32,
-        sidewalks: bool,
+        sidewalks: i32,
         zoning: bool,
         street_lights: bool,
     ) -> bool {
         let attributes = (speed_kmh, sidewalks, zoning, street_lights);
-        let Ok((median, attributes)) = cross_section_spec(median_style, median_width, attributes)
+        let Ok((median, parking, attributes)) =
+            cross_section_spec(median_style, median_width, parking, attributes)
         else {
             return false;
         };
@@ -593,8 +601,153 @@ impl SimulationNode {
                 lanes_u8(fwd),
                 lanes_u8(bkw),
                 median,
+                parking,
                 attributes,
             ) {
+                return false;
+            }
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
+    }
+
+    /// The turn pocket at end `end` (0 start, 1 end) of road `edge_id`, or reached through its
+    /// lane transition there (`ROAD-95`): `has_pocket`, and with one `left`, `right`,
+    /// `length_m` (its body from the junction, D7) and `pocket_edge`. For the Junction window's
+    /// Turn pockets rows: `junction` (the node at this end), `road` (the road's polyline from
+    /// the junction outwards, the pocket and its base road joined), `width_m` (its widest
+    /// edge), `left_offered` / `right_offered` (whether the road can carry a pocket lane on
+    /// that side at all: the edit's role checks, without the length, the junction's turns and
+    /// the compile) with `left_refusal` / `right_refusal` (the key, empty when offered), and the
+    /// length range `min_length_m`, `max_length_m`, `step_m`, `default_length_m`. Empty for an
+    /// id that is not a live edge.
+    #[func]
+    pub fn get_road_pocket(&self, edge_id: i32, end: i32) -> VarDictionary {
+        use crate::simulation::network::pockets::PocketEndView;
+        let core = self.lock_core();
+        usize::try_from(edge_id)
+            .ok()
+            .and_then(|edge| PocketEndView::of(&core.region_graph, edge, pocket_end(end)))
+            .map_or_else(VarDictionary::new, |view| {
+                pocket_end_dictionary(&core, &view, edge_id, pocket_end(end))
+            })
+    }
+
+    /// The Junction window's Turn pockets rows at node `node_id` (`ROAD-95`, round R5c2): one
+    /// dictionary per car road arm with a lane into the junction, clockwise from north by the
+    /// direction it comes from (ties by edge id), each [`Self::get_road_pocket`]'s for that end
+    /// plus `edge`, `end` (0 start, 1 end; a pocket edge's pocket end), `bearing_deg` (from the
+    /// junction to the arm's point 20 m out, clockwise from north = -Z), `road_type` (the name of
+    /// the road type its road without the pocket matches, as [`Self::get_edge_cross_section`]'s
+    /// `road_type`; empty for a custom layout) and that road's `fwd_lanes`, `bkw_lanes`,
+    /// `median_style` and `median_width`. Empty for a lane transition node, a node without
+    /// such an arm, or an id that is not a node. `O(degree + arm points)`.
+    #[func]
+    pub fn get_junction_pockets(&self, node_id: u32) -> VarArray {
+        let rows: Vec<_> = {
+            let core = self.lock_core();
+            core.junction_pocket_arms_internal(node_id)
+                .into_iter()
+                .map(|arm| {
+                    let edge_id = arm.edge as i32;
+                    let mut row = pocket_end_dictionary(&core, &arm.view, edge_id, arm.end);
+                    let (section, ..) = arm.base;
+                    row.set("edge", i64::from(edge_id));
+                    row.set(
+                        "end",
+                        i64::from(arm.end == crate::simulation::network::roadbed::EdgeEnd::End),
+                    );
+                    row.set("bearing_deg", arm.bearing_deg);
+                    row.set("fwd_lanes", i64::from(section.fwd_lanes));
+                    row.set("bkw_lanes", i64::from(section.bkw_lanes));
+                    row.set(
+                        "median_style",
+                        i64::from(RoadMedian::style_code(section.median)),
+                    );
+                    row.set(
+                        "median_width",
+                        section.median.map_or(0.0, |median| median.width_m),
+                    );
+                    (row, arm.base)
+                })
+                .collect()
+        };
+        // The library is matched without the core lock.
+        let mut result = VarArray::new();
+        for (mut row, (section, speed_kmh, street_lights)) in rows {
+            row.set(
+                "road_type",
+                self.road_type_name_of(section, speed_kmh, street_lights),
+            );
+            result.push(&row.to_variant());
+        }
+        result
+    }
+
+    /// The commit's verdict on a turn pocket at end `end` (0 start, 1 end) of road `edge_id`
+    /// with lanes on the drivers' `left` and `right` and a `length_m` body from the junction
+    /// (20-300 m by 10; both off removes the pocket) (`ROAD-95`), without applying it:
+    /// `is_valid`; when valid `cost_delta` (what Apply charges, never negative),
+    /// `demolish_count` and `demolish_lots` (the zoned land the pocket takes, `ZONE-10`: its
+    /// buildings, and four corners per lot); when refused `invalid_reason` (stable key) and
+    /// `detail`. The same check as [`Self::set_road_pocket`]
+    /// (D11: no geometry preview).
+    #[func]
+    pub fn preview_road_pocket(
+        &mut self,
+        edge_id: i32,
+        end: i32,
+        left: bool,
+        right: bool,
+        length_m: f32,
+    ) -> VarDictionary {
+        let Some(request) = pocket_request(edge_id, end, left, right, length_m) else {
+            return vdict! {
+                "is_valid": false,
+                "invalid_reason": "invalid_road",
+                "detail": format!("edge {edge_id} is not a road"),
+            };
+        };
+        let mut core = self.lock_core();
+        match core.preview_road_pocket_internal(request) {
+            Ok(verdict) => vdict! {
+                "is_valid": true,
+                "cost_delta": verdict.cost_delta,
+                "demolish_count": verdict.take.buildings.len() as i64,
+                "demolish_lots": road_tool::core_lot_outlines(&core, &verdict.take),
+            },
+            Err(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Gives end `end` of road `edge_id` the turn pocket [`Self::preview_road_pocket`] checks,
+    /// resizes or changes its pocket, or removes it, with an undo record (`ROAD-95`); its pieces
+    /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
+    /// Returns whether it was applied: a refused edit changes nothing.
+    #[func]
+    pub fn set_road_pocket(
+        &mut self,
+        edge_id: i32,
+        end: i32,
+        left: bool,
+        right: bool,
+        length_m: f32,
+    ) -> bool {
+        let Some(request) = pocket_request(edge_id, end, left, right, length_m) else {
+            return false;
+        };
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_road_pocket_internal(request) {
                 return false;
             }
             let publication = core.finalize_network_render_products();
@@ -648,22 +801,92 @@ impl SimulationNode {
     }
 }
 
+// A road end from Godot: 0 the start, anything else the end.
+fn pocket_end(end: i32) -> crate::simulation::network::roadbed::EdgeEnd {
+    use crate::simulation::network::roadbed::EdgeEnd;
+    if end == 0 {
+        EdgeEnd::Start
+    } else {
+        EdgeEnd::End
+    }
+}
+
+// `get_road_pocket`'s dictionary for end `end` of road `edge_id`, whose pocket view is `view`.
+fn pocket_end_dictionary(
+    core: &crate::nodes::sim::core::SimCore,
+    view: &crate::simulation::network::pockets::PocketEndView,
+    edge_id: i32,
+    end: crate::simulation::network::roadbed::EdgeEnd,
+) -> VarDictionary {
+    use crate::simulation::network::pockets::{
+        POCKET_BODY_DEFAULT_M, POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M,
+    };
+    let refusal = |role: Result<(), &'static str>| role.err().unwrap_or("");
+    let mut result = vdict! {
+        "has_pocket": false,
+        "junction": i64::from(view.junction),
+        "road": PackedVector3Array::from_iter(view.road.iter().copied()),
+        "width_m": view.width_m,
+        "left_offered": view.left.is_ok(),
+        "right_offered": view.right.is_ok(),
+        "left_refusal": refusal(view.left),
+        "right_refusal": refusal(view.right),
+        "min_length_m": POCKET_BODY_MIN_M,
+        "max_length_m": POCKET_BODY_MAX_M,
+        "step_m": POCKET_BODY_STEP_M,
+        "default_length_m": POCKET_BODY_DEFAULT_M,
+    };
+    if let Some(state) = core.get_road_pocket_internal(edge_id, end) {
+        result.set("has_pocket", true);
+        result.set("left", state.pocket.left);
+        result.set("right", state.pocket.right);
+        result.set("length_m", state.body_m);
+        result.set("pocket_edge", state.edge as i64);
+    }
+    result
+}
+
+// A pocket edit from Godot's arguments; `None` for a negative edge id.
+fn pocket_request(
+    edge_id: i32,
+    end: i32,
+    left: bool,
+    right: bool,
+    length_m: f32,
+) -> Option<crate::simulation::network::pockets::PocketRequest> {
+    Some(crate::simulation::network::pockets::PocketRequest {
+        edge: usize::try_from(edge_id).ok()?,
+        end: pocket_end(end),
+        left,
+        right,
+        body_m: length_m,
+    })
+}
+
 // A lane count from Godot; out of range saturates, so the edit's check refuses it.
 fn lanes_u8(count: i32) -> u8 {
     u8::try_from(count).unwrap_or(u8::MAX)
 }
 
-// An in-place edit's median and road-type attributes (speed in km/h, sidewalks, zoning, street
-// lights) from Godot's arguments, or the refusal (`unknown_median_style`,
-// `median_width_out_of_range`, `speed_out_of_range`).
+// An in-place edit's median, kerbside parking code and road-type attributes (speed in km/h,
+// sidewalk sides, zoning, street lights) from Godot's arguments, or the refusal
+// (`unknown_median_style`, `median_width_out_of_range`, `parking_code_out_of_range`,
+// `speed_out_of_range`, `sidewalks_out_of_range`).
 fn cross_section_spec(
     median_style: i32,
     median_width: f32,
-    (speed_kmh, sidewalks, zoning, street_lights): (i32, bool, bool, bool),
-) -> Result<(Option<RoadMedian>, RoadAttributes), RoadRejection> {
+    parking: i32,
+    (speed_kmh, sidewalks, zoning, street_lights): (i32, i32, bool, bool),
+) -> Result<(Option<RoadMedian>, RoadParking, RoadAttributes), RoadRejection> {
     let median = RoadMedian::from_tool(median_style, median_width)
         .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
-    let attributes = RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights)
-        .map_err(|reason| RoadRejection::new(reason, format!("{speed_kmh} km/h")))?;
-    Ok((median, attributes))
+    let parking = RoadParking::from_code(parking).ok_or_else(|| {
+        RoadRejection::new("parking_code_out_of_range", format!("parking code {parking}"))
+    })?;
+    let attributes =
+        RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights)
+            .map_err(|reason| {
+                RoadRejection::new(reason, format!("{speed_kmh} km/h, sidewalks {sidewalks}"))
+            })?;
+    Ok((median, parking, attributes))
 }

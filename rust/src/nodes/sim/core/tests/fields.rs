@@ -70,6 +70,50 @@ pub(in crate::nodes::sim::core) fn farm_fixture_with(
     (core, farm, rectangle(-8.0, back + 1.0, 400.0, 500.0))
 }
 
+// `ROAD-109`: a farm and a mine stand on a side with a sidewalk, in the industry tool's preview and
+// its commit, as a service building does (`explicit_placement_needs_a_sidewalk_on_its_side`).
+#[test]
+fn farms_and_mines_need_a_sidewalk_on_their_side() {
+    use crate::assets::asset::BuildingExtractorData;
+    use crate::simulation::buildings::allocator::ExplicitServicePlacementRejection;
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::road_types::RoadAttributes;
+    let (mut core, farm, _) = farm_fixture();
+    let road = core.allocator.buildings[farm].edge_idx;
+    let farm_id = core.allocator.buildings[farm].asset_id.clone();
+    let mut manifest = core.allocator.registry.get(&farm_id).unwrap().manifest.clone();
+    manifest.asset_id = "mine_test".to_owned();
+    let building = manifest.building.as_mut().unwrap();
+    building.economy_profile = Some("coal_mine_basic".into());
+    building.field = None;
+    building.extractor = Some(BuildingExtractorData {
+        resource: "coal".into(),
+        area_mode: "player_polygon".into(),
+    });
+    core.allocator
+        .registry
+        .register("test", manifest, String::new());
+    // The farm's side keeps its sidewalk; the left, -z on a road running +x, goes.
+    let right = RoadAttributes::new(50, SidewalkSides::RIGHT, true);
+    assert!(core.set_edge_cross_section_internal(road as i32, 1, 1, None, Default::default(), right));
+    core.transit_network
+        .roadbed
+        .compile_dirty(&core.region_graph);
+    for (asset, x) in [(farm_id.as_str(), 150.0), ("test:mine_test", -150.0)] {
+        let preview = core.get_industry_building_placement_preview_internal(asset, x, -8.0);
+        assert_eq!(
+            preview.map_or_else(Some, |hover| hover.preview.rejection),
+            Some(ExplicitServicePlacementRejection::NoSidewalk)
+        );
+        assert_eq!(
+            core.place_industry_building_internal(asset, x, -8.0),
+            Err(ExplicitServicePlacementRejection::NoSidewalk)
+        );
+        core.place_industry_building_internal(asset, x, 8.0)
+            .expect("the sidewalk side builds");
+    }
+}
+
 /// Adds one mixed-age family and assigns its adults to the farm.
 pub(in crate::nodes::sim::core) fn add_farm_household(core: &mut SimCore, farm: usize) -> usize {
     use crate::simulation::economy::agents::{age_group_can_work, household_member_age_group};
@@ -258,7 +302,7 @@ fn field_attachment_uses_the_authored_rotated_farm_lot() {
 }
 
 #[test]
-fn fields_reject_roads_building_sites_parcels_and_other_fields() {
+fn fields_reject_roads_building_sites_and_other_fields() {
     let (mut core, farm, polygon) = farm_fixture();
     // A connected, concave field can extend alongside the farm, but cannot cross the street.
     let road_overlap = vec![
@@ -284,11 +328,8 @@ fn fields_reject_roads_building_sites_parcels_and_other_fields() {
         .zoning
         .place_or_rezone_parcel_at(120.0, 8.0, 0, 20.0, 80.0, &core.region_graph)
         .unwrap();
-    assert!(
-        core.validate_field_polygon_internal(farm, &polygon)
-            .unwrap_err()
-            .contains("reserved zoning")
-    );
+    // An authored parcel is zoned land: the field's commit takes it (`ZONE-11`).
+    assert!(core.validate_field_polygon_internal(farm, &polygon).is_ok());
     core.zoning
         .remove_parcels_by_raw_ids(&HashSet::from([parcel.raw()]));
     core.allocator
@@ -321,6 +362,7 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
     let geometry = core
@@ -332,7 +374,8 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
         .set(100, &rectangle(100.0, 7.0, 60.0, 80.0));
     let preview = core
         .get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
-        .unwrap();
+        .unwrap()
+        .preview;
     assert!(!preview.valid);
     assert_eq!(
         preview.rejection,
@@ -367,8 +410,14 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
     }
 }
 
+// Painted cells with no derived lot are zoned land: an explicit building over them and a field
+// over them take their paint instead of refusing (`ZONE-11`), and release the free paint of the
+// land they regenerate, which re-lays around them (`ZONE-14`, D-placements (a)): the cells behind
+// the lot lose their road column and their paint, the cells beside it keep theirs, and the field
+// takes the paint of the cells beside the lot that it covers.
 #[test]
-fn field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot() {
+fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
+    use crate::simulation::agriculture::PolygonFootprint;
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
     let (mut core, farm, polygon) = farm_fixture();
@@ -377,6 +426,7 @@ fn field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot() {
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
     core.zoning.generate_cells(
@@ -387,40 +437,151 @@ fn field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot() {
         },
         |_| false,
     );
-    let path = [DVec2::new(120.0, 12.0), DVec2::new(120.0, 42.0)];
-    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &path);
+    // Four rows of the north curb from x 60 to 180, around the new farm's lot at x 120.
+    let path = [DVec2::new(60.0, 12.0), DVec2::new(180.0, 42.0)];
+    let selection = core.zoning.cells.select(CellSelectionShape::Marquee, &path);
     assert!(!selection.cells.is_empty());
     core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
     assert!(core.zoning.parcels().is_empty());
-    assert!(
-        core.validate_field_polygon_internal(farm, &polygon)
-            .unwrap_err()
-            .contains("reserved zoning")
-    );
-    assert!(
-        !core
-            .get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
-            .unwrap()
-            .valid
-    );
-    let count = core.allocator.buildings.len();
-    assert_eq!(
-        core.place_industry_building_internal(asset, 120.0, 8.0),
-        Err(ExplicitServicePlacementRejection::SiteOverlap)
-    );
-    assert_eq!(core.allocator.buildings.len(), count);
-    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &path);
-    core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
     assert!(core.validate_field_polygon_internal(farm, &polygon).is_ok());
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
+    let painted = |core: &SimCore| {
+        selection
+            .cells
+            .iter()
+            .copied()
+            .filter(|&key| core.zoning.cells.profile(key).is_some_and(|p| p != 0))
+            .collect::<Vec<_>>()
+    };
+    let count = core.allocator.buildings.len();
+    let placed = core
+        .place_industry_building_internal(asset, 120.0, 8.0)
+        .unwrap();
+    assert_eq!(core.allocator.buildings.len(), count + 1);
+    let lot = PolygonFootprint::new(&core.allocator.building_sites[placed].lot_footprint_world);
+    let under = |core: &SimCore, key, footprint: &PolygonFootprint| {
+        footprint.overlaps(&PolygonFootprint::new(&cell_corners(core, key)))
+    };
+    let left = painted(&core);
+    assert!(left.len() < selection.cells.len(), "the lot took paint");
+    assert!(left.iter().all(|&key| !under(&core, key, &lot)));
+    // Every other cell of the selection either stands with its paint, re-laid in place, or lost
+    // its road column behind the lot and stands no more; some did.
+    let gone: Vec<_> = selection
+        .cells
+        .iter()
+        .copied()
+        .filter(|&key| !under(&core, key, &lot) && !left.contains(&key))
+        .collect();
+    assert!(!gone.is_empty(), "the cells behind the lot lose their column");
+    assert!(
+        gone.iter()
+            .all(|&key| core.zoning.cells.profile(key).is_none()),
+        "no cell over the released land stands unpainted: {gone:?}"
+    );
+    // The field behind the farms' lots (the new farm's lot refuses it as plotted land) takes
+    // the paint of the cells beside the lot it covers; the cells in front of it keep theirs.
+    let back = core.allocator.building_sites[placed]
+        .lot_footprint_world
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let polygon = rectangle(polygon[0].x, back, 400.0, 500.0);
+    let field = PolygonFootprint::new(&polygon);
+    let (taken, kept): (Vec<_>, Vec<_>) = left.iter().partition(|&&key| under(&core, key, &field));
+    assert!(!taken.is_empty() && !kept.is_empty(), "{taken:?} {kept:?}");
+    core.commit_field_polygon_internal(farm, polygon).unwrap();
+    let after = painted(&core);
+    assert!(
+        after.iter().all(|&key| !under(&core, key, &field)),
+        "the field took the paint under it"
+    );
+    assert_eq!(after, kept, "the cells in front of the field keep their paint");
+}
+
+// `ZONE-14`, D-placements (a): a field's release reaches the region its polygon's marks
+// regenerate, not only the covered cells' halos. A field reaching from behind its farm to the
+// road takes two painted cells at x 150-170 and covers the unpainted front rows at x 300-392,
+// cutting the painted rear rows there off the road, beyond those cells' halos: the rear cells are
+// released and, with no road column left, gone. Without the two cells the field takes no zoned
+// land and releases nothing: the rear cells keep their paint.
+#[test]
+fn a_fields_release_follows_its_marks() {
+    use crate::simulation::agriculture::PolygonFootprint;
+    use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+    use glam::DVec2;
+    for takes_paint in [true, false] {
+        let (mut core, farm, behind) = farm_fixture();
+        core.zoning.generate_cells(
+            &core.region_graph,
+            CellBounds {
+                min: DVec2::splat(-600.0),
+                max: DVec2::splat(600.0),
+            },
+            |_| false,
+        );
+        let mut paint = |corners: [DVec2; 2]| {
+            let selection = core.zoning.cells.select(CellSelectionShape::Marquee, &corners);
+            assert!(!selection.cells.is_empty());
+            core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+            selection.cells
+        };
+        let front = if takes_paint {
+            paint([DVec2::new(155.0, 11.0), DVec2::new(165.0, 21.0)])
+        } else {
+            Vec::new()
+        };
+        let rear = paint([DVec2::new(305.0, 41.0), DVec2::new(390.0, 61.0)]);
+        // From behind the farm (a field lies within 10 m of its farm) east, then down to the
+        // road.
+        let polygon = vec![
+            behind[0],
+            Vector2::new(150.0, behind[0].y),
+            Vector2::new(150.0, 6.0),
+            Vector2::new(392.0, 6.0),
+            Vector2::new(392.0, 36.0),
+            Vector2::new(300.0, 36.0),
+            Vector2::new(300.0, 300.0),
+            Vector2::new(behind[0].x, 300.0),
+        ];
+        let field = PolygonFootprint::new(&polygon);
+        let under =
+            |key| field.overlaps(&PolygonFootprint::new(&cell_corners(&core, key)));
+        assert!(front.iter().any(|&key| under(key)) == takes_paint, "the field takes paint");
+        assert!(rear.iter().all(|&key| !under(key)), "the rear rows lie beside the field");
+        core.commit_field_polygon_internal(farm, polygon.clone())
+            .unwrap();
+        let standing: Vec<_> = rear
+            .iter()
+            .copied()
+            .filter(|&key| core.zoning.cells.profile(key).is_some_and(|p| p != 0))
+            .collect();
+        if takes_paint {
+            assert_eq!(standing, Vec::new(), "the cut-off rear cells are gone");
+        } else {
+            assert_eq!(standing, rear, "a field over unpainted land releases nothing");
+        }
+    }
+}
+
+// A cell's corners in world XZ, narrowed to f32 for the field footprint tests.
+fn cell_corners(
+    core: &SimCore,
+    key: crate::simulation::zoning::cells::CellKey,
+) -> [Vector2; 4] {
+    let frame = core.zoning.cells.frame(key.grid).unwrap();
+    frame
+        .corners(key.x, key.y)
+        .map(|p| Vector2::new(p.x as f32, p.y as f32))
 }
 
 #[test]
-fn field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically() {
+fn field_resize_invalidates_old_and_new_cells_and_takes_new_paint() {
     use crate::simulation::zoning::cells::CellSelectionShape;
     use glam::DVec2;
 
@@ -455,26 +616,26 @@ fn field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically()
     let preview = core.preview_cell_selection_internal(CellSelectionShape::Cell, &[point]);
     assert!(core.apply_cell_selection_internal(&preview, 1));
     assert!(core.prepare_cell_chunk_internal((0, 0)));
-    let state = core.zoning.cells.chunk_state((0, 0));
-    let paint = core.zoning.cells.saved_cells();
+    let painted = preview.selection.cells.clone();
     let revision = core.agriculture.visual_revision();
-    let dependencies = core.cell_tool_dependencies();
-    assert!(
-        core.resize_field_polygon_internal(farm, center, &smaller, polygon)
-            .unwrap_err()
-            .contains("reserved zoning")
-    );
+    let undo_depth = core.undo_stack.len();
+    // Growing the field again over the new paint takes it (`ZONE-11`), with no undo record.
+    core.resize_field_polygon_internal(farm, center, &smaller, polygon.clone())
+        .unwrap();
     assert_eq!(
         core.agriculture
             .site_for_building(farm)
             .unwrap()
             .polygon_world,
-        smaller
+        polygon
     );
-    assert_eq!(core.agriculture.visual_revision(), revision);
-    assert_eq!(core.cell_tool_dependencies(), dependencies);
-    assert_eq!(core.zoning.cells.chunk_state((0, 0)), state);
-    assert_eq!(core.zoning.cells.saved_cells(), paint);
+    assert_ne!(core.agriculture.visual_revision(), revision);
+    assert_eq!(core.undo_stack.len(), undo_depth);
+    for key in painted {
+        assert!(core.zoning.cells.profile(key).is_none_or(|p| p == 0));
+    }
+    assert!(core.prepare_cell_chunk_internal((0, 0)));
+    assert!(core.zoning.cells.pick(point).is_none());
 }
 
 #[test]

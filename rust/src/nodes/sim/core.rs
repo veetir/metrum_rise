@@ -17,19 +17,23 @@ mod graded_edits;
 mod graded_stage;
 mod household_requests;
 mod lot_adoption;
+mod parking;
 mod populated_city;
 mod road_commit;
 mod road_edit_plan;
+mod road_edit_site;
 mod road_preview;
 mod road_rejection;
 mod road_terrain_inputs;
 mod road_tool_context;
+mod road_tool_land;
 mod scenario;
 mod schedule;
 mod snapshot;
 mod state;
 mod thread;
 mod trips;
+mod turnstile;
 mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
@@ -38,7 +42,10 @@ pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTime
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
 pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};
 pub(crate) use road_commit::RoadCommitAck;
-pub(crate) use road_edit_plan::{ReservedOverlap, RoadEditPlan};
+pub(crate) use road_edit_plan::{CoreLand, RoadEditPlan, RoadLandSource, RoadLandTake};
+pub(crate) use road_edit_site::{
+    RoadEditSite, TriedGraphEdit, compile_closure, edge_grade, steepened_profile,
+};
 pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
@@ -53,16 +60,17 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot,
+    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot, StrokePieces,
 };
 pub(crate) use road_terrain_inputs::RoadTerrainInputsLog;
-pub(crate) use road_tool_context::{RoadToolPublisher, RoadToolShared};
+pub(crate) use road_tool_context::{RoadPreviewContext, RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
     WaterRuntimeSnapshot, access_phase_target,
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use thread::run_sim_thread;
+pub(crate) use turnstile::CoreTurnstile;
 pub(crate) use water_preview::{
     AuthoredWaterPatchFillDebug, WorldLakeFillPreview, WorldLakeFillPreviewStatus,
     WorldWaterFillKind,

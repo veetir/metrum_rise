@@ -7,12 +7,28 @@ mod claims;
 #[cfg(test)]
 mod contract;
 mod frontage;
+#[cfg(test)]
+mod give_way_tests;
 mod gridlock;
 mod lane_buckets;
 mod lane_nav;
 mod movement;
 mod movement_pass;
 mod planning;
+mod parking;
+#[cfg(test)]
+mod ring_capacity_tests;
+pub(crate) use access::LocalAccessPath as ParkingAccessPath;
+pub(crate) use parking::ParkingWork;
+#[cfg(test)]
+pub(in crate::simulation::economy::agents) use parking::{AnswerCounts, take_answer_counts};
+pub(crate) use planning::quote_parking_leg;
+#[cfg(test)]
+pub(crate) use planning::quote_parking_trip;
+pub(crate) use planning::{ResidentMobility, estimate_parking_trip_seconds_within};
+#[cfg(test)]
+pub(crate) use planning::estimate_parking_trip_seconds;
+pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 mod route_preview;
 mod runtime;
 mod schedule;
@@ -46,7 +62,7 @@ pub(crate) use planning::{
     SharedNetworkQuotes, TripEstimate, TripQueryScratch, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
     estimate_trip_seconds_with_scratch, plan_building_origin_trip, plan_building_to_border_trip,
-    plan_immigration_trip,
+    plan_immigration_trip, plan_border_arrival,
 };
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
@@ -56,7 +72,13 @@ pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
 pub(crate) use stranded::StrandedWalkers;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
+#[cfg(test)]
+pub(in crate::simulation::economy::agents) use lane_nav::{
+    EntryLanes, lane_hosts_turn_preparation, preferred_entry_lanes,
+};
 pub(crate) use trip_failures::TripFailureLog;
+#[cfg(test)]
+pub(crate) use trip_failures::FailurePlaces;
 #[cfg(test)]
 pub(crate) use trip_failures::probe_tally;
 
@@ -69,6 +91,23 @@ impl AgentSystem {
         graph: &mut RegionGraph,
         delta: f32,
         time: &TimeSystem,
+    ) {
+        self.tick_internal(allocator, transit_network, graph, delta, time, None);
+    }
+
+    /// Advances residents with persistent parking. Its own phases are O(candidates + transitions
+    /// × route query work): only the movement pass the city always runs visits every agent.
+    /// Shared parking mutations commit in stable agent order after parallel movement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn tick_with_parking(
+        &mut self, allocator: &BuildingAllocator, transit_network: &mut TransitNetwork, graph: &mut RegionGraph, delta: f32, time: &TimeSystem, parking: &mut crate::simulation::parking::ParkingSystem,
+    ) {
+        self.tick_internal(allocator, transit_network, graph, delta, time, Some(parking));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tick_internal(
+        &mut self, allocator: &BuildingAllocator, transit_network: &mut TransitNetwork, graph: &mut RegionGraph, delta: f32, time: &TimeSystem, mut parking: Option<&mut crate::simulation::parking::ParkingSystem>,
     ) {
         self.sim_time += delta;
         let n = self.agents.len();
@@ -85,8 +124,14 @@ impl AgentSystem {
             self.prepare_lane_buckets_for_tick(transit_network, n);
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
-        self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
+        if let Some(parking) = parking.as_deref_mut() {
+            self.prepare_parking_movement(parking,transit_network);
+        }
+        self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n, parking.as_deref());
         self.note_stranded_walkers();
+        if let Some(parking) = parking {
+            self.commit_parking_transitions(parking, allocator, transit_network, graph);
+        }
         self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);
 
@@ -105,6 +150,7 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
     ) {
         self.gridlock.bind_loaded_lanes(transit_network);
+        self.rebuild_parking_work();
         let n = self.agents.len();
         if n == 0 {
             return;

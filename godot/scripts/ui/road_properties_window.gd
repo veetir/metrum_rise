@@ -6,9 +6,10 @@
 ## draggable Window surface, sized to content and placed beside each new selection.
 ## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types, each with its speed
 ## and Rust's build cost per metre, and shows the selected road's (Rust's `road_type` for its
-## cross-section, sidewalks and speed, or "Custom layout" when no type matches; zoning is not
-## matched). A pick asks Rust's verdict for the type's lanes, median, speed, sidewalks and zoning
-## on every selected road through the select tool (the in-place edit's check, no geometry
+## cross-section, parking, sidewalk sides and speed, or "Custom layout" when no type matches;
+## zoning is not matched). A pick asks Rust's verdict for the type's lanes, median, parking, speed,
+## sidewalk sides (`ROAD-107`: left and right in each road's own drawn direction) and zoning on
+## every selected road through the select tool (the in-place edit's check, no geometry
 ## preview) and shows it beside Apply, which reads "Apply (+1,230)" with the selection's cost
 ## difference from Rust (charged, never refunded) and commits an accepted change (Ctrl+Z undoes
 ## the roads). When zoning off would demolish buildings, Apply first asks in a confirmation
@@ -16,6 +17,11 @@
 ## buildings); Cancel leaves the roads as they are. The picker stays enabled on a walkway so the
 ## refusal (walkway <-> road) shows with its text. The window leads with the selected road (its
 ## thumbnail, name and lanes); "Change road type" unfolds the other types, the verdict and Apply.
+## Kerbside parking (`PARK-05`) has its own Left and Right toggles under the road, which change only
+## that lane, in place; a refusal shows in the warning line. "No buildings" is disabled on a road
+## with no sidewalk on either side (`ROAD-109`: nothing is built there whatever it says). A type
+## that would take a sidewalk from under a building's door is refused with that reason. Turn
+## pockets are edited from the Junction window (`junction_window.gd`, `ROAD-95`).
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -27,11 +33,14 @@ const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
 ## The picker's text for a road whose cross-section no type has.
 const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
-const VERDICT_REFUSED := Color.YELLOW
+const VERDICT_REFUSED := UIStyle.SIGN_YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
-# verdict with Apply, and No buildings.
-const DEFAULT_SIZE := Vector2i(428, 460)
-const MIN_SIZE := Vector2i(360, 300)
+# verdict with Apply, the parking lane and No buildings.
+const DEFAULT_SIZE := Vector2i(428, 500)
+const MIN_SIZE := Vector2i(360, 340)
+## Parking code bits of the left and right kerb, as Rust's `parking` reports them.
+const PARKING_LEFT := 1
+const PARKING_RIGHT := 2
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -56,6 +65,7 @@ var _body: PanelContainer
 var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
+var _parking_checks: Dictionary = {}
 var _demolish_dialog: ConfirmationDialog
 # The select tool's verdict on the picked type (`preview_selected_edge_cross_section`).
 var _verdict: Dictionary = {}
@@ -122,7 +132,7 @@ func _build_window() -> void:
 
 	_warning_label = Label.new()
 	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_warning_label.add_theme_color_override("font_color", Color.YELLOW)
+	_warning_label.add_theme_color_override("font_color", UIStyle.SIGN_YELLOW)
 	UIStyle.set_font_size(_warning_label, 13)
 	root_vbox.add_child(_warning_label)
 
@@ -146,6 +156,27 @@ func _build_window() -> void:
 	UIStyle.set_font_size(_no_build_check, 13)
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	settings.add_child(_no_build_check)
+
+	# Kerbside parking per side (`PARK-05`), switched like No buildings.
+	var parking_row := HBoxContainer.new()
+	parking_row.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(parking_row)
+	var parking_label := Label.new()
+	parking_label.text = "Parking lane"
+	parking_label.tooltip_text = "Left and right looking along the direction the road was drawn."
+	parking_label.mouse_filter = Control.MOUSE_FILTER_PASS
+	parking_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	parking_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UIStyle.set_font_size(parking_label, 13)
+	parking_row.add_child(parking_label)
+	for side in [[PARKING_LEFT, "Left"], [PARKING_RIGHT, "Right"]]:
+		var check := CheckButton.new()
+		check.focus_mode = Control.FOCUS_NONE
+		check.text = side[1]
+		UIStyle.set_font_size(check, 13)
+		check.toggled.connect(_on_parking_toggled.bind(side[0]))
+		parking_row.add_child(check)
+		_parking_checks[side[0]] = check
 
 	_change_button = Button.new()
 	_change_button.text = "Change road type"
@@ -245,6 +276,8 @@ func _refresh() -> void:
 		return
 
 	_refresh_type()
+	_refresh_parking()
+	_no_build_check.disabled = _selected_edges.all(_has_no_sidewalk)
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -281,6 +314,11 @@ func _refresh() -> void:
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
 
 	_warning_label.visible = not _warning_label.text.is_empty()
+
+# Whether `edge_idx` is a car road with no sidewalk on either side. A walkway is its own path.
+func _has_no_sidewalk(edge_idx: int) -> bool:
+	var section: Dictionary = _simulation_node.get_edge_cross_section(edge_idx)
+	return bool(section.get("editable", false)) and int(section.get("sidewalks", 0)) == 0
 
 ## Lists the road types again (after a library edit) while the window shows a road.
 func refresh_types() -> void:
@@ -334,16 +372,35 @@ func _refresh_type() -> void:
 	_apply_button.disabled = true
 	_refit_visible.call_deferred()
 
+# A side's box is ticked when every selected road parks there.
+func _refresh_parking() -> void:
+	for bit: int in _parking_checks:
+		var on := _selected_edges.all(
+			func(idx): return (int(_simulation_node.get_edge_cross_section(idx).get("parking", 0)) & bit) != 0
+		)
+		(_parking_checks[bit] as CheckButton).set_pressed_no_signal(on)
+
+func _on_parking_toggled(enabled: bool, side_bit: int) -> void:
+	if _select_tool == null or not _select_tool.has_method("set_selected_edge_parking_side"):
+		return
+	var result: Dictionary = _select_tool.set_selected_edge_parking_side(side_bit, enabled)
+	_refresh()
+	var refused := int(result.get("refused", 0))
+	if refused > 0:
+		# The verdict line is folded away with "Change road type"; the warning line always shows.
+		_warning_label.text = RoadReasonText.text(result.get("verdict", {}), "%d road(s) refused the parking lane" % refused)
+		_warning_label.show()
+
 # The type picked in the picker, or {} for "Custom layout".
 func _picked_type() -> Dictionary:
 	var index := _type_picker.selected
 	return _type_picker.get_item_metadata(index) if index >= 0 else {}
 
-# The in-place arguments for `type`: lanes, median, then speed, sidewalks, zoning and street lights
-# (`RoadTypeMenu.tool_attributes`: a walkway sends the built-ins').
+# The in-place arguments for `type`: lanes, median, kerbside parking, then speed, sidewalks, zoning
+# and street lights (`RoadTypeMenu.tool_attributes`: a walkway sends the built-ins').
 func _type_arguments(type: Dictionary) -> Array:
 	return [int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)), int(type.get("median_style", 0)),
-		float(type.get("median_width", 0.0))] + RoadTypeMenu.tool_attributes(type, _speeds)
+		float(type.get("median_width", 0.0)), int(type.get("parking", 0))] + RoadTypeMenu.tool_attributes(type, _speeds)
 
 func _mark_type_tiles() -> void:
 	for index in _type_tiles:
@@ -364,19 +421,10 @@ func show_verdict(verdict: Dictionary) -> void:
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
 	var cost := roundi(float(verdict.get("cost_delta", 0.0))) if ready else 0
-	_apply_button.text = "Apply (+%s)" % _thousands(cost) if cost > 0 else "Apply"
+	_apply_button.text = "Apply (+%s)" % UIStyle.thousands(cost) if cost > 0 else "Apply"
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
 	_verdict_label.text = RoadTypeMenu.describe(_picked_type(), false) if ready \
 		else RoadReasonText.text(verdict, "This road cannot change its type")
-
-# 1230 -> "1,230".
-static func _thousands(value: int) -> String:
-	var digits := str(absi(value))
-	var text := ""
-	while digits.length() > 3:
-		text = "," + digits.substr(digits.length() - 3) + text
-		digits = digits.substr(0, digits.length() - 3)
-	return ("-" if value < 0 else "") + digits + text
 
 ## The confirmation Apply asks for, or "" when the change demolishes nothing.
 func demolition_text() -> String:

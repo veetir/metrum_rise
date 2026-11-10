@@ -12,7 +12,10 @@ class SimulationStub extends Node3D:
 	var rays := 0
 	var self_loop := false
 	var commands: Array = []
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Variant:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Variant:
+		rays += 1
+		return hit
+	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Variant:
 		rays += 1
 		return hit
 	func get_closest_node(_point: Vector3, _radius: float) -> int:
@@ -56,6 +59,10 @@ class UiStub extends Node:
 	func hide_road_properties() -> void:
 		pass
 	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
+		pass
+	func show_junction_window(_node: int, _point: Vector2) -> void:
+		pass
+	func hide_junction_window() -> void:
 		pass
 
 class ReleaseConsumer extends Node:

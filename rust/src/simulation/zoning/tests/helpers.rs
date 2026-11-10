@@ -20,6 +20,7 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
     let end = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
     let length = (end_x - start_x).abs();
     let edge_idx = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -46,6 +47,9 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     (graph, edge_idx)
 }
@@ -54,6 +58,7 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
     let start = graph.add_node(Vector3::new(x, 0.0, -80.0), NodeType::Junction);
     let end = graph.add_node(Vector3::new(x, 0.0, 80.0), NodeType::Junction);
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -74,6 +79,9 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 
@@ -96,6 +104,7 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
     let start = graph.add_node(points[0], NodeType::Junction);
     let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
     let edge_idx = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -116,6 +125,9 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     (graph, edge_idx)
 }

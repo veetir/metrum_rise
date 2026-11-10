@@ -10,7 +10,7 @@ use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{
     CellBounds, CellLotSize, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
-use crate::simulation::zoning::{CellLotGeneration, CellLotPlanner, CellZoningEdit};
+use crate::simulation::zoning::{CellLotGeneration, CellLotPlanner, CellPaintUndo, CellZoningEdit};
 use glam::DVec2;
 
 /// One immutable selection plus all authoring dependencies observed by its preview.
@@ -70,9 +70,10 @@ impl SimCore {
         }
         // A commit's deferred lots first: generation writes the cells they plan.
         self.adopt_pending_cell_lots();
-        // Site-index repair and cell generation are parallel: shared pool (CODE-17).
+        // Site-index repair and cell generation are parallel: shared pool (CODE-17). The
+        // overlay asks outside the simulation's order: only the site part is readied.
         crate::thread_pools::install(|| {
-            self.prepare_cell_site_queries();
+            self.prepare_site_and_road_reads();
             if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
                 let allocator = &self.allocator;
                 let roads = &self.transit_network.roadbed;
@@ -108,10 +109,22 @@ impl SimCore {
         );
     }
 
-    /// Prepares shared local queries without modifying paint, terrain or building ownership.
+    /// Prepares shared local queries without modifying paint, terrain or building ownership,
+    /// for the simulation's own readers: edits, lot plans and loading. A stale zone index is
+    /// rebuilt whole.
     pub(super) fn prepare_cell_site_queries(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+    }
+
+    /// [`Self::prepare_cell_site_queries`] for a reader outside the simulation's order: the
+    /// cell overlay's chunks, a cell gesture's or a parcel's preview. Only the site part of a
+    /// stale zone index is readied ([`Self::prepare_site_queries`], `ALLOC-05`).
+    pub(crate) fn prepare_site_and_road_reads(&mut self) {
+        self.prepare_site_queries();
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
@@ -141,7 +154,7 @@ impl SimCore {
         path: &[DVec2],
     ) -> CellToolPreview {
         self.adopt_pending_cell_lots();
-        self.prepare_cell_site_queries();
+        self.prepare_site_and_road_reads();
         let allocator = &self.allocator;
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
@@ -217,6 +230,25 @@ impl SimCore {
         true
     }
 
+    /// Whether a road undo can give back the paint its stroke erased (`ZONE-09`, D5): the cells'
+    /// land is free of reserved cells, authored parcels, fields, extraction areas and explicit
+    /// sites. The stroke
+    /// being undone covers that land, so roads are not tested. Prepares the site query index.
+    pub(crate) fn can_restore_road_cell_paint(&mut self, undo: &CellPaintUndo) -> bool {
+        let cell_m = self.config.zone_cell_m;
+        self.allocator.prepare_building_site_query_index(cell_m);
+        let allocator = &self.allocator;
+        self.zoning.can_restore_cell_paint_undo(undo, |corners| {
+            footprint_blocked_by_sites(
+                &allocator.field_clearance,
+                &allocator.extraction_clearance,
+                allocator,
+                cell_m,
+                corners,
+            )
+        })
+    }
+
     /// Rebuilds every queued painted neighborhood at once and installs asset-sized lots for
     /// demand, for editing paths that must publish their lots before returning. With no
     /// authoring/catalog changes this is an allocation-free constant-time check.
@@ -270,22 +302,27 @@ impl SimCore {
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
-        let mut planner = self.zoning.cell_lot_planner();
+        // A road stroke's erased paint goes to the new cells of the plan that drains its regions
+        // (`ZONE-09`): the commit's own, when it plans its lots at once.
+        let inherit = self.zoning.take_road_paint_sources();
+        let mut planner = self.zoning.cell_lot_planner().inheriting(inherit);
         let mut region = Some(first);
         while let Some(bounds) = region {
             result.absorb(planner.plan_region(&self.region_graph, bounds, &sizes, &blocked));
             region = next(&mut planner);
         }
+        result.inherited = planner.take_inherited();
         let plan = planner.finish();
         self.zoning.install_cell_lot_plan(plan);
         self.zoning.cell_lot_sizes = Some(sizes);
-        self.attach_regenerated_cell_lots(&result);
+        self.attach_regenerated_cell_lots(&mut result);
         result
     }
 
     // Reattaches the occupants of the lots a plan reattached and marks the allocator dirty when
-    // the plan created or retired lots: the end of every installed lot plan.
-    pub(super) fn attach_regenerated_cell_lots(&mut self, result: &CellLotGeneration) {
+    // the plan created or retired lots, and keeps the paint its new cells inherited in the road
+    // stroke's undo record: the end of every installed lot plan.
+    pub(super) fn attach_regenerated_cell_lots(&mut self, result: &mut CellLotGeneration) {
         self.allocator.sync_cell_lot_attachments(
             &result.reattached,
             &self.region_graph,
@@ -293,6 +330,23 @@ impl SimCore {
         );
         if !result.created.is_empty() || !result.retired.is_empty() {
             self.allocator.dirty = true;
+        }
+        if let Some(inherited) = result.inherited.take() {
+            self.record_inherited_paint(inherited);
+        }
+    }
+
+    // Keeps the paint a commit's lot plan gave the new cells along its road (`ZONE-09`) in the
+    // stroke's undo record, so undo erases it again. Every edit adopts a commit's lots before
+    // it records its own undo, so the stroke's record is the top one; a stroke without a record
+    // (the benchmark mode drops it) keeps nothing, as `record_inherited` finds another erase.
+    fn record_inherited_paint(&mut self, inherited: crate::simulation::zoning::RoadPaint) {
+        if let Some(cells) = self
+            .undo_stack
+            .back_mut()
+            .and_then(|record| record.cells.as_mut())
+        {
+            cells.record_inherited(inherited);
         }
     }
 
@@ -341,30 +395,57 @@ fn cell_site_blocked(
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
-    footprint_blocked(&allocator.field_clearance, allocator, roads, cell_m, corners)
+    footprint_blocked(
+        &allocator.field_clearance,
+        &allocator.extraction_clearance,
+        allocator,
+        roads,
+        cell_m,
+        corners,
+    )
 }
 
-// Whether a cell or lot footprint meets a field, an explicit cell site or a road on or above the
-// ground. A tunnel's bore lies in the hill: the land over it is used as if no tunnel ran under it
-// (`ROAD-61` round R8h).
+// Whether a cell or lot footprint meets a field, an extraction area (`ZONE-11`, decision
+// D-extraction-blocks: zoned land taken by an area does not grow back in the pit), an explicit
+// cell site or a road on or above the ground. A tunnel's bore lies in the hill: the land over it
+// is used as if no tunnel ran under it (`ROAD-61` round R8h).
 pub(super) fn footprint_blocked(
     fields: &FieldClearanceIndex,
+    extraction: &FieldClearanceIndex,
     sites: &impl ExplicitCellSites,
     roads: &RoadbedSystem,
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
-    // Keep the same canonical corners used by reciprocal placement and save validation.
-    // Narrowing to f32 here can hide small intersections at large world coordinates.
-    if !fields.is_empty() || sites.any() {
-        let points = corners.map(|p| [p.x, p.y]);
-        let footprint = PolygonFootprint::from_precise_slice(&points);
-        if fields.overlaps(&footprint, None) || sites.overlaps(&footprint, cell_m) {
-            return true;
-        }
+    if footprint_blocked_by_sites(fields, extraction, sites, cell_m, corners) {
+        return true;
     }
     let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
     PolygonFootprint::from_precise_slice(&points).overlaps_exposed_roads(roads)
+}
+
+// The field, extraction-area and explicit-site half of `footprint_blocked`. O(polygons and sites
+// in the footprint's chunks); one emptiness test per index when it holds none.
+fn footprint_blocked_by_sites(
+    fields: &FieldClearanceIndex,
+    extraction: &FieldClearanceIndex,
+    sites: &impl ExplicitCellSites,
+    cell_m: f32,
+    corners: &[DVec2; 4],
+) -> bool {
+    // Keep the same canonical corners used by reciprocal placement and save validation.
+    // Narrowing to f32 here can hide small intersections at large world coordinates.
+    if !fields.is_empty() || !extraction.is_empty() || sites.any() {
+        let points = corners.map(|p| [p.x, p.y]);
+        let footprint = PolygonFootprint::from_precise_slice(&points);
+        if fields.overlaps(&footprint, None)
+            || extraction.overlaps(&footprint, None)
+            || sites.overlaps(&footprint, cell_m)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

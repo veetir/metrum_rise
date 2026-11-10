@@ -21,6 +21,12 @@
 //! nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m, [`walk_to_sidewalk`]) and plans
 //! from there by the same rules; with none in reach it is stranded where it stands. Every failure
 //! the watchdog would recover goes through [`walker_lost`] instead.
+//!
+//! A walker whose trip is taken from it on the way (its job ends, its destination is removed)
+//! reaches the end of its lane with no plan and no destination. With a home it walks home from
+//! there ([`head_home_without_trip`], `TRAFFIC-24`); with none it waits there for its household's
+//! next home. A driver in that case turns at the end of its lane ([`car_trip_taken`],
+//! `TRAFFIC-29`).
 
 use super::super::super::super::{
     ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, ACTIVITY_HOME, MODE_WALK,
@@ -40,6 +46,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::lanes::geometry::agent_lane_position;
+use crate::simulation::parking::ParkingTripPhase;
 use godot::prelude::Vector2;
 use std::sync::atomic::AtomicU32;
 
@@ -109,6 +116,99 @@ pub(super) unsafe fn give_up_trip(
             record_failure(i, cause, stranded, slices);
         }
         strand(i, sim_time, slices);
+        false
+    }
+}
+
+/// Walker `i` stands at the end of road lane `lane` at `node` with no plan, no destination and no
+/// trip to recover (`TRAFFIC-24`): its trip was taken from it on the way (its job ended mid-walk,
+/// its destination was removed), and nothing else gives a walker on the road a new one. With a
+/// home it plans home from that lane, the walk home of a give-up ([`give_up_trip`]) with no
+/// record, since no trip failed: it walks home, or with no route home is stranded there (one
+/// `NoRoute` record, outcome `Stranded`) on the stranded backoff. With no home it keeps waiting
+/// for its household's next one (`relocate_household_member_home` gives it that destination).
+/// O(1) for a walker with no home; one route query for one with a home, once, since it leaves
+/// with a plan or stranded.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn head_home_without_trip(
+    i: usize,
+    node: u32,
+    lane: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let home = *slices.home.get(i);
+        if home >= allocator.buildings.len() {
+            return;
+        }
+        crate::debug::work::add(crate::debug::work::Work::WalkersHomeAfterCancel, 1);
+        let plan = plan_from_lane(
+            i,
+            node,
+            lane,
+            home,
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        );
+        head_home(i, home, sim_time, slices);
+        match plan {
+            Ok(replan) => apply_network_replan(i, replan, slices),
+            Err(failure) => {
+                record_failure(
+                    i,
+                    FailureCause::NoRoute(failure),
+                    FailureOutcome::Stranded {
+                        after_s: retry_after_s(0),
+                    },
+                    slices,
+                );
+                strand(i, sim_time, slices);
+            }
+        }
+    }
+}
+
+/// Car `i` stands at the end of its road lane, `length` metres long, with no plan and its trip
+/// taken from it on the way (`TRAFFIC-29`). On a parking leg its bay and route belong to the
+/// ordered phase, so it keeps the lane and asks the leg's recovery, which plans from here in the
+/// commit of this same tick. Off one it turns for home: the replan gate plans from the node it
+/// reached, as for any car with a destination and no plan. With no home it stands off the lane
+/// for its household's next one. Returns whether the car keeps the lane. O(1), then one route
+/// query in the recovery or the gate.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn car_trip_taken(
+    i: usize,
+    length: f32,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        if slices.parking_trip.get(i).phase != ParkingTripPhase::None {
+            let trip = slices.parking_trip.get_mut(i);
+            trip.ready = true;
+            trip.replan_needed = true;
+            *slices.lane_d.get_mut(i) = length;
+            // The cursor a load accepts for a car with no route.
+            *slices.path_idx.get_mut(i) = 0;
+            *slices.speed.get_mut(i) = 0.0;
+            return true;
+        }
+        let home = *slices.home.get(i);
+        if home < allocator.buildings.len() {
+            crate::debug::work::add(crate::debug::work::Work::DriversHomeAfterCancel, 1);
+            head_home(i, home, sim_time, slices);
+        }
         false
     }
 }
@@ -211,6 +311,9 @@ pub(super) unsafe fn retry_home_without_lane(
 /// R-tree search when it is off every sidewalk.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn stand_on_sidewalk(
     i: usize,
     sim_time: f32,
@@ -480,6 +583,9 @@ pub(super) unsafe fn walking_to_sidewalk(i: usize, slices: &MovementSlices) -> b
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn walk_to_sidewalk(
     i: usize,
     delta: f32,
@@ -519,7 +625,7 @@ pub(super) unsafe fn walk_to_sidewalk(
         };
         let pos = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
         let mut path = LocalAccessPath {
-            points: [Vector2::ZERO; 4],
+            points: [Vector2::ZERO; 5],
             count: 2,
         };
         path.points[0] = pos;
@@ -644,6 +750,8 @@ fn plan_from_lane(
         graph,
         pathfind_count,
         Some((i, "walk-home")),
+        None,
+        None,
     )
 }
 

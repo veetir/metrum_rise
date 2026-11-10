@@ -2,6 +2,7 @@
 
 //! Reusable exact commute quotations, including directed pedestrian connector fallback.
 
+use super::super::super::lane_nav::vehicle_lane_reaches_edge;
 use super::*;
 use crate::simulation::pathing::cch::{CchBucketSource, CchBuckets, CchPathScratch};
 use std::hash::BuildHasher;
@@ -14,6 +15,8 @@ thread_local! {
 /// Worker-local route storage; preparing once keeps repeated commute estimates allocation-free.
 #[derive(Default)]
 pub(crate) struct TripQueryScratch {
+    // Agents this movement shard found due in the parking phase; never route state.
+    parking_candidates: Vec<usize>,
     cch: CchPathScratch,
     possible: Vec<usize>,
     next: Vec<usize>,
@@ -438,6 +441,39 @@ impl TripQueryScratch {
         })
     }
 
+    /// Prepares resident-economy worker storage before its per-request loop. O(graph storage)
+    /// after a topology change, O(1) otherwise; subsequent cost quotes allocate nothing.
+    pub(crate) fn prepare_thread(network: &TransitNetwork, graph: &RegionGraph) {
+        QUERY.with_borrow_mut(|scratch| {
+            scratch.disable_deferred_quotes();
+            scratch.prepare(network, graph);
+        });
+    }
+
+    // A parking quote may contain several legs inside one prepared workplace shard. Unlike
+    // an independent route request, none may discard the shard's deferred shared quotes.
+    pub(in super::super) fn with_shared_quotes<T>(
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        quote: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        QUERY.with_borrow_mut(|scratch| {
+            scratch.prepare(network, graph);
+            quote(scratch)
+        })
+    }
+
+    /// Notes agent `i` for the ordered parking phase in the running shard's list: a shard owns
+    /// its scratch, so the note takes no lock. O(1); the list keeps its storage between ticks.
+    pub(in super::super::super) fn note_parking_candidate(i: usize) {
+        QUERY.with_borrow_mut(|scratch| scratch.parking_candidates.push(i));
+    }
+
+    /// Moves this shard's notes to `merged`, in no useful order; the caller sorts. O(notes).
+    pub(in super::super::super) fn drain_parking_candidates(&mut self, merged: &mut Vec<usize>) {
+        merged.append(&mut self.parking_candidates);
+    }
+
     /// Runs a planning callback with `owned` installed as the current thread-local scratch.
     ///
     /// The previous TLS value is restored when the callback returns or unwinds, so nested
@@ -727,12 +763,17 @@ impl TripQueryScratch {
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
+                None,
             )
             .map(|(seconds, _, _)| seconds)
     }
 
     /// Visits the exact selected CCH/connector path while temporary storage stays borrowed.
     /// Candidate pricing discards the slice; only a stored agent plan copies its final route.
+    /// With `first_lane` (a car's road lane ending at `from`), the route leaves `from` only on a
+    /// road that lane reaches (`vehicle_lane_reaches_edge`): the lane-aware replan after a missed
+    /// turn on a road too short to change lanes (`TRAFFIC-23`). One O(successors) test per
+    /// departure of `from`.
     #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn network_path<T>(
         &mut self,
@@ -744,8 +785,14 @@ impl TripQueryScratch {
         network: &TransitNetwork,
         graph: &RegionGraph,
         consume: impl FnOnce(&[u32]) -> T,
+        first_lane: Option<usize>,
     ) -> Result<(f32, T), &'static str> {
         self.prepare_routes(network, graph);
+        let first_hop_rule =
+            first_lane.map(|lane| move |edge| vehicle_lane_reaches_edge(lane, edge, network));
+        let first_hop = first_hop_rule
+            .as_ref()
+            .map(|rule| rule as &dyn Fn(usize) -> bool);
         self.last_path_is_walking = false;
         let edge = match start {
             RouteStart::Lane(lane) => lane_edge(lane, network),
@@ -762,6 +809,7 @@ impl TripQueryScratch {
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
+                first_hop,
             )
             .ok_or("cch_no_path")?;
         if path.len() < 2 {
@@ -1141,6 +1189,7 @@ impl TripQueryScratch {
             graph,
             flags,
             &mut self.cch,
+            None,
         )?;
         debug_assert!(
             path.len() >= 2,
@@ -1454,6 +1503,12 @@ mod tests {
             seconds: Some(2.0),
         });
         scratch.mark_dirty_quote(0);
+        TripQueryScratch::with_owned(&mut scratch, || {
+            TripQueryScratch::with_shared_quotes(&network, &graph, |scratch| {
+                assert!(scratch.deferred_shared);
+                assert_eq!(scratch.dirty_quote_slots, [0]);
+            });
+        });
         scratch.publish_quotes(&mut shared);
         assert_eq!(
             shared.get(&key, network_quote_revision(&network)),
@@ -1713,6 +1768,7 @@ mod tests {
         let points = [(0.0, 0.0), (80.0, 0.0), (160.0, 0.0)];
         let mut graph = road_through(&points);
         graph.edge_mut(1).allowed_types = TransitFlags::CAR;
+        graph.edge_mut(1).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         assert!(walking_proof(&mut graph));
     }
 
@@ -1802,6 +1858,7 @@ mod tests {
                         network,
                         graph,
                         |_| (),
+                        None,
                     );
                     if let Err(reason) = route {
                         assert_eq!(reason, "pedestrian_connector_fallback_missing");
@@ -2177,6 +2234,7 @@ mod tests {
                             &network,
                             &graph,
                             <[u32]>::to_vec,
+                            None,
                         )
                         .ok()
                         .map(|(_, path)| path);

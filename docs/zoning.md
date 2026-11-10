@@ -137,6 +137,7 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap an explicit service-building site reservation.
 - The parcel must not overlap a committed field (`ECON-07`), including when its profile is free/unzoned.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
+- A road side without a sidewalk rejects parcel attachment (`ROAD-109`, [section 8](#8-road-no-build-flag)).
 - Missing compatible initial-level assets do not block zoning, including when installed assets
   have another density, require a later building level or exceed the selected lot dimensions.
   Such parcels retain their selected profile and wait for compatible content before growth.
@@ -313,10 +314,11 @@ exists.
 
 `godot/scripts/renderers/zoning_overlay.gd` renders Rust-authored parcel geometry with an
 `ArrayMesh`. Zoning, service/industry placement, road, and walkway tools show the parcel overlay
-and orange no-build edge guides. Empty parcels remain visible constraints during road placement;
-the Rust road preview uses the same indexed parcel-corridor intersection check as commit and
-returns `parcel_overlap` before submission. Changing parcels invalidates cached road verdicts
-through the zoning overlay revision.
+and orange no-build edge guides. Since `ZONE-09` parcels no longer refuse a road: the Rust road
+preview computes the commit's land take on the road tool's published land, outlines the lots the
+stroke would remove and refuses only plotted land before submission
+([roads over zoned land](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+Changing parcels republishes that land at the end of the simulation frame.
 
 Godot must not rasterize zoning state into an authoritative grid or resolve placement conflicts.
 
@@ -386,9 +388,52 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
   type whose speed reaches it gets zoning off once, unless the player set the checkbox. Type
   matching ignores the flag, so the checkbox below stays a per-road override.
 - Player toggle: road properties panel checkbox
-- Roads without sidewalks may zone (the rural road, design D1): their lots derive as on any
-  road and their buildings are car-only destinations, 0.75 m shoulder instead of the sidewalk
-  (the road builder warns "No sidewalks: buildings here are reached by car only")
+- **A building stands on a side of a road that has a sidewalk (`ROAD-109`, the user, 2026-11-06).**
+  One rule, no per-kind exceptions: later public transport leaves workers walking the end of the
+  route, so every door must be reachable on foot. It replaces RB3a's D1 ("roads without sidewalks
+  may zone") and its per-side form from `ROAD-107`. `Edge::zones_side(side)` is the predicate:
+  `!no_building_spawn` and the side walked (`Edge::walked_on_side`: a sidewalk on that side, or a
+  walkway, which is its own path). `RegionGraph::takes_buildings(edge, side)` adds "fronts the
+  ground". Both O(1).
+  - **Cells and lots.** Every place that read `no_building_spawn` for cells reads `zones_side`:
+    `edge_candidates` per side, `warm_cold_chunks` (either side), `column_is_covered` (the
+    continuing road's own side, since it may run the other way), the curve and pinned candidates,
+    `has_road_column` and `cell_lot_frontage`. A road with no sidewalks makes no cells, a
+    one-sided road zones on its sidewalk side, and a ring never did (`ROAD-62`). A road type's
+    stored `zoning` value stays as it is; the Zoning checkbox is disabled while no side has a
+    sidewalk.
+    The zoning overlay shows this as cells on the walked side alone; its orange guide lines still
+    mark only `no_building_spawn` (`ROAD-110`).
+  - **Parcels and zoned buildings.** Parcels attach only to a side that zones; road fill fills
+    only those sides. `resolve_slot` and the demand candidates read the parcel's side. A building
+    found on a side without a sidewalk (a save from before the rule) goes at the next maintenance
+    through `compatibility_expired`, as on a road closed to buildings.
+  - **Placed buildings.** Service buildings, mines, farms and every other explicit site take the
+    nearest frontage as before and are refused there (`ExplicitServicePlacementRejection::NoSidewalk`,
+    "buildings need a sidewalk on their side of the road") in preview and commit alike, one check
+    in `validate_explicit_frontage_side`, so the player sees why instead of the site jumping to
+    another road. A road with `no_building_spawn` is still skipped in that search.
+  - **Removing a sidewalk.** A road-type change or any in-place edit that would take a sidewalk
+    from a side with a building's door is refused (`sidewalk_under_door`,
+    "A building's door is on this sidewalk: remove the building first"), a zoning-off change
+    included: the door is the rule, not the demolition. An undo that would do the same is refused
+    and stays on the stack. O(segments + chunks + candidates log candidates) through the 512 m
+    chunk index, only when a side goes; a stale index counts in parallel over the city, as
+    `buildings_fronting` always has. The side's empty parcels and lots go in the same change and its undo
+    restores them; its cells follow through `mark_cell_lots_for_roads`, which marks only the
+    edit's own roads. Bulldozing a road keeps its behaviour.
+  - **Test builds** check the rule in `check_doors_are_walked` at every entrance rebuild, and after
+    a road edit that the changed doors have their foot lanes.
+  - **Locality** (2026-11-07, release `$TEST_BINARY`, 8 workers, `nodes::sim::core::tests::
+    road_plan_scaling::<name> --exact --ignored --nocapture --test-threads=1`, unpinned, beside
+    other builds, an informational run with no control). Background 0 / 1,000 / 10,000 / 100,000
+    buildings, the neighbourhood fixed, `identical_local_products` true throughout.
+    `populated_road_side_edit_scaling` (the right sidewalk removed in place, so the door check
+    runs): verdict p50 0.34 / 0.36 / 0.40 / 0.36 ms; commit 0.63 / 0.81 / 1.06 / 1.83 ms, whose rise
+    is the undo's `O(A / P + B / P)` membership passes, as recorded for `ROAD-107`.
+    `populated_road_type_edit_scaling`: verdict 0.28 / 0.35 / 0.33 / 0.45 ms.
+    `populated_one_sided_road_plan_scaling` and `populated_cell_road_plan_scaling` (1,000 / 10,000 /
+    100,000): compile p50 0.42 / 0.35 / 0.38 ms and 0.39 / 0.35 / 0.35 ms.
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines
@@ -822,7 +867,9 @@ using the remaining length. Each group uses its endpoint chord orientation; inte
 road points constrain the frontage support line. Height-only polyline subdivision does not move
 the grid. Straight groups use one endpoint phase, with a perpendicular incident road contributing
 its curb offset at a junction. The first slice reuses the parcel frontage offset
-`edge.width / 2 + SIDEWALK_WIDTH`; compiled surface exclusions are supplied by the caller.
+`edge.width / 2 + SIDEWALK_WIDTH`, about a turn pocket edge's carriageway axis rather than its
+centreline ([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)); compiled surface
+exclusions are supplied by the caller.
 Ground-level eligible road spans generate cells; bridge and tunnel spans do not.
 A tunnel's bore lies in the hill: its buried pieces neither block nor clear the cells over it,
 generated or painted, and a tunnel drawn under painted cells is not refused for them (`ROAD-61`
@@ -867,6 +914,8 @@ an exact frame only when their periodic difference fits the source-coordinate un
 An unchanged straight curb, including a same-width split or reversed child, retains its prior
 directed phase when no perpendicular corner constrains that side. A junction anchor across the
 road cannot rephase the uninterrupted backside; same-side corners retain their alignment rules.
+The pieces a turn pocket splits off one straight base road hold that base road's choices
+([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)).
 Incompatible existing choices remain separate, and painted/claimed cell frames remain pinned.
 Ordered constraint propagation does not traverse beyond the affected ring; independent source
 sampling uses Rayon. Work is O((K + A) log K + X) for affected roads K, adjacency incidences A and
@@ -923,11 +972,14 @@ The two workflows share these reservation rules:
 | State | Land reservation |
 | --- | --- |
 | Generated, unpainted cell | Available space only; does not block parcel or road placement. |
-| Painted cell | Reserves zoning intent; a manual parcel cannot claim the same land. |
-| Authored parcel, including profile `0` | Keeps its existing reservation and suppresses conflicting generated cells. |
-| Building lot, service site or field | Uses the existing reservation owner; conflicting cells are unavailable. |
+| Painted cell | Reserves zoning intent; a manual parcel cannot claim the same land. A road, road edit or explicit placement takes it (its paint is erased; [`ZONE-09`-`ZONE-11`](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)). |
+| Authored parcel, including profile `0` | Keeps its existing reservation and suppresses conflicting generated cells. A road, road edit or explicit placement over it removes it with its building. |
+| Growable building's lot (a cell lot or an authored parcel claimed by demand) | Keeps its cells claimed; a road, road edit or explicit placement over any of its cells removes the whole lot and demolishes the building. |
+| Plotted land: an explicit (service or industry) site's lot, a farm field, a mine's extraction area | Uses the existing reservation owner; conflicting cells are unavailable. Refuses roads, road edits and other placements over it (`field_overlap`, `extraction_area_overlap`, `plotted_building_overlap`). |
 
 Placement and painting both check the other workflow within one authoritative transaction.
+Painting and manual parcels never take land from each other; roads, road edits and explicit
+placements take zoned land by the rules in the next subsection.
 Erasing empty painted cells releases their reservation and leaves the valid grid visible.
 Erasing a manual parcel's profile retains that parcel's existing free/unzoned reservation;
 removing the parcel remains a separate operation. Occupied land stays reserved until the existing
@@ -947,6 +999,284 @@ clear current fields; lots without a parcel owner and restored field polygons mu
 zoning workflows. Existing cell-lot inverse validation still applies to retained paint and claims.
 A conflict leaves authority and the inverse journal unchanged, allowing retry after land is
 released. These checks use current local indices before restoration mutates simulation state.
+
+### Roads, road edits and placements over zoned land (`ZONE-09`, `ZONE-10`, `ZONE-11`)
+
+Built 2026-11-09/10 on branch `roads-over-zoning` (rounds RZ1-RZ3, RZ10a-b, RZ11a-b), waiting
+for the user's in-game test ([`roadmap.md`](roadmap.md)); painted land re-lays around every such
+edit since `ZONE-14` (rounds RL1 and RL2, branch `zone-relay-2`, 2026-11-10). Before, a road
+stroke over zoned land was refused (`parcel_overlap` from its corridor, `zoning_cell_overlap` from its pieces), so were
+widenings, turn pockets, roundabouts and node moves, and an explicit placement's lot refused
+painted cells and every building site by an axis-aligned box test; an extraction area tested
+nothing. The sections above and below that describe those refusals record the state before this
+work. Manual node moving, which `ZONE-10` also covered, was removed from the game on 2026-11-10
+(`ROAD-111`).
+
+**Growable or plotted, from data.** A growable building has a parcel (`Building.parcel_id != 0`:
+a cell lot or an authored parcel that demand claimed). Plotted land is an explicit site's lot
+(`parcel_id == 0`: services, farms, mines, plants; the allocator's `explicit_cell_sites`), a farm
+field (`FieldClearanceIndex`) or a mine's extraction area (the allocator's `extraction_clearance`,
+a second `FieldClearanceIndex` kept by the extraction commit, its undo, load and the allocator's
+swap-remove remap). No asset or zone name is tested.
+
+**Rules** (the user's, 2026-11-09; the decisions below were taken as the plans recommended under
+the night delegation, for review):
+
+1. A road stroke, every graph edit (widening and class change through Road Properties, a turn
+   pocket, a roundabout, a crossing toggle, a road or ring removal) and every explicit
+   placement (a service or industry building, a farm field new or resized, an extraction area new
+   or resized) takes the zoned land it **newly** covers: every lot one of the covered cells belongs
+   to is removed with the building on it (a claim is atomic), every authored parcel it covers is
+   removed (decision D1), and the covered cells lose their paint. A lot's uncovered cells stay
+   painted and free (and are re-laid by rule 5).
+2. Plotted land refuses the edit or placement before anything is written, with the reasons below.
+3. "Newly covered": a cell, lot or parcel when a new piece covers its road-contact interior and no
+   piece the edit replaces did (`road_piece_newly_covers`, `simulation/zoning/system/reservations.rs`);
+   a field or area when a new piece overlaps one and no replaced piece overlapped any. A re-laid
+   junction over land already under it takes nothing. Tunnels (buried pieces) and bridge decks
+   take nothing; approaches and grounded mouths do (`PieceMesh::grounded`, decision D2).
+4. No cap on what one edit takes (D7), and no confirmation for strokes, ring clicks, move releases
+   or placements (D-dialog, D-dialog-11): the hover shows the outlines and the count first. Road
+   Properties keeps its "Apply removes N building(s)" question, which now counts the take too.
+5. Painted land re-lays itself as unpainted land does (`ZONE-14`, the user's direction of
+   2026-11-10; this replaces `ZONE-09`'s "new frontage cells fill free land only"): the edit also
+   releases the free paint (no lot, or an empty one) of the land it regenerates, its lot plan lays
+   that land's cells as on unpainted land, and every cell over the old paint takes the paint it
+   overlaps most. An occupied lot stays pinned with its cells; paint left without a road column
+   (behind a new lot, along a removed road) is gone. Details under "Paint inheritance" below.
+6. Undo of a road edit gives the road and the paint back, never the buildings. Explicit placements
+   have no undo, so the paint they erase or release is final (D-undo (a); `ZONE-12`).
+
+**One take** (`RoadLandTake`, `nodes/sim/core/road_edit_plan.rs`). `RoadLandTake::of(land,
+pieces, before, extra, owner)` over a `RoadLandSource` serves the commit and the preview with one
+copy of the rules: `CoreLand` (the live allocator and zoning, the commits) or `ViewLand`
+(`nodes/sim/core/road_tool_land.rs`: the road tool view's cell copy and the published land, the
+road and ring hovers). It returns the first plotted overlap (pieces in order; per piece field,
+extraction area, explicit site's lot), otherwise the newly covered reserved cells with their paint
+(sorted by `CellKey`), the lots claiming them plus the authored parcels covered (ascending), a
+point inside each lot, and the buildings on those lots (descending: the swap-remove order).
+`extra` footprints take land by the same rules (`footprint_newly_covers`): a roundabout's island,
+a 64-gon at radius plus half the ring plus the sidewalk (`RoundaboutLayout::island_footprint`,
+D-ring (a)). A placement is one footprint and no pieces (`RoadLandTake::of_footprint`); its
+`owner`'s own field, area and lot are not plotted for it, so a resize or the farm's own lot is
+not refused by itself. Bound: O(pieces × reserved cells in their bounds × top triangles) plus
+the plotted queries on the chunked field, extraction and site indices and a hash and a binary
+search per lot; no city scan.
+
+**Taking it** (`SimCore::take_land_for_edit`, `nodes/sim/editing.rs`), once every refusal of the
+transaction has passed, so nothing after it refuses:
+
+- demolition through the building lifecycle (`demolish_for_road`; [`building_allocator.md`
+  "Removal Lifecycle"](building_allocator.md#removal-lifecycle)): no undo record, one agent and
+  one household scan per batch, every home of the batch evacuated before the first removal;
+- lot and authored-parcel removal by id (`ZoningSystem::remove_parcels_under_road`, local per id);
+- the release (`ZoningSystem::release_painted_cells`, `ZONE-14`): the free painted cells of the
+  edit's regeneration region, their empty lots removed whole;
+- one paint erase of the covered and the released cells (`ZoningSystem::erase_cells_under_road`
+  -> `CellPaintUndo`), whose lot regions join the edit's; every erased cell's strip and conflict
+  halo is marked, as any erase marks it (round RL1: a released cell no road proposes again frees
+  land up to its halo, beyond the edit's own envelopes).
+
+Where each transaction takes: a stroke in `validate_staged_road_render_installing`, after the
+install (a plotted hit or a failed node piece rolls the staged edit back first) and before graded
+staging; a widening after `apply_edge_cross_section`; a pocket before
+`migrate_pocket_dependents`; a ring before `migrate_trimmed_arms`;
+class change, crossing toggle and the two removals after their apply and before lanes (a removal
+before its parcel capture). The shared graph-edit try is one site, `RoadEditSite`
+(`nodes/sim/core/road_edit_site.rs`), built on the live core or on the road tool's context
+([`roads.md`](roads.md#land-taken-by-road-edits-zone-09-zone-10)). An explicit building is
+prepared (`prepare_explicit_placement`: sidewalk, land, roads, support), then takes, then is
+placed (`place_explicit_site`); the support's neighbour-height test skips the buildings the take
+demolishes, and it samples the source terrain, which demolished pads never wrote. A field or area
+validates with the take (`validate_site`), takes (`take_land_for_work_area`, which follows the
+owner by handle across the swap-removes and returns its new index), then commits. Every in-place
+edit or placement that erased paint plans its lots before returning (`plan_lots_after_erase`); a
+stroke's lots are planned by the commit's own lot plan, deferred or in the commit. A demand spawn
+queued for a removed lot is refused when it starts (its door changed; lot ids are never reused),
+and queued removals, level changes and admissions resolve their building by handle and skip a
+demolished one.
+
+**Paint inheritance and the re-lay** (`ZONE-14`, PLAN-RL; rounds RL1 and RL2). The region an
+edit releases is the region it regenerates, by the same arithmetic: the envelopes its cell-lot
+marks invalidate (`mark_cell_lots_for_road_edit`, `mark_cell_lots_for_roads` and
+`mark_cell_lots_dirty` return them: per changed or realigned road its rows, half width, kerb and
+sidewalk plus six cells, widened by seven), the 12-cell halo of every covered cell and the 7-cell
+halo of every authored parcel the take removes (`ZoningSystem::authored_parcel_halos`). Every
+in-place edit marks before it takes; the stroke carries its marks' envelopes in
+`RoadAddOutcome.regeneration`. Per path: a stroke, widening, pocket, ring, ring removal and road
+removal release their marks' envelopes; a crossing toggle the covered cells' halos only (it moves
+no frontage); a class change onto the ground releases, one off the ground releases nothing beyond
+the covered halos, so a bridge or tunnel and back keeps the street's paint and its lots return
+with the ground class (decision D-class, round RL1). The explicit placements follow the same rule
+(D-placements (a), round RL2): an explicit building's lot the covered cells' halos (the lot and 7
+cells lie within them for any lot up to five cells across; the site's publication marks the lot
+again after the take), a field or extraction area the envelopes of its old and new polygons'
+marks, made before the take; a placement that takes no zoned land releases nothing, so paint cut
+off behind a lot or field on unpainted land stays as it was. A cell is free when painted and
+claimed by no lot or by an empty one; an occupied lot and a grace claim stay pinned with their
+lot, and the neighbours re-lay around them as around claimed land. The erased painted cells stay
+in `ZoningSystem::road_paint_sources` until the plan that drains the edit's lot regions takes
+them; after each region's generation every unpainted, unclaimed cell over an erased cell, not one
+the edit's pieces cover (`RoadPaint.covered`: those never inherit) and in chunks whose generation
+is current (`CellStore::generation_current`: a later region could still drop it), takes the paint
+of the erased cell it overlaps most by exact area (`cells::convex_overlap_area`), ties to the
+lowest erased `CellKey`; lots derive after in the same plan. A released cell regenerated in place
+overlaps itself wholly and takes its own paint back; a new road's cells over released land take
+the paint they overlap most, so a cell across a zone boundary takes the larger share and the
+boundary moves by under half a cell (D-mixed (a)); released land where no cell regenerates (no
+road column) keeps no paint, the erase standing in the record (D-removal (a): a removed road or a
+narrowing leaves no orphaned paint). In a block painted whole the new road's rows therefore arise
+exactly as on unpainted land, painted from the block. The inherited cells, survivors included,
+join the edit's undo record (`CellPaintUndo::record_inherited`); a placement has none. A stroke's
+plan is deferred to the next frame (the release happened on the live store before the view was
+published, and the ground mask polls busy while the plan is pending, D-mask (a)); an in-place edit
+or a field or area that erased paint plans at once, an explicit building in its entrance rebuild.
+The hover shows the take, not the re-lay (D-preview (a)).
+
+**Undo and its refusals** (D5, D6, D5 extended). The road edit's record carries `cells:
+CellPaintUndo {erased, inherited}`: the covered and released cells with their paint, and the plan's
+inherited paint (a key may be in both). The undo is refused whole, and stays on the stack, unless
+every inherited cell still carries its inherited paint with no lot or an empty one, and every
+erased cell is either unpainted and unclaimed, standing with its inherited paint (a released cell
+re-laid in place), or absent with no reserved overlap (inherited cells excepted:
+`CellStore::overlaps_reserved_except`), with no authored parcel, field, extraction area or
+explicit site over it (`can_restore_road_cell_paint`, `nodes/sim/zoning.rs`). Since the whole
+region re-lays, a house grown anywhere on it, or a placement on it, refuses the edit's undo, not
+only one on the new road's front row (D5-ext (a)); undo is atomic like every undo. Replay
+restores the road, removes the empty lots on inherited cells, erases the inherited paint, restores the erased
+paint (re-inserting cells regeneration dropped) and queues the lot regions: lots re-derive from the
+paint, not by id; buildings are not restored. The old cells then stand with their old paint and
+pin the regeneration, so the layout is the pre-edit one.
+
+**Extraction areas block** (D-extraction-blocks (a), D-extraction-rules (a)). Areas block cells
+and parcels as fields do (`footprint_blocked` reads the extraction index live, in the deferred
+plan's `Arc` and in the undo check; `zoning_site_feasibility` refuses `extraction_area_overlap`;
+the bulldoze undo's land checks read them), and an area refuses roads and building footprints, its
+own building's included, as a field does (`agriculture::work_area_clearance`). A painted cell
+saved under an older area stays until the next edit of that area takes it; the load check is
+unchanged. Explicit sites refuse each other by exact lot polygons, shared edges allowed
+(D-site-test (a); the box loop and `validate_explicit_zoning_reservation` are gone).
+
+**Previews show the take** (D9, D-hover, D-hover-11). Every hover validates as its commit does and
+reports `demolish_count` and `demolish_lots` (four corners per removed lot, built or empty); Godot
+outlines the lots with the bulldoze highlight and names the count
+([`ui.md`](ui.md#2-bottom-toolbar)). The road and ring hovers run without the core on the road
+tool's land (`RoadToolLand`: parcels per 512 m chunk with their occupants, the explicit sites'
+chunk-indexed snapshot, the field and extraction `Arc`s), which `SimCore::refresh_road_tool_land`
+refreshes at the end of every simulation frame (O(1) unchanged; only parcel chunks whose revision
+moved are rebuilt, the sites only after a building change with the site index current) and
+publishes into an O(1) slot. The widening and pocket verdicts carry the take from the core. The
+building hovers try-lock the core, answer `pending` while it is held
+and ready only the site part of a stale site index
+([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)), so a hover changes
+no simulation order ([`debug.md` "Busy Core"](debug.md#busy-core)). The commit is authoritative: a
+house that grows between the hover and the click is taken too, without a dialog; a stationary
+pointer re-previews on the next pointer move or publication.
+
+| Reason key or text | Refuses |
+| --- | --- |
+| `field_overlap`, "Road overlaps a farm field" | a road or graph edit over a field |
+| `extraction_area_overlap`, "Road overlaps a mine's extraction area" | the same over an extraction area |
+| `plotted_building_overlap`, "Road overlaps a placed building's lot" | the same over an explicit site's lot |
+| `parcel_overlap` | only unstaged bulk road adds (setup paths that plan no pieces and take no land) |
+| "building lot overlaps a placed building's lot / a farm field / a mine's extraction area" | an explicit building's lot |
+| "field overlaps another field / a mine's extraction area / a placed building's lot / a building site / a road" | a field; an area reads "extraction area overlaps a farm field / another mine's extraction area / ..." |
+
+**Known limits.** A demolishing commit scans every
+agent once (`PERF-20`); the lot plan's cost grows with the city (`PERF-21`), and since `ZONE-14`
+an edit's plan re-lays the whole region it regenerates (the cost below); an explicit
+placement's tail does too (`PERF-22`); Godot-facing per-frame queries still rebuild a stale zone
+index whole (`ALLOC-05`).
+
+**Evidence** (fresh in each round, on branch `roads-over-zoning`; the rounds' figures are in the
+`ZONE-09`-`ZONE-11` rows). Rust tests in `nodes/sim/core/tests/road_over_zoning.rs` and its
+`preview.rs`, `edits.rs` and `placements.rs` (rules, refusals with unchanged state digests,
+undo and its refusals, inheritance by exact area, preview take equal to the commit's, determinism
+across two cities); Godot `road_tool_demolition_test`, `road_edit_demolition_test` and
+`placement_demolition_test`, and `core_busy_input_test` with a ring and a building hover while the
+core is held; every rule's planted fault failed its tests. Locality (`benchmark_commit_locality`,
+`benchmark_preview_locality`, background 0 / 10k / 30k): products bitwise equal across tiers; the
+take itself 0.006-0.019 ms for placements and +0.03-0.17 ms p50 in a stroke hover; the growth
+with the city is the demolition's agent scan (`PERF-20`), the lot plan (`PERF-21`) and the
+placement tail (`PERF-22`). Each round's level-F session against `dev` `c275f63f` read level.
+
+**Landing timing** (level L, round RZD, 2026-11-10 06:32-06:42, boot `978f0c18`, one session,
+fresh). Control: `dev` `c275f63f`'s release library test binary (SHA-256 `98f0f23e`); branch:
+`roads-over-zoning` `0cb4978d`, whose code tree is `e0054783`'s (the binary RZ11b's gates ran,
+SHA-256 `9770a880`). Eight workers pinned to the performance cores, the runner's locks, no build,
+Godot or backup during the timed phase. Path rule F (the branch touches per-frame paths), timed
+at L for the landing:
+
+```bash
+./run.sh --timing --level L --base c275f63f --control "$ARTIFACTS/ctl" --branch "$TEST_BINARY" \
+    --artifacts "$ARTIFACTS/sess-l"
+```
+
+| Row | Control | Branch | Verdict |
+| --- | --- | --- | --- |
+| 30k 1× acceptance (worst unpreempted / p99.9 / preempted less wait, ms) | 5.97 / 4.12 / 4.34 (cached day, calibration passed: first 32× control run +0.5% mean, +0.0% p99, +2.7% p99.9) | 6.35 / 4.21 / 4.20 and 6.06 / 4.15 / 4.37 | **pass** both days |
+| 30k 1× comparison (mean, p99, p99.9, worst unpreempted; components) | 2.188, 3.688, 4.118, 5.975 ms | +0.3%, +0.4%, +1.5%, +3.9% (tolerance 7.3%); agent +1.6%, snapshot -1.0%, slot +0.9%, `load_s` +0.8% | level |
+| 30k 32× C B B C acceptance | 8.06 / 8.08 / 6.86 and 7.81 / 8.64 / 7.13 | 8.20 / 8.02 / 7.37 and 8.49 / 7.91 / 5.29 | known exception `PERF-17`, both sides |
+| 30k 32× comparison | mean 4.326, p99 6.893, p99.9 8.362, worst unpreempted 7.932 ms | +0.1%, +0.3%, -4.7%, +5.2% (tolerance 6.0%); components within ±0.4% | level |
+| K22 30k commit | 6.81 ms (cached, same boot) | 6.51 ms; commit products bitwise equal (hash `ca024f164af8d266`) | level |
+| Economy contract (`--diff`, branch only; the control row is cache-only and had none) | `c275f63f`'s tree in the same boot (round `Z1`'s landing session): baseline hour 0.92 / 3.41 ms, fiscal 6.49 / 13.41 ms at 10k / 30k | 0.85 / 3.26 ms, fiscal 6.51 / 13.38 ms; every one of the 25 logs' work records identical to the control's (wall-clock fields dropped) | status `failed` on the five parked work-count limits only, identical on `dev` ([`economy.md`](economy.md#performance-contract-perf-01perf-05)); no change |
+
+Raw maxima are reported only (1× 7.23 against 8.22 ms, 32× 10.65 against 8.90 ms). The mean
+pathing component reads +75% / +18% on 0.2-1.4 µs, under the comparison's floor. Session exit 0.
+
+**Re-lay evidence and cost** (`ZONE-14`, rounds RL1 and RL2, 2026-11-10, fresh in each round,
+boot `978f0c18`). Tests in `nodes/sim/core/tests/road_over_zoning/relay.rs` (PLAN-RL tests 1-9:
+the screenshot's diagonal through a block painted whole lays exactly the cells of the same stroke
+on the unpainted street, each painted one carrying the paint it overlaps most and none over old
+paint unpainted; occupied lots pinned; exact undo; D5 extended; road removal; mixed zones; the
+ring's island through undo, the ring again and a save and load; a 1.4 km stroke over several plan
+regions; a parking lot into a painted block equal to its unpainted twin; a placement over
+unpainted land releasing nothing; a lot on re-laid land refusing the stroke's undo; an authored
+parcel's halo; determinism of a stroke and of a stroke then a placement) and in `fields.rs` (a
+field's release follows its polygon's marks; the explicit site and field test under the re-lay
+rule); fourteen planted faults (eight in RL1, six in RL2), each failing at least one test. Locality
+(`benchmark_commit_locality`, release, background 0 / 10k / 30k, eight workers on the
+performance cores, two runs a side against `dev` `da5ede14`): products bitwise equal across the
+tiers. The release itself takes 0.5-0.7 ms per stroke and 1.7-1.9 ms for the widening, flat. The
+cost moved into the lot plan, which now re-lays the region: a stroke's next-frame adoption is
+28-41 ms against `dev`'s 12-30 ms, the in-place edits plan a block at once (the widening
+55-72 ms against 45-56 ms; the narrowing and the pocket's removal 30-44 ms against 2-3 ms, their
+publication 16-27 ms against `dev`'s 29-50 ms, which planned the same regions there), the
+placements that take land 3-8 ms more. The adoption's split (round RL2, the `economy_phases`
+channel's `cell_lot_detail`, 0 and 30k): waiting for the deferred plan is all but 0.5 ms of it;
+of the plan, generation 20-32 ms, inheritance 3-8 ms, derivation 0.8-1.6 ms over 8-12 regions;
+install, reattachment, repair and the view's publication 0.4-0.8 ms together. Inheritance first
+took 6-16 ms: each region's pass revisited every erased cell; a pass now runs only when a chunk's
+generation completed or a lot released its claim since the last (`CellStore::eligibility_epoch`;
+products unchanged, every tier). The generation is the re-lay itself, bounded by the reserved and
+generated cells of the regenerated envelopes: the edit's marks plus the 12-cell halo of every
+erased cell (round RL1's deviation, which a narrow-marks test requires); marking the covered
+cells' halos alone would save 8-14 ms of it (a probe build, products wrong) and is not an option.
+The growth with the city (about +5-9 ms from 0 to 30k) is the plan's `PERF-21`.
+
+**Landing timing** (level L in merge form, round RL2, 2026-11-10 12:19-12:39, boot `978f0c18`, one
+session, fresh; cumulative since `dev` `da5ede14`, the last L-verified `dev`: `ALLOC-05`, the
+`veeti-fixes` merge, `ROAD-111`, `TERRAIN-22`, RL1 and RL2). Control: `da5ede14`'s release library
+test binary built in a temporary worktree (SHA-256 `86f9ce90`), so no cached control rows existed
+and the merge form timed every control row in the session; branch: `zone-relay-2` `30146dce`
+(SHA-256 `decb5dbd`). Eight workers pinned to the performance cores, the runner's locks, no build,
+Godot or backup during the timed phase:
+
+```bash
+./run.sh --timing --level L --merge --base da5ede14 --control "$ARTIFACTS/ctl" \
+    --branch "$TEST_BINARY" --artifacts "$ARTIFACTS/sess-l"
+```
+
+| Row | Control | Branch | Verdict |
+| --- | --- | --- | --- |
+| 30k 1× acceptance (worst unpreempted / p99.9 / preempted less wait, ms) | 6.03 / 4.09 / 4.05 and 6.54 / 4.11 / 6.18 | 6.31 / 4.10 / 4.84 and 6.00 / 4.19 / 5.41 | **pass** all four days |
+| 30k 1× comparison (mean, p99, p99.9, worst unpreempted; components) | 2.177, 3.667, 4.097, 6.289 ms | +0.4%, +0.4%, +1.1%, -2.1% (tolerances 1.4%, 3.4%, 8%, 6%); agent -0.2%, snapshot +1.1%, slot +1.5%, `load_s` -0.3% | level |
+| 30k 32× C B B C acceptance | 8.36 / 8.12 / 6.59 and 8.07 / 8.06 / 6.53 | 8.22 / 7.88 / 5.48 and 8.13 / 7.96 / 6.42 | known exception `PERF-17`, both sides |
+| 30k 32× comparison (one branch row noisy, tolerances doubled) | mean 4.332, p99 6.902, p99.9 8.087 ms | +0.5%, -0.1%, -2.1%; components within ±0.7% | level |
+| K22 30k commit (one run each) | 6.59 ms | 7.02 ms; commit products bitwise equal (hash `ca024f164af8d266`) | reported (RL1's session read 6.72 against 7.06) |
+| Economy contract `--diff da5ede14` (C B) | status `failed` on the five parked work-count limits | the same five failures; every work record identical to the control's (wall-clock fields dropped) | no change |
+
+The pathing component reads -4% / -9% on 0.4-1.4 µs, under the comparison's floor. Session exit 0.
 
 ### Tool contract
 
@@ -1223,7 +1553,7 @@ Since `ROAD-68-G` part 7 the commit plans those regions in a pure job on its roa
 cell copy and the parcel store as it left them, and the next frame (or the next edit, save or
 lot preparation, whichever comes first) adopts the plan with the attachment repair and entrance
 update that follow it; the result equals planning in the commit bitwise
-([`simulation.md`](simulation.md#pure-jobs), [`roads.md`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)). Every other road edit (undo, rollback, bulldoze, node moves, class, no-build and
+([`simulation.md`](simulation.md#pure-jobs), [`roads.md`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)). Every other road edit (undo, rollback, bulldoze, class, no-build and
 border edits) queues the corridors of its roads and of the whole ring at their ends, as before
 part 3: undo and border edits leave their regions to the `cell lots` queue, where fewer regions
 would be served at other slots. A digest test runs each edit kind with the narrow and the
@@ -1330,6 +1660,11 @@ Road-contact rounding follows the same bound as generation; external sites/field
 positive-area intersection. Queries use existing cell blocks, parcel chunks and local planned
 road products; no new world spatial index is introduced.
 
+Superseded by `ZONE-09` and `ZONE-11` (2026-11-10): explicit placements, fields, roads and road
+edits now take painted cells, lots and authored parcels instead of being refused by them; only
+plotted land refuses
+([roads over zoned land](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+
 Fresh full release verification is **1,930 passed, 69 ignored** using
 `cargo test --offline --release --manifest-path rust/Cargo.toml --lib`. The four added regressions
 exercise a field and explicit industry site over paint without a building lot, stale road
@@ -1348,7 +1683,7 @@ spacing, road fill and free/unzoned parcels remain under the Parcels workflow.
 Godot sends pointer paths to the packed Rust bridge and renders the returned exact selection.
 Cell and brush paths retain their segments; marquee retains its start/end, and fill retains its
 clicked seed. Release commits one transaction. Escape, right-click, changing workflows/settings
-or releasing over UI cancels without an edit. A retained hover reuses its mesh. Authoring dependency
+or releasing over UI cancels without an edit. A retained hover reuses its mask. Authoring dependency
 changes reject/cancel stale gestures; materializing another visible chunk alone does not. Commit
 revalidates the retained cell identities and current reservations before writing any paint.
 
@@ -1356,7 +1691,7 @@ Generation completeness is metadata on the existing cell chunk index. Fill mater
 neighbors while following the same four-neighbor/profile/frame traversal as an already generated
 selection. Empty regions are cached too. Road eligibility, geometry, external sites and manual
 parcel changes invalidate intersecting cached chunks, including the direct conflict halo.
-Paint updates only its own overlay chunk; cached empty geometry stays usable. Cold and differently
+Paint updates only intersected mask chunks; cached empty geometry stays usable. Cold and differently
 ordered view queries have matching cell footprints around competing rotated roads.
 
 Demand lot preparation uses this same completeness cache. Each requested chunk generates its
@@ -1366,17 +1701,6 @@ indices. Lot derivation still runs for every dirty lot region, even when geometr
 current. Road/frontage invalidation retains its existing semantics; an occupancy release that
 keeps its lot queues only lot derivation, and one that frees the claims also invalidates their
 halo (`SIM-02-K`).
-
-The renderer polls visible chunk metadata in one nonblocking call and uploads at most two changed
-chunks per frame. Each full cell and authored parcel belongs to its centre's 512 m chunk. Derived
-lots are represented by their cells, so they do not cause a second whole-city parcel mesh upload.
-Parcel insert/remove/rezone/occupancy operations maintain versions beside the existing parcel
-chunk index. Idle polling is `O(visible chunks)`; payload work visits only changed chunks' cell
-blocks and parcel candidates. The 6% cell inset is visual only; selection and reservations retain
-the complete canonical square. Height changes refresh only chunks whose 512 m region (plus a
-96 m draping margin) changed samples; see
-[road-commit overlay latency](#road-commit-cell-overlay-latency--2026-09-30).
-Rendering memory acceptance remains outstanding.
 
 Completed gestures use the shared Rust undo stack with local paint and affected-lot journals.
 An unchanged immediate inverse restores the original lot identities and redevelopment generations.
@@ -1434,6 +1758,82 @@ Runner: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> -
 `355729e9766c5ad508fc6a34dd59675f654a58ca96cb6a7e6d1b00851bdffd2f`. No competing build/test process
 ran during the measurements. The debug extension used by the Godot checks has SHA-256
 `c90ec9d2cf754eca8bfcbdfea3a6e6e7e7cffd84cfa610491a07180d44cae543`.
+
+#### Ground mask rendering
+
+Cells, authored parcels and the painting preview tint the receiving ground
+(`scripts/shaders/zoning_ground.gdshaderinc`) instead of drawing overlay meshes. Base and graded
+terrain, site ground, lot paving and grass (at the blade root) call it behind the global
+`zoning_mask_enabled` switch; roads do not, so zones never paint over them. Trees, buildings and
+vehicles occlude the zones through the normal depth buffer. No-build guide lines stay ordinary
+depth-tested lines. Rendering only; no simulation state changes.
+
+Data per nonempty 512 m chunk: a 256 × 256 RGBA8 index mask (2 m texels, 256 KiB) plus RGBA32F
+rows. Three rows (48 bytes) describe each exact cell or parcel rectangle: chunk-local origin and
+axis; extents, style and handedness; linear profile colour. A texel holds zero (empty), an odd
+u32 `2 * row + 1` (one rectangle) or an even `2 * row` (an interned candidate list, needed where
+rotated or sub-texel boundaries share a texel). The shader tests the exact rectangles, so edges
+are analytic at any zoom and the mask resolution never shows. Row layer zero maps world chunks to
+their committed and preview layers. Styles: painted 30 % fill, occupied 15 % (zone stays readable
+under buildings), unpainted 1.5 %, preview 50 %; brighter edges from world-position derivatives, fading over 400–1800 m.
+
+Refresh: cell, parcel/occupancy revisions and the world-reset epoch; height changes do not touch
+the mask. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
+most two committed chunks rebuild per frame, and a rebuild costs the indexed local query plus
+`O(C log C + T + B)` (C rectangles, T = 65,536 texels, B their clipped texel-AABB area), built
+after the simulation lock is released. Paint-only changes upload the rows layer, not the mask:
+256 × row height × 16 bytes, 32 KiB at the fixtures' row height 8 and 512 KiB at the 30k city's
+128 (round `Z1`). The preview builds a mask for every chunk its selection touches, also after the
+lock is released, and the renderer uploads the visible ones in the same update.
+
+Cost per ground fragment: hidden, one coherent branch and no texture reads; shown, five fetches
+for a single-candidate texel (lookup, index, frame, extent, colour), more on candidate lists
+(at most four candidates in the fixtures). The switch is on only while zoning is shown and a
+layer is resident: before the first layer the sampler globals are unset, and Godot binds its
+4 × 4 × 1 white array texture there, which the chunk table would read as layer 1 (round `Z1`).
+The two global samplers count against the Compatibility renderer's 16 fragment samplers
+(`TERRAIN-16`): declared after the preprocessor, terrain 25 → 27, graded terrain (and its behind
+pass) 27 → 29, grass 17 → 19, site ground 8 → 10, lot paving (`site_surface`) 9 → 11, roads 9.
+
+Memory: 320 KiB per GPU layer for a 300-cell roadside chunk, 768 KiB for a dense 2,500-cell one
+(the row height is shared by the pool, so one dense chunk raises every layer). Residency follows
+the visible chunks, not the world: a 20 km world with 10 % of its 1,600 chunks zoned at roadside
+density would be 80 MiB only if every one were resident at once. In the saved 30k city (round
+`Z1`, overview pose) 64 visible chunks held 51 masks at row height 128: 48 MiB of layers. The
+renderer also keeps every resident payload (mask and rows) in GDScript to rebuild the arrays when
+the pool grows; each growth uploads every layer again (154 MiB uploaded while that view settled).
+
+Measured (unprofiled release, M2 Pro, Metal, 1440 × 960): mask build p50 0.42 ms (300 cells) and
+1.33 ms (2,500 cells); a 60-cell preview 1.42 ms; one-cell paint update p95 1.2–1.3 ms with
+0–128 remote roads, unchanged as the background grows. Frame p50 with
+`tests/zoning_ground_capture.gd` (its own blank world): hidden 10.85 → 10.84 ms, shown
+10.91 → 11.35 ms against the previous overlay. Metal reports no GPU timestamps, so GPU time is
+not measured.
+
+Measured again in round `Z1` (2026-11-09, `ZONE-08`; RX 7900 XTX, Godot 4.7.2 Forward+ on Vulkan
+with GPU timestamps, unprofiled release libraries, eight P-cores, gamescope's headless backend
+uncapped with `-r 1000 --immediate-flips`; control `dev` `d40d99c9`'s overlay, alternated C B B C):
+
+- Mask build (`zoning_mask_resolution_measurement`, 2 m texels, p50 of three runs): 300 cells
+  0.31 ms, 2,500 cells 1.18-1.19 ms, 900 rotated 0.94 ms, one cell 0.21-0.24 ms (the fixed
+  65,536-texel floor).
+- Saved 30k city, simulation paused, 1920 × 1080, 64 visible chunks. From the show request until
+  every visible chunk is current, the cell renderer's `_process` took at most 7.5-7.7 ms a frame at
+  the overview pose (900 m) and 2.3-2.5 ms at 300 m, against 35.7-36.2 and 19.3-19.4 ms for the
+  overlay meshes; the view settled in 267-301 frames against 424-848. Shown and settled, polling
+  costs 120-157 µs a frame (overlay 109-148 µs), hidden 7-12 µs on both.
+- GPU at the overview pose (three runs a side, 600 frames a phase): zoning hidden 10.41-10.70 ms
+  p50 against 10.31-10.52 (+1.0-2.0%, mean of frames +1.9%), shown 10.63-10.69 against
+  10.48-10.56 for the overlay; at 300 m level (9.34-9.39 against 9.31-9.37). Frame time is
+  level (the main thread bounds it).
+- Preview, Rust export plus renderer upload, p50: one cell 0.50-0.54 + 0.21 ms (overlay mesh
+  0.01 + 0.01 ms), a 20 m brush over 9 cells and 4 chunks 1.04-1.17 + 0.27-0.33 ms (0.11 + 0.01),
+  a 143-cell marquee 0.40-0.56 + 0.21-0.33 ms (2.62 + 0.07), a 74-cell fill 0.52-0.55 + 0.20-0.23
+  ms (1.37 + 0.04). A preview that grows the layer pool uploaded for 9.1-9.6 ms.
+- `zoning_overlay_benchmark.gd` passes every budget: one-cell edit update p95 0.44-0.53 ms with
+  0-128 remote roads, settle p95 1.6 ms, viewport GPU p95 0.32 ms.
+- The capture world (`zoning_ground_capture.gd`'s): frame p50 1.38-1.45 ms and GPU p50
+  0.99-1.01 ms hidden and shown, against 1.37-1.44 and 0.98-1.01 ms.
 
 ### Loaded reservations and boundary precision
 
@@ -2061,6 +2461,15 @@ and a terminal curb/sidewalk cap that overlaps paint while the straight corridor
 Rejected moves retain authoring epochs and undo depth. Native and controller bridge cases check
 both rejection and accepted movement.
 
+Superseded by `ZONE-10` (2026-11-10): a move over zoned land is no longer refused. Its drag step
+answers `pending_demolition` and moves nothing; the release commits the move and takes the land
+([roads over zoned land](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+Plotted land still refuses it.
+
+Removed with the move tool (`ROAD-111`, 2026-11-10): the game no longer moves road nodes, so this
+guard, its regressions (`cell_zoning::movement`) and the bridge cases are gone; the record below is
+history.
+
 Initial guard release verification: **1,982 library tests pass**, 76 timing fixtures ignored; all
 three headless Godot bridge suites and warning-free Rustdoc pass. Commands are the full library
 test, release build, the three named bridge scripts above, and `cargo doc --offline --no-deps
@@ -2124,6 +2533,8 @@ established performance improvement. Accepted-move finalization remains outside 
 measurement, and no new rendered-reference captures were taken for the movement changes.
 
 ### Staged node validation and boundary lookup cost
+
+History: node movement was removed from the game with the move tool (`ROAD-111`, 2026-11-10).
 
 Node movement now checks each prospective span's actual compiled carriageway, curb and sidewalk
 polygons before solving terminal or junction pieces. Any span overlap is sufficient to reject the
@@ -3440,3 +3851,126 @@ Builds: baseline is HEAD `398f7bab` with extension SHA-256
 only by rustfmt line moves: `1cc1b854accd2524b7f3d935288870438d2dc722c4856033bee6b4e6275672e0`,
 rechecked with one headless run (`final-headless-a`: lag 0 / 1 / 4 paused, 0 / 1 / 2 running).
 Machine: i9-12900K, Godot 4.7.2.
+
+### Turn pocket pieces — `ROAD-95` round R5d1
+
+**Status: 2026-11-05, branch `port-r5d1-zoning` off `port-r5-pockets` (not landed).** The user's report after round
+R5c: "the zoning is quite broken after I make pockets". On their dump (a 2+2 four-way with a
+pocket on every arm) the north arm's pocket edge had no cells on its west side, the quadrants by
+the crossing were stair-stepped, one held a hole and another a stray row. Two causes, both
+confirmed:
+
+- **Frames off the curb.** `straight_frame`, `junction_anchor` and the load's alignment check put
+  each curb at `width / 2 + SIDEWALK_WIDTH` about the raw centreline. A pocket edge's
+  carriageway lies `Edge::kerb_shift_m` off it ([roads.md](roads.md#turn-pockets-road-95), D17),
+  while its candidates and corridor already used that axis, so on the widened side the frame lay
+  1.75 m inside the true curb. Row 0 then met the corridor, the support rule dropped the whole
+  side, and the dropped side's rows 1-5 still beat the cross road's candidates (a cell loses to
+  every higher-priority raw candidate it meets), hence the steps and holes. The other side lay
+  1.75 m out.
+- **A new phase per piece.** `inherits_phase` kept a parent's frames only at an equal width, so a
+  pocket edge took a fresh phase from its own ends (along-phase 2.06 m against its base road's
+  6.48 m in the dump), and a removal, or a resize that lengthened the base piece, recomputed
+  from the merged road's ends.
+
+**Frontage lines.** A road's curb frames now belong to its frontage line
+(`zoning/cells/frontage_line.rs`): the road alone, or the pieces a pocket split off one straight
+base road, joined through their live lane transitions at the base road's width
+(`Edge::base_width_m`: the width without the pocket lanes, the median they narrowed restored).
+Every piece's record holds the line's source (its outer ends and base width) and frames, so:
+
+- an add, resize, role change, removal and undo leave the base road's frames bit for bit (the
+  pieces inherit them as a same-width subdivision of the line; the joined road is the line), and
+  a fresh refresh of a pocketed road gives the frames it had without its pocket;
+- each piece's curb reads the line's frame moved out by its kerb's move (`GridFrame::moved`,
+  exact micrometre phase arithmetic): a kerb pocket's lane on its side, nothing on the other.
+  The unwidened curb keeps the base road's frame, so its cells run straight through the
+  transition; the widened curb keeps the along-phase, its rows starting on its true curb;
+- junction anchors read a neighbour's base width and order a node's arms by each line's lowest
+  piece id (a pocket edit keeps its base road's id on one piece), so no cross road re-phases;
+- end columns: a column across a piece end is covered where the neighbouring piece's curb line
+  on that side continues it (between roads without pockets the old same-width centreline test,
+  bit for bit), and its coverage fractions use the centreline's ends: the pocket edge's shifted
+  f32 axis ends a few micrometres along from the shared transition, which left a fractional gap
+  and dropped the transition column of a turned road's unwidened curb;
+- pinned (painted) straight frames find a pocket edge's curb on each side, and curve sources on
+  a curved pocket edge validate against its axis.
+
+A chain that is not one straight line (a pocket on a bending road) leaves each piece its own
+line at its base width, as before but on its true curbs. Roads without a pocket piece at an end
+are their own line: every product is unchanged. Bounds: the line walk is `O(1)` (three pieces at
+most, no allocation) per frame lookup, alignment and anchor; the alignment refresh scope adds the
+other pieces of each road's line. No per-tick code changed.
+
+**Saves.** The record format is unchanged, but a pocket piece's record now names its line, so a
+save written before this round with a pocket fails its load ("invalid or duplicate road grid
+alignment"), as any stale record does; only unlanded `port-r5-pockets` saves can hold pockets.
+Save and load keep the pieces' records and give the live cells (test below).
+
+**The user's crossing** (FRESH 2026-11-05; the ignored test
+`road_pockets::cells::the_users_pocketed_crossing_dump` with `METRUM_R5D1_DUMP` set). Their dump's
+crossing records were written by the old rules, so a copy without them was loaded, its pockets
+removed and the city saved as a shared control; each binary then added the user's four pockets
+(west left, east right, north both, south left, 60 m) to that control. Cells within 85 m of the
+crossing along both roads are "near" (the pocket pieces and their tapers):
+
+| Quadrant | Reach | Control | Before (`f0d1e048`) | After | After: lost under road | After: lost cut off or under a moved cell | After: unexplained |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| NW | near | 48 | 20 | 25 | 13 | 35 | 0 |
+| NW | far | 102 | 102 | 102 | 0 | 0 | 0 |
+| NE | near | 48 | 16 | 25 | 13 | 35 | 0 |
+| NE | far | 144 | 138 | 138 | 1 | 5 | 0 |
+| SW | near | 48 | 18 | 33 | 6 | 20 | 0 |
+| SW | far | 36 | 30 | 30 | 1 | 5 | 0 |
+| SE | near | 50 | 32 | 50 | 0 | 0 | 0 |
+| SE | far | 99 | 99 | 99 | 0 | 0 | 0 |
+
+Totals: control 575, before 455 (10 losses no road, cut-off or other cell explains: holes in the
+SE quadrant, whose two curbs no pocket moves), after 502. After the round the SE quadrant is the
+control's bit for bit; NW and NE, where both bounding curbs widen, lose the cells behind the two
+tapers (about two columns of six each) and keep the rest on the moved lattices; SW, with one
+widened curb, one taper. Removing the four pockets gives the control's frames and cells back bit
+for bit (before the round neither). No hole in either state. A cell counts as cut off when one
+of the five cells before it in its lattice column lies under road (a cell needs an unbroken
+column to its road), and as under a moved cell when a cell of the pocketed state overlaps it.
+
+**Tests** (`nodes/sim/core/tests/road_pockets/cells.rs`, FRESH):
+`a_pocket_keeps_its_base_roads_grid_and_moves_only_its_widened_curb` (a right, a left and both
+pockets on the west arm of 1+1 and 2+2 crossings, square and turned 0.45 degrees: both pieces'
+records equal the arm's, every other road's unchanged; every cell fronting the pocket edge lies on
+its true curb and keeps the arm's along-phase, the unwidened curb's cells on the arm's frame; every
+cell beyond the unwidened curb unchanged; every loss under road, cut off or under a moved cell; no
+new hole; a resize keeps the frames, resizing back, the removal and each undo give the frames,
+cells and frontage links back bit for bit) and
+`the_users_pocketed_crossing_keeps_its_grid_through_a_save_and_removal` (the user's layout; a save
+and load accepts every piece's record and gives the live frames, cells and links; removing the
+four pockets gives the crossing back). On `f0d1e048`'s zoning code both fail at their first
+assertion: the pocket edge's frames are not the arm's (1+1, square, right pocket: along and
+lateral phases (5.0, 6.75) / (5.0, 3.25) m against the arm's (0, 5.0) / (5.0, 5.0); the user's
+layout: the west pocket edge's (9.5, 0.25) / (9.5, 9.75) against (0, 8.5) / (0, 1.5)).
+
+**Timing** (FRESH 2026-11-05 15:04, C B B C C B B C, five runs each, release lib tests, P-cores
+(`taskset -c 0,2,..,14`), 4 workers, `METRUM_DEBUG=0`, `.run.lock` and the exclusive timing lock;
+control: `f0d1e048`'s zoning code; medians of 20 with ranges, microseconds):
+
+| Row (background roads) | Control | Branch |
+| --- | ---: | ---: |
+| `benchmark_cell_zoning_locality` generation (0) | 60.175 (58.699-61.789) | 60.291 (57.733-61.709) |
+| generation (10,000) | 60.760 (58.712-61.751) | 60.898 (58.327-62.277) |
+| pick (10,000) | 0.592 (0.582-0.608) | 0.592 (0.585-0.624) |
+| brush (10,000) | 3.402 (3.365-3.504) | 3.404 (3.354-3.717) |
+| `benchmark_zoning_snap_locality` (0) | 0.044 (0.043-0.046) | 0.045 (0.044-0.076) |
+| snap (1,000) | 0.058 (0.057-0.059) | 0.056 (0.054-0.060) |
+| snap (10,000) | 0.061 (0.060-0.063) | 0.060 (0.060-0.063) |
+
+The generation row runs without prepared frames, through the frontage line and its anchors. A
+first session without the lone-road check in `frames_for` measured the snap at 0.054 / 0.062 /
+0.070 against 0.044 / 0.058 / 0.061 (the line walk per nearby road on the cursor path); the
+check restored it. The session above started at load 11.5 just after builds; a confirmation
+session at load 3.5 (15:26) agrees, every row's ranges overlapping.
+
+**Trade-off at square crossings.** Two perpendicular roads share one lattice in each quadrant.
+A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps its frame (it is
+not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
+usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
+before.

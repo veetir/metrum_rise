@@ -10,8 +10,13 @@ use super::{
     triangulate_constrained_rings_xz,
 };
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{
+    Edge, RegionGraph, RoadMedian, RoadParking, RoadPocket, SidewalkSides,
+};
 use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::roundabouts::{
+    RoundaboutApplied, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
+};
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -28,6 +33,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Road,
@@ -48,6 +54,9 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -120,11 +129,13 @@ pub(crate) fn mixed_profiles(sloped: bool) -> RegionGraph {
     };
     add((-80.0, -60.0), (80.0, -50.0), |mut edge| {
         edge.allowed_types = TransitFlags::CAR;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         edge
     });
     add((-80.0, -100.0), (40.0, -140.0), |mut edge| {
         edge.primary_type = TransitType::Foot;
         edge.allowed_types = TransitFlags::FOOT;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         edge.width = 2.5;
         edge
     });
@@ -148,7 +159,7 @@ pub(crate) fn divided(mut edge: Edge, fwd: u8, bkw: u8, median: Option<RoadMedia
     edge.fwd_lanes = fwd;
     edge.bkw_lanes = bkw;
     edge.median = median;
-    edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+    edge.width = Edge::cross_section_width_m(fwd, bkw, median, Default::default());
     edge
 }
 
@@ -185,6 +196,214 @@ pub(crate) fn straight_pair(
     graph
 }
 
+/// A junction at the origin whose west arm ends in a turn pocket (`ROAD-95`): edge 0 the base
+/// road from 150 m west to the lane transition 60 m west of the junction, edge 1 the pocket edge
+/// from there to the junction, both of `fwd` + `bkw` base lanes, edge 1 with `left` and `right`
+/// pocket lanes for its forward lanes (they approach the junction heading east); edge 2 the east
+/// arm and edge 3 the south arm (the right turn under right-hand traffic), 1+1 and 80 m; with
+/// `north`, edge 4 the north arm (the left turn). Every road has sidewalks. Nodes: 0 the
+/// junction, 1 the transition, then the far ends. Laid out as an edit does ([`finalize`]).
+pub(crate) fn pocket_junction(
+    fwd: u8,
+    bkw: u8,
+    left: bool,
+    right: bool,
+    north: bool,
+) -> RegionGraph {
+    pocket_junction_at(fwd, bkw, left, right, north, 60.0)
+}
+
+/// [`pocket_junction`] with its lane transition `pocket_m` metres west of the junction.
+pub(crate) fn pocket_junction_at(
+    fwd: u8,
+    bkw: u8,
+    left: bool,
+    right: bool,
+    north: bool,
+    pocket_m: f32,
+) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+    let transition = graph.add_node(point(-pocket_m, 0.0, false), NodeType::LaneTransition);
+    let mut far = |x: f32, z: f32| graph.add_node(point(x, z, false), NodeType::Junction);
+    let (west, east, south) = (far(-150.0, 0.0), far(80.0, 0.0), far(0.0, 80.0));
+    let north = north.then(|| far(0.0, -80.0));
+    let lanes = |mut edge: Edge, fwd: u8, bkw: u8| {
+        edge.fwd_lanes = fwd;
+        edge.bkw_lanes = bkw;
+        edge.width = Edge::cross_section_width_m(fwd, bkw, None, edge.parking);
+        edge
+    };
+    let add = |graph: &mut RegionGraph, a: u32, b: u32, fwd: u8, bkw: u8| {
+        let (pa, pb) = (graph.node(a).pos, graph.node(b).pos);
+        let points = polyline((pa.x, pa.z), (pb.x, pb.z), 20.0, false);
+        graph.add_edge(lanes(road_edge(a, b, points, 7.0), fwd, bkw))
+    };
+    add(&mut graph, west, transition, fwd, bkw);
+    let pocket = add(&mut graph, transition, center, fwd, bkw);
+    add(&mut graph, center, east, 1, 1);
+    add(&mut graph, south, center, 1, 1);
+    if let Some(north) = north {
+        add(&mut graph, center, north, 1, 1);
+    }
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left,
+            right,
+        }),
+    );
+    finalize(&mut graph);
+    graph
+}
+
+/// `graph` with kerbside `parking` (`PARK-05`) on `edges`, each widened for it, laid out again.
+pub(crate) fn with_parking(mut graph: RegionGraph, edges: &[(usize, RoadParking)]) -> RegionGraph {
+    for &(id, parking) in edges {
+        let edge = graph.edge_mut(id);
+        edge.width += parking.width_m();
+        edge.parking = parking;
+    }
+    finalize(&mut graph);
+    graph
+}
+
+/// A four-way junction of two divided 2+2 roads (`ROAD-95` round R5b1) whose west arm ends in a
+/// turn pocket: the [`pocket_junction`] layout (nodes 0 the junction, 1 the transition 60 m west,
+/// then the far ends; edges 0 base, 1 pocket edge, 2 east, 3 south, 4 north) with the west and
+/// east arms 2+2 on a `median_m` kerbed grass median and the cross street 1+1, every road with
+/// sidewalks; the pocket edge has `left` and `right` pocket lanes for its forward lanes. A left
+/// pocket narrows the median by a lane. Laid out as an edit does ([`finalize`]).
+pub(crate) fn divided_pocket_junction(median_m: f32, left: bool, right: bool) -> RegionGraph {
+    four_way_pocket_junction(2, grass(median_m), left, right)
+}
+
+/// [`divided_pocket_junction`]'s four-way with its west and east arms `lanes` + `lanes` on
+/// `median` (none: an undivided road, `ROAD-95` round R5c1, where a left pocket moves the kerb on
+/// the oncoming side); the cross street 1+1 without one.
+pub(crate) fn four_way_pocket_junction(
+    lanes: u8,
+    median: Option<RoadMedian>,
+    left: bool,
+    right: bool,
+) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+    let transition = graph.add_node(point(-60.0, 0.0, false), NodeType::LaneTransition);
+    let mut far = |x: f32, z: f32| graph.add_node(point(x, z, false), NodeType::Junction);
+    let (west, east, south, north) = (
+        far(-150.0, 0.0),
+        far(80.0, 0.0),
+        far(0.0, 80.0),
+        far(0.0, -80.0),
+    );
+    let add = |graph: &mut RegionGraph, a: u32, b: u32, lanes: u8, median: Option<RoadMedian>| {
+        let (pa, pb) = (graph.node(a).pos, graph.node(b).pos);
+        let points = polyline((pa.x, pa.z), (pb.x, pb.z), 20.0, false);
+        graph.add_edge(divided(road_edge(a, b, points, 7.0), lanes, lanes, median))
+    };
+    add(&mut graph, west, transition, lanes, median);
+    let pocket = add(&mut graph, transition, center, lanes, median);
+    add(&mut graph, center, east, lanes, median);
+    add(&mut graph, south, center, 1, None);
+    add(&mut graph, center, north, 1, None);
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left,
+            right,
+        }),
+    );
+    finalize(&mut graph);
+    graph
+}
+
+/// [`four_way_pocket_junction`]: an undivided 1+1 four-way whose west arm has a left pocket
+/// (`ROAD-95` round R5c1).
+pub(crate) fn four_way_1x1_left_pocket() -> RegionGraph {
+    four_way_pocket_junction(1, None, true, false)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 1+1 four-way whose west arm has a left and a right
+/// pocket.
+pub(crate) fn four_way_1x1_left_right_pocket() -> RegionGraph {
+    four_way_pocket_junction(1, None, true, true)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 2+2 four-way whose west arm has a left pocket.
+pub(crate) fn undivided_2x2_left_pocket() -> RegionGraph {
+    four_way_pocket_junction(2, None, true, false)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 2+2 four-way whose west arm has a left and a right
+/// pocket.
+pub(crate) fn undivided_2x2_left_right_pocket() -> RegionGraph {
+    four_way_pocket_junction(2, None, true, true)
+}
+
+/// [`divided_pocket_junction`] on a 5 m grass median with a left pocket.
+pub(crate) fn four_way_2x2_left_pocket() -> RegionGraph {
+    divided_pocket_junction(5.0, true, false)
+}
+
+/// [`divided_pocket_junction`] on a 5 m grass median with a right pocket: its laid-out
+/// transition carries the median through its node piece (`ROAD-95` round R5b1a).
+pub(crate) fn four_way_2x2_right_pocket() -> RegionGraph {
+    divided_pocket_junction(5.0, false, true)
+}
+
+/// [`divided_pocket_junction`] on a 5 m grass median with a left and a right pocket: the left
+/// pocket's narrowing starts at the laid-out transition's mouth (`ROAD-95` round R5b1a).
+pub(crate) fn four_way_2x2_left_right_pocket() -> RegionGraph {
+    divided_pocket_junction(5.0, true, true)
+}
+
+/// [`pocket_junction`]: a T whose 1+1 west arm has a right pocket.
+pub(crate) fn t_right_pocket() -> RegionGraph {
+    pocket_junction(1, 1, false, true, false)
+}
+
+/// [`t_right_pocket`] with the west arm's one sidewalk on `sides` (`ROAD-107`): the pocket moves
+/// its kerb out with the bands of that side, a shoulder or a sidewalk. Base road and pocket edge
+/// alike.
+pub(crate) fn t_right_pocket_one_sided(sides: SidewalkSides) -> RegionGraph {
+    let mut graph = t_right_pocket();
+    for edge in [0, 1] {
+        graph.edge_mut(edge).set_sidewalks(sides);
+    }
+    finalize(&mut graph);
+    graph
+}
+
+/// [`pocket_junction`]: a T whose one-way west arm (one lane towards the junction) has a right
+/// pocket.
+pub(crate) fn one_way_right_pocket() -> RegionGraph {
+    pocket_junction(1, 0, false, true, false)
+}
+
+/// [`pocket_junction`]: a T whose 2+1 west arm has a right pocket.
+pub(crate) fn two_plus_one_right_pocket() -> RegionGraph {
+    pocket_junction(2, 1, false, true, false)
+}
+
+/// A 1+1 road continued straight on by a 2+2 road at a plain degree-two node (D16: a lane-count
+/// change has no authored transition): [`straight_pair`] with sidewalks on both.
+pub(crate) fn straight_1x1_to_2x2() -> RegionGraph {
+    let lanes = |fwd: u8, bkw: u8| {
+        move |mut edge: Edge| {
+            edge.fwd_lanes = fwd;
+            edge.bkw_lanes = bkw;
+            edge.width = Edge::cross_section_width_m(fwd, bkw, None, edge.parking);
+            edge
+        }
+    };
+    let mut graph = straight_pair(lanes(1, 1), lanes(2, 2), false, false);
+    finalize(&mut graph);
+    graph
+}
+
 /// Footpath width in the footpath fixtures.
 pub(crate) const FOOTPATH_M: f32 = 2.5;
 
@@ -211,6 +430,7 @@ fn footpath_star(arms: &[(f32, bool)], sloped: bool) -> RegionGraph {
         if footpath {
             edge.primary_type = TransitType::Foot;
             edge.allowed_types = TransitFlags::FOOT;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             edge.width = FOOTPATH_M;
             edge.fwd_lanes = 0;
         } else {
@@ -267,6 +487,148 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
     .into_iter()
     .map(|(name, arms)| (format!("{name}/{sloped}"), footpath_star(&arms, sloped)))
     .collect()
+}
+
+/// A hub at the origin with one arm 120 m long per angle (degrees), `arm` lanes (leaving, entering)
+/// the hub. Even arms leave the hub from their edge's start, odd ones from its end. Every road has
+/// sidewalks.
+pub(crate) fn hub_graph(
+    angles_deg: &[f32],
+    (out, into): (u8, u8),
+    sloped: bool,
+) -> (RegionGraph, u32) {
+    let mut graph = RegionGraph::new();
+    let hub = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+    for (index, angle) in angles_deg.iter().enumerate() {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let far = graph.add_node(point(cos * 120.0, sin * 120.0, sloped), NodeType::Junction);
+        let (a, b, fwd, bkw) = if index % 2 == 0 {
+            (hub, far, out, into)
+        } else {
+            (far, hub, into, out)
+        };
+        let id = connect(&mut graph, a, b, 7.0, sloped);
+        *graph.edge_mut(id) = divided(graph.edge(id).clone(), fwd, bkw, None);
+    }
+    finalize(&mut graph);
+    (graph, hub)
+}
+
+/// A hub of [`hub_graph`]'s arms converted into a ring of `diameter_m` (`ROAD-62`), laid out as an
+/// edit does: the graph and the plan's ids, or the plan's refusal. The arms keep their ids, 0 up.
+pub(crate) fn converted_ring(
+    diameter_m: f32,
+    angles_deg: &[f32],
+    arm: (u8, u8),
+    sloped: bool,
+) -> Result<(RegionGraph, RoundaboutApplied), &'static str> {
+    let (mut graph, hub) = hub_graph(angles_deg, arm, sloped);
+    let site = RoundaboutSite::Junction(hub);
+    let layout = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })?;
+    let applied = layout.apply(&mut graph);
+    finalize(&mut graph);
+    Ok((graph, applied))
+}
+
+/// [`converted_ring`] with kerbside `parking` (`PARK-05`) on every arm, as a street drawn with it
+/// before the junction became a ring.
+pub(crate) fn converted_ring_parked(
+    diameter_m: f32,
+    angles_deg: &[f32],
+    arm: (u8, u8),
+    parking: RoadParking,
+) -> Result<(RegionGraph, RoundaboutApplied), &'static str> {
+    let (graph, hub) = hub_graph(angles_deg, arm, false);
+    let arms: Vec<_> = (0..angles_deg.len()).map(|id| (id, parking)).collect();
+    let mut graph = with_parking(graph, &arms);
+    let site = RoundaboutSite::Junction(hub);
+    let layout = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })?;
+    let applied = layout.apply(&mut graph);
+    finalize(&mut graph);
+    Ok((graph, applied))
+}
+
+/// A bare ring of `lanes` lanes and `diameter_m` around the origin, laid out as an edit does.
+pub(crate) fn bare_ring(
+    diameter_m: f32,
+    lanes: u8,
+    sloped: bool,
+) -> (RegionGraph, RoundaboutApplied) {
+    let mut graph = RegionGraph::new();
+    let site = RoundaboutSite::Ground {
+        centre: point(0.0, 0.0, sloped),
+        lanes,
+    };
+    let applied = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })
+        .expect("empty ground")
+        .apply(&mut graph);
+    finalize(&mut graph);
+    (graph, applied)
+}
+
+fn flat_distance_m(a: Vector3, b: Vector3) -> f32 {
+    (a.x - b.x).hypot(a.z - b.z)
+}
+
+/// Joins an arm 60 m long of `arm` lanes (leaving, entering the ring) to `graph`'s ring at
+/// `angle_deg`, as a stroke ending on it does: at a ring node there, else in the middle
+/// of the chord nearest the angle, on a split. Returns the ring node and the arm; the caller
+/// lays the graph out.
+pub(crate) fn join_ring_arm(
+    graph: &mut RegionGraph,
+    angle_deg: f32,
+    (out, into): (u8, u8),
+    sloped: bool,
+) -> (u32, usize) {
+    let (sin, cos) = angle_deg.to_radians().sin_cos();
+    let radial = Vector3::new(cos, 0.0, sin);
+    let on_ring = |edge: &Edge| !edge.deleted && edge.roundabout.is_some();
+    let ring = graph
+        .edges()
+        .iter()
+        .find_map(|edge| edge.roundabout.filter(|_| on_ring(edge)));
+    let ring = ring.expect("a ring");
+    let centre = Vector3::new(ring.centre.x, 0.0, ring.centre.y);
+    let target = centre + radial * ring.radius_m;
+    let mut best = (f32::INFINITY, 0, 0);
+    for (id, edge) in graph
+        .edges()
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| on_ring(edge))
+    {
+        for (segment, pair) in edge.geometry.windows(2).enumerate() {
+            let middle = pair[0].lerp(pair[1], 0.5);
+            let distance_m = flat_distance_m(middle, target);
+            if distance_m < best.0 {
+                best = (distance_m, id, segment);
+            }
+        }
+    }
+    let (_, id, segment) = best;
+    let edge = graph.edge(id);
+    let (first, last) = (edge.start_node, edge.end_node);
+    let ends = [first, last].map(|node| graph.node(node).pos);
+    let middle = edge.geometry[segment].lerp(edge.geometry[segment + 1], 0.5);
+    let node = if let Some(at) = ends
+        .iter()
+        .position(|&end| flat_distance_m(end, target) < 2.0)
+    {
+        [first, last][at]
+    } else {
+        let node = graph.add_node(middle, NodeType::Junction);
+        crate::simulation::network::topology::split_edge_graph(graph, id, segment, node, None)
+            .expect("a join away from the ends");
+        node
+    };
+    let at = graph.node(node).pos;
+    let far = at + radial * 60.0;
+    let far_y = if sloped { SLOPE * far.x } else { at.y };
+    let far = Vector3::new(far.x, far_y, far.z);
+    let far_node = graph.add_node(far, NodeType::Junction);
+    let points = vec![at, at.lerp(far, 1.0 / 3.0), at.lerp(far, 2.0 / 3.0), far];
+    let edge = divided(road_edge(node, far_node, points, 7.0), out, into, None);
+    (node, graph.add_edge(edge))
 }
 
 /// FNV-1a hashes of one network's roadbed products, by component: graph clips and physical

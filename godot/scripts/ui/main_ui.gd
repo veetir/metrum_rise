@@ -15,6 +15,7 @@ const CityPanel = preload("res://scripts/ui/city_panel.gd")
 const ZoningPanel = preload("res://scripts/ui/zoning_panel.gd")
 const AssetPanel = preload("res://scripts/ui/asset_panel.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
+const JunctionWindow = preload("res://scripts/ui/junction_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -45,7 +46,10 @@ var terrain_sub_menu: HBoxContainer
 # Road items
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
 var road_type_menu: RoadTypeMenu
-var _cul_de_sac_btn: Button
+var roundabout_btn: Button
+var roundabout_row: HBoxContainer
+var roundabout_slider: HSlider
+var roundabout_size_label: Label
 ## The road builder window (`ROAD-101`).
 var road_builder: RoadBuilderWindow
 
@@ -87,6 +91,7 @@ var _industry_asset_buttons: Dictionary = {}
 var select_main_btn: Button
 var bulldoze_btn: Button
 var road_properties_panel: Node
+var junction_window: Node
 var clock_label: Label
 var city_status_panel: Control
 var demand_meter: Control
@@ -190,6 +195,23 @@ func _build_ui():
 	tunnel_check.toggled.connect(func(enabled: bool): road_tool.set_tunnel(enabled))
 	if road_tool:
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
+
+	# The roundabout tool's size (`ROAD-62`, D12): only while that tool is on.
+	roundabout_row = HBoxContainer.new()
+	roundabout_row.visible = false
+	var diameter_label := Label.new()
+	diameter_label.text = "Diameter"
+	roundabout_row.add_child(diameter_label)
+	roundabout_slider = HSlider.new()
+	roundabout_slider.step = 1.0
+	roundabout_slider.custom_minimum_size.x = 140.0
+	roundabout_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	roundabout_slider.focus_mode = Control.FOCUS_NONE
+	roundabout_slider.tooltip_text = "Between the outside kerbs. [ and ] step by 2 m."
+	roundabout_row.add_child(roundabout_slider)
+	roundabout_size_label = Label.new()
+	roundabout_row.add_child(roundabout_size_label)
+	road_options_menu.add_child(roundabout_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)
@@ -221,13 +243,13 @@ func _build_ui():
 		road_tool.road_type_changed.connect(road_type_menu.mark)
 	road_type_menu.setup(simulation_node)
 	road_sub_menu.add_child(road_type_menu)
-	road_sub_menu.add_child(VSeparator.new())
 
-	_cul_de_sac_btn = HudIcons.icon_button("cul_de_sac", "Cul-De-Sac", "", HudIcons.TILE_SIZE)
-	HudIcons.set_shortcut(_cul_de_sac_btn, "C")
-	_cul_de_sac_btn.toggle_mode = true
-	road_sub_menu.add_child(_cul_de_sac_btn)
-	_cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
+	roundabout_btn = HudIcons.icon_button("roundabout", "Roundabout", "A ring on empty ground, or in place of a junction.", HudIcons.TILE_SIZE)
+	HudIcons.set_shortcut(roundabout_btn, "O")
+	roundabout_btn.toggle_mode = true
+	road_sub_menu.add_child(roundabout_btn)
+	roundabout_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ROUNDABOUT))
+	call_deferred("_connect_roundabout_tool")
 	# The select tool edits built roads (type, lanes, junctions), so it lives with the roads.
 	select_main_btn = HudIcons.icon_button("edit_road", "Edit roads", "", HudIcons.TILE_SIZE)
 	HudIcons.set_shortcut(select_main_btn, "V")
@@ -361,6 +383,9 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_properties_panel)
 	if road_properties_panel.has_method("setup"):
 		road_properties_panel.setup(simulation_node, input_manager.select_tool)
+	junction_window = JunctionWindow.new()
+	junction_window.setup(simulation_node, input_manager.select_tool)
+	add_child(junction_window)
 	road_builder = RoadBuilderWindow.new()
 	road_builder.setup(simulation_node)
 	add_child(road_builder)
@@ -497,8 +522,8 @@ func _connect_signals():
 # Both menu visibility and input transitions are event-driven, including keyboard/Esc paths.
 func _refresh_hud_marks(_tool: int = 0) -> void:
 	var tool: int = input_manager.current_tool
-	HudIcons.mark(_cul_de_sac_btn, tool == InputManager.Tool.CUL_DE_SAC)
-	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC, InputManager.Tool.SELECT])
+	HudIcons.mark(roundabout_btn, tool == InputManager.Tool.ROUNDABOUT)
+	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in _ROAD_PANEL_TOOLS)
 	HudIcons.mark(zoning_main_btn, zoning_combined_hbox.visible or tool == InputManager.Tool.ZONING)
 	HudIcons.mark(services_main_btn, services_combined_hbox.visible or tool == InputManager.Tool.SERVICES)
 	HudIcons.mark(industry_main_btn, industry_combined_hbox.visible or tool == InputManager.Tool.INDUSTRY)
@@ -506,10 +531,10 @@ func _refresh_hud_marks(_tool: int = 0) -> void:
 	HudIcons.mark(select_main_btn, tool == InputManager.Tool.SELECT)
 	HudIcons.mark(bulldoze_btn, tool == InputManager.Tool.BULLDOZE)
 
-const _ROAD_PANEL_TOOLS := [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.CUL_DE_SAC, InputManager.Tool.SELECT]
+const _ROAD_PANEL_TOOLS := [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.ROUNDABOUT, InputManager.Tool.SELECT]
 const _TERRAIN_PANEL_TOOLS := [InputManager.Tool.SCULPT, InputManager.Tool.VEGETATION]
 
-# Keyboard tools (R, X, C, V, Y) open their dock panel like a click on the category does,
+# Keyboard tools (R, X, O, V, Y) open their dock panel like a click on the category does,
 # and switching the tool off closes the panel it belongs to.
 var _last_tool := InputManager.Tool.NONE
 
@@ -616,6 +641,27 @@ func _on_industry_main_pressed():
 	else:
 		input_manager._cancel_active_tool()
 
+# The input manager adds the roundabout tool deferred, as it does the bulldoze tool.
+func _connect_roundabout_tool() -> void:
+	var tool: Node = input_manager.roundabout_tool
+	tool.active_changed.connect(_on_roundabout_active)
+	tool.size_changed.connect(_on_roundabout_size)
+	roundabout_slider.value_changed.connect(func(value: float): tool.set_diameter(value))
+
+# The tile and the Diameter row follow the tool; `_follow_tool` opens the Roads panel when O
+# switches it on with the panel closed.
+func _on_roundabout_active(enabled: bool) -> void:
+	HudIcons.mark(roundabout_btn, enabled)
+	roundabout_row.visible = enabled
+
+func _on_roundabout_size(diameter_m: float, min_m: float, max_m: float, lanes: int) -> void:
+	roundabout_slider.set_block_signals(true)
+	roundabout_slider.min_value = min_m
+	roundabout_slider.max_value = max_m
+	roundabout_slider.value = diameter_m
+	roundabout_slider.set_block_signals(false)
+	roundabout_size_label.text = "%.0f m, %d %s" % [diameter_m, lanes, "lane" if lanes == 1 else "lanes"]
+
 # A road type picked in the Roads menu: the Walkway tool for a walkway, else the Road tool
 # (whose activation picks the last type), then the picked type.
 func _select_road_type(id: String, walkway: bool) -> void:
@@ -685,6 +731,17 @@ func show_road_properties_multi(edge_indices: Array, screen_pos: Vector2 = Vecto
 func hide_road_properties():
 	if road_properties_panel and road_properties_panel.has_method("close_window"):
 		road_properties_panel.close_window()
+
+## Shows the Junction window (turn pockets, `ROAD-95`) for junction `node_id`, clicked at
+## `screen_pos`.
+func show_junction_window(node_id: int, screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if junction_window:
+		junction_window.show_for_node(node_id, screen_pos)
+
+## Hides the Junction window.
+func hide_junction_window() -> void:
+	if junction_window:
+		junction_window.close_window()
 
 func _build_zoning_options_popup() -> void:
 	zoning_options_popup = PopupPanel.new()
@@ -1155,7 +1212,7 @@ func handle_number_key(digit: int) -> bool:
 	return true
 
 # [tile, action] per digit from 1: built-in types, new custom road (its digit closes the open
-# builder again), the custom roads tile (which cycles the player's types), cul-de-sac, edit roads.
+# builder again), the custom roads tile (which cycles the player's types), roundabout, edit roads.
 func _road_number_slots() -> Array:
 	var slots: Array = []
 	for tile in road_type_menu.number_tiles():
@@ -1165,7 +1222,7 @@ func _road_number_slots() -> Array:
 		elif tile == road_type_menu.builder_tile():
 			action = _toggle_road_builder
 		slots.append([tile, action])
-	slots.append([_cul_de_sac_btn, HudIcons.activate.bind(_cul_de_sac_btn)])
+	slots.append([roundabout_btn, HudIcons.activate.bind(roundabout_btn)])
 	slots.append([select_main_btn, HudIcons.activate.bind(select_main_btn)])
 	return slots
 

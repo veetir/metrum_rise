@@ -129,6 +129,7 @@ fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -288,12 +289,6 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         core.set_edge_class_internal(edge, 0);
         core.build_snapshot();
     });
-    e.run("node move", || {
-        let node = core.region_graph.get_edge(0).unwrap().end_node;
-        let at = core.region_graph.node(node).pos;
-        core.move_network_node_internal(node as i32, at + Vector3::new(4.0, 0.0, 4.0));
-        core.build_snapshot();
-    });
     e.run("terrain tools", || {
         core.start_terrain_stroke_internal();
         core.sculpt_terrain_internal(Vector2::new(700.0, 700.0), 30.0, 2.0);
@@ -364,7 +359,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
     let sim_thread = {
         let (core, snapshot) = (Arc::clone(&core), Arc::clone(&snapshot));
         std::thread::spawn(move || {
-            run_sim_thread(core, snapshot, query, command_rx);
+            run_sim_thread(core, Default::default(), snapshot, query, command_rx);
         })
     };
     // A job that panics aborts this process, which fails the parent test.
@@ -401,6 +396,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             enqueued_at: Instant::now(),
             completion: road_done,

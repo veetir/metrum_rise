@@ -14,18 +14,21 @@
 ## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
 ## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
 ## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
-## label. The next stroke's lanes, median and attributes come from a road type (`ROAD-101`):
-## `set_road_type` reads the type's cross-section from Rust's `get_road_types` and sets the
-## lanes (per-call arguments of every preview and commit), the median through
-## `set_road_tool_median`, as before, and the type's speed, sidewalks, zoning and street lights
-## through
-## `set_road_tool_attributes` (a walkway, which has no speed, sends the built-ins' defaults);
-## each preview re-asserts the median and attributes, and the HUD's cost is the preview's
-## `build_cost`, Rust's cost of the type over the stroke. R keeps the last road type picked (2-Lane Road at first),
+## label. The next stroke's lanes, median, kerbside parking and attributes come from a road type
+## (`ROAD-101`, `PARK-05`): `set_road_type` reads the type's cross-section from Rust's
+## `get_road_types` and sets the lanes (per-call arguments of every preview and commit), the
+## median through `set_road_tool_median`, the parking through `set_road_tool_parking`, and the
+## type's speed, sidewalks, zoning and street lights through `set_road_tool_attributes` (a
+## walkway, which has no speed, sends the built-ins' defaults); each preview re-asserts the
+## median, parking and attributes, and the HUD's cost is the preview's `build_cost`, Rust's cost
+## of the type over the stroke. R keeps the last road type picked (2-Lane Road at first),
 ## X picks the Walkway. `set_lanes` and `set_median` stay the two low-level setters
 ## (benchmarks, probes and the debug replay write them). Rust stays the guard: the stroke's
 ## check refuses a median its lanes cannot carry (a one-way road or a walkway).
-## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(),
+## A stroke over zoned land takes it (`ZONE-09`): the preview outlines the lots Rust says the
+## stroke removes (`demolish_lots`) with the bulldoze tool's highlight and the HUD names the
+## buildings it demolishes (`demolish_count`); plotted land refuses with its reason.
+## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), set_road_tool_parking(),
 ## set_road_tool_attributes(), get_road_types(),
 ## preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
@@ -41,6 +44,7 @@ extends "res://scripts/tools/network_tool.gd"
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -65,11 +69,14 @@ signal tunnel_toggled(enabled: bool)
 # 1 painted, 2 kerbed grass, 3 kerbed paving, and its width with kerbs, in metres.
 var median_style: int = 0
 var median_width: float = 0.0
+# The next stroke's kerbside parking (`PARK-05`), mirrored in Rust: bit 0 the left kerb, bit 1
+# the right, looking along the stroke.
+var parking: int = 0
 # The next stroke's road-type attributes (`ROAD-101`), mirrored in Rust like the median: the
-# speed limit in km/h, sidewalks on both sides (else a shoulder each side), zoning and street
-# lights.
+# speed limit in km/h, the sides with a sidewalk in the stroke's direction (Rust's code, 0 none,
+# 1 left, 2 right, 3 both; a shoulder on a side without), zoning and street lights.
 var speed_kmh: int = 50
-var sidewalks: bool = true
+var sidewalks: int = RoadTypeMenu.SIDEWALKS_BOTH
 var zoning: bool = true
 var street_lights: bool = true
 ## The built-in type R starts with and falls back to when the picked type is gone.
@@ -112,6 +119,7 @@ var _preview_snap_to_roads: bool = true
 var _preview_tunnel: bool = false
 var _preview_median_style: int = 0
 var _preview_median_width: float = 0.0
+var _preview_parking: int = 0
 var _preview_attributes := []
 # Counts preview_road calls; it names displayed results for the metrics trace only.
 var _preview_sequence: int = 0
@@ -127,6 +135,8 @@ var _commit_validation: Dictionary = {}
 var _commit_border_check: Array = []
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
+# The outlines of the lots the previewed stroke removes (`ZONE-09`), made on first use.
+var _demolish_mesh: MeshInstance3D = null
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
 # new pose stages the next share until none is left.
 var _graded_pending := 0
@@ -271,10 +281,20 @@ func set_median(style: int, width: float) -> String:
 	_queue_preview_update()
 	return ""
 
-## Sets the next stroke's speed limit, sidewalks, zoning and street lights through Rust and
-## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid, keeping the tool's
-## attributes).
-func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool, with_lights: bool) -> String:
+## Sets the next stroke's kerbside parking through Rust (`PARK-05`) and returns its refusal key
+## ("" when set). A refused code leaves the tool's parking as it was.
+func set_parking(code: int) -> String:
+	var reason: String = simulation_node.set_road_tool_parking(code)
+	if not reason.is_empty():
+		return reason
+	parking = code
+	_queue_preview_update()
+	return ""
+
+## Sets the next stroke's speed limit, sidewalk sides, zoning and street lights through Rust and
+## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid or
+## `sidewalks_out_of_range`, keeping the tool's attributes).
+func set_attributes(speed: int, with_sidewalks: int, with_zoning: bool, with_lights: bool) -> String:
 	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning, with_lights)
 	if not reason.is_empty():
 		return reason
@@ -285,11 +305,11 @@ func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool, with_li
 	_queue_preview_update()
 	return ""
 
-## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, speed, sidewalks,
-## zoning and street lights as Rust's `get_road_types` lists them. Returns "" when picked, else the refusal
-## key: the type's `invalid_reason` when it is unusable, `road_type_unknown` when no type has
-## `id`; a refused pick leaves the tool as it was (a usable type's median and speed always
-## pass). `O(types x parts)` on a UI action.
+## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, parking, speed,
+## sidewalks, zoning and street lights as Rust's `get_road_types` lists them. Returns "" when
+## picked, else the refusal key: the type's `invalid_reason` when it is unusable,
+## `road_type_unknown` when no type has `id`; a refused pick leaves the tool as it was (a usable
+## type's median, parking and speed always pass). `O(types x parts)` on a UI action.
 func set_road_type(id: String) -> String:
 	var library: Dictionary = simulation_node.get_road_types()
 	var type := _road_type(id, library)
@@ -302,6 +322,8 @@ func set_road_type(id: String) -> String:
 	if not reason.is_empty():
 		return reason
 	reason = set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
+	if reason.is_empty():
+		reason = set_parking(int(type.get("parking", 0)))
 	if not reason.is_empty():
 		return reason
 	set_lanes(int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)))
@@ -425,6 +447,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	# commit and refusal report use the intent of the preview it submits.
 	simulation_node.set_road_tool_tunnel(tunnel_enabled)
 	simulation_node.set_road_tool_median(median_style, median_width)
+	simulation_node.set_road_tool_parking(parking)
 	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning, street_lights)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
@@ -438,6 +461,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_tunnel = tunnel_enabled
 	_preview_median_style = median_style
 	_preview_median_width = median_width
+	_preview_parking = parking
 	_preview_attributes = [speed_kmh, sidewalks, zoning, street_lights]
 	return _preview
 
@@ -451,6 +475,7 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and tunnel_enabled == _preview_tunnel
 		and median_style == _preview_median_style
 		and median_width == _preview_median_width
+		and parking == _preview_parking
 		and _preview_attributes == [speed_kmh, sidewalks, zoning, street_lights]
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
@@ -472,12 +497,29 @@ func _show_preview(points: PackedVector3Array) -> void:
 			shown = _preview_display.show(self, _preview, sequence)
 		if not shown:
 			_preview_display.clear()
+		_show_demolition(_preview)
 		_preview_drawn_sequence = sequence
 		if preview_metrics != null:
 			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
 			_preview_metric_row["graded_install_ms"] = graded_ms
 			preview_metrics.installed(sequence)
 	_update_preview_measurement_label(_preview.get("prepared_points", points), _preview)
+
+# Outlines the lots a valid stroke removes (`ZONE-09`), four corners each, as the bulldoze tool
+# outlines what it removes; anything else clears them.
+func _show_demolition(preview: Dictionary) -> void:
+	var lots: PackedVector3Array = preview.get("demolish_lots", PackedVector3Array())
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4) if bool(preview.get("is_valid", false)) else null
+	if mesh == null:
+		if _demolish_mesh != null:
+			_demolish_mesh.mesh = null
+			_demolish_mesh.visible = false
+		return
+	if _demolish_mesh == null:
+		_demolish_mesh = HighlightMesh.instance()
+		add_child(_demolish_mesh)
+	_demolish_mesh.mesh = mesh
+	_demolish_mesh.visible = true
 
 # The terrain renderer's graded tiles, or null without one (tests without terrain).
 func _graded_renderer():
@@ -505,6 +547,7 @@ func _release_graded_preview() -> void:
 
 func _clear_preview_visual() -> void:
 	_preview_display.clear()
+	_show_demolition({})
 	_release_graded_preview()
 	_preview_drawn_sequence = 0
 	if blueprint_mesh:
@@ -682,6 +725,9 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 			build_cost,
 			snap_str,
 		]
+		var demolish := int(preview.get("demolish_count", 0))
+		if demolish > 0:
+			_info_label.text += "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
 		# A grade above the design tier is shown, not refused (ROAD-68 question 37).
 		if String(preview.get("warning_reason", "")) == "road_steep":
 			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))

@@ -10,7 +10,7 @@ use super::road_crosswalks::{
     arm_towards, fully_emitted_chunks, products, published_chunks, t_junction_with_side,
 };
 use super::*;
-use crate::simulation::network::graph::RoadMedian;
+use crate::simulation::network::graph::{RoadMedian, SidewalkSides};
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::road_types::RoadAttributes;
 
@@ -84,12 +84,20 @@ fn edit(
 ) -> String {
     let before = (products(core), core.undo_stack.len());
     let preview = core
-        .preview_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes)
+        .preview_edge_cross_section_internal(
+            edge as i32,
+            fwd,
+            bkw,
+            median,
+            Default::default(),
+            attributes,
+        )
         .err()
         .map(|refusal| refusal.reason)
         .unwrap_or_default();
     assert_eq!(products(core), before.0, "a preview changes nothing");
-    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes);
+    let applied =
+        core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, Default::default(), attributes);
     assert_eq!(
         applied,
         preview.is_empty(),
@@ -229,10 +237,11 @@ fn lane_edits_are_refused_with_a_reason() {
     assert_eq!(edit_lanes(&mut core, west, 1, 0), "");
 }
 
-// `ROAD-80` (3): a widening reaches a parcel fronting the road, or painted cells beside it, or
-// water beside it, or turns too tightly for its new width: refused, nothing changed.
+// `ROAD-80` (3), `ZONE-10`: a widening takes a parcel fronting the road and the paint of cells
+// beside it that its pieces newly cover, as a stroke does; water beside it, or a curve too tight
+// for its new width, refuses it with nothing changed.
 #[test]
-fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
+fn a_widening_takes_parcels_and_cells_and_keeps_clear_of_water_and_tight_curves() {
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
     // A parcel east of the side road.
@@ -242,10 +251,13 @@ fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Residential)
         .unwrap();
-    core.zoning
+    let parcel = core
+        .zoning
         .place_or_rezone_default_parcel_at(12.0, 60.0, residential, &core.region_graph)
-        .expect("a parcel fronting the side road");
-    assert_eq!(edit_lanes(&mut core, side, 3, 3), "parcel_overlap");
+        .expect("a parcel fronting the side road")
+        .raw();
+    assert_eq!(edit_lanes(&mut core, side, 3, 3), "");
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_none(), "the widening takes the parcel");
 
     // Painted cells east of the side road.
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
@@ -263,7 +275,12 @@ fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
         .select(CellSelectionShape::Cell, &[DVec2::new(9.0, 60.0)]);
     assert!(!selection.cells.is_empty());
     core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
-    assert_eq!(edit_lanes(&mut core, side, 3, 3), "zoning_cell_overlap");
+    assert_eq!(edit_lanes(&mut core, side, 3, 3), "");
+    let erased = core.undo_stack.back().and_then(|record| record.cells.as_ref());
+    assert!(
+        erased.is_some_and(|cells| cells.erased() == [(selection.cells[0], 1)]),
+        "the widening erases the covered cell's paint into its undo record"
+    );
 
     // A pond 7-12 m east of the side road's centreline, 40-60 m up it.
     let mut core = test_core();
@@ -349,7 +366,11 @@ fn a_lane_edit_survives_a_save_file() {
 // A one-cell house on a default residential parcel fronting `edge` near `(x, z)`, with the zone
 // index, sites and entrance cache current, as the `editing` tests build one. Returns the
 // building's index and its parcel's id.
-fn house_fronting(core: &mut SimCore, edge: usize, (x, z): (f32, f32)) -> (usize, u64) {
+pub(super) fn house_fronting(
+    core: &mut SimCore,
+    edge: usize,
+    (x, z): (f32, f32),
+) -> (usize, u64) {
     use crate::assets::AssetManifest;
     if core.allocator.registry.get("test:house").is_none() {
         let manifest: AssetManifest = serde_json::from_value(serde_json::json!({
@@ -419,18 +440,14 @@ fn lanes_of(core: &SimCore, edge: usize, kind: LaneType) -> Vec<usize> {
 
 // `ROAD-101` (D3): a road type without sidewalks at 80 km/h given in place. The sidewalk lanes go
 // with `FOOT`; the walkers on them stay where they stand (laneless on their road, `TRAFFIC-19`'s
-// case, or on a sidewalk of their own kind nearby), none moved or lost; the house fronting the
-// road gets a car-only entrance; the speed and its routing cost are written; undo restores the
-// lanes, `FOOT`, the speed, the cost and the walking entrance.
+// case, or on a sidewalk of their own kind nearby), none moved or lost; the speed and its routing
+// cost are written; undo restores the lanes, `FOOT`, the speed and the cost.
 #[test]
 fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
     use crate::nodes::sim::render::lane_pose::sample_lane_pose;
     use crate::simulation::economy::agents::MODE_WALK;
     use crate::simulation::network::types::TransitFlags;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
-    let (house, _) = house_fronting(&mut core, side, (12.0, 60.0));
-    let entrance = &core.allocator.entrances[house];
-    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
     let sidewalks = lanes_of(&core, side, LaneType::Foot);
     let sidewalk_lanes = sidewalks.len();
     assert!(sidewalk_lanes >= 2, "a lane each way on each sidewalk");
@@ -455,7 +472,7 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
         .collect();
     let before = core.region_graph.edge(side).clone();
 
-    let rural = RoadAttributes::new(80, false, true);
+    let rural = RoadAttributes::new(80, SidewalkSides::NONE, true);
     assert_eq!(edit(&mut core, side, (1, 1, None), rural), "");
     let road = core.region_graph.edge(side);
     assert_eq!(road.allowed_types & TransitFlags::FOOT, 0);
@@ -481,10 +498,6 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
             "walker {walker} on lane {lane}"
         );
     }
-    let entrance = &core.allocator.entrances[house];
-    assert_eq!((entrance.foot_lane_fwd, entrance.foot_lane_bkw), (usize::MAX, usize::MAX));
-    assert_eq!(entrance.curb_pos, entrance.door_pos, "a car-only entrance");
-    assert_ne!(entrance.car_lane_fwd.min(entrance.car_lane_bkw), usize::MAX);
 
     assert!(core.undo_action_internal());
     let road = core.region_graph.edge(side);
@@ -492,8 +505,218 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
     assert_eq!(road.speed_limit.to_bits(), before.speed_limit.to_bits());
     assert_eq!(road.base_cost.to_bits(), before.base_cost.to_bits());
     assert_eq!(lanes_of(&core, side, LaneType::Foot).len(), sidewalk_lanes);
-    let entrance = &core.allocator.entrances[house];
-    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
+}
+
+// `ROAD-107`: one side's sidewalk removed in place and added back. The removed side's foot lanes
+// go and its walkers reattach across the road to the kept sidewalk's lanes, none lost; the kept
+// side's lanes and walkers stay as they are, and so does the house there. A lane edit that
+// passes the road's own attributes keeps the one side; undo restores the mask.
+#[test]
+fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::economy::agents::MODE_WALK;
+    use crate::simulation::network::types::TransitFlags;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (east, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    // The kept side is the one the east house's door is on (the side road runs along +z, so
+    // which lateral that is comes from the building's own side: 1 left, -1 right).
+    let east_side = core.allocator.buildings[east].side;
+    let (kept, kept_lane, removed_lane) = if east_side > 0 {
+        (SidewalkSides::LEFT, 100, -100)
+    } else {
+        (SidewalkSides::RIGHT, -100, 100)
+    };
+    let sidewalk_lanes = |core: &SimCore, idx: i8| -> Vec<usize> {
+        let lanes = &core.transit_network.lane_system;
+        lanes_of(core, side, LaneType::Foot)
+            .into_iter()
+            .filter(|&id| lanes.lanes[id].lane_idx == idx)
+            .collect()
+    };
+    let walks = |core: &SimCore, house: usize| {
+        let entrance = &core.allocator.entrances[house];
+        entrance.foot_lane_fwd.min(entrance.foot_lane_bkw) != usize::MAX
+    };
+    assert!(walks(&core, east));
+    let (start, end) = {
+        let road = core.region_graph.edge(side);
+        (road.start_node, road.end_node)
+    };
+    let mut walkers = Vec::new();
+    for lane_id in lanes_of(&core, side, LaneType::Foot) {
+        let lane = &core.transit_network.lane_system.lanes[lane_id];
+        let (at, _) = sample_lane_pose(lane, 40.0).unwrap();
+        let from = if lane.is_fwd { start } else { end };
+        let on_kept = lane.lane_idx == kept_lane;
+        let walker = core.agents.spawn_housed_agent(usize::MAX, at.x, at.z);
+        core.agents.agents.transit_mode[walker] = MODE_WALK;
+        core.agents
+            .agents
+            .enter_lane(walker, &core.transit_network.lane_system, lane_id, 40.0, from);
+        walkers.push((walker, on_kept));
+    }
+    assert_eq!(walkers.len(), 4, "a lane each way on each sidewalk");
+    let agents = core.agents.agents.current_lane_id.len();
+    let positions: Vec<_> = walkers
+        .iter()
+        .map(|&(w, _)| (core.agents.agents.pos_x[w].to_bits(), core.agents.agents.pos_y[w].to_bits()))
+        .collect();
+    let two_sided = core.region_graph.edge(side).clone();
+    let two_sided_weight = two_sided.cost_weight();
+
+    let one_side = RoadAttributes::new(50, kept, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), one_side), "");
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.sidewalk_sides(), kept);
+    assert_ne!(road.allowed_types & TransitFlags::FOOT, 0, "still walked");
+    assert!(road.cost_weight() < two_sided_weight, "one sidewalk costs less");
+    assert_eq!(sidewalk_lanes(&core, kept_lane).len(), 2);
+    assert!(sidewalk_lanes(&core, removed_lane).is_empty());
+    assert_eq!(core.agents.agents.current_lane_id.len(), agents, "no walker is lost");
+    let lanes = &core.transit_network.lane_system;
+    for (&(walker, on_kept), &position) in walkers.iter().zip(&positions) {
+        let a = &core.agents.agents;
+        let lane = a.current_lane_id[walker];
+        // Within the 30 m reach everyone is on the kept sidewalk: 8.5 m across for those moved.
+        assert_eq!(lanes.lanes[lane].lane_idx, kept_lane, "walker {walker} on lane {lane}");
+        assert_eq!(a.pos_y[walker].to_bits(), position.1, "walker {walker} stays abreast");
+        if on_kept {
+            assert_eq!(a.pos_x[walker].to_bits(), position.0, "walker {walker} kept its place");
+        }
+    }
+    assert!(walks(&core, east), "the kept side's door still walks");
+
+    // A lane edit with the road's own attributes must not turn it two-sided.
+    let own = RoadAttributes::of_edge(core.region_graph.edge(side));
+    assert_eq!(own.sidewalks, kept);
+    assert_eq!(edit(&mut core, side, (1, 0, None), own), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), kept);
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), kept);
+
+    assert!(core.undo_action_internal());
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.sidewalk_sides(), SidewalkSides::BOTH);
+    assert_eq!(road.allowed_types, two_sided.allowed_types);
+    assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2, "undo brings the lanes back");
+    assert!(walks(&core, east));
+
+    // Added back through an edit: the side and its entrance return.
+    assert_eq!(edit(&mut core, side, (1, 1, None), one_side), "");
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+    assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2);
+    assert!(walks(&core, east));
+}
+
+// The side code of `building`'s door, and the other one, as sidewalk masks.
+fn door_side_and_other(core: &SimCore, building: usize) -> (SidewalkSides, SidewalkSides) {
+    if core.allocator.buildings[building].side > 0 {
+        (SidewalkSides::LEFT, SidewalkSides::RIGHT)
+    } else {
+        (SidewalkSides::RIGHT, SidewalkSides::LEFT)
+    }
+}
+
+// `ROAD-109`: a sidewalk stays while a building's door is on its side, by any in-place edit: one
+// side off, both off, a road type without sidewalks (zoning off included: the door is the rule,
+// not the demolition). The side without a door comes off freely; a lane edit keeps its sides.
+#[test]
+fn a_sidewalk_under_a_door_is_refused_and_one_without_is_free() {
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (house, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (door, other) = door_side_and_other(&core, house);
+    let refused = "sidewalk_under_door";
+    for attributes in [
+        RoadAttributes::new(50, other, true),
+        RoadAttributes::new(50, SidewalkSides::NONE, true),
+        RoadAttributes::new(80, SidewalkSides::NONE, false),
+    ] {
+        assert_eq!(edit(&mut core, side, (1, 1, None), attributes), refused);
+        assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+        assert_eq!(core.allocator.buildings.len(), 1, "nothing is demolished");
+    }
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, door, true)), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), door);
+    assert_eq!(edit_lanes(&mut core, side, 1, 0), "", "the road's own side is no removal");
+    assert_eq!(
+        edit(&mut core, side, (1, 0, None), RoadAttributes::new(50, other, true)),
+        refused,
+        "swapping the sides takes the door's away"
+    );
+    // The building gone, the same edit goes through.
+    assert!(core.bulldoze_building(house));
+    core.run_building_allocator_maintenance_internal();
+    assert_eq!(edit(&mut core, side, (1, 0, None), RoadAttributes::new(50, other, true)), "");
+}
+
+// `ROAD-109`: an undo is an edit too. A sidewalk added, a building placed on it: the undo that
+// would take the sidewalk back is refused while the door stands, and goes through after it.
+#[test]
+fn undo_keeps_a_sidewalk_a_door_has_come_to() {
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (probe, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (door, other) = door_side_and_other(&core, probe);
+    assert!(core.bulldoze_building(probe));
+    core.run_building_allocator_maintenance_internal();
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, other, true)), "");
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT), "");
+    let (house, _) = house_fronting(&mut core, side, (12.0, 72.0));
+    let depth = core.undo_stack.len();
+    assert!(!core.undo_action_internal(), "the door keeps its sidewalk");
+    assert_eq!(core.undo_stack.len(), depth, "the record stays");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+    assert!(core.bulldoze_building(house));
+    core.run_building_allocator_maintenance_internal();
+    // The bulldoze's own record would bring the door back.
+    core.undo_stack.pop_back();
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), other);
+    assert_ne!(other, door);
+}
+
+// `ROAD-109`: a lost sidewalk takes the empty lots and the cells of its side with it in the same
+// change, leaves the other side's alone and touches no other road's; undo restores the lot.
+#[test]
+fn a_lost_sidewalks_lots_and_cells_go_with_it_and_undo_restores_them() {
+    use crate::simulation::zoning::cells::CellBounds;
+    use glam::DVec2;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let lot = |core: &mut SimCore, x: f32| {
+        core.zoning
+            .place_or_rezone_default_parcel_at(x, 60.0, profile, &core.region_graph)
+            .unwrap()
+            .raw()
+    };
+    let (east, west) = (lot(&mut core, 15.0), lot(&mut core, -15.0));
+    let east_side = core.zoning.parcel_by_raw_id(east).unwrap().side();
+    let kept = if east_side > 0 { SidewalkSides::LEFT } else { SidewalkSides::RIGHT };
+    let bounds = CellBounds {
+        min: DVec2::new(-200.0, -200.0),
+        max: DVec2::new(200.0, 200.0),
+    };
+    let cells = |core: &mut SimCore| {
+        core.zoning.generate_cells(&core.region_graph, bounds, |_| false);
+        // On the T's side road, past both lots, and along the main road.
+        [(15.0, 85.0), (-15.0, 85.0), (60.0, 15.0), (-60.0, 15.0), (60.0, -15.0)]
+            .map(|(x, z)| core.zoning.cells.pick(DVec2::new(x, z)).is_some())
+    };
+    let before = cells(&mut core);
+    assert_eq!(before, [true; 5]);
+
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, kept, true)), "");
+    assert!(core.zoning.parcel_by_raw_id(east).is_some(), "the kept side's lot stays");
+    assert!(core.zoning.parcel_by_raw_id(west).is_none(), "the lost side's lot goes");
+    assert_eq!(cells(&mut core), [true, false, true, true, true]);
+
+    assert!(core.undo_action_internal());
+    assert!(core.zoning.parcel_by_raw_id(west).is_some(), "undo brings the lot back");
+    assert_eq!(cells(&mut core), before);
 }
 
 // `ROAD-101` (C): a speed change in place recomputes the road's routing cost, and the routing
@@ -524,7 +747,7 @@ fn a_speed_change_in_place_reroutes_by_the_new_cost() {
     };
     let slow = cost(&core);
     assert_eq!(
-        edit(&mut core, side, (1, 1, None), RoadAttributes::new(100, true, true)),
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(100, SidewalkSides::BOTH, true)),
         ""
     );
     // The rebuild is deferred (D7): the routing in use keeps the old cost until it is adopted.
@@ -545,20 +768,20 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     let (mut core, _, side, west) = t_junction_with_side(test_core(), 1, 1);
     let (_, side_parcel) = house_fronting(&mut core, side, (12.0, 60.0));
     let (_, west_parcel) = house_fronting(&mut core, west, (-50.0, 12.0));
-    let off = RoadAttributes::new(50, true, false);
+    let off = RoadAttributes::new(50, SidewalkSides::BOTH, false);
     // The count comes from the road's 512 m chunks, or from the whole city while the chunk
     // index is stale.
     for stale in [false, true] {
         core.allocator.rebuild_zone_index();
         core.allocator.dirty_index = stale;
         let verdict = core
-            .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+            .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), off)
             .unwrap();
         assert_eq!(verdict.buildings_removed, 1, "stale index: {stale}");
     }
     core.allocator.rebuild_zone_index();
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), off)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 1);
     assert!(verdict.demolition_permanent, "no undo restores a road's buildings");
@@ -576,7 +799,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
         Some(0)
     );
     assert_eq!(
-        core.preview_edge_cross_section_internal(west as i32, 1, 1, None, off)
+        core.preview_edge_cross_section_internal(west as i32, 1, 1, None, Default::default(), off)
             .unwrap()
             .buildings_removed,
         1
@@ -592,7 +815,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     core.set_no_building_spawn_internal(west as i32, true);
     let on = RoadAttributes::DEFAULT;
     let verdict = core
-        .preview_edge_cross_section_internal(west as i32, 1, 1, None, on)
+        .preview_edge_cross_section_internal(west as i32, 1, 1, None, Default::default(), on)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 0);
     assert!(!verdict.demolition_permanent);
@@ -600,14 +823,14 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     assert!(!core.region_graph.edge(west).no_building_spawn);
 }
 
-// `ROAD-101` (A.4): adding sidewalks widens the roadbed though not the carriageway, so the
-// widening checks run on the roadbed half-width: a parcel inside the 1.5 m sidewalk band, clear
-// of the 0.75 m shoulder, refuses it; removing them is a narrowing and never checked.
+// `ROAD-101` (A.4), `ZONE-10`: adding sidewalks widens the roadbed though not the carriageway: a
+// parcel inside the 1.5 m sidewalk band, clear of the 0.75 m shoulder, is taken by the sidewalk's
+// pieces; removing them is a narrowing and takes nothing.
 #[test]
-fn sidewalks_added_next_to_a_parcel_are_refused() {
+fn sidewalks_added_next_to_a_parcel_take_it() {
     use crate::simulation::zoning::ParcelGeometry;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
-    let shoulders = RoadAttributes::new(50, false, true);
+    let shoulders = RoadAttributes::new(50, SidewalkSides::NONE, true);
     assert_eq!(edit(&mut core, side, (1, 1, None), shoulders), "");
     // A 4 m parcel from 4.6 m east of the side road's centreline: past its 4.25 m shoulder edge,
     // inside its 5.0 m sidewalk edge. Attached to the side road, as a frontage lot.
@@ -618,7 +841,7 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Residential)
         .unwrap();
-    core.zoning.parcels.insert_new(
+    let parcel = core.zoning.parcels.insert_new(
         ParcelGeometry {
             edge_idx: side,
             side: 1,
@@ -637,12 +860,87 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
     );
     assert_eq!(
         edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT),
-        "parcel_overlap"
-    );
-    assert_eq!(
-        edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, false, true)),
         ""
     );
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_none(), "the sidewalks take it");
+    let parcels = core.zoning.parcels.parcels().len();
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, SidewalkSides::NONE, true)),
+        ""
+    );
+    assert_eq!(core.zoning.parcels.parcels().len(), parcels, "a narrowing takes nothing");
+}
+
+// `ROAD-107`, `ZONE-10`: a sidewalk added on a road's shoulder side leaves the roadbed's larger
+// side alone but still widens that side, so its pieces take a parcel inside it, both for the
+// second sidewalk and for moving the one sidewalk over. The land is judged on the pieces, not on
+// the stroke's corridor reached to both sides: a sidewalk added opposite the parcel takes
+// nothing. Taking the sidewalk off is a narrowing and takes nothing.
+#[test]
+fn a_sidewalk_added_on_the_shoulder_side_takes_the_parcels_beside_it() {
+    use crate::simulation::zoning::ParcelGeometry;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    // The side road runs along +z: its right (positive lateral) side is east or west.
+    let lanes = &core.transit_network.lane_system;
+    let right = lanes_of(&core, side, LaneType::Foot)
+        .into_iter()
+        .find(|&id| lanes.lanes[id].lane_idx == -100)
+        .unwrap();
+    let right_x = lanes.lanes[right].geometry[0].x.signum();
+    let shoulders = RoadAttributes::new(50, SidewalkSides::NONE, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), shoulders), "");
+    // A 4 m parcel past the right shoulder edge (4.25 m), inside a right sidewalk's edge (5.0 m).
+    let (x0, z0, size) = (right_x * 4.6, 58.0, 4.0);
+    let at = |dx: f32, dz: f32| godot::prelude::Vector2::new(x0 + right_x * dx, z0 + dz);
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let corners = [at(0.0, 0.0), at(0.0, size), at(size, size), at(size, 0.0)];
+    let (min_x, max_x) = (x0.min(x0 + right_x * size), x0.max(x0 + right_x * size));
+    let insert = |core: &mut SimCore| {
+        core.zoning.parcels.insert_new(
+            ParcelGeometry {
+                edge_idx: side,
+                side: -1,
+                frontage_center_t: 0.6,
+                frontage_m: size,
+                depth_m: size,
+                front_center: at(0.0, size * 0.5),
+                center: at(size * 0.5, size * 0.5),
+                tangent: godot::prelude::Vector2::new(0.0, 1.0),
+                normal: godot::prelude::Vector2::new(right_x, 0.0),
+                corners,
+                aabb_min: godot::prelude::Vector2::new(min_x, z0),
+                aabb_max: godot::prelude::Vector2::new(max_x, z0 + size),
+            },
+            profile,
+        )
+        .raw()
+    };
+    let parcel = insert(&mut core);
+    let sides = |sides| RoadAttributes::new(50, sides, true);
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), sides(SidewalkSides::LEFT)),
+        "",
+        "a sidewalk opposite the parcel"
+    );
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_some(), "the far side takes nothing");
+    // From the left sidewalk, whose side is already the larger one, both a second sidewalk and
+    // the one moved over widen the parcel's side.
+    let mut parcel = Some(parcel);
+    for gained in [SidewalkSides::BOTH, SidewalkSides::RIGHT] {
+        let id = parcel.take().unwrap_or_else(|| insert(&mut core));
+        assert_eq!(edit(&mut core, side, (1, 1, None), sides(gained)), "", "{gained:?}");
+        assert!(core.zoning.parcel_by_raw_id(id).is_none(), "{gained:?} takes the parcel");
+        assert!(core.undo_action_internal(), "{gained:?}");
+        assert_eq!(
+            core.region_graph.edge(side).sidewalk_sides(),
+            SidewalkSides::LEFT
+        );
+    }
+    assert_eq!(edit(&mut core, side, (1, 1, None), sides(SidewalkSides::NONE)), "");
 }
 
 // `ROAD-101` (D10): Apply charges the build-cost difference over the road's length outside
@@ -655,7 +953,7 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     let built = core.treasury.lifetime_build_cost;
     // 1+1 (weight 1.0) to 2+2 (1.8): 0.8 x 15 a metre.
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 2, 2, None, RoadAttributes::DEFAULT)
+        .preview_edge_cross_section_internal(side as i32, 2, 2, None, Default::default(), RoadAttributes::DEFAULT)
         .unwrap();
     assert!((verdict.cost_delta - 12.0 * length).abs() < 1e-6 * length, "{verdict:?}");
     assert_eq!(edit_lanes(&mut core, side, 2, 2), "");
@@ -665,7 +963,7 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     );
     let built = core.treasury.lifetime_build_cost;
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 1, 1, None, RoadAttributes::DEFAULT)
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), RoadAttributes::DEFAULT)
         .unwrap();
     assert_eq!(verdict.cost_delta, 0.0);
     assert_eq!(edit_lanes(&mut core, side, 1, 1), "");
@@ -772,7 +1070,7 @@ fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
     let lit = RoadAttributes::of_edge(core.region_graph.edge(edge));
     assert!(lit.street_lights);
     let verdict = core
-        .preview_edge_cross_section_internal(edge as i32, 1, 1, None, lit.lit(false))
+        .preview_edge_cross_section_internal(edge as i32, 1, 1, None, Default::default(), lit.lit(false))
         .expect("lights off is a valid change");
     assert_eq!(verdict.cost_delta, 0.0, "street lights cost nothing");
     assert_eq!(verdict.buildings_removed, 0);
@@ -824,4 +1122,49 @@ fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
     core.finalize_network_render_products();
     assert_eq!(published_chunks(&core), lit_chunks);
     assert_eq!(fully_emitted_chunks(&mut core), lit_chunks);
+}
+
+// A ring keeps its section, class and zoning (`ROAD-62`, `roundabout_fixed`).
+#[test]
+fn a_ring_edge_refuses_every_in_place_edit() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use crate::simulation::network::roundabouts::{
+        RING_SPEED_MS, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
+    };
+    use crate::simulation::network::types::EdgeClass;
+    let mut core = test_core();
+    let site = RoundaboutSite::Ground {
+        centre: Vector3::new(100.0, 0.0, 100.0),
+        lanes: 1,
+    };
+    let request = RoundaboutRequest {
+        site,
+        diameter_m: 36.0,
+    };
+    let applied = RoundaboutLayout::prepare(&core.region_graph, request)
+        .unwrap()
+        .apply(&mut core.region_graph);
+    let edge = applied.ring[0];
+    assert_eq!(
+        core.region_graph
+            .edge(edge)
+            .validate_cross_section(2, 0, None, Default::default(), Default::default()),
+        Err("roundabout_fixed")
+    );
+    let mut with_pocket = core.region_graph.edge(edge).clone();
+    with_pocket.pocket = Some(crate::simulation::network::graph::RoadPocket {
+        end: EdgeEnd::End,
+        left: false,
+        right: true,
+    });
+    assert_eq!(with_pocket.validate_pocket(), Err("roundabout_fixed"));
+
+    core.set_edge_class_internal(edge as i32, 1);
+    assert_eq!(core.region_graph.edge(edge).class, EdgeClass::Standard);
+    core.set_no_building_spawn_internal(edge as i32, false);
+    assert!(core.region_graph.edge(edge).no_building_spawn);
+    assert_eq!(core.region_graph.edge(edge).speed_limit, RING_SPEED_MS);
+
+    assert_eq!(core.region_graph.edge(edge).sidewalks, SidewalkSides::RIGHT);
 }

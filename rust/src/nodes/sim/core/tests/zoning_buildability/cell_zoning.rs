@@ -8,7 +8,6 @@ use glam::DVec2;
 
 mod curves;
 mod merges;
-mod movement;
 mod road_marks;
 mod terrain;
 
@@ -879,6 +878,7 @@ fn painted_cells_over_a_tunnel_take_lots() {
             snap_to_existing_roads: true,
             tunnel: true,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },

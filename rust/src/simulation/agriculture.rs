@@ -49,6 +49,9 @@ pub(crate) struct FieldSite {
 pub(crate) struct FieldSiteSummary {
     /// Accepted field area in square metres.
     pub(crate) area_m2: f32,
+    /// The farm's index after the commit: the land a field takes may demolish buildings, whose
+    /// swap-removes move it (`ZONE-11`).
+    pub(crate) building_idx: usize,
 }
 
 /// Runtime agricultural field state for explicit field-producing buildings.
@@ -145,7 +148,8 @@ impl AgricultureSystem {
         self.bump_visual_revision();
     }
 
-    /// Commits or replaces the field polygon for one placed field-producing building.
+    /// Commits or replaces the field polygon for one placed field-producing building, validated
+    /// as [`Self::validate_site`] does with `land`; nothing is written on a refusal.
     pub(crate) fn commit_site(
         &mut self,
         building_idx: usize,
@@ -153,8 +157,10 @@ impl AgricultureSystem {
         allocator: &mut BuildingAllocator,
         zoning: &ZoningSystem,
         roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
     ) -> Result<FieldSiteSummary, String> {
-        let area_m2 = self.validate_site(building_idx, &polygon_world, allocator, zoning, roads)?;
+        let area_m2 =
+            self.validate_site(building_idx, &polygon_world, allocator, zoning, roads, land)?;
         let building = allocator
             .buildings
             .get(building_idx)
@@ -189,10 +195,17 @@ impl AgricultureSystem {
             top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
         }
 
-        Ok(FieldSiteSummary { area_m2 })
+        Ok(FieldSiteSummary {
+            area_m2,
+            building_idx,
+        })
     }
 
-    /// Validates geometry, farm attachment and land-use clearance without changing the saved field.
+    /// Validates geometry, farm attachment and land-use clearance without changing the saved
+    /// field: `land` judges the land under the polygon (`ZONE-11`: another field, an extraction
+    /// area or a placed building's lot refuses, the farm's own field and lot excepted; the
+    /// answer is the buildings the field will demolish, descending), then the building sites
+    /// and roads it may not cover ([`work_area_clearance`]).
     pub(crate) fn validate_site(
         &self,
         building_idx: usize,
@@ -200,6 +213,7 @@ impl AgricultureSystem {
         allocator: &BuildingAllocator,
         zoning: &ZoningSystem,
         roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
     ) -> Result<f32, String> {
         let building = allocator
             .buildings
@@ -230,31 +244,8 @@ impl AgricultureSystem {
         {
             return Err("field must remain inside the world".to_owned());
         }
-        if allocator
-            .field_clearance
-            .overlaps(&footprint, Some(building_idx))
-        {
-            return Err("field overlaps another field".to_owned());
-        }
-        if zoning.overlaps_reservation(&footprint) {
-            return Err("field overlaps reserved zoning".to_owned());
-        }
-        for idx in allocator.site_candidate_indices_for_bounds(
-            footprint.min.x,
-            footprint.min.y,
-            footprint.max.x,
-            footprint.max.y,
-        ) {
-            if let Some(site) = allocator.building_sites.get(idx)
-                && footprint.overlaps(&PolygonFootprint::new(&site.footprint_world))
-            {
-                return Err("field overlaps a building site".to_owned());
-            }
-        }
-        // A tunnel's bore lies in the hill under the field (`ROAD-61` round R8h).
-        if footprint.overlaps_exposed_roads(roads) {
-            return Err("field overlaps a road".to_owned());
-        }
+        let taken = land(&footprint)?;
+        work_area_clearance(&footprint, "field", allocator, roads, &taken)?;
         let catalog = load_runtime_economy_catalog()?;
         let profile = catalog
             .profile_by_runtime_id(building.economy_profile_runtime_id)
@@ -368,6 +359,37 @@ fn produce_site_hour(
 /// Validates field geometry and returns its unsigned world-space area.
 pub(crate) fn validate_field_polygon_world(polygon_world: &[Vector2]) -> Result<f32, String> {
     validate_player_polygon(polygon_world, "field", MIN_FIELD_POLYGON_AREA_M2)
+}
+
+/// The building sites and roads a field or extraction area (`label`) may not cover: every
+/// building footprint in its bounds but `taken` (descending), the buildings its land take
+/// demolishes (`ZONE-11`), so its own building's footprint still refuses it; and every road on
+/// or above the ground (a tunnel's bore lies in the hill under it, `ROAD-61` round R8h).
+/// O(sites in its bounds' chunks * log taken + road pieces in its bounds).
+pub(crate) fn work_area_clearance(
+    footprint: &PolygonFootprint,
+    label: &str,
+    allocator: &BuildingAllocator,
+    roads: &RoadbedSystem,
+    taken: &[usize],
+) -> Result<(), String> {
+    for idx in allocator.site_candidate_indices_for_bounds(
+        footprint.min.x,
+        footprint.min.y,
+        footprint.max.x,
+        footprint.max.y,
+    ) {
+        if taken.binary_search_by(|probe| idx.cmp(probe)).is_err()
+            && let Some(site) = allocator.building_sites.get(idx)
+            && footprint.overlaps(&PolygonFootprint::new(&site.footprint_world))
+        {
+            return Err(format!("{label} overlaps a building site"));
+        }
+    }
+    if footprint.overlaps_exposed_roads(roads) {
+        return Err(format!("{label} overlaps a road"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

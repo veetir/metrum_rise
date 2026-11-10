@@ -5,12 +5,16 @@
 mod candidate;
 mod immigration;
 mod network;
+mod parking;
+pub(crate) use parking::{parking_trip_bays, quote_parking_between_places, quote_parking_leg, quote_parking_leg_from_lane, estimate_parking_trip_seconds, estimate_parking_trip_seconds_within, ParkingLegQuote, ParkingQuote, ParkingTripBays, ResidentMobility};
+#[cfg(test)]
+pub(crate) use parking::quote_parking_trip;
 mod reachability;
 mod trip;
 mod types;
 
 pub(crate) use candidate::{SharedNetworkQuotes, TripQueryScratch};
-pub(crate) use immigration::plan_immigration_trip;
+pub(crate) use immigration::{plan_immigration_trip, plan_border_arrival};
 pub(super) use network::{
     ReplanCandidateDiagnostic, ReplanFailure, plan_border_network_replan, plan_network_replan,
 };

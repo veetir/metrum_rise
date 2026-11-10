@@ -75,6 +75,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
         snap_to_existing_roads: snap,
         tunnel,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     };
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
@@ -89,6 +90,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
             snap_to_existing_roads: snap,
             tunnel,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: Some(preview),
         },
@@ -339,7 +341,7 @@ fn assert_joins_mid_span(stroke: &[Vector3], case: &str) -> SimCore {
     assert_eq!(arms.len(), 3, "{case}");
     assert!(!graph.grounded_node(node), "{case}: a junction on a deck");
     assert!(
-        bridges.iter().all(|&edge| !graph.takes_buildings(edge)),
+        bridges.iter().all(|&edge| !graph.takes_buildings(edge, 1)),
         "{case}: a bridge takes no frontage"
     );
     let roadbed = &core.transit_network.roadbed;

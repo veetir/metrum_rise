@@ -1,7 +1,8 @@
 # Metrum Rise - Traffic Movement
 
 This document owns lane-bound vehicle movement behavior: car following, junction connector
-traversal, lane changes, conservative overtaking, render smoothing, and traffic debug output.
+traversal, lane changes, conservative overtaking, parking, render smoothing, and traffic debug
+output.
 
 It does not own:
 
@@ -20,6 +21,7 @@ Implementation lives mainly in:
 - `rust/src/nodes/sim/core/snapshot.rs`
 - `rust/src/nodes/sim/render/agents.rs`
 - `godot/scripts/renderers/agents.gd`
+- `rust/src/simulation/parking.rs` and `rust/src/simulation/parking/`, see [Parking](#parking)
 
 ## Current Scope
 
@@ -88,8 +90,11 @@ even when retry time and failure count are zero. An agent in network transit at 
 stays there and replans from the node whatever its mode, as the running game does: a road edit
 that rebuilds the junction lane a walker is crossing leaves it at the node with no edge (found in
 `SIM-02-I` part 3, when loading sent such walkers straight into their destination). Delayed
-retries retain their backoff; agents without a usable destination or pending retry still
-receive orphan repair.
+retries retain their backoff. A load repairs only a row whose saved references it could not
+restore: that agent goes on towards its home. A row the running game keeps loads as it stands,
+however little it holds, so a loaded game cannot differ from the one that kept running
+(`TRAFFIC-29`; the repair of bare rows had grown a guard for each state the game keeps, the last
+`PARK-08`, a car in the slot a timed retry fires).
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).
@@ -235,7 +240,10 @@ Vehicle junction movement uses explicit connector lanes generated in
 `network/lanes/vehicle_junctions.rs`.
 
 For every allowed inbound-to-outbound vehicle lane pair at a node, the lane system creates a
-connection lane with:
+connection lane. A pair is allowed by the node's whitelist when it has user vehicle connections,
+else by the [default junction lane use](roads.md#default-junction-lane-use-road-94) (`ROAD-94`):
+one connector per pair the approach lane's movement share and the target fan allow, not every
+pair. Each connector has:
 
 - `edge_id = usize::MAX`
 - `lane_type = LaneType::Vehicle`
@@ -634,7 +642,28 @@ crossings).
   - *End of path.* A walker whose route ends at a node that is not its exit keeps its lane and
     plans again from its end (`junction/walk.rs::replan_from_lane`; no record when a route is
     found) instead of dropping the lane and planning from the node. One with no plan waits at the
-    end of its lane; its replan gate plans from there once it has a destination. Traced case
+    end of its lane; its replan gate plans from there once it has a destination. Its lane end has
+    moved its route cursor one past its (usually empty) path, and a save keeps it there: the loader
+    took that cursor for a stale route and dropped the walker's lane, then the orphan repair sent
+    it home, so a loaded game diverged from the unsaved one (`PERF-13`, fixed 2026-11-04). A
+    walker whose trip was taken from it on the way (its job ends mid-walk: `assign_work_building`
+    clears its destination, exit and route) reaches its lane end with no plan, no destination and
+    no trip to recover. With a home it plans home from that lane end and walks home
+    (`walk_home::head_home_without_trip`, `TRAFFIC-24`, 2026-11-04): the give-up rule's walk home
+    from where it stands, along sidewalks and crossings as any walk, with no record since no trip
+    failed; with no route home it is stranded there on the stranded backoff (one `NoRoute` record,
+    outcome `Stranded`). With no home it keeps waiting at its lane end for its household's next
+    home. Before, nothing gave such a walker a destination while its home stood, so it waited for
+    good and the walkers behind it queued there. The rule fires at the lane-end event, never on a
+    scan: one route query per such walker, once (it leaves with a plan or stranded), and O(1) per
+    tick for a homeless walker waiting there; walkers already waiting in an older save go home on
+    their first tick. The 100k lane audit (one day at 32x on the `dev` snapshot) counts 24 to 26
+    walkers with a home waiting so on `dev` and 0 with the fix (29 walk home), and none without a
+    home in either run, so stepping off the lane while waiting is not needed. Tests:
+    `a_walker_whose_job_ends_on_the_way_walks_home_from_its_lane_end_and_frees_the_sidewalk`
+    (fails without the fix: the walker never sets off) and
+    `a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end`. A walker standing
+    with no lane and no trip (the `stand_on_sidewalk` early return) is unchanged. Traced case
     (`TRAFFIC-19` probe, 100k baseline, default crossings): resident 140399 walks home from a shop
     when its household loses that home (`evict_household_member_home`), which clears its
     destination, exit and route on road 2365. It walks to the lane's end at node 790, where the
@@ -684,7 +713,10 @@ crossings).
     counts it as waiting for a home (a walker with no home, no destination and no next one, not
     stranded) until it is rehoused or gone; the notice adds "N residents waiting for a home"
     (`get_stranded_walkers_report`'s `waiting_for_home`). Cost: O(log set) per evicted walker,
-    and the same report rebuild.
+    and the same report rebuild. A walker with no home whose job ends on the way
+    (`assign_work_building` cancels its trip, `TRAFFIC-24`) waits at its lane end the same way and
+    is put in the set the same way (2026-11-04, report-only: the economy envelope is
+    byte-identical).
 - **Measured (`TRAFFIC-19`, 2026-11-02; release test binaries of the control `3de19c2b` and the
   branch, each with R6's uncommitted crossings-off variant and the probe, one session; FRESH).**
   The probe is `populated_city::watchdog_probe` (ignored; `TRAFFIC19_RESIDENTS`, `TRAFFIC19_DAYS`,
@@ -807,9 +839,12 @@ crossings).
   new home; a crossing-free block with walkers left at every node and on sidewalks, no watchdog
   move and no step over 2 m on the road, identical for 1 and 8 workers. `stranded_fixture`:
   walkers stranded at nodes without a lane (two that took their sidewalks, one at a node with
-  none) saved mid-backoff and loaded continue frame for frame. The watchdog's own test now drives
-  a car, and `trips::test_walking_agent_recovers_from_stale_edge_after_road_split` expects its
-  walker at a dead end to turn back through the node's connector from the sidewalk it stands on.
+  none) saved mid-backoff and loaded continue frame for frame; since `PERF-13`, two walkers whose
+  trip ended mid-walk, one waiting at its lane's end and one behind it, do too
+  (`walkers_kept_at_their_path_end_continue_across_a_save_file`, fails at `d0b29ce6`). The
+  watchdog's own test now drives a car, and
+  `trips::test_walking_agent_recovers_from_stale_edge_after_road_split` expects its walker at a
+  dead end to turn back through the node's connector from the sidewalk it stands on.
 - **Measured (round T19b, 2026-11-02; FRESH, one session; release test binaries: the control
   `br4`, `edb8a46f` with R6's variant and the probe, whose non-test Rust equals `8baa904f`'s, and
   the branch at `d4d577fb` (built before one doc comment was rewrapped) with the same; `RAYON_NUM_THREADS=6`, the default thread stack).**
@@ -931,6 +966,307 @@ artifact folders stay local):
   claim either way. The contract's fixture has no connector and no lane-end detach; the added
   work is one O(1) detach try per road-lane end event.
 
+### Give-way on entry to a roundabout (`ROAD-62`)
+
+Round R7c (2026-11-06, branch `port-r7c-giveway`, landed on `dev` 2026-11-06). A car entering a
+[roundabout](roads.md#roundabouts-road-62) gives way to the ring, without waiting for `TRAFFIC-06`;
+every other junction still has no right of way.
+
+**Data.** The connector builder gives each connector from an arm onto a ring lane a `RingEntry
+{ circulating, ring_in }`: the connector from the ring lane into the same ring lane (a two-lane
+ring's lanes run 1:1) and the ring lane it leaves. Both sit at the entry's node, so the rebuild that
+replaces one replaces the entry too. The pair lives in a table on `LaneSystem`
+(`LaneSystem::ring_entry(id)`) and `Lane::ring_entry` is a four-byte index into it: two ids on `Lane`
+took every lane from 104 to 112 bytes and cost the 65,536-group transition rows 2-3.5% in L1d
+misses, ring or no ring, where the index fits the struct's padding (the crosswalks' reasoning: few
+lanes need it). Never saved: lanes are rebuilt on load. A retired connector clears its index; the
+table's stale rows go with the next whole rebuild, as tombstoned lanes do. It is the fork's
+`ControlledMovement.yields_to` restricted to ring entries; `TRAFFIC-06` can later fill the same
+shape for priority roads and yield signs.
+
+**Rule** (`ring_entry_blocker`, `tick/traffic/occupancy.rs`). An entry waits while, in last tick's
+lane buckets:
+
+- a car is on the circulating connector;
+- the ring lane's head is arriving: within `CAR_LENGTH + IDM_S_MIN + 20 km/h x IDM_T_HEAD` (5.48 m)
+  of the lane's end and not standing at it;
+- the ring lane's entry slot is blocked ("room ahead": `lane_entry_slot_clear`, the test a connector
+  head makes at its exit, not the box rule the user dropped in round R14C).
+
+`ring_entry_clear` is the same test as a yes or no. It is a pure function of the buckets: `O(log
+bucket)`, no allocation, one read of the lane's index on an ordinary connector. The gap uses the ring's limit,
+not the head's speed: the speed pass writes the speed column while it runs this test, so another
+car's speed is not a stable input.
+
+**Three readers.** The entry claim (`claim_connector_entry`'s candidate filter, so every connector
+entry passes through it), the gridlock check (`entry_state`, which names the lane in the way) and the
+speed pass's lane-end hold, which reads `entry_state` as well: a one-lane arm fans onto both lanes of a
+two-lane ring, so the hold must test the claim's candidates, not the first connector. A car with no
+lane at a ring node takes a road lane directly, as at any node (`first_entry_is_held`): no connector
+is involved and nothing yields. Nothing but a replan after a failure puts a car there.
+
+**Why it adds no lock.** An entry stands only for the ring lane it enters (the third hold, and the
+first when the circulating car itself waits for that slot) or for a moving car (the second hold, and
+the first otherwise). That is the wait a plain junction's connector head has at its exit, moved back
+to the stop line, so a yielding head adds no edge to the wait-for graph that a plain junction lacks. The
+head **standing** at the ring lane's end is excluded for that reason. Round R7c's first build followed
+the plan's text, any head within the gap, and the populated day locked: with rings a block apart, a
+link's head yielded to a ring head that was itself waiting to leave onto the opposite link, and the
+pair of 3 m links, their exit connectors and the two ring lanes formed a cycle around nothing. The
+check confirmed and detoured it 2,749 times in the day with 0 saturation reports, and the city
+delivered 92 loads: a day that met the gate's two numbers and did not run. A standing head waits
+either for the circulating connector or the ring lane's slot, which the rule tests anyway, or for
+its exit, in which case it is not coming.
+
+The ring itself can still fill: a ring locks when every head on it wants to go on and the next lane
+is full, or when its exits back up. Those are ordinary `TRAFFIC-14` cycles of ring lanes and
+circulating connectors, detoured through an exit or reported as usual. Giving way does not prevent
+them, and does not cause them.
+
+**Starvation** is real behaviour and is reported, not gated (the watchdog never moves a car): under
+steady circulation an entry waits, and route search is free flow (`TRAFFIC-17`), so a starved entry
+does not reroute. Crossing movements on the ring itself have no conflict test: the inner lane's exit
+crosses the outer lane as a left turn crosses at any junction today (`TRAFFIC-09`).
+
+Acceptance record (round R7c, 2026-11-06; release test binary of `51d68ccc`,
+`traffic07_lane_entry_audit` one day at 32x, 60-minute samples, `METRUM_PERF_ROUNDABOUTS=8` on the
+10k city and its 4-Lane variant, each against a ring-free run of the same city and binary; the
+knob's rings go through the tool's transaction, and the prepared snapshots pass their continuation
+check; artifact folders stay local):
+
+| 10k day | 1+1, 8 rings | 1+1, no ring | 4-Lane, 8 rings (two-lane) | 4-Lane, no ring |
+| --- | --- | --- | --- | --- |
+| Saturation reports / detours / cycles (peak) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Trip failures, all / with a ring in the cause or at the car | 0 / 0 | 0 / - | 0 / 0 | 0 / - |
+| Freight deliveries | 710 | 1,385 | 965 | 1,863 |
+| Held at nodes, peak / end of day | 104 / 84 | 260 / 260 | 486 / 438 | 163 / 140 |
+| Vehicles on lanes, peak | 2,418 | 2,869 | 3,006 | 3,082 |
+| Missed turns | 0 | 0 | 65 | 10 |
+| Stands at an entry: count, p50 / p95 / max (simulated s) | 1,424, 1.1 / 10.1 / 63.5 | - | 1,193, 1.1 / 12.8 / 68.8 | - |
+
+The gate is the first two rows; the rest are measurements (`TRAFFIC-17`). A game day is 1,440
+simulated seconds. The audit's oracle (`wait_cycles`, which follows a yielding head by its own test)
+agrees: 0 cycles at every sample. 1, 4 and 8 workers give the same 51 report lines and the same hash
+of every car's lane, distance and speed. Three days from the same snapshots: 0 / 0 / 0 and 0 / 0 on
+both cities. `n` swept over 1, 2, 4, 8, 16 and 32 on both cities: 0 saturation reports, 0 detours, 0
+cycles and 0 trip failures in all twelve, the 1+1 city's rings a block apart with 3.3 m links from
+n = 3.
+
+Deliveries roughly halve, and nearly all of it is one ring: the first junction in the knob's order is
+the border trunk's, and that ring alone gives 769 (1+1) and 1,034 (4-Lane); 32 rings give 543 and
+1,003. All border freight takes one path through it (`TRAFFIC-17`), and a plain junction has no
+conflict test to pay for. It does not catch up: over three days the ring-free cities deliver 4,383 and
+4,449 and clear their border queues (1 held car at the end), the 8-ring cities 2,137 and 2,851, with
+66 and 588 held. A single-lane ring at 20 km/h on the only border trunk is a capacity limit of this
+fixture, not a lock ([measured](#what-a-ring-carries-road-62-round-r7c2)).
+
+Most of that is the ring, not the yielding. A measurement build with the rule switched off: 864
+deliveries with the one ring, 605 with eight (710 with give-way), 1,333 on the 4-Lane city (965), and
+the rings then do form cycles the check has to break: 74 and 117 detours on the 1+1 city, with held
+peaks of 376 and 437 against 117 and 104. So give-way costs 11% at the one ring and 28% on the two-lane
+rings, gains 17% across eight one-lane rings, and buys a ring that does not cut itself off.
+
+Tests: `give_way_tests` (the three holds and the standing head; an ordinary connector owes nothing; a
+head that enters only after the circulating car passes, 1 and 4 workers equal; the gridlock check's
+wait-for edge; the fork's drain test, six uneven arms and 36 cars the long way round, on a one-lane
+and a two-lane ring at 60 m, the fork's 70 m being over the conversion cap, 1 and 4 workers equal),
+`roundabouts::tests` (every entry marked on 1+1, 2+2 and fan arms; an incremental rebuild),
+`road_roundabouts` (a load; queues crossing two neighbouring rings both ways, the lock above).
+
+Timing (2026-11-06 06:49, `.run.lock` and the exclusive timing lock, cores `0,2,..,14`, no cargo,
+rustc, godot or restic, load 10.8 falling from the gate runs; control `6e1ebef7`, branch `51d68ccc`;
+`$ARTIFACTS`-local tables): `PERF-06` (`tools/perf_contract.py --agents`, 8 workers, C B B C twice, then
+12 alternating pairs of the test itself): work counts identical in every run, every row's ranges
+overlap; medians of the 12 pairs, control / branch, ms: network 0.327 / 0.326 and 0.798 / 0.778 at
+10k / 30k, egress 0.903 / 0.618 and 1.839 / 2.002, ingress 0.259 / 0.321 and 0.531 / 0.445. Its
+fixture has no connector, so it does not reach this code. `benchmark_lane_transitions` (4 workers, 3
+pairs, transition counts equal in every row), medians at 65,536 groups: clear +0.4%, merge +0.5%,
+turn +1.4%, cruise -3.9%, inside the control's range or touching it; **blocked +1.8% and lateral +4.4%
+outside it**. `benchmark_claim_preparation` checksums equal, 1,048,576 mixed 0.560 / 0.552 / 0.493 /
+0.492 ms (C B C B). `perf_contract_day` on one private set of snapshots prepared by the control
+(the control with the branch's fixture file, whose bytes key the snapshots), 8 workers, C B B C: record and work
+counts identical; hourly 0.86 / 0.90 / 0.87 / 0.85 ms at 10k, 4.34 / 4.33 / 4.38 / 4.26 ms at 30k;
+total 3.04 / 3.05 / 3.05 / 3.02 s and 10.60 / 10.57 / 10.57 / 10.55 s.
+
+The rows outside spread, fixed-iteration `perf stat` of each row alone (the same test-only row filter on
+both sides, C B B C): blocked 3.93 / 3.95 G instructions, 2.15-2.18 / 2.16-2.18 G cycles, overlapping;
+lateral 7.19 / 7.18 G instructions, 1.176 / 1.181 G branches, 35.6 / 35.1 M L1d misses, but 2.95-2.96 /
+3.05-3.07 G cycles. So lateral does no more work and takes 3.5% more cycles: a cycle profile puts
++360 of the +377 samples on `sibling_vehicle_lane_with_idx`, a function this round did not touch.
+Round R7c2 tested the field shift below and it is not the cause. The whole benchmark runs 92.81 /
+92.86 G instructions, cycles overlapping (39.97-40.64 / 40.20-40.51 G).
+
+**The lateral row (round R7c2, 2026-11-06, fresh; lock, cores and workers as above).** `offset_of!`:
+`Lane` is 104 bytes on both sides; only `is_fwd`, `lane_type` and `lane_idx` move, 96 / 97 / 98 to
+100 / 101 / 102, with `ring_entry` at 96. A `repr(C)` build with the control's offsets and
+`ring_entry` at 100 does **not** bring the row back: 65,536 groups, medians of six runs each in one
+session (C, R7c's binary, the branch with this round's test code, the variant, in mirrored order):
+5.234 / 5.540 / 5.231 / 5.476 ms. So the control's offsets are slow in one binary, and the moved
+offsets are as fast as the control in another whose non-test source equals R7c's, with the same
+instructions in the function. 17 binaries of this hot code fall into two groups, 5.16-5.22 ms and
+5.34-5.56 ms, and both offset layouts appear in both (the three real control builds fast, the
+control-offset variant slow, branch builds on either side); the function's address modulo 64 does
+not sort them. The variant was dropped. Fixed-iteration counters on R7c's filtered builds, a fast
+control and a slow branch binary (C B B C): cycles +2%, L1 load misses -2%, MITE uops
+-13%, DSB uops -1%, store-forward blocks -5%, but stall cycles on L1d misses +5.6% and load-bound
+cycles +5.3%. So it is no front-end loss and no extra work: the same loads overlap less well in
+some link layouts. Which placement does that is not known. The row is link-layout variance of
+about 5% on identical source, not a cost of the field, and it says little about either side.
+
+### What a ring carries (`ROAD-62`, round R7c2)
+
+Round R7c2 (2026-11-06, branch `port-r7c2-capacity`, landed on `dev` 2026-11-06). Fixture `ring_capacity_tests`: no
+city, four arms, a source on every entry lane that places a car whenever the lane's entry slot is
+clear, a sink near the end of each exit arm. Flows are cars per **simulated minute**, 600 s after a
+120 s warm-up; the median and range of nine starts, because the symmetrical fixture settles into
+different periodic orbits (one case: 72 to 82). Turns are by exit in the ring's sense of travel:
+first = right, third = left. 1x is the agent step at game speed 1 (1/60 s), 32x the step of the day
+runs (0.533 s). `$TEST_BINARY simulation::economy::agents::tick::ring_capacity_tests::measure_capacity
+--ignored --nocapture`, `METRUM_CAPACITY_TRACE=1` for the lanes. All numbers fresh on `409272b9`;
+the rule-off columns come from a measurement build that is not committed.
+
+What the constants allow. The steady bumper gap at speed `v` under limit `v0` is `(s0 + vT) / sqrt(1
+- (v / v0)^4)`, so a lane's flow `v / (L + gap)` tops out at:
+
+| Limit | 13.89 m/s (50 km/h) | 6.00 (straight connector) | 5.56 (ring) | 4.47 (right turn) | 4.07 (ring entry and exit, 36 m) |
+| --- | --- | --- | --- | --- | --- |
+| Top of the curve, cars/min | 70.5 | 49.6 | 47.7 | 42.5 | 40.3 |
+
+A queue starting from rest does not reach that on a free road: it discharges at 55.1 at 50 km/h and
+40.7 (40.1-41.4) at 20 km/h. A connector is too short to settle, so a short turn runs slightly over
+its figure. A ring of `a` arms whose cars each use `s` of its `a` sections carries at most `a x
+lane / s`: with a lane of 49, 98 for through traffic, 65 for the third exit.
+
+| Cars/min, all arms queued unless noted | 1x | 32x | No give-way, 1x | No give-way, 32x |
+| --- | --- | --- | --- | --- |
+| Road 1+1 at 50 / 20 km/h, one lane | 55.1 / 40.7 | 56.3 / 35.4 | | |
+| Road 2+2 at 50 / 20 km/h, both lanes | 110.2 / 81.3 | 112.5 / 70.7 | | |
+| Junction 1+1 through, one arm / four | 49.7 / 199.0 | 49.8 / 199.0 | | |
+| Junction 1+1 right / left, four arms | 177.9 / 188.8 | 168.1 / 179.8 | | |
+| Junction 1+1 mixed (arm's own discharge, no queue) | 220.5 | 225.0 | | |
+| Junction 2+2 through, one arm / four | 99.0 / 396.2 | 95.7 / 383.1 | | |
+| Junction 2+2 right / left (one lane each) | 180.1 / 197.3 | 168.9 / 192.0 | | |
+| Junction 2+2 mixed (no queue) | 440.9 | 450.0 | | |
+| Ring 36 m one lane, one arm through | 44.3 | 37.5 | 44.3 | 40.2 |
+| through, four arms | 72.7 (72-82) | 66.4 (62-67) | 97.9 | 8.7 (8-12) |
+| first exit | 140.0 (130-140) | 146.3 (135-146) | 177.1 | 160.7 |
+| third exit | 51.9 (51-58) | 43.5 (43-47) | 10.5 (8-12) | 8.3 |
+| mixed, a third each | 66.7 (66-68) | 56.6 (56-57) | 97.9 | 9.6 (8-40) |
+| Ring 50 m two lanes, one arm through | 90.5 | 82.7 | 92.3 | 89.2 |
+| through, four arms | 143.2 (138-146) | 132.3 (124-133) | 140 (108-194) | 41.5 (20-80) |
+| first exit (arm's own discharge, no queue) | 220.4 | 225.0 | 220.5 | 225.0 |
+| third exit (inner lane only) | 54.3 (54-58) | 39.4 (34-42) | 11.1 | 8.4 |
+| mixed | 132.0 (132-135) | 117.0 (115-122) | 157 (141-172) | 138 (126-146) |
+| Ring 50 m, 2+2 and 1+1 arms (the fan), through / mixed | 152.7 / 115.7 | 128.7 / 103.4 | 191 / 177 | 113 / 77 |
+
+**One stream.** A single arm on a ring is what a plain right turn is: 44.3 against 44.5, because
+every car entering a ring makes a right turn on a 4.07 m/s connector. Removing either the connector
+speed or give-way alone changes nothing at 1x, removing both gives 49.0, a straight connector's
+figure: the third hold, read at the line 9.5 m before the ring lane, lands on the same headway.
+
+**All arms.** Without give-way a ring reaches its bound (97.9, a lane of 49). With it the ring lanes
+are not full: in the mixed case they run 33.8 cars/min at 5.0 m/s, 71% of a lane, and the entries
+stand. A trace of the heads at the line, through traffic at 1x: 82% of the ticks wait for a car on
+the circulating connector, 13% for an arriving head, 4% for their own connector, 1% free. That
+first hold closes for the whole connector, 10.75 m on the 36 m ring and 15-17.5 m on the 50 m, 2 to
+3 s a car. Each hold switched off alone, in a measurement build, through / mixed at 1x:
+
+| One lane | Rule | No circulating hold | No arriving-head hold | No slot hold | No rule |
+| --- | --- | --- | --- | --- | --- |
+| through | 72.7 | 88.3 | 87.5 | 81.4 | 97.9 |
+| mixed | 66.7 | 89.9 | 77.5 | 78.4 | 97.9 |
+| first exit | 140.0 | 140.0 | 177.2 | 158.7 | 177.1 |
+
+So the rule takes a quarter to a third of a saturated ring and is what keeps it running: without it
+the third exit falls to 10, and at 32x the one-lane ring's through and mixed cases fall to about 9. The first
+exit's whole loss is the arriving head that leaves anyway (R7c's decision 8).
+
+The city is less sensitive to any one hold than the fixture: a one-ring day from the same snapshot with one hold off gives 791, 830 and 841 deliveries on 1+1
+(rule 769) and 1,114, 1,171 and 1,075 on 4-Lane (rule 1,034), 0 detours each; all three off 471 with
+17 detours, and 1,243. R7c's rule-off day (864) was prepared without the rule as well, so the two
+differ; days with the rule off are not stable. No hold brings the trunk near the ring-free 1,385 and
+1,863.
+
+What was ruled out, each on the same fixture: entry and exit connectors raised to 6 m/s: mixed 67.8,
+through 82 (66-82), ranges overlapping; braking at ring nodes removed: 74.6 and 66.8, inside the ranges; lane-end
+claims: 0 lost at 1x, 60 of 2,300 at 32x; a connector head waiting at the ring lane's slot: 5,464
+ticks over 2,888 exits at 1x, 0.03 s a car; the fan: no loss of its own. **No defect was found on
+ring lanes or connectors**, so nothing outside test code changed. Ring connectors do allow 6 m/s, 21.6
+km/h, over 40% of the ring, above the ring's limit; it does not limit anything.
+
+**Two lanes against one.** A two-lane ring carries twice a one-lane ring: 2.04 for one stream, 1.97
+through, 1.98 mixed at 1x; 2.2, 2.0, 2.1 at 32x. The third exit, on one lane by construction, gains
+nothing.
+
+**What a plain junction does.** Four crossing through streams carry 199.0, exactly four times one
+stream: they drive through each other. That is the missing conflict of `TRAFFIC-09`, not capacity.
+Only two opposing streams can run at once, 99.4, before any lost time, so a one-lane ring's 72.7
+through is about three quarters of what a crossing with conflicts could carry at best.
+
+**The game speed.** At 32x the step is 0.533 s and a slot test reads the last tick, so one stream
+onto a 4.07 m/s connector takes exactly three ticks a car: 37.5. At 6 m/s it gets 47.0. Speeds 1 to
+16 give 44.3 to 46.9, 32 gives 37.5. A plain through stream does not lose (49.7, 49.8).
+
+**The city.** `METRUM_AUDIT_JUNCTION=<nodes>` on `traffic07_lane_entry_audit` counts cars into each
+connector by game hour (fresh, 32x, R7c's snapshots; a game day is 24 simulated minutes):
+
+| Trunk junction, one day | 1+1, plain | 1+1, one ring | 4-Lane, plain | 4-Lane, one ring |
+| --- | --- | --- | --- | --- |
+| Deliveries | 1,385 | 769 | 1,863 | 1,034 |
+| Those whose carrier crossed it | 1,221 (88%) | 610 (79%) | 1,703 (91%) | 875 (85%) |
+| Cars through it (ring: entries), per minute | 2,853, 119 | 1,517, 63 | 3,751, 156 | 1,934, 81 |
+| In from the trunk | 1,090 | 580 | 1,655 | 519 |
+
+Every ring-free delivery but the local ones crosses this one node. With a ring the entries are flat
+at every hour of the day, the trunk's lane holds 136-159 cars at all 24 hours (the 4-Lane city's
+141-168) and the row's arm up to 122: **the ring is saturated all day**, at 63 cars a minute against
+the fixture's 57-66 at 32x, and 70.5 at 1x against 67-73. The fixture and the city agree. Offering
+the ring-free day's movements to the fixture in steps (`measure_city_movements`) gives the ceiling for
+that traffic: the plain junction takes all of 140 to 150 a minute, a one-lane ring 47-50 at 1x and
+39-40 at 32x, a two-lane ring with lanes used evenly about 110-125 at 1x and at best 110 at 32x,
+unstable above that, against 119 and 156 wanted.
+40% of the plain day's movements are third exits, and in the city routes then shift off them (free
+flow costs the longer ring): the row's arm, 37 cars a day plain, sends 423 with a ring.
+
+**Why two lanes lose as much as one in the city.** They are not used. 4-Lane trunk, one ring: the inner
+lane carries 436 entries with a queue of 141-168, the outer 83 with a queue of at most 11. The ring's
+exits to a two-lane arm run 1:1 (D10), so `preferred_entry_lanes` follows the route through the ring
+to the next turn off it, and the block after the first exit needs the left lane. At a plain junction
+the turn fans onto both target lanes and the choice ends there. The plan expected no preference. A
+measurement build that stops the preference at a ring: both trunk lanes queue (782 and 473 entries),
+ring entries 2,791 a day, 116 a minute, the fixture's figure and 1.84 times the one-lane ring;
+deliveries 1,246; but 3,298 missed turns against 20, since those cars then stand in the wrong lane on a
+short block. So not a fix: the capacity exists and the lane rule keeps it out of reach on this grid.
+
+**Without the trunk junction.** `METRUM_PERF_RINGS_SKIP_TRUNK=1` leaves the junctions next to a border
+plain; D17's default is unchanged (fresh: 710 and 965 again, hashes `9d1150dd...`, `14f11455...`).
+One day at 32x, 8 workers:
+
+| 10k day | 1+1, 1 ring | 1+1, 8 rings | 1+1, no ring | 4-Lane, 1 ring | 4-Lane, 8 rings | 4-Lane, no ring |
+| --- | --- | --- | --- | --- | --- | --- |
+| Saturation reports / detours / cycles | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Trip failures, all / ring | 0 / 0 | 0 / 0 | 0 / - | 0 / 0 | 0 / 0 | 0 / - |
+| Freight deliveries | 1,419 | 1,421 | 1,385 | 1,759 | 1,909 | 1,863 |
+| Held at nodes, peak / end | 283 / 283 | 321 / 321 | 260 / 260 | 163 / 147 | 129 / 62 | 163 / 140 |
+| Vehicles on lanes, peak | 2,896 | 3,134 | 2,869 | 3,098 | 3,202 | 3,082 |
+| Missed turns | 0 | 0 | 0 | 148 | 199 | 10 |
+| Cars into the rings | 51 | 1,704 | - | 126 | 1,094 | - |
+| Stands at an entry: count, p50 / p95 / max (s) | 6, 0.5 / 0.5 / 0.5 | 557, 1.1 / 5.9 / 97.0 | - | 12, 1.1 / 3.2 / 4.8 | 193, 1.1 / 5.3 / 29.9 | - |
+
+So the rings elsewhere cost nothing; the loss is the one ring on the one junction the city's freight
+crosses. The single ring takes almost no traffic in either run, so that column says little. The
+4-Lane city's missed turns rise, 148 and 199 against 10: rings on a grid of 30-40 m links, a
+measurement.
+
+**Game speed in the day.** R7c's table is at 32x. The same snapshots at 1x (86,400 frames): 1,386 no
+ring, 826 one ring, 780 eight on 1+1; 1,889, 1,138, 1,062 on 4-Lane. The ring-free city moves 0-1.4%,
+the rings 7-10%, so the 32x table understates a ring by that much, and the ratio is still 56-60%.
+
+Not known: how the rule's windows would behave at other ring sizes (only 36 m and 50 m ran); what a
+junction with `TRAFFIC-09` conflicts would carry on the trunk (the 99.4 is an upper bound, not a
+measurement); what `TRAFFIC-17` routing would do to the trunk's load, since a single border trunk has no
+other way in.
+
 ### Gridlock check (`TRAFFIC-14`)
 
 A deterministic wait-for cycle check (`tick/gridlock.rs`, `AgentSystem::check_gridlock`) runs in
@@ -947,12 +1283,16 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
     direct pass-through lane is tested by its entry slot; otherwise the connectors leading there
     (only the shortest ones toward an edge, as the claim keeps them) are tested in successor
     order: the head waits only when every one fails, for the first one's connector. A connector's
-    test is its entry slot alone (`lane_entry_slot_clear`), as the claim's.
+    test is its entry slot (`lane_entry_slot_clear`), as the claim's, and on a ring entry the
+    [give-way test](#give-way-on-entry-to-a-roundabout-road-62) too; a head that yields waits for
+    the lane that test names, the ring's, not for its own connector.
 
   Each lane waits for at most one lane, so the graph is functional: one walk per waiting lane,
   stamped with the check number and its start lane, finds every cycle once. Inputs are the lane
   buckets the last tick left (`rebuild_lanes` at the tick's end); the check is skipped while the
-  bucket snapshot does not describe the current lanes.
+  bucket snapshot does not describe the current lanes. Parked and stored-off-map vehicles have
+  no lane-bucket entries. A pull-out held by `ACCESS_LANE_ATTACH_PENDING` has no current lane;
+  it is an entry wait and cannot supply a wait-for edge or confirm a cycle by itself.
 - **Confirmation.** A cycle's identity is its lanes, rotated to start at the lowest lane id, plus
   every car on them as (agent handle, lane distance bits) in bucket order. A cycle is confirmed
   when the previous check held one with the same lanes and the same cars at the same distances:
@@ -967,6 +1307,10 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
   edge so turn rules apply. On success the remaining route becomes the junction, the exit's end
   and the planned route, with the planned detach; the car keeps standing and enters on a later
   tick through the normal speed pass and claim. Nothing is moved, despawned or timed out.
+  Parking-bound cars use the existing parking endpoint override to retain the reserved bay's
+  driveway, custody and reservation. Route replacement also clamps the saved preparation budget
+  to the new route's guaranteed storage. This adds O(1) endpoint work per attempted detour,
+  allocation-free; the check's scan/walk bounds and single route query remain unchanged.
   Connector heads never detour. A connector exists only for a turn the node's lane rules allow,
   so a detour never takes a banned turn.
 - **Report.** A confirmed cycle with no such head is genuine saturation: it stays locked and its
@@ -1205,7 +1549,255 @@ Acceptance record (`TRAFFIC-16`, round R14B, 2026-10-31; the artifact folders st
 ## Planned Lane Changes
 
 Planned lane changes solve a different problem from overtaking: a car may need to move to a sibling
-lane on the same edge to reach the exact `planned_detach_lane_id` for building access.
+lane on the same edge to reach the exact `planned_detach_lane_id` for building access, or to a
+lane that makes its next junction movement (`ROAD-94`).
+
+### Advance lane choice (`ROAD-94`)
+
+Junction lane use and target pairing are owned by
+[`roads.md`](roads.md#default-junction-lane-use-road-94); this section owns how a car gets onto
+a lane that makes its turn. Ported from Veeti's road-chain branch (`6ec0b858`, `1ae3b22f`),
+re-derived onto `dev`'s lane-end handling.
+
+- **Window.** A car on a road lane flagged by the lane use (`LaneSystem::needs_turn_preparation`)
+  prepares its turn in the last `70 m x (count - 1) + 30 m` of the lane, `count` the lanes in its
+  direction: 100 m on a 2+2 road, 170 m on a 3+3, 240 m on a 4+4. Fixed for every road speed
+  (PLAN-R4 D2): 70 m is the longest lane-change S-curve, 30 m the 12 m road-end buffer plus room
+  to start. The guard (`lane_nav.rs` `junction_approach_node`) reads the flag first, so a car on
+  any other lane (every lane of a 1+1 road) pays one read of its lane (`Lane::solid_zone_m`, on
+  the lane's own cache line since decision Q3-1 of `TRAFFIC-23`).
+- **Selector.** Inside the window `junction_approach_lane` takes where the car goes next from
+  `planned_next_target` (the next path edge, or the zero-hop detach lane's edge; one function
+  with the route preview and the connector choice, D1) and picks the nearest same-direction lane
+  that continues onto it (a direct pass-through or a connector), ties by `(|index delta|,
+  |index|, lane id)`. The car's own lane wins when it already makes the movement, so it never
+  weaves. Claim classification (`claims.rs` `agent_turn_lane_target`) and the movement step
+  (`movement/network/lane_change.rs` `turn_lane_target`) call the same selector on the same
+  inputs, both out of line behind the flag read.
+- **The move.** `choose_lane_change` moves one adjacent lane toward the selected lane through the
+  planned-change machinery (lateral claim, owner `fetch_min`, gap check, reservation, S-curve);
+  no new agent column. A pending frontage change keeps priority, and no discretionary overtake or
+  return starts inside a window. The budget divides the distance left before the solid zone over
+  the steps still needed: `min(speed x 3.5 s, (available - 12 m) / steps - 0.25 m)`, never under
+  the 18 m minimum (`turn_lane_change_length`).
+- **Entry-lane choice (`TRAFFIC-23` (a)).** A car entering a road with more than one lane in its
+  direction takes a lane from which it can follow its route without a lane change up to the
+  route's next lane-selective movement (`lane_nav.rs` `preferred_entry_lanes`): the walk follows
+  the path and narrows the usable ranks by the default lane use's group for the movement at each
+  node (`lanes::approach_group`), carries them across every group that maps 1:1 onto the next
+  road (straight on between equal counts, a pass-through, a one-lane turn onto a one-lane road),
+  and stops at the first group that does not (a turn onto a wider road, a fan), at the planned
+  detach lane on the road or its zero-hop turn, at a whitelisted node or a U-turn, or where the
+  next group shares no lane with the ranks kept (the car must then change lanes on a later,
+  longer road). No preference when every lane is usable. The lane end's connector choice keeps
+  only the connectors onto a preferred lane when any reaches one, then the shortest as before
+  (`collect_connector_lanes_to_edge`); a preferred connector that is occupied makes the car wait,
+  as for any connector. The node entry (`prepare_lane_entry`, decision S1) rotates its seed over
+  the preferred lanes only and waits while they are busy; the zero-hop fallback prefers the
+  detach lane's own rank; the route preview passes the same inputs, so the inspector shows the
+  lane the tick takes. It works because a single-lane turn group fans onto every lane of its
+  target ([`roads.md`](roads.md#default-junction-lane-use-road-94)). The per-tick selector is
+  unchanged (one node ahead, decision S6).
+- **Turn pockets (`ROAD-95`, round R5a3).** A pocket lane is its turn's only lane, and the other
+  lanes of the pocket edge do not make that turn ([`roads.md`](roads.md#turn-pockets-road-95), D4).
+  The fork into it is a connector at the lane transition (D5: each base lane keeps its rank and the
+  lane beside the pocket lane also forks into it), so a car picks the pocket at the fork and turns
+  without a lane change. A pocket edge is one taper and a body long, about 30 m of lane at a 40 m
+  body: too short to change lanes on. So the lane choice reads through the transition: the
+  entry-lane walk continues past a transition's fan into a pocket edge to the movement at the
+  pocket's junction, and a base approach of more than one lane to a transition is flagged when the
+  pocket edge's approach needs a lane choice (`transition_needs_lane_choice`): its window selector
+  targets the base lanes whose connectors reach the lanes making the movement
+  (`pocket_fork_sources`), S8 keeps it there, and its last 20 m before the transition are a solid
+  zone like any flagged approach (the paint reads the same rule). A 1+1 base road has one forward
+  lane and needs none of this. A car that joins the base road from a frontage too close to the
+  transition to change lanes misses the turn and replans (the populated record is in
+  [`roads.md`](roads.md#pockets-in-traffic-round-r5a3)). Cost: at entry events the walk adds
+  `O(degree + lanes)` at a transition; the window selector reads one edge (whether the next road
+  has a pocket) on every other approach; the flag is written at connector rebuilds.
+- **Discretionary changes keep the route's lanes (S8).** On a flagged lane a discretionary
+  overtake or return whose target lies outside the lanes `preferred_entry_lanes` gives for the
+  current road (`route_lane_group`, the route read as `planned_next_target` reads it) is refused:
+  an overtake out of the chosen lane in a standing queue may find no gap to return before the
+  junction. Evaluated only after every other condition of the change has passed (the target is
+  useful and its gap clear), never otherwise; a 1+1 road is never flagged.
+- **Solid approach zone.** No change of any kind (frontage, turn, overtake, return) starts in
+  the last `APPROACH_SOLID_LENGTH_M` = 20 m of a flagged lane (`lane_change_end`); the turn budget
+  extends its 12 m end buffer to the zone (8 m more) rather than charging both, and the window
+  guard stops at the zone, so a queue at the stop line runs no selector. The lane lines there are
+  painted solid ([`roads.md`](roads.md#default-junction-lane-use-road-94)). The route preview's
+  preparation step uses the same zone.
+- **Missed turn (D8).** A car that reaches the lane end on a lane without a connector to its
+  planned road, while a sibling lane has one (a lane-use miss, not a missing road turn), takes its
+  lane's first successor in stable order onto another road (`junction/enter.rs`
+  `follow_missed_turn`), drops its node path and logs `[MISSED_TURN]` on `traffic`; a wait for
+  that connector keeps the car and its path at the lane end. Right after that entry, the lane-end
+  handler replans from the end of the road it entered (`replan.rs` `replan_after_missed_turn`:
+  `plan_network_replan` with the car's access flags, or `plan_border_network_replan` for
+  freight). A car whose plan is cleared on a connector starts from that same place, the end of the
+  road the connector leads onto (`replan_start`, `TRAFFIC-30`): from the junction its route could
+  leave by a road the connector does not reach. **Lane-aware (`TRAFFIC-23` (b)):** the onward road is the first successor (stable
+  order) whose lane can host a turn preparation (`lane_hosts_turn_preparation`: one lane, or the
+  18 m change and the end buffers fit before its solid zone from its start, more than 38.25 m on
+  a flagged two-lane lane), else the first that is not the wanted one (S2); when the road the car
+  entered cannot host a preparation, the replan's first hop is restricted to the roads its lane
+  reaches (`plan_network_replan`'s `first_lane`, S3): `TripQueryScratch::network_path` builds the
+  predicate (`vehicle_lane_reaches_edge`) and `CchGraph::find_path_in` seeds the origin per
+  accepted departure, as a restricted origin; that forward sweep is never retained, so the next
+  unrestricted query from the node is unchanged (S7). Every other caller passes `None` and is
+  unchanged. A failed replan only sets the replan backoff; the car drives on and `dev`'s
+  empty-path replan at the next lane end is the last resort, so nothing teleports. A destination
+  turn may enter its road on any lane (a connector to the detach edge) and reach the exact detach
+  lane by frontage changes. A missed turn is not a trip failure; a genuine missing connection
+  keeps `dev`'s failure report.
+- **Bounds.** Per tick, per car on a road lane: outside a window, one byte read in claims and
+  one in movement, plus two compares in `choose_lane_change`; no other column read, no
+  allocation, no route query. Inside a window: `O(D + L x C)` twice (`D` the node degree, `L`
+  the lanes in the car's direction, `C` their successors), the existing `O(L)` adjacent-lane
+  lookup and one `O(log K)` gap test. At a lane end, `follow_missed_turn` costs `O(L x C + C)`
+  lookups only on a missing connection, and a missed turn costs one route query (an event, not
+  per tick). The entry-lane choice costs `O(hops x degree)` per entry event on a multi-lane road
+  (one edge read on a one-lane road), the S8 check the same walk only on a tick where a
+  discretionary change on a flagged lane would otherwise start (a refused car is asked again on
+  the next such tick while it stays blocked beside a clear, useful lane), the restricted replan one `O(successors)` predicate
+  call per departure of the origin; no allocation, no extra route query, nothing per tick.
+
+Acceptance record (`ROAD-94`, 2026-11-04, rounds R4a2 and R4a3; artifact folders stay local):
+
+- `benchmark_lane_transitions` (4 workers, P-cores, alternating pairs against `dev` `9f2808bc`
+  with the same test-only `turn` scenario): the five guard-only rows within noise after two
+  inlining fixes (R4a2: the missed-turn recovery had made `enter_next_edge_connector` recursive
+  and the added code had moved the movement pass's per-agent steps into other codegen units, so
+  `handle_network_movement` called them out of line; `#[inline]` on the steps and a non-recursive
+  entry restored it, and the fork's per-tick missed-turn gate moved to the lane end). The
+  blocked row's remaining +2.6% (+0.16 ms at 65,536 groups) follows the codegen-unit partition: a
+  test-only edit applied to both sides flips its sign (roads.md question 36). The `turn` row,
+  the only measurement of the window's cost: 65,536 approach arms of 2+2 four-ways, every car
+  in its window on the wrong lane: +12.1 ms, about 0.09 us per car per tick, the worst case
+  (131,072 lane changes against the control's none). R4a3's session (12:52, `.run.lock` and the
+  exclusive timing lock, P-cores, load 1.4, the same control binary against the final code, three
+  alternating pairs, medians in ms at 65,536 groups): clear 5.10 / 5.04, merge 5.44 / 5.53,
+  blocked 6.10 / 6.28 (+2.8%, as R4a2's +2.6%), lateral 5.20 / 5.15, cruise 3.66 / 3.85 (+5.2%;
+  ranges 3.51-3.75 and 3.71-3.96 overlap), turn 3.52 / 15.31. Transition counts equal in every
+  row. The cruise rise is not attributed: the zone adds two compares to every
+  `choose_lane_change` call, and question 36's partition effect was not profiled this round.
+- Economy envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, the gate's tiers: baseline and fiscal_stress
+  10k and 30k, arrivals 30k): branch and control (`dev` plus the same test-only harness) both
+  PASS with the same 13 stale-baseline notes; all 70 `SIM02_DAY` records byte-identical; the
+  built cities' lanes hashes (`SIM02_LANES`) equal (10k `9537bde0101110fd`, 30k
+  `726f721b92d2abbc`): the envelope cities are 1+1 and the lane use changes none of their
+  connectors. Determinism: no difference (repeat, 1 and 3 threads, reload) on both.
+- Locality: `incremental_lane_rebuild_scaling` local products equal at 0 to 100,000 background
+  edges and equal to the control's (`90ceffa5f4b95fd1`), median 0.030-0.034 ms, flat;
+  `populated_road_plan_scaling` identical local products at 4 to 100,004 parcels, compile p50
+  0.19-0.46 ms with no trend in size (the control alternates 0.17-0.51 ms the same way).
+- Connector sweeps: the re-recorded Kuopio save 324 connectors (94 U-turns, `dev` 440), 0
+  failing; the generated 100k city 24,834 (10 U-turns), 0 failing, equal to the control (a 1+1
+  city).
+- 100k lane audit (the prepared city, one day at 32x, 8 workers): every `TRAFFIC07_AUDIT` and
+  `TRAFFIC14_CYCLES` line equal to the control's: 0 lanes over capacity, 0 stacked, held at
+  node 1,841-2,614, 0 gridlock cycles at all 7 samples, 4,374 freight deliveries, 9 trip
+  failures, 0 `[MISSED_TURN]`, 0 missing connections.
+- **10k 4-Lane variant (`METRUM_PERF_ARTERIALS=4lane`, test builds only: the populated city's
+  cross streets and border trunk as 2+2): failing, open as `TRAFFIC-23`.** One day at 32x:
+  68,635 missed turns (2,994 cars, 1,435 of them ten times or more, at most 113), 0 missing
+  connections, 0 trip failures, **19 freight deliveries against the control's 2,073**, about
+  5,900 vehicles on lanes all day against 940-1,850, 300 lanes over their fit against 0-5, and
+  557 cars waiting more than an hour at the border node. 98.5% of the misses are on 2+2
+  approaches of 30-40 m, the cross streets' 50 m blocks between their mouths: a lane change
+  needs `18 m + 12 m` (`38 m` with the solid zone's extra 8 m), and a car turning onto a cross
+  street enters the lane the target fan gives it (a right turn the outer lane, D10), so a turn
+  off on the other side one block later cannot be prepared; the replan from the next node often
+  needs another such turn, and the circling cars saturate the grid. The same city without the
+  solid zone (a diagnostic build) misses 54,839 turns with 24 deliveries, so the zone is not the
+  cause. A diagnostic of the border hold found no claim starvation: each tick a held car loses
+  the lane only to the car that entered it before it in the same pass. The 100k and envelope
+  cities are 1+1, so no contract tier exercises this.
+
+`TRAFFIC-23` record (round R4a4, 2026-11-04; fresh runs, artifact folders stay local; one day at
+32x, 8 workers, each binary preparing its own city; control `dev` `9f2808bc` plus the same
+test-only harness, whose audit lines equal R4a3's control's exactly): the fix ((a) entry-lane
+choice, (b) lane-aware recovery, S8, the permissive masks, Q3-1) **meets the missed turns but not
+the deliveries; deliveries were then made a measurement, not a gate (user decision, below).** Node entry run both ways (decision S1):
+
+| | control (`dev`) | S1: wait for a preferred lane (shipped) | S1 alternative: any clear lane |
+| --- | ---: | ---: | ---: |
+| `[MISSED_TURN]` / day | 0 | **10** | 1,131 |
+| freight deliveries | 2,073 | **1,863** (-10.1%) | 2,088 |
+| vehicles on lanes (samples 0-1440) | 937-1,841 | 1,012-1,709 | 1,002-2,052 |
+| held at node (7 samples) | 0, 1, 20, 115, 11, 0, 0 | 3, 0, 21, 15, 6, **129, 140** | 1, 11, 131, 184, 1, 1, 1 |
+| waits over 1 h / over 4 h (worst) | 47 / 4 | 126 / 83 | 177 / 25 |
+| lanes over fit | 0-5 | 0-2 | 0-5 |
+| trip failures / missing connections / gridlock cycles | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| prepare continuation check | passes | passes | passes |
+
+- **Misses attributed** (`[MISSED_TURN]` with the traffic channel, classified against the save):
+  waiting, all 10 on the 373 m trunk (outer lane wanting a cross street, one per car, no
+  chains): the trunk's lanes host a preparation, so each is the gap model's standing-queue limit,
+  not a lane the car could not have chosen. Any clear lane: 553 on the 506 m border link (freight
+  that took the other lane when its preferred lane's slot was busy) and 578 on the trunk, 479 cars,
+  chains up to 12 (a car off its lane in a standing queue never merges back). A
+  `RAYON_NUM_THREADS=1` repeat of the waiting run gives the same audit lines.
+- **The border hold, exactly** (a test-only breakdown of the held cars at every sample, not
+  committed): waiting, every held car at minutes 1200 and 1440 (129 and 140) stands at the border
+  node entering the 506 m border link with the outer lane preferred: the route turns right at the
+  link's far junction (a 2+2 four-way: the inner lane serves left and straight, the outer straight
+  and right). The outer lane holds 116-131 cars with its entry slot occupied (nearest car
+  0.8-4.9 m from the start) while the inner lane holds 3-5 cars (nearest 24-61 m). So it is the
+  single right-turn lane carrying the whole southbound border flow (on `dev` both lanes turn
+  right), with S1 refusing the free lane; the deliveries missing at the day's end are the queue on
+  that lane and the held freight. The alternative's peak (184 at minute 720) is both lanes' queues
+  of the same flow, then cleared.
+- Diagnostics (not shipped, test-only builds): with S8 off the waiting run makes 1,968
+  deliveries and 226 misses, holds up to 225 cars and 148 wait over 4 h, so S8 is not the cause
+  of the shortfall. **With R4a3's lane masks instead of the permissive ones** (everything else
+  as shipped) it makes **2,074 deliveries with 8 misses**; its border hold (the same node, lane
+  and movement) peaks at 167 cars at minute 720 with 72 waiting over 4 h at minute 960 (`dev` 115
+  and 4), then clears (0 from minute 1200). So the delivery shortfall comes with the permissive
+  masks (user decision), which on this grid let straight traffic share the turn lanes (two-lane
+  approaches with two movements, L+S / S and S / S+R, at the border cross streets' T junctions);
+  the hold itself is the single right-turn lane in both.
+- Other gates, fresh: economy envelope and determinism (`RAYON_NUM_THREADS=6`) PASS on both with
+  the same 13 notes, all 70 `SIM02_DAY` records byte-identical to the control's (md5
+  `35345ab0110821f9`, as R4a3), lanes hashes equal (10k `9537bde0101110fd`, 30k
+  `726f721b92d2abbc`), no determinism difference; the 100k one-day audit identical to the
+  control's line for line (4,374 deliveries, 0 missed turns); connector sweeps 0 failing: Kuopio
+  352 connectors (94 U-turns; R4a3 324, `dev` 440), the 100k city 24,834 (equal to the control);
+  locality: `incremental_lane_rebuild_scaling` local products `90ceffa5f4b95fd1` at 0 to 100,000
+  background edges, median 0.030-0.084 ms with no trend in size (the control 0.030-0.034 ms),
+  `populated_road_plan_scaling` identical local products, compile p50 0.18-0.31 ms (control
+  0.19-0.34 ms).
+- Timing (one session, 15:23, `.run.lock` and the exclusive timing lock, P-cores, load 3.6 after
+  the gate runs with no cargo, rustc or godot; three alternating pairs against the control, 4
+  workers; medians in ms at 65,536 groups): clear 5.09 / 5.13, merge 5.48 / 5.50, blocked 6.07 /
+  6.11, lateral 5.16 / 5.28 (+2.3%), cruise 3.53 / 3.53, turn 3.54 / 17.07; transition counts
+  equal in every row. The turn row's window cost rose from R4a3's 15.31 ms (+12%): the
+  selector scans every sibling lane's successors (`O(L x C)`) and one-lane turn groups now have
+  a connector to each target lane (instruction samples in `junction_approach_lane`'s filter
+  2.40% against 1.63%). PERF-06 (C F F C) work counts equal; network 30k 0.49 / 0.75 / 0.81 /
+  0.59 ms, sub-millisecond rows within their usual spread only loosely (noted, not a claim).
+  `benchmark_claim_preparation` checksums equal, 1,048,576 mixed 0.51 / 0.54 / 0.52 / 0.55 ms.
+  Decision Q3-1's check (`perf stat`, the 65,536 cruise row alone, two runs each, the same
+  test-only row filter): the new code 5.676 G instructions, 0.959 G branches, 2.04-2.05 G cycles;
+  R4a3's code 5.652-5.658 G, 0.953-0.954 G, 2.05-2.09 G; `dev` 5.843 G, 0.983 G, 2.11 G. The
+  new binary carries all of this round's code, so the field's own saving is not isolated: the
+  row runs 0.4% more instructions than R4a3's and 1% fewer cycles, 2.9% fewer instructions and
+  3% fewer cycles than `dev`.
+- **Decision (user, 2026-11-04): on this grid deliveries are a measurement, not a gate.** Route
+  search is free flow (`TRAFFIC-17`), so all border freight takes one path, and the comparison with
+  `dev`'s every-lane connectors measures that one movement's lane capacity, not the lane rules.
+  `TRAFFIC-23` is accepted on missed turns, missing connections, gridlock cycles, lanes over fit,
+  determinism, 1+1 cities unchanged, the sweeps and the per-tick cost; deliveries are re-measured
+  once `TRAFFIC-17` lets traffic spread over routes. Two-day runs (fresh, test-only diagnostic
+  builds whose first-day audit lines equal the shipped code's and the control's exactly; deliveries
+  counted from the start): `dev` 2,073 after day one and 3,113 after day two, the shipped code
+  1,863 and **3,156**, R4a3's masks (a comparator only) 2,074 and 3,130. The shipped code's border
+  queue (140 held at midnight, 98 at day two's first sample) clears early on day two (0-2 held at
+  the later samples), with 22 missed turns over the two days. So the day-one shortfall is the
+  queue's timing at the funnel, not lost throughput. Open, not attributed: the `PERF-06` network
+  30,000 row above; the turn row's sibling scan has a candidate fix (a per-lane set of the exits
+  each lane reaches, built with the connectors).
 
 Ownership split:
 
@@ -1281,6 +1873,534 @@ This rule intentionally avoids weaving:
 - a car must be traffic-blocked before passing
 - a car returns only when the outward lane is clear and the overtake cooldown has expired
 - planned destination-lane changes override overtaking
+
+## Parking
+
+A resident's car is a persistent thing: it stands in a bay, a trip walks to it, drives, parks and
+walks on, and it stays where it was left. `PARK-01` is the supply and the parked cars, `PARK-05`
+the kerbside lanes, `PARK-02` the resident trips and what the economy quotes for them. Freight
+still drives door to door (`PARK-02` round 2b, [below](#freight-and-round-2b)). The work is
+Veeti's `feat/parking` branch with its fix rounds, landed on `dev` on 2026-11-07 at save format 118;
+[acceptance](#parking-acceptance-park-01-park-02-park-05) is under the
+performance contract. Implementation: `simulation/parking.rs` and `simulation/parking/`,
+`economy/agents/tick/parking.rs` and `tick/parking/`, `tick/planning/parking.rs`,
+`nodes/sim/core/parking.rs`, `godot/scripts/renderers/parked_cars.gd`.
+
+### Parking supply (`PARK-01`)
+
+`simulation/parking.rs` owns SoA place and vehicle rows behind generational handle tables,
+per-source lists and signed, floor-divided 512 m chunks. A place is one bay with one occupant or
+reservation, and its `PlaceSource` says who hosts it: a building's `parking` anchor or one parking
+lane of a road. All of them are public supply. A car keeps its model, one of five colours, the
+bay it holds, the bay it has reserved and a home point. The fleet exists only through households
+([below](#household-cars-and-custody-park-02)), or through the explicit `debug_fill_parking()`
+bridge command, which ordinary gameplay never calls.
+
+| Operation | Cost and boundary |
+| --- | --- |
+| Resolve, reserve, occupy, release | O(1), allocation-free; dirty capacity prepared with supply |
+| Source reconciliation | O(old log old + new) per anchor source; O(old × new anchors) building dispatch, plus local tow queries |
+| Off-map retry | O(W log W + W × local candidates), W local waiting cars; supply and release events |
+| Parked publication | Per dirty chunk O(C log C) for C parked cars, empty bays never visited: a copy of cached poses on the sim thread, parallel over chunks, in reused buffers, plus one support solve per car on a place with no pose for its model. O(1) and no allocation per custody event. Nothing when no chunk is dirty |
+| Sleeping parked cars | No simulation-tick iteration |
+
+The trip column (`ParkingTrip`, 56 bytes, asserted) shrinks under `PARK-06`.
+
+### Kerbside parking lanes (`PARK-05`)
+
+A road edge carries `parking: RoadParking { left, right }`, its kerbs looking along the forward
+direction. Each parking lane is `PARKING_LANE_WIDTH_M` (2.5 m) and is part of `edge.width`
+(`Edge::cross_section_width_m`); the traffic lanes keep their widths and
+`Edge::lane_group_offset` moves them half a parking lane off a one-sided parking kerb. Only a
+road with a car lane may park (`parking_requires_vehicle_road`), and a kerb only with a sidewalk
+on its own side (`layout_parking_needs_sidewalk`, D4): a kerb bay's walking access is on its own
+side, so on a shoulder it would be supply nobody reaches. `check_layout` and
+`Edge::validate_parking` hold both rules side by side, on the stroke, in place (a sidewalk cannot
+be taken from under its parking lane) and on load. Splits copy the setting; no graph operation
+reverses an edge. A parking lane weighs 0.2 per side in `road_weight`, between a sidewalk's 0.1
+and a lane ([road costs](economy.md#road-costs-road-101)). A ring refuses cross-section edits
+(`roundabout_fixed`), so a ring never parks; its arms may.
+
+The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb next to a sidewalk
+(`layout_parking_at_kerb`; outermost on a side with no sidewalk it is
+`layout_parking_needs_sidewalk`), so at most one per side; a type's parking reaches the road tool
+through `set_road_tool_parking` and travels with the stroke through preview, commit and the
+refusal report like the median. Road types store it as the `parking` part kind. A clicked
+Parking tile always lands at a kerb: the one on the selected slot's side, the right on a tie, the
+other when that kerb already parks. Picking a part selects the slot on its kerb side, so the pick
+survives the click outside that closes its popup. A dragged tile lands where it is dropped.
+
+Road Properties changes parking in place (`set_edge_cross_section`'s `parking` code, checked by
+`Edge::validate_cross_section` with the other in-place rules): a picked road type brings its
+parking, and the Parking lane row's Left and Right boxes switch one kerb. The edit rebuilds the
+roadbed, and its publication reconciles the kerb's bays like any road edit.
+
+On the roadbed the parking lane is part of the carriageway bands: the same ground-level asphalt,
+so kerbs, junction mouths, crossings and the roadbed queries need no new band kind, and the
+reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10 m line a parking
+lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
+street included), and the lane dividers split only the traffic lanes' share of the carriageway.
+It stops where a ring entry's give-way row begins, as the dividers do (`ROAD-62`, R7d's triangles),
+and it stops at the taper to a turn pocket on its side: the span ends there, the taper lying in
+the transition's node piece, and a pocket edge paints no line on a kerb its pocket moves
+(`Edge::pocket_moves_kerb`, D5).
+
+The asphalt shader gets the parking sides and the median's width (half metres) in spare bits of
+the lane-count channels (`road_space_color`), so the parking lane draws as the same asphalt, not
+as the gravel shoulder past the traffic lanes' width, and wheel paths stay in the traffic lanes.
+That repack is the one product exception to `dev`, accepted as a fix (D6: the far carriageway of a
+divided road drew as shoulder). Measured on real meshes
+(`the_repack_moves_only_a_divided_roads_green_channel`): a road with no median and no parking is
+bit for bit what it was; a divided road moves green alone, on every carriageway vertex of its
+spans, by the median's width in half metres, with red, blue and alpha untouched and junction
+asphalt (zero alpha) unchanged. The R8 probe holds no median, so it does not see this.
+
+Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
+right }` per parking lane, saved with the other places. The save drops deleted edges and
+renumbers the rest, and a kerb place's edge is renumbered with them; a retired place whose edge
+was deleted saves a placeholder edge, which load validation skips with the inactive place. A save
+written before this fix (round `VM`, 2026-11-10) by a city with an active kerb bay on a road
+numbered past a deleted one names a later road: load refuses it with "parking place has a
+missing source" (an error, not a panic) unless that road has a parking lane on the same side, and
+the renumbering is a shift, so the last such bay names a missing road or one without such a lane
+unless a later road has the lane but no active bay (a lane too short for one), in which case the
+bays load under the wrong roads. The format did not change; a city whose kerb bays all stand on
+roads numbered before every deletion saved correctly. Each is 6 m long (`KERB_BAY_LENGTH_M`)
+and 2.5 m wide, centred half a parking lane in from the carriageway's edge of the span's
+`RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
+centred in each free stretch. A stretch starts 5 m past the span's first section or its start
+crossing strip and ends 5 m before the last section or its end crossing strip, because Finnish
+rules forbid parking within 5 m of a junction or crossing. A turn pocket takes the kerb it moves
+(D5): a pocket edge holds no bays on that side, a divided road's left pocket, which takes the
+median, moves neither kerb, and the far kerb keeps its bays. The base road's bays end 5 m short of
+the span's end, so short of the taper. The moved kerb keeps its 2.5 m strip, unmarked and without
+bays: the width rule does not change on a pocket edge. A pocket added under existing bays goes
+through the normal edit path: the rebuilt owners reconcile, the bays go and their cars are towed;
+undo returns them.
+
+A building's driveways and its street-entered lot bays cut a gap of their half width plus 1 m each
+side on their own kerb; a building without driveway anchors keeps a 3 m drive clear opposite its
+main entrance, where its deliveries and drop-offs pull in, so parked cars never wall off a
+frontage (`KerbBlocker`, indexed per building and per edge, derived and rebuilt by the load
+reconcile). Cars park facing the traffic beside them: a two-way road's left kerb faces backward,
+and a one-way road's lanes serve both kerbs. Access is the bay's own side (`SameSideOnly`) when
+its direction has lanes, both sides otherwise, entered from the lane beside the bay's rear along
+the bay's swept path. Pull-out and pull-in are those of a lot bay, [below](#the-itinerary-park-02).
+Bay paint and signs are `PARK-04`.
+
+### Anchor lots (`PARK-01`)
+
+Each fitting `parking` anchor is public supply. Its `position` is the bay's entry edge and the bay
+runs `length_m` along `forward`, as asset validation and the asset editor draw it. Existing
+building transforms, paving, structure footprints and validated frontage driveways are reused. A
+bay whose entry edge lies on the lot's street edge (within 0.6 m) and points into the lot opens
+straight onto the street: the car turns in from the road and needs no `driveway` anchor. Other
+bays use fixed driveway–aisle–bay paths that check full 1.8 × 4.5 m translated rectangles and
+conservative 4.85 m turn envelopes squared to the bay, so a lot on an off-axis road keeps the
+envelope inside its yard. Coverage ignores an uncovered remainder under 0.01 m², the float
+slivers left where the yard abuts the road surface along an off-axis seam. The envelope is
+required at the driveway and at the aisle corner only when the path bends there by more than 30°;
+through a slighter bend the two corridors, each extended 2.25 m past the corner, already cover the
+car's sweep. Paved support allows 5 cm at each bay edge. Bays painted side by side may share an
+edge: the bay-on-bay check uses the same 5 cm inset. `loading_bay` anchors are excluded. Mesh parts
+no taller than 0.15 m (`GROUND_DRESSING_MAX_HEIGHT_M`: paint, kerbs) are ground dressing and block
+neither cars nor yard hedges.
+
+A rejected anchor publishes no bay and a plain-language reason naming the failing part (the way to
+the front of the spot, the way into it, or either turn) and its cause (unpaved, structure or
+another bay), with the room that part needs. The asset editor and the building inspector call the
+same Rust validator: the editor draws the failing shape for the selected spot and lists each
+rejected spot as a validation issue that blocks export, working from the asset alone; only the
+placed inspector can check the road-to-driveway segment and neighbouring structures, and it shows
+the building's valid-place count.
+
+Cars reach every bay from the building's frontage edge, so a frontage without cars (a walkway)
+publishes no bay, and the inspector says that parking needs a road cars can drive on. A parking
+lot (`service_class = "parking"`) is refused on such a frontage in its placement preview and
+commit (`NoCarAccess`), with the same words; another building with a few bays may still stand on a
+walkway, its bays unused. The check reads the frontage edge's car flag, O(1).
+
+The bundled `parking` pack follows Finnish practice: 2.5 × 5 m bays at right angles to a central
+7 m two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater
+post per pair of bays on the strip behind the kerb, and a P sign at the entrance. The small lot
+(20 × 20 m) holds 12 bays and the larger one (20 × 30 m) 20. Both are explicitly placed sites
+with zero workers and households and no economy profile, and their site surfaces render the
+asphalt. The pack is enabled by default (`mod_pack_config.gd`).
+
+Coverage retains exact ordered polygon differences, filtering support polygons by AABB before
+any overlay. With S support vertices and K overlapping contours, each footprint costs
+O(S + K overlay cost); no overlap performs no overlay or contour allocation. Bays, swept paths
+and turn envelopes share the filter. Structure checks already use the site-cell index and
+`PolygonFootprint` AABB rejection before exact overlay, with an early exit once blocked.
+For A bays and D driveways the bound is O(A² D + A D (S + L + K overlay cost)), L local
+structure vertices. This is edit and load work and has no dependency on total city buildings.
+
+### Edits and towing (`PARK-01`, `PARK-05`)
+
+Road and building edits reconcile the affected sources at the existing publication and edit hooks.
+`SimCore::reconcile_parking_frontages` takes the buildings within 8 m of the touched edges through
+the site-cell index, revalidates their lots and blockers, then reconciles the kerbs of every
+touched edge and of every edge whose blockers moved, through `replace_source`: an unmoved bay keeps
+its car, and a removed one tows it. Splits, frontage changes, road demolition and detachment, asset
+reload and undo all pass through this and the site journal. A building a road, road edit or
+explicit placement demolishes when it takes zoned land (`ZONE-09`-`ZONE-11`) is a building
+removal like a bulldoze: its lot places go through the same site journal and their cars are towed. Removing a bay never refuses the edit:
+claims on it are cancelled and a car in it is towed to free supply near home, else stored off-map.
+A resident's car is towed by its home door's catchment, the debug fleet's by the geometric
+`nearest` (straight line, walking speed). Stable handles order the towing. Undo reconciles live
+occupancy; it restores no fleet snapshot. Before it reads any parking it runs the commit's attachment
+repair over the restored edges and the buildings that fronted the edges it removes, as a split left
+them on an edge that no longer exists (`PARK-10`). Load validation rejects a kerb place whose edge is
+missing, deleted or has no parking on that side, and a lot place whose building is gone. A
+detached explicit site retains its rigid pose (`building_detached_poses`), so losing a driveway
+road disables its supply without breaking a save.
+
+A road edit whose lanes touch an agent's route clears its access plan
+(`clear_route_plan_after_road_edit`), including an agent already on its access path. Access
+ingress then ends the leg where it was going (`PARK-11`, fixed on `econ-28` in round `E3`,
+2026-11-09): a pull-in in its
+bay and a walk to the car at the car, both marked `ready` exactly as a leg that reaches its end,
+so the parking phase occupies the bay and plans the next leg from there; only a leg that ends at
+a door, a walk to the door or a trip without parking, arrives at it. Before, every agent without
+a plan arrived at its target's door: a driver pulling into its bay went in with the car still on
+the driveway, which debug builds stop on ("resident/move-in car leg must end at parking, never a
+door") and release builds skip, seating the driver at the door with its leg still a pull-in.
+Latent on `dev` too: `a_road_edit_under_a_pull_in_ends_it_in_its_bay` fails on `6d09be0c`.
+
+### Parked-car rendering (`PARK-01`, `PARK-02`)
+
+Dirty chunks publish immutable versioned model and colour buffers, stable car IDs and 12-float
+MultiMesh transforms. Unchanged chunks send nothing. Shared `vehicle_resources.gd` keeps moving
+meshes and materials identical; parked meshes omit lamps and beams.
+
+Moving cars and parked chunks reach Godot from one `RenderSnapshot`, and the render path takes no
+core lock for them:
+
+- The sim thread rebuilds dirty chunks while it builds the snapshot, in the same lock as the
+  agent poses (`SimCore::publish_parked_chunks`), and the snapshot lists every chunk Godot has not
+  acknowledged as shared `Arc` buffers. `get_vehicle_frame` reads cars and chunks under one read
+  of that snapshot, so a car crossing a bay's edge is in exactly one of them on every frame Godot
+  draws, including when it skips snapshots: a skipped chunk stays listed. There is no `busy`
+  answer and no epoch to compare. Model and colour persist across the switch.
+- Godot answers through atomics, never the lock. `acknowledge_parked_cars(epoch, serial)` says it
+  installed everything up to a publication serial; an answer from a replaced world is dropped and
+  a serial only rises, so a late answer cannot discard a newer chunk. A renderer reconnect sets a
+  flag, and the next snapshot lists every chunk once more. The `parked` key is absent from the
+  frame when nothing changed, and the listed `Arc` vector is rebuilt only when a chunk or an
+  acknowledgement changes it, `O(listed chunks)` pointer copies.
+- A chunk lists the bays its parked cars stand on (`Chunk::parked`, with `Place::parked_slot`: 12
+  to 20 bytes a bay as the list's room doubles, derived, never saved, rebuilt at load). `occupy`,
+  `release` and `set_moving` keep it in O(1) and allocate nothing, because `add_place` reserves the
+  room. A rebuild reads that list and never an empty bay. It is O(C log C), not O(C), for a sort:
+  the buffer's order is bay handle order within each bucket and the list has none. A sorted set
+  would drop the sort, but allocate on custody events, and those are the hotter path.
+- A steady rebuild allocates nothing on the sim thread. A publication is three flat buffers, and
+  each chunk keeps the one its last publication replaced (`Chunk::spare`). The next rebuild writes
+  into it once nothing else holds it, so a chunk owns at most two: 112 bytes per parked car at the
+  chunk's peak. A snapshot's list is the only other holder, and the snapshot being rebuilt lets go
+  of its list first; update lists take turns the same way, and rebuild slots and the pending list
+  are reused. A buffer grows when its chunk has more cars than ever before, and a chunk's first two
+  rebuilds make its buffers. Packing a chunk for Godot still allocates, on Godot's thread.
+- A chunk's reuse never waits for an answer. Only the newest publication of a chunk is wanted, so
+  one it replaced is free as soon as its last holder lets go, acknowledged or not. Headless, where
+  nothing answers, a chunk is listed once and keeps one spare: list and pool stay bounded by the
+  chunks ever touched, and each dirty frame copies that many pointers.
+- One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
+  off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
+  still updates.
+
+**A parked car stands on its own street or lot.** `SimCore::parked_ground_pose` reads its own
+surface, not `dev`'s visible one: a bay on the ground takes the road on the ground
+(`grounded_height_at`) or the graded ground, so a deck overhead never lifts it; a kerb bay on a
+bridge or in a tunnel takes the road piece nearest its own height (`height_nearest_at`), so it
+stands on its deck or tunnel floor. Same contacts and one gather, so the cost of the exact solve;
+moving cars keep `dev`'s solve. A car in its pull-in or pull-out under a deck is such a moving
+car, and takes `dev`'s top surface for those seconds.
+
+**Parked poses are cached.** Each place keeps one grounded 12-float pose and the model it was
+solved for (`Place::ground`, 49 bytes a bay, 4.9 MB at 100k bays), derived and never saved. A
+pose belongs to a model, because each model has its own contacts, so a car of another model
+arriving at a bay takes one solve, and a rebuild is otherwise a copy: a custody change solves
+nothing for the other cars of its chunk. A full table of the five models would remove that one
+solve per arrival for 241 bytes a bay and five solves per bay at every publication; an arrival
+costs a car no more than one frame of off-lane grounding, so it is not worth that.
+
+A pose goes stale only if the ground under it moves, and a bay is not re-added for that: the
+pose key of `replace_source` holds the bay's own position and heading, not what a neighbouring
+piece, pad or base edit does to the surface its contacts read. So invalidation does not rely on
+reconcile. The four records of the graded edit journal (`record_graded_road_edit`, `_site_edit`,
+`_base_edit`, `_reset`), which every graded ground change passes, forget the poses within the
+change's reach plus the longest car's contacts and dirty the chunks with a car there. Road changes
+cover every piece, bridges and tunnels too; a reset covers a load, a new world and a dense terrain
+undo. Two paths outside the journal call the same invalidation: the undo of a bulldoze, whose
+restored site records no site change, and a new car profile at mesh load. The next snapshot
+solves what was forgotten, so the first publication after a load rebuilds every parked pose.
+
+### Household cars and custody (`PARK-02`)
+
+A household owns at most one car. The zoning registry's classification of
+`Building.zone_profile_runtime_id` decides: low density 100%, medium 75%, high 50%; an explicit
+home without a zoning profile counts as low density. The saved mobility seed and the stable
+household handle pick the bucket, so dense storage indices and worker scheduling do not take part.
+Household removal releases claims and deletes the car. A child never drives, in a household with
+a car or not.
+
+A new car reserves the first free fitting place of its home door's catchment before it drives in.
+With no place it stays off-map and unavailable, and supply and release events wake only nearby
+waiting home chunks. A woken car drives in from a border; with no border that reaches its home it is
+towed into the free bay (`PARK-10`). A resident keeps the vehicle handle through an outing: `reserve_trip` takes
+exclusive custody and the destination together, in the ordered phase. Returning home releases
+custody even if the car stays at a distant bay.
+
+### Door catchments (`PARK-02`)
+
+Each door publishes one candidate list from two bounded directed searches over the pedestrian
+lanes, one each way (`WalkField`), connector lengths and zebra links included, out to 400 m of
+walking (`400 / AGENT_WALK_SPEED_MS` seconds). A place is a candidate if it lies within 400 m in a
+straight line, which only rejects the impossible before the walk is read, and its walk is within
+the limit. Every door has foot access (`ROAD-109`: a building stands on a side with a sidewalk),
+so a catchment reaches its bays on foot lanes and no walk leaves them. The list is ordered by
+walking seconds, then the fixed free-flow bay manoeuvre, then the place handle: a single list
+cannot order equal walks by an origin-dependent road trip, so the manoeuvre is its tie-break and
+the departure quote prices the actual road route.
+
+Existing site cells find the doors affected after a building, place or footpath publication. A
+new placement is included at once, without rebuilding the economy's lazy vacancy and chunk index.
+Occupancy never rebuilds these lists, and a departure never route-queries each candidate. A
+place's cached driveway access keeps its edge, side, stations and positions; its lane ids are
+derived live from that edge's lanes in O(lanes on the edge), because a terrain edit or a dense undo
+renumbers every lane while republishing only the places near the edit.
+
+**The invariant.** A load rebuilds every list, so a live list equals what a rebuild from scratch
+gives, bit for bit, every time the simulation reads it. Test builds audit it after each
+publication (`audit_candidates`): the doors the edit reached, sampled, and a sample of every other
+door, with each reachable bay's access. A lane's label is the least left-to-right float sum over
+every path to it, which depends on neither the settling order nor the search stopping once the
+lanes it was asked about have settled.
+
+**Rebuilding a door.** A rebuild derives what does not depend on the door once: each bay's foot
+ends, driveway time and economy ends go into a table grouped by chunk, and the foot lanes in reach
+of the rebuild's doors into a compact graph (`FootGraph`) with successors and predecessors read
+once, so the searches never scan a junction for predecessors. A door then pays for its two searches
+and the bays of its nine chunks. Its labels live in per-worker stamped arrays, so no door pays for
+the size of the city.
+
+**A site edit** leaves the lanes alone, so it rebuilds only the changed buildings' own doors. Any
+other door can only gain or lose the changed bays, which `replace_source` and `remove_place`
+journal: added, removed, reactivated, or on a new path, and the bays that follow a host's door to
+another side of the road. The rest of its list keeps its bits. The doors within a changed bay's
+straight-line reach take one test against a single search from all the changed bays, and those in
+reach run their own searches, cut short once the bays' lanes have settled. Economy ends gain the
+new bays' ends; a door that lost a bay keeps its ends if another bay on that edge still gives them,
+since a target names its frontage edge, and otherwise reads them off its whole list, each bay's ends
+derived once across all such doors. The changed buildings' own doors and the others run side by
+side.
+
+**A road commit** changes the foot lanes, so every door in reach is rebuilt, around 2,000 near a
+long edge. Its supply and doors wait for the frame after it, which its routing hold leaves empty
+([`roads.md`](roads.md) D7): no simulation phase runs in between, so none reads a stale list, and
+the doors see the entrances that frame adopts. That order is the fix for a merge bug as well: the
+rebuild used to run inside the commit, against entrances the lot adoption had not updated yet, and
+left lists a rebuild from scratch disagreed with until the next edit nearby. A publication or a
+save before that frame reconciles the edges first. A road bulldoze and an undo still publish
+inline; a stale routing hierarchy leaves the economy ends to the adoption as before.
+
+| Operation | Bound / retained storage |
+| --- | --- |
+| Catchment rebuild (a road edit, a load) | O(local lanes log local lanes + local adjacency + local bays × trip ends + local doors × (reached lanes log reached lanes + bays of nine chunks + reached bays log reached bays)); the table, the adjacency and the doors use Rayon, the two floods run side by side |
+| Site edit | O(own doors' rebuild + bays of the hosts + doors within 512 m × changed bays + R × (searches cut at the changed bays' lanes + list length)), R the doors a changed bay enters or leaves; parallel by door |
+| Commit stage | O(edges): the edge ids are kept for the next frame |
+| Destination choice | O(k), first free fitting entry, no route query or allocation |
+| Complete departure quote | O(k + Q), three exact leg quotes after selecting one place |
+| Candidate storage at 100k nonempty doors | Approximately 9.6 MB map and header storage + 1.6 MB per mean candidate capacity + 0.4 MB per mean road-component count + 1.6 MB per mean distinct car target count; empty lists omitted. The kerbside fixture's mean is 433 entries a door, about 148 MB at its 30k tier's 21,415 doors |
+
+### The itinerary (`PARK-02`)
+
+The trip is `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` inside the ordinary
+access/network/access FSM, O(1) more phase and access work per agent. `quote_parking_trip` proves
+walk-to-car, drive and walk-to-door before departure, both swept manoeuvres in the drive quote. It
+takes the first free place of the destination's catchment and the car's actual bay. The walk to
+the actual car may pass 400 m: exact pedestrian reachability decides that leg, and the 400 m bound
+applies to the destination. The walking tie-break and the 180-second
+`CAR_MODE_CHOICE_OVERHEAD_S` are unchanged from `dev`.
+
+A resident walks instead when no adult-eligible car is free, when no bay is free within 400 m of
+the destination, when no drive route joins the two bays, or when walking is quicker. A household
+whose car is stored walks until supply appears. Each reason is counted in
+`parking/stats.rs` since the last load and printed by the debug console. A failed claim walks or
+waits for a saved timing-wheel event: route-buffer preparation takes the next eligible event slot,
+an unavailable route 30 simulation seconds, converted through `seconds_per_minute`, so the slots
+are the same at every speed. No per-agent countdown polls for supply.
+
+A commute estimate quotes this whole itinerary, so on the compressed clock it can run to game
+hours, past the time between midnight and the shift. Such a worker leaves the evening before at
+the true minute, or at once if it has gone by ([`economy.md`](economy.md#schedules-and-departures);
+`PERF-15`). The departure used to stop at 00:00, and every one of them left together.
+
+Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry` (the `TRAFFIC-11` hold), including
+`ACCESS_LANE_ATTACH_PENDING`. Pull-in uses the shared `try_network_detach`, so the `TRAFFIC-13`
+last-visit rule and the `TRAFFIC-15` lane-end reach apply to these legs too. Both use the place's
+driveway curb, followed by its four-point swept path outside the network. Origin occupancy is
+released after the pull-out reaches the network; the destination reservation becomes occupancy
+before the last walk. No resident car leg finishes at a door: arrival asserts this in debug
+builds. Parked and stored cars are out of the lane buckets and the gridlock check, and a held
+pull-out counts as an entry wait, not a cycle. A confirmed gridlock detours a parking-bound car
+with the same entrance override as an ordinary replan, so it keeps its reservation and driveway
+station; replacement also clamps the saved route budget, O(1) and no allocation per detour.
+
+### The parking tick (`PARK-02`)
+
+The ordered resource phase, O(C log C + W + T × Q) for C candidates, W lost reservations watched
+and T transitions, has no pass over the population; exclusive resource commits use ascending agent
+order, and the routing runs ahead of them on every worker, below. It visits candidates only
+(`tick/parking/candidates.rs`). An agent is due in it, with no
+retry pending, when it is `ready`, when a departure is due, when it is inside on its `WalkToDoor`
+leg, or when it drives with its old bay still held. The movement pass finds all four as it runs:
+each agent's step ends in one check on the row it has just used, so a site that sets `ready` needs
+no push of its own, and an agent `ready` freezes is noted instead of stepped, which also retries a
+commit that could not finish. The notes go into the running shard's scratch, are merged and sorted,
+and the phase walks them in ascending agent order, so 1 and 8 workers commit the same way. The
+timing wheel's retry wakes its agent for the next commit, and a bay a replan kept from being
+released carries to the next tick. The lists are reused and are never saved.
+
+The walk stays serial because a visit can take or free a bay the next visit wants, but nearly all
+of a visit's cost is routing, and routing reads nothing the commit writes: lanes, the hierarchy and
+the entrances are fixed, an agent's row changes only in its own visit, and a live bay keeps its
+access and its geometry, since the commit only removes bays already retired. So before walking each
+block of candidates, every worker pulls candidates off one counter and answers the legs each visit
+is expected to ask about (`tick/parking/prepared.rs`): a departure's walk, its car trip between the
+car's bay and the first free bay as the block starts, a transition's next leg, and the route of the
+leg the visit should start. The answers go into per-worker lists that keep their storage. That pass
+decides nothing. The walk then runs as it always did, forms each question from the live state and
+takes an answer only if it answers that question: a departure reads its bays itself, and when an
+earlier visit of the block took or freed one it quotes the trip again on the spot. A departure that
+turns out to walk after all finds no route for that leg and asks for one. So the answers change no
+outcome at any worker count; a wrong expectation costs only time, and an answer pass over a block
+of 96 costs about 0.1 ms beyond its routing. Debug test builds ask the router again for every answer
+taken and compare the bits.
+
+Network legs repeat: a commuter asks the same question every day. The phase keeps them in one
+`SharedNetworkQuotes` from tick to tick, the striped cache the job search uses, emptied by a new
+network revision. Every worker's quotes read it and fill it, and so do the economy's resident quotes
+and the movement pass's commute estimates. A leg's seconds are a pure function of its key, so which
+worker priced it first changes nothing.
+
+Custody reaches agents the other way, through two event lists `ParkingSystem` fills at each custody
+write. A borrower whose reservation ended joins a watch that sets `ready` and `replan_needed` before
+movement, and stays on it while it drives a junction connector, which is no place to replan from.
+A car whose custody changed has `has_car` rewritten for its household's members, or its arrival
+carrier, just before the tick, O(cars changed × household members), O(arrival carriers) for a car
+no household owns yet. That moment matters: the economy reads `has_car` between ticks, so a
+reservation made in a commit shows from the next tick, as it did when a pass rewrote the column.
+Rows that change with no event, a load and an undo, ask the next tick for one O(agents) rebuild.
+Debug test builds check every tick of every test against the full scans these lists replaced.
+
+### Recovery (`PARK-02`)
+
+Removing a reserved bay cancels its claim. A bounded three-handle reverse link keeps disabled
+endpoint geometry only while its borrower needs it; it is excluded from usable supply. Every
+recovery that rewrites the itinerary drops the links it no longer names, in O(1)
+(`retain_retired_places`), so a superseded destination gives its slot back. One edit can still
+tow a borrowed car through more bays than there are slots with no recovery between; with every
+slot taken the newest bay goes unretained, since no trip names a bay it was towed through and a
+destination recovery replaces anyway. Evicting the oldest instead would drop the bay the walker
+is heading for. Removal never panics on a full set. Recovery walks to the car's actual new place,
+replans from its actual lane position, or reverses an unfinished pull-in to the driveway before
+choosing replacement supply. It never moves a travelling car by towing. A failed replan on a
+parking leg asks for this ordered recovery, so the stuck-agent watchdog does not teleport the car
+(`TRAFFIC-20`). A displaced resident with a persistent car and no home left walks.
+
+Recovery replans from a lane, so a car with none waits for a retry.
+
+A trip can be taken from a driver on the way (`TRAFFIC-29`, the car's case of `TRAFFIC-24`): its
+job ends (`assign_work_building`), its household loses or changes its home, or the building goes.
+One rule covers them, read at the point the driver next needs the trip, so no caller that clears a
+target has to know it:
+
+- **On the road** the car drives on to the end of its lane, keeps the lane and asks this recovery
+  (`walk_home::car_trip_taken`), which runs in the same tick's commit. The trip turns to the
+  destination the agent holds, a demolition's move home; else its home; else, with no home, the
+  building it was going to, which still shelters it until the household's next home. A car still
+  on the road moves its reservation to the first free bay there, and with none free keeps the bay
+  it booked, parks there and walks. With no bay at all it waits on its lane for the 30 game
+  minute retry. No trip failed, so there is no record. Off a parking leg, in a city with no
+  parking system, the car sets off for home through the replan gate from the node it reached, and
+  with no home stands off the lane for its next one, as a walker waits.
+- **On an access path** the trip stays (`on_access_path`): a pull-in ends in its own bay and a walk
+  at its own door, where a replan has no lane to start from. Inside, the ordinary schedule sends
+  the agent on, home from a job that ended. A move to a new home waits for that door the same way.
+- **With nothing left**, no destination, no home and the building gone, the itinerary ends
+  (`settle_without_car`): the car stays in its bay, or from the road goes off the map until a bay
+  takes it, and the driver settles for the household's next home, as an evicted resident does. A
+  stored car whose household has since moved waits for its old home's supply: a stored car's home
+  is not updated on a move.
+
+A recovery whose building has gone reaches the same choice, at any leg: it used to ask again every
+30 game minutes for good, with the car standing on its lane. The cost is O(1) at the lane end and
+one route query in the commit, plus O(k) for the bay; nothing scans or polls, and a car with no
+bay costs one O(k) look per retry.
+
+### Economy quotes (`PARK-02`)
+
+Employment, shopping and service visits quote the same physical itinerary as departure. Jobs
+reuse the existing component buckets and shared exact CCH quotes. Publication caches each door's
+union of bay road components, distinct car arrival targets and maximum node slack, so hourly
+searches never route-query all its candidates; pending doors finish after the next CCH adoption
+(`refresh_economy_metadata`). Batch keys distinguish actual household cars. The bounded
+home/work/mode cache stores the chosen source and destination handles and a geometry stamp;
+occupancy or a local bay move replaces that value without adding availability-version keys.
+Shopping and service folds share immutable component arrays without per-entry allocation. Their
+walking proofs stay O(1); car fallbacks prove an outward itinerary and a hypothetical return from
+the proposed destination bay, with the departure bay available on return. Accepted shopping-leg
+timeouts use the same complete physical cost. A household without a car keeps its walking options:
+the job search and the visits fall back to them. See
+[the job search](economy.md#agents-supply-labor).
+
+### Arrivals and stored cars (`PARK-02`)
+
+A move-in decides its car once from the saved seed and its stable carrier identity, before a
+household record exists; adoption keeps that decision and the original car. At its paced departure
+it reserves one free place of the home catchment and goes `Drive → PullIn → WalkToDoor`. With no
+free place, or no car, it walks from the border and any car stays off-map.
+
+Stored cars never become occupied places at supply publication or load. Only new supply wakes
+them: an added or reactivated bay wakes its own chunk, and a catchment rebuild wakes the doors
+whose list of reachable places changed. New lots, vacated bays, cancelled reservations and towing
+queue deduplicated chunk events. An unchanged bay or catchment wakes nothing, so the full frontage
+reconcile and catchment rebuild after a load schedule no arrivals the uninterrupted game did not.
+Each event considers at most eight cars in stable handle order across the nine neighbouring home
+chunks, continuing at the next eligible timing-wheel slot until that finite wake cycle ends. A car
+that fails sleeps until the next supply event. The ordered sets reuse the home-chunk index; the
+continuation cursor lives in the parking chunk, and both cursor and scheduled event survive saves.
+
+Per event the bound is O(8 × (9 log W + k + BQ) + log S): W local waiting cars, k cached home
+candidates, B connected external borders, Q one exact route query, S scheduled events. A car
+selects one cached candidate before trying borders in stable order, reserves before spawning, and
+goes `Drive → PullIn`. Its delivery-only carrier retires at the bay through the normal agent
+lifecycle, without entering a building, and the household cannot use the car until pull-in commits
+occupancy. The shared logistics topology refresh is unchanged, O(nodes + edges) once per revision,
+prepared before delivery events; there is no further spatial or connectivity index.
+
+### Parking in a save
+
+Save format 118 ([`simulation.md`](simulation.md#save-bytes-road-68-k16)) holds handle generations,
+places, cars, occupancy and reservations, ownership, custody, trip phases, claims, pending
+household and release events, endpoint recovery links, quote stamps, rolling destination
+memberships and the arrival decisions, with no migration. Edge parking is
+`network_edges.parking` (bit 0 left, bit 1 right). Load validates reciprocal custody and building
+owners, and rebuilds the source, chunk, waiting and render indices, the catchments, the access
+endpoints and the route buffers' saved logical budgets; allocator spare capacity cannot change a
+departure. `households.shopping_has_car` is stored, not rebuilt from the agents: the flag changes
+only at the hourly recount, while car custody changes every tick. So a loaded game saves the same
+bytes and continues the same census as the uninterrupted one. SQLite stores opaque event payloads
+as signed bit patterns, so negative chunk coordinates round-trip. The JSON columns are `PARK-06`.
+
+### Freight and round 2b
+
+Round 2b of `PARK-02` is not built: freight custody, outside-door deliveries and wider watchdog
+and lifecycle handling. Freight keeps today's door-to-door car path and the stuck-agent watchdog's
+teleport (`TRAFFIC-20`). `PARK-03` (authored yard supply and a parking-backed admission gate) and
+`PARK-04` (paint and signs) are planned; see [`roadmap.md`](roadmap.md).
 
 ## Render Movement
 
@@ -1546,6 +2666,91 @@ Current known bounded scans:
   by degree-two split fan-out
 - lane bucket gap checks use sorted vectors and `partition_point`
 
+### Parking acceptance (`PARK-01`, `PARK-02`, `PARK-05`)
+
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717` (`324d6dde`
+and later add docs only), on the fixture with kerbside supply: exclusive locks, P-cores, 8 workers, no
+Godot, no build, a browser open. `dev` was not run (the user: no commits since this work began): its
+figures are round M7c's samples from the same boot, same binary, SHA-256 `139c9563`, not a same-session
+control. The frame budget and the 100k load are in
+[`simulation.md`](simulation.md#parking-frame-and-load-acceptance-park-02), the economy contract in
+[`economy.md`](economy.md#parking-contract-acceptance-park-02) and the commit breakdown and
+`benchmark_parking_locality` in [`roads.md`](roads.md#parking-commit-acceptance-park-02).
+
+`PERF-06`, idle fixtures, two slots of 60 samples, 120 a side, the command below: no final median is
+above `dev`'s third quartile. Five sit inside `dev`'s quartiles and network at 30k below them. Every
+median reads under round M7c's for the same work counts, by 9 to 31%, which is why this table is no
+evidence of a gain: with no control in the session the machine cannot be told from the code.
+
+| State | Agents | `dev` q1 / median / q3 (M7c's) | M7c's tree median | Final median |
+| --- | ---: | --- | --- | --- |
+| network | 10,000 | 0.270 / 0.368 / 0.537 | 0.383 | 0.281 |
+| network | 30,000 | 0.601 / 0.762 / 1.105 | 0.803 | 0.555 |
+| access_egress | 10,000 | 0.520 / 0.655 / 0.909 | 0.719 | 0.613 |
+| access_egress | 30,000 | 1.350 / 1.620 / 2.241 | 1.812 | 1.648 |
+| access_ingress | 10,000 | 0.205 / 0.264 / 0.362 | 0.252 | 0.220 |
+| access_ingress | 30,000 | 0.334 / 0.428 / 0.577 | 0.462 | 0.389 |
+
+The populated peak of the phase: 73 candidates a tick, 194 at most, at 30k 32×; 6.4 and 57 at 100k
+1× (round M7c). The parked rebuild's share is 5.1% of frame time at 30k 32×, 0.9% at 100k 1× (M7c).
+
+Round M7c's reading, not rerun: `parking_employment_reach`, 10k, within 900 s: **82.6%**, 28,134 of 34,048 pairs, against 46.7% with
+no kerbside supply; 24 of 32 sampled workers had an available car.
+
+**Correctness**, `tools/sim02_gate.py envelope determinism --bursts departures,settlements`, 14
+days, the shift probe in the binary, rerun on the final tree: saturation, detours, trip failures, lanes over capacity and
+stacked cars read **0** at 10k and 30k, with deliveries alive at 1,389 and 3,701 a day. 0 violations
+in every workload, including fiscal stress and arrivals. Departures at 10k / 30k: drove 43.7 / 41.4%,
+walking quicker 35.8 / 33.1, car away 15.9 / 16.0, "no drive route" 4.5 / 5.9, destination full 0.2 /
+3.6, stored 0, no parking within 400 m 0. Every day and lane record equals round M7c's byte for
+byte. Connector sweeps on the Kuopio map and the fresh 100k city: 352 and 24,834 connectors, 0 failing.
+
+60 days at 10k, the same counts: 0 on `dev`, and **0 on final** in round M8's run (tree `c9dda717`,
+the same probe, 8 workers), with 1,554 deliveries a day over the last 14. Round M7c read one trip failure
+on day 59 (`TRAFFIC-30`): a car replanned on a connector from the junction, then drove the connector's
+road to a far end its route never named. The fix moves no day of the record before it.
+
+**Determinism.** The same gate, 10k at 8 workers: repeat, 1 and 3 workers and reload all null, rerun on the final tree. Round M7b's product probe at 1, 4 and 8 workers at each
+speed on its tree, and round M8's at 1 and 8 on the final tree: identical across workers. The two speeds
+differ by design.
+
+Measured earlier, round M2, before the fixture supply, on the idle `PERF-06` fixtures (2026-11-06,
+`port-park-merge`, release test binaries, 8 workers, P-cores, nothing else running): the parking
+phases count 0 rows where the merged branch counted N, and the tick is back with `dev`. Slots ran `dev`, B1, final, final, B1, `dev`, 60 samples
+a slot, one measured tick a sample; quartiles of the two slots of each binary, in ms. `dev` is
+SHA-256 `139c9563`, the final build `b71f08f9`, B1 without the leg check below `b5a25d1c`.
+
+```sh
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+| State | Agents | `dev` q1 / median / q3 | Final q1 / median / q3 |
+| --- | ---: | --- | --- |
+| network | 10,000 | 0.330 / 0.463 / 0.668 | 0.310 / 0.431 / 0.598 |
+| network | 30,000 | 0.651 / 0.917 / 1.235 | 0.602 / 0.778 / 1.007 |
+| access_egress | 10,000 | 0.589 / 0.778 / 1.048 | 0.610 / 0.795 / 1.071 |
+| access_egress | 30,000 | 1.449 / 1.780 / 2.474 | 1.521 / 1.831 / 2.462 |
+| access_ingress | 10,000 | 0.226 / 0.296 / 0.400 | 0.203 / 0.254 / 0.333 |
+| access_ingress | 30,000 | 0.358 / 0.443 / 0.572 | 0.377 / 0.478 / 0.567 |
+
+An earlier session the same night, same method, set the merged branch before B1 (`c6939703`) beside
+B1: medians at 30k network 1.023 against 0.877, ingress 0.606 against 0.481, egress 1.980 against
+1.979. So the two passes were not all of the egress cost: every access step also copied the 56-byte
+trip row into a lookup that returns nothing off a parking leg, which the phase check now skips
+(30k egress 1.958 to 1.831). The samples spread widely at these sub-millisecond ticks; read the
+columns as overlapping, not as a ranking.
+
+Historical, the branch's own figures: Veeti's Apple M2 Pro, his builds from round 1b `bdf31d2b` to
+round 2a `df1cf178`, against `upstream/dev` `727dd7f2` and `c2d49902`, before `ROAD-107` and
+`ROAD-62`; evidence for those builds only. Twelve lots stayed at 0.14-0.15 ms a lot and under
+0.5 ms a publication from 0 to 100k background buildings, the twelve candidate lists at
+0.74-0.75 ms, and a road or site publication with the nearby door catchments at about 20 ms, all
+flat. At 30k, 21 `PERF-06` pairs before the candidate lists read access egress 1.681 to 2.255 ms,
+ingress 0.732 to 0.871 and network 1.051 to 1.142. The economy's hourly budgets passed, on a
+different warm-up economy, so that pair was no control. On the dense 10k district's day-12
+snapshot, with no kerbside supply, 17 of 32 sampled workers had an available car, job reach within
+900 s fell from 100% to 46.7%, and employment fell 0.72%.
+
 ### Claim Preparation Audit Measurements (2026-09-12)
 
 Five alternating unprofiled release process pairs used eight physical cores (`taskset -c
@@ -1677,9 +2882,10 @@ The measured ignored tests are
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
 - there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
-  (`TRAFFIC-06` plans junction priority, yield and stop control, and roundabout entry)
+  (`TRAFFIC-06` plans junction priority, yield and stop control); a roundabout's entries give way
+  to the ring ([round R7c](#give-way-on-entry-to-a-roundabout-road-62)), nothing else does
 - lane changes are centerline S-curves, not full swept-body collision geometry
-- parking, driveways, curb queues, and building entrance reservations are not modeled
+- resident parking trips, curb queues and building entrance reservations are not yet modeled; physical supply and parked test cars are described above
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
 - a border queue of held cars is not shortened by the entry hold: the borders' throughput (one

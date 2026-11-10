@@ -502,6 +502,7 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -523,6 +524,9 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     }
 
@@ -607,6 +611,7 @@ mod tests {
             edge.bkw_lanes = bkw;
             if primary_type == TransitType::Foot {
                 edge.allowed_types = TransitFlags::FOOT;
+                edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             }
             graph.add_edge(edge);
             graph.rebuild_adjacency_list();

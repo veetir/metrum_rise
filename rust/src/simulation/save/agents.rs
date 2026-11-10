@@ -69,6 +69,7 @@ pub(super) struct LoadedAgentRecord {
     pub cached_schedule_work_building: usize,
     pub cached_work_profile_index: u16,
     pub has_car: bool,
+    pub parking_trip: crate::simulation::parking::ParkingTrip,
     pub vehicle_type: u8,
     pub current_path_index: usize,
     pub current_path: Vec<u32>,
@@ -84,7 +85,7 @@ pub(super) fn save_agents(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, parking_trip) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -183,7 +184,8 @@ pub(super) fn save_agents(
             agents.overtake_blocked_time_s[i],
             agents.overtake_cooldown_s[i],
             i64::from(agents.job_lock_until_day[i]),
-            i64::from(agents.consecutive_unpaid_days[i])
+            i64::from(agents.consecutive_unpaid_days[i]),
+            serde_json::to_string(&agents.parking_trip[i]).map_err(|e| SaveLoadError::custom(e.to_string()))?
         ])?;
 
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
@@ -221,7 +223,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, parking_trip FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -287,6 +289,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
                     cached_schedule_work_building: db_to_optional_usize(row.get(37)?)?,
                     cached_work_profile_index: i64_to_u16(row.get(38)?)?,
                     has_car: row.get(39)?,
+                    parking_trip: serde_json::from_str(&row.get::<_, String>(55)?).map_err(|e| SaveLoadError::custom(e.to_string()))?,
                     vehicle_type: i64_to_u8(row.get(40)?)?,
                     current_path_index: i64_to_usize(row.get(41)?)?,
                     current_path: car_paths.remove(&aid).unwrap_or_default(),
@@ -385,6 +388,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         current_path_index: rec.current_path_index,
         walk_lanes: Vec::new(),
         has_car: rec.has_car,
+        parking_trip: rec.parking_trip,
         vehicle_type: rec.vehicle_type,
         pedestrian_type: rec.pedestrian_type,
         walk_phase: rec.walk_phase,
@@ -453,10 +457,12 @@ pub(super) fn validate_loaded_agents(
             agents.target_building[i] = usize::MAX;
             clear = true;
         }
-        // A failed route retains its old cursor while waiting to retry. The empty path
-        // makes it inactive; preserving it keeps an ordinary continuation bit-identical.
+        // A failed route retains its old cursor while waiting to retry, and a walker with no
+        // trip left keeps its lane with the cursor one past its path. The empty path makes it
+        // inactive; preserving it keeps an ordinary continuation bit-identical.
         if agents.current_path_index[i] > agents.current_path[i].len()
             && !loaded_empty_network_path_has_replan_context(agents, i, graph)
+            && !loaded_walker_kept_at_path_end(agents, i)
         {
             clear = true;
         }
@@ -466,17 +472,18 @@ pub(super) fn validate_loaded_agents(
         {
             clear = true;
         }
-        if !agents.next_replan_time[i].is_finite() {
-            clear_agent_access_plan(agents, i);
-        }
-        if !agents.planned_attach_lane_d[i].is_finite() || agents.planned_attach_lane_d[i] < 0.0 {
-            clear_agent_access_plan(agents, i);
-        }
-        if !agents.planned_detach_lane_d[i].is_finite() || agents.planned_detach_lane_d[i] < 0.0 {
+        let mut invalid_plan = !agents.next_replan_time[i].is_finite()
+            || !agents.planned_attach_lane_d[i].is_finite()
+            || agents.planned_attach_lane_d[i] < 0.0
+            || !agents.planned_detach_lane_d[i].is_finite()
+            || agents.planned_detach_lane_d[i] < 0.0;
+        if invalid_plan {
             clear_agent_access_plan(agents, i);
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state(agents, i, graph) {
+            if preserve_loaded_network_retry_state(agents, i, graph)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);
@@ -518,6 +525,7 @@ pub(super) fn validate_loaded_agents(
                 || (agents.access_flags[i] & ACCESS_WALK_TO_SIDEWALK) != 0
             {
                 clear_agent_access_plan(agents, i);
+                invalid_plan = true;
             }
         }
         if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() {
@@ -532,7 +540,9 @@ pub(super) fn validate_loaded_agents(
         if clear {
             clear_agent_travel_state(agents, i);
         }
-        repair_orphaned_loaded_network_agent(agents, i, graph, allocator);
+        if clear || invalid_plan {
+            send_invalid_row_home(agents, i, graph, allocator);
+        }
     }
     Ok(())
 }
@@ -550,6 +560,27 @@ fn loaded_empty_network_path_has_replan_context(
         && !graph.edge(agents.current_edge[i]).deleted
 }
 
+// A walker whose path ends short of its exit with no plan keeps its road lane and waits at its
+// end (`TRAFFIC-19`, `handle_lane_end`): the lane end has moved its cursor one past the path. Not
+// a stale route: clearing it took the walker off the sidewalk, and the orphan repair then sent it
+// home, which the running game does not (`PERF-13`).
+fn loaded_walker_kept_at_path_end(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit_mode[i] == MODE_WALK
+        && agents.transit[i] == TRANSIT_NETWORK
+        && agents.current_lane_id[i] != usize::MAX
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.current_path_index[i] == agents.current_path[i].len() + 1
+}
+
+// An agent indoors with no plan whose last departure failed waits out `BUILDING_REPLAN_DELAY_S`
+// (`next_replan_time`) before it plans again, a retry timer the running game keeps. Not plan
+// state: zeroing it made a game loaded mid-backoff retry at once.
+fn loaded_departure_backoff(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit[i] == TRANSIT_IN_BUILDING
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.next_replan_time[i] > 0.0
+}
+
 fn preserve_loaded_network_retry_state(
     agents: &AgentSystem,
     i: usize,
@@ -559,29 +590,22 @@ fn preserve_loaded_network_retry_state(
         && (agents.next_replan_time[i] > 0.0 || agents.network_replan_failures[i] > 0)
 }
 
-fn repair_orphaned_loaded_network_agent(
+// A network row the save could not restore, its travel state dropped, goes on towards its home.
+// Only a row with invalid saved references comes here: a load repairs no state the running game
+// keeps, which would make a loaded game differ from the one that kept running (`TRAFFIC-29`).
+fn send_invalid_row_home(
     agents: &mut AgentSystem,
     i: usize,
     graph: &RegionGraph,
     allocator: &BuildingAllocator,
 ) {
-    if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION) {
-        return;
-    }
-    if agents.current_lane_id[i] != usize::MAX
+    if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        || agents.current_lane_id[i] != usize::MAX
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
         || agents.agents.pending_lane_attach(i).is_some()
         || agents.agents.sidewalk_walk(i).is_some()
     {
-        return;
-    }
-    if preserve_loaded_network_retry_state(agents, i, graph)
-        || (loaded_empty_network_path_has_replan_context(agents, i, graph)
-            && agents.target_building[i] < allocator.buildings.len())
-    {
-        // Demolition can leave a valid destination awaiting its first immediate replan.
-        // It has no backoff or failures yet, but its pending target and cursor are live state.
         return;
     }
 
@@ -688,7 +712,9 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_d[i] = 0.0;
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state_without_graph(agents, i) {
+            if preserve_loaded_network_retry_state_without_graph(agents, i)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);

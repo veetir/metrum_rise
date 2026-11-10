@@ -26,6 +26,8 @@ use crate::traffic_log;
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Keep frontage geometry and logging out of the frequently executed road movement loop.
+#[inline(never)]
 pub(super) unsafe fn try_network_detach(
     i: usize,
     lane_id: usize,
@@ -86,6 +88,13 @@ pub(super) unsafe fn try_network_detach(
                     transit_network,
                 )
             {
+                let trip = *slices.parking_trip.get(i);
+                let ingress_origin = if trip.phase == crate::simulation::parking::ParkingTripPhase::WalkToCar {
+                    slices.parking.and_then(|p| p.place_curb(trip.source)).unwrap_or(ingress_origin)
+                } else { ingress_origin };
+                if trip.phase == crate::simulation::parking::ParkingTripPhase::Drive {
+                    slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::PullIn;
+                }
                 *s_pos_x.get_mut(i) = ingress_origin.x;
                 *s_pos_y.get_mut(i) = ingress_origin.y;
                 s_path.get_mut(i).clear();

@@ -9,6 +9,7 @@ use godot::prelude::Vector3;
 #[test]
 fn test_slope_cost_calculation() {
     let mut edge = Edge {
+        parking: Default::default(),
         start_node: 0,
         end_node: 1,
         primary_type: TransitType::Road,
@@ -30,6 +31,9 @@ fn test_slope_cost_calculation() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -60,6 +64,7 @@ fn test_pathing_avoids_steep_slope() {
     // 1. Short but very steep road: A -> B
     // Slope = 50m height / 100m length = 50%.
     let mut edge_ab = Edge {
+        parking: Default::default(),
         start_node: n_a,
         end_node: n_b,
         primary_type: TransitType::Road,
@@ -89,6 +94,9 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -98,6 +106,7 @@ fn test_pathing_avoids_steep_slope() {
     // 2. Long but flat detour: A -> C -> B
     // A -> C (111.8m)
     let mut edge_ac = Edge {
+        parking: Default::default(),
         start_node: n_a,
         end_node: n_c,
         primary_type: TransitType::Road,
@@ -119,6 +128,9 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -127,6 +139,7 @@ fn test_pathing_avoids_steep_slope() {
 
     // C -> B (111.8m)
     let mut edge_cb = Edge {
+        parking: Default::default(),
         start_node: n_c,
         end_node: n_b,
         primary_type: TransitType::Road,
@@ -154,6 +167,9 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -184,6 +200,7 @@ fn test_bidirectional_walkway_pathing() {
 
     // Create a bidirectional walkway (primary_type = Foot, allowed_types = 1, lanes = 0)
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Foot,
@@ -205,6 +222,9 @@ fn test_bidirectional_walkway_pathing() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -236,6 +256,7 @@ fn test_car_uturn_allowed() {
 
     // Create a bidirectional road (idx 0)
     let edge_idx = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -257,6 +278,9 @@ fn test_car_uturn_allowed() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -293,6 +317,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
         let start_pos = node_positions[start_node as usize];
         let end_pos = node_positions[end_node as usize];
         Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -314,6 +339,9 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     };
     graph.add_edge(edge(n0, center, 241.03, 0.0, 9.35));
@@ -359,6 +387,7 @@ fn test_car_avoids_walkway_shortcut() {
 
     // Road path
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -380,8 +409,12 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n1,
         end_node: n2,
         primary_type: TransitType::Road,
@@ -403,10 +436,14 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
 
     // Walkway shortcut n0 -> n2 directly
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n2,
         primary_type: TransitType::Foot,
@@ -428,6 +465,9 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -484,6 +524,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
         let p1 = g.nodes()[e as usize].pos;
         let len = p0.distance_to(p1);
         g.add_edge(Edge {
+            parking: Default::default(),
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,
@@ -505,6 +546,9 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         })
     };
 
@@ -599,6 +643,7 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
     let mut edge = |start_node: u32, end_node: u32, foot_only: bool| {
         let points = vec![graph.node(start_node).pos, graph.node(end_node).pos];
         let mut edge = Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: if foot_only {
@@ -628,6 +673,13 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: if foot_only {
+                crate::simulation::network::graph::SidewalkSides::NONE
+            } else {
+                crate::simulation::network::graph::SidewalkSides::BOTH
+            },
+            roundabout: None,
         };
         (edge.base_cost, edge.physical_length) = cost::CostCalculator::calculate_costs(&edge);
         graph.add_edge(edge);

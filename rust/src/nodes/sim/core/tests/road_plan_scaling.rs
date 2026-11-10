@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadEditPlan;
+use crate::simulation::network::graph::SidewalkSides;
 use godot::prelude::Vector2;
 use std::time::Instant;
 
@@ -12,9 +13,10 @@ mod memory;
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
 // T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
 // flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
-// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`); or
-// no stroke: the T's side road, drawn, widened in place or given that median in place
-// (`ROAD-80`).
+// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`) or
+// with its one sidewalk on the left (`ROAD-107`); or no stroke: the T's side road, drawn, widened
+// in place or given that median in place (`ROAD-80`), or that one side in place; or a stroke
+// joined to a bare ring south of the T (`ROAD-62` round R7d).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -23,9 +25,14 @@ enum Measured {
     UnderBridge,
     JoinBridge,
     Divided,
+    OneSided,
     LaneEdit,
     MedianEdit,
     TypeEdit,
+    SideEdit,
+    PocketEdit,
+    Conversion,
+    RingJoin,
 }
 
 // The median of the divided measurements (`ROAD-80`).
@@ -34,6 +41,11 @@ const GRASS: crate::simulation::network::graph::RoadMedian =
         style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
         width_m: 3.0,
     };
+
+// The one-sided measurements' road type (`ROAD-107`): the default's, its sidewalk on the left.
+fn one_sided() -> crate::simulation::network::road_types::RoadAttributes {
+    crate::simulation::network::road_types::RoadAttributes::new(50, SidewalkSides::LEFT, true)
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum CellScenario {
@@ -126,6 +138,33 @@ fn populated_median_edit_scaling() {
     );
 }
 
+// `ROAD-107` locality: the T's side road drawn with one sidewalk, planned as the remote city grows.
+#[test]
+#[ignore = "unprofiled one-sided road planning locality; run alone with --release --ignored --nocapture"]
+fn populated_one_sided_road_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::OneSided,
+    );
+}
+
+// `ROAD-107` locality: the T's side road's right sidewalk removed in place: its lanes rebuilt on
+// one side, the walkers and entrances of that side moved.
+#[test]
+#[ignore = "unprofiled in-place sidewalk side edit locality; run alone with --release --ignored --nocapture"]
+fn populated_road_side_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::SideEdit,
+    );
+}
+
 // `ROAD-101` locality: the T's side road given a rural road type's attributes in place: its
 // sidewalks off and 80 km/h (lanes rebuilt without sidewalks, the routing cost recomputed).
 #[test]
@@ -149,6 +188,45 @@ fn populated_lane_edit_scaling() {
         false,
         CellScenario::None,
         Measured::LaneEdit,
+    );
+}
+
+// `ROAD-62` round R7b: the T converted to a 36 m ring.
+#[test]
+#[ignore = "unprofiled roundabout conversion locality; run alone with --release --ignored --nocapture"]
+fn populated_roundabout_conversion_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::Conversion,
+    );
+}
+
+// `ROAD-62` round R7d: a 1 + 1 stroke joined to a bare 36 m ring near none of its nodes.
+#[test]
+#[ignore = "unprofiled ring join locality; run alone with --release --ignored --nocapture"]
+fn populated_ring_join_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::RingJoin,
+    );
+}
+
+// `ROAD-95` round R5a2: a 40 m right turn pocket on the T's side road at the T.
+#[test]
+#[ignore = "unprofiled turn pocket edit locality; run alone with --release --ignored --nocapture"]
+fn populated_pocket_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::PocketEdit,
     );
 }
 
@@ -231,7 +309,13 @@ fn measure_populated_road_plan_scaling(
     );
     let in_place = matches!(
         measured,
-        Measured::LaneEdit | Measured::MedianEdit | Measured::TypeEdit
+        Measured::LaneEdit
+            | Measured::MedianEdit
+            | Measured::TypeEdit
+            | Measured::SideEdit
+            | Measured::PocketEdit
+            | Measured::Conversion
+            | Measured::RingJoin
     );
     if in_place {
         road_terrain_plan::commit_ready(
@@ -261,6 +345,7 @@ fn measure_populated_road_plan_scaling(
                 snap_to_existing_roads: true,
                 tunnel,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
@@ -448,10 +533,18 @@ fn measure_populated_road_plan_scaling(
             let section = match measured {
                 Measured::LaneEdit => (2, 2, None, RoadAttributes::DEFAULT),
                 Measured::MedianEdit => (1, 1, Some(GRASS), RoadAttributes::DEFAULT),
-                _ => (1, 1, None, RoadAttributes::new(80, false, true)),
+                Measured::SideEdit => (1, 1, None, one_sided()),
+                _ => (1, 1, None, RoadAttributes::new(80, SidewalkSides::NONE, true)),
             };
-            let products =
-                measure_lane_edit(&mut core, remote_buildings, background_roads, section);
+            let products = if measured == Measured::PocketEdit {
+                measure_pocket_edit(&mut core, remote_buildings, background_roads)
+            } else if measured == Measured::Conversion {
+                measure_conversion(&mut core, remote_buildings, background_roads)
+            } else if measured == Measured::RingJoin {
+                measure_ring_join(&mut core, remote_buildings, background_roads)
+            } else {
+                measure_lane_edit(&mut core, remote_buildings, background_roads, section)
+            };
             if let Some(previous) = &previous_lane_products {
                 assert_eq!(&products, previous, "remote state changed local products");
             }
@@ -510,7 +603,7 @@ fn measure_populated_road_plan_scaling(
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let points = match measured {
-            Measured::Ground | Measured::Divided => {
+            Measured::Ground | Measured::Divided | Measured::OneSided => {
                 vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
             }
             Measured::Tunnel => vec![
@@ -529,11 +622,18 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(0.0, 0.0, -210.0),
                 Vector3::new(0.0, 6.0, -150.0),
             ],
-            Measured::LaneEdit | Measured::MedianEdit | Measured::TypeEdit => {
-                unreachable!("measured by measure_lane_edit")
+            Measured::LaneEdit
+            | Measured::MedianEdit
+            | Measured::TypeEdit
+            | Measured::SideEdit
+            | Measured::PocketEdit
+            | Measured::Conversion
+            | Measured::RingJoin => {
+                unreachable!("measured by measure_lane_edit or its siblings")
             }
         };
         let request = || RoadPreviewRequest {
+            parking: Default::default(),
             surface_generation: generation,
             points: points.clone(),
             fwd_lanes: 1,
@@ -541,7 +641,11 @@ fn measure_populated_road_plan_scaling(
             snap_to_existing_roads: true,
             tunnel,
             median: (measured == Measured::Divided).then_some(GRASS),
-            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            attributes: if measured == Measured::OneSided {
+                one_sided()
+            } else {
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT
+            },
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -586,6 +690,7 @@ fn measure_populated_road_plan_scaling(
                 "under_bridge": measured == Measured::UnderBridge,
                 "join_bridge": measured == Measured::JoinBridge,
                 "divided": measured == Measured::Divided,
+                "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
@@ -650,7 +755,8 @@ fn measure_lane_edit(
     let mut verdicts = Vec::new();
     for iteration in 0..103 {
         let start = Instant::now();
-        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median, attributes);
+        let verdict =
+            core.preview_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes);
         let ms = start.elapsed().as_secs_f64() * 1000.0;
         assert!(verdict.is_ok(), "{verdict:?}");
         if iteration >= 3 {
@@ -670,7 +776,7 @@ fn measure_lane_edit(
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
-        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, attributes));
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
         let start = Instant::now();
         core.precompute_road_mesh_data();
@@ -701,12 +807,368 @@ fn measure_lane_edit(
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
             "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
-            "sidewalks": attributes.sidewalks, "speed_ms": attributes.speed_ms,
+            "sidewalks": attributes.sidewalks.bits(), "speed_ms": attributes.speed_ms,
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),
             "publish_p50_ms": p50(&mut publishes), "published_chunks": published_chunks,
             "commit_samples": commits.len(), "identical_local_products": true,
+        })
+    );
+    products
+}
+
+// `ROAD-95` round R5a2: the pocket edit's verdict over 100 samples, then 20 commits of a 40 m
+// right pocket on the T's side road, each followed by its undo. Returns the local products after
+// a commit: the T's and the transition's pieces, the spans of their arms and the pair's lanes,
+// which must not depend on the remote city. The once-per-tier setup is not timed.
+fn measure_pocket_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 1.0)
+        .expect("the T");
+    let side = core.get_hovered_edge_internal(0.0, -60.0);
+    assert!(side >= 0);
+    let side = side as usize;
+    let end = if core.region_graph.edge(side).end_node == node {
+        EdgeEnd::End
+    } else {
+        EdgeEnd::Start
+    };
+    let request = PocketRequest {
+        edge: side,
+        end,
+        left: false,
+        right: true,
+        body_m: 40.0,
+    };
+    // Without ids: the added transition and edge take the next ids, which the remote roads move.
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let graph = &core.region_graph;
+        let mut out = String::new();
+        let mut nodes = vec![node];
+        nodes.extend(
+            graph
+                .node_adjacency(node)
+                .iter()
+                .flat_map(|&edge| [graph.edge(edge).start_node, graph.edge(edge).end_node])
+                .filter(|&other| graph.node(other).node_type == NodeType::LaneTransition),
+        );
+        for &at in &nodes {
+            for &edge in graph.node_adjacency(at) {
+                let piece = roadbed.span_piece(edge).expect("a span");
+                out += &format!("{:?}\n", piece.mesh().positions());
+                let lanes = &core.transit_network.lane_system;
+                for &id in &lanes.edge_lanes[&edge] {
+                    out += &format!("{:?}\n", lanes.lanes[id].geometry);
+                }
+            }
+            let piece = roadbed.node_piece(at).expect("a node piece");
+            out += &format!("{:?}\n", piece.mesh().positions());
+        }
+        out
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let mut verdicts = Vec::new();
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let verdict = core.preview_road_pocket_internal(request);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(verdict.is_ok(), "{verdict:?}");
+        if iteration >= 3 {
+            verdicts.push(ms);
+        }
+    }
+    let (mut commits, mut undos, mut publishes) = (Vec::new(), Vec::new(), Vec::new());
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    let before = local(core);
+    let mut products = String::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.set_road_pocket_internal(request));
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        let start = Instant::now();
+        core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        acknowledge(core);
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        acknowledge(core);
+        assert_eq!(local(core), before, "undo restores the T");
+    }
+    println!(
+        "POCKET_EDIT_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
+            "identical_local_products": true,
+        })
+    );
+    products
+}
+
+// `ROAD-62` round R7b: the conversion's verdict over 100 samples, then 20 commits of the T into a
+// 36 m ring, each followed by its undo. Returns the local products after a commit: the ring's and
+// its arms' spans and lanes and the ring nodes' pieces, by position, which must not depend on the
+// remote city (the ring's ids do, the remote roads moving the next id). The once-per-tier setup
+// is not timed.
+fn measure_conversion(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    use crate::simulation::network::roundabouts::{RoundaboutRequest, RoundaboutSite, ring_walk};
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 1.0)
+        .expect("the T");
+    let request = RoundaboutRequest {
+        site: RoundaboutSite::Junction(node),
+        diameter_m: 36.0,
+    };
+    // By position around the ring from its first new edge, the arms in order after it.
+    let first_edge = core.region_graph.edge_count();
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let graph = &core.region_graph;
+        let lanes = &core.transit_network.lane_system;
+        let mut out = String::new();
+        for (at, ring_edge) in ring_walk(graph, first_edge).expect("the ring") {
+            out += &format!("{:?}\n", graph.node(at).pos);
+            if let Some(piece) = roadbed.node_piece(at) {
+                out += &format!("{:?}\n", piece.mesh().positions());
+            }
+            for &edge in graph.node_adjacency(at) {
+                let same_ring = edge == ring_edge || graph.edge(edge).roundabout.is_none();
+                if same_ring {
+                    let piece = roadbed.span_piece(edge).expect("a span");
+                    out += &format!("{:?}\n", piece.mesh().positions());
+                    for &id in &lanes.edge_lanes[&edge] {
+                        out += &format!("{:?}\n", lanes.lanes[id].geometry);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let unchanged = |core: &SimCore| {
+        let graph = &core.region_graph;
+        let arms = graph.node_adjacency(node).iter();
+        arms.map(|&edge| format!("{:?}\n", graph.edge(edge).physical_geometry))
+            .collect::<String>()
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let mut verdicts = Vec::new();
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let verdict = core.preview_roundabout_internal(request);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(verdict.is_ok(), "{verdict:?}");
+        if iteration >= 3 {
+            verdicts.push(ms);
+        }
+    }
+    let (mut commits, mut undos, mut publishes) = (Vec::new(), Vec::new(), Vec::new());
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    let before = unchanged(core);
+    let mut products = String::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.place_roundabout_internal(request));
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        let start = Instant::now();
+        core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        acknowledge(core);
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        acknowledge(core);
+        assert_eq!(unchanged(core), before, "undo restores the T");
+    }
+    println!(
+        "ROUNDABOUT_CONVERSION_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
+            "identical_local_products": true,
+        })
+    );
+    products
+}
+
+// `ROAD-62` round R7d: a bare 36 m ring south of the T (per tier, setup, undone at the end) and a
+// 1 + 1 stroke joined to it from the east, 40 degrees from any node, so the join slides one. Times
+// the road tool's pose (the preview context's plan, pieces and payload) and the commit's plan over
+// 100 samples, then 20 commits each followed by its publication and undo; returns the ring and its
+// arm after a commit, which must not depend on the remote city. The context is once per edit.
+fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::network::roundabouts::{RoundaboutRequest, RoundaboutSite, ring_walk};
+    // A timing run: the commit's whole-city checks are `O(city)` by design, and this fixture's
+    // detached sites would fail the attachment repair's, which assumes a road built them.
+    crate::debug::work::set_city_checks(false);
+    // A stroke keeps its undo outside benchmark mode, and pays for itself.
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e7;
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let centre = Vector3::new(0.0, 0.0, -200.0);
+    let first_edge = core.region_graph.edge_count();
+    assert!(core.place_roundabout_internal(RoundaboutRequest {
+        site: RoundaboutSite::Ground { centre, lanes: 1 },
+        diameter_m: 36.0,
+    }));
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    let radius_m = 0.5 * (36.0 - crate::config::LANE_WIDTH);
+    let (sin, cos) = 40.0_f32.to_radians().sin_cos();
+    let at = |r: f32| centre + Vector3::new(cos * r, 0.0, sin * r);
+    let points = vec![at(radius_m + 80.0), at(radius_m)];
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let graph = &core.region_graph;
+        let lanes = &core.transit_network.lane_system;
+        let mut out = String::new();
+        for (at, ring_edge) in ring_walk(graph, first_edge).expect("the ring") {
+            out += &format!("{:?}\n", graph.node(at).pos);
+            if let Some(piece) = roadbed.node_piece(at) {
+                out += &format!("{:?}\n", piece.mesh().positions());
+            }
+            for &edge in graph.node_adjacency(at) {
+                if edge == ring_edge || graph.edge(edge).roundabout.is_none() {
+                    let piece = roadbed.span_piece(edge).expect("a span");
+                    out += &format!("{:?}\n", piece.mesh().positions());
+                    for &id in lanes.edge_lanes.get(&edge).map_or(&[][..], Vec::as_slice) {
+                        out += &format!("{:?}\n", lanes.lanes[id].geometry);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let snapshot_start = Instant::now();
+    let mut context = crate::nodes::sim::core::road_tool_context::RoadPreviewContext::capture(
+        road_tool_snapshot_from_core(core).unwrap(),
+    );
+    let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+    let generation = context.view.surface_generation;
+    let request = || RoadPreviewRequest {
+        surface_generation: generation,
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
+        parking: Default::default(),
+        attributes: RoadAttributes::DEFAULT,
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let (mut poses, mut plans) = (Vec::new(), Vec::new());
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let preview = context.preview_road(request());
+        let pose_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let validation = &preview.validation;
+        assert!(validation.is_valid, "{}", validation.invalid_reason);
+        assert!(preview.pieces.is_some(), "a valid pose compiles its pieces");
+        let start = Instant::now();
+        let plan = RoadEditPlan::compile(core, request());
+        let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(plan.status(core), "ready");
+        if iteration >= 3 {
+            poses.push(pose_ms);
+            plans.push(plan_ms);
+        }
+    }
+    let before = local(core);
+    let mut products = String::new();
+    let (mut commits, mut undos, mut publishes) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..20 {
+        let start = Instant::now();
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
+                parking: Default::default(),
+                attributes: RoadAttributes::DEFAULT,
+                preview: None,
+            },
+            Instant::now(),
+            Default::default(),
+        );
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(outcome.committed, "{}", outcome.rejection);
+        let start = Instant::now();
+        core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        acknowledge(core);
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        acknowledge(core);
+        assert_eq!(local(core), before, "undo restores the bare ring");
+    }
+    assert!(core.undo_action_internal(), "the ring goes with the tier");
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    println!(
+        "RING_JOIN_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "pose_p50_ms": p50(&mut poses), "plan_p50_ms": p50(&mut plans), "pose_samples": poses.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
+            "snapshot_once_per_edit_ms": snapshot_ms, "identical_local_products": true,
         })
     );
     products

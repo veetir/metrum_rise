@@ -91,7 +91,8 @@ fn replay_saved_city_without_impossible_turns() {
 #[test]
 fn bankrupt_grocery_is_cleared_and_replaced_without_rezoning() {
     let mut scenario = GrowthScenario::starter_town();
-    scenario.run_days(365);
+    // The starter town stops changing after its 10th day but for cash; 30 days leave margin.
+    scenario.run_days(30);
     let catalog = scenario.core.demand.runtime_catalog();
     let grocery_profile = catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
     let failed = scenario
@@ -202,24 +203,7 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
         source.core.transit_network.frontage_delay_elapsed_s,
         loaded.core.transit_network.frontage_delay_elapsed_s,
     );
-    let queued = |scenario: &GrowthScenario| -> Vec<_> {
-        scenario
-            .core
-            .pending_demand_spawns
-            .iter()
-            .map(|pending| {
-                (
-                    pending.due_minute,
-                    pending.zone_type,
-                    pending.action.parcel_id,
-                    pending.action.asset_id.clone(),
-                    pending.planned_day_index,
-                    pending.planned_minute_of_day,
-                )
-            })
-            .collect()
-    };
-    assert_eq!(queued(&source), queued(&loaded));
+    assert_same_queued_spawns(&source, &loaded);
     let target_day = source.core.time.day_index + 30;
     while source.core.time.day_index < target_day {
         source.core.step_frame(FRAME_DT_S);
@@ -239,7 +223,7 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
         source_record.treasury = 0.0;
         loaded_record.treasury = 0.0;
         assert_eq!(source_record, loaded_record);
-        assert_eq!(queued(&source), queued(&loaded));
+        assert_same_queued_spawns(&source, &loaded);
         assert_eq!(
             source.core.households.households.len(),
             loaded.core.households.households.len()
@@ -284,6 +268,32 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
     std::fs::remove_file(path).unwrap();
 }
 
+// The queued spawns' compared keys, borrowed: the lockstep compares them every frame.
+fn queued_spawns(
+    scenario: &GrowthScenario,
+) -> impl Iterator<Item = (u64, ZoneType, u64, &str, u32, u16)> {
+    scenario.core.pending_demand_spawns.iter().map(|pending| {
+        (
+            pending.due_minute,
+            pending.zone_type,
+            pending.action.parcel_id,
+            pending.action.asset_id.as_str(),
+            pending.planned_day_index,
+            pending.planned_minute_of_day,
+        )
+    })
+}
+
+// Compares without collecting; only a difference collects both lists for the message.
+fn assert_same_queued_spawns(source: &GrowthScenario, loaded: &GrowthScenario) {
+    if !queued_spawns(source).eq(queued_spawns(loaded)) {
+        assert_eq!(
+            queued_spawns(source).collect::<Vec<_>>(),
+            queued_spawns(loaded).collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() {
     use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
@@ -291,7 +301,8 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
     use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 
     let mut scenario = GrowthScenario::starter_town();
-    scenario.run_days(365);
+    // The starter town stops changing after its 10th day but for cash; 30 days leave margin.
+    scenario.run_days(30);
     let before = scenario.record();
     assert!(before.residents > 20 && before.employed > 0);
     let core = &mut scenario.core;
@@ -537,7 +548,7 @@ fn coal_power_balance_matrix() {
             let plant = scenario
                 .core
                 .allocator
-                .nearest_building_idx_at(x, z)
+                .nearest_building_idx_at(x, z, 10.0)
                 .unwrap();
             assert_eq!(
                 scenario.core.allocator.buildings[plant].asset_id,
@@ -952,6 +963,7 @@ fn assert_continues_identically_after_prepared_reload(
         source.core.step_frame(FRAME_DT_S);
         loaded.core.step_frame(FRAME_DT_S);
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
+        assert_eq!(serde_json::to_value(&source.core.agents.parking_trip).unwrap(), serde_json::to_value(&loaded.core.agents.parking_trip).unwrap(), "parking continuation at {when:?}");
         assert_same_flow_fields(&source.core, &loaded.core, &nodes, when);
         assert_same_demand_queues(&source.core, &loaded.core, &format!("{when:?}"));
         // In the hour's planning slots both games lend the published books, or skip, alike.
@@ -1916,7 +1928,7 @@ fn electricity_save_continuation_preserves_bills_and_removed_meters() {
         let plant = source
             .core
             .allocator
-            .nearest_building_idx_at(-700.0, 8.0)
+            .nearest_building_idx_at(-700.0, 8.0, 10.0)
             .unwrap_or(plant);
         assert_eq!(source.core.allocator.buildings[plant].worker_count, 1);
         assert!(source.core.allocator.buildings[plant].daily_power_service_units > 0.0);
@@ -2053,47 +2065,63 @@ fn production_area_construction_charges_only_successful_added_area() {
     }
 }
 
+// The 100 ha start distinguishes a mechanized farm from a labor-intensive mine: one test per
+// producer, so a parallel runner runs them side by side.
 #[test]
-fn hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine() {
-    for mine in [false, true] {
-        let mut scenario = GrowthScenario::starter_town_in_world(4096.0);
-        place_producer(&mut scenario, mine, 100.0, -1900.0);
-        let report = scenario.run_diagnosed_days(90);
-        verify_accounting(&report);
-        let profile = if mine {
-            "coal_mine_basic"
-        } else {
-            "grain_farm_basic"
-        };
-        let all = report.business_cash_flow(profile, usize::MAX);
-        if mine {
-            assert!(all.operating_cash_change < 0.0, "{report}");
-            let firm = report
-                .business_outcomes()
-                .find(|firm| firm.profile_id == profile)
-                .unwrap();
-            assert!(
-                firm.ending_cash < firm.opening_cash,
-                "mine must spend its owner's capital: {firm:?}"
-            );
-            assert!(
-                firm.staffed_worker_hours < firm.capacity_worker_hours,
-                "unprofitable full staffing must not be advertised against startup equity: {firm:?}"
-            );
-            // Withdrawing unfunded jobs can extend the owner's cash runway. Losses and
-            // zero subsequent equity, rather than an arbitrary 90-day failure, prove no rescue.
-        } else {
-            assert!(all.operating_cash_change > 0.0, "{report}");
-            assert_eq!(
-                all.bankruptcies, 0,
-                "six-worker farm must trade sustainably: {report}"
-            );
-        }
+fn hundred_hectare_start_keeps_a_mechanized_farm_profitable() {
+    hundred_hectare_start(false);
+}
+
+#[test]
+fn hundred_hectare_start_runs_a_labor_intensive_mine_on_owner_capital() {
+    hundred_hectare_start(true);
+}
+
+fn hundred_hectare_start(mine: bool) {
+    // The mine's 500 jobs need far more labour than a starter town has, but the town's two
+    // residential streets bring 113-132 working adults by their applicants' draw, and the mine
+    // breaks even near 128 (`ECON-28` round E3). One residential street, 44 homes, keeps its
+    // labour scarce in every draw (57-72 adults over 25 applicant seeds, round E4); the farm's
+    // six jobs keep the whole town.
+    let residential_streets = if mine { 1 } else { 2 };
+    let mut scenario =
+        GrowthScenario::starter_town_with_residential_streets(4096.0, residential_streets);
+    place_producer(&mut scenario, mine, 100.0, -1900.0);
+    let report = scenario.run_diagnosed_days(90);
+    verify_accounting(&report);
+    let profile = if mine {
+        "coal_mine_basic"
+    } else {
+        "grain_farm_basic"
+    };
+    let all = report.business_cash_flow(profile, usize::MAX);
+    if mine {
+        assert!(all.operating_cash_change < 0.0, "{report}");
+        let firm = report
+            .business_outcomes()
+            .find(|firm| firm.profile_id == profile)
+            .unwrap();
+        assert!(
+            firm.ending_cash < firm.opening_cash,
+            "mine must spend its owner's capital: {firm:?}"
+        );
+        assert!(
+            firm.staffed_worker_hours < firm.capacity_worker_hours,
+            "unprofitable full staffing must not be advertised against startup equity: {firm:?}"
+        );
+        // Withdrawing unfunded jobs can extend the owner's cash runway. Losses and
+        // zero subsequent equity, rather than an arbitrary 90-day failure, prove no rescue.
+    } else {
+        assert!(all.operating_cash_change > 0.0, "{report}");
         assert_eq!(
-            all.startup_cash, 0.0,
-            "no fresh equity after the run begins"
+            all.bankruptcies, 0,
+            "six-worker farm must trade sustainably: {report}"
         );
     }
+    assert_eq!(
+        all.startup_cash, 0.0,
+        "no fresh equity after the run begins"
+    );
 }
 
 #[test]
@@ -2111,38 +2139,46 @@ fn explicit_producers_are_observed_across_growth_and_building_remaps() {
     );
 }
 
+// One test per producer, so a parallel runner runs them side by side.
 #[test]
-fn starter_producers_restock_and_pay_workers_from_sales() {
-    for mine in [false, true] {
-        let mut scenario = GrowthScenario::starter_town();
-        place_producer(&mut scenario, mine, if mine { 1.0 } else { 4.0 }, -900.0);
-        let profile = if mine {
-            "coal_mine_basic"
-        } else {
-            "grain_farm_basic"
-        };
-        let report = scenario.run_diagnosed_days(180);
-        verify_accounting(&report);
-        let all = report.business_cash_flow(profile, usize::MAX);
-        let recent = report.business_cash_flow(profile, 90);
-        assert_eq!(all.bankruptcies, 0, "{report}");
-        assert_eq!(
-            all.startup_cash, 0.0,
-            "opening capital is already accounted for"
-        );
-        assert!(
-            recent.operating_cash_change > 0.0 && recent.payroll > 0.0,
-            "{report}"
-        );
-        assert!(
-            recent.input_purchases > 0.0,
-            "opening machinery must not be the only delivery: {report}"
-        );
-        assert!(
-            (all.sales - all.local_sales - all.export_sales).abs() < 0.1,
-            "{report}"
-        );
-    }
+fn starter_farm_restocks_and_pays_workers_from_sales() {
+    starter_producer_restocks_and_pays_workers_from_sales(false);
+}
+
+#[test]
+fn starter_mine_restocks_and_pays_workers_from_sales() {
+    starter_producer_restocks_and_pays_workers_from_sales(true);
+}
+
+fn starter_producer_restocks_and_pays_workers_from_sales(mine: bool) {
+    let mut scenario = GrowthScenario::starter_town();
+    place_producer(&mut scenario, mine, if mine { 1.0 } else { 4.0 }, -900.0);
+    let profile = if mine {
+        "coal_mine_basic"
+    } else {
+        "grain_farm_basic"
+    };
+    let report = scenario.run_diagnosed_days(180);
+    verify_accounting(&report);
+    let all = report.business_cash_flow(profile, usize::MAX);
+    let recent = report.business_cash_flow(profile, 90);
+    assert_eq!(all.bankruptcies, 0, "{report}");
+    assert_eq!(
+        all.startup_cash, 0.0,
+        "opening capital is already accounted for"
+    );
+    assert!(
+        recent.operating_cash_change > 0.0 && recent.payroll > 0.0,
+        "{report}"
+    );
+    assert!(
+        recent.input_purchases > 0.0,
+        "opening machinery must not be the only delivery: {report}"
+    );
+    assert!(
+        (all.sales - all.local_sales - all.export_sales).abs() < 0.1,
+        "{report}"
+    );
 }
 
 #[test]

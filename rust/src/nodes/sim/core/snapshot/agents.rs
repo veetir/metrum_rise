@@ -41,8 +41,9 @@ use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_v
 use crate::simulation::network::lanes::LanePlanarBox;
 use godot::prelude::{Vector2, Vector3};
 
-// Agents per posing task: about 70 tasks at 100k, enough to balance eight workers.
-const POSE_CHUNK_AGENTS: usize = 2_048;
+// Agents per posing task. Agents inside the camera sit together in the index, so a task's cost
+// runs from nothing to all of it: at 256, about 120 tasks at 30k keep eight workers level.
+const POSE_CHUNK_AGENTS: usize = 256;
 
 /// Widening of lane boxes for interpolation rounding. A lane sample is `p0 + (p1 - p0) * t`
 /// with `t` in `[0, 1]`, at most about two ulps of the coordinate outside its points' box, and
@@ -239,9 +240,9 @@ impl SimCore {
             })
         } else {
             // Off-lane footprints are grounded per bucket after bucketing.
-            let v_type = self.agents.vehicle_type[i];
             let render_id = self.agents.render_id[i];
-            let variant_id = (render_id % 5) as u8;
+            let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
+                .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
             let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
                 (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
             } else {
@@ -460,9 +461,9 @@ impl SimCore {
                 buffer.push(0.0);
                 buffer.push(0.0);
             } else {
-                let v_type = self.agents.vehicle_type[i];
                 let render_id = self.agents.render_id[i];
-                let variant_id = (render_id % 5) as u8;
+                let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
+                    .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
                 let model_key = (v_type * 10) + variant_id;
                 snapshot
                     .car_render_ids

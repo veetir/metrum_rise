@@ -3,8 +3,8 @@
 This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-09`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
 reports and their replay, the agent inspector, trip failure lines, the log format, the shared log, the always-on `events` channel, the Godot
-bridge, the in-game console, crash and hang diagnostics, how the extension's threads stop before
-Godot unloads it, and the `run.sh` launch flags.
+bridge, the in-game console, crash and hang diagnostics, the guard on the gate's Godot tests, how
+the extension's threads stop before Godot unloads it, and the `run.sh` launch flags.
 
 ## Overview
 
@@ -301,16 +301,18 @@ A refused road stroke logs two lines on `events`. The first says why, with the n
 used, where, and what was drawn:
 
 ```text
-road rejected by commit: parcel_overlap: the road corridor overlaps zoned parcels; 3 parcels, first 812. Stroke (412.0, -96.5) -> (530.2, -40.1), 2 points, 131.0 m, lanes 1/1, snap on; start node 57, road y 12.40, terrain y 12.40; end open terrain, road y 14.05, terrain y 13.90. Attempt 4.
-road_attempt {"attempt":4,"by":"commit","reason":"parcel_overlap","generation":31,"fwd_lanes":1,"bkw_lanes":1,"snap":true,"points":[[412.0,12.4,-96.5],[530.25,14.05,-40.125]]}
+road rejected by commit: plotted_building_overlap: the road corridor overlaps the lot of a placed building (a service, farm, mine or plant); zoned lots are taken, placed buildings are not; the road or its junctions overlap the lot of the placed building building.power.coal_power_plant. Stroke (412.0, -96.5) -> (530.2, -40.1), 2 points, 131.0 m, lanes 1/1, snap on; start node 57, road y 12.40, terrain y 12.40; end open terrain, road y 14.05, terrain y 13.90. Attempt 4.
+road_attempt {"attempt":4,"by":"commit","reason":"plotted_building_overlap","generation":31,"fwd_lanes":1,"bkw_lanes":1,"snap":true,"points":[[412.0,12.4,-96.5],[530.25,14.05,-40.125]]}
 ```
 
 - `by` is `tool` when the road tool's click check refused the stroke, before anything reached the
   simulation, and `commit` when the simulation's authoritative commit refused it.
 - The reason is the stable key the checks use: `bridge_clearance`, `tunnel_clearance`,
   `same_node_connection`, `too_short`, `water_requires_bridge`, `surface_geometry_invalid` and
-  the `terrain_clip_*` compile failures, `field_overlap`, `parcel_overlap`,
-  `zoning_cell_overlap`, `render_geometry_invalid` (the committed surface or its terrain failed
+  the `terrain_clip_*` compile failures, `field_overlap`, `extraction_area_overlap`,
+  `plotted_building_overlap` (plotted land under the road's pieces; zoned land is taken, not
+  refused, since `ZONE-09`), `parcel_overlap` (unstaged bulk adds only),
+  `render_geometry_invalid` (the committed surface or its terrain failed
   to build and the edit was rolled back), `validation_unavailable`, and the plan states
   `road_plan_stale`, `road_plan_pending`, `road_plan_provisional`, `road_plan_consumed`,
   `road_plan_mismatch` and `road_plan_invalid` (terrain earthwork failure). A plan refused
@@ -351,7 +353,7 @@ zoning and street lights).
 Each attempt prints one line:
 
 ```text
-attempt 4 (commit, parcel_overlap): reproduced, refused by commit
+attempt 4 (commit, plotted_building_overlap): reproduced, refused by commit
 attempt 2 (tool, same_node_connection): reproduced, refused by tool [made on road generation 29, save holds 31: the network changed since]
 ```
 
@@ -608,6 +610,103 @@ marker. Therefore the last unmatched start marker names the stalled stage; a lat
 the preceding stage returned. `add road transaction started` is emitted before the existing
 `add road internal` mutation marker.
 
+## Godot Test Guard
+
+Godot does not exit on a GDScript error: the coroutine that hit it ends, the scene tree keeps
+running, and a test that never reaches `quit()` would hold its chain forever. So
+`./run.sh --test` runs every Godot test of its chains under `run_guarded_godot_test`
+(`CODE-20`); only `simulation_speed_input_test` keeps its own 15 s timeout instead. The guard
+passes the test's output through and stops the test, and any gamescope process it started, at
+its first `SCRIPT ERROR:` line or once it has run `GODOT_TEST_LIMIT_S` (300 s, about four times
+the slowest test's time in a gate: `vehicle_ground_support_test` takes about 70 s, and 158 s
+beside 24 busy loops). The chain then fails with
+`Godot test <name> FAILED: it hit a SCRIPT ERROR ...` or `... was still running after 300 s`; a
+test that exits non-zero is named the same way.
+
+The gate runs the Godot chains beside the Rust suite, so every test runs on a loaded machine.
+A Godot test must hold there:
+
+- Wait on the condition the next step needs (the render generation, the commit's
+  acknowledgement, a result in a poll) under a deadline that fails with a clear `_expect`, never
+  on a fixed number of frames or a fixed time.
+- Bridge calls made every frame take the core lock only when it is free (see
+  [Busy Core](#busy-core)). While the simulation thread holds the core (a frame or an edit) they
+  answer at once, with `null`, `false`, `busy` or nothing done. That is common just after a
+  test's own edit, and a long frame or edit holds the core across many test frames. So a test
+  that needs the answer does not poll for it: it passes `wait` as the game's one-shot input
+  does, and the call waits for the core. `debug_hold_core` makes the simulation thread hold the
+  core until a call waits for it, for tests of exactly that (`core_busy_input_test`).
+- Work that finishes on another thread can finish before the first frame under load, so a test
+  may close what it opened in the same frame. A deferred call that takes a node must accept a
+  freed one: an untyped parameter checked with `is_instance_valid`, or the call deferred on the
+  node itself, which Godot drops with the node. A typed parameter refuses the freed instance
+  with an engine error, which fails the asset tests' log check (`pack_dialogs.gd`, round `F1`).
+
+## Busy Core
+
+The simulation thread holds the core (`SimCore`'s mutex) for every frame and every edit. The
+rule for game code (`CODE-25`):
+
+- **Per-frame queries never wait.** Renderers and hovers ask through `try_lock` and, while the
+  core is held, get `null`, `false`, `busy`, `pending` or an empty answer at once, and ask again
+  next frame.
+- **Hovers keep their last answer.** A hover asks `hover_world_surface` or `hover_terrain`,
+  which answer `false` while the core is held, and keeps that frame's outline, ring, ghost,
+  label or cursor as it was; `null` still means nothing under the pointer. The bulldoze hover
+  keeps its target on `get_bulldoze_target_at`'s `busy` too, the industry area label on a
+  `pending` quote. The industry and zoning tools return the pointer's last point from their
+  pointer helper.
+- **One-shot input waits.** A click, a release, a stroke's start or a commit passes `wait` to
+  the per-frame query it reads (`intersect_world_surface`, `intersect_terrain`,
+  `get_closest_network_point`, `get_bulldoze_target_at`, `bulldoze_at`,
+  `poll_graded_tile_results`), or calls one that always waits. It resolves the pointer itself
+  instead of reading the last hover, which may be older. The road tool's cursor, preview and
+  commit read the road tool's published view and need no core. Its one-shot stroke checks
+  (`validate_road_candidate_with_snap`, `validate_road_candidate_for_commit_with_snap`) always
+  wait for the core for the corridor's parcel and field clearance (`ROAD-102`; since `ZONE-09`
+  the plotted land on the stroke's pieces, compiled on the road tool's context first: the lock
+  order is context, then core, and nothing takes them the other way); a call that answers "not
+  valid" must name the reason, never stand for "busy".
+- **Land a hover takes** (`ZONE-09`-`ZONE-11`). The road tool's preview and the roundabout tool's
+  hover (`get_roundabout_site`, `preview_roundabout`) compute the land they would take on the road
+  tool's context without the core: the simulation republishes that land (`RoadToolLand`: parcels
+  per 512 m chunk with their occupants, the explicit sites, the field and extraction indices) at
+  the end of any frame that changed it, into an O(1) slot the context reads. The ring's click asks
+  the core. The service and industry building hovers, the industry area quote and the field
+  editor's check try-lock the core and answer `pending` while it is held; the tools keep their last
+  ghost, outline and label. Such a hover readies only the site part of a stale site index, so when
+  it runs never changes the simulation's order
+  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)).
+  `core_busy_input_test` holds the core through a ring hover and a building hover:
+  both answer at once.
+- **Godot's readers never rebuild the simulation's order** (`ALLOC-05`). Every per-frame query,
+  hover, overlay and inspector, and the render snapshot the simulation thread builds after every
+  frame and edit, readies only the site part of a stale building index
+  (`SimCore::prepare_site_queries`); the zone, vacancy and admission lists wait for the
+  simulation's own next reader. So whether and when Godot asked never changes what the city
+  does or what it records between frames, and a game matches a headless run of the same inputs
+  frame by frame. A new Godot-facing reader of the sites calls `prepare_site_queries`, never
+  `prepare_building_site_query_index`, which is for the simulation's steps, edits and loading
+  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)).
+- **A waiting call gets the core when the frame or edit in progress ends.** `std`'s mutex is not
+  fair: once frames overran their 16.7 ms interval and ran back to back, the simulation thread
+  took the core again 40-80 µs after freeing it and won the race against a waiting call frame
+  after frame. A waiting call now holds a turnstile while it waits (`CoreTurnstile`), and the
+  simulation thread passes the turnstile before every acquisition.
+
+Measured in round `C25` (debug library, headless, a paused or running 512 m world with two
+roads, a probe printing every frame's hold, two 15 s runs a case): the paused frame holds the
+core 0.95 ms on an idle machine and 1.1-1.5 ms on average beside 24 or 32 busy loops (p99 7-9 ms,
+at most 18.5 ms), most of it the simulation thread waiting for the shared pool's workers to get a
+CPU for the frame's two pool entries. The main thread's per-frame query finds the core free
+92-95% of the time, busy at most 3 polls in a row, before and after the turnstile. Round `F1`'s
+"210 busy polls in a row over 20 s" were 210 of some 2,000 polls: its probe printed only the
+busy ones. Frames that overrun run back to back: with a synthetic 20 ms frame the core is held
+99.6% of the time and the per-frame query finds it busy 98% (90% beside 24 busy loops). A
+waiting query then waited up to 604 ms on an idle machine and 266 ms beside the loops; with the
+turnstile at most 19 and 28 ms, one frame. Per-frame queries cannot find the core free in that
+state without slowing the simulation, which is why hovers keep their answer.
+
 ## Shutdown
 
 Godot unloads `libmetrum_rise.so` soon after it deletes the scene tree. A thread still running
@@ -724,6 +823,9 @@ available in every build and scene.
   - `visual <mode>` lists the mode's values.
   - `visual <mode> <value>` takes a value name, alias or index.
   - `visual off` turns every visual mode off, which also returns residency to camera-based.
+  - `parking` (`park`) prints parking spots, car custody (parked, driving, stored off-map, in
+    use), trips under way by phase, why departure attempts since load drove or walked, and every
+    rejected parking spot with its building and reason. The same text goes to `events`.
   - `dump`
   - `clear`
 - **Copy** puts the visible, filtered lines on the clipboard.

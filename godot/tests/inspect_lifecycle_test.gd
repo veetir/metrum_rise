@@ -18,7 +18,7 @@ class InspectInput extends InputManager:
 
 class SimulationStub extends Node3D:
 	var hit := Vector3.ZERO
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait: bool = false) -> Vector3:
 		return hit
 	func get_closest_node(_point: Vector3, _radius: float) -> int:
 		return -1
@@ -50,6 +50,10 @@ class UiStub extends Node:
 		inspector.close_window()
 	func show_road_properties_multi(edges: Array[int], point: Vector2) -> void:
 		inspector.show_for_edges(edges, point)
+	func show_junction_window(_node: int, _point: Vector2) -> void:
+		pass
+	func hide_junction_window() -> void:
+		pass
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -75,7 +79,7 @@ func _run() -> void:
 	var ui := UiStub.new()
 	ui.name = "MainUI"
 	scene.add_child(ui)
-	for name in ["Terrain", "ZoningOverlay", "Water", "RoadTool", "ZoningTool", "MoveTool", "VegetationTool", "Agents", "Buildings"]:
+	for name in ["Terrain", "ZoningOverlay", "Water", "RoadTool", "ZoningTool", "VegetationTool", "Agents", "Buildings"]:
 		var node := Node3D.new()
 		node.name = name
 		scene.add_child(node)

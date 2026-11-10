@@ -245,6 +245,24 @@ impl BuildingAllocator {
         if let Some(old_entrances) = old_entrances.as_deref() {
             log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
         }
+        #[cfg(debug_assertions)]
+        self.check_doors_are_walked(graph);
+    }
+
+    // `ROAD-109`, in test builds: every building on a live road stands on a side walked to. A
+    // bulldozed road's buildings are not the rule's case. O(buildings).
+    #[cfg(debug_assertions)]
+    fn check_doors_are_walked(&self, graph: &RegionGraph) {
+        for (index, building) in self.buildings.iter().enumerate() {
+            if let Some(edge) = graph.get_edge(building.edge_idx).filter(|edge| !edge.deleted) {
+                assert!(
+                    edge.walked_on_side(building.side),
+                    "building {index} stands on side {} of edge {}, which has no sidewalk",
+                    building.side,
+                    building.edge_idx
+                );
+            }
+        }
     }
 
     /// [`Self::rebuild_entrance_cache`] for a cache that was current before an edit changed the
@@ -297,6 +315,17 @@ impl BuildingAllocator {
                 panic!(
                     "local entrance update missed building {missed}: {:?} != {:?}",
                     self.entrances[missed], full[missed]
+                );
+            }
+            self.check_doors_are_walked(graph);
+            // A road edit's lanes are real, so its doors have their foot lanes.
+            for &building_idx in changed {
+                let entrance = &self.entrances[building_idx];
+                assert!(
+                    entrance.door_pos == Vector2::ZERO
+                        || graph.get_edge(entrance.edge_idx).is_none_or(|edge| edge.deleted)
+                        || entrance.flags & ENTRANCE_FOOT_VALID != 0,
+                    "building {building_idx}'s door has no foot lane: {entrance:?}"
                 );
             }
         }
@@ -474,6 +503,35 @@ impl BuildingAllocator {
         let (basis_x, basis_z) =
             building_local_xz_basis(facing, asset.manifest.building_frontage_forward());
         Some(center + basis_x * anchor.position[0] + basis_z * anchor.position[2])
+    }
+
+    /// Reuses ordinary lane derivation for a retained parking endpoint at its exact driveway.
+    /// O(edge geometry + local lanes), edit/load only; no building owner is required after removal.
+    pub(crate) fn parking_access_at(door: Vector2, curb: Vector2, edge_idx: usize, side: i8, graph: &RegionGraph, lanes: &LaneSystem) -> BuildingEntrance {
+        let mut entrance = Self::derive_door_entrance(Some(door),edge_idx,side,graph,lanes);
+        if let Some(edge) = graph.get_edge(edge_idx) {
+            entrance.entrance_s_m = Self::project_point_to_polyline_s(&edge.physical_geometry,curb);
+            entrance.curb_pos = curb;
+            entrance.vehicle_frontage_access = VehicleFrontageAccess::SameSideOnly;
+            derive_car_lanes(&mut entrance,edge,side,lanes);
+            derive_flags(&mut entrance);
+        }
+        entrance
+    }
+
+    /// Re-derives a cached entrance's lane ids from its retained edge and side, so a copy kept
+    /// outside the allocator survives lane renumbering. O(lanes on the edge), allocation-free.
+    pub(crate) fn refresh_entrance_lanes(entrance: &mut BuildingEntrance, graph: &RegionGraph, lanes: &LaneSystem) {
+        entrance.foot_lane_fwd = INVALID_LANE_ID;
+        entrance.foot_lane_bkw = INVALID_LANE_ID;
+        entrance.car_lane_fwd = INVALID_LANE_ID;
+        entrance.car_lane_bkw = INVALID_LANE_ID;
+        if let Some(edge) = graph.get_edge(entrance.edge_idx) {
+            let side = entrance.side;
+            derive_foot_lanes(entrance, edge, side, lanes);
+            derive_car_lanes(entrance, edge, side, lanes);
+        }
+        derive_flags(entrance);
     }
 
     fn derive_door_entrance(
@@ -1018,8 +1076,9 @@ fn local_access_distance_car(
     let edge_pos = entrance_edge_pos(entrance, graph)?;
     let normal = entrance_edge_normal(entrance, graph)?;
     let edge = graph.edge(entrance.edge_idx);
-    let same_side_cross_point = edge_pos + normal * (edge.width * 0.5);
-    let opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5);
+    // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
+    let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
+    let opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
     Some(
         (entrance.door_pos - same_side_cross_point).length()
             + (same_side_cross_point - opposite_side_cross_point).length()
@@ -1431,6 +1490,11 @@ fn best_vehicle_lane(lanes: &LaneSystem, edge_idx: usize, is_fwd: bool) -> usize
 }
 
 #[cfg(test)]
+crate::exact_hash_fields! {
+    BuildingEntranceKey { edge, side, frontage, geometry, lanes, flags }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian};
@@ -1450,6 +1514,7 @@ mod tests {
             end_node: end,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             width: 7.0,
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -1470,7 +1535,7 @@ mod tests {
             });
             let attributes =
                 crate::simulation::network::road_types::RoadAttributes::of_edge(graph.edge(id));
-            graph.set_edge_cross_section(id, 1, 1, median, attributes);
+            graph.set_edge_cross_section(id, 1, 1, median, Default::default(), attributes);
             let mut lanes = LaneSystem::new();
             lanes.rebuild(&mut graph);
             for side in [-1, 1] {

@@ -177,7 +177,12 @@ Work and freight timing are authored as minute windows in
 
 Workers hold stable offsets inside their windows. Departure is
 `target_arrival − estimated_travel − reliability_buffer`; the estimate is cached and refreshed
-every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A cached departure leaves
+every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A commute longer than
+the morning leaves on the evening before, at the true minute (`PERF-15`). The target is today's
+arrival until its window ends, then tomorrow's, so a true minute is today or already past: a
+worker past it leaves at once, and a worker with an estimate of a day or more always does. A
+departure that fits the morning is unchanged, and no rule moves a departure to spread a crowd. A
+cached departure leaves
 at its seed's slot of its minute, `floor(frac(seed/φ) × 16)` of the minute's 16 slots, so the
 agents due in one minute plan over the minute instead of all in its first frame; the day's last
 minute keeps slot 0. Rush hour emerges from overlapping windows.
@@ -324,16 +329,17 @@ the upkeep roll). The **weight** is in 2-lane-road units, so the 2-Lane Road at 
 exactly 1.0 and the old flat constants stay the anchors:
 
 ```
-weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
+weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks + parking)
   f(v)       = 1 + (v_kmh - 50) / 50        (30 -> 0.6, 80 -> 1.6, 100 -> 2.0, 120 -> 2.4)
   median     = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
-  sidewalks  = 0.2 (both sides) or 0
+  sidewalks  = 0.1 per side with one: 0.2 both, 0.1 one (`ROAD-107`, D3), 0 none
+  parking    = 0.2 per side with a parking lane: 0.4 both, 0.2 one (`PARK-05`), 0 none
   structure  = ground 1, bridge 3, tunnel 5 (the stroke's prepared class, its whole length)
   walkway    = structure x 0.25 (a footpath: no lanes, no speed)
 build / m = 15 x weight      upkeep / m / day = 0.1 x weight
 ```
 
-Lanes and speed multiply, sidewalks add, zoning costs nothing. `O(1)`, allocation-free.
+Lanes and speed multiply, sidewalks and parking lanes add, zoning costs nothing. `O(1)`, allocation-free.
 
 | Type | weight | build / m | upkeep / m / day |
 |---|---:|---:|---:|
@@ -342,6 +348,7 @@ Lanes and speed multiply, sidewalks add, zoning costs nothing. `O(1)`, allocatio
 | 4-Lane Road, 50 | 1.80 | 27 | 0.18 |
 | One-Way 1L / 2L, 50 | 0.60 / 1.00 | 9 / 15 | 0.06 / 0.10 |
 | 1 + 1 residential, 30 | 0.68 | 10.2 | 0.068 |
+| 1 + 1, 50, one sidewalk (`ROAD-107`) | 0.90 | 13.5 | 0.090 |
 | 1 + 1 painted 1 m, 50 | 1.05 | 15.75 | 0.105 |
 | 2 + 2 grass 3 m, 50 | 2.20 | 33 | 0.22 |
 | 1 + 1, 80, no sidewalks | 1.28 | 19.2 | 0.128 |
@@ -382,7 +389,7 @@ the live policy.
 | Property tax | 2 / 25 / 35 per day | Per occupied home / active commercial / active industrial building, × 1.75 per level above 1. City-owned and unzoned buildings pay none. |
 | Unemployment benefit | 30/day | Per unemployed adult, for at most `unemployment_max_days` (30) |
 | Pension | 30/day | Per elder |
-| Child support | 10/day | Per child |
+| Child support | 20/day | Per child |
 
 Daily budget history keeps separate buckets for each tax, each property class and each transfer.
 Pending transaction taxes roll into the report at the daily close.
@@ -559,6 +566,24 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
+- **Refill crew (`ECON-24`):** a sales-scaled store (`store` kind in a commercial zone; of the
+  shipped profiles only `grocery_basic`) staffs the smallest whole crew whose staffed output
+  exceeds its sales (`sales_store_crew`), at the same activity. That is its sales rounded up to
+  whole workers, except where they land exactly on a whole crew: there the census funds one more
+  worker. Staffed to its sales alone, such a store holds its shelf where it is and never
+  recovers from a dip (round M1b: 12 of 15 grocery workers made exactly the 160 units a day of
+  160 residents, and the shelf sat near 16 against a target of 480). The extra worker refills the
+  shelf at the full staffed rate and, once the shelf holds its target, the store produces its
+  sales. It is an ordinary funded job: the census funds it only while the plan with it pays (every
+  smaller plan keeps the same activity, so a store that cannot pay it keeps the crew its sales
+  need), it opens and closes with the sales, never with the shelf, and the
+  [workforce calendar](demand.md#workforce-calendar) and new-store plans read it like any other
+  job. The refill goods are stock, not a recurring cost: the plan buys inputs for its sales. O(1)
+  per store. A crew a fraction of a worker above its sales still refills, in proportion to that
+  fraction (one resident short of a whole crew of the shipped grocery: 1 unit a day).
+  Round M1c's rule (one worker above the sales between the reorder line and the stock target)
+  opened and closed that job with the shelf; its worker's family then lost its wage, and the
+  calendar never charged the job, so the scarce-labour expansion ended one adult short.
 - **Customers:** each store, in stable building order, claims its output from the nearest
   reachable households with exact directed shopping access (`reserve_consumer_outputs` →
   `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
@@ -579,6 +604,12 @@ answer to "how much of this operation can run":
   length (`ECON-13-C`).
 - **City services:** they use their explicit fiscal funding limit. Unfinished and inactive
   private employers advertise no live jobs.
+- **Unfunded shoppers (`ECON-28`):** the households its copy holds and, from the same budget walk,
+  the residents of housed families with an adult whose wage it does not count (no job, or hired
+  since the family last counted its wages) whose basket the family's budget leaves unfunded. The
+  [workforce calendar](demand.md#workforce-calendar) charges their store labor, and that of
+  every family that arrived after the copy, until a census funds them. O(1) per household,
+  derived with each census and never saved.
 
 Hiring, daily payroll, worker shedding, store output, construction viability and household
 admission all read this census. Each census copies every building's funded jobs onto it
@@ -610,7 +641,8 @@ Work schedules come from the profile or zone (`work_profile_by_zone_type`).
 
 Working-age adults without a job accept any reachable funded offer, regardless of savings. This
 matches the labor pool admission assumes. Employed adults reconsider when their job lock expires
-(5–9 days, spread per agent) or after 2 unpaid days, and switch only for a better score:
+(5–9 days, spread per agent) or after 2 unpaid days, and switch only for a better score, or to
+[carry their household](#agents-supply-labor):
 
 ```text
 work_score = 0.35 × income_pressure + 0.35 × supply_pressure + 0.20 − 0.10 × commute_penalty
@@ -619,31 +651,75 @@ work_score = 0.35 × income_pressure + 0.35 × supply_pressure + 0.20 − 0.10 �
 The commute penalty is commute seconds ÷ 1,800, capped at 1. Switching requires a score of at
 least 0.45; unemployed adults take the best offer regardless.
 
-**Job search.** Each searching home key `(home, has_car)` keeps the 24 best options, ranked by
+**Carrying the household (`ECON-23`).** Job choice holds a wage to the figures admission priced
+the family against ([`demand.md`](demand.md#household-admission)), `HouseholdEssentials`, instead of
+the average open wage. One adult's required net wage is:
+
+```text
+required = (members × essentials + home electricity + property tax
+            − pension − child support − net wages of the household's other adults)
+           ÷ adults not yet earning, this one included
+```
+
+A job carries the household when its net wage reaches that. Unemployment benefit and savings do not
+count, and transfers are their full rates, not scaled by treasury reliability as in admission. With
+the shipped figures (35.33 a member, 0.25 a home, 2.00 property tax at level 1) a single adult needs
+37.58 net, a parent with one child 52.91 net (gross 60.2), so the 60-wage service job, 52.80 net,
+carries the first and just not the second. Beside a partner's 90 wage a second adult of a family of
+four needs 34.37.
+
+- An adult without a job takes a carrying job first and otherwise, as before, the best it has: the
+  rule never leaves anyone unemployed who had an option. A job that fills first falls through to
+  the next option.
+- An adult on a carrying job never moves to one that cannot carry the household.
+- An adult on a job that cannot carry it moves to the best carrying option at its next search,
+  whatever its savings or commute. The score threshold does not apply. Income only rises by such a
+  move, so moves do not cycle.
+- With no carrying option, everything is as before: a job below the line is still a job.
+
+"Open" means on the home's ranked options below, and a worker looks only when its lock has run out.
+A worker who stays is locked again for 5–9 days, so an adult on a job that cannot carry it sees a
+job only if it is open at that search; unemployed adults search every hour and usually take it
+first. In a full town no job opens and such a family stays where it is. The rule keeps a family off
+that job, it does not swap it with a single adult on a better one.
+
+The test is O(1) per searcher on top of the O(options) scan: no allocation and no route query.
+`HouseholdEssentials` is built once per search batch, O(profile ports²), allocation-free.
+
+**Job search.** Each searching resident key `(home, eligible household car)` keeps the 24 best options, ranked by
 commute penalty, then higher wage, capacity, vacancy and lower building ID. Two exact lower bounds
 keep searches local:
 
 - **Ring stop.** Scanning 512 m chunk rings outward stops once the next ring's bound (the home's
   door-to-network time plus straight-line travel at the top network speed) cannot beat the 24th
-  option.
+  option. Resident parking uses the conservative door-to-door straight-line bound, because its
+  actual bay may use different network nodes than the door.
 - **Per-pair pruning.** Once 24 options are held, a workplace is routed only if one of its trip
   candidates can finish within the 24th option's commute; candidates are routed in bound order.
 
 Ranked options and commute seconds therefore match an exhaustive search; `commute_bounds.rs`
-checks over 10,000 pairs. Commutes include live frontage congestion, so a home's options are not
-reused between hours.
+checks over 10,000 building-end pairs. Resident quotes use the complete parking itinerary,
+including actual custody, the walk to the car, both maneuvers and the walk to the door. Driving
+uses free-flow costs; walking wins the unchanged mode-cost tie. A resident parking quote applies
+its physical-time budget after the exact mode choice. A home's ranked options are not reused
+between hours because availability and funded slots can change.
 
 Two caches serve the search:
 
 - **Route cache:** commute seconds by `(home, work, car)`, cleared on any building, entrance or
-  CCH change. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
+  CCH change. Resident values also stamp the actual source bay, first free destination bay and
+  their geometry, replacing the same bounded key when supply or a local bay move changes the
+  itinerary. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
 - **Network legs** (`SharedNetworkQuotes`): the road-network part of each commute, shared by
   every worker thread across hours. A car leg uses the cost-only CCH query; a walking leg keeps
   the path for the pedestrian connector check. It is emptied on a CCH or lane change. Loading
   sizes it and prepares the search's per-worker route scratch, so the first search after a load
   prepares nothing (`SIM-02-K` part 5).
 
-Neither cache changes a result.
+Neither cache changes a result. Parking publication shares per-destination bay component unions
+and exact car target contexts with the existing job/store/service bucket indices. Shopping and
+service feasibility use actual borrower availability; a proposed car return starts at the proposed
+destination bay. See [the resident trip contract](traffic.md#economy-quotes-park-02).
 
 Searches run from the `job requests` queue, queued at each agent's hourly phase and served a
 slot's searches together against the hourly job board (`SIM-02-J`,
@@ -666,10 +742,11 @@ throughput = base_rate × staffing_factor × input_factor × output_headroom_fac
 - There is no utility factor. Missing utilities cost money through the
   [`OWA`](#utility-service-layer) fallback; they do not throttle production.
 - **Census activity bounds staffing and output.** A store or service store without census
-  activity produces nothing and holds no paid staff. Groceries refill their shelf at full staffed
-  rate up to `stock_target_days` of funded sales, then produce at their census share, so rounding
-  up to whole workers creates no surplus. Farms and mines staff to the exports and local buyers
-  they can finance.
+  activity produces nothing and holds no paid staff. Groceries staff their
+  [refill crew](#funding-census-econ-17), refill their shelf at full staffed rate up to
+  `stock_target_days` of funded sales, then produce at their census share, so the crew's whole
+  workers create no surplus. Farms and mines staff to the exports and local buyers they can
+  finance.
 
 Hourly production is O(buildings) with Rayon; area production follows the indexed site list.
 Input stock targets hold at least two minimum batches; reorder thresholds keep at least one.
@@ -690,8 +767,14 @@ scale with the full area, even after the staffing cap.
 New and resized fields must:
 - stay inside the world;
 - be at least the profile minimum (4 ha for grain) and within 10 m of the farm;
-- avoid roads, sidewalks, building sites, zoning parcels and other fields (shared edges are
-  allowed).
+- avoid roads, sidewalks, explicit building sites (their footprints and lots), mines' extraction
+  areas and other fields (shared edges are allowed).
+
+Since `ZONE-11` zoned land no longer refuses a field: a new or resized field takes the painted
+cells, cell lots and authored parcels under it, demolishing their buildings, and the erased paint
+is final (fields have no undo, `ZONE-12`). An extraction area follows the same rules and also
+refuses roads and building footprints, its own mine's included
+([`zoning.md`](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 
 Clearance uses exact polygon intersection over the existing 512 m chunk layout. Each vertex
 release in the inspector's **Edit Field** mode validates and commits atomically; a rejected move
@@ -889,6 +972,26 @@ It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
+Recovery and expansion warm the starter town up for 30 days, as it stops changing after its 10th
+day but for cash; recovery's report changed with `CODE-21` `T2` (2026-11-08). Expansion kept 365
+days until `ECON-28`: at 30 and 45 days one entrant ended below its 95% staffing bound (90.3%,
+75.4%), the workforce calendar's accounting gaps, fixed in `ECON-28` round `E2`, after which
+every warm-up from 10 to 200 days ends with all entrants at 99.7% or more. Two of them (115 and
+140 days) stopped instead on a parking assertion at the expansion's road commit (`PARK-11`);
+with that fixed and the [refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200
+days by 5 and 21-40 days by 1 all pass (worst entrant 99.74%). Round `E4` shortened it to 30
+days; the committed test with its warm-up swept over 21-40 days by 1 passes all 20 (worst
+entrant 99.74%).
+The 100 ha start places a mechanized farm or a labour-intensive coal mine (500 jobs) west of the
+town in a 4 km world and runs 90 days: the farm must trade at a profit, the mine must lose money
+on its owner's capital without fresh equity or advertising full staffing it cannot fund. The
+farm keeps the starter town; the mine's town has residential paint on the west cross street
+only (44 homes). With both streets the mine broke even near 128 working adults and the town's
+84 homes brought 113-132 by their applicants' draw, so the expected loss was a coin toss on the
+seed (3 of 24 shifted seeds profited, the case's own seed too once `ECON-28` admitted the
+calendar's families). Over 25 applicant seeds the one-street town brings 57-72 adults and the
+mine loses 237,064-305,201 over the 90 days on `ECON-28`'s branch (`dev`: 375,533-492,962, three
+seeds bankrupt by day 90), so the case tests a labour-starved mine, not a draw (round `E4`).
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare
@@ -919,9 +1022,16 @@ separately from cached runtime; `--binary "$TEST_BINARY"` skips compilation. Use
 inspect selection without running, and `--prepare --keep-baseline` to prepare snapshots and
 retain the first baseline executable (it deliberately refuses to overwrite an existing one).
 
+In a round's timing session the contract runs as rows of `./run.sh --timing`
+([timing levels](simulation.md#timing-levels-and-the-session-runner-perf-19)): prepared before
+the locks; at every landing the branch runs `--diff` and the full days, and the control's rows
+come from the session cache (a merge times both).
+
 Every economy change keeps these checks. They replace `ECON-13` (closed 2026-10-12), whose
 100k runs took hours. The contract uses saved cities, deterministic work counts and one run per
-tier, so a full check takes minutes. The 100k and 1M tiers are deferred.
+tier, so a full check takes minutes. No 100k tier is measured (removed by the user on
+2026-11-09, [`simulation.md`](simulation.md#decisions-2026-11-09)); the 1M tier is deferred. The
+100k figures below are history.
 
 **Fixtures.** Two separate `PopulatedCity` workloads at 10k and 30k residents use the ordinary
 save format. The day-12 baseline retains the original census, staffing and search workload.
@@ -934,10 +1044,21 @@ churn is still reported. Bankruptcy reduces employment, so fiscal results cannot
 for baseline performance acceptance.
 
 Each snapshot records its save-format and fixture revisions, tier and boundary; the runner
-regenerates it when these change. Generation must show that loading preserves every subsequent
+regenerates it when these change. The file name carries the first 16 hex digits of the revision
+(`populated_city_<residents>_<revision>.sqlite`, `fiscal_stress_<residents>_<revision>.sqlite`,
+since `PERF-19`) and the prepare reports print the whole key, so builds with different keys share
+one cache directory without overwriting each other's cities. Generation must show that loading preserves every subsequent
 hourly `GrowthDayRecord`, placement/removal counts and the checked agent movement/schedule state
 through the next daily boundary. Fiscal generation also enforces 24/24 active intervals before
 publishing its cache. Snapshots are local build products and are not committed.
+
+**Parking supply (`PARK-02`).** The fixture's cross streets carry a parking lane on both kerbs,
+the rows and border trunks none, and a small lot stands on every other row block in a
+checkerboard, placed before the rows are zoned. A row has no depth to give: its back-to-back lots
+fill the 50 m between streets. Each household's car starts parked near its home, like the household
+placed at home: without that, a city admitted at once queues every car at the border, days of a
+road's capacity (14,576 cars at 30k). A car with no free bay near home stays stored and arrives as
+in the game. `parking_supply.rs` holds the fixture to this; `commit_locality.rs` inherits it.
 
 Fixture revisions hash the fixture source and algorithm marker, bootstrap JSON/TOML
 manifests, `economy/profiles.toml`, and `demand/growth_profiles.toml`. Relative paths and
@@ -960,6 +1081,64 @@ found that saves dropped the pending arrivals, fixed in save format 108
 the breakdown, like its prepare test, switches the test-only checks off through the same
 `contract::timing_mode` as the economy runners ([`roads.md`](roads.md#road-68-open-questions)
 question 50); its `populated_city.rs` change re-keys the economy snapshots once more.
+
+**Published snapshots (`PERF-13`, fixed 2026-11-04).** From `TRAFFIC-19` (`173578b3`) until
+the fix the 10k preparation failed its exact-continuation check, and so did the 100k one when it
+was next run (`9f2808bc`); nothing was published and `./run.sh --perf-contract` stopped at its first prepare. The cause was the loader,
+not the snapshot code: it took a walker that waits at the end of its lane with no plan, its route
+cursor one past its path, off the sidewalk as a stale route, and the walkers queued behind it then
+walked on ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), *End of
+path*). Neither the fixture revision nor the save format changed with the fix, so the snapshots
+keep their keys. Freshly prepared on `perf13-save-continuation` (release test binary SHA-256
+`0db52a5f6ed1a89e`, `RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes and publishes at 10k,
+30k and 100k (generation and continuation 26, 101 and 627 s) and `perf_contract_fiscal_prepare`
+at 10k and 30k (15 and 40 s). The runner reads and writes them in `$ARTIFACTS/snapshots`, where
+`$ARTIFACTS` is its `--artifacts` directory (by default `perf-contract` in the checkout's cargo
+target directory), as `populated_city_<residents>.sqlite` and `fiscal_stress_<residents>.sqlite`;
+the ignored tests take the same directory as `METRUM_PERF_CACHE`. A checkout without them
+prepares them in the runner's first step. One `./run.sh --perf-contract --binary "$TEST_BINARY"`
+then ran on them (both locks, `RAYON_NUM_THREADS=8`, P-cores; load average 9.9 at its start, just
+after another agent's tests, so its timings establish nothing): every prepare reused its snapshot
+(`generation_s` null), and the full and fiscal days (24 of 24 active intervals at both tiers),
+the isolated phases, the locality gates and the agent contract ran in 69.1 s. It exits 1 on seven
+work-count scaling limits, the parked `PERF-03`–`PERF-05` kind: `buyer_sites_built`,
+`staffing_trials`, `supplier_searches`, `supplier_routes` and `job_search_keys` in the baseline,
+`buyer_sites_built` and `cch_searches` in the fiscal workload. That is the set the `ROAD-68`
+runs of 2026-10-24 record ([`roads.md`](roads.md#attribution-of-the-perf-contract-rise-road-68-g)).
+Against the 2026-10-14 full runs below (ten failed limits) no time limit fails any more,
+`census_buildings` and `owner_slots_prepared` no longer fail, and `buyer_sites_built` fails in
+both workloads. Republished 2026-11-04 with the `TRAFFIC-24` fix (round T24, branch `traffic24-walker-home`,
+release test binary SHA-256 `71e4f46c439d9cb7`, `RAYON_NUM_THREADS=8`), since walkers whose job
+ends on the way now walk home and the prepared cities differ: `perf_contract_prepare` passes its
+continuation check and publishes at 10k, 30k and 100k (31, 144 and 599 s) and
+`perf_contract_fiscal_prepare` at 10k and 30k (20 and 53 s). Fixture revision and save format
+are unchanged. Republished 2026-11-05 for save format 115 with the `ROAD-95` turn pockets landing
+(branch `r5-land` `a00e8909`, release test binary SHA-256 `2c48a328a25c9f67`,
+`RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes its continuation check and publishes at
+10k, 30k and 100k (25, 99 and 479 s) and `perf_contract_fiscal_prepare` at 10k and 30k (13 and
+40 s). Fixture revision unchanged. Republished 2026-11-06 for save format 117 with the `ROAD-107`
+one-sided sidewalks and `ROAD-62` roundabouts landing (branch `r7-land` `b66fe0b5`, release test
+binary SHA-256 `f2844c4154fbf7b2`, `RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes its
+continuation check and publishes at 10k, 30k and 100k (25, 93 and 459 s) and
+`perf_contract_fiscal_prepare` at 10k and 30k (12 and 39 s). The fixture revision moved, because
+it hashes `populated_city.rs`, which gained the test-only `METRUM_PERF_ROUNDABOUTS` knob.
+Prepared 2026-11-09 for fixture revision v8 with `ECON-28` (round `E4`, branch `econ-28` on `dev`
+`e7787837`, release test binary SHA-256 `989b2db93fc6a2a5`, `RAYON_NUM_THREADS=8`), whose
+admission, store-labour charge and refill crew (`ECON-24`) change every generated city:
+`perf_contract_prepare` passes its continuation check at 10k, 30k and 100k (generation 43, 154
+and 564 s) and `perf_contract_fiscal_prepare` at 10k and 30k (16 and 42 s). They replace the
+published snapshots when the branch lands.
+The contract on them ran in one session against an `e7787837` control (2026-11-09, P-cores,
+`RAYON_NUM_THREADS=8`, control and branch alternating, two runs each; the control on the
+published snapshots): every prepare reused its snapshot. Day hourly 0.87-0.89 ms at 10k and
+3.28-3.30 at 30k (control 0.90 and 3.29-3.36), fiscal 6.44-6.50 and 13.24-13.38 (control
+7.03-7.08 and 15.85-15.93); the isolated phases match the control within 0.2 ms except execution
+at 30k (0.89 against 0.72-0.75). The control exits 1 on four parked work-scaling limits
+(`buyer_sites_built`, `supplier_searches`, `supplier_routes`, `job_search_keys`), the branch on
+the same four plus `staffing_trials`: 43,774 at 10k and 178,647 at 30k (4.08×, limit 3.28×)
+against the control's 62,293 and 191,429 (3.07×). The branch's 10k day places no building, so
+the denominator drops while the 30k count falls too. The user accepted this on 2026-11-09 as a measurement effect of
+the smaller 10k denominator, not a work regression; the 3.28× limit itself is unchanged.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
@@ -1819,6 +1998,81 @@ run-to-run spread (the control's baseline 30k moved 4.09–4.57 ms across two se
 The cities hold no footpath and their walking proof holds. Commands and results are in
 [`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
 
+#### Parking contract acceptance (`PARK-02`)
+
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717`, exclusive
+locks, P-cores, 8 workers, two runs. `dev` was not run (the user: no commits since this work began):
+its column is round M7c's runs from the same boot, same binary, SHA-256 `139c9563`, not a same-session
+control.
+
+```bash
+METRUM_PERF_RESIDENTS=30000 METRUM_PERF_CACHE="$ARTIFACTS" RAYON_NUM_THREADS=8 \
+  taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" \
+  nodes::sim::core::populated_city::contract::perf_contract_day --exact --ignored --nocapture --test-threads=1
+```
+
+| `perf_contract_day` | `dev` | Final | Budget |
+| --- | --- | --- | --- |
+| 10k hourly / daily, ms | 0.95, 0.91 / 0.00 | 0.98, 1.02 / 0.00 | 40 / 10 |
+| 30k hourly / daily, ms | 4.49, 4.58 / 0.00 | 3.45, 3.52 / 0.00 | 120 / 30 |
+| Load, 10k / 30k, s | 1.6 / 4.4 | 2.8 / 7.2 | |
+
+The agent tick, locality and employment reach are in
+[parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
+
+**The shift.** `tools/sim02_gate.py envelope determinism --bursts departures,settlements`, rerun on
+the final tree, passes against the envelope recorded before parking: 0 violations, 23 notes against
+`dev`'s 13, determinism null. Every day and lane record of the 14 days, in all five workloads, is
+byte-identical to round M7c's tree, so `PARK-10` and `TRAFFIC-30` move nothing here. `dev`'s column
+is M7c's: its binary has not changed. 14 days, baseline workload, a read-only shift probe in the
+binary. Column M5a is the first tree with the fixture's supply; M6c adds the door catchments,
+prepared answers and the wrapped departure; final adds `PARK-08`, `TRAFFIC-29` and the 10k grid.
+
+| 10k | `dev` | M5a | M6c | Final |
+| --- | --- | --- | --- | --- |
+| Residents / employed, day 14 | 10,664 / 7,166 | 10,089 / 6,737 | 10,089 / 6,731 | 11,398 / 7,723 |
+| Deliveries a day | 1,274 | 1,204 | 1,206 | 1,389 |
+| Commutes / shopping by car | 90.0 / 96.5% | 41.6 / 62.2% | 41.4 / 61.9% | 41.4 / 70.2% |
+| Adult home minutes, median | 807 | 570 | 570 | 577 |
+| Out of stock, 14-day mean / day 14 | 595.5 / 179 | 318.7 / 89 | 321.3 / 89 | 764.4 / 132 |
+| Bankruptcies | 6 | 0 | 1 | 7 |
+
+| 30k | `dev` | M5a | M6c | Final |
+| --- | --- | --- | --- | --- |
+| Residents / employed, day 14 | 30,111 / 16,018 | 31,179 / 20,396 | 31,184 / 20,374 | 31,184 / 20,381 |
+| Deliveries a day | 2,501 | 3,702 | 3,697 | 3,701 |
+| Commutes / shopping by car | 89.8 / 94.3% | 40.8 / 61.5% | 40.4 / 61.3% | 40.8 / 63.5% |
+| Adult home minutes, median | 669 | 542 | 539 | 539 |
+| Out of stock, 14-day mean / day 14 | 3,878 / 5,088 | 1,700 / 1,044 | 1,710 / 1,069 | 1,611 / 745 |
+| Bankruptcies | 500 | 62 | 68 | 50 |
+
+60 days at 10k, last 14 days, `dev` against final (round M8's run on tree `c9dda717`): out of stock
+128.8 against **181.4** (M7c's tree 180.6, M5a's smaller city 129.2), 2.4 against 3.2% of households; commutes by car 90.2 against
+40.6%, shopping 96.3 against 67.8%; employment rate 0.677 against 0.681; deliveries 1,427 against
+1,554 a day; adult home minutes 806 against 563; bankruptcies over the 60 days 300 against 345.
+Saturation, detours, trip failures, lanes over capacity and stacked cars read 0 on both; see
+[parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
+
+**Who moved what since M5a.** 10k: the grid one block wider (fixture revision 7), so a
+bigger city with room. Out of stock is a start-up wave that decays in every column: day 5 reads 2,727
+against 1,034 in M6c and 1,984 on `dev`, and follows the households admitted in the first days, 685,
+0 and 305. By day 14 it reads 132. 30k has the same grid: M6c moves nothing past noise, and the rest
+is `TRAFFIC-29`, by the column between: shopping by car +2.2 points, bankruptcies 68 to 50, out of stock
+at day 14 1,069 to 745, by reading because a shopper's return keeps what its leg planned and a driver whose
+trip is taken goes home. Rounds M6a and M6b are byte-equal on these products by their own proofs. The 10k
+share of shopping by car, +8 points, is the wider city's and was not separated.
+
+**100k stays at 50,000 households, and that is the fixture** (history: no 100k tier is measured
+since 2026-11-09). The first batch admits exactly
+`residents / 2` and houses 100,325, so the fixture stops there; everything after is demand, and
+demand admits only for net open jobs. Every tier settles at 2.6 job slots a household whatever it
+starts from: 2.59, 2.59, 2.60 at 10k, 30k, 100k, and on `dev` 2.62, 2.64, 2.61. Round M5a's lots took 7.7%
+of the 100k grid, 70,208 buildings against 76,109 and 129,954 jobs against 141,723, so the 50,000
+start already sits at 2.60: net open jobs read 0 from the first record, against 231 falling to 0 over
+three days on `dev`, and 16 of 16 applicants fail the income check with no job to take. Homes never
+limit it: 4.3% stand empty. It is a merge effect, through the
+fixture's smaller grid, not a behaviour: employment is 67,685 of 100,325, a rate of 0.675.
+
 ### `ECON-13` economy tick baseline
 
 Closed 2026-10-12 and replaced by the [performance contract](#performance-contract-perf-01perf-05).
@@ -1830,8 +2084,9 @@ deferred.
 
 - **Fixture:** `PopulatedCity::build(residents)` (`nodes/sim/core/populated_city.rs`):
   - a square grid with streets every 50 m and cross streets every 400 m, its width floored to
-    whole blocks; a tier that grid cannot house is built one block wider (`ROAD-68-K24`:
-    1,300 and 13,000 residents; every other tier is unchanged);
+    whole blocks; a tier that grid cannot house (`ROAD-68-K24`: 1,300 and 13,000 residents, 30,000
+    since `PARK-02`), or houses with under 2% of its homes to spare, so that the city cannot grow
+    (`PARK-02`: 10,000 residents), is built one block wider;
   - zoning in eight-row repeats of six residential, one commercial and one industrial row;
   - every lot built through the demand spawn executor;
   - households admitted through demand admission, with carriers placed at home;
@@ -1840,7 +2095,8 @@ deferred.
 - **Benchmark:** `rust/benches/economy_tick_benchmark.rs`. Each `operational_hour` sample is one
   of 23 demand hours, timed through the hour's fixed slots to its actions slot; each
   `daily_settlement` sample is one of ten days, timed through the calendar close. Since 2026-10-15 only
-  the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,100k,1m` requests the larger ones.
+  the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,1m` requests the 1M one (the 100k tier
+  was removed on 2026-11-09).
 - **Recipe:** run `cargo bench --bench economy_tick_benchmark -- /10k` with
   `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`. Alternate builds over four runs each,
   check that `GrowthDayRecord`s are identical, and compare run means with an exact permutation

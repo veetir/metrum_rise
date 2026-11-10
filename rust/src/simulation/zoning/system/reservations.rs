@@ -5,13 +5,16 @@
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
-use crate::simulation::zoning::cells::{CellBounds, CellMaps, CellStore, road_contact_interior};
+use crate::simulation::zoning::cells::{
+    CellBounds, CellKey, CellMaps, CellStore, road_contact_interior,
+};
 use glam::DVec2;
 
-// Whether a piece's top triangles overlap a polygon with positive area. A buried piece's top lies
-// in the hill under the cells (`ROAD-61` round R8h) and covers none.
+// Whether a piece's top triangles overlap a polygon with positive area. Only a piece on the
+// ground covers land: a buried piece's top lies in the hill under the cells (`ROAD-61` round
+// R8h), a bridge's deck above them (`ZONE-09`, decision D2), and neither covers any.
 fn piece_covers(mesh: &PieceMesh, polygon: &PolygonFootprint) -> bool {
-    if mesh.buried() {
+    if !mesh.grounded() {
         return false;
     }
     let bounds = [polygon.min.x, polygon.min.y, polygon.max.x, polygon.max.y].map(f64::from);
@@ -21,6 +24,37 @@ fn piece_covers(mesh: &PieceMesh, polygon: &PolygonFootprint) -> bool {
             .map(|point| [point.x, point.z]);
         polygon.overlaps_precise_points(&points)
     })
+}
+
+/// Whether one of an edit's road pieces newly covers a four-cornered footprint (a cell, a lot or
+/// a parcel): its top triangles overlap the footprint's road-contact interior
+/// ([`road_contact_interior`]) and those of no piece in `before`, the pieces the edit replaces,
+/// do. A footprint that only touches the road along its frontage is not covered.
+/// O(top triangles of `mesh` and `before` in the footprint's bounds).
+pub(crate) fn road_piece_newly_covers(
+    mesh: &PieceMesh,
+    before: &[&PieceMesh],
+    corners: &[DVec2; 4],
+) -> bool {
+    let interior = road_contact_interior(corners);
+    let footprint = PolygonFootprint::from_precise_points(interior.iter().map(|p| [p.x, p.y]));
+    piece_covers(mesh, &footprint) && !before.iter().any(|old| piece_covers(old, &footprint))
+}
+
+/// [`road_piece_newly_covers`] for land an edit takes beyond its pieces (`ZONE-10`, a
+/// roundabout's island): `footprint` overlaps the four-cornered footprint's road-contact interior
+/// with positive area and no piece in `before` covers it. O(`footprint` vertices + top triangles
+/// of `before` in the footprint's bounds).
+pub(crate) fn footprint_newly_covers(
+    footprint: &PolygonFootprint,
+    before: &[&PieceMesh],
+    corners: &[DVec2; 4],
+) -> bool {
+    let interior = road_contact_interior(corners).map(|p| [p.x, p.y]);
+    footprint.overlaps_precise_points(&interior) && {
+        let interior = PolygonFootprint::from_precise_slice(&interior);
+        !before.iter().any(|old| piece_covers(old, &interior))
+    }
 }
 
 impl ZoningSystem {
@@ -35,8 +69,9 @@ impl ZoningSystem {
     }
 
     /// Tests a proposed road corridor against painted cells and occupied grace claims locally.
-    /// Edits test the pieces they install instead ([`Self::cells_newly_covered_by_road_piece`]); tests
-    /// use the corridor to show what the pieces reach beyond it.
+    /// Edits test the pieces they install instead
+    /// ([`Self::reserved_cells_newly_covered_by_road_pieces`]); tests use the corridor to show
+    /// what the pieces reach beyond it.
     #[cfg(test)]
     pub(crate) fn cells_overlap_road_corridor(
         &self,
@@ -67,32 +102,35 @@ impl ZoningSystem {
         self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
     }
 
-    /// Whether the top surface of one road piece covers a reserved cell of `cells` that none of
-    /// `before` covered (`ROAD-68` open question 1): each candidate cell in the piece's bounds
-    /// against its top triangles, then against the pieces the edit replaces. Cells are laid out
-    /// against the straight road corridors, so cells beside an existing junction corner or road
-    /// end may already lie under it; an edit is refused only for land it newly covers. Cells that
-    /// only touch the road along their frontage are not covered. The commit passes the live
-    /// store and the road tool's preview the view's persistent copy of it, so both decide alike
-    /// (open question 25). O(candidate cells * top triangles of the piece and of `before`), one
-    /// bounds query when no cell is reserved near the piece.
-    pub(crate) fn cells_newly_covered_by_road_piece<M: CellMaps>(
+    /// Every reserved cell of `cells` that one of `pieces` newly covers, sorted by key and
+    /// without repeats: the cells a road edit takes (`ZONE-09`, `ZONE-10`). Each candidate cell
+    /// in a piece's bounds is tested against its top triangles, then against the pieces the edit
+    /// replaces ([`road_piece_newly_covers`]). Cells are laid out against the straight road
+    /// corridors, so cells beside an existing junction corner or road end may already lie under
+    /// it; only land the edit newly covers is taken. Cells that only touch the road along their
+    /// frontage are not covered. The commit passes the live store and the road tool's preview
+    /// the view's persistent copy of it, so both decide alike (`ROAD-68` open question 25).
+    /// O(pieces * candidate cells * top triangles), one bounds query per piece when no cell is
+    /// reserved near it.
+    pub(crate) fn reserved_cells_newly_covered_by_road_pieces<'a, M: CellMaps>(
         cells: &CellStore<M>,
-        mesh: &PieceMesh,
+        pieces: impl IntoIterator<Item = &'a PieceMesh>,
         before: &[&PieceMesh],
-    ) -> bool {
+    ) -> Vec<CellKey> {
+        let mut covered = Vec::new();
         if !cells.has_reservations() {
-            return false;
+            return covered;
         }
-        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
-        let bounds = CellBounds {
-            min: DVec2::new(min_x, min_z),
-            max: DVec2::new(max_x, max_z),
-        };
-        Self::reserved_cells_overlap(cells, bounds, true, |corners| {
-            let cell = PolygonFootprint::from_precise_points(corners.iter().map(|p| [p.x, p.y]));
-            piece_covers(mesh, &cell) && !before.iter().any(|old| piece_covers(old, &cell))
-        })
+        for mesh in pieces {
+            cells.visit_reserved_footprints_in_bounds(piece_bounds(mesh), |key, corners| {
+                if road_piece_newly_covers(mesh, before, &corners) {
+                    covered.push(key);
+                }
+            });
+        }
+        covered.sort_unstable();
+        covered.dedup();
+        covered
     }
 
     fn cells_overlap_road_points(&self, points: impl Iterator<Item = [f64; 2]> + Clone) -> bool {
@@ -140,5 +178,14 @@ impl ZoningSystem {
                 overlaps = test(corners);
             });
         overlaps
+    }
+}
+
+// A piece's XZ bounds as a cell query box.
+fn piece_bounds(mesh: &PieceMesh) -> CellBounds {
+    let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+    CellBounds {
+        min: DVec2::new(min_x, min_z),
+        max: DVec2::new(max_x, max_z),
     }
 }

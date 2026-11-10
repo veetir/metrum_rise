@@ -29,12 +29,13 @@ use super::lane_nav::{
     direct_vehicle_lane_to_lane, lane_terminal_node, planned_next_target,
 };
 use super::planning::{BuiltNetworkReplan, plan_border_network_replan, plan_network_replan};
-use super::traffic::lane_entry_slot_clear;
+use super::traffic::{lane_entry_slot_clear, ring_entry_blocker};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::data::{AgentSystem, AgentVec};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
+use crate::simulation::parking::ParkingSystem;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -356,6 +357,7 @@ impl AgentSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
         now: u64,
+        parking: Option<&ParkingSystem>,
     ) {
         let lane_count = network.lane_system.lanes.len();
         if !self.lane_bucket_snapshot_valid
@@ -368,7 +370,7 @@ impl AgentSystem {
         self.gridlock.bind(network);
         let check = self.gridlock.report.checks + 1;
         self.find_wait_for_cycles(network, graph, now, check);
-        self.act_on_confirmed_cycles(allocator, network, graph);
+        self.act_on_confirmed_cycles(allocator, network, graph, parking);
         let checker = &mut self.gridlock;
         std::mem::swap(&mut checker.previous, &mut checker.cycles);
         checker.report.checks = check;
@@ -458,6 +460,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&ParkingSystem>,
     ) {
         let lanes = &network.lane_system.lanes;
         self.gridlock.report.saturated = 0;
@@ -483,7 +486,7 @@ impl AgentSystem {
             let mut detoured = false;
             for c in 0..self.gridlock.candidates.len() {
                 let (_, head, lane) = self.gridlock.candidates[c];
-                if self.try_detour(head, lane, allocator, network, graph) {
+                if self.try_detour(head, lane, allocator, network, graph, parking) {
                     detoured = true;
                     break;
                 }
@@ -521,6 +524,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&ParkingSystem>,
     ) -> bool {
         let agents = &self.agents;
         let lanes = &network.lane_system.lanes;
@@ -573,6 +577,7 @@ impl AgentSystem {
                 graph,
                 network,
                 &self.pathfind_count,
+                None,
             )
         } else if agents.target_building[i] != usize::MAX {
             plan_network_replan(
@@ -587,6 +592,11 @@ impl AgentSystem {
                 graph,
                 &self.pathfind_count,
                 None,
+                None,
+                // Keep the claimed driveway endpoint, including a bay away from the door.
+                parking.and_then(|p| {
+                    p.replan_entrance(agents.parking_trip[i], allocator, network, graph)
+                }),
             )
             .ok()
         } else {
@@ -625,6 +635,7 @@ impl AgentSystem {
             path.extend_from_slice(&replan.current_path);
         }
         let agents = &mut self.agents;
+        agents.parking_trip[i].route_replaced(path.len());
         agents.current_path[i] = path;
         agents.walk_lanes[i].clear();
         agents.current_path_index[i] = 0;
@@ -676,7 +687,7 @@ fn record_cycle(
 // The lane `lane`'s head waits for, or `NONE`: the head is a car standing at the lane's end and
 // the entry it needs next is blocked. Connector heads wait for their exit lane's entry slot,
 // the test `exit_connector_lane` makes. O(node degree) per head at its end, O(1) otherwise.
-fn waited_for(
+pub(super) fn waited_for(
     agents: &AgentVec,
     lane: usize,
     network: &TransitNetwork,
@@ -739,8 +750,10 @@ fn head_target(
 
 // Whether a car at the end of `from` can enter toward `target` now, with the tests the movement
 // step makes: a direct pass-through lane's entry slot; else, among the connectors that lead
-// there (only the shortest ones toward an edge), one whose entry slot is clear. O(successors of
-// `from`), no allocation.
+// there (only the shortest ones toward an edge), one whose entry slot is clear and which owes no
+// give-way on a ring (`ROAD-62`). A blocked entry names the lane in its way: for a yielding head
+// that is the ring's, so a wait-for edge never points at a lane with room while the head waits on
+// another. O(successors of `from`), no allocation.
 fn entry_state(
     from: usize,
     target: NextTarget,
@@ -782,10 +795,35 @@ fn entry_state(
         {
             continue;
         }
-        if lane_entry_slot_clear(connector, buckets) {
-            return Entry::Free;
+        let in_the_way = if lane_entry_slot_clear(connector, buckets) {
+            ring_entry_blocker(connector, &network.lane_system, buckets)
+        } else {
+            Some(connector)
+        };
+        match in_the_way {
+            None => return Entry::Free,
+            Some(lane) => {
+                blocker.get_or_insert(lane);
+            }
         }
-        blocker.get_or_insert(connector);
     }
     blocker.map_or(Entry::Missing, Entry::Blocked)
+}
+
+/// Whether a car at the end of `from` may roll onto ring entry `connector`, or a sibling the claim
+/// would take in its place: a one-lane arm fans onto both lanes of a two-lane ring, so the lane-end
+/// hold reads the same candidates as the claim. O(successors of `from`), no allocation. Out of line
+/// to keep the speed pass's ordinary connector path as it was.
+#[inline(never)]
+pub(super) fn ring_approach_clear(
+    from: usize,
+    connector: usize,
+    network: &TransitNetwork,
+    buckets: &[Vec<(f32, usize)>],
+) -> bool {
+    let lanes = &network.lane_system.lanes;
+    lanes[connector].next_lanes.first().is_some_and(|&ring_out| {
+        let target = NextTarget::Edge(lanes[ring_out].edge_id);
+        matches!(entry_state(from, target, network, buckets), Entry::Free)
+    })
 }

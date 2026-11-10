@@ -7,8 +7,9 @@
 //! cap/apron reach as dirty-tile selection; a world replacement rebuilds the sparse set.
 
 use super::grade::CAP_M;
-use super::seams::road_seam;
-use super::sites::SiteSource;
+use super::prune::box_distance;
+use super::seams::{Seam, road_seam};
+use super::sites::{SiteBuffer, SiteSource};
 use super::tile::{TILE_M, TileKey, grown};
 use crate::simulation::buildings::allocator::{BuildingAllocator, SiteChange};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
@@ -27,6 +28,10 @@ const WINDOW_PAD_M: f64 = 1.0;
 // the tile rebuild itself still filters every input against the exact complete-tile window.
 const CHANGE_PAD_M: f64 = QUERY_APRON_M + WINDOW_PAD_M + 2.0;
 
+/// How far from a changed road piece or site a graded query's answer can move: the cap and this
+/// index's own pad, the reach of every local rebuild below.
+pub(crate) const GRADED_CHANGE_REACH_M: f64 = CAP_M + CHANGE_PAD_M;
+
 /// Owner references any graded query point in one 64 m tile can need. Road seams and walls are
 /// read from `road_pieces`; coverage keeps its narrower piece list so point preparation retains
 /// each piece's exact triangle-grid candidate order. Sites stay in the allocator's `SiteCells`.
@@ -34,8 +39,10 @@ const CHANGE_PAD_M: f64 = QUERY_APRON_M + WINDOW_PAD_M + 2.0;
 pub(super) struct QueryTileInputs {
     pub(super) road_pieces: Vec<PieceId>,
     pub(super) coverage_pieces: Vec<PieceId>,
-    // Exact tile-level interpolation choice: false only when no road or pad seam can reach the
-    // rendered tile. Point and vehicle queries read this instead of walking the tile's inputs.
+    // Exact tile-level interpolation choice, `GradedSurface::quiet` over the tile's apron: false
+    // only when no road or pad seam's box comes within the cap and window pad of it (Euclidean
+    // box distance, as the gather lists them). Point and vehicle queries read this instead of
+    // walking the tile's inputs.
     has_seams: bool,
 }
 
@@ -141,10 +148,10 @@ impl TerrainQueryIndex {
         }
         let mut keys = BTreeSet::new();
         for bounds in roadbed.terrain_query_input_bounds() {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         for bounds in sites.graded_query_input_bounds() {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         self.tiles.clear();
         for key in keys {
@@ -167,11 +174,11 @@ impl TerrainQueryIndex {
         }
         let mut keys = BTreeSet::new();
         for &bounds in changes.pieces.iter().chain(&changes.portals) {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         for &[a, b] in &changes.segments {
             let seam = road_seam(a, b);
-            push_tiles(grown(seam.box_xz(), CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(seam.box_xz(), GRADED_CHANGE_REACH_M), &mut keys);
         }
         self.rebuild_keys(keys, roadbed, sites);
         self.generation = self.generation.wrapping_add(1);
@@ -191,7 +198,7 @@ impl TerrainQueryIndex {
         let mut keys = BTreeSet::new();
         for change in changes {
             push_tiles(
-                grown(change.bounds.map(f64::from), CAP_M + CHANGE_PAD_M),
+                grown(change.bounds.map(f64::from), GRADED_CHANGE_REACH_M),
                 &mut keys,
             );
         }
@@ -236,7 +243,22 @@ impl TerrainQueryIndex {
         let has_sites = sites.any_graded_site_in_bounds(window);
         let mut road_segments = Vec::new();
         roadbed.grounded_seams_from_pieces(window, &inputs.road_pieces, &mut road_segments);
-        inputs.has_seams = has_sites || !road_segments.is_empty();
+        // The axis-aligned window also meets seams diagonally off the apron's corners, farther
+        // than the reach; the gather does not count those, so neither does the choice
+        // (`TERRAIN-19`: counting them answered the `GL0` triangles where `ground_height_at`
+        // answered the bilinear base).
+        let reaches = |seam: &Seam| box_distance(seam.box_xz(), rect) <= CAP_M + WINDOW_PAD_M;
+        let roads = road_segments
+            .iter()
+            .any(|&([a, b], _)| reaches(&road_seam(a, b)));
+        let pads = has_sites && !roads && {
+            let mut buffer = SiteBuffer::default();
+            buffer.gather_unordered(sites, window);
+            let mut any = false;
+            buffer.for_each_pad_seam(|seam| any |= reaches(&seam));
+            any
+        };
+        inputs.has_seams = roads || pads;
         if inputs.is_empty() && !has_sites {
             self.tiles.remove(&key);
         } else {

@@ -7,12 +7,16 @@ use super::super::super::super::{
     ACCESS_WALK_STRANDED, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
-use super::super::super::lane_nav::lane_terminal_node;
+use super::super::super::lane_nav::{
+    lane_hosts_turn_preparation, lane_terminal_node, road_lane_ahead,
+};
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_border_network_replan,
+    plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
+use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
@@ -20,12 +24,16 @@ use super::walk_home::{give_up_trip, retry_home, retry_home_without_lane};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::traffic_log;
 use std::sync::atomic::AtomicU32;
 
 /// Runs the pre-movement replan gates and returns whether the agent may keep moving this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn prepare_network_replan(
     i: usize,
     sim_time: f32,
@@ -64,6 +72,9 @@ pub(super) unsafe fn prepare_network_replan(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn bootstrap_immigration_trip(
     i: usize,
     sim_time: f32,
@@ -94,14 +105,17 @@ unsafe fn bootstrap_immigration_trip(
 
         let border_node = *s_cur_n.get(i);
         let home_bldg = *s_tgt_b.get(i);
-        if let Some(plan) = plan_immigration_trip(
-            border_node,
-            home_bldg,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-        ) {
+        let plan = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
+            allocator.entrances.get(home_bldg).and_then(|entrance|
+                plan_border_arrival(border_node, home_bldg,
+                    crate::simulation::economy::agents::MODE_WALK, entrance,
+                    transit_network, graph, pathfind_count))
+        } else {
+            plan_immigration_trip(border_node, home_bldg, allocator, transit_network, graph, pathfind_count)
+        };
+        if let Some(plan) = plan {
             apply_immigration_trip(i, border_node, plan, slices);
             true
         } else {
@@ -124,6 +138,9 @@ unsafe fn bootstrap_immigration_trip(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn ensure_exact_access_plan(
     i: usize,
     sim_time: f32,
@@ -182,6 +199,8 @@ unsafe fn ensure_exact_access_plan(
             graph,
             pathfind_count,
             Some((i, "exact-access-replan")),
+            None,
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -220,6 +239,110 @@ unsafe fn ensure_exact_access_plan(
     }
 }
 
+/// Replans car `i` once after it followed a missed turn (`follow_missed_turn`), which leaves it
+/// with a valid plan and no node path on the connector or road lane that turn entered. It plans
+/// from that road's end, so it chooses the road's next lane early, and keeps driving: a
+/// destination car through `plan_network_replan` with its access flags kept, a freight car
+/// through `plan_border_network_replan`. Called by the lane-end handler after an entry, so only a
+/// car that entered with an empty path pays the checks: a zero-hop trip (its detach node at that
+/// road's end, or its detach lane on that road) is left alone. A failed replan sets the replan
+/// backoff and changes nothing else; the car drives on, and the empty-path replan at the next lane
+/// end stays the last resort. Cost: O(1) checks, one route query on a missed turn. Out of line:
+/// it runs only at lane ends.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(never)]
+pub(super) unsafe fn replan_after_missed_turn(
+    i: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let flags = *slices.access_flags.get(i);
+        if *slices.tmode.get(i) != MODE_CAR
+            || flags & ACCESS_PLAN_VALID == 0
+            || !slices.path.get(i).is_empty()
+            || sim_time < *slices.next_replan_time.get(i)
+        {
+            return;
+        }
+        let Some(lane_id) = road_lane_ahead(*slices.lane_id.get(i), transit_network) else {
+            return;
+        };
+        let lane = &transit_network.lane_system.lanes[lane_id];
+        let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
+            return;
+        };
+        // On a road too short to change lanes the route must leave the node on a road this
+        // lane reaches; a longer road lets the preparation choose the lane (`TRAFFIC-23`, S3).
+        let first_lane =
+            (!lane_hosts_turn_preparation(lane_id, transit_network)).then_some(lane_id);
+        let target_building = *slices.tgt_b.get(i);
+        let replanned = if target_building == usize::MAX {
+            let border = *slices.freight_target_border_node.get(i);
+            if flags & ACCESS_FREIGHT_BORDER_DESTINATION == 0 || node == border {
+                return;
+            }
+            plan_border_network_replan(
+                node,
+                lane.edge_id,
+                border,
+                graph,
+                transit_network,
+                pathfind_count,
+                first_lane,
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_some()
+        } else {
+            if node == *slices.planned_detach_n.get(i)
+                || transit_network
+                    .lane_system
+                    .lanes
+                    .get(*slices.planned_detach_lane.get(i) as usize)
+                    .is_some_and(|detach| detach.edge_id == lane.edge_id)
+            {
+                return;
+            }
+            plan_network_replan(
+                node,
+                lane.edge_id,
+                None,
+                target_building,
+                MODE_CAR,
+                flags,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                Some((i, "missed-turn-replan")),
+                first_lane,
+                slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_ok()
+        };
+        if !replanned {
+            *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+            traffic_log!(
+                "[MISSED_TURN_REPLAN_FAILED] agent={} node={} lane={} target_bldg={} retry_after_s={:.1}",
+                i,
+                node,
+                lane_id,
+                target_building,
+                NETWORK_REPLAN_DELAY_S,
+            );
+        }
+    }
+}
+
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn repair_stale_detach_plan(
     i: usize,
     sim_time: f32,
@@ -280,11 +403,14 @@ unsafe fn repair_stale_detach_plan(
 
         let target_building = *s_tgt_b.get(i);
         let planned_detach_lane_id = *s_plan_detach_lane.get(i) as usize;
-        let detach_still_legal = target_building < allocator.entrances.len()
+        let trip = *slices.parking_trip.get(i);
+        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
+        let target_entrance = parking_entrance.as_ref().or_else(|| allocator.entrances.get(target_building));
+        let detach_still_legal = target_entrance.is_some()
             && planned_detach_lane_id != usize::MAX
             && planned_detach_is_legal(
                 *s_tmode.get(i),
-                &allocator.entrances[target_building],
+                target_entrance.expect("validated destination"),
                 planned_detach_lane_id,
                 *s_plan_detach_lane_d.get(i),
                 *s_plan_detach_n.get(i),
@@ -334,6 +460,8 @@ unsafe fn repair_stale_detach_plan(
             graph,
             pathfind_count,
             Some((i, "stale-detach-replan")),
+            None,
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -407,16 +535,17 @@ unsafe fn replan_start(
         let current_lane_id = *s_lane_id.get(i);
         let current_node = *s_cur_n.get(i);
         let current_edge = *s_cur_e.get(i);
-        let lane_valid = current_lane_id != usize::MAX
-            && current_lane_id < transit_network.lane_system.lanes.len();
-        if lane_valid {
-            let lane_edge = transit_network.lane_system.lanes[current_lane_id].edge_id;
-            if lane_edge != usize::MAX
-                && let Some(start_node) =
-                    lane_terminal_node(current_lane_id, transit_network, graph)
-            {
-                return Some((start_node, lane_edge));
-            }
+        // A car on a connector has one way out, so its route starts past the road that connector
+        // leads onto. From the junction itself a route can leave by any road (`TRAFFIC-30`).
+        let road_lane = if *slices.tmode.get(i) == MODE_CAR {
+            road_lane_ahead(current_lane_id, transit_network)
+        } else {
+            Some(current_lane_id)
+        };
+        if let Some(lane) = road_lane
+            && let Some(start_node) = lane_terminal_node(lane, transit_network, graph)
+        {
+            return Some((start_node, transit_network.lane_system.lanes[lane].edge_id));
         }
         (current_node != u32::MAX).then_some((current_node, current_edge))
     }
@@ -448,7 +577,7 @@ unsafe fn apply_immigration_trip(
         let s_lane_d = &slices.lane_d;
         let s_cur_e = &slices.cur_e;
 
-        *s_tmode.get_mut(i) = MODE_CAR;
+        *s_tmode.get_mut(i) = plan.mode;
         *s_tgt_b.get_mut(i) = plan.target_building;
         *s_plan_attach_n.get_mut(i) = plan.planned_attach_node;
         *s_plan_detach_n.get_mut(i) = plan.planned_detach_node;
@@ -464,6 +593,7 @@ unsafe fn apply_immigration_trip(
         *s_lane_id.get_mut(i) = usize::MAX;
         *s_lane_d.get_mut(i) = 0.0;
         *s_speed.get_mut(i) = 0.0;
+        slices.parking_trip.get_mut(i).route_replaced(plan.current_path.len());
         *s_path.get_mut(i) = plan.current_path;
         slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
@@ -489,6 +619,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
 
+        slices.parking_trip.get_mut(i).route_replaced(replan.current_path.len());
         *s_path.get_mut(i) = replan.current_path;
         slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
@@ -533,5 +664,42 @@ mod tests {
         let start = unsafe { replan_start(agent_idx, &transit_network, &graph, &slices) };
 
         assert_eq!(start, Some((node, usize::MAX)));
+    }
+
+    // `TRAFFIC-30`: a car whose plan is cleared on a connector replans past the road the
+    // connector leads onto. From the junction its route could leave by another road, and the car
+    // would drive this one to a far end that route never names.
+    #[test]
+    fn replan_start_takes_a_car_on_a_connector_to_the_end_of_its_road() {
+        use crate::simulation::network::roadbed::fixtures::{connect, point};
+        let mut graph = RegionGraph::new();
+        let junction = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+        let far = graph.add_node(point(100.0, 0.0, false), NodeType::Junction);
+        let edge = connect(&mut graph, junction, far, 7.0, false);
+        let mut transit_network = TransitNetwork::new();
+        let lanes = &mut transit_network.lane_system.lanes;
+        lanes.push(Lane {
+            edge_id: edge,
+            is_fwd: true,
+            ..Lane::default()
+        });
+        lanes.push(Lane {
+            edge_id: usize::MAX,
+            node_id: junction as usize,
+            next_lanes: vec![0].into(),
+            ..Lane::default()
+        });
+
+        let mut agents = AgentSystem::new();
+        let agent_idx = agents.spawn_border_arrival_agent(usize::MAX, junction, 0.0, 0.0);
+        agents.agents.transit_mode[agent_idx] = MODE_CAR;
+        agents.agents.current_node[agent_idx] = junction;
+        agents.agents.current_edge[agent_idx] = usize::MAX;
+        agents.agents.current_lane_id[agent_idx] = 1;
+
+        let slices = MovementSlices::new(&mut agents.agents);
+        let start = unsafe { replan_start(agent_idx, &transit_network, &graph, &slices) };
+
+        assert_eq!(start, Some((far, edge)));
     }
 }

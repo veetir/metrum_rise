@@ -50,6 +50,21 @@ pub(super) unsafe fn has_recoverable_network_trip(i: usize, slices: &MovementSli
     }
 }
 
+/// Whether network actor `i` has had its trip taken from it (`TRAFFIC-29`): no destination, and
+/// no freight, move-in or immigration errand that owns its route. O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(always)]
+pub(super) unsafe fn network_trip_taken(i: usize, slices: &MovementSlices) -> bool {
+    unsafe {
+        *slices.tgt_b.get(i) == usize::MAX
+            && *slices.freight_target_border_node.get(i) == u32::MAX
+            && *slices.pending_household_size.get(i) == 0
+            && *slices.freight_shipment_id.get(i) == u64::MAX
+            && *slices.transit.get(i) != TRANSIT_IMMIGRATING
+    }
+}
+
 /// Records one failed live network replan and recovers the agent once the watchdog threshold is hit.
 /// `reason` names the call site on `traffic`; `cause` is what the `events` log reports. A walker
 /// is never recovered here: it plans again from where it stands, walks home or is stranded
@@ -91,6 +106,13 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
         }
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
+        if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
+            let trip = slices.parking_trip.get_mut(i);
+            trip.ready = true;
+            trip.replan_needed = true;
+            *slices.speed.get_mut(i) = 0.0;
+            return;
+        }
         clear_failed_replan_attempt(i, slices);
 
         let failures = slices.network_replan_failures.get(i).saturating_add(1);
@@ -270,7 +292,13 @@ unsafe fn recover_to_border(
         } else {
             TRANSIT_NETWORK
         };
-        *slices.tmode.get_mut(i) = MODE_CAR;
+        *slices.tmode.get_mut(i) = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
+            MODE_WALK
+        } else {
+            MODE_CAR
+        };
         *slices.next_replan_time.get_mut(i) = 0.0;
         *slices.network_replan_failures.get_mut(i) = 0;
 
@@ -515,6 +543,7 @@ mod tests {
 
     fn test_edge(start_node: u32, end_node: u32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -535,6 +564,9 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     }
 

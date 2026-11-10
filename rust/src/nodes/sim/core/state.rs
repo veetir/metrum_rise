@@ -232,6 +232,8 @@ pub struct SimCore {
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
     pub agents: AgentSystem,
+    /// Persistent physical parking supply and parked vehicles; PARK-01 does not alter trips.
+    pub(crate) parking: crate::simulation::parking::ParkingSystem,
     /// Explicit household runtime records and first-pass daily economy logic.
     pub households: HouseholdSystem,
     /// Active building-level freight reservations and delayed deliveries.
@@ -289,6 +291,9 @@ pub struct SimCore {
     pub last_agent_tick_us: u64,
     /// Per-phase timing breakdown from the last road placement, for profiling.
     pub last_road_timing: String,
+    /// Wall time of the last land take's paint release (`ZONE-14`): the region's free painted
+    /// cells found and their empty lots removed, in milliseconds; for the locality benchmark.
+    pub(crate) last_land_release_ms: f64,
     /// Why the last refused road placement was refused; `commit_road` reports and clears it.
     pub(crate) last_road_rejection: Option<crate::nodes::sim::core::RoadRejection>,
     /// Fixed-size diagnostics; dictionary conversion happens only when explicitly requested.
@@ -423,6 +428,7 @@ impl SimCore {
             environment_sweep: EnvironmentSweep::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
+            parking: Default::default(),
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
@@ -451,6 +457,7 @@ impl SimCore {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_land_release_ms: 0.0,
             last_road_rejection: None,
             last_road_edit_metrics: Default::default(),
             last_road_terrain_changes: Default::default(),
@@ -1865,6 +1872,7 @@ impl SimCore {
         let changes = std::mem::take(&mut self.last_site_terrain_changes);
         self.record_graded_site_edit(&changes);
         self.last_site_terrain_changes = changes;
+        self.publish_parking_sites();
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {

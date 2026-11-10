@@ -56,7 +56,8 @@ fn perf_contract_prepare() {
     let elapsed = snapshot::ensure_snapshot(residents(), &cache_dir());
     eprintln!(
         "PERF_PREPARE {}",
-        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64())})
+        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64()),
+            "key":snapshot::fixture_revision()})
     );
 }
 
@@ -67,7 +68,8 @@ fn perf_contract_fiscal_prepare() {
     let elapsed = snapshot::ensure_fiscal_snapshot(residents(), &cache_dir());
     eprintln!(
         "PERF_FISCAL_PREPARE {}",
-        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64())})
+        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64()),
+            "key":snapshot::fixture_revision()})
     );
 }
 
@@ -413,8 +415,35 @@ fn perf_contract_phase() {
     );
 }
 
+#[test]
+#[ignore = "PARK-02 matched dense-district employment and bounded job reach diagnostic"]
+fn parking_employment_reach() {
+    use crate::simulation::economy::agents::{age_group_can_work, tick::ResidentMobility};
+    timing_mode();
+    let city = snapshot::load_snapshot(10_000, &cache_dir());
+    let c = &city.core;
+    let workers: Vec<_> = (0..c.agents.len()).filter(|&i| age_group_can_work(c.agents.age_group[i]) && c.agents.home_building[i] < c.allocator.buildings.len()).step_by(97).take(32).collect();
+    let jobs: Vec<_> = c.allocator.buildings.iter().enumerate().filter(|(_, b)| b.funded_job_capacity > 0).map(|(i, _)| i).collect();
+    let mut reachable = 0;
+    let mut available = 0;
+    let mut pairs = 0;
+    for &worker in &workers {
+        let mobility = ResidentMobility::for_agent(&c.parking, &c.agents, worker);
+        available += usize::from(mobility.eligible);
+        for &work in &jobs {
+            let seconds = mobility.seconds(c.agents.home_building[worker], work, &c.allocator, &c.transit_network, &c.region_graph, &c.agents.pathfind_count);
+            // One fixed real-time budget for both builds, independent of job-score saturation.
+            if seconds.is_some_and(|s| s <= 900) { reachable += 1; }
+            pairs += 1;
+        }
+    }
+    let r = city.record();
+    eprintln!("PARKING_EMPLOYMENT {}", serde_json::json!({"requested_residents":10000,"residents":r.residents,"households":r.households,"employed":r.employed,"jobs":r.jobs,"sample_workers":workers.len(),"sample_car_available":available,"workplaces":jobs.len(),"pairs":pairs,"reachable_within_900s":reachable}));
+}
+
 // `ROAD-101` acceptance (RB3a): `METRUM_PERF_ROAD_REBUILD=car_only` takes the sidewalks off the
-// frozen city's lowest-id road, as a player's road type without sidewalks would, and
+// frozen city's lowest-id road with no door and no parking lane on it (`ROAD-109`, `PARK-05`:
+// those keep their sidewalks), as a player's road type without sidewalks would, and
 // `METRUM_PERF_ROAD_REBUILD=same` rebuilds the same derived state with every road unchanged
 // (the matched control). Either rebuilds lanes, the routing hierarchy and the entrances outside
 // the timed interval and reports the edge and the walking proof; unset, nothing changes.
@@ -424,6 +453,8 @@ fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Valu
     let Ok(mode) = std::env::var("METRUM_PERF_ROAD_REBUILD") else {
         return serde_json::Value::Null;
     };
+    let doors: std::collections::BTreeSet<usize> =
+        core.allocator.buildings.iter().map(|b| b.edge_idx).collect();
     let graph = &mut core.region_graph;
     let edge = (0..graph.edge_count())
         .find(|&id| {
@@ -431,10 +462,14 @@ fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Valu
             !edge.deleted
                 && edge.primary_type == TransitType::Road
                 && edge.allowed_types & TransitFlags::FOOT != 0
+                && edge.parking == crate::simulation::network::graph::RoadParking::NONE
+                && !doors.contains(&id)
         })
-        .expect("a road with sidewalks");
+        .expect("a road with sidewalks and nothing that needs them");
     match mode.as_str() {
-        "car_only" => graph.edge_mut(edge).allowed_types &= !TransitFlags::FOOT,
+        "car_only" => graph
+            .edge_mut(edge)
+            .set_sidewalks(crate::simulation::network::graph::SidewalkSides::NONE),
         "same" => {}
         _ => panic!("METRUM_PERF_ROAD_REBUILD is car_only or same, not {mode}"),
     }

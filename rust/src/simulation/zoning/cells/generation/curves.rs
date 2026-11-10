@@ -71,9 +71,16 @@ fn source_candidates<M: CellMaps>(
             {
                 continue;
             }
+            // A pocket edge's groups front its carriageway's axis (`ROAD-95`, D17): its
+            // segments shifted sideways by the kerb shift, on which the mitred axis lies.
+            let shift = f64::from(edge.kerb_shift_m());
             for segment in edge.physical_geometry.windows(2) {
-                let c = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
-                let d = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+                let mut c = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
+                let mut d = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+                if shift != 0.0 {
+                    let lateral = (d - c).normalize_or_zero().perp() * shift;
+                    (c, d) = (c + lateral, d + lateral);
+                }
                 if (c - a).perp_dot(tangent).abs() > epsilon
                     || (d - a).perp_dot(tangent).abs() > epsilon
                 {
@@ -161,7 +168,9 @@ fn source_candidates<M: CellMaps>(
         let end = begin + 1.0;
         let mut eligible_end = begin;
         for interval in &intervals {
-            if graph.edge(interval.edge).no_building_spawn || interval.max <= eligible_end {
+            if !graph.edge(interval.edge).zones_side(interval.side)
+                || interval.max <= eligible_end
+            {
                 continue;
             }
             if interval.min > eligible_end + epsilon {
@@ -199,7 +208,7 @@ fn source_candidates<M: CellMaps>(
                     y: xy[1],
                 };
                 let claimed = store.lot(cell).is_some_and(|lot| lot != 0);
-                if (graph.edge(interval.edge).no_building_spawn && !claimed)
+                if (!graph.edge(interval.edge).zones_side(interval.side) && !claimed)
                     || (eligible_end < end - epsilon
                         && !claimed
                         && !store.profile(cell).is_some_and(|p| p != 0))

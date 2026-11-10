@@ -21,8 +21,10 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub(crate) mod cch_adoption;
+pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub(crate) mod road_types;
+pub(crate) mod roundabouts;
 pub mod topology;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -35,11 +37,12 @@ use render::road::RoadRenderer;
 use roadbed::{RoadbedSystem, SurfaceChunkKey};
 use types::*;
 
-/// A stroke's edge: its lanes, median and class, and the road type's `attributes`
-/// (`ROAD-101`): a car road carries `FOOT` (its sidewalks) only with `attributes.sidewalks`
-/// and its speed limit; a walkway is always walked and keeps the default limit, which walking
-/// ignores; zoning off sets `no_building_spawn`, street lights off `no_street_lights`.
-/// `base_cost` is left 0 for the caller's `CostCalculator` pass.
+/// A stroke's edge: its lanes, median, kerbside parking (`PARK-05`) and class, and the road
+/// type's `attributes` (`ROAD-101`): a car road carries the sidewalk sides `attributes.sidewalks`
+/// (`ROAD-107`), `FOOT` exactly when it has one, and its speed limit; a walkway is always walked
+/// and keeps the default limit, which walking ignores; zoning off sets `no_building_spawn`,
+/// street lights off `no_street_lights`. `base_cost` is left 0 for the caller's `CostCalculator`
+/// pass.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network) fn build_surface_edge(
     start_node: u32,
@@ -49,6 +52,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
     bkw_lanes: u8,
     class: EdgeClass,
     median: Option<RoadMedian>,
+    parking: RoadParking,
     attributes: road_types::RoadAttributes,
 ) -> graph::Edge {
     let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
@@ -56,7 +60,12 @@ pub(in crate::simulation::network) fn build_surface_edge(
     if !is_walkway {
         allowed_types |= TransitFlags::CAR;
     }
-    if is_walkway || attributes.sidewalks {
+    let sidewalks = if is_walkway {
+        SidewalkSides::NONE
+    } else {
+        attributes.sidewalks
+    };
+    if is_walkway || sidewalks.any() {
         allowed_types |= TransitFlags::FOOT;
     }
     let speed_limit = if is_walkway {
@@ -84,7 +93,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         },
         allowed_types,
         class,
-        width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median),
+        width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median, parking),
         fwd_lanes,
         bkw_lanes,
         speed_limit,
@@ -99,6 +108,10 @@ pub(in crate::simulation::network) fn build_surface_edge(
         no_street_lights: !attributes.street_lights,
         vehicle_frontage_access,
         median,
+        parking,
+        pocket: None,
+        sidewalks,
+        roundabout: None,
     }
 }
 
@@ -310,7 +323,7 @@ impl TransitNetwork {
             points,
             fwd_lanes,
             bkw_lanes,
-            (None, road_types::RoadAttributes::DEFAULT),
+            (None, RoadParking::NONE, road_types::RoadAttributes::DEFAULT),
             class,
             grade,
             zoning,
@@ -320,7 +333,8 @@ impl TransitNetwork {
 
     /// As [`Self::add_road`], the road meeting the roads it reaches by `grade` (`ROAD-99`): a
     /// road-tool stroke's, whose bridge ends at its support join roads mid-span, with the
-    /// stroke's `median` (`ROAD-80`) and road-type attributes (`ROAD-101`).
+    /// stroke's `median` (`ROAD-80`), kerbside `parking` (`PARK-05`) and road-type attributes
+    /// (`ROAD-101`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_road_graded(
         &mut self,
@@ -328,7 +342,7 @@ impl TransitNetwork {
         points: Vec<Vector3>,
         fwd_lanes: u8,
         bkw_lanes: u8,
-        (median, attributes): (Option<RoadMedian>, road_types::RoadAttributes),
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, road_types::RoadAttributes),
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -367,7 +381,7 @@ impl TransitNetwork {
                 physical_points,
                 fwd_lanes,
                 bkw_lanes,
-                (median, attributes),
+                (median, parking, attributes),
                 class,
                 grade,
                 zoning,
@@ -386,7 +400,7 @@ impl TransitNetwork {
         points: Vec<Vector3>,
         fwd: u8,
         bkw: u8,
-        (median, attributes): (Option<RoadMedian>, road_types::RoadAttributes),
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, road_types::RoadAttributes),
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -402,7 +416,7 @@ impl TransitNetwork {
         }
 
         let edge_id = graph.add_edge(build_surface_edge(
-            start, end, points, fwd, bkw, class, median, attributes,
+            start, end, points, fwd, bkw, class, median, parking, attributes,
         ));
 
         let (cost, length) =
@@ -840,3 +854,5 @@ pub mod test_ped_junction;
 pub mod test_topology;
 /// Automated tests for vehicle U-turn constraints.
 pub mod test_uturn;
+#[cfg(test)]
+mod test_pockets;

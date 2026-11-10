@@ -36,6 +36,8 @@ pub(crate) struct RoadCommitRequest {
     /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
     /// the stroke's edge carries it.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), carried like `median`.
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`): a preview made with others is not this
     /// stroke's, and the stroke's edge and pieces carry them.
     pub(crate) attributes: crate::simulation::network::road_types::RoadAttributes,
@@ -113,6 +115,7 @@ impl SimCore {
             snap_to_existing_roads,
             tunnel,
             median,
+            parking,
             attributes,
             preview,
         } = request;
@@ -133,7 +136,7 @@ impl SimCore {
                     bkw_lanes,
                     snap_to_existing_roads,
                     tunnel,
-                    (median, attributes),
+                    (median, parking, attributes),
                 )
         });
         edit_metrics.preview_plan_reused = preview.is_some();
@@ -152,6 +155,7 @@ impl SimCore {
                         snap_to_existing_roads,
                         tunnel,
                         median,
+                        parking,
                         attributes,
                     },
                 );
@@ -202,6 +206,7 @@ impl SimCore {
             road_add.committed = self.validate_staged_road_render_installing(
                 preview_pieces.map(|pieces| &pieces.delta),
                 preview_pieces.map(|pieces| &pieces.graded),
+                &road_add.regeneration,
                 &mut edit_metrics,
             );
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
@@ -345,6 +350,7 @@ impl SimCore {
                     snap: snap_to_existing_roads,
                     tunnel,
                     median,
+                    parking,
                     attributes,
                 },
                 self.road_tool_surface_generation,
@@ -378,7 +384,7 @@ impl SimCore {
         crate::thread_pools::install(|| {
             let cache_current = self.entrance_cache_current();
             let lots = self.prepare_cell_lots_internal();
-            self.repair_commit_entrances(dirty, cache_current, &lots);
+            self.repair_commit_entrances(dirty, cache_current, &lots, &[]);
         });
     }
 }
@@ -406,6 +412,7 @@ mod tests {
                 snap_to_existing_roads: false,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },

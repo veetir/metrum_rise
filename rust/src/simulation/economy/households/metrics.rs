@@ -247,6 +247,71 @@ pub(crate) fn consumer_basket_cost(catalog: &RuntimeEconomyCatalog, vat: f32) ->
     basket
 }
 
+/// What one household's recurring income must cover, as admission prices it: a resident's
+/// store-sold basket with VAT and imported utilities, and one home's electricity allowance
+/// (`docs/demand.md#household-admission`). Job choice holds a wage to the same figures
+/// (`ECON-23`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HouseholdEssentials {
+    /// Daily cost of each member.
+    pub(crate) per_member: f32,
+    /// Daily electricity allowance of the home itself.
+    pub(crate) per_home: f32,
+}
+
+impl HouseholdEssentials {
+    /// The figures at `vat`. Admission must stay affordable with imported utilities, before
+    /// local coverage exists. O(profile ports²), allocation-free.
+    pub(crate) fn new(
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        vat: f32,
+    ) -> Self {
+        let sold_in_stores = |resource| {
+            catalog.all_profiles().iter().any(|profile| {
+                matches!(
+                    profile.kind,
+                    EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+                ) && profile
+                    .outputs
+                    .iter()
+                    .any(|port| port.resource_runtime_id == resource)
+            })
+        };
+        let mut supplies = 0.0_f32;
+        for profile in catalog.all_profiles() {
+            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+                continue;
+            }
+            for input in &profile.inputs {
+                if !sold_in_stores(input.resource_runtime_id) {
+                    continue;
+                }
+                let price = catalog
+                    .unit_price_for_resource(input.resource_runtime_id)
+                    .unwrap_or_else(|| {
+                        let resource = catalog
+                            .resource_id_for_runtime_id(input.resource_runtime_id)
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "resource '{resource}' used by household demand sink has no catalog price"
+                        )
+                    });
+                supplies += profile.consumption_rate_per_resident.max(0.0) * price.max(0.0);
+            }
+        }
+        let per_home = household_daily_utility_allowance(catalog, tuning, 0.0)
+            * tuning.owa_import_price_multiplier;
+        Self {
+            per_member: supplies * (1.0 + vat)
+                + household_daily_utility_allowance(catalog, tuning, 1.0)
+                    * tuning.owa_import_price_multiplier
+                - per_home,
+            per_home,
+        }
+    }
+}
+
 /// Visits each housed family's recurring goods budget after taxes, utilities and property, for
 /// the households in `range`. The callback receives household index, desired resident count and
 /// gross spending including VAT. Savings and temporary benefits do not enter the budget; finite
@@ -619,10 +684,41 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity;
     }
-    let scaled_capacity = (worker_capacity as f32
-        * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale))
-    .ceil() as u32;
-    scaled_capacity.clamp(1, worker_capacity)
+    sales_store_crew(
+        worker_capacity,
+        commercial_activity_scale_with_floor(catalog, building, profile, floor_scale),
+    )
+    .clamp(1, worker_capacity)
+}
+
+/// Whole workers a sales-scaled store staffs at census `activity` of its `capacity` jobs
+/// (`ECON-24`): the smallest crew whose staffed output exceeds its sales, capped by `capacity`;
+/// none without sales. Staffed to its sales alone, a store holds its shelf where it is, so one
+/// whose whole workers land exactly on its sales never recovers from a dip. Its refill crew,
+/// the one worker above them, refills the shelf at the full staffed rate, and once the shelf
+/// holds its target the store produces at its sales. The same as rounding the sales up to whole
+/// workers unless they land exactly on a whole crew, so it is a funded job like any other: the
+/// census funds it while it pays, and planning reads it with the rest. O(1).
+pub(crate) fn sales_store_crew(capacity: u32, activity: f32) -> u32 {
+    if activity <= 0.0 {
+        return 0;
+    }
+    ((capacity as f32 * activity).floor() as u32 + 1).min(capacity)
+}
+
+/// Whole workers an operation of `physical` jobs staffs at census `activity`: a sales-scaled
+/// store's crew ([`sales_store_crew`]), any other operation's activity rounded up. O(1).
+pub(crate) fn operation_crew(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    physical: u32,
+    activity: f32,
+) -> u32 {
+    if is_sales_scaled_commercial_store(building, profile) {
+        sales_store_crew(physical, activity)
+    } else {
+        (physical as f32 * activity).ceil() as u32
+    }
 }
 
 /// Returns one output port's daily rate after explicit work-area scaling.
@@ -768,9 +864,10 @@ pub(crate) fn building_operation_factors(
     )
 }
 
-// A store's funded staff, rounded up to whole workers, may refill its shelf above its funded
-// sales until it holds `stock_target_days` of them; bulk pantry purchases otherwise find it
-// sold out. It opens no job and stays within the authored output buffer. O(output ports).
+// A store's funded crew, whole workers above its funded sales (`sales_store_crew`), refills its
+// shelf above those sales until it holds `stock_target_days` of them; bulk pantry purchases
+// otherwise find it sold out. It opens no job and stays within the authored output buffer.
+// O(output ports).
 fn shelf_below_target(
     building: &Building,
     profile: &EconomyProfileRuntime,
@@ -1106,8 +1203,11 @@ pub(crate) fn applicant_offer_limit(arrivals: usize) -> usize {
 ///
 /// `home_seed` is the home's building index (the index it will have once placed while it is
 /// queued, `queued_home_seed`; a proposed home's parcel id before it is queued) and
-/// `household_seed` the offer's position in the applicant stream. Admission, housing need and
-/// the workforce calendar read the same stream. `None` where the flat fits no household. O(1).
+/// `household_seed` the applicant's position. The workforce calendar credits each free place
+/// with the applicant at the place's ordinal in its home, and admission offers a vacancy that
+/// applicant first (`ECON-28`); a refused one is followed by the applicant at the hour's
+/// position in the applicant stream, which housing need samples. `None` where the flat fits no
+/// household. O(1).
 pub(crate) fn applicant_offer(
     flat_size_m2: f32,
     home_seed: usize,

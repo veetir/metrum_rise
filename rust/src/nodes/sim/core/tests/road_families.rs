@@ -14,6 +14,7 @@ use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::road_mesh_seams::open_road_edges_where;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+use crate::simulation::network::graph::SidewalkSides;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{PieceId, RoadVec3};
@@ -51,6 +52,7 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
     for &edge in edges {
         let edge = core.region_graph.edge_mut(edge);
         edge.allowed_types = TransitFlags::CAR;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         nodes.extend([edge.start_node, edge.end_node]);
     }
     let graph = &mut core.region_graph;
@@ -266,6 +268,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f).
                         tunnel: class == EdgeClass::Tunnel,
                         median: None,
+                        parking: crate::simulation::network::graph::RoadParking::NONE,
                         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                         preview: None,
                     },
@@ -306,7 +309,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
 
 // A rural road type's attributes (`ROAD-101`): 100 km/h, no sidewalks, zoning off.
 fn rural() -> RoadAttributes {
-    RoadAttributes::from_tool(100, false, false, true).unwrap()
+    RoadAttributes::from_tool(100, 0, false, true).unwrap()
 }
 
 // Commits one 1 + 1 stroke between `ends` through the road tool's path with `attributes`.
@@ -322,6 +325,7 @@ fn commit_with(core: &mut SimCore, ends: [Vector2; 2], attributes: RoadAttribute
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes,
             preview: None,
         },
@@ -329,6 +333,32 @@ fn commit_with(core: &mut SimCore, ends: [Vector2; 2], attributes: RoadAttribute
         Default::default(),
     );
     assert!(outcome.committed, "{}", outcome.rejection);
+}
+
+// `ROAD-107`: left and right are the stroke's, however it is drawn: the left sidewalk's lane lies
+// left of the drawn direction (north of an eastward stroke, -z), and the mask reads back as drawn.
+#[test]
+fn a_left_sidewalk_is_on_the_left_of_the_stroke_either_way_it_is_drawn() {
+    for (from, to) in [(-60.0, 60.0), (60.0, -60.0)] {
+        let mut core = test_core();
+        core.treasury.balance = 1.0e7;
+        core.precompute_road_mesh_data();
+        let left_only = RoadAttributes::new(50, SidewalkSides::LEFT, true);
+        commit_with(&mut core, [Vector2::new(from, 0.0), Vector2::new(to, 0.0)], left_only);
+        let edge = core.get_hovered_edge_internal(0.0, 0.0) as usize;
+        assert_eq!(core.region_graph.edge(edge).sidewalk_sides(), SidewalkSides::LEFT);
+        let lanes = &core.transit_network.lane_system;
+        let sidewalks: Vec<_> = lanes.edge_lanes[&edge]
+            .iter()
+            .map(|&id| &lanes.lanes[id])
+            .filter(|lane| lane.lane_type == LaneType::Foot)
+            .collect();
+        assert_eq!(sidewalks.len(), 2, "one sidewalk, a lane each way");
+        for lane in sidewalks {
+            let north_of_road = lane.geometry[0].z < 0.0;
+            assert_eq!(north_of_road, to > from, "drawn from {from} to {to}");
+        }
+    }
 }
 
 // The live edges with a node at `x` = 0 off the through road: the cross stroke's pieces.
@@ -403,7 +433,13 @@ fn a_stroke_is_charged_its_road_types_cost() {
         let before = core.treasury.lifetime_build_cost;
         commit_with(&mut core, SIDE.0, attributes);
         let side = core.region_graph.edge(edge_ending_at(&core, SIDE.0[1]));
-        let weight = stroke_weight((1, 1), None, attributes, EdgeClass::Standard);
+        let weight = stroke_weight(
+            (1, 1),
+            None,
+            crate::simulation::network::graph::RoadParking::NONE,
+            attributes,
+            EdgeClass::Standard,
+        );
         assert!((BUILD_COST_PER_M * weight - per_m).abs() < 1e-9);
         assert_eq!(side.cost_weight().to_bits(), weight.to_bits());
         // The charge is the stroke's polyline length at that rate (the edge is clipped at the
@@ -428,7 +464,7 @@ fn a_road_without_sidewalks_keeps_the_walking_proof() {
         let side_edge = edge_ending_at(&core, SIDE.0[1]);
         assert_eq!(
             core.region_graph.edge(side_edge).allowed_types & TransitFlags::FOOT != 0,
-            side.sidewalks
+            side.sidewalks.any()
         );
         let mut graph = core.region_graph.clone();
         core.transit_network.lane_system.rebuild(&mut graph);
