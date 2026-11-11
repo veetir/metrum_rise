@@ -198,7 +198,7 @@ func _run() -> void:
 	await _open()
 	var window: Window = _builder.window
 	_expect(_builder.is_open() and not window.exclusive and not window.unresizable, "Road builder... opens a non-exclusive resizable window")
-	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(760, 420)
+	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(760, 430)
 		and window.get_meta("metrum_base_window_size") == Vector2i(960, 440), "the window: %s" % window.title)
 	var content_y := int((window.get_child(0) as Control).get_combined_minimum_size().y)
 	_expect(content_y <= _builder.MIN_SIZE.y, "the smallest window holds every row: %d" % content_y)

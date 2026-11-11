@@ -49,7 +49,7 @@ const RoadPartPopup = preload("res://scripts/ui/road_builder/road_part_popup.gd"
 const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_library_list.gd")
 
 const DEFAULT_SIZE := Vector2i(960, 440)
-const MIN_SIZE := Vector2i(760, 420)
+const MIN_SIZE := Vector2i(760, 430)
 const SIDEWALK := {"kind": "sidewalk"}
 ## A layout's end without a sidewalk: the roadbed's shoulder band, drawn on the strip, never sent
 ## to Rust.
