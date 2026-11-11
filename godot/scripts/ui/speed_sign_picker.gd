@@ -134,7 +134,12 @@ func _init() -> void:
 func set_value_no_signal(v: float) -> void:
 	_set_silently(_clamped(v))
 
+# Writes the value back without the signal and stops any animation; the value already set is a
+# no-op, so a caller echoing the limit it was just sent (the builder's `set_speed`, a refresh of
+# the grid) does not cut the slide and swell short.
 func _set_silently(v: float) -> void:
+	if is_equal_approx(v, value):
+		return
 	set_block_signals(true)
 	value = v
 	set_block_signals(false)
