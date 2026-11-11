@@ -744,6 +744,9 @@ func _on_window_input(event: InputEvent) -> void:
 		number_key.emit(key.keycode - KEY_0)
 	elif (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and window.gui_get_focus_owner() != name_edit:
 		create()
+	elif (key.keycode == KEY_BACKSPACE or key.keycode == KEY_DELETE) and _popup_index >= 0 and not _typing():
+		window.set_input_as_handled()
+		remove_part(_popup_index)
 
 # Whether a text field (the name, the speed box, a median width) holds the builder's focus.
 func _typing() -> bool:

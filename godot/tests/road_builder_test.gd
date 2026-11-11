@@ -3,7 +3,7 @@
 ## The road builder window (`ROAD-101`) through Main.tscn and the player's gestures: opened from
 ## the Roads row's drop-down; sidewalk, backward lane, grass median, forward lane, sidewalk built
 ## by clicking a slot and then tiles, and again through the drop handlers (tiles in, parts along
-## and off the strip); the part popup's median style and width, Move and Remove; Rust's widths
+## and off the strip); the part popup's median style and width, Move and Remove (and Backspace); Rust's widths
 ## and the "1 + 1" label; an invalid order shows its reason with Create disabled; create with the
 ## suggested name and with a typed one (Enter), a taken name refused; the new type in the Roads
 ## row draws a road with its layout; edit (the tool re-picks it), duplicate (a custom type and a
@@ -254,8 +254,14 @@ func _run() -> void:
 	await _click_part(1)
 	_expect(popup.visible and _builder._popup_index == 1 and bool(_builder.parts[1].forward),
 		"the popup opens again on the next part: %s, %d" % [popup.visible, _builder._popup_index])
-	await _remove_in_popup()
-	_expect(_builder.parts == [SW, SW], "the popup removed both lanes: %s" % [_builder.parts])
+	# Backspace removes the selected part, through the keyboard's real route (the open popup).
+	var backspace := InputEventKey.new()
+	backspace.keycode = KEY_BACKSPACE
+	backspace.pressed = true
+	Input.parse_input_event(backspace)
+	await process_frame
+	await process_frame
+	_expect(_builder.parts == [SW, SW], "the popup and Backspace removed both lanes: %s" % [_builder.parts])
 	_expect(not _builder.strip.valid and _builder.create_button.disabled and _builder.status_label.text == "A road needs at least one car lane",
 		"bare sidewalks are refused: %s" % _builder.status_label.text)
 	# A click on an end turns its sidewalk off and on again, without a popup.

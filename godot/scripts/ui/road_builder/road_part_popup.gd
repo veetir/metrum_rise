@@ -69,6 +69,19 @@ func _init() -> void:
 	move_left_button = _action(row, Glyph.LEFT, "Move left", func(): move_requested.emit(-1))
 	move_right_button = _action(row, Glyph.RIGHT, "Move right", func(): move_requested.emit(1))
 	remove_button = _action(row, Glyph.REMOVE, "Remove", func(): remove_requested.emit())
+	# The popup has the keyboard while open: Backspace or Delete removes the part, except while
+	# the median width is being typed.
+	window_input.connect(func(event: InputEvent):
+		var key := event as InputEventKey
+		if key == null or not key.pressed or key.echo:
+			return
+		if key.keycode != KEY_BACKSPACE and key.keycode != KEY_DELETE:
+			return
+		var owner := gui_get_focus_owner()
+		if owner is LineEdit or owner is SpinBox:
+			return
+		set_input_as_handled()
+		remove_requested.emit())
 
 func _action(row: HBoxContainer, glyph: Glyph, tip: String, on_pressed: Callable) -> Button:
 	var button := GlyphButton.new()
