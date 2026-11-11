@@ -150,9 +150,6 @@ func _set_silently(v: float) -> void:
 	_pop = 0.0
 	_nudge = 0.0
 
-func _get_tooltip(_at_position: Vector2) -> String:
-	return tooltip_text if not tooltip_text.is_empty() else "%d km/h · scroll or click a sign to change" % int(value)
-
 func _gui_input(event: InputEvent) -> void:
 	var motion := event as InputEventMouseMotion
 	if motion:

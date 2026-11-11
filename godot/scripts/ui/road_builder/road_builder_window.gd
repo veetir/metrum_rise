@@ -294,7 +294,7 @@ func _icon_toggle(icon_name: String, tip: String) -> Button:
 	button.add_theme_color_override("icon_disabled_color", Color(1, 1, 1, 0.18))
 	return button
 
-# The type's attributes: Speed, then Zoning and Street lights as icon toggles. The sidewalks are
+# The type's attributes: the speed signs, then Zoning and Street lights as icon toggles. The sidewalks are
 # toggled on the strip's ends.
 func _build_attributes() -> Control:
 	# Wraps onto a second row in a narrow window.
@@ -303,11 +303,9 @@ func _build_attributes() -> Control:
 	row.add_theme_constant_override("v_separation", 6)
 	var speed := HBoxContainer.new()
 	speed.add_theme_constant_override("separation", 6)
-	var label := _label(speed, 14)
-	label.text = "Speed"
-	# Speed limit signs on Rust's grid: scroll or click a neighbouring sign.
+	# Speed limit signs on Rust's grid: scroll or click a neighbouring sign. The sign says what
+	# it is, so it has no label or tooltip.
 	speed_box = SpeedSignPicker.new()
-	speed_box.tooltip_text = "The speed limit cars drive at; faster roads cost more and are louder. Scroll or click a sign to change it."
 	speed_box.value_changed.connect(func(value: float): set_speed(int(value)))
 	speed.add_child(speed_box)
 	speed_row = speed
@@ -315,12 +313,12 @@ func _build_attributes() -> Control:
 	var toggles := HBoxContainer.new()
 	toggles.add_theme_constant_override("separation", 6)
 	row.add_child(toggles)
-	zoning_check = _icon_toggle("zoning", "Zoning: lots and buildings along the road, on a side with a sidewalk")
+	zoning_check = _icon_toggle("zoning", "Zoning")
 	zoning_check.toggled.connect(func(on: bool):
 		_zoning_settled = true
 		set_zoning(on))
 	toggles.add_child(zoning_check)
-	street_lights_check = _icon_toggle("street_light", "Street lights: lamp posts along the road, lit at night")
+	street_lights_check = _icon_toggle("street_light", "Street lights")
 	street_lights_check.toggled.connect(set_street_lights)
 	toggles.add_child(street_lights_check)
 	return row

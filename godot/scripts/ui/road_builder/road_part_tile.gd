@@ -18,7 +18,6 @@ var part: Dictionary
 func _init(tile_part: Dictionary) -> void:
 	part = tile_part
 	text = RoadPartGlyph.part_name(part)
-	tooltip_text = RoadPartGlyph.part_hint(part)
 	focus_mode = Control.FOCUS_NONE
 	alignment = HORIZONTAL_ALIGNMENT_LEFT
 	# The name wraps ("Painted / median"), so six tiles share one row of a narrow editor.
