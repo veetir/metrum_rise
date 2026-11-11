@@ -10,15 +10,15 @@
 ## player types one; Rust's description as its tooltip), and beside it the first reason the type
 ## cannot be created, if any. Right: the strip with the layout to scale on a stage (each end a
 ## fixed sidewalk, or on a side without one a 0.75 m shoulder band, drawn but not a part) with
-## the widths, six part tiles, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
-## and independent, `ROAD-107`, left and right as the road is drawn, a "Speed" stepper on Rust's
-## grid, hidden for a footpath, a "Zoning" checkbox, disabled with no sidewalk on either side
-## (`ROAD-109`: the type's value stays), and a "Street lights" checkbox, ticked for a
-## new type), a warning when a road zones with a side or both without a sidewalk (nothing is
-## built there), and a footer with the type's cost per metre from Rust, Cancel and Create road
-## (Save when editing). A new
+## the total width and, under it, the type's cost per metre from Rust; a check box over each end
+## toggles its sidewalk (`ROAD-107`, left and right as the road is drawn). Below the stage a
+## warning when a road zones with a side or both without a sidewalk (nothing is built there),
+## six part tiles, and one row with the type's attributes (speed limit signs on Rust's grid,
+## hidden for a footpath; Zoning as an icon toggle, disabled with no sidewalk on either side,
+## `ROAD-109`: the type's value stays; Street lights as an icon toggle, on for a new type) and,
+## at its right end, Cancel and Create road (Save when editing). A new
 ## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
-## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
+## the player set the Zoning toggle; the type's flag decides from then on. Parts go
 ## in by clicking a "+" slot and then a tile, or by dragging a tile into the strip; a click on a
 ## part opens its popup (median swatches and width, move arrows, remove); parts drag along
 ## the strip and off it. Every change asks Rust's `check_road_layout`; Create is enabled only
@@ -179,8 +179,7 @@ func _build_window() -> void:
 	warning_label.add_theme_color_override("font_color", STATUS_NAME)
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	editor.add_child(_build_tiles())
-	editor.add_child(_well(_build_attributes(), 8))
-	editor.add_child(_build_footer())
+	editor.add_child(_well(_build_bottom_row(), 8))
 
 	part_popup = RoadPartPopup.new()
 	part_popup.median_changed.connect(func(style: int, width: float): set_median(_popup_index, style, width))
@@ -205,8 +204,9 @@ func _build_window() -> void:
 	WindowResizeHandles.install(window)
 	window.hide()
 
-# The road on its stage: the strip large and centred, the widths in the corner. The stage takes
-# any height the window has to spare, so a taller window shows more road, not empty rows.
+# The road on its stage: the strip large and centred with its cost per metre under it (a price
+# of the cross-section, read with its width). The stage takes any height the window has to spare,
+# so a taller window shows more road, not empty rows.
 func _build_stage() -> Control:
 	var stage := PanelContainer.new()
 	stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -217,9 +217,12 @@ func _build_stage() -> Control:
 	style.set_corner_radius_all(10)
 	style.set_content_margin_all(12)
 	stage.add_theme_stylebox_override("panel", style)
+	var column := VBoxContainer.new()
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.add_theme_constant_override("separation", 6)
+	stage.add_child(column)
 	strip = RoadBuilderStrip.new()
 	strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	strip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	strip.slot_clicked.connect(func(_slot: int): _close_popup())
 	strip.part_pressed.connect(func(index: int):
 		_toggle_off_index = index if part_popup.visible and _popup_index == index else -1)
@@ -228,7 +231,16 @@ func _build_stage() -> Control:
 	strip.tile_dropped.connect(insert_part)
 	strip.part_moved.connect(move_part)
 	strip.part_dragged_out.connect(remove_part)
-	stage.add_child(strip)
+	column.add_child(strip)
+	cost_label = RichTextLabel.new()
+	cost_label.bbcode_enabled = true
+	cost_label.fit_content = true
+	cost_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	cost_label.scroll_active = false
+	cost_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cost_label.add_theme_color_override("default_color", STATUS_COST)
+	cost_label.add_theme_font_size_override("normal_font_size", UIStyle.scaled_font_size(14))
+	column.add_child(cost_label)
 	return stage
 
 # `content` in a rounded well, `pad` px inside.
@@ -350,33 +362,28 @@ func _build_name_edit() -> LineEdit:
 	return name_edit
 
 # The type's cost from Rust on the left; Cancel and Create on the right.
-func _build_footer() -> Control:
-	var footer := HBoxContainer.new()
-	footer.add_theme_constant_override("separation", 8)
-	# The money sign before both amounts: "(M) 15 / m · upkeep (M) 0.10 / m / day".
-	cost_label = RichTextLabel.new()
-	cost_label.bbcode_enabled = true
-	cost_label.fit_content = true
-	cost_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	cost_label.scroll_active = false
-	cost_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	cost_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	cost_label.add_theme_color_override("default_color", STATUS_COST)
-	cost_label.add_theme_font_size_override("normal_font_size", UIStyle.scaled_font_size(13))
-	footer.add_child(cost_label)
+# The bottom row: the attributes, and Cancel and Create road at the right end.
+func _build_bottom_row() -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var attributes := _build_attributes()
+	attributes.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(attributes)
 	cancel_button = Button.new()
 	cancel_button.text = "Cancel"
 	cancel_button.focus_mode = Control.FOCUS_NONE
+	cancel_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	UIStyle.set_font_size(cancel_button, 14)
 	cancel_button.pressed.connect(close)
-	footer.add_child(cancel_button)
+	row.add_child(cancel_button)
 	create_button = Button.new()
 	create_button.focus_mode = Control.FOCUS_NONE
+	create_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	UIStyle.style_primary_button(create_button)
 	UIStyle.set_font_size(create_button, 14)
 	create_button.pressed.connect(create)
-	footer.add_child(create_button)
-	return footer
+	row.add_child(create_button)
+	return row
 
 ## Opens the builder on a new layout (or brings it forward when it is open).
 func open() -> void:
@@ -599,7 +606,7 @@ func _layout_changed() -> void:
 func _cost_bbcode() -> String:
 	var values := RoadTypeMenu.cost_values(check)
 	var money := "[img=%dx%d]res://assets/ui/icons/money.svg[/img]" % [MONEY_PX, MONEY_PX]
-	return "%s %s / m  ·  upkeep %s %s / m / day" % [money, values[0], money, values[1]]
+	return "[center]%s %s / m  ·  upkeep %s %s / m / day[/center]" % [money, values[0], money, values[1]]
 
 # Create / Save is enabled when the layout and the name both pass and the library is writable;
 # the status line gives the first reason it is not.
