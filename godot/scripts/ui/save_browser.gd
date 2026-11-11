@@ -115,6 +115,10 @@ func is_open() -> bool:
 	return visible
 
 func _input(event: InputEvent) -> void:
+	if visible and UIStyle.is_mouse_back(event):
+		_close()
+		get_viewport().set_input_as_handled()
+		return
 	if not visible or not (event is InputEventKey) or not event.pressed:
 		return
 	match event.keycode:

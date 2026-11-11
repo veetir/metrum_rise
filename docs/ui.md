@@ -153,6 +153,11 @@ short accent rule, then the entries, dim at rest and white with an accent bar at
 edge under the mouse (`UIStyle.menu_text_button`). There is no card and no button boxes. The
 pause menu uses the same layout over the dimmed city.
 
+The mouse's back (thumb) button acts as Esc in the menus (`UIStyle.is_mouse_back`): it closes
+Load Game, the New Game world browser and dialog, the in-game Save and Load browsers and Options;
+in the pause menu it dismisses the leave confirmation, else resumes. Outside the menus it does
+nothing.
+
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
 ### Options

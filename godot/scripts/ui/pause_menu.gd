@@ -64,7 +64,20 @@ func build(items: Array) -> void:
 	_confirm = ConfirmationDialog.new()
 	_confirm.dialog_text = "Unsaved progress will be lost."
 	_confirm.confirmed.connect(func(): action_requested.emit(_pending_id))
+	# The open confirmation takes the mouse: the back button dismisses it there.
+	_confirm.window_input.connect(func(event: InputEvent):
+		if UIStyle.is_mouse_back(event):
+			_confirm.set_input_as_handled()
+			_confirm.hide())
 	add_child(_confirm)
+
+# The mouse's back button resumes. Options and the save browser open over the menu later in the
+# tree, so they take it first; the leave confirmation takes it in its own window.
+func _input(event: InputEvent) -> void:
+	if not visible or _confirm.visible or not UIStyle.is_mouse_back(event):
+		return
+	get_viewport().set_input_as_handled()
+	action_requested.emit(RESUME)
 
 func _ask(id: int, title: String) -> void:
 	_pending_id = id

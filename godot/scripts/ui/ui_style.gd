@@ -211,6 +211,11 @@ static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewpo
 	y = clampf(y, top_margin, max_y)
 	window.position = Vector2i(int(round(x)), int(round(y)))
 
+## The mouse's back (thumb) button pressed: a menu takes it as Esc, as a browser takes it as Back.
+static func is_mouse_back(event: InputEvent) -> bool:
+	var button := event as InputEventMouseButton
+	return button != null and button.pressed and button.button_index == MOUSE_BUTTON_XBUTTON1
+
 ## Moves `window` up when it hangs off the bottom of the screen (a window that grew to its
 ## content), keeping the same top and bottom margins as `place_window_near_cursor`.
 static func keep_window_bottom_on_screen(window: Window, viewport: Viewport) -> void:
