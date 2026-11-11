@@ -3049,11 +3049,6 @@ impl SimCore {
         }
 
         if rebuild_needed {
-            self.transit_network
-                .lane_system
-                .rebuild(&mut self.region_graph);
-            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
-            self.schedule_cch_rebuild_of_live_graph();
             let mut affected_nodes = HashSet::from([node_id as u32]);
             let mut affected_edges = HashSet::new();
             for &edge_idx in &adj {
@@ -3064,6 +3059,25 @@ impl SimCore {
                     affected_edges.insert(edge_idx);
                 }
             }
+            // Only the extended road's lane closure is rebuilt, with its agents detached and
+            // reattached around it, as every other edge edit does: a full rebuild renumbers every
+            // lane in the city and leaves agents and entrances on stale lane ids.
+            self.agents.invalidate_lane_ids_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
+            self.transit_network
+                .lane_system
+                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
+            self.agents.reattach_invalidated_lanes_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
+            self.rebuild_building_entrances_internal();
+            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+            self.schedule_cch_rebuild_of_live_graph();
             self.transit_network
                 .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
             // The moved end changes the road's grid alignment source; a stale one fails to load.
