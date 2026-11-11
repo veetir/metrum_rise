@@ -19,6 +19,7 @@ const JunctionWindow = preload("res://scripts/ui/junction_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const CheckIcons = preload("res://scripts/ui/check_icons.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadOptionsView = preload("res://scripts/ui/road_options_view.gd")
 
@@ -113,6 +114,7 @@ const ZONING_PARCEL_GAP_DEFAULT_M := 0.0
 
 
 func _ready():
+	CheckIcons.install(get_tree().root)
 	_build_ui()
 	_build_auxiliary_windows()
 	_connect_signals()
