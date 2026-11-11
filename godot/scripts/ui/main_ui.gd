@@ -114,7 +114,7 @@ const ZONING_PARCEL_GAP_DEFAULT_M := 0.0
 
 
 func _ready():
-	CheckIcons.install(get_tree().root)
+	CheckIcons.install()
 	_build_ui()
 	_build_auxiliary_windows()
 	_connect_signals()

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The game's check box and switch icons, set on the root window's theme so every CheckBox and
-## CheckButton (in-game windows, cards and editors) uses them. Godot's defaults draw an unchecked
+## The game's check box and switch icons, set on Godot's default theme so every CheckBox and
+## CheckButton (in-game windows, cards and editors) uses them: every theme lookup ends there,
+## while a theme on the root window stops at the game UI's CanvasLayer. Godot's defaults draw an unchecked
 ## box and an off switch so dark that on the game's dark panels they read as stray text; here the
 ## off states keep a visible outline and track, and the on states fill with the HUD accent.
 ## Drawn from SVG at the UI scale, at Godot's default icon sizes (16 x 16 box, 32 x 16 switch), so
@@ -12,11 +13,9 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const DISABLED_OPACITY := 0.4
 
-## Sets the check icons on `root`'s theme (creating it when it has none).
-static func install(root: Window) -> void:
-	if root.theme == null:
-		root.theme = Theme.new()
-	var theme := root.theme
+## Sets the check icons on the default theme.
+static func install() -> void:
+	var theme := ThemeDB.get_default_theme()
 	var accent := "#" + UIStyle.HUD_ACCENT.to_html(false)
 	var scale := UIStyle.ui_scale()
 	for state in [["", 1.0], ["_disabled", DISABLED_OPACITY]]:

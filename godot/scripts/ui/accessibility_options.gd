@@ -57,7 +57,7 @@ func apply_changes() -> Error:
 		return err
 	_initial_ui_scale = _pending_ui_scale
 	UIStyle.refresh_scaled_font_sizes(get_tree().root)
-	CheckIcons.install(get_tree().root)
+	CheckIcons.install()
 	_emit_dirty_state()
 	return OK
 
