@@ -30,14 +30,15 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
+const Card = preload("res://scripts/ui/inspector_card.gd")
 ## The picker's text for a road whose cross-section no type has.
 const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := UIStyle.SIGN_YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
 # verdict with Apply, the parking lane and No buildings.
-const DEFAULT_SIZE := Vector2i(428, 500)
-const MIN_SIZE := Vector2i(360, 340)
+const DEFAULT_SIZE := Vector2i(428, 320)
+const MIN_SIZE := Vector2i(428, 140)
 ## Parking code bits of the left and right kerb, as Rust's `parking` reports them.
 const PARKING_LEFT := 1
 const PARKING_RIGHT := 2
@@ -61,7 +62,7 @@ var _name_label: Label
 # "Change road type" reveals the other types, the verdict and Apply.
 var _change_button: Button
 var _change_box: VBoxContainer
-var _body: PanelContainer
+var _body: Control
 var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
@@ -83,57 +84,35 @@ func _ready() -> void:
 func _build_window() -> void:
 	_window = Window.new()
 	_window.title = "Road Properties"
-	_window.unresizable = true
 	_window.exclusive = false
 	_window.visible = false
 	_window.close_requested.connect(_close_selection)
 	UIStyle.keep_keyboard_with_game(_window)
+	# The game's card chrome (`inspector_card.gd`): the header drags it, × closes it.
+	var parts := Card.build(_window)
 	# Content-sized: stale persisted dimensions from the former large panel do not apply.
 	UIStyle.set_window_base_size(_window, DEFAULT_SIZE, MIN_SIZE, get_viewport())
+	_body = _window.get_child(0)
+	var root_vbox: VBoxContainer = parts["content"]
+	(parts["eyebrow"] as Label).text = "Road properties"
 
-	var body := PanelContainer.new()
-	_body = body
-	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	body.add_theme_stylebox_override("panel", UIStyle.window_body_style())
-	_window.add_child(body)
-
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", UIStyle.PAD_WINDOW)
-	margin.add_theme_constant_override("margin_right", UIStyle.PAD_WINDOW)
-	margin.add_theme_constant_override("margin_top", UIStyle.PAD_WINDOW)
-	margin.add_theme_constant_override("margin_bottom", UIStyle.PAD_WINDOW)
-	body.add_child(margin)
-
-	var root_vbox := VBoxContainer.new()
-	root_vbox.add_theme_constant_override("separation", 10)
-	margin.add_child(root_vbox)
-
-	var current := HBoxContainer.new()
-	current.add_theme_constant_override("separation", 12)
-	root_vbox.add_child(current)
-	_current_tile = HudIcons.road_tile({}, "")
-	_current_tile.toggle_mode = false
-	_current_tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	current.add_child(_current_tile)
-	var names := VBoxContainer.new()
-	names.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	names.alignment = BoxContainer.ALIGNMENT_CENTER
-	current.add_child(names)
-	_name_label = Label.new()
-	_name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(_name_label, 16)
-	names.add_child(_name_label)
+	# The selected road: its type's thumbnail in the icon well, its name and its layout.
+	_current_tile = parts["icon"]
+	_current_tile.custom_minimum_size = Vector2.ONE * 52.0
+	_name_label = parts["title"]
+	(parts["chips"] as Control).hide()
 	_layout_label = Label.new()
 	_layout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_layout_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	UIStyle.set_font_size(_layout_label, 13)
-	names.add_child(_layout_label)
+	_layout_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UIStyle.set_font_size(_layout_label, 12)
+	_name_label.get_parent().add_child(_layout_label)
 
 	_warning_label = Label.new()
 	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_warning_label.add_theme_color_override("font_color", UIStyle.SIGN_YELLOW)
 	UIStyle.set_font_size(_warning_label, 13)
+	_warning_label.hide()
 	root_vbox.add_child(_warning_label)
 
 	var settings := HBoxContainer.new()
@@ -183,7 +162,23 @@ func _build_window() -> void:
 	_change_button.toggle_mode = true
 	_change_button.focus_mode = Control.FOCUS_NONE
 	_change_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	UIStyle.set_font_size(_change_button, 13)
+	_change_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	UIStyle.set_font_size(_change_button, 12)
+	# A quiet well that lights on hover, like the card's tiles.
+	for state in ["normal", "hover", "pressed", "hover_pressed"]:
+		var well := StyleBoxFlat.new()
+		well.bg_color = Color(1, 1, 1, 0.09) if state.begins_with("hover") else Card.WELL_BG
+		well.set_corner_radius_all(8)
+		well.content_margin_left = 10
+		well.content_margin_right = 10
+		well.content_margin_top = 6
+		well.content_margin_bottom = 7
+		_change_button.add_theme_stylebox_override(state, well)
+	_change_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	_change_button.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	_change_button.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
+	_change_button.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
+	_change_button.add_theme_color_override("font_hover_pressed_color", UIStyle.TEXT_PRIMARY)
 	_change_button.toggled.connect(_show_change)
 	root_vbox.add_child(_change_button)
 
@@ -252,7 +247,7 @@ func _close_selection() -> void:
 # The other types, the verdict and Apply stay folded until the player asks to change the type.
 func _show_change(open: bool) -> void:
 	_change_box.visible = open
-	_change_button.text = "Hide road types" if open else "Change road type…"
+	_change_button.text = "▾  Hide road types" if open else "▸  Change road type"
 
 func _fit_columns() -> void:
 	if _type_grid:
