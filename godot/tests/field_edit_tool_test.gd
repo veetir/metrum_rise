@@ -239,7 +239,7 @@ func _test_farm_inspector(scene: Node) -> void:
 	_expect(rows.get("Farm Household") == "1 / 1", "Farm inspector retains household occupancy")
 	_expect(rows.get("Children") == "2" and rows.get("Adults") == "2" and rows.get("Elders") == "1", "Farm inspector displays resident age groups independently of workers")
 	_expect(rows.get("Workers") == "7 / 8", "Household details preserve farm business staffing")
-	_expect(rows.get("Household Money") == "$125 total · $125 avg", "Farm inspector shows household money")
+	_expect(rows.get("Household Money") == "$125, $125 average", "Farm inspector shows household money")
 	_expect(rows.get("Stored Supplies") == "12.0 kg" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
 
 	_expect(rows.get("Machinery") == "0.0 kg · uses 1.0 kg/day", "Farm inspector shows empty Machinery stock and upkeep rate")

@@ -292,9 +292,9 @@ func _status_color(status: String) -> Color:
 	return UIStyle.SIGN_YELLOW
 
 func _summary(info: Dictionary) -> String:
+	# A home's households are a KPI tile; a business's budget is said only here.
 	if str(info.get("zone_type", "")) == "residential":
-		var homes := int(info.get("household_count", info.get("occupancy", 0)))
-		return "%d household%s" % [homes, "" if homes == 1 else "s"]
+		return ""
 	return "Budget %s" % _money(float(info.get("operating_budget", 0.0)))
 
 # A utility's service icon, a farm's field, an extractor's pit, else the zone's.
@@ -465,11 +465,9 @@ func _add_alerts(stats_body: VBoxContainer, info: Dictionary) -> void:
 func _fill_people(page: VBoxContainer, info: Dictionary) -> void:
 	var zone: String = info.get("zone_type", "")
 	var is_farm := info.has("field_resource")
-	if zone == "residential" or is_farm:
-		if is_farm:
-			_row(page, "Farm Household", "%d / %d" % [int(info.get("occupancy", 0)), int(info.get("household_capacity", 1))])
-		else:
-			_row(page, "Households", str(info.get("household_count", info.get("occupancy", 0))))
+	# A home's households and ages are the KPI strip and its legend already.
+	if is_farm:
+		_row(page, "Farm Household", "%d / %d" % [int(info.get("occupancy", 0)), int(info.get("household_capacity", 1))])
 		_row(page, "Children", str(info.get("child_count", 0)))
 		_row(page, "Adults", str(info.get("adult_count", 0)))
 		_row(page, "Elders", str(info.get("elder_count", 0)))
@@ -491,15 +489,13 @@ func _fill_people(page: VBoxContainer, info: Dictionary) -> void:
 	if info.has("utility_service_available") and not info.has("utility_service"):
 		_row(page, "Utility", "Yes" if info["utility_service_available"] else "No")
 
-# The business's budget and profit, then the residents' money and supplies.
+# What the header and KPIs leave out: a business's profit yesterday and a utility's flows, then
+# the residents' money and supplies (a home's averages are KPIs, so only the rest here).
 func _fill_money(page: VBoxContainer, info: Dictionary) -> void:
 	var zone: String = info.get("zone_type", "")
 	if zone != "residential":
-		_row(page, "Budget", _money(float(info.get("operating_budget", 0.0))))
 		if info.get("business_summary", false):
-			var today := float(info.get("business_profit_today", 0.0))
 			var yesterday := float(info.get("business_profit_yesterday", 0.0))
-			_row(page, "Today", _signed_money(today), Card.GOOD if today >= 0.0 else Card.BAD)
 			_row(page, "Yesterday", _signed_money(yesterday), Card.GOOD if yesterday >= 0.0 else Card.BAD)
 			if info.has("utility_service"):
 				_row(page, "Utility Revenue", _money(float(info.get("utility_local_revenue", 0.0))))
@@ -508,22 +504,14 @@ func _fill_money(page: VBoxContainer, info: Dictionary) -> void:
 		return
 	if not (page.get_meta("pairs") as Array).is_empty():
 		_add_section(page, "Households")
-	_row(
-		page,
-		"Household Money",
-		"%s total · %s avg" % [
-			_money(float(info.get("household_budget_total", 0.0))),
-			_money(float(info.get("household_budget_avg", 0.0))),
-		]
-	)
-	_row(
-		page,
-		"Supplies",
-		"%.1f d avg · %.1f d min" % [
-			float(info.get("household_stock_days_avg", 0.0)),
-			float(info.get("household_stock_days_min", 0.0)),
-		]
-	)
+	var total := _money(float(info.get("household_budget_total", 0.0)))
+	var lowest := "%.1f d" % float(info.get("household_stock_days_min", 0.0))
+	if zone == "residential":
+		_row(page, "Money in all", total)
+		_row(page, "Lowest supplies", lowest)
+	else:
+		_row(page, "Household Money", "%s, %s average" % [total, _money(float(info.get("household_budget_avg", 0.0)))])
+		_row(page, "Supplies", "%.1f d average, %s lowest" % [float(info.get("household_stock_days_avg", 0.0)), lowest])
 	_row(page, "Stored Supplies", "%.1f kg" % float(info.get("household_stock_total", 0.0)))
 	_row(page, "Replenishment", str(info.get("household_replenishment_state", "-")))
 	if int(info.get("household_replenishment_active", 0)) > 0:
