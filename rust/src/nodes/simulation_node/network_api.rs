@@ -19,6 +19,20 @@ impl SimulationNode {
         self.lock_core().get_hovered_edge_internal(world_x, world_z)
     }
 
+    /// The per-frame hover over a camera ray: the edge under the visible world surface the ray
+    /// hits (`-1` for none, or when the ray misses), or `false` while the simulation thread holds
+    /// the core, so the caller keeps its last answer instead of blocking the frame.
+    #[func]
+    pub fn hover_edge(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
+        let Some(mut core) = self.try_lock_core() else {
+            return false.to_variant();
+        };
+        core.prepare_site_queries();
+        core.intersect_world_surface_internal(ray_origin, ray_dir)
+            .map_or(-1, |p| core.get_hovered_edge_internal(p.x, p.z))
+            .to_variant()
+    }
+
     /// Returns the 3D geometry for a road edge.
     #[func]
     pub fn get_edge_geometry_3d(&self, edge_idx: i32) -> PackedVector3Array {

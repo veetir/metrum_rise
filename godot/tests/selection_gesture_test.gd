@@ -22,6 +22,9 @@ class SimulationStub extends Node3D:
 		return 7 if hit.x < 40.0 else -1
 	func get_hovered_edge(x: float, _z: float) -> int:
 		return (0 if x < 60.0 else 1) if x >= 40.0 else -1
+	# The per-frame road hover (its own probe; `rays` counts the gestures' probes).
+	func hover_edge(_origin: Vector3, _direction: Vector3) -> Variant:
+		return -1 if hit == null else get_hovered_edge(hit.x, hit.z)
 	func get_node_lanes(_id: int) -> Array:
 		return [
 			{"edge_id": 10, "lane_id": 0, "is_incoming": true, "pos": Vector3(-5, 0.6, 0)},

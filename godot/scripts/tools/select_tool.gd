@@ -689,7 +689,15 @@ func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D) -> ImmediateMesh:
 func _update_hover() -> void:
 	var edge_idx := -1
 	if not _mouse_pressed and selected_node == -1 and get_viewport().gui_get_hovered_control() == null:
-		edge_idx = _hovered_edge()
+		var camera := get_viewport().get_camera_3d()
+		if camera:
+			var mouse := get_viewport().get_mouse_position()
+			var hit = simulation_node.hover_edge(camera.project_ray_origin(mouse), camera.project_ray_normal(mouse))
+			# The simulation thread holds the core: keep the hover as it is, or it blinks off
+			# for every busy frame.
+			if hit is bool:
+				return
+			edge_idx = hit
 	if selected_edges.has(edge_idx):
 		edge_idx = -1
 	_set_hover(edge_idx)
