@@ -230,8 +230,9 @@ func _test_farm_inspector(scene: Node) -> void:
 		"inventory": [{"name": "machinery", "unit": "kg", "amount": 0.0, "daily_input_units": 1.0}]}
 	inspector._populate(entry, info)
 	var rows := {}
-	for row in body.get_children():
-		if row is HBoxContainer and row.get_child_count() == 2:
+	# Rows sit inside the inspector's tabs.
+	for row in body.find_children("*", "HBoxContainer", true, false):
+		if row.get_child_count() == 2 and row.get_child(1) is Label:
 			rows[row.get_child(0).text] = row.get_child(1).text
 	_expect(rows.get("Farm Household") == "1 / 1", "Farm inspector retains household occupancy")
 	_expect(rows.get("Children") == "2" and rows.get("Adults") == "2" and rows.get("Elders") == "1", "Farm inspector displays resident age groups independently of workers")

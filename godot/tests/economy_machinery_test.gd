@@ -37,11 +37,10 @@ func _run() -> void:
 		"electricity_imported_kwh": 500.0, "electricity_cost": 325.0,
 		"inventory": [{"name": "packaged_food", "unit": "kg", "amount": 100.0, "daily_input_units": 200.0}],
 	})
+	# Rows sit inside the inspector's tabs.
 	var labels: Array[String] = []
-	for row in body.get_children():
-		for child in row.get_children():
-			if child is Label:
-				labels.append(child.text)
+	for child in body.find_children("*", "Label", true, false):
+		labels.append((child as Label).text)
 	_expect(labels.has("12.0 kg"), "Household supplies display kilograms")
 	_expect(labels.has("1.5 MWh") and labels.has("1.0 MWh") and labels.has("500.0 kWh"), "Building consumption, local supply and imports carry energy units")
 	_expect(labels.has("$325"), "Building electricity cost remains money")

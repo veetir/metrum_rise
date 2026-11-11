@@ -7,13 +7,26 @@
 ## replaces it, and inspecting the same building again closes it. The open window
 ## refreshes only when the in-game hour changes, so the steady-state cost is O(1)
 ## per frame. The window never keeps the keyboard, so the camera can move while it is open.
+##
+## Laid out like Road Properties: the building's icon, name and a dim line (zone, level, business
+## status) lead, alerts follow in red or yellow, and the details sit in tabs (Overview, Money,
+## Site, Power, Stock, Parking). A tab with nothing to show is left out, the last tab picked stays
+## picked for the next building, and Parking carries a warning icon when places are rejected. The
+## window fits its height to the open tab; the tabs sit at the top, so only the bottom edge moves.
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
-const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 
 const SECTION_FONT_SIZE := 13
 const ROW_FONT_SIZE := 14
+const DEFAULT_SIZE := Vector2i(420, 360)
+const MIN_SIZE := Vector2i(360, 140)
+## Tab order; empty tabs are dropped per building.
+const TABS: Array[String] = ["Overview", "Money", "Site", "Power", "Stock", "Parking"]
+
+# The tab the player last picked, kept for the next building inspected this session.
+static var _last_tab := "Overview"
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -54,6 +67,8 @@ func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle 
 	_update_anchor(entry, info)
 
 	var window: Window = entry["window"]
+	if entry.has("body"):
+		_fit_window(window, entry["body"])
 	_place_window_near_cursor(window, screen_pos)
 	window.show()
 	_last_observed_hour = _current_absolute_hour()
@@ -92,20 +107,14 @@ func _current_absolute_hour() -> int:
 func _create_window_entry(key: String) -> Dictionary:
 	var window := Window.new()
 	window.title = "Building Inspector"
-	window.unresizable = false
+	window.unresizable = true
 	window.exclusive = false
 	window.visible = false
 	window.close_requested.connect(_close_entry.bind(key))
 	# The camera keys, zoom and Esc keep working while the window is open.
 	UIStyle.keep_keyboard_with_game(window)
-	UIStyle.set_persistent_window_layout(
-		window,
-		"building_inspector",
-		Vector2i(420, 470),
-		Vector2i(340, 320),
-		get_viewport(),
-		false
-	)
+	# Content-sized like Road Properties; the height follows the open tab.
+	UIStyle.set_window_base_size(window, DEFAULT_SIZE, MIN_SIZE, get_viewport())
 
 	var body := PanelContainer.new()
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -121,34 +130,53 @@ func _create_window_entry(key: String) -> Dictionary:
 	body.add_child(margin)
 
 	var root_vbox := VBoxContainer.new()
-	root_vbox.add_theme_constant_override("separation", 6)
+	root_vbox.add_theme_constant_override("separation", 10)
 	margin.add_child(root_vbox)
 
-	var title_label := UIStyle.inspector_heading("")
-	title_label.clip_text = true
-	root_vbox.add_child(title_label)
-
-	root_vbox.add_child(HSeparator.new())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root_vbox.add_child(scroll)
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 12)
+	root_vbox.add_child(header)
+	var icon := HudIcons.icon_button("services", "", "", 48)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header.add_child(icon)
+	var names := VBoxContainer.new()
+	names.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	names.alignment = BoxContainer.ALIGNMENT_CENTER
+	header.add_child(names)
+	var title_label := Label.new()
+	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UIStyle.set_font_size(title_label, 16)
+	names.add_child(title_label)
+	var subtitle_label := Label.new()
+	subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(subtitle_label, 13)
+	names.add_child(subtitle_label)
 
 	var stats_body := VBoxContainer.new()
 	stats_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	stats_body.add_theme_constant_override("separation", 4)
-	scroll.add_child(stats_body)
+	stats_body.add_theme_constant_override("separation", 6)
+	root_vbox.add_child(stats_body)
 
 	add_child(window)
-	WindowResizeHandles.install(window)
 	window.hide()
 
 	return {
 		"window": window,
+		"body": body,
+		"icon": icon,
 		"title_label": title_label,
+		"subtitle_label": subtitle_label,
 		"stats_body": stats_body,
 		"anchor_pos": Vector3.ZERO,
 	}
+
+# The height follows the content (the open tab), capped to the screen.
+func _fit_window(window: Window, body: Control) -> void:
+	if not is_instance_valid(window) or not is_instance_valid(body):
+		return
+	var cap := int(get_viewport().get_visible_rect().size.y * 0.9)
+	window.size.y = mini(int(body.get_combined_minimum_size().y), cap)
 
 func _close_entry(key: String) -> void:
 	var entry: Dictionary = _open_windows.get(key, {})
@@ -158,7 +186,6 @@ func _close_entry(key: String) -> void:
 	_open_windows.erase(key)
 	var window: Window = entry["window"]
 	if is_instance_valid(window):
-		UIStyle.save_persistent_window_layout(window)
 		window.queue_free()
 
 func _update_anchor(entry: Dictionary, info: Dictionary) -> void:
@@ -187,165 +214,248 @@ func _place_window_near_cursor(window: Window, screen_pos: Vector2) -> void:
 
 func _populate(entry: Dictionary, info: Dictionary) -> void:
 	entry["info"] = info
-	var window: Window = entry["window"]
 	var title_label: Label = entry["title_label"]
 	var stats_body: VBoxContainer = entry["stats_body"]
-	var display_name := _display_name(info)
-
-	window.title = display_name
-	title_label.text = display_name
+	title_label.text = _display_name(info)
+	var subtitle: Label = entry.get("subtitle_label")
+	if subtitle:
+		subtitle.text = _subtitle(info)
+	var icon: Button = entry.get("icon")
+	if icon:
+		HudIcons.set_icon(icon, _icon_name(info))
 
 	for child in stats_body.get_children():
+		stats_body.remove_child(child)
 		child.queue_free()
 
-	var zone: String = info.get("zone_type", "")
-	_add_row(stats_body, "Type", "%s   Level %d" % [_zone_label(zone), int(info.get("level", 0))])
+	_add_alerts(stats_body, info)
+
+	var pages := {}
+	for title in TABS:
+		var page := VBoxContainer.new()
+		page.name = title
+		page.add_theme_constant_override("separation", 4)
+		pages[title] = page
+	_fill_overview(pages["Overview"], info)
+	_fill_money(pages["Money"], info)
+	if info.has("extractor_resource"):
+		_add_extractor_reserve_section(pages["Site"], info)
+	if info.has("field_resource"):
+		_add_field_section(pages["Site"], info)
+	_fill_power(pages["Power"], info)
+	_fill_stock(pages["Stock"], info)
+	_add_row(pages["Parking"], "Valid places", str(info.get("parking_valid_places", 0)))
+	var parking_rejected: PackedStringArray = info.get("parking_rejected", PackedStringArray())
+	for reason in parking_rejected:
+		_add_alert(pages["Parking"], reason, false)
+
+	var tabs := TabContainer.new()
+	_style_tabs(tabs)
+	stats_body.add_child(tabs)
+	for title in TABS:
+		var page: VBoxContainer = pages[title]
+		if page.get_child_count() == 0:
+			page.free()
+			continue
+		tabs.add_child(page)
+		if title == "Parking" and not parking_rejected.is_empty():
+			var index := tabs.get_tab_count() - 1
+			tabs.set_tab_icon(index, load(HudIcons.ICON_DIR + "warning.svg") as Texture2D)
+			tabs.set_tab_icon_max_width(index, int(UIStyle.scaled_px(14.0)))
+	var picked := tabs.get_node_or_null(NodePath(_last_tab))
+	tabs.current_tab = tabs.get_tab_idx_from_control(picked) if picked else 0
+	tabs.tab_changed.connect(_on_tab_changed.bind(entry, tabs))
+	# Once the new rows have their sizes; the hourly refresh can add or drop rows.
+	if entry.has("body"):
+		_fit_window.call_deferred(entry["window"], entry["body"])
+
+func _on_tab_changed(index: int, entry: Dictionary, tabs: TabContainer) -> void:
+	_last_tab = tabs.get_tab_title(index)
+	if entry.has("body"):
+		_fit_window.call_deferred(entry["window"], entry["body"])
+
+# Zone, level and the business status, e.g. "Industrial · Level 1 · Running".
+func _subtitle(info: Dictionary) -> String:
+	var parts: PackedStringArray = [
+		_zone_label(str(info.get("zone_type", ""))),
+		"Level %d" % int(info.get("level", 0)),
+	]
+	if info.get("business_summary", false):
+		parts.append(str(info.get("business_status", "-")))
+	return " · ".join(parts)
+
+# A utility's service icon, a farm's field, an extractor's pit, else the zone's.
+func _icon_name(info: Dictionary) -> String:
+	var candidates: Array[String] = [str(info.get("utility_service", ""))]
+	if info.has("field_resource"):
+		candidates.append("field")
+	if info.has("extractor_resource"):
+		candidates.append("extractor")
+	candidates.append(str(info.get("zone_type", "")))
+	for icon_name in candidates:
+		if not icon_name.is_empty() and ResourceLoader.exists(HudIcons.ICON_DIR + icon_name + ".svg"):
+			return icon_name
+	return "services"
+
+# Flat tabs with the HUD accent underline on the picked one, matching the toolbar tiles.
+func _style_tabs(tabs: TabContainer) -> void:
+	tabs.get_tab_bar().focus_mode = Control.FOCUS_NONE
+	UIStyle.set_font_size(tabs, 13)
+	var panel := StyleBoxEmpty.new()
+	panel.content_margin_top = 8
+	tabs.add_theme_stylebox_override("panel", panel)
+	var bar := StyleBoxFlat.new()
+	bar.bg_color = Color.TRANSPARENT
+	bar.border_width_bottom = 1
+	bar.border_color = UIStyle.BORDER_ACCENT
+	tabs.add_theme_stylebox_override("tabbar_background", bar)
+	var styles := {
+		"tab_unselected": [Color.TRANSPARENT, Color.TRANSPARENT],
+		"tab_hovered": [Color(1, 1, 1, 0.06), Color.TRANSPARENT],
+		"tab_selected": [Color(UIStyle.HUD_ACCENT, 0.12), UIStyle.HUD_ACCENT],
+	}
+	for state: String in styles:
+		var style := StyleBoxFlat.new()
+		style.bg_color = styles[state][0]
+		style.border_color = styles[state][1]
+		style.border_width_bottom = 2
+		style.corner_radius_top_left = 4
+		style.corner_radius_top_right = 4
+		style.content_margin_left = 10
+		style.content_margin_right = 10
+		style.content_margin_top = 5
+		style.content_margin_bottom = 5
+		tabs.add_theme_stylebox_override(state, style)
+	tabs.add_theme_stylebox_override("tab_focus", StyleBoxEmpty.new())
+	tabs.add_theme_color_override("font_selected_color", UIStyle.TEXT_PRIMARY)
+	tabs.add_theme_color_override("font_hovered_color", UIStyle.TEXT_PRIMARY)
+	tabs.add_theme_color_override("font_unselected_color", UIStyle.TEXT_DIM)
+
+# Broken assets and economies in red; deserted, rezoning and construction in yellow.
+func _add_alerts(stats_body: VBoxContainer, info: Dictionary) -> void:
+	if info.get("broken", false):
+		_add_alert(stats_body, "Asset broken", true)
+	if info.get("economy_broken", false):
+		_add_alert(stats_body, "Economy broken", true)
+	if info.get("is_deserted", false):
+		_add_alert(stats_body, "Deserted", false)
+	if info.get("pending_redevelopment", false):
+		_add_alert(stats_body, "Rezone (%d d grace)" % info.get("rezone_grace_days", 0), false)
 	if info.get("under_construction", false):
-		_add_row(
+		_add_alert(
 			stats_body,
-			"Construction",
-			"%d h left / %.0f%%" % [
+			"Under construction: %d h left (%.0f%%)" % [
 				int(info.get("construction_remaining_hours", 0)),
 				float(info.get("construction_progress", 0.0)) * 100.0,
-			]
+			],
+			false
 		)
 
-	_add_section(stats_body, "Parking")
-	_add_row(stats_body, "Valid places", str(info.get("parking_valid_places", 0)))
-	for reason in info.get("parking_rejected", PackedStringArray()):
-		_add_alert(stats_body, reason, false)
-
+# Residents, staffing, output and the utility's state and funding.
+func _fill_overview(page: VBoxContainer, info: Dictionary) -> void:
+	var zone: String = info.get("zone_type", "")
 	var is_farm := info.has("field_resource")
 	if zone == "residential" or is_farm:
 		if is_farm:
-			_add_row(stats_body, "Farm Household", "%d / %d" % [int(info.get("occupancy", 0)), int(info.get("household_capacity", 1))])
+			_add_row(page, "Farm Household", "%d / %d" % [int(info.get("occupancy", 0)), int(info.get("household_capacity", 1))])
 		else:
-			_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
-		_add_row(stats_body, "Children", str(info.get("child_count", 0)))
-		_add_row(stats_body, "Adults", str(info.get("adult_count", 0)))
-		_add_row(stats_body, "Elders", str(info.get("elder_count", 0)))
-		_add_section(stats_body, "Household Economy")
-		_add_row(
-			stats_body,
-			"Household Money",
-			"$%.1f total / $%.1f avg" % [
-				float(info.get("household_budget_total", 0.0)),
-				float(info.get("household_budget_avg", 0.0)),
-			]
-		)
-		_add_row(
-			stats_body,
-			"Supplies",
-			"%.1f d avg / %.1f d min" % [
-				float(info.get("household_stock_days_avg", 0.0)),
-				float(info.get("household_stock_days_min", 0.0)),
-			]
-		)
-		_add_row(stats_body, "Stored Supplies", "%.1f kg" % float(info.get("household_stock_total", 0.0)))
-		_add_row(stats_body, "Replenishment", str(info.get("household_replenishment_state", "-")))
-		if int(info.get("household_replenishment_active", 0)) > 0:
-			_add_row(
-				stats_body,
-				"Active Replenishment",
-				str(info.get("household_replenishment_active", 0))
-			)
+			_add_row(page, "Households", str(info.get("household_count", info.get("occupancy", 0))))
+		_add_row(page, "Children", str(info.get("child_count", 0)))
+		_add_row(page, "Adults", str(info.get("adult_count", 0)))
+		_add_row(page, "Elders", str(info.get("elder_count", 0)))
+	if zone == "residential":
+		return
+	if is_farm:
+		_add_section(page, "Business")
+	var is_power_utility := str(info.get("utility_service", "")) == "power"
+	if info.get("business_summary", false):
+		var workers := int(info.get("worker_count", 0))
+		var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
+		var max_capacity := int(info.get("worker_capacity", 0))
+		var worker_text := str(workers)
+		if not is_power_utility:
+			worker_text = "%d / %d" % [workers, max_capacity]
+			if active_capacity != max_capacity:
+				worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
+		_add_row(page, "Workers", worker_text)
+		_add_row(page, "Production", "%.0f%%" % (float(info.get("business_production_ratio", 0.0)) * 100.0))
+		if info.get("business_has_inventory_fill", false):
+			_add_row(page, "Inventory", "%.0f%% full" % (float(info.get("business_inventory_fill_ratio", 0.0)) * 100.0))
+		if info.has("utility_service"):
+			var utility_name := str(info.get("utility_service", "")).capitalize()
+			var utility_state := "active" if info.get("utility_service_available", false) else "inactive"
+			_add_row(page, "Utility", "%s %s" % [utility_name, utility_state])
+			if is_power_utility:
+				_add_service_funding_slider(page, info)
+	else:
+		var fallback_worker_text := str(info.get("worker_count", 0))
+		if not is_power_utility:
+			fallback_worker_text = "%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
+		_add_row(page, "Workers", fallback_worker_text)
+	if info.has("utility_service_available") and not info.has("utility_service"):
+		_add_row(page, "Utility", "Yes" if info["utility_service_available"] else "No")
+
+# The business's budget and profit, then the residents' money and supplies.
+func _fill_money(page: VBoxContainer, info: Dictionary) -> void:
+	var zone: String = info.get("zone_type", "")
 	if zone != "residential":
-		_add_section(stats_body, "Business")
+		_add_row(page, "Budget", _money(float(info.get("operating_budget", 0.0))))
 		if info.get("business_summary", false):
-			_add_row(stats_body, "Status", str(info.get("business_status", "-")))
-			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
-			_add_row(stats_body, "Today", _signed_money(float(info.get("business_profit_today", 0.0))))
-			_add_row(stats_body, "Yesterday", _signed_money(float(info.get("business_profit_yesterday", 0.0))))
-			var workers := int(info.get("worker_count", 0))
-			var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
-			var max_capacity := int(info.get("worker_capacity", 0))
-			var is_power_utility := str(info.get("utility_service", "")) == "power"
-			var worker_text := str(workers)
-			if not is_power_utility:
-				worker_text = "%d / %d" % [workers, max_capacity]
-				if active_capacity != max_capacity:
-					worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
-			_add_row(stats_body, "Workers", worker_text)
-			_add_row(
-				stats_body,
-				"Production",
-				"%.0f%%" % (float(info.get("business_production_ratio", 0.0)) * 100.0)
-			)
-			if info.has("extractor_resource"):
-				_add_extractor_reserve_section(stats_body, info)
-			if info.has("field_resource"):
-				_add_field_section(stats_body, info)
-			if info.get("business_has_inventory_fill", false):
-				_add_row(
-					stats_body,
-					"Inventory",
-					"%.0f%% full" % (float(info.get("business_inventory_fill_ratio", 0.0)) * 100.0)
-				)
+			_add_row(page, "Today", _signed_money(float(info.get("business_profit_today", 0.0))))
+			_add_row(page, "Yesterday", _signed_money(float(info.get("business_profit_yesterday", 0.0))))
 			if info.has("utility_service"):
-				var utility_name := str(info.get("utility_service", "")).capitalize()
-				var utility_state := "active" if info.get("utility_service_available", false) else "inactive"
-				_add_row(stats_body, "Utility", "%s %s" % [utility_name, utility_state])
-				if str(info.get("utility_service", "")) == "power":
-					_add_service_funding_slider(stats_body, info)
-				_add_row(stats_body, "Utility Revenue", _money(float(info.get("utility_local_revenue", 0.0))))
-				if str(info.get("utility_service", "")) == "power":
-					var power_produced := float(info.get("utility_power_production_today", 0.0))
-					var power_consumed := float(info.get("utility_power_consumed_today", 0.0))
-					_add_row(
-						stats_body,
-						"Energy Produced",
-						_electricity_quantity(power_produced, "kWh", "MWh")
-					)
-					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
-				_add_row(stats_body, "City Inputs Today", _money(float(info.get("city_input_cost_today", 0.0))))
-		else:
-			var fallback_worker_text := str(info.get("worker_count", 0))
-			if str(info.get("utility_service", "")) != "power":
-				fallback_worker_text = "%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
-			_add_row(
-				stats_body,
-				"Workers",
-				fallback_worker_text
-			)
-			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
-		if info.has("utility_service_available") and not info.has("utility_service"):
-			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
+				_add_row(page, "Utility Revenue", _money(float(info.get("utility_local_revenue", 0.0))))
+				_add_row(page, "City Inputs Today", _money(float(info.get("city_input_cost_today", 0.0))))
+	if zone != "residential" and not info.has("field_resource"):
+		return
+	if page.get_child_count() > 0:
+		_add_section(page, "Households")
+	_add_row(
+		page,
+		"Household Money",
+		"$%.1f total / $%.1f avg" % [
+			float(info.get("household_budget_total", 0.0)),
+			float(info.get("household_budget_avg", 0.0)),
+		]
+	)
+	_add_row(
+		page,
+		"Supplies",
+		"%.1f d avg / %.1f d min" % [
+			float(info.get("household_stock_days_avg", 0.0)),
+			float(info.get("household_stock_days_min", 0.0)),
+		]
+	)
+	_add_row(page, "Stored Supplies", "%.1f kg" % float(info.get("household_stock_total", 0.0)))
+	_add_row(page, "Replenishment", str(info.get("household_replenishment_state", "-")))
+	if int(info.get("household_replenishment_active", 0)) > 0:
+		_add_row(page, "Active Replenishment", str(info.get("household_replenishment_active", 0)))
 
-	_add_section(stats_body, "Electricity · last day")
-	_add_row(stats_body, "Consumption", _electricity_quantity(float(info.get("electricity_consumption_kwh", 0.0)), "kWh", "MWh"))
-	_add_row(stats_body, "Local supply", _electricity_quantity(float(info.get("electricity_local_kwh", 0.0)), "kWh", "MWh"))
-	_add_row(stats_body, "Imports", _electricity_quantity(float(info.get("electricity_imported_kwh", 0.0)), "kWh", "MWh"))
-	_add_row(stats_body, "Cost", _money(float(info.get("electricity_cost", 0.0))))
-	if float(info.get("household_power_arrears", 0.0)) > 0.0:
-		_add_row(stats_body, "Unpaid household bills", _money(float(info["household_power_arrears"])))
+# A power plant's output first, then the building's own use over the last day.
+func _fill_power(page: VBoxContainer, info: Dictionary) -> void:
+	if info.get("business_summary", false) and str(info.get("utility_service", "")) == "power":
+		var power_produced := float(info.get("utility_power_production_today", 0.0))
+		var power_consumed := float(info.get("utility_power_consumed_today", 0.0))
+		_add_row(page, "Energy Produced", _electricity_quantity(power_produced, "kWh", "MWh"))
+		_add_power_consumption_bar(page, power_consumed, power_produced)
 	if info.has("power_staffed_capacity_kw"):
-		_add_row(stats_body, "Staffed capacity", _electricity_quantity(float(info["power_staffed_capacity_kw"]), "kW", "MW"))
+		_add_row(page, "Staffed capacity", _electricity_quantity(float(info["power_staffed_capacity_kw"]), "kW", "MW"))
+	_add_section(page, "Last day")
+	_add_row(page, "Consumption", _electricity_quantity(float(info.get("electricity_consumption_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(page, "Local supply", _electricity_quantity(float(info.get("electricity_local_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(page, "Imports", _electricity_quantity(float(info.get("electricity_imported_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(page, "Cost", _money(float(info.get("electricity_cost", 0.0))))
+	if float(info.get("household_power_arrears", 0.0)) > 0.0:
+		_add_row(page, "Unpaid household bills", _money(float(info["household_power_arrears"])))
 
+func _fill_stock(page: VBoxContainer, info: Dictionary) -> void:
 	var inventory: Array = info.get("inventory", [])
-	if inventory.size() > 0:
-		_add_section(stats_body, "Inventory")
-		for item in inventory:
-			var unit := str(item.get("unit", ""))
-			var stock_text := "%.1f %s" % [float(item.get("amount", 0.0)), unit]
-			if item.has("daily_input_units"):
-				stock_text += " (%.1f %s/day at full operation)" % [float(item["daily_input_units"]), unit]
-			_add_row(stats_body, _resource_label(str(item.get("name", "?"))), stock_text)
-
-	var flags: Array = []
-	if info.get("broken", false):
-		flags.append(["Asset broken", true])
-	if info.get("economy_broken", false):
-		flags.append(["Economy broken", true])
-	if info.get("is_deserted", false):
-		flags.append(["Deserted", false])
-	if info.get("pending_redevelopment", false):
-		flags.append(["Rezone (%d d grace)" % info.get("rezone_grace_days", 0), false])
-	if info.get("under_construction", false):
-		flags.append(["Under construction", false])
-	if flags.size() > 0:
-		_add_section(stats_body, "Alerts")
-		for flag in flags:
-			_add_alert(stats_body, flag[0], flag[1])
+	for item in inventory:
+		var unit := str(item.get("unit", ""))
+		var stock_text := "%.1f %s" % [float(item.get("amount", 0.0)), unit]
+		if item.has("daily_input_units"):
+			stock_text += " (%.1f %s/day at full operation)" % [float(item["daily_input_units"]), unit]
+		_add_row(page, _resource_label(str(item.get("name", "?"))), stock_text)
 
 func _zone_label(zone: String) -> String:
 	match zone:
@@ -375,8 +485,10 @@ func _resource_units(amount: float) -> String:
 		return "%.1f t" % (amount / 1000.0)
 	return "%.1f kg" % amount
 
+# A heading; the separator above it is left out at the top of a tab.
 func _add_section(stats_body: VBoxContainer, title: String) -> void:
-	stats_body.add_child(HSeparator.new())
+	if stats_body.get_child_count() > 0:
+		stats_body.add_child(HSeparator.new())
 	stats_body.add_child(UIStyle.inspector_heading(title, true))
 
 func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String) -> void:
