@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! Border promotion keeps the rest of the network's lane ids: it extends one road, so only that
+//! road's lanes may change, and agents elsewhere keep the lanes they hold.
+
+use super::*;
+
+// Draws one stroke the way the road tool commits it.
+fn commit(core: &mut SimCore, start: (f32, f32), end: (f32, f32)) {
+    core.precompute_road_mesh_data();
+    let outcome = core.commit_road(
+        super::super::road_commit::RoadCommitRequest {
+            points: vec![
+                Vector3::new(start.0, 0.0, start.1),
+                Vector3::new(end.0, 0.0, end.1),
+            ],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
+            parking: Default::default(),
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection_reason);
+}
+
+fn node_at(core: &SimCore, x: f32, z: f32) -> u32 {
+    (0..core.region_graph.node_count() as u32)
+        .find(|&node| {
+            let pos = core.region_graph.node(node).pos;
+            (pos.x - x).abs() < 0.5 && (pos.z - z).abs() < 0.5
+        })
+        .expect("road end node")
+}
+
+// The live lane ids of every edge outside `rebuilt`, by edge.
+fn lanes_outside(core: &SimCore, rebuilt: &HashSet<usize>) -> Vec<(usize, Vec<usize>)> {
+    let mut lanes: Vec<(usize, Vec<usize>)> = core
+        .transit_network
+        .lane_system
+        .edge_lanes
+        .iter()
+        .filter(|(edge, _)| !rebuilt.contains(edge))
+        .map(|(&edge, ids)| (edge, ids.clone()))
+        .collect();
+    lanes.sort_unstable();
+    lanes
+}
+
+#[test]
+fn border_connection_keeps_other_roads_lane_ids() {
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e7;
+    commit(&mut core, (0.0, 0.0), (200.0, 0.0));
+    // A tee splits that road, retiring its lanes and appending new ones, so the lane table has
+    // the holes a full rebuild compacts; the road drawn after it holds lane ids past them.
+    commit(&mut core, (100.0, -100.0), (100.0, 0.0));
+    commit(&mut core, (-300.0, 0.0), (-100.0, 0.0));
+    let border = node_at(&core, 200.0, 0.0);
+    let extended: HashSet<usize> = core
+        .region_graph
+        .node_adjacency(border)
+        .iter()
+        .copied()
+        .collect();
+    let rebuilt = crate::simulation::network::lanes::LaneSystem::incremental_rebuild_edge_closure(
+        &core.region_graph,
+        &extended,
+    );
+    let before = lanes_outside(&core, &rebuilt);
+    assert!(!before.is_empty());
+
+    core.set_border_connection_internal(border as i32);
+
+    assert_eq!(lanes_outside(&core, &rebuilt), before);
+}
