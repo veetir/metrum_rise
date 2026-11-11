@@ -147,7 +147,8 @@ already includes terrain clearance and is restored without another terrain adjus
 Loading an upward debug view in normal mode clamps its pitch to the normal downward limit.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `WorldEditor`).
-The menu is plain uppercase text down the left side over a soft gradient: the title with a
+The menu is plain uppercase text down the left side over a flat dark fill (a gradient this dark
+banded): the title with a
 short accent rule, then the entries, dim at rest and white with an accent bar at their left
 edge under the mouse (`UIStyle.menu_text_button`). There is no card and no button boxes. The
 pause menu uses the same layout over the dimmed city.

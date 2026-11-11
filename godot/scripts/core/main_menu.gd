@@ -14,6 +14,7 @@ const GameSettings = preload("res://scripts/core/game_settings.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
+const BACKGROUND := Color(0.055, 0.065, 0.085)
 
 var _options_menu = null
 var _new_game_dialog: Window = null
@@ -27,21 +28,13 @@ func _exit_tree() -> void:
 func _ready() -> void:
 	_build_ui()
 
-# Plain text entries down the left side over a soft gradient: no card, no button boxes.
+# Plain text entries down the left side over a flat dark fill: no card, no button boxes. (A
+# gradient this dark bands visibly in 8-bit colour.)
 func _build_ui() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	var gradient := Gradient.new()
-	gradient.set_color(0, Color(0.09, 0.11, 0.14))
-	gradient.set_color(1, Color(0.025, 0.03, 0.04))
-	var fill := GradientTexture2D.new()
-	fill.gradient = gradient
-	fill.fill_from = Vector2(0.0, 0.0)
-	fill.fill_to = Vector2(0.9, 1.0)
-	var background := TextureRect.new()
-	background.texture = fill
-	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	background.stretch_mode = TextureRect.STRETCH_SCALE
+	var background := ColorRect.new()
+	background.color = BACKGROUND
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(background)
 
