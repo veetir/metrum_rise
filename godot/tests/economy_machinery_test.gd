@@ -44,7 +44,7 @@ func _run() -> void:
 	_expect(labels.has("12.0 kg"), "Household supplies display kilograms")
 	_expect(labels.has("1.5 MWh") and labels.has("1.0 MWh") and labels.has("500.0 kWh"), "Building consumption, local supply and imports carry energy units")
 	_expect(labels.has("$325"), "Building electricity cost remains money")
-	_expect(labels.has("100.0 kg (200.0 kg/day at full operation)"), "Stock and recipe rate carry their resource unit")
+	_expect(labels.has("100.0 kg · uses 200.0 kg/day"), "Stock and recipe rate carry their resource unit")
 	body.free()
 	title.free()
 	window.free()

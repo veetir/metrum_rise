@@ -230,17 +230,17 @@ func _test_farm_inspector(scene: Node) -> void:
 		"inventory": [{"name": "machinery", "unit": "kg", "amount": 0.0, "daily_input_units": 1.0}]}
 	inspector._populate(entry, info)
 	var rows := {}
-	# Rows sit inside the inspector's tabs.
-	for row in body.find_children("*", "HBoxContainer", true, false):
-		if row.get_child_count() == 2 and row.get_child(1) is Label:
-			rows[row.get_child(0).text] = row.get_child(1).text
+	# Labels come in label/value pairs (KPI tiles, then the tabs' grids); the tabs' detail wins.
+	var labels := body.find_children("*", "Label", true, false)
+	for i in range(labels.size() - 1):
+		rows[(labels[i] as Label).text] = (labels[i + 1] as Label).text
 	_expect(rows.get("Farm Household") == "1 / 1", "Farm inspector retains household occupancy")
 	_expect(rows.get("Children") == "2" and rows.get("Adults") == "2" and rows.get("Elders") == "1", "Farm inspector displays resident age groups independently of workers")
 	_expect(rows.get("Workers") == "7 / 8", "Household details preserve farm business staffing")
-	_expect(rows.get("Household Money") == "$125.0 total / $125.0 avg", "Farm inspector shows household money")
+	_expect(rows.get("Household Money") == "$125 total · $125 avg", "Farm inspector shows household money")
 	_expect(rows.get("Stored Supplies") == "12.0 kg" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
 
-	_expect(rows.get("Machinery") == "0.0 kg (1.0 kg/day at full operation)", "Farm inspector shows empty Machinery stock and upkeep rate")
+	_expect(rows.get("Machinery") == "0.0 kg · uses 1.0 kg/day", "Farm inspector shows empty Machinery stock and upkeep rate")
 
 func _test_one_inspector_at_a_time(scene: Node) -> void:
 	var inspector := FixtureInspector.new()
