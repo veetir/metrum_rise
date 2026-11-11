@@ -551,6 +551,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
         asset_set: None,
         tags: Vec::new(),
         thumbnail: None,
+        icon: None,
         lods: Vec::new(),
         mesh_parts: vec![mesh_part],
         anchors: vec![

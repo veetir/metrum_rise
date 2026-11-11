@@ -63,6 +63,17 @@ static func asset_tile(asset: Dictionary, class_id: String) -> Button:
 		details.append("Cost: $%s" % str(asset.build_cost))
 	if asset.has("upkeep"):
 		details.append("upkeep: $%s" % str(asset.upkeep))
-	var button := HudIcons.icon_button(class_icon(class_id), title, "\n".join(details), 72)
+	var button := HudIcons.icon_button(asset_icon(asset, class_id), title, "\n".join(details), 72)
 	button.toggle_mode = true
 	return button
+
+## The asset's own menu icon (its manifest `icon`), else its class icon. A named icon the game
+## lacks falls back too, logged on the always-on `events` debug channel.
+static func asset_icon(asset: Dictionary, class_id: String) -> String:
+	var icon_name := str(asset.get("icon", ""))
+	if icon_name.is_empty():
+		return class_icon(class_id)
+	if not ResourceLoader.exists(HudIcons.ICON_DIR + icon_name + ".svg"):
+		MetrumDebug.log("events", "%s: no icon '%s'" % [asset.get("asset_id", "?"), icon_name])
+		return class_icon(class_id)
+	return icon_name
