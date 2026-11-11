@@ -766,8 +766,8 @@ Properties has no pocket section any more (one way to do it).
   change") beside "Apply (+N)" with Rust's `cost_delta`. No geometry preview (D11): the verdict is
   the commit's own check (`preview_road_pocket` on each change, `set_road_pocket` on Apply through
   the select tool, which redraws the junction's lanes). The hovered row's road, else the last
-  changed row's, is highlighted from the junction over the requested length (the selection
-  highlight's material, cyan at alpha 0.3, as wide as the road's widest edge), and that row is
+  changed row's, is highlighted from the junction over the requested length (a flat cyan
+  material at alpha 0.3, as wide as the road's widest edge), and that row is
   outlined in the same cyan. After an Apply or an undo (a new network render generation) the
   window reads the arms again: a pocket edit splits and joins the arm, never the junction, so the
   node keeps its id, and each unapplied request whose arm (edge and end) is still there is kept
@@ -11971,7 +11971,7 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
 - **Attributes** (round RB3c). Under the strip: **Left sidewalk** and **Right sidewalk**
   (`ROAD-107`: one per end, left and right as the road is drawn; a type without one sends no
-  sidewalk part at that end), **Speed** (a stepper on Rust's grid,
+  sidewalk part at that end), **Speed** (Finnish speed limit signs on Rust's grid,
   `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
   speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
   speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
