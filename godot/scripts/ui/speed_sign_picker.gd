@@ -8,7 +8,7 @@
 ##
 ## The signs sit in a recessed track whose ends, half signs included, fade into the panel (a
 ## canvas mask on the strip). A step slides the strip and the chosen sign swells slightly for a
-## moment; scrolling past the first or last limit nudges the strip and springs it back. A side
+## moment; scrolling past the first or last limit leans the strip that way and eases it back. A side
 ## sign under the cursor lights.
 ##
 ## Keeps SpinBox's surface for its callers: `min_value`, `max_value`, `step`, `value` (setting it
@@ -27,10 +27,10 @@ const SLIDE_S := 0.14
 # The chosen sign's swell: up to POP_SCALE larger over POP_IN_S, back over POP_OUT_S.
 const POP_IN_S := 0.07
 const POP_OUT_S := 0.18
-const NUDGE_S := 0.32
+const NUDGE_S := 0.24
 # How far (in slots) the strip leans when scrolled past an end.
-const NUDGE_SLOTS := 0.22
-const POP_SCALE := 0.08
+const NUDGE_SLOTS := 0.06
+const POP_SCALE := 0.03
 # The neighbours' size and opacity next to the chosen sign; a hovered one lights to HOVER_ALPHA.
 const SIDE_SCALE := 0.78
 const SIDE_ALPHA := 0.55
@@ -270,7 +270,7 @@ func _animate_to(target: float) -> void:
 	_pop_tween.tween_property(self, "_pop", 1.0, POP_IN_S).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_pop_tween.tween_property(self, "_pop", 0.0, POP_OUT_S).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 
-# Scrolled past an end: lean `direction` slots-ward and spring back.
+# Scrolled past an end: lean `direction` slots-ward and ease back, without a wobble.
 func _lean(direction: float) -> void:
 	if not is_inside_tree():
 		return
@@ -280,4 +280,4 @@ func _lean(direction: float) -> void:
 	_nudge_tween.tween_property(self, "_nudge", direction * NUDGE_SLOTS, NUDGE_S * 0.3) \
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_nudge_tween.tween_property(self, "_nudge", 0.0, NUDGE_S * 0.7) \
-		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
