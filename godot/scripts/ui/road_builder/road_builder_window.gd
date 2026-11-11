@@ -6,16 +6,17 @@
 ##
 ## Left: the library column (built-ins to duplicate; the player's types to edit, duplicate or
 ## delete, unusable ones greyed with their reason; the library error when the file cannot be
-## written). Right: six part tiles, the strip with the layout to scale (each end a fixed sidewalk,
-## or on a side without one a 0.75 m shoulder band, drawn but not a part), the lane split and
-## widths, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
+## written). The card's header is one row: the type's name, editable (Rust's suggestion until the
+## player types one; Rust's description as its tooltip), and beside it the first reason the type
+## cannot be created, if any. Right: the strip with the layout to scale on a stage (each end a
+## fixed sidewalk, or on a side without one a 0.75 m shoulder band, drawn but not a part) with
+## the widths, six part tiles, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
 ## and independent, `ROAD-107`, left and right as the road is drawn, a "Speed" stepper on Rust's
 ## grid, hidden for a footpath, a "Zoning" checkbox, disabled with no sidewalk on either side
 ## (`ROAD-109`: the type's value stays), and a "Street lights" checkbox, ticked for a
-## new type), Rust's verdict under them with the type's cost per metre from Rust and a warning
-## when a road zones with a side or both without a sidewalk (nothing is built there),
-## and a footer with the name (Rust's
-## suggestion until the player types one), Cancel and Create road (Save when editing). A new
+## new type), a warning when a road zones with a side or both without a sidewalk (nothing is
+## built there), and a footer with the type's cost per metre from Rust, Cancel and Create road
+## (Save when editing). A new
 ## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
 ## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
 ## in by clicking a "+" slot and then a tile, or by dragging a tile into the strip; a click on a
@@ -50,8 +51,8 @@ const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_lib
 const Card = preload("res://scripts/ui/inspector_card.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 
-const DEFAULT_SIZE := Vector2i(980, 580)
-const MIN_SIZE := Vector2i(780, 570)
+const DEFAULT_SIZE := Vector2i(980, 600)
+const MIN_SIZE := Vector2i(780, 590)
 const SIDEWALK := {"kind": "sidewalk"}
 ## A layout's end without a sidewalk: the roadbed's shoulder band, drawn on the strip, never sent
 ## to Rust.
@@ -63,7 +64,6 @@ const NEW_LAYOUT := [
 ]
 const STATUS_REFUSED := Color(1.0, 0.45, 0.38)
 const STATUS_NAME := Color.YELLOW
-const STATUS_READY := Color(0.55, 0.95, 0.55)
 const STATUS_COST := Color(0.85, 0.85, 0.85)
 # The road's stage, darker than the card so the road reads on it.
 const STAGE_BG := Color(0.0, 0.0, 0.0, 0.28)
@@ -77,8 +77,6 @@ var library_list: RoadTypeLibraryList
 var strip: RoadBuilderStrip
 var tiles: Array[RoadPartTile] = []
 var part_popup: RoadPartPopup
-var header_label: Label
-var lanes_label: Label
 var widths_label: Label
 var status_label: Label
 var cost_label: Label
@@ -139,11 +137,20 @@ func _build_window() -> void:
 	window.unresizable = false
 	UIStyle.set_persistent_window_layout(window, "road_builder", DEFAULT_SIZE, MIN_SIZE, get_viewport())
 	HudIcons.set_icon(card["icon"], "road")
-	# Header: "New road type" / "Editing …" over the lane split, with Rust's description (or
-	# its refusal) under it, so the road being built is named at the top.
-	header_label = card["eyebrow"]
-	lanes_label = card["title"]
-	status_label = card["subtitle"]
+	# Header, one row: the type's name, editable, with the first reason it cannot be created
+	# beside it (nothing when it can; Rust's description is the name's tooltip). Whether it is
+	# a new type or an edit shows in the library and on the Create / Save button.
+	for unused in ["eyebrow", "title", "chips"]:
+		(card[unused] as Control).visible = false
+	var name_row := HBoxContainer.new()
+	name_row.add_theme_constant_override("separation", 12)
+	(card["title"] as Control).get_parent().add_child(name_row)
+	name_row.add_child(_build_name_edit())
+	status_label = _label(name_row, 13)
+	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	status_label.clip_text = true
+	status_label.mouse_filter = Control.MOUSE_FILTER_PASS
 	var body: Control = window.get_child(0)
 	# A part dropped anywhere in the window off the strip is removed (the strip's drag end).
 	body.set_drag_forwarding(Callable(), _can_drop_off_strip, func(_at, _data): pass)
@@ -151,6 +158,8 @@ func _build_window() -> void:
 	var columns := HBoxContainer.new()
 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	columns.add_theme_constant_override("separation", 14)
+	# The card's content takes the window's height, so a taller window grows the stage.
+	(card["content"] as Control).size_flags_vertical = Control.SIZE_EXPAND_FILL
 	card["content"].add_child(columns)
 
 	library_list = RoadTypeLibraryList.new()
@@ -313,26 +322,39 @@ func _build_attributes() -> Control:
 	row.add_child(street_lights_check)
 	return row
 
-# The type's cost from Rust on the left; its name, Cancel and Create on the right.
+# The type's name as the card's title: a bold field that shows it can be typed in only under
+# the cursor or while editing.
+func _build_name_edit() -> LineEdit:
+	name_edit = LineEdit.new()
+	name_edit.custom_minimum_size.x = 280.0
+	name_edit.max_length = 40
+	name_edit.placeholder_text = "Road type name"
+	name_edit.add_theme_font_override("font", Card.bold_font())
+	UIStyle.set_font_size(name_edit, 17)
+	for state in ["normal", "hover", "focus"]:
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(1, 1, 1, 0.0 if state == "normal" else 0.06)
+		style.border_color = Color(UIStyle.HUD_ACCENT, 0.7) if state == "focus" else Color(1, 1, 1, 0.0 if state == "normal" else 0.14)
+		style.set_border_width_all(1)
+		style.set_corner_radius_all(6)
+		style.content_margin_left = 6.0
+		style.content_margin_right = 6.0
+		style.content_margin_top = 2.0
+		style.content_margin_bottom = 2.0
+		name_edit.add_theme_stylebox_override(state, style)
+	name_edit.text_changed.connect(func(_text: String):
+		_name_typed = true
+		_update_actions())
+	name_edit.text_submitted.connect(func(_text: String): create())
+	return name_edit
+
+# The type's cost from Rust on the left; Cancel and Create on the right.
 func _build_footer() -> Control:
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
 	cost_label = _label(footer, 13)
 	cost_label.add_theme_color_override("font_color", STATUS_COST)
 	cost_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var label := _label(footer, 14)
-	label.text = "Name"
-	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	name_edit = LineEdit.new()
-	name_edit.custom_minimum_size.x = 240.0
-	name_edit.max_length = 40
-	name_edit.placeholder_text = "Road type name"
-	UIStyle.set_font_size(name_edit, 14)
-	name_edit.text_changed.connect(func(_text: String):
-		_name_typed = true
-		_update_actions())
-	name_edit.text_submitted.connect(func(_text: String): create())
-	footer.add_child(name_edit)
 	cancel_button = Button.new()
 	cancel_button.text = "Cancel"
 	cancel_button.focus_mode = Control.FOCUS_NONE
@@ -560,24 +582,13 @@ func _layout_changed() -> void:
 	zoning_check.disabled = not has_sidewalk(true) and not has_sidewalk(false)
 	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
-	lanes_label.text = "%d + %d" % [int(check.get("fwd_lanes", 0)), int(check.get("bkw_lanes", 0))] if valid else "-"
 	widths_label.text = "Road %.1f m\nTotal %.1f m" % [float(check.get("carriageway_m", 0.0)), float(check.get("total_m", 0.0))]
 	if not _name_typed and valid:
 		name_edit.text = String(check.get("suggested_name", ""))
-	if editing_id.is_empty():
-		header_label.text = "New road type"
-	else:
-		header_label.text = "Editing %s" % _type_name(editing_id)
 	if _popup_index >= 0:
 		part_popup.show_part(parts[_popup_index], strip.is_interior(_popup_index - 1),
 			strip.is_interior(_popup_index + 1), _median_styles)
 	_update_actions()
-
-func _type_name(id: String) -> String:
-	for type: Dictionary in _library.get("types", []):
-		if String(type.get("id", "")) == id:
-			return String(type.get("name", id))
-	return id
 
 # Create / Save is enabled when the layout and the name both pass and the library is writable;
 # the status line gives the first reason it is not.
@@ -596,7 +607,9 @@ func _update_actions() -> void:
 	elif not name_reason.is_empty():
 		_status(RoadReasonText.text({"invalid_reason": name_reason}), STATUS_NAME)
 	else:
-		_status(RoadTypeMenu.describe(check), STATUS_READY)
+		_status("", UIStyle.TEXT_DIM)
+	name_edit.tooltip_text = RoadTypeMenu.describe(check) if valid else ""
+
 
 # The warning for the side or sides that take no buildings (`ROAD-109`), or "".
 func _sidewalk_warning() -> String:
@@ -608,6 +621,7 @@ func _sidewalk_warning() -> String:
 
 func _status(text: String, color: Color) -> void:
 	status_label.text = text
+	status_label.tooltip_text = text
 	status_label.add_theme_color_override("font_color", color)
 
 ## Creates the new type (or saves the edited one) when enabled; on success the library changes,
@@ -641,7 +655,6 @@ func _on_type_selected(type: Dictionary) -> void:
 		# A built-in is a template: its layout starts a new type.
 		_start(type.get("parts", []), "", "", type)
 		library_list.select_id(String(type.get("id", "")))
-		header_label.text = "New road type from %s" % String(type.get("name", ""))
 		return
 	_start(type.get("parts", []), String(type.get("id", "")), String(type.get("name", "")), type)
 

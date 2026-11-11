@@ -158,6 +158,10 @@ func _key(keycode: Key) -> void:
 	event.pressed = true
 	_builder.window.window_input.emit(event)
 
+# The builder's lane split, from Rust's check.
+func _lanes() -> String:
+	return "%d + %d" % [int(_builder.check.get("fwd_lanes", 0)), int(_builder.check.get("bkw_lanes", 0))]
+
 func _type_name(text: String) -> void:
 	_builder.name_edit.text = text
 	_builder.name_edit.text_changed.emit(text)
@@ -198,11 +202,17 @@ func _run() -> void:
 	await _open()
 	var window: Window = _builder.window
 	_expect(_builder.is_open() and not window.exclusive and not window.unresizable, "Road builder... opens a non-exclusive resizable window")
-	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(780, 570)
-		and window.get_meta("metrum_base_window_size") == Vector2i(980, 580), "the window: %s" % window.title)
+	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(780, 590)
+		and window.get_meta("metrum_base_window_size") == Vector2i(980, 600), "the window: %s" % window.title)
+	# Measured at the smallest size: the tiles' names and the attributes wrap with the width.
+	var shown_size := window.size
+	window.size = _builder.MIN_SIZE
+	await process_frame
+	await process_frame
 	var content_y := int((window.get_child(0) as Control).get_combined_minimum_size().y)
 	_expect(content_y <= _builder.MIN_SIZE.y, "the smallest window holds every row: %d" % content_y)
-	_expect(_builder.parts == [SW, BACK, AHEAD, SW] and _builder.lanes_label.text == "1 + 1", "a new layout is 1 + 1: %s" % [_builder.parts])
+	window.size = shown_size
+	_expect(_builder.parts == [SW, BACK, AHEAD, SW] and _lanes() == "1 + 1", "a new layout is 1 + 1: %s" % [_builder.parts])
 	_expect(not _builder.create_button.disabled and _builder.create_button.text == "Create road", "a new 1 + 1 can be created")
 	_expect(_builder.name_edit.text == String(_builder.check.suggested_name) and not _builder.name_edit.text.is_empty(),
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
@@ -233,7 +243,7 @@ func _run() -> void:
 	_tile(TILE_GRASS)
 	_tile(TILE_AHEAD)
 	_expect(_builder.parts == built, "click-insert builds sidewalk, lane <-, grass, lane ->, sidewalk: %s" % [_builder.parts])
-	_expect(_builder.strip.valid and _builder.lanes_label.text == "1 + 1", "the built layout is 1 + 1: %s" % _builder.lanes_label.text)
+	_expect(_builder.strip.valid and _lanes() == "1 + 1", "the built layout is 1 + 1: %s" % _lanes())
 	var widths: PackedFloat32Array = _builder.check.part_widths_m
 	_expect(Array(widths) == [1.5, 3.5, grass_m, 3.5, 1.5], "Rust's part widths: %s" % widths)
 	_expect(_builder.widths_label.text == "Road %.1f m\nTotal %.1f m" % [7.0 + grass_m, 10.0 + grass_m], "the widths: %s" % _builder.widths_label.text)
@@ -324,7 +334,7 @@ func _run() -> void:
 	_click_slot(3)
 	_tile(TILE_PAINTED)
 	_tile(TILE_AHEAD)
-	_expect(_builder.lanes_label.text == "2 + 2", "2 + 2 painted: %s" % [_builder.parts])
+	_expect(_lanes() == "2 + 2", "2 + 2 painted: %s" % [_builder.parts])
 	_type_name("Builder Test Avenue")
 	_builder.name_edit.text_submitted.emit(_builder.name_edit.text)
 	await process_frame
@@ -359,7 +369,7 @@ func _run() -> void:
 	await _open()
 	_builder.library_list.pick(avenue)
 	_expect(_builder.editing_id == avenue and _builder.create_button.text == "Save" and _builder.name_edit.text == "Builder Test Avenue",
-		"selecting a custom type edits it: %s" % _builder.header_label.text)
+		"selecting a custom type edits it: %s" % _builder.create_button.text)
 	_expect(_builder.parts == _type(avenue).parts, "its layout is loaded")
 	await _click_part(3)
 	popup.median_controls._width_buttons[1].pressed.emit()
@@ -421,7 +431,8 @@ func _run() -> void:
 	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 0 and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 0.75],
 		"the strip draws 0.75 m shoulders: %s" % _builder.strip.widths_m)
 	_expect(_builder.widths_label.text == "Road 7.0 m\nTotal 8.5 m", "the widths without sidewalks: %s" % _builder.widths_label.text)
-	_expect(_builder.status_label.text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide", "the description: %s" % _builder.status_label.text)
+	_expect(_builder.name_edit.tooltip_text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide" and _builder.status_label.text.is_empty(),
+		"the description is the name's tooltip: %s" % _builder.name_edit.tooltip_text)
 	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING, "no sidewalks with zoning warns: %s" % _builder.warning_label.text)
 	_expect(_builder.zoning_check.disabled and _builder.zoning, "no sidewalks: the Zoning box is disabled, the type's value kept")
 	_expect(not _builder.strip.is_interior(0) and _builder.strip.is_interior(1), "the shoulders are fixed ends")
@@ -443,9 +454,9 @@ func _run() -> void:
 	_expect(_builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
 		"Rust's cost at 100 km/h without sidewalks: %s" % _builder.cost_label.text)
 	_builder.street_lights_check.button_pressed = false
-	_expect(not _builder.street_lights and _builder.status_label.text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
+	_expect(not _builder.street_lights and _builder.name_edit.tooltip_text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
 		and _builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
-		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.status_label.text, _builder.cost_label.text])
+		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.name_edit.tooltip_text, _builder.cost_label.text])
 	_builder.left_sidewalk_check.button_pressed = true
 	_builder.right_sidewalk_check.button_pressed = true
 	_expect(_builder.parts == [SW, BACK, AHEAD, SW], "sidewalks back on: %s" % [_builder.parts])
@@ -498,8 +509,8 @@ func _run() -> void:
 		"the right end alone becomes a shoulder: %s" % [_builder.parts])
 	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 1 and Array(_builder.strip.widths_m) == [1.5, 3.5, 3.5, 0.75],
 		"Rust reads the left side, the strip draws the shoulder: %s" % _builder.strip.widths_m)
-	_expect(is_equal_approx(float(_builder.check.total_m), 9.25) and _builder.status_label.text.contains("sidewalk on the left")
-		and not _builder.status_label.text.contains("no sidewalks"), "the left-only description: %s" % _builder.status_label.text)
+	_expect(is_equal_approx(float(_builder.check.total_m), 9.25) and _builder.name_edit.tooltip_text.contains("sidewalk on the left")
+		and not _builder.name_edit.tooltip_text.contains("no sidewalks"), "the left-only description: %s" % _builder.name_edit.tooltip_text)
 	_expect(_builder.warning_label.text == "No sidewalk on the right: nothing is built on that side",
 		"the warning names the side: %s" % _builder.warning_label.text)
 	_expect(not _builder.zoning_check.disabled, "one sidewalk: the Zoning box works")
@@ -513,9 +524,9 @@ func _run() -> void:
 	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING and _builder.parts == [SH, BACK, AHEAD, SH], "neither side: the road's warning")
 	_builder.right_sidewalk_check.button_pressed = true
 	_expect(_builder.parts == [SH, BACK, AHEAD, SW] and int(_builder.check.sidewalks) == 2
-		and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 1.5] and _builder.status_label.text.contains("sidewalk on the right")
+		and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 1.5] and _builder.name_edit.tooltip_text.contains("sidewalk on the right")
 		and _builder.warning_label.text == "No sidewalk on the left: nothing is built on that side" and _builder.name_edit.text == "1+1 R",
-		"right only: %s / %s" % [_builder.status_label.text, _builder.warning_label.text])
+		"right only: %s / %s" % [_builder.name_edit.tooltip_text, _builder.warning_label.text])
 	_builder.create_button.pressed.emit()
 	await process_frame
 	var right_type := _type_named("1+1 R")
