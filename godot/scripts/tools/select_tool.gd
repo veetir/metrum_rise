@@ -13,8 +13,8 @@
 ## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
 ## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
 ## while that verdict is shown.
-## The selection is drawn by `road_highlight.gdshader`: a faint fill with a glowing outline and
-## chevrons drifting in each road's drawn direction. While the tool is on and nothing is being
+## The selection is drawn by `road_highlight.gdshader`: a faint fill with a glowing outline and,
+## on each vehicle lane, chevrons drifting the way its traffic goes. While the tool is on and nothing is being
 ## dragged, the road under the cursor gets a fainter outline and the pointer becomes a hand, so
 ## it is clear a click picks roads. Only the one hovered road is drawn, rebuilt when it changes:
 ## the cost is one surface probe and one road-index query per frame, whatever the map's size.
@@ -621,9 +621,14 @@ func _rebuild_highlight() -> void:
 	if selected_edges.is_empty():
 		_clear_highlight()
 		return
-	_highlight_mi.mesh = _ribbon_mesh(selected_edges, _highlight_mi)
+	_highlight_mi.mesh = _ribbon_mesh(selected_edges, _highlight_mi, true)
 	if selected_edges.has(_hover_edge):
 		_set_hover(-1)
+
+## Lights the left (`side_bit` 1) or right (2) half of the selected roads, looking along each
+## one's drawn direction, as the parking toggles name them; 0 lights neither.
+func light_side(side_bit: int) -> void:
+	(_highlight_mi.material_override as ShaderMaterial).set_shader_parameter("side_glow", clampi(side_bit, 0, 2))
 
 func _clear_highlight() -> void:
 	show_demolition(PackedVector3Array())
@@ -640,13 +645,18 @@ func _highlight_material(fill: float, glow: float, edge: float, chevrons: float,
 	mat.render_priority = priority
 	return mat
 
-# The mesh for `mi` (whose material gets the width): one ribbon per road along its polyline, mitred at the bends so the outline stays one line:
-# UV.x across (0 left, 1 right in the drawn direction), UV.y in metres along it. The shader's
-# width uniform takes the widest road; on a mixed selection narrower roads get a slightly
-# thicker outline, which reads fine.
-func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D) -> ImmediateMesh:
+# The mesh for `mi` (whose material gets the width): per road, a ribbon along its polyline,
+# mitred at the bends so the outline stays one line, with UV.x across (0 left, 1 right in the
+# drawn direction) and UV.y in metres along it. With `lanes`, each vehicle lane also gets a strip
+# (vertex colour red 1) whose UV.y runs the way its traffic goes, for the shader's chevrons. The
+# shader's width uniform takes the widest road; on a mixed selection narrower roads get a
+# slightly thicker outline, which reads fine.
+func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D, lanes := false) -> ImmediateMesh:
 	var im := ImmediateMesh.new()
 	var widest := 0.0
+	var lane_w := 0.0
+	if lanes:
+		lane_w = simulation_node.get_lane_width()
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 	for edge_idx in edges:
 		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
@@ -654,35 +664,53 @@ func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D) -> ImmediateMesh:
 			continue
 		var half_w: float = simulation_node.get_edge_width(edge_idx) * 0.5 + HIGHLIGHT_PAD_M
 		widest = maxf(widest, half_w * 2.0)
-		var left := PackedVector3Array()
-		var right := PackedVector3Array()
+		var centre := PackedVector3Array()
+		var lateral := PackedVector3Array()
 		var along := PackedFloat32Array()
 		var run := 0.0
 		for i in pts.size():
 			var prev: Vector3 = pts[maxi(i - 1, 0)]
 			var next: Vector3 = pts[mini(i + 1, pts.size() - 1)]
 			var tangent := Vector3(next.x - prev.x, 0.0, next.z - prev.z).normalized()
-			var lateral := Vector3(-tangent.z, 0.0, tangent.x)
+			# The road's right, looking along its drawn direction.
+			var right := Vector3(-tangent.z, 0.0, tangent.x)
 			# Mitre: widen at a bend so the edges stay parallel to both segments (capped).
 			if i > 0 and i < pts.size() - 1:
 				var seg := Vector3(pts[i].x - prev.x, 0.0, pts[i].z - prev.z).normalized()
-				var cos_half := maxf(lateral.dot(Vector3(-seg.z, 0.0, seg.x)), 0.5)
-				lateral /= cos_half
+				right /= maxf(right.dot(Vector3(-seg.z, 0.0, seg.x)), 0.5)
 			if i > 0:
 				run += Vector2(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z).length()
-			var p: Vector3 = pts[i] + Vector3.UP * 0.05
-			left.append(p - lateral * half_w)
-			right.append(p + lateral * half_w)
+			centre.append(pts[i] + Vector3.UP * 0.05)
+			lateral.append(right)
 			along.append(run)
-		for i in pts.size() - 1:
-			var quad := [[left[i], 0.0, along[i]], [right[i], 1.0, along[i]], [right[i + 1], 1.0, along[i + 1]],
-				[left[i], 0.0, along[i]], [right[i + 1], 1.0, along[i + 1]], [left[i + 1], 0.0, along[i + 1]]]
-			for v in quad:
-				im.surface_set_uv(Vector2(v[1], v[2]))
-				im.surface_add_vertex(v[0])
+		_add_strip(im, centre, lateral, along, -half_w, half_w, 1.0, Color.BLACK)
+		if not lanes:
+			continue
+		# Rust's lanes: (offset to the right of the centreline, 1 forward or -1 backward).
+		for lane: Vector2 in simulation_node.get_edge_cross_section(edge_idx).get("lanes", PackedVector2Array()):
+			_add_strip(im, centre, lateral, along, lane.x - lane_w * 0.5, lane.x + lane_w * 0.5, lane.y, Color.RED)
 	im.surface_end()
-	(mi.material_override as ShaderMaterial).set_shader_parameter("width_m", maxf(widest, 1.0))
+	var mat := mi.material_override as ShaderMaterial
+	mat.set_shader_parameter("width_m", maxf(widest, 1.0))
+	if lanes:
+		mat.set_shader_parameter("lane_m", lane_w)
 	return im
+
+# One strip from `from_m` to `to_m` right of the centre line (UV.x 0 to 1), UV.y the distance
+# along times `direction`, in vertex colour `kind`.
+func _add_strip(im: ImmediateMesh, centre: PackedVector3Array, lateral: PackedVector3Array,
+		along: PackedFloat32Array, from_m: float, to_m: float, direction: float, kind: Color) -> void:
+	im.surface_set_color(kind)
+	for i in centre.size() - 1:
+		var a0 := centre[i] + lateral[i] * from_m
+		var a1 := centre[i] + lateral[i] * to_m
+		var b0 := centre[i + 1] + lateral[i + 1] * from_m
+		var b1 := centre[i + 1] + lateral[i + 1] * to_m
+		var ya := along[i] * direction
+		var yb := along[i + 1] * direction
+		for v in [[a0, 0.0, ya], [a1, 1.0, ya], [b1, 1.0, yb], [a0, 0.0, ya], [b1, 1.0, yb], [b0, 0.0, yb]]:
+			im.surface_set_uv(Vector2(v[1], v[2]))
+			im.surface_add_vertex(v[0])
 
 # The road under the cursor, outlined faintly, with a hand pointer. Not while a button is down,
 # a junction is open (its handles own the clicks) or the mouse is over the UI.

@@ -469,8 +469,10 @@ impl SimulationNode {
     /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
     /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
     /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
-    /// these street lights, else empty; zoning is not matched). Empty for an id that is not a
-    /// live edge.
+    /// these street lights, else empty; zoning is not matched), and `lanes` (a
+    /// `PackedVector2Array`, one entry per vehicle lane: its centre's lateral offset in metres,
+    /// positive to the right looking along the road's drawn direction, and its travel direction,
+    /// 1 forward or -1 backward). Empty for an id that is not a live edge.
     #[func]
     pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
         let (mut result, section) = {
@@ -508,6 +510,16 @@ impl SimulationNode {
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
+            // Forward lanes 0.., backward lanes -1.. (`vehicle_lane_offset`'s numbering).
+            let lane_offset = crate::simulation::network::lanes::rebuild::vehicle_lane_offset;
+            let lanes: PackedVector2Array = (0..edge.fwd_lanes as i8)
+                .map(|lane| Vector2::new(lane_offset(edge, lane), 1.0))
+                .chain(
+                    (1..=edge.bkw_lanes as i8)
+                        .map(|lane| Vector2::new(lane_offset(edge, -lane), -1.0)),
+                )
+                .collect();
+            result.set("lanes", lanes);
             (result, (section, speed_kmh, !edge.no_street_lights))
         };
         // The library is matched without the core lock.

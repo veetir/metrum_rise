@@ -18,7 +18,8 @@
 ## refusal (walkway <-> road) shows with its text. The window leads with the selected road (its
 ## thumbnail, name and lanes); "Change road type" unfolds the other types, the verdict and Apply.
 ## Kerbside parking (`PARK-05`) has its own Left and Right toggles under the road, which change only
-## that lane, in place; a refusal shows in the warning line. "No buildings" is disabled on a road
+## that lane, in place; a refusal shows in the warning line. Hovering one lights that half of the
+## selected road. "No buildings" is disabled on a road
 ## with no sidewalk on either side (`ROAD-109`: nothing is built there whatever it says). A type
 ## that would take a sidewalk from under a building's door is refused with that reason. Turn
 ## pockets are edited from the Junction window (`junction_window.gd`, `ROAD-95`).
@@ -154,6 +155,9 @@ func _build_window() -> void:
 		check.text = side[1]
 		UIStyle.set_font_size(check, 13)
 		check.toggled.connect(_on_parking_toggled.bind(side[0]))
+		# Hovering a side lights that half of the selected road, so Left and Right read off it.
+		check.mouse_entered.connect(_light_side.bind(side[0]))
+		check.mouse_exited.connect(_light_side.bind(0))
 		parking_row.add_child(check)
 		_parking_checks[side[0]] = check
 
@@ -234,10 +238,16 @@ func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO
 	_window.show()
 
 func close_window() -> void:
+	_light_side(0)
 	_selected_edges.clear()
 	if _window:
 		_demolish_dialog.hide()
 		_window.hide()
+
+# Lights the selected road's `side_bit` half (PARKING_LEFT or PARKING_RIGHT), or neither for 0.
+func _light_side(side_bit: int) -> void:
+	if _select_tool and _select_tool.has_method("light_side"):
+		_select_tool.light_side(side_bit)
 
 func _close_selection() -> void:
 	if _select_tool:
