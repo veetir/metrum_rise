@@ -51,10 +51,19 @@ func _process(_delta: float) -> void:
 	_last_observed_hour = absolute_hour
 	_refresh_open_windows()
 
-## Opens the inspector for the building at `world_pos`. Inspecting the open building again
-## closes it, unless `toggle` is false (a link to the building), which keeps it open.
-func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle := true) -> bool:
-	var info: Dictionary = simulation_node.get_building_info_at(world_pos.x, world_pos.z)
+## Opens the inspector for the building at `world_pos`: with `click`, the building whose
+## footprint holds it (`pick_building_at`; nothing on a road or bare ground), otherwise the
+## building whose lot center it is (a link). Inspecting the open building again closes it,
+## unless `toggle` is false (a link to the building), which keeps it open.
+func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle := true, click := true) -> bool:
+	var info := {}
+	if click:
+		# A click inspects the building it lands on, never the nearest one beside it.
+		var center = simulation_node.pick_building_at(world_pos.x, world_pos.z)
+		if center != null:
+			info = simulation_node.get_building_info_at(center.x, center.y)
+	else:
+		info = simulation_node.get_building_info_at(world_pos.x, world_pos.z)
 	if info.is_empty():
 		close_window()
 		return false

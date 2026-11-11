@@ -41,6 +41,8 @@ class SimulationStub extends Node3D:
 	func get_road_types() -> Dictionary:
 		return {"speeds": {}, "types": [{"id": "test:road", "name": "Test road", "usable": true,
 			"fwd_lanes": 1, "bkw_lanes": 1, "speed_kmh": 50, "parts": []}]}
+	func pick_building_at(_x: float, _z: float) -> Variant:
+		return null
 	func get_building_info_at(_x: float, _z: float) -> Dictionary:
 		return {}
 

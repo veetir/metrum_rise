@@ -749,7 +749,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 # A home, work or destination link in the agent inspector: open that building, never toggle it.
 func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> void:
 	if building_inspector:
-		building_inspector.try_inspect(world_pos, screen_pos, false)
+		building_inspector.try_inspect(world_pos, screen_pos, false, false)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:

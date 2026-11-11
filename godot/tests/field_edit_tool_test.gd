@@ -49,6 +49,8 @@ class SimulationStub extends Node3D:
 		return hit
 	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
 		return hit
+	func pick_building_at(x: float, _z: float) -> Variant:
+		return Vector2(0.0 if x < 50.0 else 100.0, 0.0)
 	func get_building_info_at(x: float, _z: float) -> Dictionary:
 		# Two houses: one centred at the origin and one 100 m east.
 		return {"zone_type": "residential", "center_x": 0.0 if x < 50.0 else 100.0, "center_z": 0.0}
