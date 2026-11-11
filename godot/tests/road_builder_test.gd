@@ -124,6 +124,21 @@ func _remove_in_popup() -> void:
 	_builder.part_popup.remove_button.pressed.emit()
 	await process_frame
 
+# Clicks the left (`left`) or right end of the strip when its sidewalk is not already `on`.
+func _set_sidewalk(left: bool, on: bool) -> void:
+	if _builder.has_sidewalk(left) != on:
+		_click(_builder.strip.part_rect(0 if left else _builder.parts.size() - 1).get_center())
+
+# Rust's carriageway and total widths of the layout.
+func _widths_are(carriageway_m: float, total_m: float) -> bool:
+	return is_equal_approx(float(_builder.check.carriageway_m), carriageway_m) \
+		and is_equal_approx(float(_builder.check.total_m), total_m)
+
+# The cost line as read, the money signs (images) left out: "15 / m, upkeep 0.10 / m / day".
+func _cost() -> String:
+	var words: PackedStringArray = _builder.cost_label.get_parsed_text().split(" ", false)
+	return " ".join(words).replace(" · ", ", ")
+
 func _click_slot(slot: int) -> void:
 	_click(_builder.strip.slot_position(slot))
 
@@ -217,17 +232,22 @@ func _run() -> void:
 	_expect(_builder.name_edit.text == String(_builder.check.suggested_name) and not _builder.name_edit.text.is_empty(),
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
 	_expect(_builder.tiles.size() == 6, "six part tiles")
-	_expect(_builder.left_sidewalk_check.button_pressed and _builder.right_sidewalk_check.button_pressed
+	_expect(_builder.has_sidewalk(true) and _builder.has_sidewalk(false)
 		and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
 		and _builder.speed_row.visible and _builder.street_lights_check.button_pressed and _builder.street_lights,
 		"a new type has sidewalks, 50 km/h, zoning and street lights")
-	_expect(_builder.cost_label.text == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
-		"Rust's cost of the 2-Lane Road: %s" % _builder.cost_label.text)
+	_expect(_cost() == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
+		"Rust's cost of the 2-Lane Road: %s" % _cost())
 
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
 	await _click_part(1)
 	var popup = _builder.part_popup
 	_expect(popup.visible and _builder._popup_index == 1 and not popup.median_controls.visible, "a lane's popup: %d" % _builder._popup_index)
+	await _click_part(1)
+	_expect(not popup.visible and _builder._popup_index == -1 and _builder.strip.selected_part == -1,
+		"a second click on the part closes its popup")
+	await _click_part(1)
+	_expect(popup.visible and _builder._popup_index == 1, "a third click opens it again")
 	await _remove_in_popup()
 	await _click_part(1)
 	_expect(popup.visible and _builder._popup_index == 1 and bool(_builder.parts[1].forward),
@@ -236,8 +256,11 @@ func _run() -> void:
 	_expect(_builder.parts == [SW, SW], "the popup removed both lanes: %s" % [_builder.parts])
 	_expect(not _builder.strip.valid and _builder.create_button.disabled and _builder.status_label.text == "A road needs at least one car lane",
 		"bare sidewalks are refused: %s" % _builder.status_label.text)
+	# A click on an end turns its sidewalk off and on again, without a popup.
 	_click(_builder.strip.part_rect(0).get_center())
-	_expect(not popup.visible, "a sidewalk has no popup")
+	_expect(not popup.visible and _builder.parts == [SH, SW], "a click on the left sidewalk removes it: %s" % [_builder.parts])
+	_click(_builder.strip.part_rect(0).get_center())
+	_expect(_builder.parts == [SW, SW], "a second click gives it back: %s" % [_builder.parts])
 	_click_slot(1)
 	_tile(TILE_BACK)
 	_tile(TILE_GRASS)
@@ -246,7 +269,7 @@ func _run() -> void:
 	_expect(_builder.strip.valid and _lanes() == "1 + 1", "the built layout is 1 + 1: %s" % _lanes())
 	var widths: PackedFloat32Array = _builder.check.part_widths_m
 	_expect(Array(widths) == [1.5, 3.5, grass_m, 3.5, 1.5], "Rust's part widths: %s" % widths)
-	_expect(_builder.widths_label.text == "Road %.1f m\nTotal %.1f m" % [7.0 + grass_m, 10.0 + grass_m], "the widths: %s" % _builder.widths_label.text)
+	_expect(_widths_are(7.0 + grass_m, 10.0 + grass_m), "the widths: %s / %s" % [_builder.check.carriageway_m, _builder.check.total_m])
 	for px in _builder.strip._ws:
 		_expect(px >= _builder.strip.MIN_PART_PX, "every part is at least 24 px: %.1f" % px)
 	_expect(_builder.strip._ws[1] > _builder.strip._ws[0], "the strip is to scale: a lane wider than a sidewalk")
@@ -274,7 +297,7 @@ func _run() -> void:
 	_drag_part(2, 1)
 	_expect(_builder.parts == [SW, PARK, BACK, grass, AHEAD, SW] and _builder.strip.valid and int(_builder.check.parking) == 1,
 		"parking at the left kerb: %s" % [_builder.parts])
-	_expect(_builder.widths_label.text == "Road %.1f m\nTotal %.1f m" % [9.5 + grass_m, 12.5 + grass_m], "parking widths: %s" % _builder.widths_label.text)
+	_expect(_widths_are(9.5 + grass_m, 12.5 + grass_m), "parking widths: %s / %s" % [_builder.check.carriageway_m, _builder.check.total_m])
 	_drag_part_off(1)
 	_expect(_builder.parts == built, "parking dragged off: %s" % [_builder.parts])
 	# A clicked Parking tile always lands at a kerb: the selected slot's side, the other kerb when
@@ -425,12 +448,12 @@ func _run() -> void:
 	# Attributes: both sidewalks off (shoulders drawn), the car-only warning, the Speed stepper
 	# with zoning off once at 80 km/h, Rust's speed refusal and cost line.
 	await _open()
-	_builder.left_sidewalk_check.button_pressed = false
-	_builder.right_sidewalk_check.button_pressed = false
+	_set_sidewalk(true, false)
+	_set_sidewalk(false, false)
 	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and _builder.rust_parts() == [BACK, AHEAD], "no sidewalks: shoulder ends, not parts: %s" % [_builder.parts])
 	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 0 and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 0.75],
 		"the strip draws 0.75 m shoulders: %s" % _builder.strip.widths_m)
-	_expect(_builder.widths_label.text == "Road 7.0 m\nTotal 8.5 m", "the widths without sidewalks: %s" % _builder.widths_label.text)
+	_expect(_widths_are(7.0, 8.5), "the widths without sidewalks: %s / %s" % [_builder.check.carriageway_m, _builder.check.total_m])
 	_expect(_builder.name_edit.tooltip_text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide" and _builder.status_label.text.is_empty(),
 		"the description is the name's tooltip: %s" % _builder.name_edit.tooltip_text)
 	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING, "no sidewalks with zoning warns: %s" % _builder.warning_label.text)
@@ -451,17 +474,17 @@ func _run() -> void:
 	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed between 20 and 120 km/h, in steps of 10",
 		"Rust refuses a speed off the grid: %s" % _builder.status_label.text)
 	_builder.speed_box.value = 100
-	_expect(_builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
-		"Rust's cost at 100 km/h without sidewalks: %s" % _builder.cost_label.text)
+	_expect(_cost() == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
+		"Rust's cost at 100 km/h without sidewalks: %s" % _cost())
 	_builder.street_lights_check.button_pressed = false
 	_expect(not _builder.street_lights and _builder.name_edit.tooltip_text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
-		and _builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
-		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.name_edit.tooltip_text, _builder.cost_label.text])
-	_builder.left_sidewalk_check.button_pressed = true
-	_builder.right_sidewalk_check.button_pressed = true
+		and _cost() == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
+		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.name_edit.tooltip_text, _cost()])
+	_set_sidewalk(true, true)
+	_set_sidewalk(false, true)
 	_expect(_builder.parts == [SW, BACK, AHEAD, SW], "sidewalks back on: %s" % [_builder.parts])
-	_builder.left_sidewalk_check.button_pressed = false
-	_builder.right_sidewalk_check.button_pressed = false
+	_set_sidewalk(true, false)
+	_set_sidewalk(false, false)
 	_type_name("Builder Test Highway")
 	_builder.create_button.pressed.emit()
 	await process_frame
@@ -480,8 +503,8 @@ func _run() -> void:
 	# Edit: the type's own attributes load and Save keeps them; an edit suggests nothing.
 	await _open()
 	list.pick(highway_id)
-	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.left_sidewalk_check.button_pressed
-		and not _builder.right_sidewalk_check.button_pressed and int(_builder.speed_box.value) == 100
+	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.has_sidewalk(true)
+		and not _builder.has_sidewalk(false) and int(_builder.speed_box.value) == 100
 		and not _builder.zoning_check.button_pressed and not _builder.street_lights_check.button_pressed, "an edited type loads its attributes")
 	_builder.speed_box.value = 110
 	_builder.create_button.pressed.emit()
@@ -503,9 +526,9 @@ func _run() -> void:
 
 	# One side (`ROAD-107`): each end on its own, the shoulder drawn on the other.
 	await _open()
-	_builder.right_sidewalk_check.button_pressed = false
+	_set_sidewalk(false, false)
 	_expect(_builder.parts == [SW, BACK, AHEAD, SH] and _builder.rust_parts() == [SW, BACK, AHEAD]
-		and _builder.left_sidewalk_check.button_pressed and not _builder.right_sidewalk_check.button_pressed,
+		and _builder.has_sidewalk(true) and not _builder.has_sidewalk(false),
 		"the right end alone becomes a shoulder: %s" % [_builder.parts])
 	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 1 and Array(_builder.strip.widths_m) == [1.5, 3.5, 3.5, 0.75],
 		"Rust reads the left side, the strip draws the shoulder: %s" % _builder.strip.widths_m)
@@ -514,15 +537,15 @@ func _run() -> void:
 	_expect(_builder.warning_label.text == "No sidewalk on the right: nothing is built on that side",
 		"the warning names the side: %s" % _builder.warning_label.text)
 	_expect(not _builder.zoning_check.disabled, "one sidewalk: the Zoning box works")
-	_expect(_builder.name_edit.text == "1+1 L" and _builder.cost_label.text == "13.5 / m, upkeep 0.09 / m / day",
-		"one sidewalk's name and cost: %s / %s" % [_builder.name_edit.text, _builder.cost_label.text])
+	_expect(_builder.name_edit.text == "1+1 L" and _cost() == "13.5 / m, upkeep 0.09 / m / day",
+		"one sidewalk's name and cost: %s / %s" % [_builder.name_edit.text, _cost()])
 	_expect(_builder.strip.is_interior(1) and not _builder.strip.is_interior(3), "the ends stay fixed")
 	_builder.zoning_check.button_pressed = false
 	_expect(_builder.warning_label.text.is_empty(), "no warning without zoning")
 	_builder.zoning_check.button_pressed = true
-	_builder.left_sidewalk_check.button_pressed = false
+	_set_sidewalk(true, false)
 	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING and _builder.parts == [SH, BACK, AHEAD, SH], "neither side: the road's warning")
-	_builder.right_sidewalk_check.button_pressed = true
+	_set_sidewalk(false, true)
 	_expect(_builder.parts == [SH, BACK, AHEAD, SW] and int(_builder.check.sidewalks) == 2
 		and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 1.5] and _builder.name_edit.tooltip_text.contains("sidewalk on the right")
 		and _builder.warning_label.text == "No sidewalk on the left: nothing is built on that side" and _builder.name_edit.text == "1+1 R",
@@ -533,7 +556,7 @@ func _run() -> void:
 	_expect(bool(right_type.get("usable", false)) and int(right_type.get("sidewalks", -1)) == 2 and right_type.get("parts", []) == [BACK, AHEAD, SW],
 		"the right-only type: %s" % right_type)
 	await _open()
-	_builder.right_sidewalk_check.button_pressed = false
+	_set_sidewalk(false, false)
 	_expect(_builder.parts == [SW, BACK, AHEAD, SH], "a new layout again, then left only: %s" % [_builder.parts])
 	_builder.create_button.pressed.emit()
 	await process_frame
@@ -551,9 +574,9 @@ func _run() -> void:
 		"the drawn road reads back as left: %s" % left_section)
 	await _open()
 	list.pick(left_id)
-	_expect(_builder.parts == [SW, BACK, AHEAD, SH] and _builder.left_sidewalk_check.button_pressed and not _builder.right_sidewalk_check.button_pressed,
+	_expect(_builder.parts == [SW, BACK, AHEAD, SH] and _builder.has_sidewalk(true) and not _builder.has_sidewalk(false),
 		"an edited left-only type loads its side: %s" % [_builder.parts])
-	_builder.right_sidewalk_check.button_pressed = true
+	_set_sidewalk(false, true)
 	_builder.create_button.pressed.emit()
 	await process_frame
 	_expect(int(_type(left_id).get("sidewalks", -1)) == 3, "Save writes the new sides")

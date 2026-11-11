@@ -225,10 +225,16 @@ static func _sidewalk_text(sides: int) -> String:
 ## Rust's cost of a type per metre on the ground, "15 / m, upkeep 0.10 / m / day", from its
 ## `build_per_m` and `upkeep_per_m_day` (`get_road_types`, `check_road_layout`).
 static func cost_text(type: Dictionary) -> String:
-	return "%s / m, upkeep %s / m / day" % [
+	var values := cost_values(type)
+	return "%s / m, upkeep %s / m / day" % [values[0], values[1]]
+
+## Rust's build cost per metre and upkeep per metre and day of `type` (or a layout check), as
+## shown: "15" and "0.10".
+static func cost_values(type: Dictionary) -> PackedStringArray:
+	return PackedStringArray([
 		_decimals(float(type.get("build_per_m", 0.0)), 2, 0),
 		_decimals(float(type.get("upkeep_per_m_day", 0.0)), 3, 2),
-	]
+	])
 
 # `value` with at most `most` decimals, trailing zeros dropped down to `least`: 15, 19.2, 3.75;
 # 0.10, 0.128, 0.025.

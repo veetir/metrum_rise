@@ -2,8 +2,9 @@
 
 ## The road builder's part popup (`ROAD-101`), opened by clicking a part in the strip: one row,
 ## the clicked part being highlighted on the strip already. For a median, its style swatches and
-## width (the reusable median controls, compact and without "None"); then move left, move right
-## and remove as arrow and cross icons, named by their tooltips. A view: it reports the player's
+## width (the reusable median controls, compact and without "None"); then move left and move
+## right as arrows and remove as the bulldozer in red (a cross would read as closing the popup),
+## named by their tooltips. A view: it reports the player's
 ## choice through its signals and the builder edits the layout.
 extends PopupPanel
 
@@ -17,10 +18,11 @@ signal remove_requested
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ICON_SIDE := 30.0
+const BULLDOZE := preload("res://assets/ui/icons/bulldoze.svg")
 
 enum Glyph { LEFT, RIGHT, REMOVE }
 
-# A square button drawing its glyph: an arrow, or the remove cross in the alert red.
+# A square button drawing its glyph: an arrow, or the bulldozer in the alert red.
 class GlyphButton extends Button:
 	var glyph := Glyph.LEFT
 
@@ -31,8 +33,8 @@ class GlyphButton extends Button:
 		var c := size * 0.5
 		var r := minf(size.x, size.y) * 0.22
 		if glyph == Glyph.REMOVE:
-			draw_line(c + Vector2(-r, -r), c + Vector2(r, r), colour, 2.2, true)
-			draw_line(c + Vector2(-r, r), c + Vector2(r, -r), colour, 2.2, true)
+			var side := r * 3.6
+			draw_texture_rect(BULLDOZE, Rect2(c - Vector2(side, side) * 0.5, Vector2(side, side)), false, colour)
 			return
 		var dir := -1.0 if glyph == Glyph.LEFT else 1.0
 		var tip := c + Vector2(dir * r * 1.15, 0.0)

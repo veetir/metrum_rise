@@ -7,15 +7,20 @@
 ## sidewalk, or on a side without one the shoulder band), each part's glyph, its surface, its
 ## width, and a dimension line with the whole road's width. An invalid
 ## layout is tinted red. Clicking a slot selects it and clicking a part (not an end) asks for
-## its popup; parts drag along the strip to move, off it to be removed, and the palette's tiles
-## drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures
+## its popup; each end carries a check box in its glyph row, and clicking the end turns its
+## sidewalk on or off (a shoulder). Parts drag along the strip to move, off it to be removed, and
+## the palette's tiles drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures
 ## through its signals; the builder edits the layout and asks Rust's check.
 extends Control
 
 ## The player selected insert slot `slot` (a part inserted there gets index `slot`).
 signal slot_clicked(slot: int)
+## The player pressed interior part `index` (before any open popup closes on the press).
+signal part_pressed(index: int)
 ## The player clicked interior part `index`.
 signal part_clicked(index: int)
+## The player clicked the left (`left`) or right end, to turn its sidewalk on or off.
+signal end_clicked(left: bool)
 ## A palette tile was dropped at slot `slot`.
 signal tile_dropped(part: Dictionary, slot: int)
 ## Interior part `from` was dropped at slot `slot` (the boundary it lands on, before removal).
@@ -53,11 +58,15 @@ var valid := true
 var selected_slot := 1
 ## The part whose popup is open, or -1.
 var selected_part := -1
+## Whether the ends' sidewalks can be turned on and off (not for a footpath).
+var ends_editable := true
 
 # Each part's left edge and width in px, from _layout_parts.
 var _xs := PackedFloat32Array()
 var _ws := PackedFloat32Array()
 var _press_part := -1
+# The end part under the cursor (0 or the last), or -1.
+var _hover_end := -1
 # The slot a drag over the strip would drop at, or -1.
 var _drop_slot := -1
 # The part this strip is dragging, and whether it landed back on the strip.
@@ -154,7 +163,10 @@ func _draw() -> void:
 		var rect := part_rect(index)
 		RoadPartGlyph.draw_surface(self, rect, parts[index])
 		var glyph_x := rect.get_center().x - GLYPH_SIZE * 0.5
-		RoadPartGlyph.draw_glyph(self, Rect2(glyph_x, GLYPH_TOP, GLYPH_SIZE, GLYPH_SIZE), parts[index])
+		if _is_toggle_end(index):
+			_draw_end_toggle(index, rect)
+		else:
+			RoadPartGlyph.draw_glyph(self, Rect2(glyph_x, GLYPH_TOP, GLYPH_SIZE, GLYPH_SIZE), parts[index])
 		var label := _width_text(_metres(index))
 		var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
 		draw_string(font, Vector2(rect.get_center().x - label_width * 0.5, LABEL_TOP + 14.0), label,
@@ -179,6 +191,24 @@ func _draw() -> void:
 	if _drop_slot >= 1:
 		var x := _xs[_drop_slot]
 		draw_line(Vector2(x, SLOT_Y - SLOT_RADIUS), Vector2(x, SURFACE_TOP + SURFACE_HEIGHT + 4.0), ACCENT, 3.0)
+
+# An end's check box, ticked with a sidewalk, centred in the glyph row; the hovered end lights.
+func _draw_end_toggle(index: int, rect: Rect2) -> void:
+	var on := String(parts[index].get("kind", "")) == "sidewalk"
+	var icon := get_theme_icon("checked" if on else "unchecked", "CheckBox")
+	var side := GLYPH_SIZE * 0.75
+	var box := Rect2(rect.get_center().x - side * 0.5, GLYPH_TOP + (GLYPH_SIZE - side) * 0.5, side, side)
+	draw_texture_rect(icon, box, false)
+	if index == _hover_end:
+		draw_rect(rect, Color(1, 1, 1, 0.08))
+		draw_rect(rect.grow(-1.0), Color(1, 1, 1, 0.35), false, 1.0)
+
+# Whether part `index` is an end whose sidewalk the player can turn on or off.
+func _is_toggle_end(index: int) -> bool:
+	if not ends_editable or parts.size() < 2 or (index != 0 and index != parts.size() - 1):
+		return false
+	var kind := String(parts[index].get("kind", ""))
+	return kind == "sidewalk" or kind == "shoulder"
 
 # |<-- 10.0 m -->| under the width labels, the whole road's width.
 func _draw_dimension(font: Font, left: float, right: float) -> void:
@@ -226,6 +256,14 @@ func _slot_under(at: Vector2) -> int:
 	return slot if absf(_xs[slot] - at.x) <= SLOT_RADIUS + 3.0 else -1
 
 func _gui_input(event: InputEvent) -> void:
+	var motion := event as InputEventMouseMotion
+	if motion:
+		var index := part_at(motion.position)
+		var hover := index if _is_toggle_end(index) else -1
+		if hover != _hover_end:
+			_hover_end = hover
+			queue_redraw()
+		return
 	var button := event as InputEventMouseButton
 	if button == null or button.button_index != MOUSE_BUTTON_LEFT:
 		return
@@ -237,10 +275,15 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		_press_part = part_at(button.position)
+		if is_interior(_press_part):
+			part_pressed.emit(_press_part)
 	else:
 		var index := part_at(button.position)
 		if index >= 0 and index == _press_part and is_interior(index):
 			part_clicked.emit(index)
+			accept_event()
+		elif index >= 0 and index == _press_part and _is_toggle_end(index):
+			end_clicked.emit(index == 0)
 			accept_event()
 		_press_part = -1
 
@@ -250,6 +293,11 @@ func _get_tooltip(at_position: Vector2) -> String:
 	var index := part_at(at_position)
 	if index < 0:
 		return ""
+	if _is_toggle_end(index):
+		var side := "left" if index == 0 else "right"
+		if String(parts[index].get("kind", "")) == "sidewalk":
+			return "%s sidewalk · %s m" % [side.capitalize(), _width_text(_metres(index))]
+		return "No %s sidewalk" % side
 	return "%s · %s m" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index))]
 
 func _get_drag_data(at_position: Vector2) -> Variant:
@@ -280,8 +328,9 @@ func _drop_data(at_position: Vector2, data: Variant) -> void:
 		part_moved.emit(int(data.index), slot)
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_MOUSE_EXIT and _drop_slot >= 0:
+	if what == NOTIFICATION_MOUSE_EXIT:
 		_drop_slot = -1
+		_hover_end = -1
 		queue_redraw()
 	elif what == NOTIFICATION_DRAG_END:
 		_drop_slot = -1

@@ -65,6 +65,8 @@ const NEW_LAYOUT := [
 const STATUS_REFUSED := Color(1.0, 0.45, 0.38)
 const STATUS_NAME := Color.YELLOW
 const STATUS_COST := Color(0.85, 0.85, 0.85)
+# The money sign's side in the cost line, in px.
+const MONEY_PX := 15
 # The road's stage, darker than the card so the road reads on it.
 const STAGE_BG := Color(0.0, 0.0, 0.0, 0.28)
 ## The warning for a type without sidewalks that zones (design D1), and per side for a type with
@@ -77,16 +79,13 @@ var library_list: RoadTypeLibraryList
 var strip: RoadBuilderStrip
 var tiles: Array[RoadPartTile] = []
 var part_popup: RoadPartPopup
-var widths_label: Label
 var status_label: Label
-var cost_label: Label
+var cost_label: RichTextLabel
 var warning_label: Label
-var left_sidewalk_check: CheckBox
-var right_sidewalk_check: CheckBox
 var speed_box: SpeedSignPicker
 var speed_row: Control
-var zoning_check: CheckBox
-var street_lights_check: CheckBox
+var zoning_check: Button
+var street_lights_check: Button
 var name_edit: LineEdit
 var cancel_button: Button
 var create_button: Button
@@ -112,6 +111,8 @@ var _median_styles: Dictionary = {}
 var _name_typed := false
 # The part whose popup is open, or -1.
 var _popup_index := -1
+# The part pressed while its own popup was open: its click closes the popup instead.
+var _toggle_off_index := -1
 var _pending_delete: Dictionary = {}
 # Rust's speed grid (`get_road_types().speeds`).
 var _speeds: Dictionary = {}
@@ -220,18 +221,14 @@ func _build_stage() -> Control:
 	strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	strip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	strip.slot_clicked.connect(func(_slot: int): _close_popup())
+	strip.part_pressed.connect(func(index: int):
+		_toggle_off_index = index if part_popup.visible and _popup_index == index else -1)
 	strip.part_clicked.connect(_open_popup)
+	strip.end_clicked.connect(func(left: bool): set_sidewalk(left, not has_sidewalk(left)))
 	strip.tile_dropped.connect(insert_part)
 	strip.part_moved.connect(move_part)
 	strip.part_dragged_out.connect(remove_part)
 	stage.add_child(strip)
-	# Over the stage's top-right corner (a PanelContainer stacks its children).
-	widths_label = _label(stage, 12)
-	widths_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	widths_label.size_flags_horizontal = Control.SIZE_SHRINK_END
-	widths_label.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	widths_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	widths_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	return stage
 
 # `content` in a rounded well, `pad` px inside.
@@ -270,26 +267,40 @@ func _build_tiles() -> Control:
 		tiles.append(tile)
 	return row
 
-# One end's sidewalk checkbox.
-func _sidewalk_check(row: Control, left: bool) -> CheckBox:
-	var side := "left" if left else "right"
-	var check_box := CheckBox.new()
-	check_box.text = "%s sidewalk" % side.capitalize()
-	check_box.focus_mode = Control.FOCUS_NONE
-	check_box.tooltip_text = "A sidewalk on the %s of the direction the road is drawn; without it a 0.75 m shoulder that walkers do not use" % side
-	UIStyle.set_font_size(check_box, 14)
-	check_box.toggled.connect(func(on: bool): set_sidewalk(left, on))
-	row.add_child(check_box)
-	return check_box
+# An icon that toggles a yes / no attribute: lit in the accent when on, dim when off.
+func _icon_toggle(icon_name: String, tip: String) -> Button:
+	var button := Button.new()
+	button.toggle_mode = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.tooltip_text = tip
+	button.icon = load("res://assets/ui/icons/%s.svg" % icon_name) as Texture2D
+	button.expand_icon = true
+	button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.custom_minimum_size = Vector2.ONE * UIStyle.scaled_px(40.0)
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	for state in ["normal", "hover", "pressed", "hover_pressed", "disabled"]:
+		var style := StyleBoxFlat.new()
+		var on := String(state).contains("pressed")
+		style.bg_color = Color(UIStyle.HUD_ACCENT, 0.16) if on else Color(1, 1, 1, 0.05 if state == "hover" else 0.0)
+		style.border_color = Color(UIStyle.HUD_ACCENT, 0.7) if on else Color(1, 1, 1, 0.14)
+		style.set_border_width_all(1)
+		style.set_corner_radius_all(8)
+		style.set_content_margin_all(UIStyle.scaled_px(8.0))
+		button.add_theme_stylebox_override(state, style)
+	for color in ["icon_pressed_color", "icon_hover_pressed_color"]:
+		button.add_theme_color_override(color, UIStyle.HUD_ACCENT)
+	for color in ["icon_normal_color", "icon_hover_color"]:
+		button.add_theme_color_override(color, Color(1, 1, 1, 0.45))
+	button.add_theme_color_override("icon_disabled_color", Color(1, 1, 1, 0.18))
+	return button
 
-# The type's attributes: a sidewalk checkbox per end, Speed, Zoning and Street lights.
+# The type's attributes: Speed, then Zoning and Street lights as icon toggles. The sidewalks are
+# toggled on the strip's ends.
 func _build_attributes() -> Control:
 	# Wraps onto a second row in a narrow window.
 	var row := HFlowContainer.new()
 	row.add_theme_constant_override("h_separation", 18)
 	row.add_theme_constant_override("v_separation", 6)
-	left_sidewalk_check = _sidewalk_check(row, true)
-	right_sidewalk_check = _sidewalk_check(row, false)
 	var speed := HBoxContainer.new()
 	speed.add_theme_constant_override("separation", 6)
 	var label := _label(speed, 14)
@@ -301,22 +312,17 @@ func _build_attributes() -> Control:
 	speed.add_child(speed_box)
 	speed_row = speed
 	row.add_child(speed)
-	zoning_check = CheckBox.new()
-	zoning_check.text = "Zoning"
-	zoning_check.focus_mode = Control.FOCUS_NONE
-	zoning_check.tooltip_text = "Lots and buildings along the road, on a side with a sidewalk; off for roads nothing is built on"
-	UIStyle.set_font_size(zoning_check, 14)
+	var toggles := HBoxContainer.new()
+	toggles.add_theme_constant_override("separation", 6)
+	row.add_child(toggles)
+	zoning_check = _icon_toggle("zoning", "Zoning: lots and buildings along the road, on a side with a sidewalk")
 	zoning_check.toggled.connect(func(on: bool):
 		_zoning_settled = true
 		set_zoning(on))
-	row.add_child(zoning_check)
-	street_lights_check = CheckBox.new()
-	street_lights_check.text = "Street lights"
-	street_lights_check.focus_mode = Control.FOCUS_NONE
-	street_lights_check.tooltip_text = "Lamp posts along the road, lit at night; they cost nothing"
-	UIStyle.set_font_size(street_lights_check, 14)
+	toggles.add_child(zoning_check)
+	street_lights_check = _icon_toggle("street_light", "Street lights: lamp posts along the road, lit at night")
 	street_lights_check.toggled.connect(set_street_lights)
-	row.add_child(street_lights_check)
+	toggles.add_child(street_lights_check)
 	return row
 
 # The type's name as the card's title: a bold field that shows it can be typed in only under
@@ -349,9 +355,17 @@ func _build_name_edit() -> LineEdit:
 func _build_footer() -> Control:
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
-	cost_label = _label(footer, 13)
-	cost_label.add_theme_color_override("font_color", STATUS_COST)
+	# The money sign before both amounts: "(M) 15 / m · upkeep (M) 0.10 / m / day".
+	cost_label = RichTextLabel.new()
+	cost_label.bbcode_enabled = true
+	cost_label.fit_content = true
+	cost_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	cost_label.scroll_active = false
 	cost_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cost_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	cost_label.add_theme_color_override("default_color", STATUS_COST)
+	cost_label.add_theme_font_size_override("normal_font_size", UIStyle.scaled_font_size(13))
+	footer.add_child(cost_label)
 	cancel_button = Button.new()
 	cancel_button.text = "Cancel"
 	cancel_button.focus_mode = Control.FOCUS_NONE
@@ -572,20 +586,22 @@ func _layout_changed() -> void:
 		widths = drawn
 	strip.set_layout(parts, widths, valid)
 	var footpath := _is_footpath()
-	left_sidewalk_check.set_pressed_no_signal(has_sidewalk(true))
-	right_sidewalk_check.set_pressed_no_signal(has_sidewalk(false))
-	left_sidewalk_check.disabled = footpath
-	right_sidewalk_check.disabled = footpath
+	strip.ends_editable = not footpath
 	zoning_check.disabled = not has_sidewalk(true) and not has_sidewalk(false)
 	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
-	widths_label.text = "Road %.1f m\nTotal %.1f m" % [float(check.get("carriageway_m", 0.0)), float(check.get("total_m", 0.0))]
 	if not _name_typed and valid:
 		name_edit.text = String(check.get("suggested_name", ""))
 	if _popup_index >= 0:
 		part_popup.show_part(parts[_popup_index], strip.is_interior(_popup_index - 1),
 			strip.is_interior(_popup_index + 1), _median_styles)
 	_update_actions()
+
+# Rust's cost with the money sign before each amount.
+func _cost_bbcode() -> String:
+	var values := RoadTypeMenu.cost_values(check)
+	var money := "[img=%dx%d]res://assets/ui/icons/money.svg[/img]" % [MONEY_PX, MONEY_PX]
+	return "%s %s / m  ·  upkeep %s %s / m / day" % [money, values[0], money, values[1]]
 
 # Create / Save is enabled when the layout and the name both pass and the library is writable;
 # the status line gives the first reason it is not.
@@ -594,7 +610,7 @@ func _update_actions() -> void:
 	var valid := bool(check.get("is_valid", false))
 	var name_reason: String = _simulation_node.check_road_type_name(name_edit.text, editing_id)
 	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
-	cost_label.text = RoadTypeMenu.cost_text(check) if valid else ""
+	cost_label.text = _cost_bbcode() if valid else ""
 	warning_label.text = _sidewalk_warning() if valid and zoning and not _is_footpath() else ""
 	warning_label.visible = not warning_label.text.is_empty()
 	if not valid:
@@ -680,6 +696,13 @@ func _on_delete_confirmed() -> void:
 	road_types_changed.emit("")
 
 func _open_popup(index: int) -> void:
+	# A second click on the part whose popup was open closes it: the press already hid it.
+	if index == _toggle_off_index:
+		_toggle_off_index = -1
+		_close_popup()
+		strip.selected_part = -1
+		strip.queue_redraw()
+		return
 	_popup_index = index
 	strip.selected_part = index
 	# The slot on the part's kerb side (a centred part's right), so the next clicked tile goes
