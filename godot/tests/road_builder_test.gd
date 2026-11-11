@@ -134,10 +134,12 @@ func _widths_are(carriageway_m: float, total_m: float) -> bool:
 	return is_equal_approx(float(_builder.check.carriageway_m), carriageway_m) \
 		and is_equal_approx(float(_builder.check.total_m), total_m)
 
-# The cost line as read, the money signs (images) left out: "15 / m, upkeep 0.10 / m / day".
+# The cost line as read, the money signs (images) left out: "15 / m, 0.10 / m / day".
 func _cost() -> String:
-	var words: PackedStringArray = _builder.cost_label.get_parsed_text().split(" ", false)
-	return " ".join(words).replace(" · ", ", ")
+	var amounts: PackedStringArray = []
+	for amount in _builder.cost_label.get_parsed_text().split(_builder.COST_GAP):
+		amounts.append(" ".join(amount.split(" ", false)))
+	return ", ".join(amounts)
 
 func _click_slot(slot: int) -> void:
 	_click(_builder.strip.slot_position(slot))
@@ -236,7 +238,7 @@ func _run() -> void:
 		and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
 		and _builder.speed_row.visible and _builder.street_lights_check.button_pressed and _builder.street_lights,
 		"a new type has sidewalks, 50 km/h, zoning and street lights")
-	_expect(_cost() == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
+	_expect(_cost() == "15 / m, 0.10 / m / day" and _builder.warning_label.text.is_empty(),
 		"Rust's cost of the 2-Lane Road: %s" % _cost())
 
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
@@ -474,11 +476,11 @@ func _run() -> void:
 	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed between 20 and 120 km/h, in steps of 10",
 		"Rust refuses a speed off the grid: %s" % _builder.status_label.text)
 	_builder.speed_box.value = 100
-	_expect(_cost() == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
+	_expect(_cost() == "24 / m, 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
 		"Rust's cost at 100 km/h without sidewalks: %s" % _cost())
 	_builder.street_lights_check.button_pressed = false
 	_expect(not _builder.street_lights and _builder.name_edit.tooltip_text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
-		and _cost() == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
+		and _cost() == "24 / m, 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
 		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.name_edit.tooltip_text, _cost()])
 	_set_sidewalk(true, true)
 	_set_sidewalk(false, true)
@@ -537,7 +539,7 @@ func _run() -> void:
 	_expect(_builder.warning_label.text == "No sidewalk on the right: nothing is built on that side",
 		"the warning names the side: %s" % _builder.warning_label.text)
 	_expect(not _builder.zoning_check.disabled, "one sidewalk: the Zoning box works")
-	_expect(_builder.name_edit.text == "1+1 L" and _cost() == "13.5 / m, upkeep 0.09 / m / day",
+	_expect(_builder.name_edit.text == "1+1 L" and _cost() == "13.5 / m, 0.09 / m / day",
 		"one sidewalk's name and cost: %s / %s" % [_builder.name_edit.text, _cost()])
 	_expect(_builder.strip.is_interior(1) and not _builder.strip.is_interior(3), "the ends stay fixed")
 	_builder.zoning_check.button_pressed = false

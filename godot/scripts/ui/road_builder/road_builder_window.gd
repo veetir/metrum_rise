@@ -72,6 +72,8 @@ const STAGE_BG := Color(0.0, 0.0, 0.0, 0.28)
 ## The warning for a type without sidewalks that zones (design D1), and per side for a type with
 ## one (`ROAD-107`), which `CAR_ONLY_SIDE_WARNING` names.
 const NO_SIDEWALK_WARNING := "No sidewalks: nothing is built along this road"
+## The space between the build cost and the upkeep in the cost line; the units tell them apart.
+const COST_GAP := "      "
 const NO_SIDEWALK_SIDE_WARNING := "No sidewalk on the %s: nothing is built on that side"
 
 var window: Window
@@ -602,11 +604,11 @@ func _layout_changed() -> void:
 			strip.is_interior(_popup_index + 1), _median_styles)
 	_update_actions()
 
-# Rust's cost with the money sign before each amount.
+# Rust's build cost per metre and upkeep per metre and day, the money sign before each.
 func _cost_bbcode() -> String:
 	var values := RoadTypeMenu.cost_values(check)
 	var money := "[img=%dx%d]res://assets/ui/icons/money.svg[/img]" % [MONEY_PX, MONEY_PX]
-	return "[center]%s %s / m  ·  upkeep %s %s / m / day[/center]" % [money, values[0], money, values[1]]
+	return "[center]%s %s / m%s%s %s / m / day[/center]" % [money, values[0], COST_GAP, money, values[1]]
 
 # Create / Save is enabled when the layout and the name both pass and the library is writable;
 # the status line gives the first reason it is not.

@@ -296,9 +296,9 @@ func _get_tooltip(at_position: Vector2) -> String:
 	if _is_toggle_end(index):
 		var side := "left" if index == 0 else "right"
 		if String(parts[index].get("kind", "")) == "sidewalk":
-			return "%s sidewalk · %s m" % [side.capitalize(), _width_text(_metres(index))]
+			return "%s sidewalk, %s m" % [side.capitalize(), _width_text(_metres(index))]
 		return "No %s sidewalk" % side
-	return "%s · %s m" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index))]
+	return "%s, %s m" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index))]
 
 func _get_drag_data(at_position: Vector2) -> Variant:
 	var index := part_at(at_position)
