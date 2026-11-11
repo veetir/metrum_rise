@@ -2,9 +2,10 @@
 
 ## The road builder's strip (`ROAD-101`): the layout seen across the road, left to right looking
 ## the way it is drawn, drawn to scale with a floor of MIN_PART_PX per part so a 0.5 m painted
-## median stays clickable. Rows, top to bottom: a "+" slot marker on every boundary a part may be
-## inserted at (between the two ends: each a sidewalk, or on a side without one the shoulder
-## band), each part's glyph, its surface, and its width. An invalid
+## median stays clickable, centred with a strip of verge on each side. Rows, top to bottom: a
+## "+" slot marker on every boundary a part may be inserted at (between the two ends: each a
+## sidewalk, or on a side without one the shoulder band), each part's glyph, its surface, its
+## width, and a dimension line with the whole road's width. An invalid
 ## layout is tinted red. Clicking a slot selects it and clicking a part (not an end) asks for
 ## its popup; parts drag along the strip to move, off it to be removed, and the palette's tiles
 ## drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures
@@ -26,16 +27,20 @@ const RoadPartGlyph = preload("res://scripts/ui/road_builder/road_part_glyph.gd"
 const RoadPartTile = preload("res://scripts/ui/road_builder/road_part_tile.gd")
 ## The narrowest a part is drawn, in px.
 const MIN_PART_PX := 24.0
-## The widest scale, in px per metre (a 3.5 m lane at 84 px).
-const MAX_PX_PER_M := 24.0
-const PAD_X := 12.0
+## The widest scale, in px per metre (a 3.5 m lane at 140 px).
+const MAX_PX_PER_M := 40.0
+## Room left and right of the road for the verge, in px.
+const PAD_X := 28.0
 const SLOT_Y := 10.0
 const SLOT_RADIUS := 8.0
-const GLYPH_TOP := 22.0
-const GLYPH_SIZE := 24.0
-const SURFACE_TOP := 50.0
-const SURFACE_HEIGHT := 56.0
-const LABEL_TOP := 110.0
+const GLYPH_TOP := 24.0
+const GLYPH_SIZE := 28.0
+const SURFACE_TOP := 58.0
+const SURFACE_HEIGHT := 80.0
+const LABEL_TOP := 142.0
+const DIMENSION_Y := 174.0
+const VERGE := Color(0.30, 0.42, 0.24, 0.55)
+const DIMENSION := Color(1, 1, 1, 0.45)
 const INVALID_TINT := Color(0.85, 0.12, 0.10, 0.38)
 const INVALID_BORDER := Color(1.0, 0.35, 0.3)
 const ACCENT := Color(1.0, 0.82, 0.30)
@@ -60,7 +65,7 @@ var _drag_index := -1
 var _dropped_on_strip := false
 
 func _init() -> void:
-	custom_minimum_size = Vector2(0.0, LABEL_TOP + 22.0)
+	custom_minimum_size = Vector2(0.0, DIMENSION_Y + 14.0)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	resized.connect(_relayout)
 
@@ -114,7 +119,10 @@ func _relayout() -> void:
 		if free_m <= 0.0 or floored_px + free_m * px_per_m <= room:
 			break
 		px_per_m = (room - floored_px) / free_m
-	var x := PAD_X
+	var total := 0.0
+	for index in count:
+		total += maxf(MIN_PART_PX, _metres(index) * px_per_m)
+	var x := maxf(PAD_X, (size.x - total) * 0.5)
 	for index in count:
 		_xs[index] = x
 		_ws[index] = maxf(MIN_PART_PX, _metres(index) * px_per_m)
@@ -128,6 +136,20 @@ func _draw() -> void:
 	if parts.is_empty():
 		return
 	var font := get_theme_default_font()
+	var road_left := _xs[0]
+	var road_right := _xs[-1] + _ws[-1]
+	# The verge either side, fading out towards the stage's edges.
+	for side: float in [-1.0, 1.0]:
+		var edge := road_left if side < 0.0 else road_right
+		var reach := minf(PAD_X * 1.6, edge if side < 0.0 else size.x - edge)
+		var steps := 6
+		for step in steps:
+			var t0 := float(step) / steps
+			var t1 := float(step + 1) / steps
+			var x0 := edge + side * reach * t0
+			var x1 := edge + side * reach * t1
+			draw_rect(Rect2(minf(x0, x1), SURFACE_TOP, absf(x1 - x0), SURFACE_HEIGHT),
+				Color(VERGE, VERGE.a * (1.0 - t0)))
 	for index in parts.size():
 		var rect := part_rect(index)
 		RoadPartGlyph.draw_surface(self, rect, parts[index])
@@ -140,7 +162,8 @@ func _draw() -> void:
 		if index > 0:
 			draw_line(Vector2(rect.position.x, SURFACE_TOP), Vector2(rect.position.x, SURFACE_TOP + SURFACE_HEIGHT),
 				Color(0.0, 0.0, 0.0, 0.55), 1.0)
-	var whole := Rect2(_xs[0], SURFACE_TOP, _xs[-1] + _ws[-1] - _xs[0], SURFACE_HEIGHT)
+	var whole := Rect2(road_left, SURFACE_TOP, road_right - road_left, SURFACE_HEIGHT)
+	_draw_dimension(font, road_left, road_right)
 	if not valid:
 		draw_rect(whole, INVALID_TINT)
 		draw_rect(whole, INVALID_BORDER, false, 2.0)
@@ -156,6 +179,24 @@ func _draw() -> void:
 	if _drop_slot >= 1:
 		var x := _xs[_drop_slot]
 		draw_line(Vector2(x, SLOT_Y - SLOT_RADIUS), Vector2(x, SURFACE_TOP + SURFACE_HEIGHT + 4.0), ACCENT, 3.0)
+
+# |<-- 10.0 m -->| under the width labels, the whole road's width.
+func _draw_dimension(font: Font, left: float, right: float) -> void:
+	var total_m := 0.0
+	for metres in widths_m:
+		total_m += metres
+	var y := DIMENSION_Y
+	var text := "%s m" % _width_text(total_m)
+	var text_width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+	var mid := (left + right) * 0.5
+	var gap := text_width * 0.5 + 8.0
+	draw_line(Vector2(left, y - 6.0), Vector2(left, y + 6.0), DIMENSION, 1.0)
+	draw_line(Vector2(right, y - 6.0), Vector2(right, y + 6.0), DIMENSION, 1.0)
+	if mid - gap > left + 4.0:
+		draw_line(Vector2(left, y), Vector2(mid - gap, y), DIMENSION, 1.0)
+		draw_line(Vector2(mid + gap, y), Vector2(right, y), DIMENSION, 1.0)
+	draw_string(font, Vector2(mid - text_width * 0.5, y + 5.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
+		Color(1, 1, 1, 0.8))
 
 # A width with one decimal, or two where one would round it (a 0.75 m shoulder).
 static func _width_text(metres: float) -> String:

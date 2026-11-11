@@ -47,9 +47,11 @@ const RoadPartTile = preload("res://scripts/ui/road_builder/road_part_tile.gd")
 const RoadBuilderStrip = preload("res://scripts/ui/road_builder/road_builder_strip.gd")
 const RoadPartPopup = preload("res://scripts/ui/road_builder/road_part_popup.gd")
 const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_library_list.gd")
+const Card = preload("res://scripts/ui/inspector_card.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 
-const DEFAULT_SIZE := Vector2i(960, 440)
-const MIN_SIZE := Vector2i(760, 420)
+const DEFAULT_SIZE := Vector2i(980, 580)
+const MIN_SIZE := Vector2i(780, 570)
 const SIDEWALK := {"kind": "sidewalk"}
 ## A layout's end without a sidewalk: the roadbed's shoulder band, drawn on the strip, never sent
 ## to Rust.
@@ -63,6 +65,8 @@ const STATUS_REFUSED := Color(1.0, 0.45, 0.38)
 const STATUS_NAME := Color.YELLOW
 const STATUS_READY := Color(0.55, 0.95, 0.55)
 const STATUS_COST := Color(0.85, 0.85, 0.85)
+# The road's stage, darker than the card so the road reads on it.
+const STAGE_BG := Color(0.0, 0.0, 0.0, 0.28)
 ## The warning for a type without sidewalks that zones (design D1), and per side for a type with
 ## one (`ROAD-107`), which `CAR_ONLY_SIDE_WARNING` names.
 const NO_SIDEWALK_WARNING := "No sidewalks: nothing is built along this road"
@@ -125,72 +129,50 @@ func _ready() -> void:
 func _build_window() -> void:
 	window = Window.new()
 	window.title = "Road Builder"
-	window.unresizable = false
 	window.exclusive = false
 	window.visible = false
 	window.close_requested.connect(close)
 	window.window_input.connect(_on_window_input)
+	# The game's card chrome (`inspector_card.gd`): the header drags it, × closes it; the edge
+	# handles below resize it.
+	var card := Card.build(window)
+	window.unresizable = false
 	UIStyle.set_persistent_window_layout(window, "road_builder", DEFAULT_SIZE, MIN_SIZE, get_viewport())
-
-	var body := PanelContainer.new()
-	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	body.add_theme_stylebox_override("panel", UIStyle.window_body_style())
+	HudIcons.set_icon(card["icon"], "road")
+	# Header: "New road type" / "Editing …" over the lane split, with Rust's description (or
+	# its refusal) under it, so the road being built is named at the top.
+	header_label = card["eyebrow"]
+	lanes_label = card["title"]
+	status_label = card["subtitle"]
+	var body: Control = window.get_child(0)
 	# A part dropped anywhere in the window off the strip is removed (the strip's drag end).
 	body.set_drag_forwarding(Callable(), _can_drop_off_strip, func(_at, _data): pass)
-	window.add_child(body)
-	var margin := MarginContainer.new()
-	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, UIStyle.PAD_WINDOW)
-	body.add_child(margin)
+
 	var columns := HBoxContainer.new()
-	columns.add_theme_constant_override("separation", 12)
-	margin.add_child(columns)
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	columns.add_theme_constant_override("separation", 14)
+	card["content"].add_child(columns)
 
 	library_list = RoadTypeLibraryList.new()
 	library_list.type_selected.connect(_on_type_selected)
 	library_list.new_requested.connect(func(): _start(NEW_LAYOUT, "", ""))
 	library_list.duplicate_requested.connect(func(type: Dictionary): _start(type.get("parts", []), "", "", type))
 	library_list.delete_requested.connect(_on_delete_requested)
-	columns.add_child(library_list)
-	columns.add_child(VSeparator.new())
+	columns.add_child(_well(library_list, 6))
 
 	var editor := VBoxContainer.new()
 	editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	editor.add_theme_constant_override("separation", 8)
+	editor.add_theme_constant_override("separation", 10)
 	columns.add_child(editor)
-	header_label = _label(editor, 15)
-	header_label.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	editor.add_child(_build_tiles())
-
-	var strip_row := HBoxContainer.new()
-	strip_row.add_theme_constant_override("separation", 10)
-	editor.add_child(strip_row)
-	strip = RoadBuilderStrip.new()
-	strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	strip.slot_clicked.connect(func(_slot: int): _close_popup())
-	strip.part_clicked.connect(_open_popup)
-	strip.tile_dropped.connect(insert_part)
-	strip.part_moved.connect(move_part)
-	strip.part_dragged_out.connect(remove_part)
-	strip_row.add_child(strip)
-	var summary := VBoxContainer.new()
-	summary.custom_minimum_size.x = 110.0
-	summary.alignment = BoxContainer.ALIGNMENT_CENTER
-	strip_row.add_child(summary)
-	lanes_label = _label(summary, 22)
-	widths_label = _label(summary, 13)
-	editor.add_child(_build_attributes())
-	status_label = _label(editor, 13)
-	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	cost_label = _label(editor, 13)
-	cost_label.add_theme_color_override("font_color", STATUS_COST)
+	editor.add_child(_build_stage())
 	warning_label = _label(editor, 13)
 	warning_label.add_theme_color_override("font_color", STATUS_NAME)
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	editor.add_child(spacer)
+	var parts_caption := _label(editor, 11)
+	parts_caption.text = "Parts · click a + on the road, then a part, or drag a part onto the road"
+	parts_caption.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	editor.add_child(_build_tiles())
+	editor.add_child(_well(_build_attributes(), 8))
 	editor.add_child(_build_footer())
 
 	part_popup = RoadPartPopup.new()
@@ -216,6 +198,47 @@ func _build_window() -> void:
 	WindowResizeHandles.install(window)
 	window.hide()
 
+# The road on its stage: the strip large and centred, the widths in the corner. The stage takes
+# any height the window has to spare, so a taller window shows more road, not empty rows.
+func _build_stage() -> Control:
+	var stage := PanelContainer.new()
+	stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var style := StyleBoxFlat.new()
+	style.bg_color = STAGE_BG
+	style.border_color = Color(1, 1, 1, 0.06)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.set_content_margin_all(12)
+	stage.add_theme_stylebox_override("panel", style)
+	strip = RoadBuilderStrip.new()
+	strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	strip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	strip.slot_clicked.connect(func(_slot: int): _close_popup())
+	strip.part_clicked.connect(_open_popup)
+	strip.tile_dropped.connect(insert_part)
+	strip.part_moved.connect(move_part)
+	strip.part_dragged_out.connect(remove_part)
+	stage.add_child(strip)
+	# Over the stage's top-right corner (a PanelContainer stacks its children).
+	widths_label = _label(stage, 12)
+	widths_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	widths_label.size_flags_horizontal = Control.SIZE_SHRINK_END
+	widths_label.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	widths_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	widths_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	return stage
+
+# `content` in a rounded well, `pad` px inside.
+func _well(content: Control, pad: int) -> PanelContainer:
+	var well := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Card.WELL_BG
+	style.set_corner_radius_all(8)
+	style.set_content_margin_all(pad)
+	well.add_theme_stylebox_override("panel", style)
+	well.add_child(content)
+	return well
+
 func _label(parent: Control, font_size: int) -> Label:
 	var label := Label.new()
 	UIStyle.set_font_size(label, font_size)
@@ -225,6 +248,7 @@ func _label(parent: Control, font_size: int) -> Label:
 # The six part tiles: the lanes by direction, the three medians at their default widths and the
 # kerbside parking lane (`PARK-05`).
 func _build_tiles() -> Control:
+	# One row: the tiles share the width and their names wrap.
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
 	var tile_parts: Array[Dictionary] = [
@@ -235,7 +259,6 @@ func _build_tiles() -> Control:
 	tile_parts.append({"kind": "parking"})
 	for part in tile_parts:
 		var tile := RoadPartTile.new(part)
-		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tile.picked.connect(func(picked: Dictionary): insert_part(picked, _click_slot(picked)))
 		row.add_child(tile)
 		tiles.append(tile)
@@ -255,8 +278,10 @@ func _sidewalk_check(row: Control, left: bool) -> CheckBox:
 
 # The type's attributes: a sidewalk checkbox per end, Speed, Zoning and Street lights.
 func _build_attributes() -> Control:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 18)
+	# Wraps onto a second row in a narrow window.
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("h_separation", 18)
+	row.add_theme_constant_override("v_separation", 6)
 	left_sidewalk_check = _sidewalk_check(row, true)
 	right_sidewalk_check = _sidewalk_check(row, false)
 	var speed := HBoxContainer.new()
@@ -288,13 +313,18 @@ func _build_attributes() -> Control:
 	row.add_child(street_lights_check)
 	return row
 
+# The type's cost from Rust on the left; its name, Cancel and Create on the right.
 func _build_footer() -> Control:
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
+	cost_label = _label(footer, 13)
+	cost_label.add_theme_color_override("font_color", STATUS_COST)
+	cost_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var label := _label(footer, 14)
 	label.text = "Name"
+	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	name_edit = LineEdit.new()
-	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_edit.custom_minimum_size.x = 240.0
 	name_edit.max_length = 40
 	name_edit.placeholder_text = "Road type name"
 	UIStyle.set_font_size(name_edit, 14)
@@ -311,6 +341,7 @@ func _build_footer() -> Control:
 	footer.add_child(cancel_button)
 	create_button = Button.new()
 	create_button.focus_mode = Control.FOCUS_NONE
+	UIStyle.style_primary_button(create_button)
 	UIStyle.set_font_size(create_button, 14)
 	create_button.pressed.connect(create)
 	footer.add_child(create_button)
@@ -557,6 +588,7 @@ func _update_actions() -> void:
 	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
 	cost_label.text = RoadTypeMenu.cost_text(check) if valid else ""
 	warning_label.text = _sidewalk_warning() if valid and zoning and not _is_footpath() else ""
+	warning_label.visible = not warning_label.text.is_empty()
 	if not valid:
 		_status(RoadReasonText.text(check, "This layout cannot be built"), STATUS_REFUSED)
 	elif not _library_writable():
