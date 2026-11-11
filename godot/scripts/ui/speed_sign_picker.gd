@@ -23,14 +23,14 @@ const DISC := UIStyle.SIGN_YELLOW
 const INK := Color(0.06, 0.06, 0.07)
 ## Base height; the width follows from `full_signs`.
 const BASE_HEIGHT := 56.0
-const SLIDE_S := 0.14
+const SLIDE_S := 0.12
 # The chosen sign's swell: up to POP_SCALE larger over POP_IN_S, back over POP_OUT_S.
 const POP_IN_S := 0.07
 const POP_OUT_S := 0.18
-const NUDGE_S := 0.24
+const NUDGE_S := 0.20
 # How far (in slots) the strip leans when scrolled past an end.
-const NUDGE_SLOTS := 0.06
-const POP_SCALE := 0.03
+const NUDGE_SLOTS := 0.03
+const POP_SCALE := 0.015
 # The neighbours' size and opacity next to the chosen sign; a hovered one lights to HOVER_ALPHA.
 const SIDE_SCALE := 0.78
 const SIDE_ALPHA := 0.55
