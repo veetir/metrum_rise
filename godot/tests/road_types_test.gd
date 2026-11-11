@@ -6,7 +6,8 @@
 ## (the same lanes and no median through `add_road_with_snap`); the custom type draws its lanes
 ## and median, read back from the graph; editing the type changes the next stroke only (the
 ## first edge keeps its layout); Road Properties changes a 1 + 1 road to the divided type and
-## Ctrl+Z restores it, and refuses walkway -> road with its text; the drawing panel has no lane
+## Ctrl+Z restores it, and refuses walkway -> road with its text; opened low, unfolding its road types
+## keeps it on screen; the drawing panel has no lane
 ## or median rows; the row fits 1280 x 720 with thirteen custom types in its "Custom roads"
 ## drop-down. Attributes (`ROAD-101`): every built-in sends dev's (50 km/h, sidewalks, zoning,
 ## street lights); a type without sidewalks or street lights at 80 km/h draws an edge with
@@ -235,6 +236,21 @@ func _run() -> void:
 	_input.select_tool.selected_edges = selection
 	_ui.show_road_properties_multi(selection)
 	var window = _ui.road_properties_panel
+	# Opened low on a 1280 x 720 screen, unfolding the road types grows the window, and it moves up
+	# to stay on screen.
+	var unfold_screen := root.size
+	root.size = Vector2i(1280, 720)
+	var screen_height := 720
+	window._show_change(false)
+	await process_frame
+	await process_frame
+	window._window.position.y = screen_height - window._window.size.y - 20
+	window._show_change(true)
+	await process_frame
+	await process_frame
+	_expect(window._window.position.y + window._window.size.y <= screen_height,
+		"the unfolded window stays on screen: bottom %d of %d" % [window._window.position.y + window._window.size.y, screen_height])
+	root.size = unfold_screen
 	var picker: OptionButton = window._type_picker
 	_expect(picker.get_item_text(picker.selected) == "2-Lane Road (50 km/h, 15 / m)", "the window shows the road's type: %s" % picker.get_item_text(picker.selected))
 	var avenue_index := -1

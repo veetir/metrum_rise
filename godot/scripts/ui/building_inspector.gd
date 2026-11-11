@@ -158,9 +158,7 @@ func _fit_window(window: Window, body: Control) -> void:
 		mini(int(wanted.y), int(viewport_size.y * 0.9))
 	)
 	# A taller tab must not hang off the bottom of the screen.
-	var bottom := window.position.y + window.size.y
-	if bottom > viewport_size.y - 12:
-		window.position.y = maxi(40, int(viewport_size.y) - 12 - window.size.y)
+	UIStyle.keep_window_bottom_on_screen(window, get_viewport())
 
 func _close_entry(key: String) -> void:
 	var entry: Dictionary = _open_windows.get(key, {})

@@ -272,6 +272,8 @@ func _fit_content() -> void:
 	var rows := ceili(float(_type_tiles.size()) / float(_type_grid.columns))
 	_type_scroll.custom_minimum_size.y = minf(rows, 2) * 76.0
 	_window.size.y = mini(int(_body.get_combined_minimum_size().y), int(get_viewport().get_visible_rect().size.y * 0.9))
+	# Unfolding the road types grows the window down: it must not hang off the screen.
+	UIStyle.keep_window_bottom_on_screen(_window, get_viewport())
 
 func _place_window_near_cursor(screen_pos: Vector2) -> void:
 	UIStyle.place_window_near_cursor(_window, screen_pos, get_viewport())

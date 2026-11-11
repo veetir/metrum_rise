@@ -47,6 +47,9 @@ const PAD_WINDOW := 12
 const PAD_PANEL := 15
 const PAD_INNER := 8
 const CURSOR_WINDOW_GAP := 40.0
+# The space a window placed or kept on screen leaves above it (the HUD's top bar) and below it.
+const WINDOW_TOP_MARGIN := 40.0
+const WINDOW_BOTTOM_MARGIN := 12.0
 const HUD_STRIP_HEIGHT := 60.0
 const HUD_BUTTON_HEIGHT := 60.0
 const HUD_BOTTOM_MARGIN := 20.0
@@ -196,8 +199,8 @@ static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewpo
 	var viewport_size := viewport.get_visible_rect().size
 	var window_size := Vector2(window.size)
 	var padding := CURSOR_WINDOW_GAP
-	var top_margin := 40.0
-	var bottom_margin := 12.0
+	var top_margin := WINDOW_TOP_MARGIN
+	var bottom_margin := WINDOW_BOTTOM_MARGIN
 	var x := screen_pos.x + padding
 	if x + window_size.x > viewport_size.x - padding:
 		x = screen_pos.x - window_size.x - padding
@@ -207,6 +210,15 @@ static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewpo
 	var max_y := maxf(top_margin, viewport_size.y - window_size.y - bottom_margin)
 	y = clampf(y, top_margin, max_y)
 	window.position = Vector2i(int(round(x)), int(round(y)))
+
+## Moves `window` up when it hangs off the bottom of the screen (a window that grew to its
+## content), keeping the same top and bottom margins as `place_window_near_cursor`.
+static func keep_window_bottom_on_screen(window: Window, viewport: Viewport) -> void:
+	if window == null or viewport == null:
+		return
+	var viewport_height := viewport.get_visible_rect().size.y
+	if window.position.y + window.size.y > viewport_height - WINDOW_BOTTOM_MARGIN:
+		window.position.y = maxi(int(WINDOW_TOP_MARGIN), int(viewport_height - WINDOW_BOTTOM_MARGIN) - window.size.y)
 
 static func set_window_base_size(
 	window: Window,
