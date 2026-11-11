@@ -13,9 +13,17 @@
 ## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
 ## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
 ## while that verdict is shown.
+## The selection is drawn by `road_highlight.gdshader`: a faint fill with a glowing outline and
+## chevrons drifting in each road's drawn direction. While the tool is on and nothing is being
+## dragged, the road under the cursor gets a fainter outline and the pointer becomes a hand, so
+## it is clear a click picks roads. Only the one hovered road is drawn, rebuilt when it changes:
+## the cost is one surface probe and one road-index query per frame, whatever the map's size.
 extends Node3D
 
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
+const RoadHighlightShader := preload("res://assets/materials/road_highlight.gdshader")
+# The highlight runs this far past each kerb, in metres, so the outline frames the road.
+const HIGHLIGHT_PAD_M := 0.8
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var main_ui = $"../MainUI"
@@ -28,6 +36,7 @@ var active: bool = false:
 		active = value
 		if not active:
 			clear_selection()
+			_set_hover(-1)
 
 # Edge Selection
 var selected_edges: Array[int] = []
@@ -36,7 +45,9 @@ var _mouse_pressed: bool = false
 var _last_hovered: int = -1
 
 var _highlight_mi: MeshInstance3D = null
-var _highlight_tween: Tween = null
+# The road under the cursor while nothing is pressed, and its fainter outline.
+var _hover_edge: int = -1
+var _hover_mi: MeshInstance3D = null
 # The Junction window's highlighted road: a strip from the junction over the pocket's length,
 # drawn with the selection highlight's material in its own colour.
 var _pocket_end_mi: MeshInstance3D = null
@@ -61,6 +72,13 @@ var drag_line_mesh: MeshInstance3D
 func _ready():
 	_highlight_mi = MeshInstance3D.new()
 	_highlight_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_highlight_mi.material_override = _highlight_material(0.10, 0.30, 0.95, 0.22, 100)
+	add_child(_highlight_mi)
+	_hover_mi = MeshInstance3D.new()
+	_hover_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_hover_mi.material_override = _highlight_material(0.04, 0.14, 0.55, 0.0, 99)
+	add_child(_hover_mi)
+	# The pocket stretch keeps a plain see-through fill in its own colour.
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.albedo_color = Color(1.0, 1.0, 1.0, 0.45)
@@ -71,8 +89,6 @@ func _ready():
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.no_depth_test = true
 	mat.render_priority = 100
-	_highlight_mi.material_override = mat
-	add_child(_highlight_mi)
 	_pocket_end_mi = MeshInstance3D.new()
 	_pocket_end_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var end_mat := mat.duplicate() as StandardMaterial3D
@@ -193,6 +209,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_delta):
 	if not active: return
+	_update_hover()
 	
 	if not _drag_source.is_empty():
 		_update_drag_line()
@@ -604,39 +621,91 @@ func _rebuild_highlight() -> void:
 	if selected_edges.is_empty():
 		_clear_highlight()
 		return
-	var im := ImmediateMesh.new()
-	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-	for edge_idx in selected_edges:
-		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
-		if pts.size() < 2: continue
-		var half_w: float = simulation_node.get_edge_width(edge_idx) * 0.5 + 1.5
-		for i in range(pts.size() - 1):
-			var a: Vector3 = pts[i];     a.y += 0.03
-			var b: Vector3 = pts[i + 1]; b.y += 0.03
-			var tang: Vector3 = (b - a).normalized()
-			var lat := Vector3(-tang.z, 0.0, tang.x) * half_w
-			var al := a - lat; var ar := a + lat
-			var bl := b - lat; var br := b + lat
-			im.surface_add_vertex(al); im.surface_add_vertex(ar); im.surface_add_vertex(br)
-			im.surface_add_vertex(al); im.surface_add_vertex(br); im.surface_add_vertex(bl)
-	im.surface_end()
-	_highlight_mi.mesh = im
-	if not _highlight_tween or not _highlight_tween.is_running():
-		if _highlight_tween: _highlight_tween.kill()
-		_highlight_tween = create_tween().set_loops().set_parallel(false)
-		var mat := _highlight_mi.material_override as StandardMaterial3D
-		_highlight_tween.tween_property(mat, "emission", Color(1.0, 1.0, 0.0), 0.5)
-		_highlight_tween.tween_property(mat, "emission", Color(1.0, 1.0, 1.0), 0.5)
+	_highlight_mi.mesh = _ribbon_mesh(selected_edges, _highlight_mi)
+	if selected_edges.has(_hover_edge):
+		_set_hover(-1)
 
 func _clear_highlight() -> void:
 	show_demolition(PackedVector3Array())
-	if _highlight_tween:
-		_highlight_tween.kill()
-		_highlight_tween = null
 	if _highlight_mi:
 		_highlight_mi.mesh = null
-		var mat := _highlight_mi.material_override as StandardMaterial3D
-		if mat: mat.emission = Color(1, 1, 1)
+
+func _highlight_material(fill: float, glow: float, edge: float, chevrons: float, priority: int) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = RoadHighlightShader
+	mat.set_shader_parameter("fill_alpha", fill)
+	mat.set_shader_parameter("glow_alpha", glow)
+	mat.set_shader_parameter("edge_alpha", edge)
+	mat.set_shader_parameter("chevron_alpha", chevrons)
+	mat.render_priority = priority
+	return mat
+
+# The mesh for `mi` (whose material gets the width): one ribbon per road along its polyline, mitred at the bends so the outline stays one line:
+# UV.x across (0 left, 1 right in the drawn direction), UV.y in metres along it. The shader's
+# width uniform takes the widest road; on a mixed selection narrower roads get a slightly
+# thicker outline, which reads fine.
+func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D) -> ImmediateMesh:
+	var im := ImmediateMesh.new()
+	var widest := 0.0
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	for edge_idx in edges:
+		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
+		if pts.size() < 2:
+			continue
+		var half_w: float = simulation_node.get_edge_width(edge_idx) * 0.5 + HIGHLIGHT_PAD_M
+		widest = maxf(widest, half_w * 2.0)
+		var left := PackedVector3Array()
+		var right := PackedVector3Array()
+		var along := PackedFloat32Array()
+		var run := 0.0
+		for i in pts.size():
+			var prev: Vector3 = pts[maxi(i - 1, 0)]
+			var next: Vector3 = pts[mini(i + 1, pts.size() - 1)]
+			var tangent := Vector3(next.x - prev.x, 0.0, next.z - prev.z).normalized()
+			var lateral := Vector3(-tangent.z, 0.0, tangent.x)
+			# Mitre: widen at a bend so the edges stay parallel to both segments (capped).
+			if i > 0 and i < pts.size() - 1:
+				var seg := Vector3(pts[i].x - prev.x, 0.0, pts[i].z - prev.z).normalized()
+				var cos_half := maxf(lateral.dot(Vector3(-seg.z, 0.0, seg.x)), 0.5)
+				lateral /= cos_half
+			if i > 0:
+				run += Vector2(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z).length()
+			var p: Vector3 = pts[i] + Vector3.UP * 0.05
+			left.append(p - lateral * half_w)
+			right.append(p + lateral * half_w)
+			along.append(run)
+		for i in pts.size() - 1:
+			var quad := [[left[i], 0.0, along[i]], [right[i], 1.0, along[i]], [right[i + 1], 1.0, along[i + 1]],
+				[left[i], 0.0, along[i]], [right[i + 1], 1.0, along[i + 1]], [left[i + 1], 0.0, along[i + 1]]]
+			for v in quad:
+				im.surface_set_uv(Vector2(v[1], v[2]))
+				im.surface_add_vertex(v[0])
+	im.surface_end()
+	(mi.material_override as ShaderMaterial).set_shader_parameter("width_m", maxf(widest, 1.0))
+	return im
+
+# The road under the cursor, outlined faintly, with a hand pointer. Not while a button is down,
+# a junction is open (its handles own the clicks) or the mouse is over the UI.
+func _update_hover() -> void:
+	var edge_idx := -1
+	if not _mouse_pressed and selected_node == -1 and get_viewport().gui_get_hovered_control() == null:
+		edge_idx = _hovered_edge()
+	if selected_edges.has(edge_idx):
+		edge_idx = -1
+	_set_hover(edge_idx)
+
+func _set_hover(edge_idx: int) -> void:
+	var was := _hover_edge
+	_hover_edge = edge_idx
+	if was == edge_idx:
+		return
+	if _hover_mi:
+		if edge_idx == -1:
+			_hover_mi.mesh = null
+		else:
+			var one: Array[int] = [edge_idx]
+			_hover_mi.mesh = _ribbon_mesh(one, _hover_mi)
+	Input.set_default_cursor_shape(Input.CURSOR_POINTING_HAND if edge_idx != -1 else Input.CURSOR_ARROW)
 
 # ── Junction window (`ROAD-95` turn pockets) ────────────────────────────────
 
