@@ -37,6 +37,7 @@ signal road_types_changed(created_id: String)
 ## Roads palette numbers apply, so 6 closes the builder again.
 signal number_key(digit: int)
 
+const SpeedSignPicker = preload("res://scripts/ui/speed_sign_picker.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
@@ -48,7 +49,7 @@ const RoadPartPopup = preload("res://scripts/ui/road_builder/road_part_popup.gd"
 const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_library_list.gd")
 
 const DEFAULT_SIZE := Vector2i(960, 440)
-const MIN_SIZE := Vector2i(760, 400)
+const MIN_SIZE := Vector2i(760, 420)
 const SIDEWALK := {"kind": "sidewalk"}
 ## A layout's end without a sidewalk: the roadbed's shoulder band, drawn on the strip, never sent
 ## to Rust.
@@ -80,7 +81,7 @@ var cost_label: Label
 var warning_label: Label
 var left_sidewalk_check: CheckBox
 var right_sidewalk_check: CheckBox
-var speed_box: SpinBox
+var speed_box: SpeedSignPicker
 var speed_row: Control
 var zoning_check: CheckBox
 var street_lights_check: CheckBox
@@ -262,13 +263,9 @@ func _build_attributes() -> Control:
 	speed.add_theme_constant_override("separation", 6)
 	var label := _label(speed, 14)
 	label.text = "Speed"
-	speed_box = SpinBox.new()
-	speed_box.suffix = "km/h"
-	speed_box.rounded = true
-	# Wide enough for "120 km/h": a narrower line edit scrolls to the text's end ("0 km/h").
-	speed_box.custom_minimum_size.x = 118.0
-	speed_box.tooltip_text = "The speed limit cars drive at; faster roads cost more and are louder"
-	UIStyle.set_font_size(speed_box.get_line_edit(), 14)
+	# Speed limit signs on Rust's grid: scroll or click a neighbouring sign.
+	speed_box = SpeedSignPicker.new()
+	speed_box.tooltip_text = "The speed limit cars drive at; faster roads cost more and are louder. Scroll or click a sign to change it."
 	speed_box.value_changed.connect(func(value: float): set_speed(int(value)))
 	speed.add_child(speed_box)
 	speed_row = speed
