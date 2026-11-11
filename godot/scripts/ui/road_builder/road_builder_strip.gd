@@ -249,10 +249,8 @@ func _get_tooltip(at_position: Vector2) -> String:
 		return ""
 	var index := part_at(at_position)
 	if index < 0:
-		return "Click a + to choose where a clicked part goes" if _slot_under(at_position) >= 1 else ""
-	var hint := "Click to change, move or remove it; drag it along the road or off it" if is_interior(index) \
-		else RoadPartGlyph.part_hint(parts[index])
-	return "%s, %s m\n%s" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index)), hint]
+		return ""
+	return "%s · %s m" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index))]
 
 func _get_drag_data(at_position: Vector2) -> Variant:
 	var index := part_at(at_position)

@@ -227,10 +227,10 @@ func _run() -> void:
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
 	await _click_part(1)
 	var popup = _builder.part_popup
-	_expect(popup.visible and popup._title.text == "Backward lane" and not popup.median_controls.visible, "a lane's popup: %s" % popup._title.text)
+	_expect(popup.visible and _builder._popup_index == 1 and not popup.median_controls.visible, "a lane's popup: %d" % _builder._popup_index)
 	await _remove_in_popup()
 	await _click_part(1)
-	_expect(popup.visible and _builder._popup_index == 1 and popup._title.text == "Forward lane",
+	_expect(popup.visible and _builder._popup_index == 1 and bool(_builder.parts[1].forward),
 		"the popup opens again on the next part: %s, %d" % [popup.visible, _builder._popup_index])
 	await _remove_in_popup()
 	_expect(_builder.parts == [SW, SW], "the popup removed both lanes: %s" % [_builder.parts])

@@ -49,7 +49,7 @@ static func part_name(part: Dictionary) -> String:
 					return "Paving median"
 	return "Unknown part"
 
-## One line on what the part is, for its tooltip.
+## One short line on what the part is, for its tile's tooltip.
 static func part_hint(part: Dictionary) -> String:
 	match String(part.get("kind", "")):
 		"sidewalk":
@@ -60,16 +60,16 @@ static func part_hint(part: Dictionary) -> String:
 			return "No sidewalk: a shoulder on this side that walkers do not use"
 		"car_lane":
 			if bool(part.get("forward", true)):
-				return "Traffic runs the way the road is drawn (right of the median)"
-			return "Traffic runs against the way the road is drawn (left of the median)"
+				return "Traffic in the direction the road is drawn"
+			return "Traffic against the direction the road is drawn"
 		"median":
 			match int(part.get("style", 0)):
 				PAINTED:
-					return "Painted hatching between the two directions"
+					return "Painted, between the two directions"
 				GRASS:
-					return "A kerbed grass strip between the two directions"
+					return "Kerbed grass, between the two directions"
 				PAVING:
-					return "A kerbed paved strip between the two directions"
+					return "Kerbed paving, between the two directions"
 	return ""
 
 ## The colour the part's surface is drawn in.

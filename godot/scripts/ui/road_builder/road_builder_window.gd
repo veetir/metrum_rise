@@ -20,7 +20,7 @@
 ## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
 ## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
 ## in by clicking a "+" slot and then a tile, or by dragging a tile into the strip; a click on a
-## part opens its popup (median style and width, Move left / right, Remove); parts drag along
+## part opens its popup (median swatches and width, move arrows, remove); parts drag along
 ## the strip and off it. Every change asks Rust's `check_road_layout`; Create is enabled only
 ## when the layout and the name both pass. Esc and Cancel close without writing; Enter creates.
 ## Create and Save write the library, emit `road_types_changed` and close; Delete asks first.
@@ -177,9 +177,6 @@ func _build_window() -> void:
 	warning_label = _label(editor, 13)
 	warning_label.add_theme_color_override("font_color", STATUS_NAME)
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var parts_caption := _label(editor, 11)
-	parts_caption.text = "Parts · click a + on the road, then a part, or drag a part onto the road"
-	parts_caption.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	editor.add_child(_build_tiles())
 	editor.add_child(_well(_build_attributes(), 8))
 	editor.add_child(_build_footer())
@@ -689,7 +686,9 @@ func _open_popup(index: int) -> void:
 	# beside it towards that kerb, also after the click on the tile has closed this popup.
 	strip.set_slot(index if 2 * index + 1 < parts.size() else index + 1)
 	strip.queue_redraw()
+	# Anchored from the part down to below the dimension line, so the widths stay readable.
 	var rect := strip.part_rect(index)
+	rect.size.y = strip.DIMENSION_Y + 8.0 - rect.position.y
 	part_popup.show_for(parts[index], strip.is_interior(index - 1), strip.is_interior(index + 1), _median_styles,
 		Rect2(strip.get_screen_position() + rect.position, rect.size))
 
