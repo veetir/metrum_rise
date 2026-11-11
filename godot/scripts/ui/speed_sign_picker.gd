@@ -6,11 +6,10 @@
 ## the edge, so the strip reads as continuing. The mouse wheel steps one limit (down is
 ## faster), a click on a sign left or right of the middle picks it.
 ##
-## It reads as a scrollable control: a recessed track whose ends, half signs included, fade
-## into the panel (a canvas mask on the strip), ‹ › over a faded end while more limits lie that
-## way, and a row of dots under it (one per limit) whose lit pill slides with the value.
-## A step slides the strip with a slight overshoot and pops the new sign; scrolling past the
-## first or last limit nudges the strip and springs it back. A side sign under the cursor lights.
+## The signs sit in a recessed track whose ends, half signs included, fade into the panel (a
+## canvas mask on the strip). A step slides the strip and the chosen sign swells slightly for a
+## moment; scrolling past the first or last limit nudges the strip and springs it back. A side
+## sign under the cursor lights.
 ##
 ## Keeps SpinBox's surface for its callers: `min_value`, `max_value`, `step`, `value` (setting it
 ## emits `value_changed`, as SpinBox does) and `set_value_no_signal`. The limits come from Rust's
@@ -22,17 +21,16 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const RING := Color(0.80, 0.10, 0.14)
 const DISC := UIStyle.SIGN_YELLOW
 const INK := Color(0.06, 0.06, 0.07)
-## Base height, the dots row included; the width follows from `full_signs`.
-const BASE_HEIGHT := 62.0
-# The dots row under the signs, unscaled.
-const DOTS_H := 8.0
-const SLIDE_S := 0.26
-const POP_S := 0.30
+## Base height; the width follows from `full_signs`.
+const BASE_HEIGHT := 56.0
+const SLIDE_S := 0.14
+# The chosen sign's swell: up to POP_SCALE larger over POP_IN_S, back over POP_OUT_S.
+const POP_IN_S := 0.07
+const POP_OUT_S := 0.18
 const NUDGE_S := 0.32
 # How far (in slots) the strip leans when scrolled past an end.
 const NUDGE_SLOTS := 0.22
-# How much larger the new sign is at the start of its pop.
-const POP_SCALE := 0.09
+const POP_SCALE := 0.08
 # The neighbours' size and opacity next to the chosen sign; a hovered one lights to HOVER_ALPHA.
 const SIDE_SCALE := 0.78
 const SIDE_ALPHA := 0.55
@@ -84,19 +82,20 @@ var value := 50.0:
 			value_changed.emit(value)
 
 # Animated draw state, each redrawing on change: the value the strip is drawn at (it eases to
-# `value`, so the signs slide), the new sign's pop (1 → 0) and the end-of-range lean in slots.
+# `value`, so the signs slide), the chosen sign's swell (0 → 1 → 0) and the end-of-range lean
+# in slots.
 var _shown := 50.0:
 	set(v):
 		_shown = v
-		_redraw()
+		queue_redraw()
 var _pop := 0.0:
 	set(v):
 		_pop = v
-		_redraw()
+		queue_redraw()
 var _nudge := 0.0:
 	set(v):
 		_nudge = v
-		_redraw()
+		queue_redraw()
 var _slide_tween: Tween
 var _pop_tween: Tween
 var _nudge_tween: Tween
@@ -104,8 +103,6 @@ var _nudge_tween: Tween
 var _hover_x := NAN
 var _font: Font
 var _track := StyleBoxFlat.new()
-# ‹ › drawn above the mask, so they stay sharp over the faded ends.
-var _ends := Control.new()
 
 func _init() -> void:
 	focus_mode = Control.FOCUS_NONE
@@ -128,14 +125,10 @@ func _init() -> void:
 		_fade_shader.code = FADE_SHADER
 	material = ShaderMaterial.new()
 	(material as ShaderMaterial).shader = _fade_shader
-	_ends.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ends.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_ends.draw.connect(_draw_ends)
-	add_child(_ends)
 	resized.connect(_update_mask)
 	mouse_exited.connect(func():
 		_hover_x = NAN
-		_redraw())
+		queue_redraw())
 
 ## Sets the limit without emitting `value_changed`, and without the slide.
 func set_value_no_signal(v: float) -> void:
@@ -159,7 +152,7 @@ func _gui_input(event: InputEvent) -> void:
 	var motion := event as InputEventMouseMotion
 	if motion:
 		_hover_x = motion.position.x
-		_redraw()
+		queue_redraw()
 		return
 	var button := event as InputEventMouseButton
 	if button == null or not button.pressed:
@@ -186,11 +179,9 @@ func _step_by(slots: int) -> void:
 		_lean(signf(slots))
 
 func _draw() -> void:
-	var dots_h := UIStyle.scaled_px(DOTS_H)
-	var signs := Rect2(Vector2.ZERO, Vector2(size.x, size.y - dots_h))
 	var hovered := not is_nan(_hover_x)
-	_draw_track(signs, hovered)
-	var centre := signs.get_center()
+	_draw_track(Rect2(Vector2.ZERO, size), hovered)
+	var centre := size * 0.5
 	var spacing := _spacing()
 	var radius := _radius()
 	# Slide: while easing, the row is drawn `offset` slots from its rest.
@@ -203,12 +194,13 @@ func _draw() -> void:
 			continue
 		var at := float(i) + offset
 		var near := clampf(1.0 - absf(at), 0.0, 1.0)
-		var scale := lerpf(SIDE_SCALE, 1.0, near) * (1.0 + POP_SCALE * _pop * near)
+		var scale := lerpf(SIDE_SCALE, 1.0, near)
+		if i == 0:
+			scale *= 1.0 + POP_SCALE * _pop
 		var alpha := lerpf(SIDE_ALPHA, 1.0, near)
 		if i != 0 and i == hover_slot:
 			alpha = maxf(alpha, HOVER_ALPHA)
 		_draw_sign(Vector2(centre.x + at * spacing, centre.y), radius * scale, int(kmh), alpha)
-	_draw_dots(Rect2(0, signs.end.y, size.x, dots_h))
 
 # The recessed pill the signs sit in; a touch lighter under the cursor.
 func _draw_track(rect: Rect2, hovered: bool) -> void:
@@ -228,44 +220,6 @@ func _draw_sign(at: Vector2, radius: float, kmh: int, alpha: float) -> void:
 	draw_string(_font, Vector2(at.x - width * 0.5, baseline), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
 		Color(INK, alpha))
 
-# ‹ and › over the faded ends, each only while more limits lie that way (on `_ends`).
-func _draw_ends() -> void:
-	var rect := Rect2(Vector2.ZERO, Vector2(size.x, size.y - UIStyle.scaled_px(DOTS_H)))
-	var hovered := not is_nan(_hover_x)
-	var h := rect.size.y * 0.16
-	var w := h * 0.6
-	var inset := UIStyle.scaled_px(9.0)
-	var color := Color(1, 1, 1, 0.95 if hovered else 0.7)
-	var y := rect.get_center().y
-	var shadow := Color(0, 0, 0, 0.55)
-	for side in [-1.0, 1.0]:
-		var more := value > min_value + 0.5 if side < 0.0 else value < max_value - 0.5
-		if not more:
-			continue
-		var tip_x := rect.position.x + inset if side < 0.0 else rect.end.x - inset
-		var points := PackedVector2Array([Vector2(tip_x - side * w, y - h), Vector2(tip_x, y), Vector2(tip_x - side * w, y + h)])
-		_ends.draw_polyline(points, shadow, UIStyle.scaled_px(4.0), true)
-		_ends.draw_polyline(points, color, UIStyle.scaled_px(2.0), true)
-
-# One dot per limit; a lit pill at the shown value slides along them.
-func _draw_dots(rect: Rect2) -> void:
-	var count := int(roundf((max_value - min_value) / step)) + 1
-	if count < 2:
-		return
-	var gap := UIStyle.scaled_px(5.0)
-	var y := rect.get_center().y
-	var x0 := rect.get_center().x - gap * float(count - 1) * 0.5
-	var dot := UIStyle.scaled_px(1.3)
-	for i in range(count):
-		draw_circle(Vector2(x0 + gap * float(i), y), dot, Color(1, 1, 1, 0.22), true, -1.0, true)
-	var at := x0 + gap * ((_shown - min_value) / step + _nudge * 0.5)
-	var half := UIStyle.scaled_px(3.2)
-	draw_line(Vector2(at - half, y), Vector2(at + half, y), UIStyle.HUD_ACCENT, dot * 2.0, true)
-
-func _redraw() -> void:
-	queue_redraw()
-	_ends.queue_redraw()
-
 func _update_mask() -> void:
 	var mask := material as ShaderMaterial
 	mask.set_shader_parameter("width_px", size.x)
@@ -282,12 +236,11 @@ func _spacing() -> float:
 # Wide enough for the whole signs and half of one more at each edge.
 func _resize() -> void:
 	var height := UIStyle.scaled_px(BASE_HEIGHT)
-	var radius := (height - UIStyle.scaled_px(DOTS_H)) * 0.46
-	custom_minimum_size = Vector2(radius * 2.15 * float(full_signs + 1), height)
-	_redraw()
+	custom_minimum_size = Vector2(height * 0.46 * 2.15 * float(full_signs + 1), height)
+	queue_redraw()
 
 func _radius() -> float:
-	return (size.y - UIStyle.scaled_px(DOTS_H)) * 0.46
+	return size.y * 0.46
 
 func _clamped(v: float) -> float:
 	if step <= 0.0:
@@ -297,20 +250,20 @@ func _clamped(v: float) -> float:
 func _snap() -> void:
 	_set_silently(_clamped(value))
 
-# The slide to `target` with a slight overshoot, and the new sign's pop.
+# The slide to `target`, and the chosen sign's swell.
 func _animate_to(target: float) -> void:
 	if not is_inside_tree():
 		_shown = target
 		return
 	if is_instance_valid(_slide_tween):
 		_slide_tween.kill()
-	_slide_tween = create_tween().set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_slide_tween = create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_slide_tween.tween_property(self, "_shown", target, SLIDE_S)
 	if is_instance_valid(_pop_tween):
 		_pop_tween.kill()
-	_pop = 1.0
-	_pop_tween = create_tween().set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	_pop_tween.tween_property(self, "_pop", 0.0, POP_S)
+	_pop_tween = create_tween()
+	_pop_tween.tween_property(self, "_pop", 1.0, POP_IN_S).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_pop_tween.tween_property(self, "_pop", 0.0, POP_OUT_S).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 
 # Scrolled past an end: lean `direction` slots-ward and spring back.
 func _lean(direction: float) -> void:
