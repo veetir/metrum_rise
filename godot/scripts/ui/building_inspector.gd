@@ -543,8 +543,10 @@ func _fill_power(page: VBoxContainer, info: Dictionary) -> void:
 		_add_power_consumption_bar(page, power_consumed, power_produced)
 	elif info.has("power_staffed_capacity_kw"):
 		_row(page, "Staffed capacity", _electricity_quantity(float(info["power_staffed_capacity_kw"]), "kW", "MW"))
-	_add_section(page, "Own use · last day")
-	_row(page, "Consumption", _electricity_quantity(float(info.get("electricity_consumption_kwh", 0.0)), "kWh", "MWh"))
+	# A heading only to set the building's own use apart from a plant's output above it.
+	if info.get("business_summary", false) and str(info.get("utility_service", "")) == "power":
+		_add_section(page, "Own use")
+	_row(page, "Used yesterday", _electricity_quantity(float(info.get("electricity_consumption_kwh", 0.0)), "kWh", "MWh"))
 	_row(page, "Local supply", _electricity_quantity(float(info.get("electricity_local_kwh", 0.0)), "kWh", "MWh"))
 	_row(page, "Imports", _electricity_quantity(float(info.get("electricity_imported_kwh", 0.0)), "kWh", "MWh"))
 	_row(page, "Cost", _money(float(info.get("electricity_cost", 0.0))))
