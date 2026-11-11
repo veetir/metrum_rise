@@ -277,12 +277,12 @@ fn the_builtins_build_todays_roads_menu() {
 }
 
 #[test]
-fn speeds_are_checked_on_the_10_kmh_grid() {
+fn speeds_are_the_posted_limits() {
     let road = check_layout(&[S, B, F, S]).unwrap();
-    for speed in [20, 50, 80, 120] {
+    for speed in [20, 50, 70, 80, 100, 120] {
         assert_eq!(check_speed_kmh(road, speed), Ok(speed as u16));
     }
-    for speed in [0, 10, 15, 125, 130, -20, 65_556] {
+    for speed in [0, 10, 15, 90, 110, 125, 130, -20, 65_556] {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));

@@ -11,9 +11,10 @@
 ## moment; scrolling past the first or last limit leans the strip that way and eases it back. A side
 ## sign under the cursor lights.
 ##
-## Keeps SpinBox's surface for its callers: `min_value`, `max_value`, `step`, `value` (setting it
-## emits `value_changed`, as SpinBox does) and `set_value_no_signal`. The limits come from Rust's
-## speed grid (`get_road_types().speeds`); the picker does not decide which are allowed.
+## Its callers set `values` (the limits, slowest first), `value` (setting it emits
+## `value_changed`, as SpinBox does) and `set_value_no_signal`; a value off the list snaps to the
+## nearest limit. The limits come from Rust (`get_road_types().speeds.kmh`); the picker does not
+## decide which are allowed. The strip steps one limit at a time, so 80 is next to 100.
 extends Control
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -60,31 +61,25 @@ var full_signs := 1:
 		full_signs = 3 if v >= 3 else 1
 		_resize()
 
-var min_value := 20.0:
+## The limits in km/h, slowest first; never empty.
+var values := PackedInt32Array([20, 30, 40, 50, 60, 70, 80, 100, 120]):
 	set(v):
-		min_value = v
-		_snap()
-var max_value := 120.0:
-	set(v):
-		max_value = v
-		_snap()
-var step := 10.0:
-	set(v):
-		step = maxf(v, 1.0)
-		_snap()
+		values = v if not v.is_empty() else PackedInt32Array([50])
+		_set_silently(_clamped(value))
+		_shown = _index()
 var value := 50.0:
 	set(v):
 		var snapped_value := _clamped(v)
 		var changed := not is_equal_approx(snapped_value, value)
 		value = snapped_value
 		if changed:
-			_animate_to(value)
+			_animate_to(_index())
 			value_changed.emit(value)
 
-# Animated draw state, each redrawing on change: the value the strip is drawn at (it eases to
-# `value`, so the signs slide), the chosen sign's swell (0 → 1 → 0) and the end-of-range lean
+# Animated draw state, each redrawing on change: the slot (index into `values`) the strip is drawn
+# at (it eases to the chosen limit's, so the signs slide), the chosen sign's swell (0 → 1 → 0) and the end-of-range lean
 # in slots.
-var _shown := 50.0:
+var _shown := 3.0:
 	set(v):
 		_shown = v
 		queue_redraw()
@@ -146,7 +141,7 @@ func _set_silently(v: float) -> void:
 	for tween in [_slide_tween, _pop_tween, _nudge_tween]:
 		if is_instance_valid(tween):
 			tween.kill()
-	_shown = v
+	_shown = _index()
 	_pop = 0.0
 	_nudge = 0.0
 
@@ -175,10 +170,11 @@ func _gui_input(event: InputEvent) -> void:
 
 # Steps `slots` limits; at an end of the range the strip leans that way and springs back.
 func _step_by(slots: int) -> void:
-	var before := value
-	value = value + float(slots) * step
-	if is_equal_approx(before, value):
+	var target := clampi(_index() + slots, 0, values.size() - 1)
+	if target == _index():
 		_lean(signf(slots))
+	else:
+		value = values[target]
 
 func _draw() -> void:
 	var hovered := not is_nan(_hover_x)
@@ -187,13 +183,14 @@ func _draw() -> void:
 	var spacing := _spacing()
 	var radius := _radius()
 	# Slide: while easing, the row is drawn `offset` slots from its rest.
-	var offset := (_shown - value) / step - _nudge
+	var chosen := _index()
+	var offset := _shown - float(chosen) - _nudge
 	var hover_slot := _slot_at(_hover_x) if hovered else 0
 	var reach := (full_signs + 1) / 2 + 1
 	for i in range(-reach, reach + 1):
-		var kmh := value + float(i) * step
-		if kmh < min_value - 0.5 or kmh > max_value + 0.5:
+		if chosen + i < 0 or chosen + i >= values.size():
 			continue
+		var kmh := values[chosen + i]
 		var at := float(i) + offset
 		var near := clampf(1.0 - absf(at), 0.0, 1.0)
 		var scale := lerpf(SIDE_SCALE, 1.0, near)
@@ -202,7 +199,7 @@ func _draw() -> void:
 		var alpha := lerpf(SIDE_ALPHA, 1.0, near)
 		if i != 0 and i == hover_slot:
 			alpha = maxf(alpha, HOVER_ALPHA)
-		_draw_sign(Vector2(centre.x + at * spacing, centre.y), radius * scale, int(kmh), alpha)
+		_draw_sign(Vector2(centre.x + at * spacing, centre.y), radius * scale, kmh, alpha)
 
 # The recessed pill the signs sit in; a touch lighter under the cursor.
 func _draw_track(rect: Rect2, hovered: bool) -> void:
@@ -244,15 +241,19 @@ func _resize() -> void:
 func _radius() -> float:
 	return size.y * 0.46
 
+# The listed limit nearest `v`; the slower one on a tie.
 func _clamped(v: float) -> float:
-	if step <= 0.0:
-		return clampf(v, min_value, max_value)
-	return clampf(min_value + roundf((v - min_value) / step) * step, min_value, max_value)
+	var best := values[0]
+	for kmh in values:
+		if absf(kmh - v) < absf(best - v):
+			best = kmh
+	return best
 
-func _snap() -> void:
-	_set_silently(_clamped(value))
+# The chosen limit's slot in `values`.
+func _index() -> int:
+	return maxi(values.find(int(value)), 0)
 
-# The slide to `target`, and the chosen sign's swell.
+# The slide to slot `target`, and the chosen sign's swell.
 func _animate_to(target: float) -> void:
 	if not is_inside_tree():
 		_shown = target

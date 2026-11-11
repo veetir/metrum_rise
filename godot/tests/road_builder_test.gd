@@ -473,14 +473,18 @@ func _run() -> void:
 	_expect(not _builder.zoning and not _builder.zoning_check.button_pressed and _builder.warning_label.text.is_empty(),
 		"a new type reaching 80 km/h turns zoning off")
 	_builder.speed_box.value = 50
-	_builder.speed_box.value = 90
+	_builder.speed_box.value = 100
 	_expect(not _builder.zoning, "only once: zoning stays off")
+	# The signs step through the posted limits: one step up from 80 is 100 (Finland posts no 90).
+	_builder.speed_box.value = 80
+	_builder.speed_box._step_by(1)
+	_expect(_builder.speed_kmh == 100, "a step up from 80 km/h is 100: %d" % _builder.speed_kmh)
 	_builder.zoning_check.button_pressed = true
 	_expect(_builder.zoning and _builder.warning_label.text == _builder.NO_SIDEWALK_WARNING, "zoning on again warns")
 	_builder.zoning_check.button_pressed = false
-	_builder.set_speed(105)
-	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed between 20 and 120 km/h, in steps of 10",
-		"Rust refuses a speed off the grid: %s" % _builder.status_label.text)
+	_builder.set_speed(90)
+	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed must be 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h",
+		"Rust refuses a speed that is not a posted limit: %s" % _builder.status_label.text)
 	_builder.speed_box.value = 100
 	_expect(_cost() == "24 / m, 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
 		"Rust's cost at 100 km/h without sidewalks: %s" % _cost())
@@ -514,16 +518,16 @@ func _run() -> void:
 	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.has_sidewalk(true)
 		and not _builder.has_sidewalk(false) and int(_builder.speed_box.value) == 100
 		and not _builder.zoning_check.button_pressed and not _builder.street_lights_check.button_pressed, "an edited type loads its attributes")
-	_builder.speed_box.value = 110
+	_builder.speed_box.value = 120
 	_builder.create_button.pressed.emit()
 	await process_frame
 	var saved := _type(highway_id)
-	_expect(int(saved.get("speed_kmh", 0)) == 110 and not bool(saved.get("zoning", true)) and not bool(saved.get("sidewalks", true))
+	_expect(int(saved.get("speed_kmh", 0)) == 120 and not bool(saved.get("zoning", true)) and not bool(saved.get("sidewalks", true))
 		and not bool(saved.get("street_lights", true)), "Save keeps the edited type's own attributes: %s" % saved)
 	await _open()
 	list.pick(avenue)
-	_builder.speed_box.value = 90
-	_expect(_builder.zoning and _builder.zoning_check.button_pressed, "an edited type keeps its zoning at 90 km/h")
+	_builder.speed_box.value = 100
+	_expect(_builder.zoning and _builder.zoning_check.button_pressed, "an edited type keeps its zoning at 100 km/h")
 	_builder.library_list.new_button.pressed.emit()
 	_expect(_builder.street_lights and _builder.street_lights_check.button_pressed, "a new type starts with street lights")
 	_builder.zoning_check.button_pressed = false

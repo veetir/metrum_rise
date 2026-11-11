@@ -11770,7 +11770,7 @@ Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), 
 2026-11-03/04. The user's decisions of 2026-11-03 are binding: sidewalks none or both,
 independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
 
-- **Attributes.** A type has `speed_kmh` (20-120 in steps of 10, `speed_out_of_range` off the
+- **Attributes.** A type has `speed_kmh` (a Finnish posted limit, 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, each with its C32 sign; Finland posts no 90 or 110; `speed_out_of_range` off the
   grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (its sides, `ROAD-107`:
   0 none, 1 left, 2 right, 3 both) and `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
   preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
@@ -11972,7 +11972,7 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
 - **Attributes** (round RB3c). Under the strip: **Left sidewalk** and **Right sidewalk**
   (`ROAD-107`: one per end, left and right as the road is drawn; a type without one sends no
   sidewalk part at that end), **Speed** (Finnish speed limit signs on Rust's grid,
-  `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
+  `get_road_types().speeds.kmh`: 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, so 80 steps to 100; hidden for a footpath, which has no
   speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
   speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
   Zoning checkbox; an edited type keeps its own. Under
@@ -13718,13 +13718,15 @@ cosmetic: traffic ignores them.
   Zebras lie on node pieces (`ROAD-68-C` follow-up), so signs stand on the span sections
   extended by the node's section at the zebra's inner edge, where the curb stops curving; the
   sign for traffic leaving the junction is held there, 1.5 m before the crossing centre.
-- **Speed limits (C32-30/40/50/60/80).** As in Finnish towns, where the limit is mostly set for an
+- **Speed limits (C32-20/30/40/50/60/70/80/100/120).** As in Finnish towns, where the limit is mostly set for an
   area, a sign stands only where it tells the driver something: for traffic turning into a street
   at a junction of three or more arms whose limit differs from another road arm there, or, as a
   repeat after the junction, into a street of at least 300 m (120 m for roads of more than two
   lanes). Dead ends and degree-two nodes get none, nor streets under 40 m. The sign stands at least
   25 m past the crossing sign. The value is the nearest C32 to the edge's speed limit, within
-  5 km/h. The first version put a sign at every street start beside the crossing sign, which made
+  5 km/h; every road type speed has its sign, and an older road at 90 or 110 km/h (which Finland
+  does not post) has none. C32-20, -70, -100 and -120 share C32-80's mesh, with their faces in
+  free cells of the same atlas. The first version put a sign at every street start beside the crossing sign, which made
   both unreadable and crowded every corner of a busy junction
   (`screenshots/2026-10-09-roads/signs-zebra-before.png`).
 - **Warnings for awkward roads.** Measured from the edge's physical centreline with the road

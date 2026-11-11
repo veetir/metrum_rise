@@ -210,7 +210,7 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"layout_unknown_part":
 			return "Unknown road part"
 		"speed_out_of_range":
-			return "Speed between 20 and 120 km/h, in steps of 10"
+			return "Speed must be 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h"
 		"name_empty":
 			return "Enter a name"
 		"name_too_long":

@@ -12,17 +12,18 @@
 //! "width_m": float}`, `{"kind": "parking"}` (a kerbside parking lane, `PARK-05`) or
 //! `{"kind": "footpath"}` (a walkway's single part). A car road has a sidewalk part at either
 //! end, at both or at none (`ROAD-107`); a listed type or checked layout gives the sides as
-//! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (20 to 120 in steps
-//! of 10; 0 for a walkway), `zoning` and `street_lights`; the tool draws them through
-//! `set_road_tool_attributes`, and its parking through `set_road_tool_parking`.
+//! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (one of
+//! `SPEEDS_KMH`, the Finnish posted limits; 0 for a walkway), `zoning` and `street_lights`; the
+//! tool draws them through `set_road_tool_attributes`, and its parking through
+//! `set_road_tool_parking`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    DEFAULT_SPEED_KMH, MAX_SPEED_KMH, MIN_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart,
-    RoadType, RoadTypeRefusal, SPEED_STEP_KMH, layout_widths, type_of,
+    DEFAULT_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal,
+    SPEEDS_KMH, layout_widths, type_of,
 };
 use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
@@ -90,9 +91,9 @@ impl SimulationNode {
     /// `builtin`, `usable`, `parts` (see the module docs), `speed_kmh` (0 for a walkway),
     /// `zoning`, `street_lights` and the fields of [`Self::check_road_layout`] but `suggested_name` (so also
     /// `build_per_m` and `upkeep_per_m_day`, 0 for an unusable type): an unusable
-    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` is the speed
-    /// grid every car road type takes, for the road builder's stepper: `min_kmh`, `max_kmh`,
-    /// `step_kmh`, `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
+    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` holds the
+    /// speeds every car road type takes, for the road builder's signs: `kmh` (slowest first),
+    /// `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
     /// suggests zoning off once a new type reaches it; the type's flag decides). `O(types x
     /// parts)`; the file is read once.
     #[func]
@@ -104,9 +105,7 @@ impl SimulationNode {
             }
             let error = library.error();
             let speeds = vdict! {
-                "min_kmh": i64::from(MIN_SPEED_KMH),
-                "max_kmh": i64::from(MAX_SPEED_KMH),
-                "step_kmh": i64::from(SPEED_STEP_KMH),
+                "kmh": PackedInt32Array::from_iter(SPEEDS_KMH.map(i32::from)),
                 "default_kmh": i64::from(DEFAULT_SPEED_KMH),
                 "no_zoning_from_kmh": i64::from(RoadAttributes::speed_kmh_of(
                     crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS,
@@ -126,7 +125,7 @@ impl SimulationNode {
     /// `is_valid`;
     /// `invalid_reason` and `detail` (`part <index>`) when refused (`layout_unknown_part` for a
     /// dictionary that is not a part, else the layout check's keys, then `speed_out_of_range`
-    /// outside 20 to 120 km/h in steps of 10; a walkway's speed is not checked); the
+    /// for a speed not in `SPEEDS_KMH`; a walkway's speed is not checked); the
     /// cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`, `median_style` (0 none),
     /// `median_width`, `parking` (bit 0 left, bit 1 right) and `sidewalks` (the sides, 0 none,
     /// 1 left, 2 right, 3 both; 0 when refused); `speed_kmh` (as checked; 0 for a walkway),

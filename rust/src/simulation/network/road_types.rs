@@ -354,27 +354,21 @@ pub fn layout_widths(parts: &[RoadPart]) -> (Vec<f32>, f32, f32) {
     (widths, total - sidewalks, total + shoulders_m)
 }
 
-/// The slowest speed a road type may set, in km/h.
-pub const MIN_SPEED_KMH: u16 = 20;
-/// The fastest speed a road type may set, in km/h.
-pub const MAX_SPEED_KMH: u16 = 120;
-/// The step between a road type's speeds, in km/h.
-pub const SPEED_STEP_KMH: u16 = 10;
+/// The speed limits a road type may set, in km/h, slowest first: the Finnish posted limits, each
+/// with its C32 sign in the world (Finland posts no 90 or 110).
+pub const SPEEDS_KMH: [u16; 9] = [20, 30, 40, 50, 60, 70, 80, 100, 120];
 /// The speed of every built-in car road, in km/h (`config::DEFAULT_URBAN_ROAD_SPEED_MS`).
 pub const DEFAULT_SPEED_KMH: u16 = 50;
 
-/// A road type's speed for `section` in km/h, or `speed_out_of_range` outside
-/// [`MIN_SPEED_KMH`]..=[`MAX_SPEED_KMH`] or off the [`SPEED_STEP_KMH`] grid. A walkway has no
-/// speed: always 0, whatever is asked. `O(1)`.
+/// A road type's speed for `section` in km/h, or `speed_out_of_range` for one not in
+/// [`SPEEDS_KMH`]. A walkway has no speed: always 0, whatever is asked. `O(1)`.
 pub fn check_speed_kmh(section: RoadCrossSection, speed_kmh: i64) -> Result<u16, &'static str> {
     if section.is_walkway() {
         return Ok(0);
     }
     u16::try_from(speed_kmh)
         .ok()
-        .filter(|speed| {
-            (MIN_SPEED_KMH..=MAX_SPEED_KMH).contains(speed) && speed % SPEED_STEP_KMH == 0
-        })
+        .filter(|speed| SPEEDS_KMH.contains(speed))
         .ok_or("speed_out_of_range")
 }
 

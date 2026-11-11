@@ -116,7 +116,7 @@ var _popup_index := -1
 # The part pressed while its own popup was open: its click closes the popup instead.
 var _toggle_off_index := -1
 var _pending_delete: Dictionary = {}
-# Rust's speed grid (`get_road_types().speeds`).
+# Rust's speed limits (`get_road_types().speeds`).
 var _speeds: Dictionary = {}
 # The player set the Zoning checkbox, or the 80 km/h suggestion was made: no further suggestion.
 var _zoning_settled := false
@@ -455,9 +455,7 @@ func _start(layout: Array, id: String, type_name: String, from: Dictionary = {})
 func _refresh_library() -> void:
 	_library = _simulation_node.get_road_types()
 	_speeds = _library.get("speeds", {})
-	speed_box.min_value = int(_speeds.get("min_kmh", 20))
-	speed_box.max_value = int(_speeds.get("max_kmh", 120))
-	speed_box.step = int(_speeds.get("step_kmh", 10))
+	speed_box.values = PackedInt32Array(_speeds.get("kmh", PackedInt32Array()))
 	library_list.show_library(_library, editing_id)
 
 ## The layout as Rust takes it: `parts` without the shoulder ends.

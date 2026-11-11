@@ -436,8 +436,8 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
         (80.0_f32 * crate::config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(listed[2].speed_kmh, 120);
-    // Speeds off the range or the 10 km/h grid are refused; a walkway's is ignored.
-    for speed in [0, 10, 55, 130, -50, i64::from(u16::MAX) + 50] {
+    // Speeds that are not a posted limit are refused; a walkway's is ignored.
+    for speed in [0, 10, 55, 90, 110, 130, -50, i64::from(u16::MAX) + 50] {
         assert_eq!(
             reason(library.create("Odd", &[S, F, S], speed, true, true)),
             "speed_out_of_range",

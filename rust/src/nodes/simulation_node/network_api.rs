@@ -533,7 +533,7 @@ impl SimulationNode {
     /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes, the
     /// median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
     /// `median_width` metres, kerbside `parking` (`PARK-05`: bit 0 left kerb, bit 1 right), and
-    /// a road type's `speed_kmh` (20 to 120 in steps of 10),
+    /// a road type's `speed_kmh` (one of `road_types::SPEEDS_KMH`),
     /// `sidewalks` (`ROAD-107`: the road's forward frame, codes as in
     /// [`Self::set_road_tool_attributes`]), `zoning` and `street_lights` in place (`ROAD-80`,
     /// `ROAD-101`; pass the road's own values from
