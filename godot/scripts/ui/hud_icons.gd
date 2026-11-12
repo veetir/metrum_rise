@@ -9,6 +9,9 @@ const Tooltip = preload("res://scripts/ui/hud_tooltip.gd")
 const RoadThumbnail = preload("res://scripts/ui/hud_road_thumbnail.gd")
 const ICON_DIR := "res://assets/ui/icons/"
 const TILE_SIZE := 72.0
+## The bottom dock's main tiles, and the share of their face their icons fill.
+const DOCK_SIZE := 50.0
+const DOCK_FACE := 0.74
 const FEEDBACK := &"HUDFeedback"
 
 class IconButton extends Button:
@@ -98,6 +101,16 @@ static func pulse(button: Button) -> void:
 	if feedback:
 		feedback.pulse()
 
+## A dock tile: `DOCK_SIZE`, its icon filling `DOCK_FACE` of the face. A `full_colour` icon is a
+## painted picture (`icons/dock/`) drawn as authored, never tinted; selection shows in the tile's
+## fill and underline only.
+static func dock_button(icon_name: String, title: String, full_colour: bool) -> Button:
+	var button := icon_button(("dock/" if full_colour else "") + icon_name, title, "", DOCK_SIZE)
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.face = DOCK_FACE
+	feedback.full_colour = full_colour
+	return button
+
 ## Tints artwork without tinting the shared shell or selected accent underline.
 static func tint(button: Button, color: Color) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
@@ -153,6 +166,10 @@ class HoverFeedback extends Node:
 	var road: RoadThumbnail
 	var menu_selected := false
 	var number := ""
+	# The share of the face the icon fills; 0 sizes it from the font, as the menus' tiles do.
+	var face := 0.0
+	# A painted icon: drawn untinted, only dimmed when disabled.
+	var full_colour := false
 	var _hovered := false
 	var _down := false
 	var _tween: Tween
@@ -225,12 +242,16 @@ class HoverFeedback extends Node:
 			paint = ink.lightened(0.18) if tinted else accent
 		if button.disabled:
 			paint = Color(UIStyle.TEXT_DIM, 0.4)
+		if full_colour:
+			paint = Color(1, 1, 1, 0.4 if button.disabled else 1.0)
 		if road != null:
 			road.paint(button, rect.grow(-8.0))
 		else:
 			# The scale-aware font size is already refreshed by Accessibility; no settings I/O.
 			# Small buttons (the status row in the menu bar) keep the icon at 3/4 of their face.
 			var side := minf(2.0 * button.get_theme_font_size("font_size"), rect.size.x * 0.75)
+			if face > 0.0:
+				side = rect.size.x * face
 			var box := Rect2(rect.get_center() - Vector2.ONE * side * 0.5, Vector2.ONE * side)
 			button.draw_texture_rect(texture, box, false, paint)
 		var line := accent

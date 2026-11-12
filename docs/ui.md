@@ -253,8 +253,12 @@ collision calculation lifts the bottom toolbar.
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
-The `u01` demo slice uses hand-authored white SVG category/tool icons, one `UIStyle.HUD_ACCENT`,
-72 px road tiles and names on hover. `hud_icons.gd` owns the icon/tile factories and 0.12 s
+The category row's tiles are 50 px (`HudIcons.dock_button`), their icons filling 74 % of the
+face: painted full-colour pictures for Roads, Zoning, Services (a wrench), Industry (a mine
+cart) and Terrain (`assets/ui/icons/dock/`, never tinted, so selection shows in the tile fill
+and underline only), and Bulldoze as the line bulldozer in the alert red the road builder's
+remove button uses. The `u01` demo slice uses hand-authored white SVG tool icons elsewhere, one
+`UIStyle.HUD_ACCENT`, 72 px road tiles and names on hover. `hud_icons.gd` owns the icon/tile factories and 0.12 s
 ease-out hover/press feedback; `hud_tooltip.gd` shows wrapped name/detail/cost cards after
 150 ms. `hud_road_thumbnail.gd` paints Rust's `parts` and `part_widths_m` through the existing
 road-part glyphs. Built-ins occupy a five-column grid; a `+` tile opens the builder and the

@@ -341,12 +341,15 @@ func _build_ui():
 	main_toolbar.add_theme_constant_override("separation", 6)
 	main_toolbar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	# Bindings mirror InputManager._unhandled_input; R/Y select tools, not the category panel.
-	road_main_btn = HudIcons.icon_button("road", "Roads", "")
-	zoning_main_btn = HudIcons.icon_button("zoning", "Zoning", "")
-	services_main_btn = HudIcons.icon_button("services", "Services", "")
-	industry_main_btn = HudIcons.icon_button("industry", "Industry", "")
-	terrain_main_btn = HudIcons.icon_button("terrain", "Terrain", "")
-	bulldoze_btn = HudIcons.icon_button("bulldoze", "Bulldoze", "")
+	# Painted icons for the categories; the bulldozer stays the line drawing in the alert red the
+	# road builder's remove button uses.
+	road_main_btn = HudIcons.dock_button("roads", "Roads", true)
+	zoning_main_btn = HudIcons.dock_button("zoning", "Zoning", true)
+	services_main_btn = HudIcons.dock_button("services", "Services", true)
+	industry_main_btn = HudIcons.dock_button("industry", "Industry", true)
+	terrain_main_btn = HudIcons.dock_button("terrain", "Terrain", true)
+	bulldoze_btn = HudIcons.dock_button("bulldoze", "Bulldoze", false)
+	HudIcons.tint(bulldoze_btn, UIStyle.TEXT_ALERT)
 	for entry in [[road_main_btn, "R"], [zoning_main_btn, "Z"], [terrain_main_btn, "Y"], [bulldoze_btn, "B"]]:
 		HudIcons.set_shortcut(entry[0], entry[1])
 	for button in [road_main_btn, zoning_main_btn, services_main_btn, industry_main_btn, terrain_main_btn]:
