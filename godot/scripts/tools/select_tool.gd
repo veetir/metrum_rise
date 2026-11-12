@@ -607,6 +607,29 @@ func set_selected_edge_parking_side(side_bit: int, enabled: bool) -> Dictionary:
 	_rebuild_highlight()
 	return {"refused": refused, "verdict": first_refusal}
 
+## Gives every selected car road the speed limit `speed_kmh` (one of Rust's posted limits),
+## keeping its lanes, median, parking, sidewalks, zoning and lights, each with its undo record; a
+## walkway has no speed and is left alone. Returns `refused` and `verdict`, the first refusal.
+func set_selected_edge_speed(speed_kmh: int) -> Dictionary:
+	var refused := 0
+	var first_refusal := {}
+	for idx in selected_edges:
+		var section: Dictionary = simulation_node.get_edge_cross_section(idx)
+		var current := int(section.get("speed_kmh", 0))
+		if current == 0 or current == speed_kmh:
+			continue
+		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
+			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)),
+			int(section.get("parking", 0)), speed_kmh, int(section.get("sidewalks", 3)),
+			bool(section.get("zoning", true)), bool(section.get("street_lights", true))]
+		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
+		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):
+			refused += 1
+			if first_refusal.is_empty():
+				first_refusal = verdict
+	_rebuild_highlight()
+	return {"refused": refused, "verdict": first_refusal}
+
 func set_selected_edge_no_building_spawn(enabled: bool) -> void:
 	for idx in selected_edges:
 		simulation_node.set_no_building_spawn(idx, enabled)

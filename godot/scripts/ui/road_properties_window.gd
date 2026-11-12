@@ -19,7 +19,9 @@
 ## thumbnail, name and lanes); "Change road type" unfolds the other types, the verdict and Apply.
 ## Kerbside parking (`PARK-05`) has its own Left and Right toggles under the road, which change only
 ## that lane, in place; a refusal shows in the warning line. Hovering one lights that half of the
-## selected road. "No buildings" is disabled on a road
+## selected road. The speed limit shows as its sign (the first selected car road's; hidden for
+## walkways only); turning the sign changes only the speed of every selected car road, in place,
+## once the picker rests, so a run of scroll steps is one edit and one undo. "No buildings" is disabled on a road
 ## with no sidewalk on either side (`ROAD-109`: nothing is built there whatever it says). A type
 ## that would take a sidewalk from under a building's door is refused with that reason. Turn
 ## pockets are edited from the Junction window (`junction_window.gd`, `ROAD-95`).
@@ -32,6 +34,11 @@ const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
 const Card = preload("res://scripts/ui/inspector_card.gd")
+const SpeedSignPicker = preload("res://scripts/ui/speed_sign_picker.gd")
+# The speed sign's height in the window, and how long the picker rests before its limit applies:
+# scrolling 50 to 100 is one edit and one undo record, not five.
+const SPEED_SIGN_HEIGHT := 40.0
+const SPEED_SETTLE_S := 0.4
 ## The picker's text for a road whose cross-section no type has.
 const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
@@ -68,6 +75,9 @@ var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
 var _parking_checks: Dictionary = {}
+var _speed_row: HBoxContainer
+var _speed_picker: SpeedSignPicker
+var _speed_timer: Timer
 var _demolish_dialog: ConfirmationDialog
 # The select tool's verdict on the picked type (`preview_selected_edge_cross_section`).
 var _verdict: Dictionary = {}
@@ -160,6 +170,27 @@ func _build_window() -> void:
 		check.mouse_exited.connect(_light_side.bind(0))
 		parking_row.add_child(check)
 		_parking_checks[side[0]] = check
+
+	# The speed limit as its sign; turning it changes only the speed, in place.
+	_speed_row = HBoxContainer.new()
+	_speed_row.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(_speed_row)
+	var speed_label := Label.new()
+	speed_label.text = "Speed limit"
+	speed_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	speed_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UIStyle.set_font_size(speed_label, 13)
+	_speed_row.add_child(speed_label)
+	_speed_picker = SpeedSignPicker.new()
+	_speed_picker.base_height = SPEED_SIGN_HEIGHT
+	_speed_picker.tooltip_text = "Scroll or click a side sign to change only the speed limit."
+	_speed_picker.value_changed.connect(func(_kmh: float): _speed_timer.start())
+	_speed_row.add_child(_speed_picker)
+	_speed_timer = Timer.new()
+	_speed_timer.one_shot = true
+	_speed_timer.wait_time = SPEED_SETTLE_S
+	_speed_timer.timeout.connect(_apply_speed)
+	_speed_row.add_child(_speed_timer)
 
 	_change_button = Button.new()
 	_change_button.text = "Change road type"
@@ -284,6 +315,7 @@ func _refresh() -> void:
 
 	_refresh_type()
 	_refresh_parking()
+	_refresh_speed()
 	_no_build_check.disabled = _selected_edges.all(_has_no_sidewalk)
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
@@ -369,7 +401,8 @@ func _refresh_type() -> void:
 	var current_type := _picked_type()
 	_name_label.text = String(current_type.get("name", CUSTOM_LAYOUT))
 	HudIcons.set_road(_current_tile, current_type)
-	_layout_label.text = RoadTypeMenu.describe(first, false)
+	# The speed is the sign row's.
+	_layout_label.text = RoadTypeMenu.describe(first, false, false)
 	_change_button.set_pressed_no_signal(false)
 	_show_change(false)
 	_verdict_label.text = ""
@@ -386,6 +419,29 @@ func _refresh_parking() -> void:
 			func(idx): return (int(_simulation_node.get_edge_cross_section(idx).get("parking", 0)) & bit) != 0
 		)
 		(_parking_checks[bit] as CheckButton).set_pressed_no_signal(on)
+
+# The first selected car road's limit on the sign; hidden when only walkways are selected.
+func _refresh_speed() -> void:
+	_speed_timer.stop()
+	var speed := 0
+	for idx in _selected_edges:
+		speed = int(_simulation_node.get_edge_cross_section(idx).get("speed_kmh", 0))
+		if speed > 0:
+			break
+	_speed_row.visible = speed > 0
+	_speed_picker.values = PackedInt32Array(_speeds.get("kmh", PackedInt32Array()))
+	if speed > 0:
+		_speed_picker.set_value_no_signal(speed)
+
+func _apply_speed() -> void:
+	if _select_tool == null or not _select_tool.has_method("set_selected_edge_speed"):
+		return
+	var result: Dictionary = _select_tool.set_selected_edge_speed(int(_speed_picker.value))
+	_refresh()
+	var refused := int(result.get("refused", 0))
+	if refused > 0:
+		_warning_label.text = RoadReasonText.text(result.get("verdict", {}), "%d road(s) refused the speed limit" % refused)
+		_warning_label.show()
 
 func _on_parking_toggled(enabled: bool, side_bit: int) -> void:
 	if _select_tool == null or not _select_tool.has_method("set_selected_edge_parking_side"):

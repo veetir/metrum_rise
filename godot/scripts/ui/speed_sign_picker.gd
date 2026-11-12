@@ -55,6 +55,12 @@ static var _fade_shader: Shader
 ## Emitted with the new limit (km/h) when the player picks one or `value` is set.
 signal value_changed(value: float)
 
+## The strip's height before UI scaling (`BASE_HEIGHT` in the road builder); the width follows.
+var base_height := BASE_HEIGHT:
+	set(v):
+		base_height = v
+		_resize()
+
 ## Whole signs in the strip: 1 (the chosen one) or 3; a half sign shows at each edge too.
 var full_signs := 1:
 	set(v):
@@ -234,7 +240,7 @@ func _spacing() -> float:
 
 # Wide enough for the whole signs and half of one more at each edge.
 func _resize() -> void:
-	var height := UIStyle.scaled_px(BASE_HEIGHT)
+	var height := UIStyle.scaled_px(base_height)
 	custom_minimum_size = Vector2(height * 0.46 * 2.15 * float(full_signs + 1), height)
 	queue_redraw()
 

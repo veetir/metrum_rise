@@ -192,8 +192,8 @@ const PARKING_TEXT: Array[String] = ["", ", parking left", ", parking right", ",
 ## 17.0 m wide" ("sidewalk on the left" or "... right" for a road with one; or "Footpath, 2.0 m
 ## wide") from Rust's figures for a `get_road_types` entry, a
 ## `check_road_layout` verdict or a road's `get_edge_cross_section`; `with_width` false leaves
-## the width out. A footpath has no speed.
-static func describe(type: Dictionary, with_width: bool = true) -> String:
+## the width out, `with_speed` false the speed (shown as its sign instead). A footpath has no speed.
+static func describe(type: Dictionary, with_width: bool = true, with_speed: bool = true) -> String:
 	var fwd := int(type.get("fwd_lanes", 0))
 	var bkw := int(type.get("bkw_lanes", 0))
 	var text := "Footpath" if fwd + bkw == 0 else "%d + %d lanes" % [fwd, bkw]
@@ -202,7 +202,7 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
 	text += PARKING_TEXT[int(type.get("parking", 0)) & 3]
 	if fwd + bkw > 0:
-		if int(type.get("speed_kmh", 0)) > 0:
+		if with_speed and int(type.get("speed_kmh", 0)) > 0:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))
 		text += _sidewalk_text(int(type.get("sidewalks", SIDEWALKS_BOTH)))
 	if not bool(type.get("street_lights", true)):

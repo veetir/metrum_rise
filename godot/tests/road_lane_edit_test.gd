@@ -13,7 +13,9 @@
 ## verdict that demolishes buildings asks first ("This cannot be undone"): Cancel leaves the road,
 ## Apply changes it. Street lights (`ROAD-101` RB3e): a 2-Lane Road type without them applies in
 ## place at no cost ("no street lights" in the verdict), reads back unlit as that type, and
-## Ctrl+Z lights it again. Writes the road-type library, so it runs only in the isolated profile.
+## Ctrl+Z lights it again. The speed limit (sign row): the picker shows the road's 50; two steps
+## to 70 settle into one in-place edit that keeps the lanes and type's other parts, and one undo
+## brings back 50. Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
 const SelectTool := preload("res://scripts/tools/select_tool.gd")
@@ -135,7 +137,7 @@ func _run() -> void:
 	window.show_for_edges(selection)
 	await process_frame
 	_expect(_picked_text(window) == "2-Lane Road (50 km/h, 15 / m)", "the picker shows the 1 + 1 road's type: %s" % _picked_text(window))
-	_expect(window._layout_label.text == "1 + 1 lanes, 50 km/h", "the window shows 1 + 1 lanes: %s" % window._layout_label.text)
+	_expect(window._layout_label.text == "1 + 1 lanes", "the window shows 1 + 1 lanes: %s" % window._layout_label.text)
 	var content: Control = window._window.get_child(0)
 	# The window's own size is clamped to the headless viewport; its default is what a player gets.
 	_expect(window.DEFAULT_SIZE.y >= int(content.get_combined_minimum_size().y), "the default height holds every row: %d < %d" % [window.DEFAULT_SIZE.y, int(content.get_combined_minimum_size().y)])
@@ -189,7 +191,7 @@ func _run() -> void:
 	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 0, 50, 3, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
-	_expect(window._layout_label.text == "3 + 1 lanes, 50 km/h", "the custom layout's lanes: %s" % window._layout_label.text)
+	_expect(window._layout_label.text == "3 + 1 lanes", "the custom layout's lanes: %s" % window._layout_label.text)
 	await _undo("the custom layout")
 
 	# Kerbside parking (`PARK-05`): the Right box adds a parking lane in place, keeping the lanes.
@@ -204,6 +206,22 @@ func _run() -> void:
 	_expect(right_box.button_pressed and simulation.get_network_render_generation() > generation, "the box stays ticked and the edit publishes")
 	await _undo("the parking lane")
 	_expect(int(simulation.get_edge_cross_section(edge).get("parking", -1)) == 0, "undo removes the parking lane")
+
+	# The speed limit's sign: two quick steps settle into one edit, undone at once.
+	window.show_for_edges(selection)
+	_expect(window._speed_row.visible and int(window._speed_picker.value) == 50, "the sign shows 50: %s" % window._speed_picker.value)
+	generation = simulation.get_network_render_generation()
+	window._speed_picker._step_by(1)
+	window._speed_picker._step_by(1)
+	_expect(int(simulation.get_edge_cross_section(edge).get("speed_kmh", 0)) == 50, "the steps wait for the picker to rest")
+	window._speed_timer.stop()
+	window._apply_speed()
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("speed_kmh", 0)) == 70 and _lanes(edge) == Vector2i(1, 1) and int(section.get("sidewalks", 0)) == 3,
+		"the sign sets only the speed: %s" % section)
+	_expect(simulation.get_network_render_generation() > generation and int(window._speed_picker.value) == 70, "the edit publishes and the sign keeps 70")
+	await _undo("the speed limit")
+	_expect(int(simulation.get_edge_cross_section(edge).get("speed_kmh", 0)) == 50, "one undo brings back 50")
 
 	# A road with one sidewalk (`ROAD-107`): the box keeps its sidewalk sides, and a side without
 	# a sidewalk refuses the parking lane (D4) with its reason.
@@ -301,7 +319,7 @@ func _run() -> void:
 	window._apply_button.pressed.emit()
 	section = simulation.get_edge_cross_section(edge)
 	_expect(int(section.get("sidewalks", -1)) == 1 and String(section.get("road_type", "")) == left_only, "Apply removes one side: %s" % section)
-	_expect(_picked_text(window).begins_with("Lane Edit Left") and window._layout_label.text == "1 + 1 lanes, 50 km/h, sidewalk on the left",
+	_expect(_picked_text(window).begins_with("Lane Edit Left") and window._layout_label.text == "1 + 1 lanes, sidewalk on the left",
 		"the window shows the one-sided road: %s / %s" % [_picked_text(window), window._layout_label.text])
 	_expect(simulation.delete_road_type(left_only).is_empty(), "the left-only type is deleted")
 	window.show_for_edges(selection)
