@@ -238,6 +238,19 @@ func _run() -> void:
 	_expect(tool.mode == VegetationTool.Mode.REMOVE and remove_button.button_pressed, "Remove must update the same mode as E")
 	remove_button.pressed.emit()
 	_expect(tool.mode == VegetationTool.Mode.PLANT and not remove_button.button_pressed, "Remove must toggle back to planting")
+	# Number keys: 1 Raise and lower, 2-6 the categories, 7 Remove. A category's digit opens it,
+	# then steps through its options.
+	var slots := panel.number_slots()
+	_expect(slots.size() == 7 and slots[6][0] == remove_button, "the palette numbers its seven tiles")
+	slots[3][1].call()
+	var flowers := TerrainPanel.group_options("flowers")
+	_expect(panel._open_group == "flowers" and tool.option_index == flowers[0], "3 opens Flowers")
+	slots[3][1].call()
+	_expect(panel._open_group == "flowers" and tool.option_index == flowers[1], "3 again steps to the next flower")
+	slots[6][1].call()
+	_expect(tool.mode == VegetationTool.Mode.REMOVE, "7 is Remove")
+	slots[3][1].call()
+	_expect(tool.mode == VegetationTool.Mode.PLANT and tool.option_index == flowers[1], "the open category's digit leaves Remove first")
 	panel.free()
 
 	manager._activate_tool_logic(InputManager.Tool.VEGETATION, false)

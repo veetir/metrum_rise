@@ -11,6 +11,9 @@
 ## menu only loads them. An option without its file keeps the brush icon, logged on the
 ## `events` debug channel.
 ##
+## Number keys 1-7 press the row's tiles in order (`number_slots`); a category's digit while it is
+## open steps to its next option.
+##
 ## A view with the tools' wiring: a click selects the vegetation tool's option and mode, or the
 ## sculpt tool, through the input manager; the tool's own changes (Shift + wheel cycling, E for
 ## Remove, Esc) come back through its signals and the input manager's `tool_changed`, so the
@@ -69,7 +72,7 @@ func build(input_manager: Node) -> void:
 		categories.add_child(button)
 		_group_buttons[id] = button
 	categories.add_child(VSeparator.new())
-	_remove_button = HudIcons.icon_button("erase", "Remove", "Remove trees, plants and rocks", CATEGORY_TILE)
+	_remove_button = HudIcons.icon_button("uproot", "Remove", "Remove trees, plants and rocks", CATEGORY_TILE)
 	HudIcons.set_shortcut(_remove_button, "E")
 	HudIcons.tint(_remove_button, UIStyle.TEXT_ALERT)
 	HudIcons.set_accent(_remove_button, UIStyle.TEXT_ALERT)
@@ -112,6 +115,32 @@ static func group_options(id: String) -> PackedInt32Array:
 		if VegetationTool.BRUSH_OPTIONS[i].get("group", "") == id:
 			indices.append(i)
 	return indices
+
+## [tile, action] per number key from 1: Raise and lower, the categories, Remove. Each action
+## plays its tile's click.
+func number_slots() -> Array:
+	var slots: Array = [[_sculpt_button, _on_sculpt_pressed]]
+	for group in GROUPS:
+		slots.append([_group_buttons[group[0]], _number_group.bind(group[0])])
+	slots.append([_remove_button, _on_remove_pressed])
+	for slot in slots:
+		var tile: Button = slot[0]
+		var action: Callable = slot[1]
+		slot[1] = func():
+			action.call()
+			HudIcons.pulse(tile)
+	return slots
+
+# A category's digit opens it; while it is open it plants (leaving Remove), and while it is
+# already planting it steps to its next option. A click on the open category's tile closes it.
+func _number_group(id: String) -> void:
+	if not (_options_panel.visible and _open_group == id):
+		_on_group_pressed(id)
+		return
+	if _input_manager.current_tool == InputManager.Tool.VEGETATION and _tool.mode == VegetationTool.Mode.PLANT:
+		var options := group_options(id)
+		_tool.option_index = options[(options.find(_tool.option_index) + 1) % options.size()]
+	_plant()
 
 func _on_sculpt_pressed() -> void:
 	_close_group()

@@ -42,7 +42,7 @@ var road_combined_hbox: HBoxContainer
 var zoning_main_btn: Button
 
 var terrain_main_btn: Button
-var terrain_sub_menu: Control
+var terrain_sub_menu: TerrainPanel
 
 # Road items
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
@@ -1122,7 +1122,7 @@ func _refresh_city_status_display() -> void:
 
 ## Tab, or a click on the demand bars: the city status panel with each zone's growth reasons.
 # Number keys act on the open palette's tiles, each showing its digit at its bottom edge. While
-# Roads or Zoning is open it claims 1-9 (unnumbered digits do nothing); with neither open the
+# Roads, Zoning or Terrain is open it claims 1-9 (unnumbered digits do nothing); with none open the
 # digits keep their global bindings (zone types, terrain overlays).
 var _numbered: Array[Button] = []
 
@@ -1133,6 +1133,8 @@ func handle_number_key(digit: int) -> bool:
 		slots = _road_number_slots()
 	elif zoning_combined_hbox.visible:
 		slots = _zoning_number_slots()
+	elif terrain_sub_menu.visible:
+		slots = terrain_sub_menu.number_slots()
 	else:
 		return false
 	if digit >= 1 and digit <= slots.size():
@@ -1186,15 +1188,16 @@ func _number_zone_type(zone_type: String) -> void:
 	_select_zoning_profile(zone_type, int(Dictionary(profiles[next]).get("runtime_id", 0)))
 
 # Redrawn when the tiles change: road types refresh, the zoning workflow (its digit sits on the
-# workflow it switches to).
+# workflow it switches to). The terrain row is fixed.
 func _apply_number_badges() -> void:
-	if not is_instance_valid(road_type_menu) or not is_instance_valid(zoning_combined_hbox):
+	if not is_instance_valid(road_type_menu) or not is_instance_valid(zoning_combined_hbox) \
+			or not is_instance_valid(terrain_sub_menu):
 		return
 	for tile in _numbered:
 		if is_instance_valid(tile):
 			HudIcons.set_number(tile, "")
 	_numbered.clear()
-	for slots in [_road_number_slots(), _zoning_number_slots()]:
+	for slots in [_road_number_slots(), _zoning_number_slots(), terrain_sub_menu.number_slots()]:
 		for index in slots.size():
 			var tile: Button = slots[index][0]
 			HudIcons.set_number(tile, str(index + 1) if index < 9 else "")

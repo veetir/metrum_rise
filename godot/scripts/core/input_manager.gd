@@ -301,7 +301,7 @@ func _unhandled_input(event):
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		# An open Roads or Zoning palette takes 1-9 for its numbered tiles.
+		# An open Roads, Zoning or Terrain palette takes 1-9 for its numbered tiles.
 		if event.keycode >= KEY_1 and event.keycode <= KEY_9 and not event.ctrl_pressed \
 				and not event.alt_pressed and not event.meta_pressed and main_ui \
 				and main_ui.has_method("handle_number_key") \
