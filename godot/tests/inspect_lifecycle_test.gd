@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Isolated Inspect lifecycle regression: real input routing and windows, a minimal road stub.
+## Closing a building's card also takes its ring off the map.
 extends SceneTree
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
@@ -137,13 +138,15 @@ func _run() -> void:
 		window.unfocusable = true
 		building.add_child(window)
 		building._open_windows["fixture"] = {"window": window}
+		building._halo.show_footprint(PackedVector3Array([Vector3(0, 0, 0), Vector3(10, 0, 0), Vector3(10, 0, 10), Vector3(0, 0, 10)]), Color.RED)
+		_expect(building._halo.visible and building._halo.mesh != null, "the inspected building is ringed")
 		if action == "escape":
 			_key(KEY_ESCAPE)
 		elif action == "ground":
 			tool._unhandled_input(click)
 		else:
 			_key(KEY_V)
-		_expect(not building.is_inspecting(), action + " closes the building inspector")
+		_expect(not building.is_inspecting() and not building._halo.visible, action + " closes the building inspector and its ring")
 	tool.active = false
 	scene.free()
 	quit(_failures)

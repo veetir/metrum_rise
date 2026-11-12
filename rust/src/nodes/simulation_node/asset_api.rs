@@ -155,7 +155,9 @@ impl SimulationNode {
     /// `worker_capacity`, compact business summary fields, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
     /// `economy_profile`, `center_x`, `center_z`, residential/farm household aggregates,
-    /// extractor reserve fields, and `inventory` (Array of `{name, amount}` Dictionaries).
+    /// extractor reserve fields, `footprint` (the building's outline as world points just above
+    /// its base, the bulldoze highlight's), and `inventory` (Array of `{name, amount}`
+    /// Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
@@ -233,6 +235,17 @@ impl SimulationNode {
         let rejected = core.parking.diagnostics.get(&handle).map(Vec::as_slice).unwrap_or_default();
         dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
         dict.set("building_id", best_idx as i64);
+        // The outline the inspector rings, at the bulldoze highlight's height.
+        if let Some(site) = core.allocator.building_sites.get(best_idx) {
+            let y =
+                site.support_height_m + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M;
+            let footprint = PackedVector3Array::from_iter(
+                site.footprint_world
+                    .iter()
+                    .map(|p| Vector3::new(p.x, y, p.y)),
+            );
+            dict.set("footprint", footprint);
+        }
         let asset_display_name = core
             .allocator
             .registry

@@ -17,11 +17,15 @@
 ## A tab with nothing to show is left out, the last tab picked stays picked for the next
 ## building, and Parking carries a warning icon when places are rejected. The card fits its
 ## height to the open tab; the tabs sit above the content, so only the bottom edge moves.
+##
+## The inspected building is ringed on the map in the card's accent (`footprint_halo.gd`, from
+## the info's `footprint`) until its card closes.
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const Card = preload("res://scripts/ui/inspector_card.gd")
+const FootprintHalo = preload("res://scripts/renderers/footprint_halo.gd")
 
 const SECTION_FONT_SIZE := 12
 const ROW_FONT_SIZE := 13
@@ -39,6 +43,10 @@ static var _last_tab := "People"
 
 var _open_windows: Dictionary = {}
 var _last_observed_hour: int = -1
+var _halo := FootprintHalo.new()
+
+func _ready() -> void:
+	add_child(_halo)
 
 func _process(_delta: float) -> void:
 	if _open_windows.is_empty() or simulation_node == null:
@@ -166,6 +174,7 @@ func _close_entry(key: String) -> void:
 		return
 
 	_open_windows.erase(key)
+	_halo.hide_halo()
 	var window: Window = entry["window"]
 	if is_instance_valid(window):
 		window.queue_free()
@@ -200,6 +209,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	var stats_body: VBoxContainer = entry["stats_body"]
 	var zone := str(info.get("zone_type", ""))
 	var accent: Color = Card.ACCENTS.get(zone, UIStyle.HUD_ACCENT)
+	_halo.show_footprint(info.get("footprint", PackedVector3Array()), accent)
 	title_label.text = _display_name(info)
 	var parts: Dictionary = entry.get("parts", {})
 	if not parts.is_empty():
