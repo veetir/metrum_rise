@@ -6,6 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+`ROAD-112` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
+applies them to the new road's junction approaches, with local hover, refusal feedback and one
+undo. Built on the branch, waiting for the user's in-game test ([contract](roads.md#turn-pockets-road-95)).
+
 The `u02` icon HUD pass on `feat/icon-ui` moves status into a slim top bar, fixes the bottom
 toolbar height, adds zoning/service/industry tiles and compacts Road Properties. Inspect now
 clears selection before exiting on Esc and releases keyboard focus. Godot parse-only checks
