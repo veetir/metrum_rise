@@ -55,7 +55,7 @@ func build(input_manager: Node) -> void:
 	var categories := HBoxContainer.new()
 	categories.add_theme_constant_override("separation", 6)
 	palette.add_child(categories)
-	_sculpt_button = HudIcons.icon_button("terrain", "Raise and lower", "Raise or lower the ground", CATEGORY_TILE)
+	_sculpt_button = HudIcons.icon_button("sculpt", "Raise and lower", "Raise or lower the ground", CATEGORY_TILE)
 	_sculpt_button.toggle_mode = true
 	_sculpt_button.pressed.connect(_on_sculpt_pressed)
 	categories.add_child(_sculpt_button)
