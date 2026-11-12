@@ -24,7 +24,7 @@ const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadOptionsView = preload("res://scripts/ui/road_options_view.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
-const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
+const TerrainPanel = preload("res://scripts/ui/terrain_panel.gd")
 
 @onready var input_manager = $"../InputManager"
 @onready var road_tool = $"../RoadTool"
@@ -42,7 +42,7 @@ var road_combined_hbox: HBoxContainer
 var zoning_main_btn: Button
 
 var terrain_main_btn: Button
-var terrain_sub_menu: HBoxContainer
+var terrain_sub_menu: Control
 
 # Road items
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
@@ -265,28 +265,12 @@ func _build_ui():
 	options_panel.size_flags_vertical = Control.SIZE_SHRINK_END
 	sub_panel.size_flags_vertical = Control.SIZE_SHRINK_END
 	
-	# --- Terrain Sub Menu ---
-	terrain_sub_menu = HBoxContainer.new()
-	terrain_sub_menu.add_theme_constant_override("separation", 10)
-	terrain_sub_menu.visible = false
-	var terrain_sub_panel = PanelContainer.new()
-	terrain_sub_panel.add_child(terrain_sub_menu)
-	
-	var sculpt_btn = Button.new()
-	sculpt_btn.text = "Raise/Lower Terrain"
-	sculpt_btn.focus_mode = Control.FOCUS_NONE
-	terrain_sub_menu.add_child(sculpt_btn)
-	sculpt_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.SCULPT))
-	_build_vegetation_controls()
-	
-	var terrain_sub_margin = MarginContainer.new()
-	terrain_sub_margin.add_theme_constant_override("margin_bottom", 5)
-	terrain_sub_margin.add_child(terrain_sub_panel)
-	
-	var hbox_terrain_sub_center = HBoxContainer.new()
-	hbox_terrain_sub_center.alignment = BoxContainer.ALIGNMENT_CENTER
-	hbox_terrain_sub_center.add_child(terrain_sub_margin)
-	vbox.add_child(hbox_terrain_sub_center)
+	# --- Terrain palette: sculpting and planting, laid out like Services ---
+	var terrain_view := TerrainPanel.new()
+	terrain_view.build(input_manager)
+	terrain_view.visible = false
+	terrain_sub_menu = terrain_view
+	vbox.add_child(terrain_view)
 
 	# Palette views own widget construction; selection and tool handlers remain here.
 	var zoning_view := ZoningPanel.new()
@@ -446,66 +430,6 @@ func _create_bottom_group_shell(content: Control) -> PanelContainer:
 	content.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	padding.add_child(content)
 	return shell
-
-## Vegetation controls share the existing Terrain submenu and forward settings to its tool.
-##
-## Two controls: choosing a brush preset is the plant action, and `Remove` is its opposite. The
-## presets are named trees, tree mixes and planting densities, and Rust owns what each one means;
-## this list only names them. The tool owns the radius, which the player turns with ctrl and the
-## mouse wheel and reads off the ground ring, so neither the point/brush choice nor the footprint
-## needs a control here.
-func _build_vegetation_controls() -> void:
-	terrain_sub_menu.add_child(VSeparator.new())
-	var tool = input_manager.vegetation_tool
-
-	var options := OptionButton.new()
-	options.focus_mode = Control.FOCUS_NONE
-	options.tooltip_text = "Shift + wheel: cycle brush; Ctrl + wheel: radius"
-	for option in VegetationTool.BRUSH_OPTIONS:
-		options.add_item("+ " + option.label)
-	options.select(tool.option_index)
-	# select() updates the readout without emitting item_selected again.
-	tool.option_changed.connect(options.select)
-	terrain_sub_menu.add_child(options)
-
-	var remove_button := Button.new()
-	remove_button.text = "Remove"
-	remove_button.toggle_mode = true
-	remove_button.focus_mode = Control.FOCUS_NONE
-	remove_button.tooltip_text = "E: toggle erase"
-	remove_button.set_pressed_no_signal(tool.mode == VegetationTool.Mode.REMOVE)
-	tool.mode_changed.connect(func(value: int):
-		remove_button.set_pressed_no_signal(value == VegetationTool.Mode.REMOVE)
-	)
-	terrain_sub_menu.add_child(remove_button)
-
-	# Opening the dropdown already leaves remove mode: `item_selected` does not fire when the
-	# wanted preset is the current one, which would otherwise trap the player in removal.
-	var plant := func():
-		_activate_vegetation(VegetationTool.Mode.PLANT)
-	options.pressed.connect(plant)
-	options.item_selected.connect(func(index: int):
-		tool.option_index = index
-		plant.call()
-	)
-	# The popup grabs input; forward both brush gestures with the same Ctrl priority as the tool.
-	options.get_popup().window_input.connect(func(event: InputEvent):
-		if tool.apply_brush_gesture(event):
-			options.get_popup().set_input_as_handled()
-	)
-	remove_button.toggled.connect(func(pressed: bool):
-		_activate_vegetation(VegetationTool.Mode.REMOVE if pressed else VegetationTool.Mode.PLANT)
-	)
-	# One reset covers every path that closes the submenu, including the tool cancel it triggers.
-	terrain_sub_menu.visibility_changed.connect(func():
-		if not terrain_sub_menu.visible:
-			tool.mode = VegetationTool.Mode.PLANT
-	)
-
-func _activate_vegetation(mode: int) -> void:
-	if input_manager.current_tool != InputManager.Tool.VEGETATION:
-		input_manager._toggle_tool(InputManager.Tool.VEGETATION)
-	input_manager.vegetation_tool.mode = mode
 
 func _connect_signals():
 	input_manager.tool_changed.connect(_refresh_hud_marks)

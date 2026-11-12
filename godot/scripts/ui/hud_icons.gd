@@ -111,6 +111,14 @@ static func dock_button(icon_name: String, title: String, full_colour: bool) -> 
 	feedback.full_colour = full_colour
 	return button
 
+## Shows `picture` (a rendered thumbnail) as the tile's face, untinted, filling `face` of it.
+static func set_picture(button: Button, picture: Texture2D, face := 0.92) -> void:
+	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
+	feedback.texture = picture
+	feedback.full_colour = true
+	feedback.face = face
+	button.queue_redraw()
+
 ## Tints artwork without tinting the shared shell or selected accent underline.
 static func tint(button: Button, color: Color) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
