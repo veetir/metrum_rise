@@ -543,6 +543,16 @@ non-blocking Rust call per frame (`hover_edge`: the surface probe and one R-tree
 single `try_lock`; `false` while the simulation thread holds the core, when the hover stays as it
 was rather than blinking off), and its one-edge mesh is rebuilt only when the hovered edge
 changes; nothing is drawn over the rest of the network.
+Every junction in view where a click opens the Junction window (a node with three or more road
+arms, from Rust's `get_junction_markers(centre, half_extent_m)`: a node-grid rectangle query,
+`O(nodes in the rectangle × degree)`, empty while the core is busy) wears a faint ring in the
+same look, as wide as its widest road plus 1.5 m; the ring under the cursor (within the click's
+8 m reach, nearest first) and the open junction's are lit, and a hovered junction takes the
+pointing hand from the road under it. The square read is centred on the view, 1.3 × the camera's
+distance to it (150-900 m; rings are hidden zoomed out past that), and is read again only when
+the view moves a quarter of it, zooms by a quarter or the network changes. The open junction's
+lane labels and crosswalk labels ("Zebra on", with "Click to turn off" or the refusal on a second
+line) are white or yellow text in a dark outline at a fixed size on screen.
 
 **Check boxes and switches** (`scripts/ui/check_icons.gd`). `MainUI` sets the CheckBox and
 CheckButton icons on Godot's default theme (again after a UI scale change; a theme on the root

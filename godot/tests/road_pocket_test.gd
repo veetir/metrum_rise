@@ -79,6 +79,23 @@ func _click_node(tool: Node, x: float, z: float) -> int:
 	await process_frame
 	return node
 
+# With a camera over the four-way, the select tool rings it: the junction is marked, and a click
+# within the 8 m reach of its centre picks it, one beyond it does not.
+func _check_junction_markers(tool: Node, node: int) -> void:
+	var camera := Camera3D.new()
+	root.add_child(camera)
+	camera.look_at_from_position(_ground(0.0, 0.0) + Vector3(0.0, 300.0, 1.0), _ground(0.0, 0.0))
+	camera.make_current()
+	tool._junction_generation = -1
+	# The test drives the tool by hand (its processing is off): one frame's marker update.
+	tool._update_junction_markers()
+	_expect(tool._junction_ids.has(node), "the four-way is marked: %s" % [tool._junction_ids])
+	_expect(tool._junction_mi.mesh != null, "the marked junctions have rings")
+	var centre: Vector3 = simulation.get_node_pos(node)
+	_expect(tool._junction_under(centre + Vector3(5.0, 50.0, 0.0), Vector3.DOWN) == node, "a click 5 m from the centre picks the junction")
+	_expect(tool._junction_under(centre + Vector3(12.0, 50.0, 0.0), Vector3.DOWN) == -1, "a click 12 m from the centre does not")
+	camera.queue_free()
+
 # The row whose name starts with "From <direction>".
 func _row(window: Node, direction: String):
 	for i in range(window.row_count()):
@@ -163,6 +180,7 @@ func _run() -> void:
 
 	# Crossing A: four rows clockwise from north, nothing applied yet.
 	var node := await _click_node(tool, 0.0, 0.0)
+	_check_junction_markers(tool, node)
 	_expect(window._window.visible and window.row_count() == 4, "four rows at a four-way: %d" % window.row_count())
 	var names := []
 	for i in range(window.row_count()):

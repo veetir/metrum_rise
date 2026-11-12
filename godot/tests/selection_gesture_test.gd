@@ -61,6 +61,10 @@ class SimulationStub extends Node3D:
 		return {"lanes": PackedVector2Array([Vector2(1.75, 1.0), Vector2(-1.75, -1.0)])}
 	func get_edge_width(_edge: int) -> float:
 		return 5.0
+	func get_network_render_generation() -> int:
+		return 0
+	func get_junction_markers(_centre: Vector3, _half_extent_m: float) -> Dictionary:
+		return {"ids": PackedInt32Array(), "positions": PackedVector3Array(), "radii": PackedFloat32Array()}
 
 class UiStub extends Node:
 	func hide_road_properties() -> void:

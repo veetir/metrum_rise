@@ -13,6 +13,12 @@
 ## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
 ## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
 ## while that verdict is shown.
+## Every junction in view (three or more roads, Rust's `get_junction_markers`) wears a faint ring
+## in the selection's look, so it is clear where a click opens the Junction window; the one under
+## the cursor (a click's 8 m reach) and the selected one are lit, and a hovered junction takes
+## the hand pointer from the road beneath it. The rings are read for a square around the view
+## centre, again only when the view moves a quarter of it, zooms or the network changes, so
+## their cost follows the junctions in view, never the city.
 ## The selection is drawn by `road_highlight.gdshader`: a faint fill with a glowing outline and,
 ## on each vehicle lane, chevrons drifting the way its traffic goes. While the tool is on and nothing is being
 ## dragged, the road under the cursor gets a fainter outline and the pointer becomes a hand, so
@@ -37,6 +43,7 @@ var active: bool = false:
 		if not active:
 			clear_selection()
 			_set_hover(-1)
+			_clear_junction_markers()
 
 # Edge Selection
 var selected_edges: Array[int] = []
@@ -54,6 +61,26 @@ var _pocket_end_mi: MeshInstance3D = null
 const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
 # The lots the shown verdict takes (`ZONE-10`), in the bulldoze highlight.
 var _demolish_mi: MeshInstance3D = null
+
+# Junction markers: the rings of the junctions in view, the lit ring of the hovered or selected
+# one, what Rust last listed (ids, positions, ring radii) and the square and network generation
+# it was read for.
+const JUNCTION_PICK_M := 8.0
+const JUNCTION_RING_M := 1.6
+# The marked square's half size follows the camera's distance to the view centre, within these
+# bounds; zoomed out further the rings are hidden (too small to read, too many to draw).
+const JUNCTION_VIEW_MIN_M := 150.0
+const JUNCTION_VIEW_MAX_M := 900.0
+var _junction_mi: MeshInstance3D = null
+var _junction_lit_mi: MeshInstance3D = null
+var _junction_ids := PackedInt32Array()
+var _junction_positions := PackedVector3Array()
+var _junction_radii := PackedFloat32Array()
+var _junction_centre := Vector3.INF
+var _junction_half := 0.0
+var _junction_generation := -1
+var _hover_junction := -1
+var _lit_junction := -1
 
 # Node Selection
 var selected_node: int = -1
@@ -100,6 +127,17 @@ func _ready():
 
 	drag_line_mesh = MeshInstance3D.new()
 	add_child(drag_line_mesh)
+
+	_junction_mi = MeshInstance3D.new()
+	_junction_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_junction_mi.material_override = _highlight_material(0.05, 0.18, 0.55, 0.0, 98)
+	(_junction_mi.material_override as ShaderMaterial).set_shader_parameter("width_m", JUNCTION_RING_M)
+	add_child(_junction_mi)
+	_junction_lit_mi = MeshInstance3D.new()
+	_junction_lit_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_junction_lit_mi.material_override = _highlight_material(0.22, 0.35, 1.0, 0.0, 101)
+	(_junction_lit_mi.material_override as ShaderMaterial).set_shader_parameter("width_m", JUNCTION_RING_M)
+	add_child(_junction_lit_mi)
 
 ## Clears roads, junction handles and the building inspector; returns whether anything was selected.
 func clear_selection() -> bool:
@@ -209,6 +247,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_delta):
 	if not active: return
+	_update_junction_markers()
 	_update_hover()
 	
 	if not _drag_source.is_empty():
@@ -745,13 +784,18 @@ func _add_strip(im: ImmediateMesh, centre: PackedVector3Array, lateral: PackedVe
 			im.surface_set_uv(Vector2(v[1], v[2]))
 			im.surface_add_vertex(v[0])
 
-# The road under the cursor, outlined faintly, with a hand pointer. Not while a button is down,
-# a junction is open (its handles own the clicks) or the mouse is over the UI.
+# The junction or road under the cursor: a junction's ring lights, else the road is outlined
+# faintly; either gets a hand pointer. Not while a button is down, a junction is open (its handles
+# own the clicks) or the mouse is over the UI.
 func _update_hover() -> void:
 	var edge_idx := -1
+	var junction := -1
 	if not _mouse_pressed and selected_node == -1 and get_viewport().gui_get_hovered_control() == null:
 		var camera := get_viewport().get_camera_3d()
 		if camera:
+			var mouse := get_viewport().get_mouse_position()
+			junction = _junction_under(camera.project_ray_origin(mouse), camera.project_ray_normal(mouse))
+		if camera and junction == -1:
 			var mouse := get_viewport().get_mouse_position()
 			var hit = simulation_node.hover_edge(camera.project_ray_origin(mouse), camera.project_ray_normal(mouse))
 			# The simulation thread holds the core: keep the hover as it is, or it blinks off
@@ -761,7 +805,12 @@ func _update_hover() -> void:
 			edge_idx = hit
 	if selected_edges.has(edge_idx):
 		edge_idx = -1
+	var junction_changed := junction != _hover_junction
+	_hover_junction = junction
 	_set_hover(edge_idx)
+	_light_junction(selected_node if selected_node != -1 else junction)
+	if junction_changed:
+		Input.set_default_cursor_shape(Input.CURSOR_POINTING_HAND if junction != -1 or edge_idx != -1 else Input.CURSOR_ARROW)
 
 func _set_hover(edge_idx: int) -> void:
 	var was := _hover_edge
@@ -839,3 +888,103 @@ func clear_pocket_end() -> void:
 	show_demolition(PackedVector3Array())
 	if _pocket_end_mi:
 		_pocket_end_mi.mesh = null
+
+# ── Junction markers ─────────────────────────────────────────────────────────
+
+# Reads the junctions again when the view has moved a quarter of the marked square, zoomed by a
+# quarter or the network changed; a busy core keeps the last rings and asks next frame.
+func _update_junction_markers() -> void:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return
+	var centre_screen := get_viewport().get_visible_rect().size * 0.5
+	var origin := camera.project_ray_origin(centre_screen)
+	var direction := camera.project_ray_normal(centre_screen)
+	if direction.y > -0.05:
+		_clear_junction_markers()
+		return
+	var plane_y := _junction_positions[0].y if not _junction_positions.is_empty() else 0.0
+	var centre := origin + direction * ((plane_y - origin.y) / direction.y)
+	var half := camera.global_position.distance_to(centre) * 1.3
+	if half > JUNCTION_VIEW_MAX_M:
+		_clear_junction_markers()
+		return
+	half = maxf(half, JUNCTION_VIEW_MIN_M)
+	var generation := int(simulation_node.get_network_render_generation())
+	var moved := Vector2(centre.x - _junction_centre.x, centre.z - _junction_centre.z).length() > _junction_half * 0.25
+	var zoomed := absf(half - _junction_half) > _junction_half * 0.25
+	if not moved and not zoomed and generation == _junction_generation:
+		return
+	var markers: Dictionary = simulation_node.get_junction_markers(centre, half)
+	if markers.is_empty():
+		return
+	_junction_centre = centre
+	_junction_half = half
+	_junction_generation = generation
+	_junction_ids = markers.ids
+	_junction_positions = markers.positions
+	_junction_radii = markers.radii
+	_junction_mi.mesh = _rings_mesh(range(_junction_ids.size()))
+	_lit_junction = -2
+	_light_junction(selected_node if selected_node != -1 else _hover_junction)
+
+func _clear_junction_markers() -> void:
+	_junction_ids = PackedInt32Array()
+	_junction_positions = PackedVector3Array()
+	_junction_radii = PackedFloat32Array()
+	_junction_centre = Vector3.INF
+	_junction_half = 0.0
+	_hover_junction = -1
+	if _junction_mi:
+		_junction_mi.mesh = null
+	if _junction_lit_mi:
+		_junction_lit_mi.mesh = null
+	_lit_junction = -1
+
+# The marked junction a click at the ray would open: the nearest within the click's reach, where
+# the ray crosses each junction's own height. -1 for none.
+func _junction_under(origin: Vector3, direction: Vector3) -> int:
+	if absf(direction.y) < 0.001:
+		return -1
+	var best := -1
+	var best_d := JUNCTION_PICK_M * JUNCTION_PICK_M
+	for i in _junction_ids.size():
+		var pos := _junction_positions[i]
+		var hit := origin + direction * ((pos.y - origin.y) / direction.y)
+		var d := Vector2(hit.x - pos.x, hit.z - pos.z).length_squared()
+		if d < best_d:
+			best_d = d
+			best = _junction_ids[i]
+	return best
+
+# Lights junction `node`'s ring (-1: none), rebuilt only when it changes.
+func _light_junction(node: int) -> void:
+	if node == _lit_junction or _junction_lit_mi == null:
+		return
+	_lit_junction = node
+	var index := _junction_ids.find(node) if node != -1 else -1
+	_junction_lit_mi.mesh = _rings_mesh([index]) if index != -1 else null
+
+# One ring per listed marker index: a band JUNCTION_RING_M wide inside each junction's radius,
+# UV.x 0 on the outer edge and 1 on the inner, as the highlight shader's ribbon.
+func _rings_mesh(indices: Array) -> ImmediateMesh:
+	if indices.is_empty():
+		return null
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	im.surface_set_color(Color.BLACK)
+	const SEGMENTS := 32
+	for index: int in indices:
+		var centre := _junction_positions[index] + Vector3.UP * 0.1
+		var outer := _junction_radii[index]
+		var inner := maxf(outer - JUNCTION_RING_M, 0.5)
+		for k in SEGMENTS:
+			var a := TAU * float(k) / SEGMENTS
+			var b := TAU * float(k + 1) / SEGMENTS
+			var da := Vector3(cos(a), 0.0, sin(a))
+			var db := Vector3(cos(b), 0.0, sin(b))
+			for v in [[da, outer, 0.0], [da, inner, 1.0], [db, inner, 1.0], [da, outer, 0.0], [db, inner, 1.0], [db, outer, 0.0]]:
+				im.surface_set_uv(Vector2(v[2], 0.0))
+				im.surface_add_vertex(centre + v[0] * v[1])
+	im.surface_end()
+	return im
