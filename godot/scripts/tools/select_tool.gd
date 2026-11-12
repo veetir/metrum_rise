@@ -273,13 +273,7 @@ func _build_node_visuals(node_id: int):
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mesh_inst.material_override = mat
 
-		var label = Label3D.new()
-		label.text = "e%d" % edge_id
-		label.font_size = 64
-		label.pixel_size = 0.015
-		label.no_depth_test = true
-		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		label.modulate = Color(1.0, 1.0, 0.0)
+		var label := _world_label("e%d" % edge_id, 32, Color(1.0, 0.92, 0.35))
 		add_child(label)
 		label.global_position = pos + Vector3(0, 1.0, 0)
 
@@ -318,12 +312,7 @@ func _build_node_visuals(node_id: int):
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		mesh_inst.material_override = mat
 		
-		var label := Label3D.new()
-		label.text = _crosswalk_label(has_cw, {})
-		label.font_size = 32
-		label.pixel_size = 0.008
-		label.no_depth_test = true
-		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		var label := _world_label(_crosswalk_label(has_cw, {}), 32, Color.WHITE)
 		add_child(label)
 		label.global_position = mesh_inst.global_position + Vector3(0, 1.5, 0)
 		crosswalk_toggles.push_back({
@@ -353,13 +342,34 @@ func _build_node_visuals(node_id: int):
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
 
+# The toggle's label: its state, and while hovered what a click does (or why it cannot) on a
+# second line.
 func _crosswalk_label(has_cw: bool, preview: Dictionary) -> String:
 	var text := "Zebra on" if has_cw else "Zebra off"
 	if preview.is_empty():
 		return text
+	var turn := "off" if has_cw else "on"
 	if preview.get("is_valid", false):
-		return text + " · click to turn " + ("off" if has_cw else "on")
-	return text + " · can't turn " + ("off" if has_cw else "on") + ": " + str(preview.get("invalid_reason", ""))
+		return "%s\nClick to turn %s" % [text, turn]
+	return "%s\nCan't turn %s: %s" % [text, turn, str(preview.get("invalid_reason", ""))]
+
+# A billboard label drawn over everything, white-ish text in a dark outline so it reads on asphalt,
+# grass and paint alike, the same size on screen at any zoom.
+func _world_label(text: String, font_size: int, colour: Color) -> Label3D:
+	var label := Label3D.new()
+	label.text = text
+	label.font_size = font_size
+	# The same size on screen at any zoom (`fixed_size`): about `font_size` / 2 px at 1080p.
+	label.fixed_size = true
+	label.pixel_size = 0.0007
+	label.outline_size = maxi(8, font_size / 4)
+	label.outline_modulate = Color(0.05, 0.06, 0.08, 0.92)
+	label.modulate = colour
+	label.no_depth_test = true
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.render_priority = 2
+	label.outline_render_priority = 1
+	return label
 
 # The commit's verdict on toggling `toggle`, asked once while it stays hovered.
 func _preview_crosswalk(toggle: Dictionary) -> Dictionary:
