@@ -22,8 +22,8 @@ use crate::simulation::network::graph::{MedianStyle, RoadMedian};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    DEFAULT_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal,
-    SPEEDS_KMH, layout_widths, type_of,
+    DEFAULT_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypePockets,
+    RoadTypeRefusal, SPEEDS_KMH, layout_widths, type_of,
 };
 use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
@@ -95,7 +95,8 @@ impl SimulationNode {
     /// speeds every car road type takes, for the road builder's signs: `kmh` (slowest first),
     /// `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
     /// suggests zoning off once a new type reaches it; the type's flag decides). `O(types x
-    /// parts)`; the file is read once.
+    /// parts)`; the file is read once. Each type includes `pockets` (`left`, `right`, `body_m`);
+    /// `pocket_lengths` gives the shared default/min/max/step metre grid.
     #[func]
     pub fn get_road_types(&self) -> VarDictionary {
         self.with_road_types(|library| {
@@ -114,6 +115,12 @@ impl SimulationNode {
             vdict! {
                 "types": types,
                 "speeds": speeds,
+                "pocket_lengths": vdict! {
+                    "default_m": crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M,
+                    "min_m": crate::simulation::network::pockets::POCKET_BODY_MIN_M,
+                    "max_m": crate::simulation::network::pockets::POCKET_BODY_MAX_M,
+                    "step_m": crate::simulation::network::pockets::POCKET_BODY_STEP_M,
+                },
                 "error": error.as_ref().map_or("", |error| error.reason),
                 "error_detail": error.as_ref().map_or("", |error| error.detail.as_str()),
             }
@@ -191,6 +198,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> VarDictionary {
         let created = parts_from_variant(&parts).and_then(|parts| {
             self.with_road_types(|library| {
@@ -200,6 +208,7 @@ impl SimulationNode {
                     speed_kmh.into(),
                     zoning,
                     street_lights,
+                    pockets_from_variant(&pockets),
                 )
             })
         });
@@ -234,6 +243,7 @@ impl SimulationNode {
     /// written, else the refusal key: those of [`Self::create_road_type`],
     /// `road_type_builtin` or `road_type_unknown`. Roads already built keep their own layout.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_road_type(
         &self,
         id: GString,
@@ -242,6 +252,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> GString {
         let updated = parts_from_variant(&parts).and_then(|parts| {
             self.with_road_types(|library| {
@@ -252,6 +263,7 @@ impl SimulationNode {
                     speed_kmh.into(),
                     zoning,
                     street_lights,
+                    pockets_from_variant(&pockets),
                 )
             })
         });
@@ -287,7 +299,14 @@ fn type_to_variant(ty: &RoadType) -> VarDictionary {
     result.set("speed_kmh", i64::from(ty.speed_kmh));
     result.set("zoning", ty.zoning);
     result.set("street_lights", ty.street_lights);
-    set_cost(&mut result, ty.usable().map(|section| (section, ty.speed_kmh)));
+    result.set(
+        "pockets",
+        vdict! { "left": ty.pockets.left, "right": ty.pockets.right, "body_m": ty.pockets.body_m },
+    );
+    set_cost(
+        &mut result,
+        ty.usable().map(|section| (section, ty.speed_kmh)),
+    );
     let mut parts = VarArray::new();
     for part in &ty.parts {
         parts.push(&part_to_variant(*part).to_variant());
@@ -386,5 +405,23 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
             Ok(RoadPart::Median(RoadMedian { style, width_m }))
         }
         _ => Err(UNKNOWN),
+    }
+}
+
+/// The builder and road tool share this configuration; omitted fields mean the defaults.
+pub(super) fn pockets_from_variant(value: &VarDictionary) -> RoadTypePockets {
+    RoadTypePockets {
+        left: value
+            .get("left")
+            .and_then(|v| v.try_to::<bool>().ok())
+            .unwrap_or(false),
+        right: value
+            .get("right")
+            .and_then(|v| v.try_to::<bool>().ok())
+            .unwrap_or(false),
+        body_m: value
+            .get("body_m")
+            .and_then(|v| v.try_to::<f32>().ok())
+            .unwrap_or(crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M),
     }
 }

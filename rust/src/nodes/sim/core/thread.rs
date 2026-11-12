@@ -65,6 +65,8 @@ pub(crate) enum SimCommand {
         parking: crate::simulation::network::graph::RoadParking,
         /// The road tool's road-type attributes at submission (`ROAD-101`).
         attributes: crate::simulation::network::road_types::RoadAttributes,
+        /// Optional pockets on the new stroke approaches.
+        pockets: crate::simulation::network::road_types::RoadTypePockets,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -265,6 +267,7 @@ pub(crate) fn run_sim_thread(
                     median,
                     parking,
                     attributes,
+                    pockets,
                     enqueued_at,
                     completion,
                     preview,
@@ -296,7 +299,7 @@ pub(crate) fn run_sim_thread(
                                 geometry: crash_geometry,
                             },
                         );
-                        let outcome = c.commit_road(
+                        let outcome = c.commit_road_with_pockets(
                             RoadCommitRequest {
                                 points,
                                 fwd_lanes,
@@ -308,6 +311,7 @@ pub(crate) fn run_sim_thread(
                                 attributes,
                                 preview,
                             },
+                            pockets,
                             road_total,
                             edit_metrics,
                         );
@@ -334,6 +338,7 @@ pub(crate) fn run_sim_thread(
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
                         generation: outcome.generation,
+                        pocket_refusals: outcome.pocket_refusals,
                     });
                 }
                 Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {

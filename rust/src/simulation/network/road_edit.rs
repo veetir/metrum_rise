@@ -41,6 +41,8 @@ pub(crate) struct FinalizedRoadGeometry {
     /// The dirty edges whose geometry, clips, endpoints or deletion changed, as an adopted
     /// plan knows them; `None` when every dirty edge may have changed. Cell lots follow these.
     pub(crate) changed_edges: Option<BTreeSet<usize>>,
+    /// Live edges descended from the new stroke, excluding splits of resident roads.
+    pub(crate) stroke_edges: Vec<usize>,
 }
 
 /// Ordered split provenance and pre-finalization lengths used by dependent-record migration.
@@ -300,6 +302,7 @@ impl TransitNetwork {
             profile_us,
             clips_us,
             changed_edges: None,
+            stroke_edges: Vec::new(),
         }
     }
 
@@ -344,6 +347,7 @@ impl TransitNetwork {
             dirty_edges: applied.dirty_edges,
             affected_nodes: applied.affected_nodes,
             changed_edges: Some(changed_edges),
+            stroke_edges: applied.stroke_edges,
             ..Default::default()
         })
     }
@@ -381,6 +385,8 @@ impl RoadTopologyPlan {
 
 /// Where a plan's records went in a graph, and what the edit dirtied there.
 pub(crate) struct AppliedRoadTopology {
+    /// Live ids of only the new stroke's descendants.
+    pub(crate) stroke_edges: Vec<usize>,
     // Live id of each local edge.
     edge_ids: Vec<usize>,
     /// Edges whose geometry changed, in live ids.
@@ -526,7 +532,23 @@ impl RoadTopologyPlan {
             .iter()
             .map(|id| node_ids[*id as usize])
             .collect();
+        // Roots are resolved in split order: O(local edges + splits), without a city scan.
+        let mut resident: Vec<bool> = self
+            .edges
+            .iter()
+            .map(|edge| edge.source.is_some())
+            .collect();
+        for split in &self.splits {
+            resident[split.new_edge_id] = resident[split.edge_id];
+        }
+        let stroke_edges = edge_ids
+            .iter()
+            .enumerate()
+            .filter(|&(local, &id)| !resident[local] && !graph.edge(id).deleted)
+            .map(|(_, &id)| id)
+            .collect();
         Some(AppliedRoadTopology {
+            stroke_edges,
             edge_ids,
             dirty_edges,
             affected_nodes,

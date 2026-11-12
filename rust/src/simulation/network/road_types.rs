@@ -29,6 +29,42 @@ use super::roadbed::{FOOTPATH_MIN_WIDTH_M, SHOULDER_BAND_WIDTH_M};
 use super::types::TransitFlags;
 use crate::config;
 
+/// Pockets requested on each new approach into a junction (`ROAD-112`).
+/// Roles are relative to the approaching driver; length uses the Junction window's body grid.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoadTypePockets {
+    /// Add a left-turn lane at the approach.
+    pub left: bool,
+    /// Add a right-turn lane at the approach.
+    pub right: bool,
+    /// Body length measured from the junction, in metres.
+    pub body_m: f32,
+}
+
+impl Default for RoadTypePockets {
+    fn default() -> Self {
+        Self {
+            left: false,
+            right: false,
+            body_m: super::pockets::POCKET_BODY_DEFAULT_M,
+        }
+    }
+}
+
+impl RoadTypePockets {
+    /// Checks the shared pocket length grid, including when both roles are off. O(1).
+    pub fn validate(self) -> Result<(), &'static str> {
+        use super::pockets::{POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M};
+        if !self.body_m.is_finite()
+            || !(POCKET_BODY_MIN_M..=POCKET_BODY_MAX_M).contains(&self.body_m)
+            || self.body_m % POCKET_BODY_STEP_M != 0.0
+        {
+            return Err("invalid_pocket_dimensions");
+        }
+        Ok(())
+    }
+}
+
 /// One part of a road layout, as the road builder shows it from the side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadPart {
@@ -604,6 +640,8 @@ pub struct RoadType {
     pub street_lights: bool,
     /// What it builds, or why it is unusable (kept in the library file, listed, never drawn).
     pub verdict: Result<RoadCrossSection, RoadTypeRefusal>,
+    /// Optional turn lanes applied when a stroke creates junction approaches.
+    pub pockets: RoadTypePockets,
 }
 
 impl RoadType {
@@ -618,6 +656,7 @@ impl RoadType {
             zoning: true,
             street_lights: true,
             verdict: Ok(builtin.cross_section),
+            pockets: RoadTypePockets::default(),
         }
     }
 

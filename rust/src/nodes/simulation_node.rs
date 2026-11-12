@@ -213,6 +213,8 @@ pub struct SimulationNode {
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
     pub(crate) road_tool_parking: crate::simulation::network::graph::RoadParking,
+    /// Pockets requested on new approaches by the selected road type.
+    pub(crate) road_tool_pockets: crate::simulation::network::road_types::RoadTypePockets,
     /// The road tool's road-type attributes (`ROAD-101`: speed, sidewalks, zoning), copied into
     /// every request the tool sends; the built-ins' until a type sets others.
     pub(crate) road_tool_attributes: crate::simulation::network::road_types::RoadAttributes,
@@ -477,6 +479,7 @@ impl INode3D for SimulationNode {
             road_tool_tunnel: false,
             road_tool_median: None,
             road_tool_parking: Default::default(),
+            road_tool_pockets: Default::default(),
             road_tool_attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,

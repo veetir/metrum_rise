@@ -115,6 +115,8 @@ pub(crate) struct RoadAddOutcome {
     pub(crate) build_cost: f64,
     /// Already adopted local geometry; absent when authoritative preparation must finalize it.
     pub(crate) finalized_geometry: Option<FinalizedRoadGeometry>,
+    /// New-stroke descendants from unplanned insertion; adopted geometry carries its own.
+    pub(crate) stroke_edges: Vec<usize>,
     /// Wall-clock milliseconds of the undo record, the topology mutation (graph, parcels and
     /// adopted plan) and the cell-lot marks, for the commit breakdown (`ROAD-68-G`).
     pub(crate) stage_ms: RoadAddStageTimes,
@@ -137,6 +139,7 @@ impl RoadAddOutcome {
             committed: false,
             build_cost: 0.0,
             finalized_geometry: None,
+            stroke_edges: Vec::new(),
             stage_ms: RoadAddStageTimes::default(),
             regeneration: Vec::new(),
         }
@@ -147,7 +150,7 @@ impl SimCore {
     /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, &[], &mut Default::default())
+        self.validate_staged_road_render_installing(None, None, &[], &mut Default::default(), true)
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
@@ -163,12 +166,14 @@ impl SimCore {
     /// The undo record keeps what the install replaced and the erased paint. True when the edit
     /// is accepted. `metrics` receives the sub-stages' times (`surface_roadbed_ms`,
     /// `surface_overlap_ms`, `surface_land_ms`, `surface_graded_ms`).
+    /// A stroke with pockets defers grading until its final local roadbed has been installed.
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
         graded: Option<&crate::nodes::sim::core::GradedPose>,
         regeneration: &[CellBounds],
         metrics: &mut RoadEditMetrics,
+        stage_graded: bool,
     ) -> bool {
         let roadbed_start = Instant::now();
         // The graded selection reads the roadbeds before and after the install (`O(1)`).
@@ -222,7 +227,11 @@ impl SimCore {
         let erased_paint = self.take_land_for_edit(take, Some(regeneration));
         metrics.surface_land_ms = land_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
-        let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
+        let graded = if stage_graded {
+            self.stage_committed_graded_tiles(roadbed_before, graded)
+        } else {
+            None
+        };
         metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let stats = self.last_graded_stats;
         metrics.graded_select_ms = stats.select_ms;
@@ -1812,6 +1821,7 @@ impl SimCore {
         } else {
             HashSet::new()
         };
+        let mut stroke_edges = Vec::new();
         let finalized_geometry = if let Some(plan) = topology_plan {
             Some(
                 self.transit_network
@@ -1825,7 +1835,7 @@ impl SimCore {
             )
         } else {
             // Plan-less callers draw without the tunnel intent, so the stroke has no bore.
-            self.transit_network.add_road_graded(
+            stroke_edges = self.transit_network.add_road_graded(
                 &mut self.region_graph,
                 fixed_points,
                 fwd_lanes_u8,
@@ -1887,6 +1897,7 @@ impl SimCore {
             committed: true,
             build_cost: build_length_m * road_cost::build_per_m(build_weight),
             finalized_geometry,
+            stroke_edges,
             stage_ms: RoadAddStageTimes {
                 undo_ms: dt_undo_ms as f64 / 1000.0,
                 topology_ms: dt_topo_us as f64 / 1000.0,

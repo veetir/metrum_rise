@@ -38,6 +38,7 @@ signal road_types_changed(created_id: String)
 ## Roads palette numbers apply, so 6 closes the builder again.
 signal number_key(digit: int)
 
+const PocketControls = preload("res://scripts/ui/road_builder/pocket_controls.gd")
 const SpeedSignPicker = preload("res://scripts/ui/speed_sign_picker.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
@@ -88,6 +89,8 @@ var speed_box: SpeedSignPicker
 var speed_row: Control
 var zoning_check: Button
 var street_lights_check: Button
+var pocket_controls: PocketControls
+var pocket_badge: Label
 var name_edit: LineEdit
 var cancel_button: Button
 var create_button: Button
@@ -181,6 +184,9 @@ func _build_window() -> void:
 	warning_label.add_theme_color_override("font_color", STATUS_NAME)
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	editor.add_child(_build_tiles())
+	pocket_controls = PocketControls.new()
+	pocket_controls.changed.connect(func(): _layout_changed())
+	editor.add_child(_well(pocket_controls, 6))
 	editor.add_child(_well(_build_bottom_row(), 8))
 
 	part_popup = RoadPartPopup.new()
@@ -243,6 +249,9 @@ func _build_stage() -> Control:
 	cost_label.add_theme_color_override("default_color", STATUS_COST)
 	cost_label.add_theme_font_size_override("normal_font_size", UIStyle.scaled_font_size(14))
 	column.add_child(cost_label)
+	pocket_badge = _label(column, 13)
+	pocket_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pocket_badge.add_theme_color_override("font_color", UIStyle.HUD_ACCENT)
 	return stage
 
 # `content` in a rounded well, `pad` px inside.
@@ -445,6 +454,7 @@ func _start(layout: Array, id: String, type_name: String, from: Dictionary = {})
 	speed_kmh = speed if speed > 0 else int(_speeds.get("default_kmh", 50))
 	zoning = bool(from.get("zoning", true))
 	street_lights = bool(from.get("street_lights", true))
+	pocket_controls.set_value(from.get("pockets", {}), _library.get("pocket_lengths", {}))
 	_zoning_settled = false
 	speed_box.set_value_no_signal(speed_kmh)
 	zoning_check.set_pressed_no_signal(zoning)
@@ -592,6 +602,9 @@ func _layout_changed() -> void:
 	strip.set_layout(parts, widths, valid)
 	var footpath := _is_footpath()
 	strip.ends_editable = not footpath
+	pocket_controls.visible = not footpath
+	pocket_badge.text = pocket_controls.description() if not footpath else ""
+	pocket_badge.visible = not pocket_badge.text.is_empty()
 	zoning_check.disabled = not has_sidewalk(true) and not has_sidewalk(false)
 	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
@@ -651,12 +664,12 @@ func create() -> void:
 	var refusal := ""
 	if editing_id.is_empty():
 		var created: Dictionary = _simulation_node.create_road_type(name_edit.text, rust_parts(), speed_kmh, zoning,
-			street_lights)
+			street_lights, pocket_controls.value())
 		created_id = String(created.get("id", ""))
 		refusal = String(created.get("invalid_reason", ""))
 	else:
 		refusal = _simulation_node.update_road_type(editing_id, name_edit.text, rust_parts(), speed_kmh, zoning,
-			street_lights)
+			street_lights, pocket_controls.value())
 	if not refusal.is_empty():
 		# Another game may have changed the file since it was listed.
 		_refresh_library()

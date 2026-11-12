@@ -83,6 +83,20 @@ impl SimulationNode {
         }
     }
 
+    /// Sets pockets requested on the next stroke's new junction approaches (`ROAD-112`).
+    /// Uses the same body-length limits as the Junction window; invalid settings keep the old value.
+    #[func]
+    pub fn set_road_tool_pockets(&mut self, pockets: VarDictionary) -> GString {
+        let pockets = super::super::road_types::pockets_from_variant(&pockets);
+        match pockets.validate() {
+            Ok(()) => {
+                self.road_tool_pockets = pockets;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
     /// Each median style's widths in metres (`ROAD-80`), keyed by the style code
     /// [`Self::set_road_tool_median`] takes (1 painted, 2 kerbed grass, 3 kerbed paving): a
     /// dictionary of `default_m` (the width a picked style starts at), `min_m` and `max_m` (the
@@ -372,17 +386,20 @@ impl SimulationNode {
                 .expect("road tool context lock poisoned");
             context.land = land;
             let surface_generation = context.view.surface_generation;
-            let preview = Arc::new(context.preview_road(RoadPreviewRequest {
-                surface_generation,
-                points: points.to_vec(),
-                fwd_lanes,
-                bkw_lanes,
-                snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
-            }));
+            let preview = Arc::new(context.preview_road_with_pockets(
+                RoadPreviewRequest {
+                    surface_generation,
+                    points: points.to_vec(),
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    tunnel: self.road_tool_tunnel,
+                    median: self.road_tool_median,
+                    parking: self.road_tool_parking,
+                    attributes: self.road_tool_attributes,
+                },
+                self.road_tool_pockets,
+            ));
             context.last_preview = Some(Arc::clone(&preview));
             context
                 .graded
