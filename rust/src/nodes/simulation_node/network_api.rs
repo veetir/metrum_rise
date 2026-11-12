@@ -19,18 +19,41 @@ impl SimulationNode {
         self.lock_core().get_hovered_edge_internal(world_x, world_z)
     }
 
-    /// The per-frame hover over a camera ray: the edge under the visible world surface the ray
-    /// hits (`-1` for none, or when the ray misses), or `false` while the simulation thread holds
-    /// the core, so the caller keeps its last answer instead of blocking the frame.
+    /// What the select tool's ray points at: `Vector2i(edge, junction)`, the road whose surface it
+    /// hits or the junction (three or more roads) whose junction piece it hits, the other -1, both
+    /// -1 for neither. Exact: only a road or junction the ray meets on the visible surface, never
+    /// the nearest one. A hover (`wait` false) answers `false` while the simulation thread holds
+    /// the core, so it keeps its last answer (`CODE-25`); a click waits (`CODE-20`).
     #[func]
-    pub fn hover_edge(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        let Some(mut core) = self.try_lock_core() else {
+    pub fn pick_road_piece(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        #[opt(default = false)] wait: bool,
+    ) -> Variant {
+        let Some(mut core) = self.lock_core_if(wait) else {
             return false.to_variant();
         };
-        core.prepare_site_queries();
-        core.intersect_world_surface_internal(ray_origin, ray_dir)
-            .map_or(-1, |p| core.get_hovered_edge_internal(p.x, p.z))
-            .to_variant()
+        let pick = core.pick_road_piece_internal(ray_origin, ray_dir);
+        Vector2i::new(
+            pick.edge.map_or(-1, |edge| edge as i32),
+            pick.junction.map_or(-1, |node| node as i32),
+        )
+        .to_variant()
+    }
+
+    /// The outline of junction `node_id`'s paved piece (its kerbs, closed across the road mouths),
+    /// the area where a select-tool click opens it; empty while the simulation core is busy or
+    /// when the node has no piece.
+    #[func]
+    pub fn get_junction_outline(&self, node_id: i32) -> PackedVector3Array {
+        let Some(core) = self.try_lock_core() else {
+            return PackedVector3Array::new();
+        };
+        if node_id < 0 {
+            return PackedVector3Array::new();
+        }
+        PackedVector3Array::from_iter(core.junction_outline_internal(node_id as u32))
     }
 
     /// Returns the 3D geometry for a road edge.
@@ -386,9 +409,9 @@ impl SimulationNode {
     }
 
     /// The junctions (three or more roads) in the XZ square of half size `half_extent_m` around
-    /// `center`, for the select tool's markers: `ids` (PackedInt32Array), `positions` and `radii`
-    /// (each junction's marker radius, metres), in ascending id order. Empty while the
-    /// simulation core is busy, so the caller keeps its last markers.
+    /// `center`, for the select tool's markers: `ids` (PackedInt32Array) and `positions`, in
+    /// ascending id order. Empty while the simulation core is busy, so the caller keeps its last
+    /// markers.
     #[func]
     pub fn get_junction_markers(&self, center: Vector3, half_extent_m: f32) -> VarDictionary {
         let half = Vector3::new(half_extent_m, 0.0, half_extent_m);
@@ -397,10 +420,9 @@ impl SimulationNode {
         };
         let markers = core.junction_markers_internal(center - half, center + half);
         drop(core);
-        let ids: PackedInt32Array = markers.iter().map(|&(id, _, _)| id as i32).collect();
-        let positions: PackedVector3Array = markers.iter().map(|&(_, pos, _)| pos).collect();
-        let radii: PackedFloat32Array = markers.iter().map(|&(_, _, radius)| radius).collect();
-        vdict! { "ids": ids, "positions": positions, "radii": radii }
+        let ids: PackedInt32Array = markers.iter().map(|&(id, _)| id as i32).collect();
+        let positions: PackedVector3Array = markers.iter().map(|&(_, pos)| pos).collect();
+        vdict! { "ids": ids, "positions": positions }
     }
 
     /// Returns the number of road connections for a node.

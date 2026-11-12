@@ -22,9 +22,13 @@ class SimulationStub extends Node3D:
 		return 7 if hit.x < 40.0 else -1
 	func get_hovered_edge(x: float, _z: float) -> int:
 		return (0 if x < 60.0 else 1) if x >= 40.0 else -1
-	# The per-frame road hover (its own probe; `rays` counts the gestures' probes).
-	func hover_edge(_origin: Vector3, _direction: Vector3) -> Variant:
-		return -1 if hit == null else get_hovered_edge(hit.x, hit.z)
+	# The exact road or junction pick (its own probe; `rays` counts the gestures' probes).
+	func pick_road_piece(_origin: Vector3, _direction: Vector3, _wait := false) -> Variant:
+		if hit == null:
+			return Vector2i(-1, -1)
+		if get_closest_node(hit, 8.0) != -1:
+			return Vector2i(-1, get_closest_node(hit, 8.0))
+		return Vector2i(get_hovered_edge(hit.x, hit.z), -1)
 	func get_node_lanes(_id: int) -> Array:
 		return [
 			{"edge_id": 10, "lane_id": 0, "is_incoming": true, "pos": Vector3(-5, 0.6, 0)},
@@ -64,7 +68,9 @@ class SimulationStub extends Node3D:
 	func get_network_render_generation() -> int:
 		return 0
 	func get_junction_markers(_centre: Vector3, _half_extent_m: float) -> Dictionary:
-		return {"ids": PackedInt32Array(), "positions": PackedVector3Array(), "radii": PackedFloat32Array()}
+		return {"ids": PackedInt32Array(), "positions": PackedVector3Array()}
+	func get_junction_outline(_node: int) -> PackedVector3Array:
+		return PackedVector3Array()
 
 class UiStub extends Node:
 	func hide_road_properties() -> void:

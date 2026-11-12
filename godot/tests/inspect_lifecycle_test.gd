@@ -25,6 +25,8 @@ class SimulationStub extends Node3D:
 		return -1
 	func get_hovered_edge(x: float, _z: float) -> int:
 		return 0 if x < 50 else -1
+	func pick_road_piece(_origin: Vector3, _direction: Vector3, _wait := false) -> Variant:
+		return Vector2i(get_hovered_edge(hit.x, hit.z), -1)
 	func get_edge_nodes(_edge: int) -> Vector2i:
 		return Vector2i(0, 1)
 	func get_edge_geometry_3d(_edge: int) -> PackedVector3Array:

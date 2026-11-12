@@ -749,8 +749,8 @@ Properties has no pocket section any more (one way to do it).
   keyboard for typing until Enter or a click elsewhere (the wheel steps it). The stepper is the
   row's own (− and + buttons around an editable number, `LengthStepper`), not Godot's spin box,
   whose arrows stopped when its text was not editable (the user's play-test, 2026-11-05). A
-  junction that opens the window is ringed while the select tool is on (`get_junction_markers`,
-  see [`ui.md`](ui.md)). Its "Turn pockets" section has one compact row per incoming car
+  junction that opens the window carries a dot while the select tool is on, and a click opens it
+  only on its paved piece (`get_junction_markers`, `pick_road_piece`, see [`ui.md`](ui.md)). Its "Turn pockets" section has one compact row per incoming car
   road, from Rust's `get_junction_pockets(node)`: one entry per car road arm with a lane into the
   junction (an outgoing one-way arm has no approach and no row), clockwise from north by the
   bearing from the junction to the arm's point 20 m out (ties by edge id), each

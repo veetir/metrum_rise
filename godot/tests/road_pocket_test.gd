@@ -79,8 +79,9 @@ func _click_node(tool: Node, x: float, z: float) -> int:
 	await process_frame
 	return node
 
-# With a camera over the four-way, the select tool rings it: the junction is marked, and a click
-# within the 8 m reach of its centre picks it, one beyond it does not.
+# With a camera over the four-way, the select tool marks it with a dot, and the pick is exact: a
+# ray onto the junction's paved area picks the junction, onto the west road that road, and onto
+# the grass beside it nothing. The open junction is outlined.
 func _check_junction_markers(tool: Node, node: int) -> void:
 	var camera := Camera3D.new()
 	root.add_child(camera)
@@ -90,10 +91,15 @@ func _check_junction_markers(tool: Node, node: int) -> void:
 	# The test drives the tool by hand (its processing is off): one frame's marker update.
 	tool._update_junction_markers()
 	_expect(tool._junction_ids.has(node), "the four-way is marked: %s" % [tool._junction_ids])
-	_expect(tool._junction_mi.mesh != null, "the marked junctions have rings")
-	var centre: Vector3 = simulation.get_node_pos(node)
-	_expect(tool._junction_under(centre + Vector3(5.0, 50.0, 0.0), Vector3.DOWN) == node, "a click 5 m from the centre picks the junction")
-	_expect(tool._junction_under(centre + Vector3(12.0, 50.0, 0.0), Vector3.DOWN) == -1, "a click 12 m from the centre does not")
+	_expect(tool._junction_mi.mesh != null, "the marked junctions have dots")
+	var pick := func(x: float, z: float) -> Vector2i:
+		return simulation.pick_road_piece(_ground(x, z) + Vector3.UP * 50.0, Vector3.DOWN, true)
+	_expect(pick.call(1.0, 1.0) == Vector2i(-1, node), "a ray onto the junction picks it: %s" % pick.call(1.0, 1.0))
+	var west: int = pick.call(-60.0, 0.0).x
+	_expect(west != -1 and pick.call(-60.0, 0.0).y == -1, "a ray onto the west road picks the road")
+	_expect(pick.call(-60.0, 15.0) == Vector2i(-1, -1), "a ray onto the grass beside it picks nothing: %s" % pick.call(-60.0, 15.0))
+	tool._light_junction(node)
+	_expect(tool._junction_halo.visible, "the junction is outlined")
 	camera.queue_free()
 
 # The row whose name starts with "From <direction>".
