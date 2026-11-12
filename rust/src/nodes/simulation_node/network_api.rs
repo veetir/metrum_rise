@@ -385,6 +385,24 @@ impl SimulationNode {
             .get_closest_node_internal(world_pos, max_dist)
     }
 
+    /// The junctions (three or more roads) in the XZ square of half size `half_extent_m` around
+    /// `center`, for the select tool's markers: `ids` (PackedInt32Array), `positions` and `radii`
+    /// (each junction's marker radius, metres), in ascending id order. Empty while the
+    /// simulation core is busy, so the caller keeps its last markers.
+    #[func]
+    pub fn get_junction_markers(&self, center: Vector3, half_extent_m: f32) -> VarDictionary {
+        let half = Vector3::new(half_extent_m, 0.0, half_extent_m);
+        let Some(core) = self.try_lock_core() else {
+            return VarDictionary::new();
+        };
+        let markers = core.junction_markers_internal(center - half, center + half);
+        drop(core);
+        let ids: PackedInt32Array = markers.iter().map(|&(id, _, _)| id as i32).collect();
+        let positions: PackedVector3Array = markers.iter().map(|&(_, pos, _)| pos).collect();
+        let radii: PackedFloat32Array = markers.iter().map(|&(_, _, radius)| radius).collect();
+        vdict! { "ids": ids, "positions": positions, "radii": radii }
+    }
+
     /// Returns the number of road connections for a node.
     #[func]
     pub fn get_node_connection_count(&self, node_id: i32) -> i32 {

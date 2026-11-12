@@ -7,6 +7,9 @@ use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::interaction;
 use godot::prelude::*;
 
+// How far a junction's marker ring reaches beyond half its widest carriageway, in metres.
+const JUNCTION_MARKER_PAD_M: f32 = 1.5;
+
 impl SimCore {
     /// Returns the ID of the edge closest to the given world position.
     pub fn get_hovered_edge_internal(&self, world_x: f32, world_z: f32) -> i32 {
@@ -28,6 +31,42 @@ impl SimCore {
     pub fn get_closest_node_internal(&self, world_pos: Vector3, max_dist: f32) -> i32 {
         interaction::get_closest_node_xz(&self.region_graph, world_pos, max_dist)
             .map_or(-1, |id| id as i32)
+    }
+
+    /// The junctions (live nodes where three or more roads meet) inside the XZ rectangle `min` to
+    /// `max`, in ascending node id order: id, position and a marker radius (half the widest
+    /// road's carriageway plus `JUNCTION_MARKER_PAD_M`). The work follows the node grid cells the
+    /// rectangle covers and each junction's own roads, never the whole network.
+    pub fn junction_markers_internal(
+        &self,
+        min: Vector3,
+        max: Vector3,
+    ) -> Vec<(u32, Vector3, f32)> {
+        let graph = &self.region_graph;
+        let mut markers = Vec::new();
+        for node_id in graph.get_nodes_near_aabb(min, max) {
+            let pos = graph.node(node_id).pos;
+            if pos.x < min.x || pos.x > max.x || pos.z < min.z || pos.z > max.z {
+                continue;
+            }
+            if graph.get_valid_node(node_id) != node_id
+                || node_id as usize >= graph.node_adjacency_count()
+            {
+                continue;
+            }
+            let (arms, widest) = graph
+                .node_adjacency(node_id)
+                .iter()
+                .map(|&edge_idx| graph.edge(edge_idx))
+                .filter(|edge| !edge.deleted)
+                .fold((0, 0.0_f32), |(arms, widest), edge| {
+                    (arms + 1, widest.max(edge.width))
+                });
+            if arms >= 3 {
+                markers.push((node_id, pos, widest * 0.5 + JUNCTION_MARKER_PAD_M));
+            }
+        }
+        markers
     }
 
     /// Returns the number of non-deleted road connections for a node.

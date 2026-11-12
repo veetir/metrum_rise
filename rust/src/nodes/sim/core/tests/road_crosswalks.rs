@@ -395,3 +395,28 @@ pub(super) fn fully_emitted_chunks(core: &mut SimCore) -> String {
     core.precompute_road_mesh_data();
     published_chunks(core)
 }
+
+// The select tool's junction markers: the T node alone (its road ends have one arm), found only
+// when the rectangle holds it, its ring reaching past the widest road's half width.
+#[test]
+fn junction_markers_mark_the_t_node_inside_the_rectangle() {
+    let (core, node, _, _) = t_junction();
+    let markers = core.junction_markers_internal(
+        Vector3::new(-150.0, 0.0, -150.0),
+        Vector3::new(150.0, 0.0, 150.0),
+    );
+    assert_eq!(markers.len(), 1);
+    let (id, pos, radius) = markers[0];
+    assert_eq!(id, node);
+    assert!(pos.distance_to(Vector3::ZERO) < 0.5, "{pos:?}");
+    let widest = live_arms(&core, node)
+        .into_iter()
+        .map(|edge| core.region_graph.edge(edge).width)
+        .fold(0.0_f32, f32::max);
+    assert!(radius > widest * 0.5, "{radius} {widest}");
+    let elsewhere = core.junction_markers_internal(
+        Vector3::new(40.0, 0.0, 40.0),
+        Vector3::new(150.0, 0.0, 150.0),
+    );
+    assert!(elsewhere.is_empty());
+}
