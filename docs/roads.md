@@ -741,14 +741,16 @@ Properties has no pocket section any more (one way to do it).
 - **The Junction window** (round R5c2; the select tool and `ui/junction_window.gd` are the
   controllers, each row the view `ui/junction_pocket_row.gd`). A junction click in the select tool
   opens it beside the click (`UIStyle.place_window_near_cursor`: right of it, or left near the
-  screen edge; a visible window the player moved stays unless it would cover the click), movable
-  and resizable, its size kept between sessions; the lane spheres, connection arches and
+  screen edge; a visible window the player moved stays unless it would cover the click), in the
+  Building Inspector's card chrome (`inspector_card.gd`), sized to its rows; the lane spheres, connection arches and
   crosswalk toggles stay in the world. The window keeps the game's keyboard
   (`UIStyle.keep_keyboard_with_game`), so Ctrl+Z undoes with it open. The length stepper's arrows
   step it by 10 m and leave the keyboard to the game; a click on its number keeps the window's
-  keyboard for typing until Enter or a click elsewhere (the wheel steps it while typing). Its text
-  stays editable: Godot 4.7's spin box ignores its arrows when its text is not, which left the
-  length stuck at 60 m until the user's play-test (2026-11-05). Its "Turn pockets" section has one compact row per incoming car
+  keyboard for typing until Enter or a click elsewhere (the wheel steps it). The stepper is the
+  row's own (− and + buttons around an editable number, `LengthStepper`), not Godot's spin box,
+  whose arrows stopped when its text was not editable (the user's play-test, 2026-11-05). A
+  junction that opens the window is ringed while the select tool is on (`get_junction_markers`,
+  see [`ui.md`](ui.md)). Its "Turn pockets" section has one compact row per incoming car
   road, from Rust's `get_junction_pockets(node)`: one entry per car road arm with a lane into the
   junction (an outgoing one-way arm has no approach and no row), clockwise from north by the
   bearing from the junction to the arm's point 20 m out (ties by edge id), each
@@ -757,8 +759,9 @@ Properties has no pocket section any more (one way to do it).
   empty for a custom layout) and that road's `fwd_lanes`, `bkw_lanes`, `median_style`,
   `median_width`; empty for a lane transition node or a node without such an arm.
   `O(degree + arm points)`, reusing `PocketEndView::of` per arm; it reads, never edits. A row:
-  "From west · 2-Lane Road" (eight compass sectors, north = -Z; a custom road reads "2 + 2 lanes,
-  Grass 5.0 m") with what its end has ("Right, 60 m" or "No pocket"); Left and Right check boxes
+  "From west" over "2-Lane Road" (eight compass sectors, north = -Z; a custom road reads "2 + 2
+  lanes, Grass 5.0 m") with what its end has as a pill ("Right, 60 m" or "No pocket"); Left and
+  Right turn-arrow toggles
   (a side the road cannot carry is disabled, its refusal text as the tooltip, unless the pocket
   has it, so it can be removed); a Length stepper, 20-300 m in 10 m steps, default 60 m or the
   pocket's own length, "from the junction"; the verdict line (Rust's refusal through
@@ -772,8 +775,8 @@ Properties has no pocket section any more (one way to do it).
   window reads the arms again: a pocket edit splits and joins the arm, never the junction, so the
   node keeps its id, and each unapplied request whose arm (edge and end) is still there is kept
   with a fresh verdict. A lane transition node or a node without an incoming car road shows no
-  Turn pockets section, only a line saying to edit a pocket from its junction. The window opens at
-  460 x 600 px (minimum 460 x 300): four rows fit without scrolling, more arms scroll.
+  Turn pockets section, only a line saying to edit a pocket from its junction. The card is 430 px
+  wide and as tall as its content: up to four rows show without scrolling, more arms scroll.
 - **Removed with it** (round R5c2): Road Properties' Turn pocket section and its select-tool
   wiring (the end highlight on road selection, the stored click point, `selected_pocket_end`,
   `follow_click_selection`) and the Rust query only it used, `nearest_road_pocket_end`
