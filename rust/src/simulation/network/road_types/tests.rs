@@ -389,3 +389,33 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
         "1+1"
     );
 }
+
+#[test]
+fn pockets_fit_the_layout_they_are_saved_with() {
+    // A left pocket on a divided two-way road takes a lane's width out of a raised median and
+    // leaves its kerb stub (`ROAD-114`); right pockets and undivided roads always have room.
+    let road = |fwd_lanes, bkw_lanes, style, width_m| RoadCrossSection {
+        fwd_lanes,
+        bkw_lanes,
+        median: RoadMedian::from_tool(style, width_m).unwrap(),
+        parking: RoadParking::NONE,
+        sidewalks: SidewalkSides::BOTH,
+    };
+    let pockets = |left, right| RoadTypePockets {
+        left,
+        right,
+        body_m: 60.0,
+    };
+    let left = Err("pocket_requires_wide_median");
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 0, 0.0)), Ok(()));
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 2, 3.0)), left);
+    assert_eq!(pockets(true, false).fits(&road(1, 1, 1, 1.0)), left);
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 2, 4.0)), Ok(()));
+    assert_eq!(pockets(false, true).fits(&road(1, 1, 2, 3.0)), Ok(()));
+    assert_eq!(pockets(true, false).fits(&road(2, 0, 0, 0.0)), Ok(()));
+    assert_eq!(
+        pockets(true, true).fits(&road(3, 3, 0, 0.0)),
+        Err("pocket_lane_limit")
+    );
+    assert_eq!(pockets(false, true).fits(&road(3, 3, 0, 0.0)), Ok(()));
+}

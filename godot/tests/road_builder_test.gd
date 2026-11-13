@@ -249,6 +249,15 @@ func _run() -> void:
 	pockets.longer_button.pressed.emit()
 	_expect(pockets.value() == {"left": true, "right": true, "body_m": 70.0}
 		and _builder.pocket_badge.text.contains("70 m"), "both roles and length appear on the stage")
+	# A left pocket needs a raised median a lane wider than its kerb stub: the grass default is
+	# too narrow, so Save waits and the status line says why.
+	_builder.parts.insert(2, grass)
+	_builder._layout_changed()
+	_expect(_builder.create_button.disabled and bool(_builder.check.get("is_valid", false))
+		and _builder.status_label.text.contains("raised median at least 3.8 m"),
+		"a left pocket on a narrow median is refused: %s" % _builder.status_label.text)
+	_builder.remove_part(2)
+	_expect(not _builder.create_button.disabled, "without the median the pockets fit again")
 	window.size = _builder.MIN_SIZE
 	await process_frame
 	await process_frame

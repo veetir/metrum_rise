@@ -63,6 +63,33 @@ impl RoadTypePockets {
         }
     }
 
+    /// Whether every approach of a road built as `section` can take these pockets, as
+    /// [`Edge::validate_pocket`](super::graph::Edge::validate_pocket) decides per approach: at
+    /// most [`MAX_LANES_PER_DIRECTION`](super::graph::MAX_LANES_PER_DIRECTION) lanes each way
+    /// with the pockets (`pocket_lane_limit`), and a left pocket on a two-way road with a median
+    /// only inside a raised one a lane plus a kerb stub wide (`pocket_requires_wide_median`).
+    /// O(1).
+    pub fn fits(self, section: &RoadCrossSection) -> Result<(), &'static str> {
+        use super::graph::{MAX_LANES_PER_DIRECTION, POCKET_MEDIAN_STUB_M};
+        let pocket_lanes = u8::from(self.left) + u8::from(self.right);
+        if pocket_lanes > 0
+            && section.fwd_lanes.max(section.bkw_lanes) + pocket_lanes > MAX_LANES_PER_DIRECTION
+        {
+            return Err("pocket_lane_limit");
+        }
+        if self.left
+            && section.fwd_lanes > 0
+            && section.bkw_lanes > 0
+            && section.median.is_some_and(|median| {
+                !median.is_raised()
+                    || median.width_m < crate::config::LANE_WIDTH + POCKET_MEDIAN_STUB_M
+            })
+        {
+            return Err("pocket_requires_wide_median");
+        }
+        Ok(())
+    }
+
     /// Checks the shared pocket length grid, including when both roles are off. O(1).
     pub fn validate(self) -> Result<(), &'static str> {
         use super::pockets::{POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M};

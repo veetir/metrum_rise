@@ -11972,7 +11972,14 @@ D1-D5, D22, D23).
 independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
 The cross-section stage annotates the selected arrows and length “at junctions”, because these
 are local approach lanes rather than lanes along the whole type. Neither switch means none;
-the remembered length stays editable when a role is enabled. Footpaths hide these controls.
+the remembered length stays editable when a role is enabled. The controls sit on the speed sign
+row; footpaths hide them. A layout that cannot take its pockets cannot be saved:
+`RoadTypePockets::fits` refuses a left pocket on a two-way road whose median is painted or
+narrower than a lane plus the 0.3 m kerb stub (3.8 m, `pocket_requires_wide_median`), and more
+than four lanes per direction with the pockets (`pocket_lane_limit`). `check_road_layout`
+returns it as `pocket_refusal`, which disables Save and names the reason while the strip still
+draws the layout. Library create and edit enforce it; loading does not, so older types stay usable
+and their approaches are refused at drawing time.
 Creating, editing and duplicating custom types retain the setting. The additive `pockets`
 object (`left`, `right`, `body_m`) lives in `user://road_types.json`, version **2 unchanged**,
 using the library's existing defaulted-field convention. Older entries and built-ins default

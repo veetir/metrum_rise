@@ -143,7 +143,8 @@ impl SimulationNode {
     /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
     /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
     /// of a valid layout with `pockets` (`{left, right, body_m}`, `ROAD-114`): "2+2 Grass 3 m",
-    /// "1+1 Pockets", with " (2)" when taken; else empty. `O(parts)` plus
+    /// "1+1 Pockets", with " (2)" when taken; else empty; and `pocket_refusal`, why a valid
+    /// layout cannot take `pockets` (`RoadTypePockets::fits`), else empty. `O(parts)` plus
     /// the name lookup's `O(types)`.
     #[func]
     pub fn check_road_layout(
@@ -178,13 +179,16 @@ impl SimulationNode {
         result.set("street_lights", street_lights);
         set_cost(&mut result, checked.as_ref().ok().copied());
         result.set("is_valid", verdict.is_ok());
+        let pockets = pockets_from_variant(&pockets);
+        // A layout that cannot take its pockets is still a layout: the strip keeps drawing it.
+        let pocket_refusal = verdict
+            .as_ref()
+            .ok()
+            .and_then(|section| pockets.fits(section).err());
+        result.set("pocket_refusal", pocket_refusal.unwrap_or(""));
         let name = verdict.map_or_else(
             |_| String::new(),
-            |section| {
-                self.with_road_types(|library| {
-                    library.suggested_name(section, pockets_from_variant(&pockets))
-                })
-            },
+            |section| self.with_road_types(|library| library.suggested_name(section, pockets)),
         );
         result.set("suggested_name", name.as_str());
         result

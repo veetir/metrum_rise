@@ -229,7 +229,8 @@ impl RoadTypeLibrary {
     /// Adds a type named `name` (trimmed) with `parts`, `speed_kmh`, `zoning` and
     /// `street_lights`, and returns
     /// its new id. Refused when the file cannot be written, the layout fails [`check_layout`],
-    /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the name breaks a rule
+    /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the pockets do not fit the layout
+    /// ([`RoadTypePockets::fits`]), the name breaks a rule
     /// ([`clean_name`]) or another type has it (`name_taken`), or the write fails
     /// (`library_write_failed`).
     pub fn create(
@@ -242,10 +243,13 @@ impl RoadTypeLibrary {
         pockets: RoadTypePockets,
     ) -> Result<String, RoadTypeRefusal> {
         self.reload_for_write()?;
-        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
+        let (section, speed_kmh) = check_type(parts, speed_kmh)?;
         pockets
             .validate()
             .map_err(|reason| RoadTypeRefusal::new(reason, "pocket body"))?;
+        pockets
+            .fits(&section)
+            .map_err(|reason| RoadTypeRefusal::new(reason, "turn pockets"))?;
         let name = self.free_name(name, None)?;
         let id = format!("{CUSTOM_ID_PREFIX}{}", self.next_id);
         self.next_id += 1;
@@ -278,10 +282,13 @@ impl RoadTypeLibrary {
     ) -> Result<(), RoadTypeRefusal> {
         self.reload_for_write()?;
         let entry = self.entry_index(id)?;
-        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
+        let (section, speed_kmh) = check_type(parts, speed_kmh)?;
         pockets
             .validate()
             .map_err(|reason| RoadTypeRefusal::new(reason, "pocket body"))?;
+        pockets
+            .fits(&section)
+            .map_err(|reason| RoadTypeRefusal::new(reason, "turn pockets"))?;
         let name = self.free_name(name, Some(entry))?;
         self.entries[entry] = stored(
             id,

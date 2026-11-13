@@ -630,12 +630,17 @@ func _update_actions() -> void:
 	create_button.text = "Create road" if editing_id.is_empty() else "Save"
 	var valid := bool(check.get("is_valid", false))
 	var name_reason: String = _simulation_node.check_road_type_name(name_edit.text, editing_id)
-	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
+	# Rust's refusal of pockets this layout cannot take; the strip still draws the layout.
+	var pocket_reason := String(check.get("pocket_refusal", ""))
+	create_button.disabled = not valid or not pocket_reason.is_empty() or not name_reason.is_empty() \
+		or not _library_writable()
 	cost_label.text = _cost_bbcode() if valid else ""
 	warning_label.text = _sidewalk_warning() if valid and zoning and not _is_footpath() else ""
 	warning_label.visible = not warning_label.text.is_empty()
 	if not valid:
 		_status(RoadReasonText.text(check, "This layout cannot be built"), STATUS_REFUSED)
+	elif not pocket_reason.is_empty():
+		_status(RoadReasonText.text({"invalid_reason": pocket_reason}), STATUS_REFUSED)
 	elif not _library_writable():
 		_status(RoadReasonText.text({"invalid_reason": _library.get("error", "")}), STATUS_REFUSED)
 	elif not name_reason.is_empty():
