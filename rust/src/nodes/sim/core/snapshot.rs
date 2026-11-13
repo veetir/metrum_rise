@@ -308,6 +308,9 @@ pub struct RenderSnapshot {
     pub(crate) parked: crate::simulation::parking::ParkedPublication,
     /// World identity of the coherent vehicle frame.
     pub(crate) vehicle_world_epoch: u64,
+    /// What a drawn car's ground solve depends on besides its pose and the camera: the world,
+    /// [`SimCore::vehicle_ground_generation`] and the full-detail radius's bits (`RENDER-28`).
+    pub(crate) vehicle_ground_key: [u64; 3],
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
     /// Per `(vehicle_type * 10 + color_variant)` → flat 12-float `Transform3D` buffer.
@@ -316,6 +319,11 @@ pub struct RenderSnapshot {
     pub car_render_ids: HashMap<u8, Vec<i64>>,
     /// Off-lane support flags, aligned with each car transform/identity bucket.
     pub car_ground_flags: HashMap<u8, Vec<u8>>,
+    /// Walkers and cars inside the camera's rectangle that their draw distance cut (`RENDER-28`).
+    pub(crate) agent_draw_cut: [u32; 2],
+    /// Microseconds this snapshot spent on its agent instances: cull, pose, buckets and the
+    /// off-lane cars' ground solve (`RENDER-28`, the perf channel).
+    pub(crate) agent_instances_us: u32,
     /// Mirrors `SimCore::terrain_dirty` at snapshot time.
     pub terrain_dirty: bool,
     /// Sorted dirty terrain patch keys paired with their authoritative payload revisions.
@@ -421,10 +429,13 @@ impl Default for RenderSnapshot {
         Self {
             parked: Default::default(),
             vehicle_world_epoch: 0,
+            vehicle_ground_key: [0; 3],
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
             car_ground_flags: HashMap::new(),
+            agent_draw_cut: [0; 2],
+            agent_instances_us: 0,
             terrain_dirty: true,
             terrain_dirty_patch_states: Arc::new(Vec::new()),
             terrain_payload_global_generation: 0,
@@ -552,9 +563,17 @@ impl SimCore {
 
         // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
         // interpolation identity contract (`SIM-02-K`).
+        let agents_started = std::time::Instant::now();
         self.build_agent_instances(&mut snapshot);
+        snapshot.agent_instances_us =
+            u32::try_from(agents_started.elapsed().as_micros()).unwrap_or(u32::MAX);
         self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
+        snapshot.vehicle_ground_key = [
+            self.world_epoch,
+            self.vehicle_ground_generation,
+            u64::from(self.vehicle_ground_full_detail_m.to_bits()),
+        ];
 
         let node_positions = self.network_node_positions_snapshot();
 

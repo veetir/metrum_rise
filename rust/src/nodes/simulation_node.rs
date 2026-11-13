@@ -103,11 +103,14 @@
 //! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
-//! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
+//! | **Agents** | `update_walker_buffers` | `agents.gd` (`get_changed_walker_buckets`: the walker buckets to upload) |
+//! | | `get_agent_draw_distances` | `agents.gd` (the fade bands of the agents' shaders) |
 //! | | `get_car_render_data` | `agents.gd` |
 //! | | `smooth_car_render_data` | `agents.gd` |
 //! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
-//! | | `set_camera_aabb` | `agents.gd` (culling update) |
+//! | | `get_changed_car_buckets` | `agents.gd` (the car buckets to upload) |
+//! | | `update_agent_view` | `agents.gd` (culling rectangle from the camera) |
+//! | | `set_camera_aabb` | tests (culling update) |
 
 use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
@@ -146,12 +149,14 @@ mod async_jobs;
 mod async_terrain;
 mod building_lod_api;
 mod cell_zoning_api;
+mod core_lock_stats;
 mod economy_api;
 mod graded_tiles_api;
 mod gridlock_api;
 mod junction_debug_api;
 mod network_api;
 mod parking_api;
+mod road_hydration_api;
 mod system_api;
 mod terrain_api;
 #[cfg(test)]
@@ -226,8 +231,23 @@ pub struct SimulationNode {
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
+    /// The building LOD batches' `RenderingServer` slots (`RENDER-32-L`), once
+    /// `building_lods.gd` gave the scenario; presentation state like `building_lods`.
+    pub(crate) building_draw: Option<building_lod_api::BuildingDraw>,
+    /// The network a load's road chunks hydrate from (`RENDER-32-P`), until the hydration ends;
+    /// presentation state like `building_lods`.
+    pub(crate) road_hydration: Option<road_hydration_api::RoadHydrationSource>,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
+    /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
+    /// buckets its last call changed (`RENDER-28`); presentation state like `car_visuals`.
+    car_buffers: VarDictionary,
+    changed_car_buckets: PackedInt64Array,
+    /// The drawn walker buffers (`RENDER-28`): Rust's copy, the bucket dictionary
+    /// `update_walker_buffers` returns and the buckets its last call changed.
+    walker_visuals: crate::nodes::sim::render::walker_visual::DrawnWalkers,
+    walker_buffers: VarDictionary,
+    changed_walker_buckets: PackedInt64Array,
     /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
     pub(crate) render_camera_position: Option<Vector2>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
@@ -236,6 +256,8 @@ pub struct SimulationNode {
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     /// Graded terrain residency work in flight and waiting for Godot's poll (`TERRAIN-07-D`).
     graded_jobs: Arc<Mutex<graded_tiles_api::GradedResidencyJobs>>,
+    /// Vegetation patch products prepared on the background pool (`RENDER-32-D`).
+    vegetation_jobs: Arc<Mutex<vegetation_api::VegetationJobs>>,
     /// The graded edit journal's latest serial (`T61 (2)`), read without the core lock.
     graded_edit_serial: Arc<std::sync::atomic::AtomicU64>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
@@ -268,18 +290,26 @@ impl SimulationNode {
     /// Poisoning is an authoritative simulation failure: callers must not expose
     /// potentially partial state after a failed phase.
     #[inline]
+    #[track_caller]
     fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
         Self::wait_for_shared_core(&self.core_turnstile, &self.core)
     }
 
     /// [`Self::lock_core`] for a caller that holds its own reference to the core.
+    #[track_caller]
     fn wait_for_shared_core<'a>(
         turnstile: &CoreTurnstile,
         core: &'a Mutex<SimCore>,
     ) -> std::sync::MutexGuard<'a, SimCore> {
-        turnstile
+        // The perf channel's main-thread counts (`CODE-26`): one relaxed load when off.
+        let start = core_lock_stats::enabled().then(std::time::Instant::now);
+        let guard = turnstile
             .wait_for(core)
-            .expect("simulation core lock poisoned by a failed authoritative phase")
+            .expect("simulation core lock poisoned by a failed authoritative phase");
+        if let Some(start) = start {
+            core_lock_stats::note_wait(std::panic::Location::caller(), start);
+        }
+        guard
     }
 
     /// Non-blocking mutex acquire. Returns `None` if the sim thread currently holds
@@ -287,6 +317,7 @@ impl SimulationNode {
     /// calls (terrain raycast, network snap) so the Godot main thread never stalls
     /// waiting for an in-progress road placement.
     #[inline]
+    #[track_caller]
     fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
         Self::try_lock_shared_core(&self.core)
     }
@@ -295,6 +326,7 @@ impl SimulationNode {
     /// one-shot callers (a click, a test reading the answer) ask to wait for the core
     /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
     #[inline]
+    #[track_caller]
     fn lock_core_if(
         &self,
         wait: bool,
@@ -306,8 +338,17 @@ impl SimulationNode {
         }
     }
 
+    #[track_caller]
     fn try_lock_shared_core(core: &Mutex<SimCore>) -> Option<std::sync::MutexGuard<'_, SimCore>> {
-        match core.try_lock() {
+        let result = core.try_lock();
+        // The perf channel's main-thread counts (`CODE-26`): one relaxed load when off.
+        if core_lock_stats::enabled() {
+            core_lock_stats::note_try(
+                std::panic::Location::caller(),
+                matches!(result, Err(std::sync::TryLockError::WouldBlock)),
+            );
+        }
+        match result {
             Ok(g) => Some(g),
             Err(std::sync::TryLockError::WouldBlock) => None,
             Err(std::sync::TryLockError::Poisoned(_)) => {
@@ -484,11 +525,19 @@ impl INode3D for SimulationNode {
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),
+            building_draw: None,
+            road_hydration: None,
             car_visuals: Default::default(),
+            car_buffers: VarDictionary::new(),
+            changed_car_buckets: PackedInt64Array::new(),
+            walker_visuals: Default::default(),
+            walker_buffers: VarDictionary::new(),
+            changed_walker_buckets: PackedInt64Array::new(),
             render_camera_position: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),
+            vegetation_jobs: Default::default(),
             graded_edit_serial,
             water_patch_payload_jobs,
             async_jobs: Default::default(),
@@ -538,6 +587,13 @@ impl INode3D for SimulationNode {
 
         // Start the background simulation thread.
         self.start_sim_thread();
+    }
+
+    // The building batches' slots are `RenderingServer` objects no node owns: they are freed as
+    // the node leaves the tree, before the scene's nodes and the looks' meshes are deleted
+    // (`RENDER-41`); `Drop` may come after `building_lods.gd` freed the meshes.
+    fn exit_tree(&mut self) {
+        self.reset_building_draw();
     }
 
     fn process(&mut self, delta: f64) {

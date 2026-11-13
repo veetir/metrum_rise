@@ -170,6 +170,9 @@ pub struct GrowthReport {
     current: DayDiagnostics,
     businesses: BTreeMap<BusinessIdentity, BusinessSnapshot>,
     business_outcomes: BTreeMap<BusinessIdentity, GrowthBusinessOutcome>,
+    // `business_outcomes` at the last calendar close: the run ends in the frame of its last close,
+    // and daily phases settled after it in that frame belong to the next, unreported day.
+    closed_outcomes: BTreeMap<BusinessIdentity, GrowthBusinessOutcome>,
     profile_names: BTreeMap<u16, String>,
     opening_treasury: f64,
     opening_build_cost: f64,
@@ -181,6 +184,9 @@ pub struct GrowthReport {
     stranded_members: String,
     // Shortage lines of the household windows closed since the last calendar close.
     stranded_today: String,
+    // Private wages paid between the last calendar close and the attachment: daily phases that
+    // settled in the frame after the close. Counted in the first day's paid wages only.
+    unobserved_payroll: f64,
 }
 
 /// Per-firm results over the observed run, retained after bankruptcy and removal.
@@ -252,6 +258,7 @@ impl GrowthReport {
             current: DayDiagnostics::default(),
             businesses: BTreeMap::new(),
             business_outcomes: BTreeMap::new(),
+            closed_outcomes: BTreeMap::new(),
             profile_names: BTreeMap::new(),
             opening_treasury: core.treasury.balance,
             opening_build_cost: core.treasury.lifetime_build_cost,
@@ -271,6 +278,7 @@ impl GrowthReport {
             support_days: core.demand.runtime_tuning().unemployment_max_days,
             stranded_members: String::new(),
             stranded_today: String::new(),
+            unobserved_payroll: core.households.day_totals.private_payroll,
         };
         report.sample_businesses(core, Sample::Boundary);
         report.opening_business_cash = report.businesses.values().map(|b| b.cash).sum();
@@ -278,6 +286,7 @@ impl GrowthReport {
             outcome.opening_cash = outcome.startup_cash;
             outcome.startup_cash = 0.0;
         }
+        report.closed_outcomes.clone_from(&report.business_outcomes);
         report.current = DayDiagnostics::default();
         report
     }
@@ -432,9 +441,10 @@ impl GrowthReport {
         });
     }
 
-    /// Returns individual firms in stable site order, including failed and removed firms.
+    /// Returns individual firms in stable site order, including failed and removed firms, as of
+    /// the last calendar close.
     pub fn business_outcomes(&self) -> impl Iterator<Item = &GrowthBusinessOutcome> {
-        self.business_outcomes.values()
+        self.closed_outcomes.values()
     }
 
     /// Largest daily mismatch between measured treasury movement and the observed flow buckets.
@@ -1012,7 +1022,7 @@ impl EconomyObserver for GrowthReport {
         self.sample_businesses(core, Sample::Boundary);
         let last_day = &core.households.last_day_totals;
         assert!(
-            (self.current.payroll - last_day.private_payroll).abs() < 0.1
+            (self.current.payroll + self.unobserved_payroll - last_day.private_payroll).abs() < 0.1
                 && (self
                     .current
                     .businesses
@@ -1024,6 +1034,8 @@ impl EconomyObserver for GrowthReport {
                     < 0.1,
             "private payroll observer must reconcile actual paid wages"
         );
+        self.unobserved_payroll = 0.0;
+        self.closed_outcomes.clone_from(&self.business_outcomes);
         self.stranded_members = std::mem::take(&mut self.stranded_today);
         for agent in 0..core.agents.len() {
             if core

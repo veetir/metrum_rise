@@ -135,6 +135,11 @@ class Cycler extends HBoxContainer:
 		if selected < 0:
 			select(0)
 
+	## Number of items, as OptionButton's `item_count`.
+	var item_count: int:
+		get:
+			return _items.size()
+
 	## Number of items.
 	func get_item_count() -> int:
 		return _items.size()

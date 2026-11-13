@@ -63,7 +63,16 @@ var _environment: Environment
 var _fog_effects: Array[WaterReflectionFogEffect] = []
 var _reflection_sun: DirectionalLight3D
 # Levels the last vote chose, which the next vote favours.
-var _voted_levels := PackedFloat32Array()
+var _voted_levels := PackedFloat32Array([NAN, NAN])
+# Inputs of the last successful vote. Compare against that pose so sub-epsilon motion accrues.
+var _vote_sources := PackedInt64Array()
+var _vote_valid := false
+var _vote_transform := Transform3D.IDENTITY
+var _vote_projection := Projection()
+var _vote_rect := Rect2()
+var _vote_offsets := Vector2.ZERO
+# Microseconds the last frame's vote took, for the perf channel.
+var _vote_us := 0
 # Per vote ray, the water level it last came down onto, or NAN.
 var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
@@ -71,19 +80,17 @@ var _ray_directions := PackedVector3Array()
 # The terrain patches the reflection world mirrors, by instance id, to [proxy instance RID,
 # base RID, transform, material]. Meshes are shared; terrain uses a cached clip-material variant.
 var _proxies := {}
-# The same for tree impostor MultiMeshes, which follow their patches' events, not the round robin.
-var _tree_proxies := {}
 var _proxy_frame := 0
 var _terrain: Node
 # Reflection variants of terrain materials, by source.
 var _grid_materials := {}
 var _proxy_shaders := {}
 var _dirty_terrain_patches := {}
+# The vegetation renderer: the stream node draws its tree impostors in this pass's world too
+# (`RENDER-32-E`), from the frame they install in the scene.
 var _vegetation: Node
-# Tree patches added, shown or hidden since the last frame, by instance id: their proxies are
-# synced in this frame's pre-draw, so the reflection's forest changes when the scene's does.
-var _dirty_tree_patches := {}
-# Building and scaffold batches mirrored as shared MultiMesh proxies (water_reflection_sources.gd).
+# Scaffold batches mirrored as shared MultiMesh proxies (water_reflection_sources.gd); the building
+# LOD batches' proxies are drawn by Rust with their batches (`RENDER-32-L`).
 var _building_proxies: RefCounted
 
 ## Wires the pass to the scene's key light and environment. Call once before the first frame.
@@ -100,15 +107,25 @@ func setup(
 		_terrain.patches_will_reset.connect(_on_terrain_reset)
 	_sun = sun
 	_main_environment = environment
-	if _vegetation != null:
-		_vegetation.child_entered_tree.connect(_on_tree_patch_entered)
-		_vegetation.child_exiting_tree.connect(_on_tree_patch_exiting)
-		_vegetation.visibility_changed.connect(_on_vegetation_visibility_changed)
-		for patch in _vegetation.get_children():
-			_on_tree_patch_entered(patch)
+	_link_vegetation()
+
+## Hands the reflection's world to the vegetation once both exist (setup may come before or after
+## the world is made), and to the building batches (`RENDER-32-L`), which draw their proxies in it;
+## a building renderer made later asks for it (`reflection_scenario`).
+func _link_vegetation() -> void:
+	if _vegetation != null and _world != null and _vegetation.has_method("set_reflection_scenario"):
+		_vegetation.set_reflection_scenario(_world.scenario)
+	if _world != null and is_inside_tree():
+		get_tree().call_group("building_lod_renderers", "set_reflection_scenario", _world.scenario)
+
+## The reflection's world, or an invalid RID before it exists.
+func reflection_scenario() -> RID:
+	return _world.scenario if _world != null else RID()
 
 func _ready() -> void:
+	add_to_group("water_reflections")
 	_world = World3D.new()
+	_link_vegetation()
 	_building_proxies = ReflectionSources.new()
 	_building_proxies.setup(_world.scenario, PROXY_SYNC_FRAMES,
 		_water.get_node_or_null("../Buildings") if _water != null else null)
@@ -147,19 +164,30 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if _building_proxies != null:
 		_building_proxies.clear()
-	for proxies in [_proxies, _tree_proxies]:
-		for proxy in proxies.values():
-			RenderingServer.free_rid(proxy[0])
-		proxies.clear()
+	if is_instance_valid(_vegetation) and _vegetation.has_method("set_reflection_scenario"):
+		_vegetation.set_reflection_scenario(RID())
+	get_tree().call_group("building_lod_renderers", "set_reflection_scenario", RID())
+	for proxy in _proxies.values():
+		RenderingServer.free_rid(proxy[0])
+	_proxies.clear()
 	if RenderingServer.frame_pre_draw.is_connected(_update_before_draw):
 		RenderingServer.frame_pre_draw.disconnect(_update_before_draw)
 	RenderingServer.global_shader_parameter_set("water_reflection_map", null)
 	RenderingServer.global_shader_parameter_set("water_reflection_map_2", null)
 	RenderingServer.global_shader_parameter_set("water_reflection_plane", Vector4.ZERO)
 
-# After every node has moved the camera and the key light for this frame.
+# After every node has moved the camera and the key light for this frame. The perf channel
+# records the hook as "water_reflection", with the vote's own share.
 func _update_before_draw() -> void:
-	_sync_tree_patches()
+	var start_us := Time.get_ticks_usec()
+	_vote_us = 0
+	_update_mirrors()
+	if PerfDebug.is_enabled():
+		PerfDebug.record("water_reflection", float(Time.get_ticks_usec() - start_us) / 1000.0, {
+			"vote_ms": float(_vote_us) / 1000.0,
+			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3])})
+
+func _update_mirrors() -> void:
 	_building_proxies.sync()
 	var main_viewport := get_viewport()
 	var main_camera := main_viewport.get_camera_3d() if main_viewport != null else null
@@ -169,7 +197,9 @@ func _update_before_draw() -> void:
 		_publish_planes()
 		return
 	main_camera.cull_mask &= ~REFLECTION_LAYER
+	var vote_start := Time.get_ticks_usec()
 	var levels := _vote_planes(main_camera)
+	_vote_us = Time.get_ticks_usec() - vote_start
 	var synced := false
 	for index in MIRROR_COUNT:
 		var mirror: Array = _mirrors[index]
@@ -342,11 +372,33 @@ func _sync_environment() -> void:
 # where a mirror has no lake. Rust marches the rays against the terrain and the water
 # as drawn (get_first_water_surfaces), so water a hill hides gets no vote and a river stepping
 # down its valley polls at the levels it is drawn at. O(VOTE_COLUMNS * VOTE_ROWS *
-# VOTE_MAX_DISTANCE_M / 4 m) samples in Rust per frame.
+# VOTE_MAX_DISTANCE_M / 4 m) samples only when a vote input changes; O(1) otherwise.
 func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 	if _simulation == null:
-		return PackedFloat32Array([NAN, NAN])
+		return _voted_levels
+	var sources: PackedInt64Array = _simulation.get_water_reflection_sources(_vote_sources)
+	# No lock means retry next frame, not a successful vote for these inputs.
+	if sources.is_empty():
+		return _voted_levels
+	if sources[2] == 0:
+		if sources != _vote_sources:
+			_voted_levels = PackedFloat32Array([NAN, NAN])
+			_ray_levels.clear()
+			_vote_sources = sources
+			_vote_valid = false
+		return _voted_levels
 	var rect := camera.get_viewport().get_visible_rect()
+	var transform := camera.global_transform
+	var projection := camera.get_camera_projection()
+	var offsets := Vector2(camera.h_offset, camera.v_offset)
+	# Absolute tolerances: relative approximate equality grows too loose far from world zero.
+	if _vote_valid and sources == _vote_sources and rect == _vote_rect \
+			and projection == _vote_projection and offsets == _vote_offsets \
+			and transform.origin.distance_squared_to(_vote_transform.origin) <= 1.0e-8 \
+			and transform.basis.x.distance_squared_to(_vote_transform.basis.x) <= 1.0e-12 \
+			and transform.basis.y.distance_squared_to(_vote_transform.basis.y) <= 1.0e-12 \
+			and transform.basis.z.distance_squared_to(_vote_transform.basis.z) <= 1.0e-12:
+		return _voted_levels
 	# The rows start at the horizon, or the top of the screen when it is above, and close up
 	# towards it with the square of their spacing: far water is a thin band just under the
 	# horizon in a low view. Rows fixed over the lower two thirds of the screen all passed
@@ -372,8 +424,15 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 		camera.global_position, _ray_directions, VOTE_MAX_DISTANCE_M)
 	# Empty while the simulation holds its core. Last frame's levels stand in: abstaining rays
 	# emptied the vote then, and the reflection flickered off.
-	if levels.size() == _ray_directions.size():
-		_ray_levels = levels
+	if levels.size() != _ray_directions.size():
+		return _voted_levels
+	_ray_levels = levels
+	_vote_sources = sources
+	_vote_transform = transform
+	_vote_projection = projection
+	_vote_rect = rect
+	_vote_offsets = offsets
+	_vote_valid = true
 	# Rust owns selection and its hysteresis. Row weights are immutable screen shares; a second
 	# lake is ranked against other lakes, without a separate absolute entry/exit threshold.
 	if _ray_weights.is_empty():
@@ -384,8 +443,9 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 	_voted_levels = _simulation.select_water_reflection_planes(_ray_levels, _ray_weights, _voted_levels)
 	return _voted_levels
 
-# Mirrors the resident terrain patches into the reflection world; tree impostors follow their
-# patches' events (_sync_tree_patches), buildings their batches' (water_reflection_sources.gd).
+# Mirrors the resident terrain patches into the reflection world; tree impostors are drawn there
+# by the stream node, building batches by Rust with their batches, scaffolds by their events
+# (water_reflection_sources.gd).
 # Agents, grass, props, understory, near tree meshes, hedges, lots and roads are left out; a
 # bridge would need its own geometry first. Each frame handles
 # one PROXY_SYNC_FRAMES-th of the patches and of the proxies, round robin, so no frame pays for
@@ -401,7 +461,9 @@ func _on_terrain_reset() -> void:
 	_proxies.clear()
 	_grid_materials.clear()
 	_dirty_terrain_patches.clear()
-	_voted_levels.clear()
+	_voted_levels = PackedFloat32Array([NAN, NAN])
+	_vote_valid = false
+	_vote_sources.clear()
 	_ray_levels.clear()
 
 func _sync_proxies() -> void:
@@ -434,55 +496,6 @@ func _sync_proxies() -> void:
 			RenderingServer.free_rid(_proxies[id][0])
 			_proxies.erase(id)
 	_dirty_terrain_patches.clear()
-
-# Tree patches are built, replaced, cached and restored as the camera moves. Synced round robin
-# like the terrain, a replaced patch's old proxies went in one slice and its new ones came in
-# another, up to ten frames apart, and its trees vanished from the reflection meanwhile. Synced
-# from the patch's own events, the reflection's forest changes in the frame the scene's does.
-# O(changed patches) per frame.
-func _on_tree_patch_entered(node: Node) -> void:
-	if not (node is Node3D):
-		return
-	if not node.visibility_changed.is_connected(_on_tree_patch_visibility_changed):
-		node.visibility_changed.connect(_on_tree_patch_visibility_changed.bind(node))
-	_dirty_tree_patches[node.get_instance_id()] = node
-
-func _on_tree_patch_exiting(node: Node) -> void:
-	_dirty_tree_patches.erase(node.get_instance_id())
-	_free_tree_proxies(node)
-
-func _on_tree_patch_visibility_changed(patch: Node3D) -> void:
-	_dirty_tree_patches[patch.get_instance_id()] = patch
-
-func _on_vegetation_visibility_changed() -> void:
-	for patch in _vegetation.get_children():
-		_on_tree_patch_entered(patch)
-
-func _sync_tree_patches() -> void:
-	if _dirty_tree_patches.is_empty():
-		return
-	var scenario := _world.scenario
-	for patch in _dirty_tree_patches.values():
-		if not is_instance_valid(patch) or not patch.is_inside_tree():
-			continue
-		if not patch.is_visible_in_tree():
-			_free_tree_proxies(patch)
-			continue
-		for child in patch.get_children():
-			var trees := child as MultiMeshInstance3D
-			if trees == null or not trees.visible or int(trees.get_meta("lod", 0)) != 2 \
-					or bool(trees.get_meta("shadow_proxy", false)):
-				continue
-			_sync_proxy(_tree_proxies, trees, trees.multimesh.get_rid(), trees.material_override,
-				scenario)
-	_dirty_tree_patches.clear()
-
-func _free_tree_proxies(patch: Node) -> void:
-	for child in patch.get_children():
-		var id := child.get_instance_id()
-		if _tree_proxies.has(id):
-			RenderingServer.free_rid(_tree_proxies[id][0])
-			_tree_proxies.erase(id)
 
 func _sync_proxy(
 	proxies: Dictionary, source: GeometryInstance3D, base: RID, material: Material, scenario: RID

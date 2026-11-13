@@ -158,7 +158,7 @@ func run(bench: Node) -> void:
 		_vegetation = bench.terrain.get_node_or_null("../Vegetation")
 		# The settle includes every resident patch's cell set build (off the frame paths).
 		_report.loads.append({"case": fixture.case_id, "settle_ms": float(Time.get_ticks_usec() - load_us) / 1000.0,
-			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patch_cells.size()})
+			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patches_with_cells()})
 		if _graded == null:
 			_finish("the terrain renderer draws no graded tiles")
 			return
@@ -421,7 +421,7 @@ func _edit(record: Dictionary, kind: String) -> Dictionary:
 	var frames := 0
 	await _next_frame()
 	_kind = "wait"
-	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or not _graded._edit_batch.is_empty() or _graded._edit_release >= 0):
+	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or _graded._book.edit_batch_len() > 0 or _graded._book.edit_release() >= 0):
 		await _next_frame()
 		frames += 1
 	var batch: Array = _frames.filter(func(row): return row.has("batch_ms"))
@@ -460,7 +460,7 @@ func _next_frame() -> void:
 		"uploads": int(counters["uploads"]) - int(_seen["uploads"]),
 		"upload_bytes": int(counters["upload_bytes"]) - int(_seen["upload_bytes"]),
 		"pending": int(_bench.road_tool._graded_pending),
-		"cell_patches": _graded.patch_cells.size(),
+		"cell_patches": _graded.patches_with_cells(),
 		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
 		# Resident patches drawing nothing (sky through the ground): a failure in any frame.
 		"holes": _graded.hole_patches(),
@@ -516,8 +516,8 @@ func _settle(record: Dictionary) -> bool:
 	while bool(wait.get("ok", false)) and graded != null and stable < 3 and frames < SETTLE_FRAME_LIMIT:
 		await _bench.get_tree().process_frame
 		frames += 1
-		var idle: bool = (graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
-			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
+		var idle: bool = (not graded._book.has_pending_work() and not graded._book.lists_in_flight()
+			and graded.cell_builds_pending() == 0)
 		stable = stable + 1 if idle else 0
 	if stable < 3:
 		record["error"] = "the terrain did not settle"
@@ -543,57 +543,64 @@ func _capture(record: Dictionary, label: String) -> void:
 func _vegetation_row() -> Dictionary:
 	var epoch := int(_bench.simulation_node.get_land_cover_epoch())
 	var trunks := PackedVector2Array()
+	var stream: Node = _vegetation.stream
 	var row := {"on_road": 0, "extra": 0, "missing": 0, "uploads": 0, "stale": 0, "queued": 0,
-		"queue": _vegetation.queue.size(), "revision": int(_bench.terrain.get_surface_commit_revision()),
-		"epoch": epoch}
-	for drawn: Dictionary in [_vegetation.patches, _vegetation.standins]:
-		for key: Vector3i in drawn:
-			var node: Node3D = drawn[key]
-			var origin := Vector2(node.position.x, node.position.z)
-			var span: float = _vegetation._key_span(key)
-			if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
-				continue
-			var id := node.get_instance_id()
-			if _veg_ids.has(key) and _veg_ids[key] != id:
-				row.uploads += 1
-			_veg_ids[key] = id
-			if not _veg_trunks.has(id):
-				_veg_trunks[id] = _patch_trunks(node)
-			var local: Dictionary = _veg_trunks[id]
-			var understory := bool(node.get_meta("understory"))
-			var cached := "%s %s %d" % [key, understory, epoch]
-			if not _veg_rust.has(cached):
-				_veg_rust[cached] = _placement(origin, span, understory, bool(node.get_meta("near_band")))
-			var placed: Dictionary = _veg_rust[cached]
-			for at: Vector2 in local:
-				if _veg_region.has_point(origin + at):
-					trunks.append(origin + at)
-					row.extra += 0 if placed.has(at) else 1
-			for at: Vector2 in placed:
-				if not local.has(at) and _veg_region.has_point(origin + at):
-					row.missing += 1
-			var generations: Vector2i = _vegetation._owner_generations(_vegetation._owner_key(key), null)
-			if ((generations.x >= 0 and generations.x != int(node.get_meta("surface_generation")))
-					or generations.y != int(node.get_meta("vegetation_generation"))):
-				row.stale += 1
-				row.queued += 1 if _vegetation.queued.has(key) else 0
+		"queue": int(stream.get_vegetation_metrics()["queue"]),
+		"revision": int(_bench.terrain.get_surface_commit_revision()), "epoch": epoch}
+	# The stream node's records (`RENDER-32-F`): drawn (0) and stand-ins (1) draw.
+	var records: Dictionary = stream.get_vegetation_records()
+	for key: Vector3i in records:
+		var record: Dictionary = records[key]
+		if int(record["standing"]) > 1:
+			continue
+		# What the stream node drew for the patch (`RENDER-32-E`): its install's serial
+		# identifies the version, as the patch node's instance id did.
+		var patch: Dictionary = stream.get_vegetation_patch(key)
+		if patch.is_empty():
+			continue
+		var origin: Vector2 = patch["origin"]
+		var span: float = float(_bench.terrain.get_render_patch_span_m()) / maxi(key.z, 1)
+		if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
+			continue
+		var id: int = patch["serial"]
+		if _veg_ids.has(key) and _veg_ids[key] != id:
+			row.uploads += 1
+		_veg_ids[key] = id
+		if not _veg_trunks.has(id):
+			_veg_trunks[id] = _patch_trunks(patch)
+		var local: Dictionary = _veg_trunks[id]
+		var understory := bool(record["understory"])
+		var cached := "%s %s %d" % [key, understory, epoch]
+		if not _veg_rust.has(cached):
+			_veg_rust[cached] = _placement(origin, span, understory, bool(record["near_band"]))
+		var placed: Dictionary = _veg_rust[cached]
+		for at: Vector2 in local:
+			if _veg_region.has_point(origin + at):
+				trunks.append(origin + at)
+				row.extra += 0 if placed.has(at) else 1
+		for at: Vector2 in placed:
+			if not local.has(at) and _veg_region.has_point(origin + at):
+				row.missing += 1
+		if bool(record["stale"]):
+			row.stale += 1
+			row.queued += 1 if bool(record["queued"]) else 0
 	row.on_road = _on_road(trunks, false)
 	row["on_preview"] = _on_road(trunks, true)
 	row["plants"] = trunks.size()
 	return row
 
 # A drawn patch's plant trunks in its own frame, as a set: the instance origins of its visible
-# levels, its shadow proxies and hedge runs left out.
-func _patch_trunks(node: Node3D) -> Dictionary:
+# levels (hedge runs left out; a shadow caster draws on its impostor's buffer), read back from
+# the stream node's `MultiMesh` buffers.
+func _patch_trunks(patch: Dictionary) -> Dictionary:
 	var out := {}
-	for child in node.get_children():
-		if (not child is MultiMeshInstance3D or not child.visible or child.get_meta("shadow_proxy", false)
-				or int(child.get_meta("lod", 0)) == Vegetation.HEDGE_RUN_LOD):
+	for batch: Dictionary in patch["batches"]:
+		if not bool(batch["main"]["visible"]) or int(batch["lod"]) == Vegetation.HEDGE_RUN_LOD:
 			continue
-		var multimesh: MultiMesh = child.multimesh
-		for i in multimesh.instance_count:
-			var at := multimesh.get_instance_transform(i).origin
-			out[Vector2(at.x, at.z)] = true
+		var stride := 12 + (4 if batch["colors"] else 0) + (4 if batch["custom"] else 0)
+		var buffer := RenderingServer.multimesh_get_buffer(batch["multimesh"])
+		for i in int(batch["count"]):
+			out[Vector2(buffer[i * stride + 3], buffer[i * stride + 11])] = true
 	return out
 
 # Rust's placement for a patch now, as its upload would draw it (vegetation.gd `_upload_patch`):

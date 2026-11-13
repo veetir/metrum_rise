@@ -10,6 +10,7 @@ const Species = preload("res://scripts/renderers/tree_species.gd")
 const SPAN = 510.0
 class Terrain extends Node:
 	func get_patch_surface_generation(_key): return 7
+	func get_render_patch_span_m(): return SPAN
 class Simulation extends Node:
 	var data := PackedFloat32Array()
 	func _init():
@@ -21,7 +22,6 @@ class Simulation extends Node:
 			data[i*6+3] = float(i % 31) * 0.2
 			data[i*6+4] = 0.8 + float(i % 17) * 0.025
 			data[i*6+5] = [0, 1, 2, 2, 2, 2, 3, 3][i % 8]
-	func get_vegetation_patch_generation(_key): return 0
 	func get_terrain_world_size(): return Vector2(1020, 1020)
 	# Rust packs world positions; the fixture is authored relative to the patch it is fetched for.
 	# No crown coverage, so every tree keeps an open stand.
@@ -34,20 +34,11 @@ class Simulation extends Node:
 			world[i] += origin.x
 			world[i + 2] += origin.y
 		return world
-# Inspect the CPU buffer during actual uploads; the dummy backend cannot read it back.
-# Used only for four pinned trees outside the timed fixture.
-class BufferProbe extends Vegetation:
-	var written := 0
-	func _ready() -> void: pass
-	func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float,
-		tint: Color) -> void:
-		super._write_impostor(buffer, offset, placed, layer, tint)
-		# The pins below name variants 0 and 2, and the layer is the variant.
-		var expected := 2.0 if int(placed.origin.x) % 20 == 0 else 0.0
-		assert(buffer[offset + 12] == expected)
-		assert(buffer[offset + 3] == placed.origin.x)
-		written += 1
-
+	# The products' catalogue (`rebuild_from_simulation_state` hands it to the background jobs).
+	var catalogue := PackedFloat32Array()
+	func set_vegetation_product_catalogue(value):
+		catalogue = value
+		return true
 func _initialize(): call_deferred("run")
 func run():
 	var host := Node3D.new()
@@ -58,6 +49,9 @@ func run():
 	var simulation := Simulation.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	host.add_child(stream)
 	var camera := Camera3D.new()
 	host.add_child(camera)
 	camera.current = true
@@ -66,6 +60,13 @@ func run():
 	var catalogue_start := Time.get_ticks_usec()
 	host.add_child(vegetation)
 	var catalogue_ms := float(Time.get_ticks_usec() - catalogue_start) / 1000.0
+	# The water reflection's world, where the stream node mirrors the impostors.
+	var reflection_world := World3D.new()
+	vegetation.set_reflection_scenario(reflection_world.scenario)
+	# The residency's settings and the terrain span: the stream node answers the bands a patch
+	# takes from the camera (`RENDER-32-F`); its patches here are built and delivered by the test.
+	stream.set_terrain_patch_span(SPAN)
+	vegetation.rebuild_from_simulation_state()
 	var geometry := _geometry_counts(vegetation.meshes)
 	_check_geometry_budget(geometry)
 	_check_impostors(vegetation)
@@ -73,149 +74,142 @@ func run():
 	_check_meshes(vegetation.meshes)
 	_check_atlas_cells()
 	for key in [Vector3i(0,0,1), Vector3i(1,0,1), Vector3i(0,1,1), Vector3i(1,1,1)]:
-		vegetation._upload_patch(key, SPAN)
+		_upload(vegetation, key, SPAN)
 	await process_frame
-	vegetation.generation_ms_max = 0.0
 	for repeat in range(6):
-		for key in vegetation.patches.keys():
-			vegetation._upload_patch(key, SPAN)
+		for key in _records.keys():
+			_upload(vegetation, key, SPAN)
 		await process_frame
 	var nodes := 0
 	var resident := 0
 	var proxies_seen := 0
 	var positions: Array[String] = []
 	var appearance: Array[String] = []
-	# The headless dummy renderer does not retain uploaded transforms/colours. Check
-	# deterministic inputs here and validate actual bucket populations on the nodes.
+	# The headless dummy renderer does not retain uploaded transforms/colours. Check the product
+	# Rust builds (`RENDER-32-C`) here and validate actual bucket populations on the nodes.
+	var expected_positions: Array[String] = []
 	for offset in range(0, simulation.data.size(), 6):
-		var packed := int(simulation.data[offset + 5])
-		var species := packed & Vegetation.SPECIES_MASK
-		var seed: int = vegetation._appearance_seed(simulation.data, offset)
-		var variant: int = vegetation._variant_index(species, seed, packed >> Vegetation.SPECIES_BITS)
-		var tint: Color = vegetation._instance_tint(seed)
+		var data := simulation.data
+		expected_positions.append(var_to_bytes([int(data[offset + 5]) & Vegetation.SPECIES_MASK,
+			Vector3(data[offset], data[offset + 1], data[offset + 2])]).hex_encode())
+	for entry in _near_instances(vegetation, simulation.data):
+		var tint: Color = entry[3]
 		assert(tint.a == 1.0)
 		assert(minf(tint.r, minf(tint.g, tint.b)) >= 0.82 * 0.90)
 		assert(maxf(tint.r, maxf(tint.g, tint.b)) <= 1.18 * 1.10)
-		assert(variant >= 0 and variant < Species.VARIANT_COUNTS[species])
-		var t: Transform3D = vegetation._instance_transform(simulation.data, offset, seed, Vector2.ZERO)
-		var expected := Vector3(simulation.data[offset], simulation.data[offset + 1], simulation.data[offset + 2])
-		assert(var_to_bytes(t.origin) == var_to_bytes(expected))
-		positions.append(var_to_bytes([species, t.origin]).hex_encode())
-		appearance.append(var_to_bytes([t.origin, species, variant, tint]).hex_encode())
-	for key in vegetation.patches:
-		var patch: Node3D = vegetation.patches[key]
+		assert(entry[1] >= 0 and entry[1] < Species.VARIANT_COUNTS[entry[0]])
+		positions.append(var_to_bytes([entry[0], entry[2]]).hex_encode())
+		appearance.append(var_to_bytes([entry[2], entry[0], entry[1], tint]).hex_encode())
+	# Every placement is drawn once, at exactly the position Rust packed.
+	expected_positions.sort()
+	var drawn := positions.duplicate()
+	drawn.sort()
+	assert(drawn == expected_positions)
+	for key in _records:
+		var record: Dictionary = _records[key]
+		# What the stream node drew (`RENDER-32-E`): one dictionary per batch, each instance's state.
+		var patch: Dictionary = stream.get_vegetation_patch(key)
 		# Seeds are keyed on world position, so each patch of the one fixture splits its
 		# variants differently.
 		var expected_buckets := {}
 		var world_data: PackedFloat32Array = simulation.get_decorative_tree_patch(
 			Vector2(key.x, key.y) * SPAN - simulation.get_terrain_world_size() * 0.5, SPAN, true)
-		for offset in range(0, world_data.size(), 6):
-			var packed := int(world_data[offset + 5])
-			var species := packed & Vegetation.SPECIES_MASK
-			var bucket := Vector2i(species, vegetation._variant_index(species,
-				vegetation._appearance_seed(world_data, offset), packed >> Vegetation.SPECIES_BITS))
+		for entry in _near_instances(vegetation, world_data):
+			var bucket := Vector2i(entry[0], entry[1])
 			expected_buckets[bucket] = int(expected_buckets.get(bucket, 0)) + 1
-		nodes += patch.get_child_count()
-		assert(patch.get_meta("surface_generation") == 7)
-		assert(patch.get_meta("understory"))
-		assert(patch.get_meta("near_band"))
+		assert(record["understory"])
+		assert(record["near_band"])
+		assert(patch["origin"] == Vector2(key.x, key.y) * SPAN - simulation.get_terrain_world_size() * 0.5)
 		# The levels of one species measure their visibility range from one bounds, or the
 		# complementary near and distant ranges stop and start at different distances and
-		# drop the trees in between. A single-level species keeps its own bounds. The dummy
-		# renderer reports empty automatic bounds; explicit impostor bounds remain available.
+		# drop the trees in between. A single-level species keeps its own bounds. The shared
+		# bounds hold the impostors' (the near levels' are the engine's own, which the dummy
+		# renderer does not compute; the product's parity test holds them bitwise).
 		var species_bounds: Dictionary = {}
-		var species_union: Dictionary = {}
-		for instance in patch.get_children():
-			var species: int = instance.get_meta("species")
-			var box: AABB = instance.multimesh.custom_aabb
-			if box.size == Vector3.ZERO:
-				box = instance.get_aabb()
-			species_union[species] = (
-				box if not species_union.has(species) else (species_union[species] as AABB).merge(box)
-			)
+		for batch: Dictionary in patch["batches"]:
+			var species: int = batch["species"]
+			var main: Dictionary = batch["main"]
+			nodes += 2 if batch.has("caster") else 1
 			if species_bounds.has(species):
-				assert(instance.custom_aabb == species_bounds[species])
-			species_bounds[species] = instance.custom_aabb
+				assert(main["aabb"] == species_bounds[species])
+			species_bounds[species] = main["aabb"]
+			if species < Species.BUSH and batch["lod"] == 2:
+				assert(main["aabb"].encloses(batch["multimesh_aabb"]))
+			# Every instance stands at the patch origin.
+			assert(main["origin"] == Vector3(patch["origin"].x, 0.0, patch["origin"].y))
 		for species in species_bounds:
-			var union: AABB = species_union[species]
-			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
+			assert((species_bounds[species].size == Vector3.ZERO) == (species >= Species.BUSH))
 		# Every canopy tree past TREE_SHADOW_HANDOVER_M casts from its impostor, faced to the light,
-		# through one shadows-only instance per species that shares the impostor's buffer. A patch
-		# near the camera also submits its branched canopy; the shaders split the trees.
-		assert(patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.IMPOSTOR)
-		var casters := {}
-		var impostors := {}
-		for instance in patch.get_children():
-			var mm: MultiMesh = instance.multimesh
-			var species: int = instance.get_meta("species")
-			var lod: int = instance.get_meta("lod")
-			if instance.get_meta("shadow_proxy"):
-				assert(species == Species.CONIFER or species == Species.BROADLEAF)
-				assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
-				assert(instance.visibility_range_begin == 0.0)
-				assert(instance.visibility_range_end == vegetation.canopy_far_m())
-				assert(mm.mesh == Species.impostor_mesh())
-				assert(instance.material_override == Species.impostor_shadow_material(species))
-				assert(mm.use_custom_data and not mm.use_colors)
-				casters[species] = mm
+		# through one shadows-only instance per species on the impostor's own buffer. A patch near
+		# the camera also submits its branched canopy; the shaders split the trees.
+		assert(record["shadow_caster"] == Vegetation.ShadowCaster.IMPOSTOR)
+		assert(patch["has_caster"])
+		for batch: Dictionary in patch["batches"]:
+			var species: int = batch["species"]
+			var lod: int = batch["lod"]
+			var main: Dictionary = batch["main"]
+			if batch.has("caster"):
+				var caster: Dictionary = batch["caster"]
+				assert(lod == 2 and (species == Species.CONIFER or species == Species.BROADLEAF))
+				assert(caster["shadow"] == RenderingServer.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+				assert(caster["range"] == Vector2(0.0, vegetation.canopy_far_m()))
+				assert(caster["material"] == 2 + species)
+				assert(caster["visible"])
 				proxies_seen += 1
-				continue
-			if lod == 2:
-				impostors[species] = mm
 			# Rocks and yard plants stand in the open and cast; ground cover does not, and the
 			# branched canopy only while its patch is near the camera.
 			var casts: bool = species == Species.ROCK or (species == Species.BUSH
-				and int(instance.get_meta("variant")) >= Species.LANDSCAPE_FIRST_VARIANT) or (
-				species < Species.BUSH and lod == 0 and bool(patch.get_meta("branched_casts", false)))
-			assert(instance.cast_shadow == (GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
+				and int(batch["variant"]) >= Species.LANDSCAPE_FIRST_VARIANT) or (
+				species < Species.BUSH and lod == 0 and bool(patch["branched"]))
+			assert(main["shadow"] == (RenderingServer.SHADOW_CASTING_SETTING_ON
+				if casts else RenderingServer.SHADOW_CASTING_SETTING_OFF))
+			assert(main["visible"])
 			# Only the near band carries instance colours; see the renderer's distant level.
-			assert(mm.use_colors == (lod == 0))
+			assert(batch["colors"] == (lod == 0))
 			# The distant level carries form and tint, and a near canopy tree its stand closure.
-			assert(mm.use_custom_data == (lod == 2 or (lod == 0
+			assert(batch["custom"] == (lod == 2 or (lod == 0
 				and (species == Species.CONIFER or species == Species.BROADLEAF))))
-			resident += mm.instance_count
-			var near_band: bool = patch.get_meta("near_band")
-			var variant: int = instance.get_meta("variant")
+			resident += int(batch["count"])
+			var variant: int = batch["variant"]
 			# The understory staggers its cutoff by variant. A canopy range reaches past the
 			# handover by how far a tree origin stands from the centre of the shared bounds,
 			# which is at most half their diagonal.
-			var half: float = instance.custom_aabb.size.length() * 0.5
+			var half: float = main["aabb"].size.length() * 0.5
+			var range_m: Vector2 = main["range"]
 			if species >= Species.BUSH:
-				assert(Vector2(instance.visibility_range_begin, instance.visibility_range_end)
-					== vegetation.lod_range(species, lod, variant, near_band, 0.0))
+				var reach: float = Vegetation.BUSH_RANGE_M if species == Species.BUSH else Vegetation.ROCK_RANGE_M
+				var stagger := lerpf(0.75, 1.0, fmod(float(variant) * 0.6180339887498949, 1.0))
+				assert(range_m.x == 0.0)
+				# The range is stored in single precision.
+				assert(range_m.y == PackedFloat32Array([reach * stagger])[0])
 			elif lod == 0:
-				assert(instance.visibility_range_begin == 0.0)
-				assert(instance.visibility_range_end >= vegetation.canopy_near_m())
-				assert(instance.visibility_range_end <= vegetation.canopy_near_m() + half)
+				assert(range_m.x == 0.0)
+				assert(range_m.y >= vegetation.canopy_near_m())
+				assert(range_m.y <= vegetation.canopy_near_m() + half)
 			else:
 				var begin: float = vegetation.canopy_crossfade_begin_m()
-				assert(instance.visibility_range_begin <= begin)
-				assert(instance.visibility_range_begin >= begin - half)
-				assert(instance.visibility_range_end >= vegetation.canopy_far_m())
-				assert(instance.visibility_range_end <= vegetation.canopy_far_m() + half)
+				assert(range_m.x <= begin)
+				assert(range_m.x >= begin - half)
+				assert(range_m.y >= vegetation.canopy_far_m())
+				assert(range_m.y <= vegetation.canopy_far_m() + half)
 			# Only canopy trees hand over; the understory shares their materials and does not.
 			if lod == 0:
-				assert(instance.get_instance_shader_parameter("hands_over")
-					== (1.0 if species < Species.BUSH else null))
-			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
+				assert(batch["hands_over"] == (species < Species.BUSH))
 			if lod >= 2:
-				# One shared quad and material per species, with a custom form per tree.
+				# One shared quad and material per species, with a custom form per tree; the water
+				# reflection draws the same impostors.
 				assert(lod == 2)
-				assert(mm.mesh == Species.impostor_mesh())
-				assert(instance.material_override == Species.impostor_material(species))
-				assert(mm.instance_count == 512)
+				assert(batch["mesh"] == _impostor_mesh_index())
+				assert(main["material"] == species)
+				assert(batch["count"] == 512)
+				assert(batch["reflection"]["material"] == species and batch["reflection"]["visible"])
+				assert(batch["reflection"]["aabb"] == main["aabb"])
 			else:
 				# The near mesh remains a per-patch distance choice.
-				var detail: int = patch.get_meta("near_detail_lod") if species < Species.BUSH else 0
-				assert(mm.mesh == vegetation.meshes[species][variant][detail])
-				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
-		for species in casters:
-			# Shares the impostor buffer, custom lane included, rather than copying it.
-			assert(not is_same(casters[species], impostors[species]))
-			assert(casters[species].buffer == impostors[species].buffer)
-			assert(casters[species].instance_count == impostors[species].instance_count)
-			assert(casters[species].custom_aabb == impostors[species].custom_aabb)
+				var detail: int = patch["detail"] if species < Species.BUSH else 0
+				assert(batch["mesh"] == _near_mesh_index(species, variant, detail))
+				assert(main["material"] == -1)
+				assert(batch["count"] == expected_buckets[Vector2i(species, variant)])
 	positions.sort()
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()
@@ -223,95 +217,131 @@ func run():
 	# One proxy per canopy species in each of the four patches.
 	assert(proxies_seen == 8)
 	assert(nodes == 160 and resident == 20480)
-	assert(vegetation.tree_count == 16384)
+	var planted := 0
+	for key in _records:
+		planted += int(_records[key]["tree_count"])
+	assert(planted == 16384)
 	# The detail level swaps the near mesh on the buffer already uploaded, so the reduced level
 	# costs no second instance. A patch holds a single level only where the whole box of its
 	# trees lies on one side of the handover band, which each tree crosses by its own distance.
-	var detail_patch: Node3D = vegetation.patches[vegetation.patches.keys()[0]]
-	var trees: AABB = detail_patch.get_meta("canopy_box")
+	# The stream node follows the camera (`RENDER-32-E`; the rule's boundaries are its Rust tests).
+	var detail_key: Vector3i = _records.keys()[0]
+	var trees: AABB = stream.get_vegetation_patch(detail_key)["canopy_box"]
 	assert(trees.size.x > 0.0 and trees.size.z > 0.0)
 	var band_end: float = Vegetation.TREE_NEAR_DETAIL_M + Species.TREE_DETAIL_FADE_M
-	var tiny := AABB(trees.get_center(), Vector3.ONE)
-	assert(vegetation._near_detail_lod(tiny, tiny.get_center() + Vector3.UP * 10.0)
-		== Vegetation.DETAIL_FULL)
-	assert(vegetation._near_detail_lod(trees, trees.end + Vector3(band_end, 0.0, 0.0))
-		== Vegetation.DETAIL_REDUCED)
-	assert(vegetation._near_detail_lod(trees, trees.end + Vector3(band_end - 1.0, 0.0, 0.0))
-		== Vegetation.DETAIL_BLEND)
 	for wanted in [Vegetation.DETAIL_REDUCED, Vegetation.DETAIL_BLEND]:
-		vegetation._refresh_near_detail(detail_patch, trees.get_center()
-			+ Vector3.UP * (band_end + trees.size.length() if wanted == Vegetation.DETAIL_REDUCED else 0.0))
-		assert(int(detail_patch.get_meta("near_detail_lod")) == wanted)
-		for instance in detail_patch.get_children():
-			var species: int = instance.get_meta("species")
-			if species >= Species.BUSH or int(instance.get_meta("lod")) != 0:
+		camera.global_position = trees.get_center() + Vector3.UP * (band_end + trees.size.length()
+			if wanted == Vegetation.DETAIL_REDUCED else 0.0)
+		stream.flush_vegetation()
+		var detail_patch: Dictionary = stream.get_vegetation_patch(detail_key)
+		assert(int(detail_patch["detail"]) == wanted)
+		for batch: Dictionary in detail_patch["batches"]:
+			if int(batch["species"]) >= Species.BUSH or int(batch["lod"]) != 0:
 				continue
-			assert(instance.multimesh.mesh
-				== vegetation.meshes[species][int(instance.get_meta("variant"))][wanted])
+			assert(batch["mesh"] == _near_mesh_index(batch["species"], batch["variant"], wanted))
+	camera.global_position = Vector3.ZERO
+	stream.flush_vegetation()
 	print("FIXTURE ", JSON.stringify({"catalogue_ms":catalogue_ms, "geometry":geometry, "metrics":vegetation.metrics(), "nodes_per_patch":nodes / 4, "total_nodes":nodes, "resident_instances":resident, "position_sha256":digest, "appearance_sha256":appearance_digest}))
 	# The toggle has to reach the caster, and a silent caster has to be hidden as well as
 	# silenced, or an OFF caster would draw its unshaded quads.
-	var toggle_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	vegetation.set_cast_shadows(false)
-	for instance in toggle_patch.get_children():
-		assert(instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
-		assert(instance.visible != bool(instance.get_meta("shadow_proxy")))
+	for batch: Dictionary in stream.get_vegetation_patch(Vector3i(0, 0, 1))["batches"]:
+		assert(batch["main"]["shadow"] == RenderingServer.SHADOW_CASTING_SETTING_OFF)
+		assert(batch["main"]["visible"])
+		if batch.has("caster"):
+			assert(batch["caster"]["shadow"] == RenderingServer.SHADOW_CASTING_SETTING_OFF)
+			assert(not batch["caster"]["visible"])
 	vegetation.set_cast_shadows(true)
-	for instance in toggle_patch.get_children():
-		assert(instance.visible)
-		assert((instance.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
-			== bool(instance.get_meta("shadow_proxy")))
+	for batch: Dictionary in stream.get_vegetation_patch(Vector3i(0, 0, 1))["batches"]:
+		assert(batch["main"]["visible"])
+		if batch.has("caster"):
+			assert(batch["caster"]["shadow"] == RenderingServer.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+			assert(batch["caster"]["visible"])
 	# Out of the near band a patch drops the variant split, the tints and the understory,
 	# keeping one distant instance per canopy species. It is also past the sun's range, so
 	# nothing it holds can reach a cascade and it carries no caster either.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
-	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
-	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
-	assert(far_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NONE)
-	assert(far_patch.get_child_count() == 2)
-	for instance in far_patch.get_children():
-		var species: int = instance.get_meta("species")
-		assert(instance.get_meta("lod") == 2)
+	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
+	var far_record: Dictionary = _records[Vector3i(0, 0, 1)]
+	assert(not far_record["near_band"] and not far_record["understory"])
+	assert(far_record["shadow_caster"] == Vegetation.ShadowCaster.NONE)
+	var far_patch: Dictionary = stream.get_vegetation_patch(Vector3i(0, 0, 1))
+	assert(far_patch["batches"].size() == 2 and not far_patch["has_caster"])
+	for batch: Dictionary in far_patch["batches"]:
+		var species: int = batch["species"]
+		assert(batch["lod"] == 2 and not batch.has("caster"))
 		assert(species == Species.CONIFER or species == Species.BROADLEAF)
-		assert(instance.multimesh.mesh == Species.impostor_mesh())
-		assert(instance.multimesh.use_custom_data)
-		assert(instance.material_override == Species.impostor_material(species))
-		assert(instance.custom_aabb.size != Vector3.ZERO)
-		assert(instance.multimesh.instance_count == 512)
-		assert(not instance.multimesh.use_colors)
-	# The near band must not follow the span of whichever patch uploaded last. It once did, and
-	# with the floor below the coarse diagonal every upload flipped it between 250 m and 721 m,
-	# so resident patches disagreed with their own record each frame and rebuilt without end.
-	vegetation._upload_patch(Vector3i(0, 0, Vegetation.PATCH_SUBDIVISION), SPAN / Vegetation.PATCH_SUBDIVISION)
-	var fine_near: float = vegetation.canopy_near_m()
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
-	assert(vegetation.canopy_near_m() == fine_near)
+		assert(batch["mesh"] == _impostor_mesh_index())
+		assert(batch["custom"] and not batch["colors"])
+		assert(batch["main"]["material"] == species)
+		assert(batch["main"]["aabb"].size != Vector3.ZERO)
+		assert(batch["count"] == 512)
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
 	vegetation.density_fraction = 0.0
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
-	assert(vegetation.patches[Vector3i(0, 0, 1)].get_child_count() == 0)
-	assert(vegetation.patches[Vector3i(0, 0, 1)].get_meta("tree_count") == 0)
-	# Exercise both bucketed near uploads and the far-only placement loop with pins.
-	var probe := BufferProbe.new()
-	probe.meshes = vegetation.meshes
-	probe.set_process(false)
-	host.add_child(probe)
-	simulation.data = PackedFloat32Array([
+	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
+	assert(stream.get_vegetation_patch(Vector3i(0, 0, 1))["batches"].is_empty())
+	assert(_records[Vector3i(0, 0, 1)]["tree_count"] == 0)
+	# Pins name the variant in both the bucketed near level and the far-only impostor rows, whose
+	# layer lane is the variant (the dummy backend cannot read a buffer back, so the product is
+	# read directly).
+	vegetation.density_fraction = 1.0
+	var pinned := PackedFloat32Array([
 		10, 0, 10, 0, 1, 4, 20, 0, 10, 0, 1, 12,
 		30, 0, 10, 0, 1, 5, 40, 0, 10, 0, 1, 13,
 	])
-	for x in [0.0, 2000.0]:
-		camera.global_position = Vector3(x, 0, 0)
-		probe.written = 0
-		probe._upload_patch(Vector3i(0, 0, 1), SPAN)
-		assert(probe.written == 4)
-		assert(probe.patches[Vector3i(0, 0, 1)].get_meta("near_band") == (x == 0.0))
+	for near_band in [true, false]:
+		var product: Dictionary = SimulationNode.build_vegetation_product(pinned, {},
+			PackedFloat32Array(), Vector2.ZERO, near_band, true, vegetation._product_settings(),
+			vegetation._product_catalogue())
+		var batches: PackedInt32Array = product.batches
+		var written := 0
+		for at in range(0, batches.size(), 8):
+			if batches[at + 1] != 2 or batches[at + 3] == 1:
+				continue
+			var buffer: PackedFloat32Array = product.buffers[batches[at + 7]]
+			for row in range(0, buffer.size(), 16):
+				# The pins below name variants 0 and 2, and the layer is the variant.
+				assert(buffer[row + 12] == (2.0 if int(buffer[row + 3]) % 20 == 0 else 0.0))
+				written += 1
+		assert(written == 4)
 	await process_frame
 	host.free()
 	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
+
+# What each patch was built with, by key: its bands and plants (the residency's records hold
+# what the game requests; this test builds and delivers its products itself).
+var _records := {}
+var _serial := 0
+
+## Builds a patch's product from the mock's placements with the bands the stream node gives it
+## from the camera now (its residency's rule), delivers it and installs it.
+func _upload(vegetation, key: Vector3i, span: float) -> void:
+	var simulation = vegetation.simulation
+	var bands: Vector3i = vegetation.stream.get_vegetation_bands(key)
+	assert(bands.x >= 0)
+	var world: Vector2 = simulation.get_terrain_world_size()
+	var origin := Vector2(key.x, key.y) * span - world * 0.5
+	var product: Dictionary = SimulationNode.build_vegetation_product(
+		simulation.get_decorative_tree_patch(origin, span, bands.x == 1), {}, PackedFloat32Array(),
+		origin, bands.y == 1, bands.z == 1, vegetation._product_settings(), simulation.catalogue)
+	_serial += 1
+	vegetation.stream.deliver_vegetation_product(key, _serial, product, origin, span)
+	vegetation.stream.flush_vegetation()
+	_records[key] = {"understory": bands.x == 1, "near_band": bands.y == 1,
+		"shadow_caster": bands.z, "tree_count": int(product["tree_count"])}
+
+## The stream node's mesh index of a near level (`StreamNode.set_vegetation_catalogue`'s order:
+## three levels per variant, species by species), and of the impostor quad after them.
+func _near_mesh_index(species: int, variant: int, level: int) -> int:
+	var bucket := variant
+	for earlier in range(species):
+		bucket += Species.VARIANT_COUNTS[earlier]
+	return bucket * 3 + level
+
+func _impostor_mesh_index() -> int:
+	return _near_mesh_index(Species.SPECIES_COUNT, 0, 0)
 
 func _check_impostors(vegetation: Node3D) -> void:
 	var metadata := Species.impostor_metadata()
@@ -333,17 +363,16 @@ func _check_impostors(vegetation: Node3D) -> void:
 		for variant in range(Species.VARIANT_COUNTS[species]):
 			assert(metadata.forms.has(Species.impostor_form(species, variant)))
 			# Every brush pin overrides the seed, even in the distant placement path.
-			assert(vegetation._variant_index(species, 123456, variant + 1) == variant)
-	# The dummy renderer discards GPU buffers. Verify the exact CPU layout before upload,
-	# with off-diagonal basis entries and translation to detect row/column transposition.
-	var buffer := PackedFloat32Array()
-	buffer.resize(32)
-	var transform := Transform3D(Basis(Vector3(1, 2, 3), Vector3(4, 5, 6), Vector3(7, 8, 9)), Vector3(10, 11, 12))
-	vegetation._write_impostor(buffer, 0, transform, 1.0, Color(0.25, 0.5, 0.75))
-	vegetation._write_impostor(buffer, 16, transform.translated(Vector3(3, 4, 5)), 0.0, Color.WHITE)
-	assert(buffer.slice(0, 12) == PackedFloat32Array([1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12]))
-	# Custom lane: variant layer, then the near tint the impostor multiplies its albedo by.
-	assert(buffer.slice(12, 16) == PackedFloat32Array([1.0, 0.25, 0.5, 0.75]) and buffer[28] == 0.0)
+			for near_band in [true, false]:
+				var product: Dictionary = SimulationNode.build_vegetation_product(
+					PackedFloat32Array([5, 0, 5, 0, 1, ((variant + 1) << Vegetation.SPECIES_BITS) | species]),
+					{}, PackedFloat32Array(), Vector2.ZERO, near_band, false,
+					vegetation._product_settings(), vegetation._product_catalogue())
+				var batches: PackedInt32Array = product.batches
+				var impostor: PackedFloat32Array = product.buffers[batches[batches.size() - 1]]
+				# The near level's variant, and the impostor row's layer lane.
+				assert(not near_band or batches[2] == variant)
+				assert(impostor[12] == float(variant))
 
 func _geometry_counts(meshes: Array) -> Array:
 	var result := []
@@ -539,3 +568,22 @@ func _check_atlas_cells() -> void:
 				var radial := Vector3.RIGHT.cross(axis).normalized().rotated(axis,
 					Species._noise(seed, 307) * PI + float(vertex / 6) * PI / 3.0)
 				assert(positions[vertex].is_equal_approx(top.lerp(bottom, uv.y) + radial * (2.0 * uv.x - 1.0)))
+
+## [species, variant, origin, tint] of every near instance the product draws for `data` at the
+## origin, decoded from the near buffers: transform rows, then the tint.
+func _near_instances(vegetation, data: PackedFloat32Array) -> Array:
+	var product: Dictionary = SimulationNode.build_vegetation_product(data, {},
+		PackedFloat32Array(), Vector2.ZERO, true, false, vegetation._product_settings(),
+		vegetation._product_catalogue())
+	var batches: PackedInt32Array = product.batches
+	var result := []
+	for at in range(0, batches.size(), 8):
+		if batches[at + 1] != 0:
+			continue
+		var buffer: PackedFloat32Array = product.buffers[batches[at + 7]]
+		var stride := 20 if batches[at + 6] == 1 else 16
+		for row in range(0, buffer.size(), stride):
+			result.append([batches[at], batches[at + 2],
+				Vector3(buffer[row + 3], buffer[row + 7], buffer[row + 11]),
+				Color(buffer[row + 12], buffer[row + 13], buffer[row + 14], buffer[row + 15])])
+	return result

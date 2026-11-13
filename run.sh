@@ -27,6 +27,11 @@
 #                        Run deterministic Rust generation and Godot upload benchmarks
 #   --benchmark-road-chunk-upload
 #                        Run only the deterministic Godot upload benchmark
+#   --benchmark-stream   Release build, then the rendered camera-move benchmark (PERF-23,
+#                        tools/stream_benchmark.py): gamescope headless at 1000 Hz, isolated
+#                        profile, timing CPUs and locks. METRUM_STREAM_SAVE loads a save (else
+#                        Kuopio), METRUM_STREAM_LABEL / METRUM_STREAM_OUT name the output,
+#                        METRUM_STREAM_DETAIL=1 records the perf channel (shares, not times)
 #   --benchmark-gameplay-roads / --benchmark-gameplay-roads-headless
 #                        Measure the gameplay workload without profiler overhead
 #   --profile-gameplay-roads
@@ -106,6 +111,11 @@
 #   Missing/stale imported resources are repaired once per asset-source state.
 #   METRUM_SKIP_GODOT_IMPORT_REPAIR=1 skips the repair pass.
 #   METRUM_FORCE_GODOT_IMPORT_REPAIR=1 retries even after a previous attempt.
+#
+# Git LFS assets:
+#   A clone made without Git LFS holds pointer stubs. Every run fetches them (git lfs pull),
+#   restores the .import metadata Godot invalidated on them, and replaces stubs that a first
+#   launch seeded into the player's mods with the bundled originals.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Performance contracts are engine-independent and must not build/deploy the GDExtension.
@@ -137,6 +147,7 @@ TEST=0
 TEST_QUICK=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
+STREAM_BENCHMARK=0
 ROAD_REPLAY_DUMP=""
 GAMEPLAY_ROAD_PROFILE_MODE=""
 GAMEPLAY_ROAD_USE_PROFILER=0
@@ -319,36 +330,34 @@ PY
 
 # Every Godot regression runs in a throwaway profile. Several of them install content packs and
 # rewrite the active pack selection, so pointing them at the player's real user:// would change
-# which packs their game loads and strand fixture packs behind an interrupted run. A unique
-# project identity also isolates user:// on macOS, which ignores XDG. Reuse imported resources
-# without copying assets or changing the project. Sets asset_test_profile, asset_test_project and
-# godot_test_profile_name, and exports XDG_DATA_HOME / XDG_CONFIG_HOME.
+# which packs their game loads and strand fixture packs behind an interrupted run. The profile is
+# tools/godot_isolated.py's (`TOOLS-19`): absolute data, config and cache homes (Godot ignores a
+# relative XDG path and falls back to the home profile), and a project copy with a unique name,
+# which also isolates user:// on macOS, which ignores XDG. Imported resources are reused through
+# links, without copying assets or changing the project. An optional directory of packs is copied
+# into the profile's user://mods. Sets asset_test_profile, asset_test_project and
+# godot_test_profile_name, and exports XDG_DATA_HOME / XDG_CONFIG_HOME / XDG_CACHE_HOME.
 create_isolated_godot_profile() {
-    asset_test_profile=$(mktemp -d -t metrum-godot-tests.XXXXXX) || return 1
-    asset_test_project="$asset_test_profile/project"
-    mkdir "$asset_test_project" || return 1
-    local entry
-    for entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
-        case "${entry##*/}" in project.godot|override.cfg) continue ;; esac
-        [ -e "$entry" ] || continue
-        ln -s "$entry" "$asset_test_project/" || return 1
-    done
-    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || return 1
-    # Some tests reach repo siblings through `res://../<dir>` (economy, maps, benchmarks).
-    # The relocated project makes that resolve to the temporary profile, so mirror every
-    # sibling of the real project directory beside it.
-    for entry in "$PROJECT_ROOT"/*; do
-        [ -e "$entry" ] || continue
-        [ "$entry" = "$GODOT_DIR" ] && continue
-        ln -s "$entry" "$asset_test_profile/" || return 1
-    done
-    # macOS ignores XDG and derives user:// from this name, so it is the isolation that
-    # matters there; keep one definition so the two cannot drift apart.
-    godot_test_profile_name="MetrumGodotTests-${asset_test_profile##*/}"
-    printf '[application]\nconfig/name="%s"\nconfig/use_custom_user_dir=false\n' \
-        "$godot_test_profile_name" > "$asset_test_project/override.cfg" || return 1
-    export XDG_DATA_HOME="$asset_test_profile/data"
-    export XDG_CONFIG_HOME="$asset_test_profile/config"
+    local assignments
+    local mods_args=()
+    [ -n "${1:-}" ] && [ -d "$1" ] && mods_args=(--mods "$1")
+    assignments=$(python3 "$PROJECT_ROOT/tools/godot_isolated.py" profile --prefix metrum-godot-tests. \
+        --name-prefix MetrumGodotTests --godot-dir "$GODOT_DIR" "${mods_args[@]}") || return 1
+    eval "$assignments"
+    asset_test_profile=$METRUM_GODOT_PROFILE
+    asset_test_project=$METRUM_GODOT_PROJECT
+    godot_test_profile_name=$METRUM_GODOT_PROFILE_NAME
+    export XDG_DATA_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
+}
+
+# The Godot half of the road-chunk benchmark, in a throwaway profile (`TOOLS-19`).
+run_road_chunk_upload_benchmark() {
+    local status
+    create_isolated_godot_profile || return 1
+    godot --headless --path "$asset_test_project" --script res://tests/road_chunk_renderer_benchmark.gd
+    status=$?
+    rm -rf "$asset_test_profile"
+    return $status
 }
 
 # Rendered Godot tests need a real renderer. They run in gamescope's headless backend, which
@@ -502,25 +511,86 @@ godot_vehicle_chain() {
     for script in \
         vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
         road_builder_test road_junction_preview_test road_preview_stream_test \
-        zoning_reference_test road_tunnels_test agent_inspector_test core_busy_input_test; do
+        road_tunnels_test agent_inspector_test core_busy_input_test; do
         run_godot_bridge_test "$script" || return 1
     done
+    # Record and replay (`RENDER-32-I`): the zoning reference test's graded renderers record their
+    # traces, which must replay through the renderer bit for bit.
+    METRUM_GRADED_TRACE="$asset_test_profile/graded-trace" run_godot_bridge_test zoning_reference_test || return 1
+    local traces
+    traces=$(find "$asset_test_profile" -maxdepth 1 -name 'graded-trace.*' | sort | tr '\n' ';')
+    [ -n "$traces" ] || { echo "graded_replay: zoning_reference_test recorded no trace"; return 1; }
+    METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
+    # The tracked goldens (the zoning reference's and the bridge test's traces, recorded on
+    # `RENDER-32-K` part 5): they pin the renderer's outputs across builds, which a trace this
+    # build records and replays cannot. A change that moves them is re-recorded as a reviewed step.
+    traces=$(find "$PROJECT_ROOT/godot/tests/fixtures/graded_traces" -name '*.trace' | sort | tr '\n' ';')
+    [ -n "$traces" ] || { echo "graded_replay: no golden trace"; return 1; }
+    METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
+}
+
+# The graded tile renderer test, its production renderer recording a trace through the bridge's
+# wall faces (`TERRAIN-24`), which must draw a wall and replay through the renderer bit for bit.
+run_graded_bridge_trace_test() {
+    local trace="$asset_test_profile/graded-bridge-trace"
+    METRUM_GRADED_BRIDGE_TRACE="$trace" run_godot_bridge_test graded_tile_renderer_test || return 1
+    if ! grep -qE '^> walls -?[0-9]+ -?[0-9]+ [1-9]' "$trace.1"; then
+        echo "graded_replay: the bridge trace draws no wall face"
+        return 1
+    fi
+    METRUM_GRADED_REPLAY="$trace.1" run_godot_bridge_test graded_replay
+}
+
+# The test guard's refusal (`TOOLS-19` part 2): profile_guard_test.gd writes its marker in the
+# gate's isolated profile, and is refused (exit 3, before it runs) in a copy of that project that
+# keeps the player's project name, under a throwaway HOME with the XDG homes unset, whose default
+# data directory stands in for the player's profile.
+run_profile_refusal_test() {
+    local copy="$asset_test_profile/refusal" entry output status
+    local markers=("$copy/home/.local/share/godot/app_userdata/Metrum Rise/profile_guard_marker"
+        "$copy/home/Library/Application Support/Godot/app_userdata/Metrum Rise/profile_guard_marker")
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/profile_guard_test.gd || return 1
+    if [ "$METRUM_PLATFORM" = linux ] && [ ! -f "$XDG_DATA_HOME/godot/app_userdata/$godot_test_profile_name/profile_guard_marker" ]; then
+        echo "Godot test profile_guard_test FAILED: no marker in the isolated profile" >&2
+        return 1
+    fi
+    mkdir -p "$copy/project" "$copy/home" || return 1
+    # Every entry but the copy's override.cfg, which renames the project.
+    for entry in "$asset_test_project"/* "$asset_test_project"/.godot; do
+        [ "${entry##*/}" = override.cfg ] && continue
+        [ -e "$entry" ] && ln -s "$entry" "$copy/project/"
+    done
+    output=$(env -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_CACHE_HOME HOME="$copy/home" \
+        godot --headless --path "$copy/project" --script res://tests/profile_guard_test.gd 2>&1)
+    status=$?
+    if [ $status -ne 3 ] || ! grep -q "refusing to run the test script" <<<"$output" || [ -e "${markers[0]}" ] || [ -e "${markers[1]}" ]; then
+        echo "$output" >&2
+        echo "Godot test profile_guard_test FAILED: the player's profile was not refused (exit $status)" >&2
+        return 1
+    fi
+    echo "profile_guard_test: refused in the player's profile (exit 3), marker absent"
 }
 
 # Every other Godot regression. Each fixture generator runs just before the test that reads it.
 godot_main_chain() {
     local script
+    run_profile_refusal_test || return 1
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
         selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
-        vegetation_invalidation_test \
+        stream_benchmark_report_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test menu_back_button_test asset_menu_icon_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test \
-        street_lamp_grid_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test; do
+        street_lights_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test; do
+        if [ "$script" = graded_tile_renderer_test ]; then
+            run_graded_bridge_trace_test || return 1
+            continue
+        fi
         run_godot_bridge_test "$script" || return 1
     done
     # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
@@ -626,6 +696,15 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_timing_session.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_stream_benchmark.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_godot_isolated.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_graded_drag_probe.py; then
         return 1
     fi
     echo "Checking benchmark targets for API drift..."
@@ -809,6 +888,107 @@ repair_godot_import_cache_if_needed() {
     fi
 }
 
+# The player's installed packs, seeded from godot/bootstrap/mods on first launch.
+player_mods_dir() {
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        printf '%s\n' "$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
+    else
+        printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Metrum Rise/mods"
+    fi
+}
+
+LFS_POINTER_HEADER="version https://git-lfs.github.com/spec/v1"
+
+# Reads NUL-separated paths and prints, NUL-separated, those that are Git LFS pointer stubs.
+# -I skips binary files after their first buffer, so real assets cost almost nothing.
+filter_lfs_pointer_stubs() {
+    xargs -0 grep -l --null -x -F -I -m1 -- "$LFS_POINTER_HEADER" 2>/dev/null
+}
+
+# A clone made before `git lfs install` checks every LFS asset out as a pointer stub: Godot then
+# fails each model and texture import, marks its .import metadata invalid, and the first launch
+# seeds the stubs into the player's mods. Fetch the assets and undo what the stubs left behind.
+ensure_lfs_assets() {
+    if ! command -v git >/dev/null 2>&1 || \
+       ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    local stubs=()
+    local path
+    while IFS= read -r -d '' path; do
+        stubs+=("$path")
+    done < <(cd "$PROJECT_ROOT" && git ls-files -z ':(attr:filter=lfs)' | filter_lfs_pointer_stubs)
+    if [ ${#stubs[@]} -gt 0 ]; then
+        echo "${#stubs[@]} Git LFS assets are pointer stubs; fetching them..."
+        if ! git -C "$PROJECT_ROOT" lfs version >/dev/null 2>&1; then
+            echo "Error: Git LFS is not installed. Install git-lfs and rerun ./run.sh." >&2
+            return 2
+        fi
+        # Without the LFS filters, git would report every fetched asset as modified.
+        if [ -z "$(git -C "$PROJECT_ROOT" config filter.lfs.process)" ] && \
+           ! git -C "$PROJECT_ROOT" lfs install --local; then
+            echo "Error: could not enable Git LFS for this repository." >&2
+            return 1
+        fi
+        if ! git -C "$PROJECT_ROOT" lfs pull; then
+            echo "Error: git lfs pull failed." >&2
+            return 1
+        fi
+        local remaining
+        remaining="$(cd "$PROJECT_ROOT" && git ls-files -z ':(attr:filter=lfs)' | filter_lfs_pointer_stubs | tr -cd '\0' | wc -c)"
+        if [ "$remaining" -gt 0 ]; then
+            echo "Error: $remaining Git LFS assets are still pointer stubs after git lfs pull." >&2
+            return 1
+        fi
+        # Restore the committed import metadata Godot invalidated; the import cache repair
+        # then reimports the real assets.
+        local invalid_imports=()
+        for path in "${stubs[@]}"; do
+            if grep -q -x -F 'valid=false' "$PROJECT_ROOT/$path.import" 2>/dev/null && \
+               ! git -C "$PROJECT_ROOT" diff --quiet -- "$path.import"; then
+                invalid_imports+=("$path.import")
+            fi
+        done
+        if [ ${#invalid_imports[@]} -gt 0 ] && \
+           ! git -C "$PROJECT_ROOT" checkout -- "${invalid_imports[@]}"; then
+            echo "Error: could not restore Godot import metadata for the fetched assets." >&2
+            return 1
+        fi
+    fi
+    repair_seeded_mod_stubs
+}
+
+# Seeding never overwrites the player's files, so stubs seeded before the assets were fetched
+# stay broken. Replace each with its fetched bootstrap original; packs without one are left alone.
+repair_seeded_mod_stubs() {
+    local mods_dir
+    mods_dir="$(player_mods_dir)"
+    if [ ! -d "$mods_dir" ]; then
+        return 0
+    fi
+    local stub relative_path seed repaired=0
+    # LFS pointers are about 130 bytes, so only files under 1 KiB need reading.
+    while IFS= read -r -d '' stub; do
+        relative_path="${stub#"$mods_dir"/}"
+        seed="$GODOT_DIR/bootstrap/mods/$relative_path"
+        if [ -f "$seed" ] && ! grep -q -x -F -I -m1 -- "$LFS_POINTER_HEADER" "$seed"; then
+            if ! cp "$seed" "$stub"; then
+                echo "Error: could not replace the pointer stub $stub." >&2
+                return 1
+            fi
+            repaired=$((repaired + 1))
+        fi
+    done < <(
+        find "$mods_dir" -type f -size -2k \
+            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.exr' -o -iname '*.dds' \
+            -o -iname '*.glb' -o -iname '*.gltf' -o -iname '*.bin' \) \
+            -print0 | filter_lfs_pointer_stubs
+    )
+    if [ $repaired -gt 0 ]; then
+        echo "Replaced $repaired pointer stubs in $mods_dir with the bundled assets."
+    fi
+}
+
 i=1
 while [ $i -le $# ]; do
     arg="${!i}"
@@ -823,6 +1003,9 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--benchmark-road-chunk-upload" ]; then
         ROAD_CHUNK_UPLOAD_BENCHMARK=1
+        RELEASE=1
+    elif [ "$arg" = "--benchmark-stream" ]; then
+        STREAM_BENCHMARK=1
         RELEASE=1
     elif [ "$arg" = "--replay-road-terrain" ] || [ "$arg" = "--replay-road-terrain-headless" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="windowed"
@@ -995,6 +1178,13 @@ if [ $TEST -eq 1 ] || [ $TEST_QUICK -eq 1 ]; then
     fi
 fi
 
+# Rust tests read bundled packs and Godot imports the assets, so fetch them before either.
+ensure_lfs_assets
+lfs_status=$?
+if [ $lfs_status -ne 0 ]; then
+    exit $lfs_status
+fi
+
 # Quick mode builds and runs only the library tests: no dev library, bench check or Godot.
 if [ $TEST_QUICK -eq 1 ]; then
     echo "Quick tests: library tests without the slow scenarios of the nextest profile 'quick'."
@@ -1114,7 +1304,7 @@ fi
 INTERACTIVE_RELEASE=0
 if [ $RELEASE -eq 1 ] && [ $TEST -eq 0 ] && \
    [ $ROAD_CHUNK_BENCHMARK -eq 0 ] && [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 0 ] && \
-   [ -z "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "$ROAD_REPLAY_DUMP" ]; then
+   [ $STREAM_BENCHMARK -eq 0 ] && [ -z "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "$ROAD_REPLAY_DUMP" ]; then
     INTERACTIVE_RELEASE=1
     for engine_arg in "${GODOT_ENGINE_ARGS[@]}"; do
         case "$engine_arg" in
@@ -1365,8 +1555,10 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     fi
     echo "  Metrics: $GAMEPLAY_METRICS_PATH"
     echo "  Log:     $GAMEPLAY_LOG_PATH"
+    # An isolated profile with a copy of the player's packs (`TOOLS-19`): the run never writes them.
+    create_isolated_godot_profile "$(player_mods_dir)" || exit 1
     cd "$GODOT_DIR"
-    GAMEPLAY_COMMAND=(godot --path "$GODOT_DIR" --log-file "$GAMEPLAY_LOG_PATH")
+    GAMEPLAY_COMMAND=(godot --path "$asset_test_project" --log-file "$GAMEPLAY_LOG_PATH")
     if [ "$GAMEPLAY_ROAD_PROFILE_MODE" = "headless" ]; then
         GAMEPLAY_COMMAND+=(--headless)
     else
@@ -1384,6 +1576,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
         "${GAMEPLAY_COMMAND[@]}"
     fi
     PROFILE_STATUS=$?
+    rm -rf "$asset_test_profile"
     if [ $PROFILE_STATUS -eq 0 ] && [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
         if [ ! -s "$GAMEPLAY_PROFILE_PATH" ] || ! gzip -t "$GAMEPLAY_PROFILE_PATH" 2>/dev/null; then
             echo "Error: Samply did not produce a readable profile at $GAMEPLAY_PROFILE_PATH" >&2
@@ -1415,9 +1608,17 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     exit $PROFILE_STATUS
 fi
 
+if [ $STREAM_BENCHMARK -eq 1 ]; then
+    stream_args=(run --label "${METRUM_STREAM_LABEL:-stream-$(date -u +%Y%m%dT%H%M%SZ)}"
+        --out "${METRUM_STREAM_OUT:-$PROJECT_ROOT/benchmark-results}" --godot-dir "$GODOT_DIR")
+    [ -n "${METRUM_STREAM_SAVE:-}" ] && stream_args+=(--save "$METRUM_STREAM_SAVE")
+    [ "${METRUM_STREAM_DETAIL:-0}" = 1 ] && stream_args+=(--detail)
+    exec python3 "$PROJECT_ROOT/tools/stream_benchmark.py" "${stream_args[@]}"
+fi
+
 if [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 1 ]; then
     echo "Running deterministic Godot road-chunk upload benchmark..."
-    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    run_road_chunk_upload_benchmark
     exit $?
 fi
 
@@ -1428,17 +1629,13 @@ if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
         exit 1
     fi
     echo "Running deterministic Godot road-chunk upload benchmark..."
-    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    run_road_chunk_upload_benchmark
     exit $?
 fi
 
 if [ -n "$ROAD_REPLAY_DUMP" ]; then
     # The player's installed packs, read before the isolated profile replaces XDG_DATA_HOME.
-    if [ "$METRUM_PLATFORM" = "darwin" ]; then
-        road_replay_packs="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
-    else
-        road_replay_packs="${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Metrum Rise/mods"
-    fi
+    road_replay_packs="$(player_mods_dir)"
     road_replay_packs="${METRUM_ROAD_REPLAY_PACKS:-$road_replay_packs}"
     # The replay loads the save and edits only that loaded copy; the profile is thrown away.
     create_isolated_godot_profile || exit 1

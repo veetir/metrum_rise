@@ -22,6 +22,14 @@ pub mod network;
 /// Authored resource overlay rendering.
 pub mod resources;
 pub(crate) mod vehicle_ground;
+/// Street lights' lamp grid, far light map, light pool and chunk batches (`RENDER-32-H`).
+pub(crate) mod street_lights;
+/// The streaming core: render-consumer state chosen from the view (`RENDER-32`).
+pub(crate) mod stream;
+/// A vegetation patch's instance buffers, bounds and ranges (`RENDER-32-C`).
+pub(crate) mod vegetation_product;
+/// The walkers' drawn buffers between snapshots, uploaded only when changed (`RENDER-28`).
+pub(crate) mod walker_visual;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
 /// The water a view ray first comes down onto, for the planar reflection's mirror planes.

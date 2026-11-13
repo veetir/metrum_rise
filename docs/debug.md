@@ -516,6 +516,23 @@ after the third failure: `sent home to building B at (x, y)`, `sent to border no
 `no border node to send it to`. Road edits clear the routes they touch, so junction lines point
 at lane or connector data that disagrees with the road graph.
 
+A car on a parking leg is never handed to the watchdog: its failure goes to the leg's recovery in
+the same tick's commit, and its line says what the recovery did (`TRAFFIC-32`): `drops its route
+and replans`, `its parking leg plans again in 30 s`, or, for a drive cut off from its bay
+([`TRAFFIC-34`](traffic.md#recovery-park-02)), `parks in the nearest free bay it can reach by road,
+at (x, z), and walks on`, `gives up and drives home to building B`, or `no free bay in reach and
+no way home: stops at the end of lane L, plans home again in 5 s`. A parked driver with no walk
+from its bay logs `no walk from its parking bay to building B` with `gives up and drives home to
+building H` or `no way home either: stays parked in its bay, plans the drive home again in 5 s`.
+The movement pass records it with the placeholder `its parking leg's recovery plans again`, which
+the commit replaces; a failure the recovery finds itself is recorded there. One line per failure:
+the retries on the backoff record nothing. The `TRAFFIC-31` dump's car, its booked bay's road cut
+off from every other road after the load:
+
+```text
+trip failed: agent 125 [row 125], resident, car, at node 7, to building 90 (industrial): no route from node 7 to building 90: no lane by the door from node 32; no road path from node 7 to node 19; gives up and drives home to building 121
+```
+
 Flood control keeps the 4096-line log readable when a road edit strands many agents:
 
 - An agent that repeats the same failure at the same place within a simulated minute of the
@@ -580,6 +597,14 @@ that runs once at load, such as the lighting summary, does not repeat after a sw
 `PerfDebug` keeps its 0.5 s summaries, logs them on `perf` and exposes the latest one as
 `PerfDebug.last_summary`.
 
+The main thread's core locks are counted by call site while a caller turns them on
+(`SimulationNode.set_core_lock_stats(true)` from the main thread; `take_core_lock_stats()` returns
+and resets, per `file:line`, the tries, the tries that found the core busy, the blocking waits,
+their total and longest wait in microseconds; `CODE-26`). Off, a lock pays one relaxed atomic
+load. The stream benchmark turns them on with the perf channel and records them per frame
+(`core_locks`); the terrain's `perf` record splits its dirty-patch commit (`upload_*`,
+`RENDER-40`). See [terrain.md](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12).
+
 ## Crash and Hang Diagnostics
 
 `METRUM_CRASH_DIAGNOSTICS=1` installs the panic hook, the ten-second hang watchdog and a
@@ -611,6 +636,39 @@ the preceding stage returned. `add road transaction started` is emitted before t
 `add road internal` mutation marker.
 
 ## Godot Test Guard
+
+**Isolated profile (`TOOLS-19`).** Every Godot run of a test, benchmark, probe or import runs in
+a throwaway profile, never the player's: Godot ignores a relative `XDG_DATA_HOME` /
+`XDG_CONFIG_HOME` (it warns "is a relative path") and falls back to the home profile, where a
+run rotates the player's logs, rewrites the editor settings or, for a pack-writing test, the
+active packs. `tools/godot_isolated.py` makes the profile: absolute data, config and cache homes,
+a project copy with a unique name (every entry of `godot/` linked, so imports are shared), and on
+request another build's library or scripts and a copy of the player's packs. It refuses an
+environment whose XDG homes are unset, relative or the home profile's. `run` deletes a passed
+run's profile and keeps a failed one's; `profile` prints the paths for a shell to `eval`.
+`./run.sh --test`, its replay and benchmark modes, the stream benchmark, the parking capture and
+the camera playtest use it; a hand-started run uses it too:
+
+```bash
+tools/godot_isolated.py run -- godot --headless --path {project} --script res://tests/<test>.gd
+tools/godot_isolated.py run --library <other .so> -- godot --headless --path {project} --import
+tools/godot_isolated.py run --mods player -- gamescope --backend headless -- godot --path {project} ...
+```
+
+A round's logs end clean: `grep -rl 'is a relative path' <artefacts>` finds nothing.
+
+**The refusal (`TOOLS-19` part 2).** The extension refuses a test, benchmark or probe started in
+the player's profile: at its Scene initialisation stage (before Godot creates a main loop or runs a
+`--script`), when the command line names a script under `res://tests/` or
+`res://scripts/benchmarks/` or a benchmark user argument (`--gameplay-road-benchmark`,
+`--benchmark`, `--generate-benchmark`), the project keeps its own name and Godot's data directory
+is the platform's default one (`OS.get_data_dir()` against `$HOME/.local/share`, `$HOME/Library/Application
+Support` or `%APPDATA%`; no home directory counts as the player's), it logs the reason and exits
+with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). Godot's own
+log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
+`profile_guard_test` runs the same script in its isolated profile (it writes its marker) and in a
+copy of that project keeping the player's name, under a throwaway `HOME` with the XDG homes unset
+(refused, exit 3, no marker).
 
 Godot does not exit on a GDScript error: the coroutine that hit it ends, the scene tree keeps
 running, and a test that never reaches `quit()` would hold its chain forever. So

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Visible ground-mask chunks from Rust; retained textures upload only after local changes.
-## Generation, reservations, cell ownership and paint remain in the simulation.
+## Ground-mask chunks from Rust on the streaming core's 2 km ring about the eye (`RENDER-32-P`);
+## retained textures upload only after local changes. Generation, reservations, cell ownership
+## and paint remain in the simulation.
 extends Node3D
 
 var simulation_node: Node
@@ -13,7 +14,12 @@ var _preview_payload: Dictionary = {}
 var _preview_view: Array[Vector2i] = []
 var _span: float
 var _reported_visible := false
-const VIEW_DISTANCE_M := 2000.0
+# The streaming core: a sibling, or the overlay's sibling in the game scene.
+@onready var _stream: Node = get_node_or_null("../StreamNode") if has_node("../StreamNode") else get_node_or_null("../../StreamNode")
+# The ring's resident chunks, nearest first, as of its revision.
+var _ring: Array[Vector2i] = []
+var _ring_revision := -1
+var _world := Vector2.ZERO
 const UPLOADS_PER_FRAME := 2
 
 func full_refresh() -> void:
@@ -24,10 +30,12 @@ func full_refresh() -> void:
 	_preview_view.clear()
 	_masks.clear()
 	_masks.setup(simulation_node.get_terrain_world_size())
+	_world = simulation_node.get_terrain_world_size()
 
 func _ready() -> void:
 	_span = simulation_node.get_zoning_cell_chunk_span()
-	_masks.setup(simulation_node.get_terrain_world_size())
+	_world = simulation_node.get_terrain_world_size()
+	_masks.setup(_world)
 	top_level = true
 
 func _process(_delta: float) -> void:
@@ -115,31 +123,17 @@ func _upload_preview(keys: Array[Vector2i]) -> void:
 func _exit_tree() -> void:
 	_masks.clear()
 
+# The ring's chunks about the camera (the stream node moves it: nothing for a still eye).
 func _visible_chunks() -> Array[Vector2i]:
-	var keys: Array[Vector2i] = []
 	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return keys
-	var size := get_viewport().get_visible_rect().size
-	var lower := Vector2(INF, INF)
-	var upper := Vector2(-INF, -INF)
-	for screen in [Vector2.ZERO, Vector2(size.x, 0), size, Vector2(0, size.y)]:
-		var origin := camera.project_ray_origin(screen)
-		var direction := camera.project_ray_normal(screen)
-		var distance := VIEW_DISTANCE_M
-		if direction.y < -0.001:
-			distance = clampf(-origin.y / direction.y, 0.0, VIEW_DISTANCE_M)
-		var point := origin + direction * distance
-		lower = lower.min(Vector2(point.x, point.z))
-		upper = upper.max(Vector2(point.x, point.z))
-	# One extra chunk covers squares crossing ownership boundaries and terrain-height variation.
-	var half_world: Vector2 = simulation_node.get_terrain_world_size() * 0.5
-	lower = (lower - Vector2.ONE * _span).max(-half_world)
-	upper = (upper + Vector2.ONE * _span).min(half_world)
-	for x in range(floori(lower.x / _span), floori(upper.x / _span) + 1):
-		for z in range(floori(lower.y / _span), floori(upper.y / _span) + 1):
-			keys.append(Vector2i(x, z))
-	var center := (lower + upper) * 0.5 / _span
-	keys.sort_custom(func(a: Vector2i, b: Vector2i):
-		return Vector2(a).distance_squared_to(center) < Vector2(b).distance_squared_to(center))
-	return keys
+	if _stream == null or camera == null:
+		return _ring
+	var revision: int = _stream.update_zoning_ring(camera.global_position, _span, _world)
+	if revision != _ring_revision:
+		_ring_revision = revision
+		# A new array: the preview keeps the list it was uploaded for.
+		_ring = []
+		var pairs: PackedInt32Array = _stream.get_zoning_ring()
+		for at in range(0, pairs.size(), 2):
+			_ring.append(Vector2i(pairs[at], pairs[at + 1]))
+	return _ring

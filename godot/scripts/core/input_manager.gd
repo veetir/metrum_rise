@@ -55,7 +55,7 @@ const WORLD_CAMERA_MAX_DISTANCE_M := 40000.0
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # A world load hands the game over once every patch within this distance of the camera draws what it
-# draws settled (TERRAIN-15): the graded levels' detailed ring (GL2 ends at 2 km, terrain_graded_tiles.gd
+# draws settled (TERRAIN-15): the graded levels' detailed ring (GL2 ends at 2 km, the Rust level rule's
 # LEVEL_END_M); the farther patches stream on within the frame budget.
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
@@ -216,6 +216,10 @@ func is_world_ready() -> bool:
 # over in follows one with the near ring ready. O(patches within the radius).
 func _await_world_ready() -> void:
 	if terrain_node != null and terrain_node.unready_patches_near_camera(WORLD_READY_RADIUS_M) > 0:
+		return
+	# The road chunks of the near ring too: a load's chunks stream in nearest first (RENDER-32-P).
+	var roads := get_node_or_null("../NetworkRenderer/RoadChunkHydration")
+	if roads != null and roads.holes_near(WORLD_READY_RADIUS_M) > 0:
 		return
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
@@ -560,6 +564,10 @@ func _refresh_after_world_load():
 	# Never leave the previous world's road chunks visible while the new terrain is rebuilt.
 	if road_tool:
 		road_tool.reset_main_mesh_chunks()
+	# The road chunks then stream in nearest first (RENDER-32-P): their one-time resources here.
+	var roads := get_node_or_null("../NetworkRenderer/RoadChunkHydration")
+	if roads != null:
+		roads.prewarm()
 	if terrain_node:
 		terrain_node.rebuild_from_simulation_state()
 	if water_node:

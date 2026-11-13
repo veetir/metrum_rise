@@ -4984,7 +4984,10 @@ These need a user decision; work that does not depend on them continues.
       simulation paused; its frames, time and frames over 16.7 ms in each case's `steady_wait`).
       (b) is `TERRAIN-13` (the user widened it at about 17:30: the graded renderer's GDScript
       bookkeeping moves to Rust, its residency pass following the changed tiles); its own track,
-      not blocking `ROAD-68`.
+      not blocking `ROAD-68`. Since 2026-11-11 it is built as `RENDER-32-B` (G1: the desired
+      levels, travel buckets and request queue in Rust; 23-35 ms a frame at 100k measured fresh),
+      and [T65](terrain.md#terrain-07-open-questions)'s one hand-over rule as `RENDER-32-K` (G2c)
+      ([streaming core](terrain.md#streaming-core-render-32)).
 65. **The rendered rows' misses beyond the GDScript share (`ROAD-68-H` round 4) — (a) with (d),
     decided by the user, 2026-10-29 (about 19:15).**
     - **Evidence** (round 4, fresh, [record](#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)).
@@ -12285,6 +12288,136 @@ change only on the steep Kuopio hillside roads (0.06 to 0.12 per metre).
 Remaining: grade change, a debug overlay and preview colouring of design warnings other than
 grade.
 
+## Road tools (`ROAD-112`, `ROAD-113`)
+
+**Status: planned (2026-11-12), nothing built.** The user asked for a complete refactor of the
+road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
+Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
+length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
+continuous, grid, parallel, replace and freeform tools); no names, art or look are copied.
+"Drawing and placement (`ROAD-63`)" below describes today's tool until round D lands.
+
+### Design (`ROAD-112`)
+
+- **Back end stays.** One stroke is still a polyline through `RoadEditPlan`, the roadbed, the
+  commit and the undo stack. New: a batch of strokes as one transaction (the commit split into a
+  per-stroke core and a once-per-command tail of publication, graph copy and routing; undo
+  records of a batch share a group id; the whole batch is dry-run before any land is taken).
+- **Rust tool core** in `nodes/sim/road_tool/`, guide kernel in `simulation/network/guide/`:
+  guide geometry in `f64` (line, exact circular arc, biarc S-curve, cubic Bezier) with one
+  flattening rule (sag at most 5 cm, step at most 4 m); one session with a small state machine
+  per mode; pick, snapping, measurement and HUD values, height handles, batch builders,
+  plan-mode drafts, redo. No clothoids for now (cars do not slow for radius); the segment enum
+  leaves room for one.
+- **Protocol.** GDScript sends `road_tool_event` and `road_tool_set_option` and calls
+  `road_tool_frame` once a frame; the frame returns the existing `preview_road` dictionary
+  unchanged, plus gizmo arrays, HUD numbers, cursor and state. `preview_road` and
+  `add_road_with_snap` stay as low-level entries for replays and the drag probe. GDScript keeps
+  input forwarding and drawing; preview holds come from `RENDER-32`'s single Rust hold rule.
+- **Snapping precedence**: node; then the angle lock intersected with an edge, a guide line or a
+  zoning-grid line; then that line alone; then the angle alone; then length steps. Fixed
+  world-metre tolerances, `O(log E + K)` per pointer move, no allocation.
+- **Height**: handles at the stroke ends. Both ends at 0 with straight grade off is today's
+  follow-ground solve, bit for bit; a moved handle or straight grade switched on gives a grade
+  line between the ends. A span leaving the ground becomes a bridge or tunnel automatically
+  (bridge threshold 1.0 m above ground, today's rule).
+- **Multi-stroke preview**: an outline ghost every pose, exact pieces one stroke a frame when the
+  pointer rests (one stroke's stage budgets are about 7.5 ms). Cap 40 strokes / 8 km a batch,
+  final after round G's measurement.
+- **Redo** re-runs the undone action's stored request through the normal commit; any new edit
+  clears it. The undo record carries its request, undo refunds the build cost, and a redo
+  refuses when it would demolish buildings that appeared after the undo.
+
+### Decisions (user, 2026-11-12, all as recommended)
+
+- U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
+- U2 angle lock off by default, guide lines on, lock steps 15 / 30 / 45 / 90 on demand, Shift
+  frees; today's soft 45° magnet goes.
+- U3 straight grade only on demand. U4 PageUp/PageDown stay as a second way to move the live
+  end's handle. U5 undo refunds the build cost. U6 two-tier multi-stroke preview with the cap
+  above. U7 Replace skips and counts roads with turn pockets. U8 gizmo, HUD and keys: plain
+  defaults, stills reviewed at landings 1 and 2. U9 plan-mode drafts are not saved (no save
+  change). U10 batch and heights before grid and parallel. U11 redo covers road tool actions
+  only at first.
+- U12 groundwork for `ROAD-113` inside A-Q is API shape only (guide kernel location, the stroke
+  request carrying its guide, Replace's check as one `try_graph_edit`), +1.5 h.
+- U13 older saves stop loading at `MV0`'s bump. U14 roads without a stored guide move as exact
+  polylines, no fitting. U15 a moved node keeps straight roads straight and curves' end
+  directions. U16 a shift slides end junctions along their cross streets; a road continuing the
+  span takes an S-bend (about 26 m for 3.5 m). U17 buildings on the side a road leaves are kept
+  while the gap is under one zoning cell, taken from one cell on, shown and counted first.
+  U18 a move costs the build-cost difference, never negative, refunded by undo. U19 tunnels,
+  turn pockets, ring nodes and border connections do not move in the first version, no
+  move-to-join, bridges from `MV6`. U20 smooth joints unless broken, a midpoint handle on
+  straight roads, key M, Shift-click for several nodes. U21 shift first, then move and
+  reshape. U22 `ROAD-113` is a new tool on stored guides; the removed `move_node` tool
+  (`ROAD-111`) does not come back.
+
+### Rounds
+
+| Round | Scope | Hours | Timing level |
+| --- | --- | --- | --- |
+| A | Guide geometry kernel | 4.5 | R |
+| B | Session, pick, snap, measure (not wired) | 5 | R |
+| C | Bridge calls; session drives preview and commit; straight parity bitwise | 4.5 | F + preview rows |
+| D | Simple curve, continuous, HUD, gizmos; GDScript curve code deleted | 5 | F + preview rows |
+| E | Snapping toggles, guide lines, angle lock, length steps | 3 | R |
+| | **Landing 1** | | L |
+| F | Batch commit, grouped undo, undo refund | 5 | F + K22 |
+| G | Two-tier batch preview; part 2: T65 option (c), the terrain cut-out follows the drawn road | 8 | F + preview rows |
+| H | Profile field, automatic bridge/tunnel segmentation | 5 | F + K22 |
+| I | Height handles and HUD | 3 | R |
+| | **Landing 2** | | L |
+| J | Grid | 4 | R |
+| K | Parallel | 4 | R |
+| L | Replace, flip, eyedropper | 4.5 | F + K22 |
+| M | Route upgrade | 3 | R |
+| | **Landing 3** | | L |
+| N | Complex curve and freeform handles | 4 | R |
+| O | Redo | 3 | F |
+| P | Plan mode | 4 | R |
+| Q | Acceptance, cleanup, docs | 3 | L |
+| | **Landing 4** | | |
+| MV0 | Stored edge guides, save bump | 6 | F + K22 |
+| MV1 | Geometry edit core, undo, refund, redo | 7 | F + K22 |
+| MV2 | Geometry edit preview | 4 | F + preview rows |
+| MV3 | Shift in Replace | 5 | R |
+| | **Landing 5** | | L |
+| MV4 | Move tool | 5 | R |
+| MV5 | Reshape handles | 4 | R |
+| MV6 | Bridges | 4 | F + K22 |
+| MV7 | Acceptance, docs | 3 | L |
+| | **Landing 6** | | |
+
+Rounds A and B add new files only. Round C and later start after `RENDER-32`'s G2c-5, R1 and
+BX1 have landed and re-read `road_tool.gd`, `network_tool.gd` and the hold rule at their base.
+
+Round G part 2 (user decision 2026-11-12): T65's remaining junction frames, where a drag pose
+replaces published pieces and the published graded tiles drop the old pieces' cut-out before the
+pose's exact selection is ready, take option (c): the graded terrain's road cut-out follows the
+road pieces drawn that frame, so road and terrain never disagree and the road is not held. It
+builds on `TERRAIN-23`'s batch rule and the single Rust hold rule, and moves the last GDScript
+hold bookkeeping to Rust. A short spike comes first; the bar is `kuopio_03` attempt 8's 16
+junction frames to 0 with the moving preview rows not worse than control. Background:
+[`terrain.md`](terrain.md#terrain-23s-cause-and-the-streaming-audits-graded-findings-render-32-k-part-5-2026-11-12),
+"T65 option (3): what is left".
+
+### Moving and reshaping built roads (`ROAD-113`)
+
+One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position
+as one graph-only edit on `RoadEditSite::try_graph_edit` (as widening, pockets and roundabouts
+do) and one undo record; ids, lane counts, turn rules, crossing overrides and pockets are kept.
+Shapes come from a guide stored per edge (`f64` line, arc as endpoints plus bulge, or Bezier
+spans; about 90 bytes an edge) that splits, joins, trims and reverses exactly. `move_node` is
+not the primitive: it deforms every connected edge along its length and drifts (`ROAD-111`
+measured 13.7 mm on a 6 m away-and-back, the gate test here). The shift in Replace snaps to
+centre, align left edge, align right edge or free 0.5 m steps; lines offset to parallels and
+arcs to concentric arcs. Dependents reuse the widening's paths: lot marks before and after,
+land take and re-lay, `restore_lanes_locally`, attachment repair, parking reconcile, routing
+rebuild. Before coding, `MV1` checks the lot refresh on an occupied lot whose frontage on the
+moved road is incomplete, and `reconcile_parking_frontages` with a car on a bay whose station
+moved.
+
 ## Drawing and placement (`ROAD-63`)
 
 The road tool (`godot/scripts/tools/road_tool.gd`) draws continuously: an accepted road starts the
@@ -13596,7 +13729,10 @@ nearly flat.
 
 Every standard road and footpath gets street lights, placed in Rust with the road mesh
 (`rust/src/simulation/network/render/road/street_lights.rs`) and drawn by
-`godot/scripts/renderers/street_lights.gd`.
+`godot/scripts/renderers/street_lights.gd`; its camera passes (the lamp grid, the far light map,
+the light pool) and each chunk's instance buffers are built in Rust by `StreetLightBook`
+(`rust/src/nodes/sim/render/street_lights.rs`, `RENDER-32-H`), and the script uploads two
+textures and places the pool's lights.
 
 - Placement is a pure function of the compiled sections, along whole streets: chains of edges
   through degree-two nodes that take the same family of light (residential, main road, path).
@@ -13701,14 +13837,18 @@ last 30 m before the handoff, and the material lamp takes the same smoothstep's 
 real plus material light stays constant and no lamp pops. Real lights reaching 160 m instead of 80 m
 cost another 0.4 ms (2026-10-14), so the reach stays 80 m.
 
-The lamps reach the GPU through a camera-centred grid (`street_lamp_grid.gd`): 128 × 128 cells of
+The lamps reach the GPU through a camera-centred grid (`StreetLightBook`): 128 × 128 cells of
 16 m (2,048 m across), each listing up to 16 lamp heads whose range reaches it, one RGBAF texel per
 head (position and kind; 4 MiB in all), plus a texel per lamp kind for colour and range. A street
 puts about six to eight heads in a cell; 16 leaves room for junctions and median pairs, and a
 fuller cell keeps the first 16 in stable world order. Per pixel: one fetch to find an empty cell,
-otherwise at most 16 heads, one fetch each. The grid is rebuilt when chunks change or the camera
-moves 256 m from where it was last centred, O(lamps in the window). It took 0.9 ms in the
-`light-road` save; following every 16 m cell would have cost that per few metres of panning.
+otherwise at most 16 heads, one fetch each. The grid re-centres when the camera moves 256 m from
+where it was last centred: `O(l log l + l k)` for the `l` lamps of the window's chunks and
+`k` <= 25 cells a lamp, packed in bands of 16 cell rows on the shared pool; a chunk added or
+removed re-packs only the cells its lamps reach, which equals a full pack because a cell's list
+depends only on the lamps reaching it. In GDScript a re-centre took 0.9 ms in the `light-road`
+save and 25-38 ms on the 30k city (`RENDER-33`); in Rust the street lights take 0.2 ms a frame
+mean on the 30k night turn (`terrain.md`, [`RENDER-32-H`](terrain.md#street-lights-camera-passes-in-rust-render-32-h-2026-11-11)).
 
 Past 500 to 700 m from the camera the per-lamp loop hands over to a far light map
 (`street_lamp_far`): 512 × 512 cells of 16 m (8 km across), each holding the mean light its lamps
@@ -13719,8 +13859,10 @@ spreads that as a tent of 32 m. Before, the 2 km grid was centred on the camera,
 1 km out under a tilted camera fell off it and went totally dark at a hard edge, where real
 cities read as lit areas from a plane. The map is centred on where the camera looks (its
 centre ray to the ground, at most 3 km out) and re-centred after 1,024 m: a full rebuild
-splats every loaded lamp, 33 ms for 30,000 lamps plus 0.3 ms to upload; a chunk added or removed
-splats only its own lamps in or out. Walls get no far light (upward normal only); at that
+splats the lamps of the chunks over the map in chunk upload order, `O(chunks + lamps)` (33 ms for
+30,000 lamps in GDScript, a fraction of a millisecond in Rust); a chunk added or removed splats
+only its own lamps in or out. At most one of the two textures is rebuilt a frame; when both are
+due, the one that waited goes first. Walls get no far light (upward normal only); at that
 distance they are a few pixels.
 
 Check (2026-10-15, `light-road` at 01:00, far against exact in the fade band, mean absolute

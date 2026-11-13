@@ -11,6 +11,9 @@
 ## frame pacing can be compared against the display refresh rather than measured as throughput.
 ## METRUM_IDLE_BENCH_CANOPY_DENSITY starts a new game on the pinned world at that many canopy stems
 ## per hectare instead of loading it with the default forest.
+## METRUM_IDLE_BENCH_VIEWS adds explicit camera views, "name:x,z,yaw,pitch,distance;...".
+## METRUM_IDLE_BENCH_TREE_FAR_M draws trees out to that distance, for comparing far stands drawn
+## as trees with the terrain standing in for them.
 ## METRUM_IDLE_BENCH_TERRAIN is retained as an ignored matrix label for old launch scripts; every
 ## pose now uses the production graded terrain.
 extends RefCounted
@@ -50,16 +53,16 @@ const PATHS := [
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
-const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits"]
+const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
+const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
+# This matrix's names for the shared shadow variants; any other variant keeps full shadows.
+const SHADOW_VARIANTS := {"no_shadows": "none", "minimal": "none", "no_blend_splits": "no_blend"}
 const DEFAULT_WARMUP_FRAMES := 120
 const DEFAULT_CAPTURE_FRAMES := 600
 
 var _report: Dictionary
 var _environment: Environment
 var _sun: DirectionalLight3D
-# The shadow settings the player's quality chose, restored after a variant that changes one.
-var _sun_angular_distance := 0.0
-var _sun_blend_splits := false
 var _vegetation: Node
 var _grass: Node
 var _water: Node3D
@@ -71,8 +74,6 @@ func run(bench: Node) -> void:
 	var main := bench.get_parent()
 	_environment = (main.get_node("WorldEnvironment") as WorldEnvironment).environment
 	_sun = main.get_node("DirectionalLight3D")
-	_sun_angular_distance = _sun.light_angular_distance
-	_sun_blend_splits = _sun.directional_shadow_blend_splits
 	_vegetation = main.get_node("Vegetation")
 	_grass = main.get_node("Grass")
 	_water = main.get_node("Water")
@@ -88,6 +89,10 @@ func run(bench: Node) -> void:
 	var warmup_frames: int = bench._environment_int("METRUM_IDLE_BENCH_WARMUP_FRAMES", DEFAULT_WARMUP_FRAMES, 0)
 	var capture_frames: int = bench._environment_int("METRUM_IDLE_BENCH_FRAMES", DEFAULT_CAPTURE_FRAMES, 10)
 	var variants := _selected(OS.get_environment("METRUM_IDLE_BENCH_VARIANTS"), VARIANTS)
+	# Any other sun-shadow variant `shadow_variants.gd` knows, in the order asked (`RENDER-15`).
+	for name in OS.get_environment("METRUM_IDLE_BENCH_VARIANTS").split(",", false):
+		if not name in VARIANTS and ShadowVariants.is_known(name):
+			variants.append(name)
 	_report = {
 		"schema_version": 1, "benchmark": "idle_frame", "success": false, "mode": bench.mode,
 		"runtime": bench._runtime_metadata(), "warmup_frames": warmup_frames,
@@ -98,6 +103,12 @@ func run(bench: Node) -> void:
 	bench._metrics = _report
 
 	_report["terrain"] = "graded"
+	# Probe: draw trees out to this distance instead of TreeSpecies.TREE_FAR_M (the ground term
+	# keeps its own range), so a stand drawn as trees can be compared with the ground standing in.
+	var tree_far_m := float(OS.get_environment("METRUM_IDLE_BENCH_TREE_FAR_M"))
+	if tree_far_m > 0.0:
+		_vegetation.far_range_override_m = tree_far_m
+	_report["tree_far_override_m"] = tree_far_m
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
@@ -192,6 +203,12 @@ func run(bench: Node) -> void:
 			var xz: Vector2 = centre + pose.offset
 			var y := float(bench.simulation_node.get_world_surface_height(xz))
 			bench.camera.focus_on(Vector3(xz.x, y, xz.y), pose.radius)
+		if pose.has("view"):
+			# An explicit orbit view, offset from the world centre: [x, z, yaw, pitch, distance].
+			var v: Array = pose.view
+			var vxz: Vector2 = centre + Vector2(v[0], v[1])
+			var vy := float(bench.simulation_node.get_world_surface_height(vxz))
+			bench.camera.set_view_state(PackedFloat32Array([vxz.x, vy, vxz.y, v[2], v[3], v[4], 0.0]))
 		if pose.get("look_up", false):
 			# orbit() clamps the pitch, so an oversized upward drag lands exactly on the limit.
 			bench.camera.orbit(Vector2(0.0, -100000.0))
@@ -215,7 +232,8 @@ func run(bench: Node) -> void:
 			# Optional visual baseline: the last captured frame, for before/after image diffs.
 			var screenshot_dir := OS.get_environment("METRUM_IDLE_BENCH_SCREENSHOT_DIR")
 			if not screenshot_dir.is_empty():
-				# Wind sway depends on wall-clock shader TIME, so it never matches between runs.
+				# Trees at rest: their sway follows the weather's wind clock (weather_wind.x, never
+				# TIME), which stops wherever the run paused it, so a swaying shot would hang on that.
 				_set_vegetation_wind(0.0)
 				await bench.get_tree().process_frame
 				await bench.get_tree().process_frame
@@ -246,8 +264,8 @@ func run(bench: Node) -> void:
 		var unready_before := 0
 		if graded != null and graded.counters.has("unready_in_view"):
 			unready_before = int(graded.counters["unready_in_view"])
-			for name in ["unready_in_view_max", "ready_ms_max", "ready_frames_max"]:
-				graded.counters[name] = 0
+			# The book's counters since `RENDER-32-K` part 7 (`counters` is a copy on each read).
+			graded._book.reset_maxima(PackedStringArray(["unready_in_view_max", "ready_ms_max", "ready_frames_max"]))
 		var sample := await _capture(bench, viewport_rid, path_frames,
 			func(frame: int): _focus_path(bench, centre, definition, float(frame + 1) / path_frames))
 		if graded != null and graded.counters.has("unready_in_view"):
@@ -345,16 +363,14 @@ func _apply_variant(variant: String) -> void:
 	# The day cycle writes ssil_enabled every frame (on only while windows can be lit).
 	_lighting.ssil_allowed = effects and variant != "no_ssil"
 	_environment.glow_enabled = effects and variant != "no_glow"
-	_sun.shadow_enabled = not (minimal or variant == "no_shadows")
+	# The sun's shadows and the receivers' cloud lookup (`shadow_variants.gd`).
+	ShadowVariants.apply(_lighting, _sun, SHADOW_VARIANTS.get(variant, variant))
 	_water.visible = variant != "no_water"
 	_terrain.visible = variant != "no_terrain"
 	# The cloud pass and the receivers' cloud lookups, measured apart.
 	_lighting._cloud_effect.enabled = not (minimal or variant == "no_clouds")
-	_lighting.cloud_shadows_allowed = not (minimal or variant == "no_cloud_shadows")
-	# The two open RENDER-15 shadow costs at High quality: the variable penumbra (an angular
-	# size of zero makes the directional shadow a plain PCF lookup) and blending between splits.
-	_sun.light_angular_distance = 0.0 if variant == "no_pcss" else _sun_angular_distance
-	_sun.directional_shadow_blend_splits = variant != "no_blend_splits" and _sun_blend_splits
+	if minimal:
+		_lighting.cloud_shadows_allowed = false
 
 # Screenshot-only: TreeSpecies caches every vegetation ShaderMaterial in static containers.
 func _set_vegetation_wind(strength: float) -> void:
@@ -387,7 +403,17 @@ func _selected(text: String, all: Array) -> Array:
 
 func _selected_poses(text: String) -> Array:
 	var wanted := text.split(",", false)
-	return POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+	var poses := POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+	# METRUM_IDLE_BENCH_VIEWS adds explicit views, "name:x,z,yaw,pitch,distance;..." with x and z
+	# offsets from the world centre, yaw and pitch in radians and the orbit distance in metres.
+	for entry in OS.get_environment("METRUM_IDLE_BENCH_VIEWS").split(";", false):
+		var parts := entry.split(":")
+		var values := Array(parts[1].split(",")).map(func(value): return float(value)) if parts.size() == 2 else []
+		if values.size() != 5:
+			push_error("METRUM_IDLE_BENCH_VIEWS: ignoring malformed view '%s'" % entry)
+			continue
+		poses.append({"name": parts[0], "view": values})
+	return poses
 
 # From `start_us` (the load call) to the first of three frames in a row on which the terrain
 # renderer has settled, and whether the load flow had handed the game over then (input_manager's

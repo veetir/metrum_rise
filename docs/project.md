@@ -32,7 +32,7 @@ Zoning cells, parcels and the painting preview are now drawn into the ground sur
 meshes are gone ([ground mask](zoning.md#ground-mask-rendering)). Veeti's branch came in as one
 squashed commit in round `Z1` with two fixes, verified on the RX 7900 XTX (`ZONE-08`).
 
-Veeti's road-render and signs/parking fixes are merged on branch `veeti-fixes` (round `VM`, not landed): a graded page grows by device copy, so committed roads no longer drop out (`TERRAIN-21`; on Compatibility the move copies a CPU copy of the uploaded layers since round `T22`, branch `terrain-22`, not landed: `TERRAIN-22`), a ring entry's crossing sign carries B5 + D2 (`ROAD-62`), parking lots refuse walkways (`PARK-01`) and kerb bays save with renumbered roads (`PARK-05`).
+Veeti's road-render and signs/parking fixes are merged on `dev` (round `VM`): a graded page grows by device copy, so committed roads no longer drop out (`TERRAIN-21`; on Compatibility the move copies a CPU copy of the uploaded layers since round `T22`, landed on `dev`: `TERRAIN-22`), a ring entry's crossing sign carries B5 + D2 (`ROAD-62`), parking lots refuse walkways (`PARK-01`) and kerb bays save with renumbered roads (`PARK-05`).
 
 Roads, road edits and service/industry placements now take zoned land instead of being refused by
 it: the lots they cover go with their houses, the covered cells lose their paint, placed buildings,
@@ -45,6 +45,126 @@ diagonal through a zoned block leaves no slivers, gaps or cells without a street
 orphaned paint, no cell stands on a ring's island, and undo gives the old cells and paint back
 exactly (branch `zone-relay-2`, rounds RL1 and RL2, not landed; `ZONE-14`, `ZONE-13` closed,
 [zoning](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+
+Camera moves are the next rendering focus (`RENDER-32`, planned and adopted 2026-11-11): on the
+30k city a 1 s orbit turn spends 23.5 ms a frame in renderer scripts against 16.5 ms of GPU, led
+by the graded tiles' residency, the vegetation's main-thread placement query and the cars' ground
+solve. One Rust-owned streaming core (view, rings, a 2.0 ms streaming budget, pooled
+`RenderingServer` objects) replaces each renderer's own bookkeeping over sixteen rounds, starting
+with a wall-clock stream benchmark ([streaming core](terrain.md#streaming-core-render-32)). Its
+second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rust: the 30k turn
+is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s. The
+third (`RENDER-32-C`) builds every vegetation instance buffer in Rust, bit for bit what the
+GDScript built (Rust now owns the plants' appearance hash): Kuopio's turns are 3-5 ms faster.
+`RENDER-32-D` (landed) runs the vegetation query on a background thread from a
+snapshot: the vegetation's frame time on a turn falls from 6-11 ms to 1.5-2.7 ms, and Kuopio's
+turns are twice as fast.
+`RENDER-32-H` (landed) moves the street lights' night passes to Rust, bit for bit:
+on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
+more than day turns. `RENDER-32-I` (landed) moves the graded renderer's
+pages, copies, growth, installed tiles and bake hand-over to Rust, proven by replaying recorded
+traces bit for bit: the graded residency work on a 100k turn falls from 2.5-2.8 ms a frame to 0.4, and the pooled
+empty pages are bounded at 32 MiB (`TERRAIN-09`). `RENDER-32-E` (landed) installs the
+vegetation through pooled `RenderingServer` objects from Rust under one 2.0 ms streaming budget a
+frame, with no node per patch: stills identical, the vegetation's frame time on a 30k turn about
+1 ms (control 1.6-1.8) and at most 1.5 ms of installs in any frame.
+`RENDER-32-G` (accepted by the user 2026-11-12) stops re-solving and re-uploading cars that
+stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms, and 1.7 ms at
+1x instead of 3.7. `RENDER-32-O` (landed) gives agents the draw distances the user
+chose: walkers fade out from 0.8 km and end at 1.0 km, moving cars from 2.0 to 2.5 km, cut before
+the snapshot poses them; nothing nearer changes. The 30k paused still runs at 7.5 ms instead of
+8.4, and at 100k agents cost 2.0 ms a frame instead of 3.3 with half the primitives drawn.
+`RENDER-32-J` (landed) moves the graded cell sets, wall faces and draw states to
+Rust, replayed bit for bit: the cell rewrites on a 30k turn fall from 3.2-3.6 ms a frame to 0.5,
+and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-K` part 1 (landed)
+draws those cells, walls and their materials as `RenderingServer` objects from
+Rust with no node: stills identical, the cells' part of a turn 0.3-0.4 ms a frame instead of
+0.5-0.8, and Kuopio's cell-set builds done within its load instead of 0.8 ms a frame after it.
+`RENDER-32-K` part 2 (landed) writes the graded page uploads from Rust: a 30k turn
+installs 12-23 % more tiles a frame in the same budget, stills identical (after fixing a grass
+mask left stale by a cell set build), but the graded time a frame is unchanged, because the turns
+keep the install budget full; the renderer test's waits are fixed (`TERRAIN-17`, `TERRAIN-24`).
+`RENDER-32-K` part 3 (landed 2026-11-12) takes each finished graded tile from the simulation
+to the page in Rust, without dictionaries or GDScript per tile: a 30k turn's graded time falls
+from 1.2-1.4 ms a frame to 0.8-0.9 and its install queue keeps up; at 100k the install budget now
+also counts the cell rewrites its installs cause, so the graded time is 1.4-1.5 ms against the
+control's 1.5-1.6 with half again as many tiles a frame; the 0.5 / 1.0 ms bars stay missed.
+`RENDER-32-K` part 4 (landed 2026-11-12, part 5 left) moves the graded edit batch and the road
+preview's tiles to Rust, replayed bit for bit; T65's one rule, the tools' holds and the rest of the
+renderer's deletion are part 5's, and `TERRAIN-23` (the drag probe's fast commit) is narrowed, not
+fixed. `RENDER-32-K` part 5 (landed 2026-11-12) fixes `TERRAIN-23`: a click right after a drag now
+installs its graded terrain in the same frame as its road, and the streaming audit's graded
+cleanups are in (a page write checked against its own bake, golden traces in the gate, no entry
+clone on install, freed pages forgotten); the last junction frames of T65 wait for the user's
+choice of rule, and the renderer's deletion to an executor is still to come.
+`RENDER-32-K` part 6 hands the graded renderer's resident patches from `terrain.gd` to the
+streaming core (the book follows the terrain layer's activations, step changes, departures and
+commits directly), puts the graded result path and edit batch under Rust tests without Godot
+(`CODE-30`), and moves the patch lists' bookkeeping and the cell set builds into the book;
+`terrain_graded_tiles.gd` is 1,347 lines (from 1,425), the rest of its deletion still to come.
+`RENDER-32-K` part 7 moves the graded renderer's frame, its counters and perf parts, the readiness
+latency and the test and probe readers into the book, and the Godot tests and older traces onto the
+streaming core's entries; `terrain_graded_tiles.gd` is an executor of 611 lines (the Godot objects
+it makes, the effects that need them and the traced simulation calls).
+`RENDER-32-F` (landed)
+moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
+GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
+area draws from one grid tier in every frame.
+`RENDER-32-L` (landed) evaluates a building part's level of detail only when the
+camera has moved far enough that it could change, exactly as before otherwise, and draws the
+building batches and their water reflections through the pooled `RenderingServer` objects: the
+buildings' frame time on a 30k turn falls from 1.4-1.9 ms to 0.1-0.2 (0.3-0.5 ms at 100k against
+3.5-5.1), the water reflection's hook from 0.3 ms a frame to 0.03, and the near canopy's detail swap
+on zooms no longer reads its buffer back from the GPU (`RENDER-37`: 6-11 ms frames to 0.14 ms).
+`RENDER-32-M` (landed 2026-11-12) decides the terrain and water patches' residency, mesh
+levels and prewarm in Rust, decision for decision as the scripts did on the benchmark's recorded
+paths: terrain and water cost 0.13-0.17 ms a frame on Kuopio's turns and pans (0.2-0.3 before), a
+100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable and
+settled about 0.6 s sooner after a load (a terrain build 0.41 to 0.16 ms, its land cover built off
+the main thread, and a post-load window at the control's own cost a frame). The stream benchmark gains a pond on the 30k city, made by a recorded recipe.
+`RENDER-32-P` (landed 2026-11-12) streams a load's road chunks in one at a time,
+nearest first with the near ring before the hand-over, instead of every chunk in the load's first
+frame (one 1.4 s frame at 100k; now at most 33 ms of road work in any frame), draws the parked
+cars through pooled objects with no node per chunk, keeps the zoning masks on a 2 km ring about
+the camera, and retries a building frame the full slot pool refused until it draws whole
+(`RENDER-42`).
+The building batches' pooled objects are freed when the game scene goes and before a world load
+lets go of their meshes (`RENDER-39`, `RENDER-41`, fixed 2026-11-12): no more `Parameter "mesh"
+is null` bursts on a load or at quit, and no leaked rendering objects at exit.
+With the simulation running (`PL1`, measured 2026-11-12, no behaviour change) the main thread's
+largest costs are its blocking waits for the simulation core in per-frame queries (`CODE-26`: 0.5
+ms a frame at 30k 1x, 2.9 at 30k 32x, 3.1 at 100k 1x, 44 at 100k 32x), the terrain's dirty-patch
+commit on growth edits (`RENDER-40`: 8-23 ms frames at 30k, up to 442 ms at 100k) and Godot's own
+draw (`RENDER-46`); the paused 30k turn's 6 ms over its GPU time is the draw's command replay, the
+core waits, Rayon joins and X11 round trips
+([record](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
+Where the GPU goes (`RENDER-44`, `RENDER-46`, measured 2026-11-13, no behaviour change): the
+100k still's 99 M main-pass primitives are mostly building batches and parked cars beyond 1 km
+(parked cars are drawn to the horizon; cars and walkers have no far mesh), and 73 % of them draw no
+visible pixel (off-screen inside drawn batches, sub-pixel or occluded); the parked cars make 64-71 %
+of the draws. A turn draws and binds what a still does: its dearer draws are cache misses and
+install churn, not state changes. Ranked levers: one body surface per car mesh, the parked cars'
+draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), occlusion later
+(`RENDER-50`) ([record](terrain.md#where-the-gpu-goes-render-44-render-46-2026-11-13)).
+`RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
+waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
+the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
+did not (trees up to 32 frames late on the 30k city, gaps of up to 23 frames on Kuopio). The
+vegetation now prepares the patches the camera can reach next while the view is still, and keeps
+installed patches' products for a turn back (64 MB at most): the 30k coarse trees draw at once
+(was up to 32 frames late) and the fine ones' worst waits are 6-13 frames (was 18); Kuopio's are
+now limited by the per-frame install budget
+(`RENDER-32-Q`). `CODE-12` stays open for the rest (record in
+[terrain.md](terrain.md#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)).
+Part 2 (2026-11-13, for review) prepares each tree patch for every detail level the camera can
+ask for next, reaches along a zoom in or out, and prepares gaps before detail changes: on the 30k
+city trees now draw within two frames on every measured motion; Kuopio's turns wait only for the
+install budget, its far zooms still partly for preparation (less than before); with the
+simulation running the preparation now yields to the game and costs a still view nothing measurable
+([record](terrain.md#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)).
+The graded ground's material edges and road seams no longer flicker from frame to frame
+(`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
+city's stills byte-identical run to run again, at the control's GPU and frame time.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
@@ -1501,8 +1621,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
-- `ROAD-111` round R111 (branch `remove-node-move`, 2026-11-10, not landed): manual road node moving is removed from the game (the user: "it has not worked in ages"): the move tool, its M shortcut, its bridge calls and core paths and the `pending_demolition` reason are gone, so its away-and-back drift is moot ([`roads.md`](roads.md#land-taken-by-road-edits-zone-09-zone-10)).
-- `ALLOC-05` round A05 (branch `alloc-05`, 2026-11-10, not landed): Godot's queries, overlays, previews, inspectors and the render snapshot ready only the site part of a stale building index, so when Godot asks never changes the simulation's order lists; the simulation's own readers rebuild them where a headless run does. No day had diverged on `dev` (the frame's start rebuilt first), but the state between frames depended on the pointer. Level F level with `dev`, products bitwise equal ([indices](building_allocator.md#indices-and-vacancy-rules), [Busy Core](debug.md#busy-core)).
+- `TOOLS-19` part 2 (2026-11-12, branch `stream-g2c4`): a test script, benchmark or probe started in the player's real profile exits with status 3 before any script runs ([guard](debug.md#godot-test-guard)); the graded drag probe has a tracked runner that fails loudly (`tools/graded_drag_probe.py`, `TERRAIN-23`).
+- `TOOLS-19` part 1 and `TOOLS-20` (2026-11-12, branch `stream-tl1`, landed on `dev`): every scripted Godot run (tests, benchmarks, probes, imports) goes through `tools/godot_isolated.py`, an absolute throwaway profile that refuses a relative or home XDG path ([guard](debug.md#godot-test-guard)); the stream benchmark's verdicts are tracked subcommands, `series` (C B B C in one lock), `compare`, `digests` (equal, band or different; the benchmark records the level rule's ends) and `stills` ([tools](terrain.md#stream-benchmark-perf-23)).
+- `TOOLS-16` (2026-11-10, landed on `dev`, open until the packages are tried on a Mac and on Windows): release builds. Every push to `main` builds Linux, Windows and macOS packages on GitHub Actions, smoke-tests Linux and (under Wine) Windows by starting both bundled worlds without the build checkout, and publishes a GitHub Release `vYYYY.M.N`; `dev` never does. Saves record the release version as `game_build` and the main menu shows it (`dev` for a checkout). Two full runs passed on the test branch. See [`release.md`](release.md).
+- `TOOLS-15` (2026-11-10, landed on `dev`): an exported game can start a city. The first trial export found three blockers: the economy, demand and zoning tuning files were read from the build machine's checkout (now compiled in), and the bundled packs, walker VAT set and car models were read as raw files that export does not ship (now imported as `keep`). See [`TOOLS-15`](roadmap.md).
+- `TRAFFIC-32`/`33`/`34` round STUCK2 (2026-11-10, landed on `dev`): a car whose road route to its booked bay is cut off releases the booking and parks in the nearest bay it can reach (the driver walks on), else drives home, else waits at a lane's end and retries home on the stranded walkers' backoff; a parked driver with no walk on drives home or stays in its bay. It never stands in a junction. A parking leg's failure now logs one `events` line with that outcome, and a car with no lane stands at speed 0 ([recovery](traffic.md#recovery-park-02)).
+- `TRAFFIC-31` round STUCK (2026-11-10, landed on `dev`): a car left standing at a junction's node by a road edit that cut its route no longer stays there for good once the road is back. A parking leg's recovery planned only from a lane, so its retry never found one; it now plans from the node, as the replan gate does, and the car drives on ([recovery](traffic.md#recovery-park-02)).
+- `ROAD-111` round R111 (2026-11-10, landed on `dev`): manual road node moving is removed from the game (the user: "it has not worked in ages"): the move tool, its M shortcut, its bridge calls and core paths and the `pending_demolition` reason are gone, so its away-and-back drift is moot ([`roads.md`](roads.md#land-taken-by-road-edits-zone-09-zone-10)).
+- `ALLOC-05` round A05 (2026-11-10, landed on `dev`): Godot's queries, overlays, previews, inspectors and the render snapshot ready only the site part of a stale building index, so when Godot asks never changes the simulation's order lists; the simulation's own readers rebuild them where a headless run does. No day had diverged on `dev` (the frame's start rebuilt first), but the state between frames depended on the pointer. Level F level with `dev`, products bitwise equal ([indices](building_allocator.md#indices-and-vacancy-rules), [Busy Core](debug.md#busy-core)).
 - `CODE-25` round C25 (branch `code-25`, 2026-11-09, not landed): no click is lost while the simulation thread holds the core. Clicks, releases and stroke starts in every tool resolve their own point and wait for the core, and a waiting call gets it when the frame in progress ends (a turnstile; before, back-to-back frames starved it up to 0.6 s); hovers keep their last answer instead of clearing ([Busy Core](debug.md#busy-core)).
 - `ECON-28` round `E4` (branch `econ-28` on `dev` `e7787837`, 2026-11-09, not landed, for the user's review): every gate passes. The labour-intensive mine case keeps its assertions on a one-street town (44 homes), where the mine loses in every applicant draw instead of breaking even near the two-street town's 128 working adults; the scarce-labour expansion warms up for 30 days instead of 365; the behaviour envelope is re-recorded and the perf fixtures are republished at revision v8 ([`economy.md`](economy.md#econ-12-growth-scenario), roadmap `ECON-28`).
 - `ECON-24`, `PARK-11`, `ECON-28` round `E3` (branch `econ-28`, 2026-11-09, not landed): a sales-scaled store whose sales land exactly on a whole crew staffs one refill worker above them, an ordinary funded job the calendar charges, so its shelf recovers ([`economy.md`](economy.md#funding-census-econ-17)); a road edit that drops the plan of a car pulling into its bay ends the pull-in in the bay instead of at the door, latent on `dev` ([`traffic.md`](traffic.md#edits-and-towing-park-01-park-05)). The scarce-labour expansion's warm-up sweep is clean and the two-year growth test passes; the branch still stops on the labour-intensive mine case, whose expected loss depends on its town's applicant draw (user's decision, roadmap `ECON-28`).

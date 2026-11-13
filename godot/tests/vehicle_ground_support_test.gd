@@ -18,13 +18,17 @@ class RenderSource extends RefCounted:
 	var simulation: SimulationNode
 	var cars: Dictionary = {}
 	var drawn: Dictionary = {}
-	func get_agent_transforms() -> Dictionary:
+	func update_walker_buffers() -> Dictionary:
 		return {}
+	func get_changed_walker_buckets() -> PackedInt64Array:
+		return PackedInt64Array()
 	func get_vehicle_frame(_full: bool) -> Dictionary:
 		return {"cars": cars}
 	func smooth_car_render_data(data: Dictionary, delta: float) -> Dictionary:
 		drawn = simulation.smooth_car_render_data(data, delta)
 		return drawn
+	func get_changed_car_buckets() -> PackedInt64Array:
+		return simulation.get_changed_car_buckets()
 	func set_vehicle_ground_support(kind: int, bounds: AABB, contacts: PackedVector3Array) -> bool:
 		return simulation.set_vehicle_ground_support(kind, bounds, contacts)
 

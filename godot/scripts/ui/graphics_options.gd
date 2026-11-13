@@ -22,6 +22,7 @@ var _syncing := false
 # Setting key -> its value cycler.
 var _choices: Dictionary = {}
 var _max_fps: OptionsRows.Cycler
+var _shadow_quality: OptionsRows.Cycler
 var _lod_quality: OptionsRows.Cycler
 
 func _ready() -> void:
@@ -44,8 +45,8 @@ func _build_ui() -> void:
 	add_child(OptionsRows.heading("Graphics"))
 	_add_choice("Render scale", GameSettings.KEY_RENDER_SCALE, RENDER_SCALE_LABELS,
 		"Renders the 3D view at a lower resolution and upscales it with FSR 2. The interface stays sharp.")
-	_add_choice("Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Low"],
-		"Low uses hard-edged shadows with two cascades instead of four.")
+	_shadow_quality = _add_choice("Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Medium", "Low"],
+		"Medium keeps soft shadows but draws them in two cascades instead of four, so distant shadows are coarser.\nLow also makes them hard-edged.")
 	_add_choice("View distance", GameSettings.KEY_VIEW_DISTANCE, ["Full", "Reduced"],
 		"Reduced stops drawing the world beyond about 3 km from the camera, unless zoomed far out.")
 	_lod_quality = _add_choice("Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
@@ -124,6 +125,8 @@ func _value_for_index(key: String, index: int) -> Variant:
 			return GameSettings.MAX_FPS_CHOICES[index]
 		GameSettings.KEY_RENDER_SCALE:
 			return GameSettings.RENDER_SCALE_CHOICES[index]
+		GameSettings.KEY_SHADOW_QUALITY:
+			return GameSettings.SHADOW_QUALITY_CHOICES[index]
 	return index
 
 func _index_for_value(key: String, value: Variant) -> int:
@@ -134,6 +137,8 @@ func _index_for_value(key: String, value: Variant) -> int:
 			return GameSettings.MAX_FPS_CHOICES.find(value)
 		GameSettings.KEY_RENDER_SCALE:
 			return GameSettings.RENDER_SCALE_CHOICES.find(value)
+		GameSettings.KEY_SHADOW_QUALITY:
+			return GameSettings.SHADOW_QUALITY_CHOICES.find(value)
 	return int(value)
 
 func _set_pending(key: String, value: Variant) -> void:

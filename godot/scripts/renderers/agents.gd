@@ -2,9 +2,15 @@
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_car_render_data(), smooth_car_render_data(),
-##   set_vehicle_ground_support(),
-##   get_agent_paths_debug(), get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
+## Rust methods called: update_walker_buffers(), get_changed_walker_buckets(), get_vehicle_frame(),
+##   smooth_car_render_data(), get_changed_car_buckets(), get_car_frame_parts(),
+##   set_vehicle_ground_support(), get_agent_paths_debug(), update_agent_view(),
+##   get_agent_draw_distances(), get_agent_snapshot_parts()
+## The agents' view (the ground rectangle the snapshot culls to, and the eye their draw distances
+## measure from) comes from the camera in Rust. Walkers and moving cars fade out by a dither over
+## a band before their draw distance (`RENDER-28`); the snapshot does not pose them beyond it.
+## Only the buckets whose drawn buffer changed are uploaded: a car at rest is drawn as it was, and
+## walkers upload only when the snapshot moved them.
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz] — MultiMesh row-major 3×4 layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -22,12 +28,18 @@ const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.g
 var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
+## The last frame's buffers per bucket as Rust returned them (walker type, car type key): the
+## shadow benchmark's caster twins read them instead of reading the GPU buffers back (`RENDER-15`).
+var walker_buffers: Dictionary = {}
+var car_buffers: Dictionary = {}
 var texture_cache: Dictionary = {}
 const WALKER_VAT_FRAMES := 30.0
 # Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
 const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
 const DEBUG_LABEL_LIMIT := 96
+const SWARM_PARTS: Array[String] = ["walker_fetch", "walker_assign", "vehicle_frame", "car_smooth", "car_assign", "headlights"]
+const CAR_PARTS: Array[String] = ["car_interpolate", "car_ground", "car_record", "cars_smoothed", "cars_off_lane", "off_lane_solved", "cars_at_rest", "off_lane_at_rest", "car_buckets_uploaded", "car_buckets_kept"]
 var _vehicles := preload("res://scripts/renderers/vehicle_resources.gd").new()
 var _headlights := VehicleHeadlights.new()
 
@@ -36,6 +48,11 @@ var debug_mesh: ImmediateMesh
 var debug_labels: Array = []
 var show_paths = false
 var _debug_overlay_visible := false
+# The last swarm update's parts in microseconds, for the perf channel (`RENDER-28`): walker fetch,
+# walker buffers, vehicle frame, car smoothing with the off-lane ground solve, car buffers,
+# headlights. Written in place every update.
+var _swarm_us := PackedInt64Array([0, 0, 0, 0, 0, 0])
+var _walker_buckets_uploaded := 0
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -68,6 +85,9 @@ func _ready():
 	}
 
 	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
+	# Walker fade start and draw distance, then the cars', from the camera in metres.
+	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
+	_vehicles.draw_fade_m = Vector2(draw[2], draw[3])
 	var console := get_node_or_null("/root/DebugConsole")
 	if console != null:
 		console.visual_mode_changed.connect(_on_visual_mode_changed)
@@ -126,6 +146,7 @@ func _ready():
 		mat.set_shader_parameter("albedo_tint",    person_tints[p_type])
 		mat.set_shader_parameter("debug_mode",     pedestrian_vat_debug_mode)
 		mat.set_shader_parameter("reverse_phase",  WALKER_VAT_REVERSE_PHASE)
+		mat.set_shader_parameter("draw_fade_m",    Vector2(draw[0], draw[1]))
 		mmi.material_override = mat
 
 		add_child(mmi)
@@ -187,77 +208,71 @@ func _notification(what: int) -> void:
 
 func _process(delta):
 	if not PerfDebug.is_enabled():
-		_update_camera_aabb()
-		# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+		_update_view()
+		# Update every rendered frame so cars do not visually quantize to 12 Hz at fast speeds;
+		# only the buckets that changed upload.
 		update_swarm(delta)
 		return
 	var frame_start_us := Time.get_ticks_usec()
 	var aabb_start_us := frame_start_us
-	_update_camera_aabb()
+	_update_view()
 	var aabb_elapsed_ms := float(Time.get_ticks_usec() - aabb_start_us) / 1000.0
-	# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+	# Update every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
 	var swarm_start_us := Time.get_ticks_usec()
 	update_swarm(delta)
 	var swarm_elapsed_ms := float(Time.get_ticks_usec() - swarm_start_us) / 1000.0
-	PerfDebug.record(
-		"agents",
-		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
-		{
-			"camera_aabb": aabb_elapsed_ms,
-			"swarm": swarm_elapsed_ms,
-		}
-	)
+	var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
+	var details := {"camera_aabb": aabb_elapsed_ms, "swarm": swarm_elapsed_ms}
+	for index in SWARM_PARTS.size():
+		details[SWARM_PARTS[index]] = float(_swarm_us[index]) / 1000.0
+	# Inside car_smooth, from Rust: smoothing, the off-lane ground solve, recording (ms), then
+	# counts (`RENDER-28`).
+	var car_parts: PackedInt64Array = simulation_node.get_car_frame_parts()
+	for index in CAR_PARTS.size():
+		details[CAR_PARTS[index]] = float(car_parts[index]) / 1000.0 if index < 3 else car_parts[index]
+	var walkers := 0
+	var cars := 0
+	for mmi in walker_mmis.values():
+		walkers += mmi.multimesh.instance_count
+	for mmi in car_mmis.values():
+		cars += mmi.multimesh.instance_count
+	details["walkers"] = walkers
+	details["cars"] = cars
+	# From the latest snapshot: agents inside the camera's rectangle that their draw distance
+	# cut, and its agent instances' time (ms, on the simulation thread).
+	var snapshot_parts: PackedInt64Array = simulation_node.get_agent_snapshot_parts()
+	details["walkers_cut"] = snapshot_parts[0]
+	details["cars_cut"] = snapshot_parts[1]
+	details["snapshot_agents_ms"] = float(snapshot_parts[2]) / 1000.0
+	details["walker_buckets_uploaded"] = _walker_buckets_uploaded
+	PerfDebug.record("agents", elapsed_ms, details)
 
-func _update_camera_aabb():
-	var camera = get_viewport().get_camera_3d()
-	if not camera:
-		return
-	# For each viewport corner ray, find how far along the ray to sample.
-	# Prefer the ground-plane (y=0) intersection — this gives a tight AABB when
-	# the camera is steep. Fall back to AGENT_CULL_FAR_M when the ray is
-	# near-horizontal (dir.y small), which was the original bug: ground intersection
-	# produced a point at astronomical distance or didn't exist at all.
-	var cull_far = SimulationNode.get_agent_cull_far_m()
-	var vp_size = get_viewport().get_visible_rect().size
-	var screen_corners = [
-		Vector2(0, 0),
-		Vector2(vp_size.x, 0),
-		Vector2(vp_size.x, vp_size.y),
-		Vector2(0, vp_size.y),
-	]
-	var x_min = INF; var x_max = -INF
-	var z_min = INF; var z_max = -INF
-	for c in screen_corners:
-		var origin = camera.project_ray_origin(c)
-		var dir = camera.project_ray_normal(c)
-		# Compute the distance to y=0; use it if it's valid and closer than cull_far.
-		var dist: float
-		if dir.y < -1e-3:
-			dist = min(-origin.y / dir.y, cull_far)
-		else:
-			dist = cull_far
-		var pt = origin + dir * dist
-		x_min = min(x_min, pt.x); x_max = max(x_max, pt.x)
-		z_min = min(z_min, pt.z); z_max = max(z_max, pt.z)
-	var pad = SimulationNode.get_agent_cull_padding_m()
-	simulation_node.set_camera_aabb(
-		x_min - pad, x_max + pad, z_min - pad, z_max + pad, camera.global_position
-	)
+func _update_view() -> void:
+	var camera := get_viewport().get_camera_3d()
+	if camera:
+		simulation_node.update_agent_view(camera)
 
 func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
-	var walker_data = simulation_node.get_agent_transforms()
-	for p_type in walker_mmis:
-		var mmi = walker_mmis[p_type]
-		var buffer = walker_data.get(p_type, PackedFloat32Array())
-		var count = buffer.size() / 16 # Transform (12) + Custom (4)
-		
-		# MMIs are initialized on demand; skip if no agents of this type.
+	var start_us := Time.get_ticks_usec()
+	var walker_data: Dictionary = simulation_node.update_walker_buffers()
+	walker_buffers = walker_data
+	var fetched_us := Time.get_ticks_usec()
+	# Only the buckets the snapshot changed; a bucket absent from walker_data left: it draws none.
+	var changed_walkers: PackedInt64Array = simulation_node.get_changed_walker_buckets()
+	_walker_buckets_uploaded = changed_walkers.size()
+	for p_type in changed_walkers:
+		var mmi = walker_mmis.get(p_type)
+		if mmi == null:
+			continue
+		var buffer: PackedFloat32Array = walker_data.get(p_type, PackedFloat32Array())
+		var count := int(buffer.size() / 16) # Transform (12) + Custom (4)
 		if count != mmi.multimesh.instance_count:
 			mmi.multimesh.instance_count = count
 		if count > 0:
 			mmi.multimesh.buffer = buffer
 
+	var walkers_us := Time.get_ticks_usec()
 	# Cars (grouped by vehicle type and color variant). Rust moves each drawn pose toward its
 	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
 	var parked_renderer: Node = get_node_or_null("../ParkedCars")
@@ -267,18 +282,29 @@ func update_swarm(delta: float = 0.0):
 	var vehicle_frame: Dictionary = simulation_node.get_vehicle_frame(full)
 	if parked_renderer != null and vehicle_frame.has("parked"):
 		parked_renderer.apply_publication(vehicle_frame["parked"])
-	var car_buffers: Dictionary = simulation_node.smooth_car_render_data(
-		vehicle_frame["cars"], delta
-	)
-	for type_key in car_mmis:
-		var mmi = car_mmis[type_key]
+	var frame_us := Time.get_ticks_usec()
+	car_buffers = simulation_node.smooth_car_render_data(vehicle_frame["cars"], delta)
+	var smoothed_us := Time.get_ticks_usec()
+	# A bucket absent from car_buffers left the view: it draws none.
+	for type_key in simulation_node.get_changed_car_buckets():
+		var mmi = car_mmis.get(type_key)
+		if mmi == null:
+			continue
 		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
 		var count := int(buffer.size() / CAR_TRANSFORM_STRIDE)
 		if count != mmi.multimesh.instance_count:
 			mmi.multimesh.instance_count = count
 		if count > 0:
 			mmi.multimesh.buffer = buffer
+	var assigned_us := Time.get_ticks_usec()
 	_headlights.update(simulation_node, car_buffers)
+	var lit_us := Time.get_ticks_usec()
+	_swarm_us[0] = fetched_us - start_us
+	_swarm_us[1] = walkers_us - fetched_us
+	_swarm_us[2] = frame_us - walkers_us
+	_swarm_us[3] = smoothed_us - frame_us
+	_swarm_us[4] = assigned_us - smoothed_us
+	_swarm_us[5] = lit_us - assigned_us
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()

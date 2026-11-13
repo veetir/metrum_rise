@@ -7,7 +7,7 @@ use super::*;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::economy::agents::{
     ACCESS_PLAN_VALID, ACTIVITY_WORK, MODE_CAR, MODE_WALK, TRANSIT_ACCESS_EGRESS,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::parking::{ParkingTripPhase, Vehicle};
 
@@ -20,15 +20,32 @@ struct Commute {
     work: usize,
 }
 
+// A road's two ends on the ground, (x, z).
+type Road = ((f32, f32), (f32, f32));
+
 impl Commute {
     fn new() -> Self {
+        Self::on_roads(&[((-600.0, 0.0), (600.0, 0.0))])
+    }
+
+    // The commute on `roads`, committed in order; the lots stand at x = -450 and 450, south of
+    // the road along z = 0.
+    fn on_roads(roads: &[Road]) -> Self {
+        Self::with_lots_near_work(roads, &[])
+    }
+
+    // `on_roads` with a public lot of its own `x` metres short of the workplace for each `x` in
+    // `near_work`, on the way from home.
+    fn with_lots_near_work(roads: &[Road], near_work: &[f32]) -> Self {
         let mut c = SimCore::new(
             WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
                 .with_chunking(128.0, 0.0)
                 .with_terrain_resolution(2.0),
         );
         c.treasury.balance = 1_000_000.0;
-        commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
+        for &(a, b) in roads {
+            commit(&mut c, a, b);
+        }
         let id = register_lot(&mut c);
         let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
         manifest.building.as_mut().unwrap().household_capacity = Some(64);
@@ -45,6 +62,12 @@ impl Commute {
         } else {
             (1, 0)
         };
+        let side = c.allocator.buildings[work].center_x.signum();
+        for &x in near_work {
+            c.place_service_building_internal(&id, side * (450.0 - x), -30.0)
+                .unwrap();
+        }
+        c.publish_pending_building_site_changes();
         let agent = c.debug_add_parking_commuter(home, work).unwrap();
         c.agents.assign_work_building(agent, work, 0);
         c.agents.release_departure(agent);
@@ -462,3 +485,5 @@ fn a_road_edit_under_a_pull_in_ends_it_in_its_bay() {
     assert_eq!(t.c.agents.transit_mode[agent], MODE_WALK);
     assert!(t.c.parking.vehicle_place(t.car()).is_some(), "it parked");
 }
+
+mod cut_off;
