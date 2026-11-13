@@ -3023,7 +3023,13 @@ impl SimCore {
                 if dir_vec.length_squared() > 0.001 {
                     let dir = dir_vec.normalized();
                     let new_p2 = p2 + dir * crate::config::BORDER_EXTENSION_M;
+                    // Both spatial indices find their entries by the old extent, so they drop
+                    // them before the move and take the new ones after it.
+                    self.region_graph
+                        .remove_node_from_spatial_index(node_id as u32, p2);
+                    self.region_graph.remove_from_spatial_index(e_idx);
                     self.region_graph.set_node_pos(node_id as u32, new_p2);
+                    self.region_graph.add_node_to_spatial_index(node_id as u32);
 
                     let edge = self.region_graph.edge_mut(e_idx);
                     if is_end {
@@ -3054,6 +3060,7 @@ impl SimCore {
                     edge.physical_length = new_len;
                     edge.base_cost =
                         crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge).0;
+                    self.region_graph.add_to_spatial_index(e_idx);
                     rebuild_needed = true;
                 }
             }
