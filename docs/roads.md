@@ -341,7 +341,7 @@ The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choic
 
 ### Turn pockets (`ROAD-95`)
 
-**Road-type defaults (`ROAD-112`).** A custom type can request Left, Right or both, with
+**Road-type defaults (`ROAD-114`).** A custom type can request Left, Right or both, with
 neither selected meaning none. Its body length uses the existing 60 m default and 20–300 m
 range in 10 m steps. On a stroke, only its new incoming car approaches at junctions receive
 these requests, including both endpoints and intermediate crossings/joins. Resident roads
@@ -11965,7 +11965,7 @@ D1-D5, D22, D23).
 
 #### The road builder (ROAD-101, round RB2)
 
-**Built-in turn pockets (`ROAD-112`, branch `feat/road-type-pockets`).** The builder has
+**Built-in turn pockets (`ROAD-114`, branch `feat/road-type-pockets`).** The builder has
 independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
 The cross-section stage annotates the selected arrows and length “at junctions”, because these
 are local approach lanes rather than lanes along the whole type. Neither switch means none;
@@ -11977,7 +11977,7 @@ to no pockets; malformed lengths are rejected without rewriting the file. City s
 unchanged: placed pockets use the existing edge records. See [Turn pockets](#turn-pockets-road-95)
 for drawing, hover, refusal and undo semantics.
 
-ROAD-112 validation (2026-11-12, Apple M2 Pro, two Rayon workers, unpinned release runs):
+ROAD-114 validation (2026-11-12, Apple M2 Pro, two Rayon workers, unpinned release runs):
 `cargo test --lib road_type` passed 31 tests (2 ignored); `cargo test --lib road_pockets`
 passed 31 (3 ignored). `cargo clippy --all-targets` is clean. `cargo doc --no-deps` succeeds
 with no missing-doc warnings (28 existing private-link warnings). The final `./run.sh --test`
@@ -12047,7 +12047,7 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   controls' speed, zoning and street lights: an edited type keeps its own. Zoning is disabled
   with no sidewalk on either side, its value kept (`ROAD-109`).
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m";
-  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-112`) until the
+  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-114`) until the
   player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
   characters, or another type's name ignoring case, built-ins included) and the library can be

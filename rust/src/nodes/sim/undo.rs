@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 impl SimCore {
-    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-112`).
+    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-114`).
     /// The graph and paint journals keep pre-stroke values; dependent migrations undo in reverse.
     /// O(journal records log journal records), with no city scan or snapshot.
     pub(crate) fn push_stroke_pocket_undo(&mut self, mut records: Vec<SimulationSnapshot>) {

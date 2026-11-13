@@ -363,7 +363,7 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
         }),
         "Walkway (2)"
     );
-    // Turn pockets follow the layout (`ROAD-112`).
+    // Turn pockets follow the layout (`ROAD-114`).
     let pockets = |left, right| RoadTypePockets {
         left,
         right,

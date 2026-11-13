@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Persistent, non-exclusive feedback for optional road-type pockets refused by Rust.
-## Uses the inspector card and the shared road reason translations (`ROAD-112`).
+## Uses the inspector card and the shared road reason translations (`ROAD-114`).
 extends Window
 
 const Card = preload("res://scripts/ui/inspector_card.gd")

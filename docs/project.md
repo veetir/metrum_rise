@@ -6,7 +6,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-`ROAD-112` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
+`ROAD-114` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
 applies them to the new road's junction approaches, with local hover, refusal feedback and one
 undo. Built on the branch, waiting for the user's in-game test ([contract](roads.md#turn-pockets-road-95)).
 
