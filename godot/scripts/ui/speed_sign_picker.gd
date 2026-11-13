@@ -110,12 +110,7 @@ func _init() -> void:
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	clip_contents = true
 	_resize()
-	var bold := FontVariation.new()
-	bold.base_font = ThemeDB.fallback_font
-	bold.variation_embolden = 0.9
-	# Road sign numerals are tall and narrow.
-	bold.variation_transform = Transform2D(Vector2(0.86, 0), Vector2(0, 1), Vector2.ZERO)
-	_font = bold
+	_font = sign_font()
 	_track.border_width_left = 1
 	_track.border_width_top = 1
 	_track.border_width_right = 1
@@ -215,15 +210,28 @@ func _draw_track(rect: Rect2, hovered: bool) -> void:
 	draw_style_box(_track, rect.grow_individual(0, -1, 0, -1))
 
 func _draw_sign(at: Vector2, radius: float, kmh: int, alpha: float) -> void:
-	draw_circle(at + Vector2(0, radius * 0.06), radius, Color(0, 0, 0, 0.35 * alpha))
-	draw_circle(at, radius, Color(RING, alpha))
-	draw_circle(at, radius * 0.80, Color(DISC, alpha))
+	paint_sign(self, _font, at, radius, kmh, alpha)
+
+## The sign numerals' font: bold, tall and narrow like a road sign's.
+static func sign_font() -> Font:
+	var bold := FontVariation.new()
+	bold.base_font = ThemeDB.fallback_font
+	bold.variation_embolden = 0.9
+	bold.variation_transform = Transform2D(Vector2(0.86, 0), Vector2(0, 1), Vector2.ZERO)
+	return bold
+
+## Draws a `kmh` speed limit sign of `radius` centred at `at` on `canvas`, in `font`
+## (`sign_font`); the road type card shows the same sign.
+static func paint_sign(canvas: CanvasItem, font: Font, at: Vector2, radius: float, kmh: int, alpha := 1.0) -> void:
+	canvas.draw_circle(at + Vector2(0, radius * 0.06), radius, Color(0, 0, 0, 0.35 * alpha))
+	canvas.draw_circle(at, radius, Color(RING, alpha))
+	canvas.draw_circle(at, radius * 0.80, Color(DISC, alpha))
 	var text := str(kmh)
 	var font_size := int(radius * (0.95 if text.length() <= 2 else 0.78))
-	var width := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-	var baseline := at.y + (_font.get_ascent(font_size) - _font.get_descent(font_size)) * 0.5
-	draw_string(_font, Vector2(at.x - width * 0.5, baseline), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
-		Color(INK, alpha))
+	var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	var baseline := at.y + (font.get_ascent(font_size) - font.get_descent(font_size)) * 0.5
+	canvas.draw_string(font, Vector2(at.x - width * 0.5, baseline), text, HORIZONTAL_ALIGNMENT_LEFT, -1,
+		font_size, Color(INK, alpha))
 
 func _update_mask() -> void:
 	var mask := material as ShaderMaterial

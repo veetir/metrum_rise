@@ -8,9 +8,10 @@
 ## is marked: its built-in button pressed, or, for a custom type, the drop-down showing its layout
 ## in the pressed style with the item checked. A view: a pick emits `type_picked`, and the host
 ## activates the tool and calls `RoadTool.set_road_type`. `refresh` rebuilds the row from Rust
-## after a library edit; unusable entries are never listed (the builder lists them). Each type's
-## tooltip gives its layout, speed, its sidewalk side ("sidewalk on the left", "no sidewalks"),
-## "No zoning" (the flag, or no sidewalks), the one building side and Rust's cost per metre.
+## after a library edit; unusable entries are never listed (the builder lists them). A tile's
+## hover card is `RoadTypeCard` (speed sign, symbol chips, cost); the custom roads key shows the
+## card briefly on the type it lands on. The drop-down's items keep a text tooltip: layout,
+## speed, sidewalk side, "No zoning", the one building side and Rust's cost per metre.
 ## Rust methods called: get_road_types().
 extends HBoxContainer
 
@@ -21,6 +22,8 @@ signal road_builder_requested
 
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
+const HudTooltip = preload("res://scripts/ui/hud_tooltip.gd")
+const RoadTypeCard = preload("res://scripts/ui/road_type_card.gd")
 ## The drop-down's text while the tool draws a built-in type.
 ## Rust's sidewalk side codes (`ROAD-107`), in a road's forward direction: a road type's and a
 ## road's `sidewalks`, and what the road tool and an in-place edit send.
@@ -91,6 +94,7 @@ func refresh() -> void:
 			popup.set_item_tooltip(popup.item_count - 1, tooltip(type))
 			continue
 		var button := HudIcons.road_tile(type, tooltip(type))
+		set_card(button, type)
 		button.button_group = _group
 		button.pressed.connect(func(): type_picked.emit(id, _is_walkway(type)))
 		_grid.add_child(button)
@@ -114,10 +118,12 @@ func mark(id: String) -> void:
 	if custom >= 0:
 		custom_menu.text = String(_types[id].get("name", id))
 		custom_menu.tooltip_text = tooltip(_types[id])
+		set_card(custom_menu, _types[id])
 		HudIcons.set_road(custom_menu, _types[id])
 	else:
 		custom_menu.text = CUSTOM_ROADS
 		custom_menu.tooltip_text = "Your road types and the road builder"
+		set_card(custom_menu, {})
 		HudIcons.set_road(custom_menu, {})
 	HudIcons.mark(custom_menu, custom >= 0)
 
@@ -162,6 +168,17 @@ func pick_next_custom() -> void:
 		custom_menu.show_popup()
 		return
 	pick(custom_ids[(custom_ids.find(_marked_id) + 1) % custom_ids.size()])
+	# A custom type's art is dense; its card names the type the key landed on. Deferred: the
+	# host marks the pick after `type_picked`.
+	HudIcons.flash_tooltip.call_deferred(custom_menu)
+
+## Gives `button`'s hover card the road type card of `type`; an empty `type` keeps the plain one.
+static func set_card(button: Control, type: Dictionary) -> void:
+	if type.is_empty():
+		if button.has_meta(HudTooltip.CARD_META):
+			button.remove_meta(HudTooltip.CARD_META)
+	else:
+		button.set_meta(HudTooltip.CARD_META, func(): return RoadTypeCard.build(type, cost_values(type)))
 
 func _on_custom_item(item_id: int) -> void:
 	if item_id == BUILDER_ITEM:
@@ -201,6 +218,10 @@ static func describe(type: Dictionary, with_width: bool = true, with_speed: bool
 	if style > 0 and style < MedianControls.MEDIAN_STYLE_NAMES.size():
 		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
 	text += PARKING_TEXT[int(type.get("parking", 0)) & 3]
+	var pockets: Dictionary = type.get("pockets", {})
+	var turns := ("↰" if bool(pockets.get("left", false)) else "") + ("↱" if bool(pockets.get("right", false)) else "")
+	if fwd + bkw > 0 and not turns.is_empty():
+		text += ", turn pockets %s %d m" % [turns, int(pockets.get("body_m", 0.0))]
 	if fwd + bkw > 0:
 		if with_speed and int(type.get("speed_kmh", 0)) > 0:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))

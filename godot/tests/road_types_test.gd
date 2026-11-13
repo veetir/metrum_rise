@@ -197,6 +197,14 @@ func _run() -> void:
 		"the custom type picks the Road tool and the drop-down shows it")
 	for other in builtin_ids:
 		_expect(not menu.button_for(other).button_pressed, "a custom type unmarks %s" % other)
+	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-112` polish).
+	var card_builder = menu.custom_menu.get_meta(&"hud_tooltip_card", null)
+	_expect(card_builder is Callable, "the custom tile carries the road type card")
+	if card_builder is Callable:
+		var card: Control = card_builder.call()
+		_expect("Menu Test Avenue" in _labels(card, []) and card.find_children("*", "HFlowContainer", true, false).size() == 1,
+			"the card names the type and lists its chips")
+		card.free()
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")

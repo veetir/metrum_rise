@@ -80,6 +80,12 @@ static func set_icon(button: Button, icon_name: String) -> void:
 static func set_shortcut(button: Control, key: String) -> void:
 	button.set_meta(Tooltip.SHORTCUT_META, key)
 
+## Shows the tile's tooltip card briefly without a hover (`HudTooltip.flash`).
+static func flash_tooltip(button: Control) -> void:
+	for child in button.get_children():
+		if child is Tooltip:
+			child.flash()
+
 ## A small digit at the tile's bottom-right edge naming its number key; empty removes it.
 static func set_number(button: Button, digit: String) -> void:
 	var feedback: HoverFeedback = button.get_node(NodePath(FEEDBACK))
