@@ -52,6 +52,17 @@ impl Default for RoadTypePockets {
 }
 
 impl RoadTypePockets {
+    /// The words a suggested name gains for these pockets: " Pocket L", " Pocket R",
+    /// " Pockets" for both, or nothing. Sides are the approaching driver's, as in the builder.
+    pub fn name_suffix(self) -> &'static str {
+        match (self.left, self.right) {
+            (false, false) => "",
+            (true, false) => " Pocket L",
+            (false, true) => " Pocket R",
+            (true, true) => " Pockets",
+        }
+    }
+
     /// Checks the shared pocket length grid, including when both roles are off. O(1).
     pub fn validate(self) -> Result<(), &'static str> {
         use super::pockets::{POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M};
@@ -580,8 +591,14 @@ pub fn same_name(a: &str, b: &str) -> bool {
 
 /// The cross-section's [`RoadCrossSection::base_name`], or the first of "<base> (2)",
 /// "<base> (3)", ... that `taken` does not hold. `O(taken names x attempts)` on a UI action.
-pub fn suggested_name(section: RoadCrossSection, taken: impl Fn(&str) -> bool) -> String {
-    let base = section.base_name();
+/// The type's turn pockets follow the layout (`ROAD-112`): "1+1 Pocket L", "1+1 Pocket R",
+/// "1+1 Pockets" for both.
+pub fn suggested_name(
+    section: RoadCrossSection,
+    pockets: RoadTypePockets,
+    taken: impl Fn(&str) -> bool,
+) -> String {
+    let base = section.base_name() + pockets.name_suffix();
     if !taken(&base) {
         return base;
     }

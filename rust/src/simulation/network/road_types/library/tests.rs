@@ -313,7 +313,7 @@ fn edits_follow_the_name_and_layout_rules() {
     );
     assert_eq!(edited.usable().map(|section| section.fwd_lanes), Some(2));
     assert_eq!(
-        library.suggested_name(edited.usable().unwrap()),
+        library.suggested_name(edited.usable().unwrap(), Default::default()),
         "2+2 Grass 4 m"
     );
     library
@@ -327,7 +327,7 @@ fn edits_follow_the_name_and_layout_rules() {
         )
         .unwrap();
     assert_eq!(
-        library.suggested_name(edited.usable().unwrap()),
+        library.suggested_name(edited.usable().unwrap(), Default::default()),
         "2+2 Grass 4 m (2)"
     );
     assert_eq!(library.delete(&id), Ok(()));

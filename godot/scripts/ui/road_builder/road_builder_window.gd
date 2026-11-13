@@ -583,7 +583,9 @@ func set_median(index: int, style: int, width_m: float) -> void:
 # Asks Rust's verdict on the layout and shows it. The strip draws a shoulder band at each end
 # without a sidewalk, sharing what Rust's total has beyond its parts.
 func _layout_changed() -> void:
-	check = _simulation_node.check_road_layout(rust_parts(), speed_kmh, zoning, street_lights)
+	# A footpath hides the pocket controls, so its name never gains them.
+	check = _simulation_node.check_road_layout(rust_parts(), speed_kmh, zoning, street_lights,
+		{} if _is_footpath() else pocket_controls.value())
 	var valid := bool(check.get("is_valid", false))
 	var widths: PackedFloat32Array = check.get("part_widths_m", PackedFloat32Array())
 	var shoulders := int(not has_sidewalk(true)) + int(not has_sidewalk(false))

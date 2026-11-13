@@ -197,11 +197,15 @@ impl RoadTypeLibrary {
         }
     }
 
-    /// The name a new type of `section` is offered, unique among all types
+    /// The name a new type of `section` with `pockets` is offered, unique among all types
     /// ([`suggested_name`]).
-    pub fn suggested_name(&mut self, section: RoadCrossSection) -> String {
+    pub fn suggested_name(
+        &mut self,
+        section: RoadCrossSection,
+        pockets: RoadTypePockets,
+    ) -> String {
         let types = self.types();
-        suggested_name(section, |name| {
+        suggested_name(section, pockets, |name| {
             types.iter().any(|ty| same_name(&ty.name, name))
         })
     }

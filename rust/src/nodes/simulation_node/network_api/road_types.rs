@@ -142,7 +142,8 @@ impl SimulationNode {
     /// without one, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
     /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
     /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
-    /// of a valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus
+    /// of a valid layout with `pockets` (`{left, right, body_m}`, `ROAD-112`): "2+2 Grass 3 m",
+    /// "1+1 Pockets", with " (2)" when taken; else empty. `O(parts)` plus
     /// the name lookup's `O(types)`.
     #[func]
     pub fn check_road_layout(
@@ -151,6 +152,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> VarDictionary {
         let parts = match parts_from_variant(&parts) {
             Ok(parts) => parts,
@@ -178,7 +180,11 @@ impl SimulationNode {
         result.set("is_valid", verdict.is_ok());
         let name = verdict.map_or_else(
             |_| String::new(),
-            |section| self.with_road_types(|library| library.suggested_name(section)),
+            |section| {
+                self.with_road_types(|library| {
+                    library.suggested_name(section, pockets_from_variant(&pockets))
+                })
+            },
         );
         result.set("suggested_name", name.as_str());
         result

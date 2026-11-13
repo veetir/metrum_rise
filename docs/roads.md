@@ -12046,8 +12046,9 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   right: nothing is built on that side". Create and Save send the
   controls' speed, zoning and street lights: an edited type keeps its own. Zoning is disabled
   with no sidewalk on either side, its value kept (`ROAD-109`).
-- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
-  until the player types one. Create road (Save when editing) is enabled only when the layout
+- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m";
+  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-112`) until the
+  player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
   characters, or another type's name ignoring case, built-ins included) and the library can be
   written; the line under the strip gives the first reason it is not. Enter creates, Esc and
