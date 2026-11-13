@@ -1141,10 +1141,6 @@ func _log_click_detail(
 		]
 	)
 
-# Optional pockets never reject the road. Keep every approach's refusal visible until dismissed.
-func _show_pocket_refusals(refusals: Array) -> void:
-	if refusals.is_empty():
-		return
-	var notice := preload("res://scripts/ui/road_pocket_notice.gd").new()
-	add_child(notice)
-	notice.show_refusals(refusals)
+# Optional pockets never reject the road: each refused junction gets a short fading reason.
+func _show_pocket_refusals(refusals: Array) -> Array:
+	return preload("res://scripts/ui/road_pocket_notice.gd").show_refusals(_hud_canvas, refusals)

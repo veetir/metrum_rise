@@ -712,15 +712,12 @@ func _test_pocket_refusal(type_id: String) -> void:
 		_expect(refusals[0].get("invalid_reason", "") == "pocket_road_too_short"
 			and is_equal_approx(float(refusals[0].get("bearing_deg", -1.0)), 180.0),
 			"Rust reports the reason and the approach from south")
-		_tool._show_pocket_refusals(refusals)
+		var notices: Array = _tool._show_pocket_refusals(refusals)
 		await process_frame
-		await process_frame
-		var notices := _tool.get_children().filter(func(child):
-			return child is Window and child.get_script() == preload("res://scripts/ui/road_pocket_notice.gd"))
-		_expect(notices.size() == 1 and notices[0].visible, "the road tool displays the persistent refusal card")
-		if not notices.is_empty():
-			await _capture_pockets(notices[0], "refusal.png")
-			notices[0].close_requested.emit()
+		_expect(notices.size() == 1 and notices[0].text.contains("Road too short"),
+			"the road tool shows one short reason over the junction")
+		for notice in notices:
+			notice.queue_free()
 	for _stroke in 2:
 		var generation: int = _simulation.get_network_render_generation()
 		_expect(_simulation.undo_action() and await _await_generation(generation), "one undo removes each fixture stroke")

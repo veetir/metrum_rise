@@ -348,8 +348,8 @@ these requests, including both endpoints and intermediate crossings/joins. Resid
 and their split descendants do not acquire the selected type's pockets. Targets are captured
 in stroke-edge/end order and followed through local split lineage, so the two ends remain
 independent. Every request runs the existing pocket edit's checks, land take and dependent
-migration. A refusal leaves that approach without a pocket, keeps the road, and reports the
-existing Rust reason with the approach direction and junction position in a dismissible card.
+migration. A refusal leaves that approach without a pocket, keeps the road, and shows the
+existing Rust reason in a short label over the junction that fades after four seconds.
 The two requested roles are one existing pocket request: if either cannot be offered, that
 approach receives neither. Editing an existing road's type does not apply these drawing defaults.
 
