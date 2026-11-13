@@ -17,22 +17,20 @@ var body_m := 60.0
 var _limits: Dictionary = {}
 
 func _init() -> void:
-	add_theme_constant_override("separation", 6)
-	var label := Label.new()
-	label.text = "Turn pockets"
-	UIStyle.set_font_size(label, 13)
-	add_child(label)
+	# The arrows say what they are; the tooltips name them.
+	add_theme_constant_override("separation", 4)
 	left_button = _button("↰", true)
 	left_button.tooltip_text = "Left turn pocket"
 	right_button = _button("↱", true)
 	right_button.tooltip_text = "Right turn pocket"
 	for button in [left_button, right_button]:
-		button.custom_minimum_size = Vector2(34, 30)
+		# As tall as the zoning and light toggles beside them.
+		button.custom_minimum_size = Vector2.ONE * UIStyle.scaled_px(40.0)
 		UIStyle.set_font_size(button, 18)
 	left_button.toggled.connect(func(_on: bool): _emit())
 	right_button.toggled.connect(func(_on: bool): _emit())
 	var gap := Control.new()
-	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gap.custom_minimum_size.x = 4.0
 	add_child(gap)
 	shorter_button = _button("−", false)
 	shorter_button.pressed.connect(func(): _step(-1))

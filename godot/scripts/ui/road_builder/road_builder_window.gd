@@ -184,9 +184,6 @@ func _build_window() -> void:
 	warning_label.add_theme_color_override("font_color", STATUS_NAME)
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	editor.add_child(_build_tiles())
-	pocket_controls = PocketControls.new()
-	pocket_controls.changed.connect(func(): _layout_changed())
-	editor.add_child(_well(pocket_controls, 6))
 	editor.add_child(_well(_build_bottom_row(), 8))
 
 	part_popup = RoadPartPopup.new()
@@ -317,8 +314,8 @@ func _icon_toggle(icon_name: String, tip: String) -> Button:
 	button.add_theme_color_override("icon_disabled_color", Color(1, 1, 1, 0.18))
 	return button
 
-# The type's attributes: the speed signs, then Zoning and Street lights as icon toggles. The sidewalks are
-# toggled on the strip's ends.
+# The type's attributes: the speed signs, the turn pockets, then Zoning and Street lights as icon
+# toggles. The sidewalks are toggled on the strip's ends.
 func _build_attributes() -> Control:
 	# Wraps onto a second row in a narrow window.
 	var row := HFlowContainer.new()
@@ -333,6 +330,10 @@ func _build_attributes() -> Control:
 	speed.add_child(speed_box)
 	speed_row = speed
 	row.add_child(speed)
+	pocket_controls = PocketControls.new()
+	pocket_controls.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	pocket_controls.changed.connect(func(): _layout_changed())
+	row.add_child(pocket_controls)
 	var toggles := HBoxContainer.new()
 	toggles.add_theme_constant_override("separation", 6)
 	row.add_child(toggles)
