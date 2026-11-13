@@ -22,6 +22,8 @@ var _timer: Timer
 var _layer: CanvasLayer
 var _card: PanelContainer
 var _flash_timer: Timer
+# The button's rect the open card was placed against.
+var _anchor := Rect2()
 
 ## Installs one delayed tooltip on a HUD button; the button suppresses its native tooltip.
 func attach(button: Control, title: String = "") -> void:
@@ -39,6 +41,13 @@ func attach(button: Control, title: String = "") -> void:
 		button.button_down.connect(_hide)
 	button.visibility_changed.connect(_hide)
 	button.resized.connect(_hide)
+	set_process(false)
+
+# While a card is open: a button that moves without resizing (its row laid out after a key
+# opened the palette and flashed the card in the same frame) takes its card along.
+func _process(_delta: float) -> void:
+	if is_instance_valid(_card) and _button.get_global_rect() != _anchor:
+		_place()
 
 func _show() -> void:
 	if not _button.is_visible_in_tree() or not _hovered():
@@ -87,6 +96,7 @@ func _place() -> void:
 	_card.reset_size()
 	var bounds := _button.get_viewport_rect()
 	var anchor := _button.get_global_rect()
+	_anchor = anchor
 	var at := Vector2(
 		anchor.get_center().x - _card.size.x * 0.5, anchor.position.y - _card.size.y - 12)
 	if at.y < 12:
@@ -95,6 +105,7 @@ func _place() -> void:
 	at.y = clampf(at.y, 12, maxf(12, bounds.size.y - _card.size.y - 12))
 	_card.position = at.round()
 	_card.show()
+	set_process(true)
 
 func _hide() -> void:
 	_timer.stop()
@@ -105,6 +116,7 @@ func _hide() -> void:
 		_layer.queue_free()
 	_layer = null
 	_card = null
+	set_process(false)
 
 ## The card's shell around `content`: the HUD's dark panel with an accent rim.
 static func panel(content: Control) -> PanelContainer:

@@ -104,6 +104,19 @@ func _labels(node: Node, into: Array) -> Array:
 		_labels(child, into)
 	return into
 
+func _press(keycode: int) -> void:
+	var event := InputEventKey.new()
+	event.keycode = keycode
+	event.pressed = true
+	_input._unhandled_input(event)
+
+# `tile`'s tooltip while it shows its card, or null.
+func _shown_tooltip(tile: Control) -> Node:
+	for child in tile.get_children():
+		if "_card" in child and is_instance_valid(child._card) and child._card.visible:
+			return child
+	return null
+
 func _press_ctrl_z() -> void:
 	var event := InputEventKey.new()
 	event.keycode = KEY_Z
@@ -205,6 +218,22 @@ func _run() -> void:
 		_expect("Menu Test Avenue" in _labels(card, []) and card.find_children("*", "HFlowContainer", true, false).size() == 1,
 			"the card names the type and lists its chips")
 		card.free()
+	# R then 7 in one frame: the card flashed for the custom tile follows it once the freshly
+	# opened row is laid out, above the tile rather than over the row.
+	# The builder the drop-down's last entry opened above has the keyboard; close it as Esc would.
+	_ui.road_builder.close()
+	_input._toggle_tool(_input.Tool.SELECT)
+	for _frame in 2:
+		await process_frame
+	_press(KEY_R)
+	_press(KEY_7)
+	for _frame in 3:
+		await process_frame
+	var tooltip := _shown_tooltip(menu.custom_menu)
+	var tile_rect: Rect2 = menu.custom_menu.get_global_rect()
+	_expect(tooltip != null and tooltip._anchor == tile_rect,
+		"key 7 right after R places the card against the laid-out tile: %s, tile %s" % [tooltip._anchor if tooltip else null, tile_rect])
+	_expect(_input.current_tool == _input.Tool.ROAD and menu.custom_menu.text == "Menu Test Avenue", "R then 7 picks the custom type")
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
