@@ -326,8 +326,12 @@ func set_road_type(id: String) -> String:
 		reason = set_parking(int(type.get("parking", 0)))
 	if not reason.is_empty():
 		return reason
+	reason = simulation_node.set_road_tool_pockets(type.get("pockets", {}))
+	if not reason.is_empty():
+		return reason
 	set_lanes(int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)))
 	road_type_id = id
+	_queue_preview_update()
 	if id != WALKWAY_ROAD_TYPE:
 		last_road_type_id = id
 	road_type_changed.emit(id)
@@ -901,6 +905,7 @@ func _poll_road_commit_result() -> void:
 			_preview = rejected
 			_preview_points = _commit_points
 			_show_preview(_commit_points)
+	_show_pocket_refusals(result.get("pocket_refusals", []))
 	_commit_points = PackedVector3Array()
 	_commit_validation = {}
 	_commit_border_check = []
@@ -1135,3 +1140,11 @@ func _log_click_detail(
 			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 		]
 	)
+
+# Optional pockets never reject the road. Keep every approach's refusal visible until dismissed.
+func _show_pocket_refusals(refusals: Array) -> void:
+	if refusals.is_empty():
+		return
+	var notice := preload("res://scripts/ui/road_pocket_notice.gd").new()
+	add_child(notice)
+	notice.show_refusals(refusals)

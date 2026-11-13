@@ -341,6 +341,27 @@ The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choic
 
 ### Turn pockets (`ROAD-95`)
 
+**Road-type defaults (`ROAD-112`).** A custom type can request Left, Right or both, with
+neither selected meaning none. Its body length uses the existing 60 m default and 20–300 m
+range in 10 m steps. On a stroke, only its new incoming car approaches at junctions receive
+these requests, including both endpoints and intermediate crossings/joins. Resident roads
+and their split descendants do not acquire the selected type's pockets. Targets are captured
+in stroke-edge/end order and followed through local split lineage, so the two ends remain
+independent. Every request runs the existing pocket edit's checks, land take and dependent
+migration. A refusal leaves that approach without a pocket, keeps the road, and reports the
+existing Rust reason with the approach direction and junction position in a dismissible card.
+The two requested roles are one existing pocket request: if either cannot be offered, that
+approach receives neither. Editing an existing road's type does not apply these drawing defaults.
+
+The stroke and accepted pockets publish together and have one composed local undo record.
+Graph and paint inverses retain pre-stroke values; dependent migrations restore in reverse.
+As with existing road edits, demolished buildings are not resurrected by undo. Hover runs the
+same pocket checks on its local graph replica and shows the accepted pockets. Final graded
+terrain covers the complete stroke; no intermediate base-road tiles replace the pocket preview.
+Work is O(stroke edges × local junction degree + summed pocket closure work), plus O(M log M)
+for composing M local journal entries. There is no per-pocket city scan, graph copy or routing
+publication; the stroke retains its existing single publication and lane/entrance refresh.
+
 A turn pocket adds a lane for one turn on the last stretch of a road before a junction. Round R5a1
 (2026-11-04, branch `port-r5-pockets`, not landed) built the model, the geometry, the lanes and the
 save; the pocket edit, its API and the tool are rounds R5a2-R5b2 (`PLAN-R5` decisions D1-D17, the
@@ -11943,6 +11964,46 @@ D1-D5, D22, D23).
   40,179 -> 41,581, branch misses 4.5 -> 6.0 and L1 instruction misses 1,626 -> 1,683 rise.
 
 #### The road builder (ROAD-101, round RB2)
+
+**Built-in turn pockets (`ROAD-112`, branch `feat/road-type-pockets`).** The builder has
+independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
+The cross-section stage annotates the selected arrows and length “at junctions”, because these
+are local approach lanes rather than lanes along the whole type. Neither switch means none;
+the remembered length stays editable when a role is enabled. Footpaths hide these controls.
+Creating, editing and duplicating custom types retain the setting. The additive `pockets`
+object (`left`, `right`, `body_m`) lives in `user://road_types.json`, version **2 unchanged**,
+using the library's existing defaulted-field convention. Older entries and built-ins default
+to no pockets; malformed lengths are rejected without rewriting the file. City save format is
+unchanged: placed pockets use the existing edge records. See [Turn pockets](#turn-pockets-road-95)
+for drawing, hover, refusal and undo semantics.
+
+ROAD-112 validation (2026-11-12, Apple M2 Pro, two Rayon workers, unpinned release runs):
+`cargo test --lib road_type` passed 31 tests (2 ignored); `cargo test --lib road_pockets`
+passed 31 (3 ignored). `cargo clippy --all-targets` is clean. `cargo doc --no-deps` succeeds
+with no missing-doc warnings (28 existing private-link warnings). The final `./run.sh --test`
+used Python 3.12 and `METRUM_SKIP_GODOT_IMPORT_REPAIR=1` after a complete import: 2,391 Rust
+tests passed, 12 failed, 218 skipped; every failure also reproduces on pristine `0ddc50bb`.
+These are the walking proof, bulk lane rebuild, six census/plan save-continuation cases,
+byte-identical town saves and three road geometry reference probes. The Godot vehicle/road
+chain passes, including the extended builder; the main chain stops at the unchanged asset
+editor's two Ctrl+click selection assertions. The builder also passes a rendered run with
+actual refused-stroke feedback and undo. No excluded UI source was changed.
+
+`RAYON_NUM_THREADS=2 METRUM_COMMIT_POCKETS=both METRUM_COMMIT_PREVIEW=1 $TEST_BINARY
+benchmark_commit_locality --ignored --nocapture` passed at 0/1k/10k/30k remote agents,
+buildings and parcels (83/108/333/833 graph edges including the fixed neighborhood).
+All local graph/render/graded/land products match across tiers. Median complete stroke times
+were 58.61/70.78/70.73/70.34 ms; the local surface stage was 53.05/64.92/65.05/64.51 ms,
+and snapshot publication 0.10/0.13/0.13/0.29 ms. Setup was separate: neighborhood construction
+0.51 s, background insertion 0.018/0.061/0.531/1.709 s. The original whole-stroke publication
+still has its existing city-dependent snapshot cost; no new per-pocket publication is added.
+
+`RAYON_NUM_THREADS=2 $BENCH_BINARY --bench --noplot pocket_chunk_emit_only`
+(`road_chunk_benchmark`, 20 samples, 1 s warm-up, 3 s measurement, control/branch/branch/control)
+keeps the same local mesh digest. Means of the two runs per build were 346.02 → 345.27 us at
+one occupied chunk and 360.84 → 355.79 us at 1,024 chunks, within the observed run spread.
+The control is pristine `0ddc50bb`; binaries were built separately, copied before switching
+builds, and verified by digest. These are fresh measurements, not historical acceptance.
 
 "Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
 (`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,

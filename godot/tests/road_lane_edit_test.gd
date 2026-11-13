@@ -114,7 +114,7 @@ func _run() -> void:
 	var created: Dictionary = simulation.create_road_type("Lane Edit Boulevard", [
 		{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 		{"kind": "median", "style": 2, "width_m": 3.0},
-		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true)
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true, {})
 	var boulevard := String(created.get("id", ""))
 	_expect(not boulevard.is_empty(), "the divided type is created: %s" % created)
 	var ui := UiStub.new()
@@ -241,7 +241,7 @@ func _run() -> void:
 
 	# A 100 km/h type without sidewalks or zoning in place: nothing to demolish, applied at once.
 	var rural := String(simulation.create_road_type("Lane Edit Rural", [
-		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 100, false, true).get("id", ""))
+		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 100, false, true, {}).get("id", ""))
 	_expect(not rural.is_empty(), "the rural type is created")
 	window.show_for_edges(selection)
 	_pick(window, rural)
@@ -289,7 +289,7 @@ func _run() -> void:
 	# Street lights off in place: the same lanes, speed and sidewalks, no cost, undo lights it.
 	var unlit := String(simulation.create_road_type("Lane Edit Unlit", [{"kind": "sidewalk"},
 		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}],
-		50, true, false).get("id", ""))
+		50, true, false, {}).get("id", ""))
 	_expect(not unlit.is_empty(), "the unlit type is created")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window).begins_with("2-Lane Road"), "the road is a 2-Lane Road: %s" % _picked_text(window))
@@ -310,7 +310,7 @@ func _run() -> void:
 	# One side (`ROAD-107`): the type is matched by its sides, picked and undone; a road no type
 	# has reads "Custom layout", and nothing makes it two-sided but a picked type.
 	var left_only := String(simulation.create_road_type("Lane Edit Left", [{"kind": "sidewalk"},
-		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 50, true, true).get("id", ""))
+		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 50, true, true, {}).get("id", ""))
 	_expect(not left_only.is_empty(), "the left-only type is created")
 	window.show_for_edges(selection)
 	_pick(window, left_only)

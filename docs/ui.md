@@ -305,6 +305,7 @@ building(s)" unless noted:
 | --- | --- |
 | Road tool | the HUD measurement line, after the cost |
 | Roundabout tool | the label beside the ring |
+| Road Builder turn pockets (`ROAD-112`) | Roads menu → Road builder | `scripts/ui/road_builder/pocket_controls.gd` | Styled independent Left/Right arrows, a metre stepper using Rust's pocket limits, and a junction-length annotation on the cross-section stage. The road tool shows refused approaches in the shared inspector card, with direction, junction position and `RoadReasonText`'s Rust reason; the road remains built. |
 | Road Properties | the selected roads' widenings outlined; Apply asks "Apply removes N building(s). This cannot be undone." |
 | Junction window | the pocket row's verdict ("..., demolishes N building(s)") and the row's take outlined |
 | Services and Industry building placement | the price label; while the core is busy the hover keeps its last ghost, outline and label |

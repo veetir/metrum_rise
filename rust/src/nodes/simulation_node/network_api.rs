@@ -131,6 +131,7 @@ impl SimulationNode {
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
+                pockets: self.road_tool_pockets,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,
@@ -174,12 +175,22 @@ impl SimulationNode {
             return Variant::nil();
         };
         let result = match receiver.try_recv() {
-            Ok(ack) => vdict! {
-                "committed": ack.committed,
-                "reason": ack.reason,
-                "detail": ack.detail,
-                "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
-            },
+            Ok(ack) => {
+                let mut pockets = VarArray::new();
+                for refusal in ack.pocket_refusals {
+                    pockets.push(&vdict! {
+                        "position": refusal.position, "edge": refusal.edge as i64, "bearing_deg": refusal.bearing_deg,
+                        "junction": i64::from(refusal.node), "invalid_reason": refusal.reason,
+                    }.to_variant());
+                }
+                vdict! {
+                    "committed": ack.committed,
+                    "reason": ack.reason,
+                    "detail": ack.detail,
+                    "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
+                    "pocket_refusals": pockets,
+                }
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 vdict! {

@@ -241,6 +241,43 @@ func _run() -> void:
 	_expect(_cost() == "15 / m, 0.10 / m / day" and _builder.warning_label.text.is_empty(),
 		"Rust's cost of the 2-Lane Road: %s" % _cost())
 
+	var pockets = _builder.pocket_controls
+	_expect(not pockets.left_button.button_pressed and not pockets.right_button.button_pressed
+		and pockets.body_m == 60.0 and not _builder.pocket_badge.visible, "new types have no pockets")
+	pockets.left_button.button_pressed = true
+	pockets.right_button.button_pressed = true
+	pockets.longer_button.pressed.emit()
+	_expect(pockets.value() == {"left": true, "right": true, "body_m": 70.0}
+		and _builder.pocket_badge.text.contains("70 m"), "both roles and length appear on the stage")
+	window.size = _builder.MIN_SIZE
+	await process_frame
+	await process_frame
+	_expect(int((window.get_child(0) as Control).get_combined_minimum_size().y) <= _builder.MIN_SIZE.y,
+		"the smallest window also holds the pocket annotation")
+	window.size = shown_size
+	await process_frame
+	await _capture_pockets(window, "builder.png")
+	_type_name("Pocket Builder Test")
+	_builder.create()
+	var pocket_type: Dictionary = {}
+	for type: Dictionary in _simulation.get_road_types().get("types", []):
+		if type.get("name", "") == "Pocket Builder Test":
+			pocket_type = type
+	_expect(pocket_type.get("pockets", {}) == pockets.value(), "pocket settings survive the library write")
+	_builder.open()
+	_builder._on_type_selected(pocket_type)
+	_expect(pockets.left_button.button_pressed and pockets.right_button.button_pressed
+		and pockets.body_m == 70.0, "editing restores the saved controls")
+	_expect(_tool.set_road_type(String(pocket_type.get("id", ""))).is_empty(), "the tool selects a pocket type")
+	await _test_pocket_refusal(String(pocket_type.get("id", "")))
+	_builder.library_list.duplicate_requested.emit(pocket_type)
+	_expect(_builder.editing_id.is_empty() and pockets.value() == pocket_type.get("pockets", {}),
+		"duplicating retains pockets")
+	_simulation.delete_road_type(String(pocket_type.get("id", "")))
+	_builder._start(_builder.NEW_LAYOUT, "", "")
+	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_changes.clear()
+
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
 	await _click_part(1)
 	var popup = _builder.part_popup
@@ -642,3 +679,51 @@ func _run() -> void:
 	if _failures == 0:
 		print("road_builder_test: PASS")
 	quit(_failures)
+
+# Optional rendered evidence from the same isolated UI fixture; never reads a player save.
+func _capture_pockets(window: Window, file_name: String) -> void:
+	var folder := OS.get_environment("METRUM_ROAD112_SCREENSHOTS")
+	if folder.is_empty():
+		return
+	await RenderingServer.frame_post_draw
+	_expect(window.get_texture().get_image().save_png(folder.path_join(file_name)) == OK,
+		"pocket screenshot saves")
+
+# A saved type reaches the sim-thread command, and its refusal reaches the road tool's card.
+func _test_pocket_refusal(type_id: String) -> void:
+	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	var trunk := await _commit_pocket_fixture(_ground(-180.0, 100.0), _ground(180.0, 100.0))
+	_expect(bool(trunk.get("committed", false)), "the pocket fixture's trunk commits")
+	_tool.set_road_type(type_id)
+	var short_road := await _commit_pocket_fixture(_ground(0.0, 100.0), _ground(0.0, 160.0))
+	var refusals: Array = short_road.get("pocket_refusals", [])
+	_expect(bool(short_road.get("committed", false)) and refusals.size() == 1,
+		"the short road commits and reports one optional pocket refusal")
+	if refusals.size() == 1:
+		_expect(refusals[0].get("invalid_reason", "") == "pocket_road_too_short"
+			and is_equal_approx(float(refusals[0].get("bearing_deg", -1.0)), 180.0),
+			"Rust reports the reason and the approach from south")
+		_tool._show_pocket_refusals(refusals)
+		await process_frame
+		await process_frame
+		var notices := _tool.get_children().filter(func(child):
+			return child is Window and child.get_script() == preload("res://scripts/ui/road_pocket_notice.gd"))
+		_expect(notices.size() == 1 and notices[0].visible, "the road tool displays the persistent refusal card")
+		if not notices.is_empty():
+			await _capture_pockets(notices[0], "refusal.png")
+			notices[0].close_requested.emit()
+	for _stroke in 2:
+		var generation: int = _simulation.get_network_render_generation()
+		_expect(_simulation.undo_action() and await _await_generation(generation), "one undo removes each fixture stroke")
+	_expect(_simulation.get_hovered_edge(0.0, 140.0) < 0, "undo removes the road whose pocket was refused")
+
+func _commit_pocket_fixture(a: Vector3, b: Vector3) -> Dictionary:
+	var request: int = _simulation.add_road_with_snap(PackedVector3Array([a, b]), 1, 1, true)
+	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
+	while Time.get_ticks_msec() < deadline:
+		var result = _simulation.get_road_commit_result(request)
+		if result is Dictionary:
+			return result
+		await process_frame
+	_expect(false, "the pocket fixture commit completes")
+	return {}
