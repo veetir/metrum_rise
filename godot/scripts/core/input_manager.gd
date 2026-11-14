@@ -334,7 +334,7 @@ func _unhandled_input(event):
 			KEY_P: _toggle_agent_paths()
 			KEY_T:
 				if current_tool == Tool.ROAD:
-					road_tool.set_tunnel(not road_tool.tunnel_enabled)
+					road_tool.set_straight_grade(not road_tool.straight_grade)
 					get_viewport().set_input_as_handled()
 			KEY_COMMA, KEY_KP_SUBTRACT:
 				step_simulation_speed(-1)
@@ -359,9 +359,9 @@ func _unhandled_input(event):
 			KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS:
 				_handle_overlay_mode(event.keycode)
 
-			# Altitude Adjustments
-			KEY_PAGEUP: _handle_altitude_adjust(2.5)
-			KEY_PAGEDOWN: _handle_altitude_adjust(-2.5)
+			# The active height handle, one 0.5 m step (`ROAD-112` round I)
+			KEY_PAGEUP: _handle_height_step(1)
+			KEY_PAGEDOWN: _handle_height_step(-1)
 
 			# Zoning Selection
 			KEY_1, KEY_2, KEY_3:
@@ -369,6 +369,10 @@ func _unhandled_input(event):
 
 			KEY_ESCAPE:
 				_handle_escape()
+
+			# Enter: a freeform road's edit phase starts, then builds (`ROAD-112` round N).
+			KEY_ENTER, KEY_KP_ENTER:
+				_handle_confirm()
 
 	if event is InputEventMouseButton:
 		_handle_mouse(event)
@@ -552,7 +556,7 @@ func _default_save_name() -> String:
 	return "savegame.sqlite"
 
 func _refresh_after_world_load():
-	if road_tool and road_tool.current_state != 0:
+	if road_tool and road_tool.is_drawing():
 		road_tool.cancel_road()
 	_cancel_active_tool()
 	if building_inspector:
@@ -760,7 +764,7 @@ func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> vo
 		building_inspector.try_inspect(world_pos, screen_pos, false, false)
 
 func _handle_right_click():
-	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.is_drawing():
 		road_tool.cancel_road()
 	elif current_tool == Tool.SCULPT:
 		pass # Right click is used for lowering ground during sculpting
@@ -768,9 +772,13 @@ func _handle_right_click():
 	else:
 		_cancel_active_tool()
 
-func _handle_altitude_adjust(delta):
+func _handle_confirm() -> void:
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool and road_tool.is_drawing():
+		road_tool.confirm_road()
+
+func _handle_height_step(steps: int) -> void:
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool:
-		road_tool.adjust_altitude(delta)
+		road_tool.step_height(steps)
 
 func menu_save_game() -> void:
 	_handle_save_game()

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road-type pockets: stroke ownership, refusal independence and undo (`ROAD-114`).
+//! Road-type pockets: stroke ownership, refusal independence and undo (`ROAD-118`).
 
 use super::*;
 use crate::nodes::sim::core::road_commit::{RoadCommitOutcome, RoadCommitRequest};
@@ -17,7 +17,7 @@ fn draw(core: &mut SimCore, points: &[(f32, f32)], pockets: RoadTypePockets) -> 
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: Default::default(),
             attributes: RoadAttributes::DEFAULT,
@@ -210,7 +210,7 @@ fn pocket_hover_matches_committed_piece_bits_and_restores_its_replica() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: Default::default(),
             attributes: RoadAttributes::DEFAULT,

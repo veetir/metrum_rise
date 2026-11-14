@@ -4,7 +4,7 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
-use crate::simulation::network::road_edit::{PreparedRoadInput, plan_road_edit};
+use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::types::EdgeClass;
 
@@ -15,14 +15,6 @@ fn lanes_u8(count: i32) -> u8 {
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Sets the road tool's tunnel intent (`ROAD-61`), which every later hover check, preview,
-    /// commit and refusal report of the tool carries: with it a stroke keeps its drawn profile
-    /// through the ground, its covered stretch becomes a tunnel and its open ends approaches.
-    #[func]
-    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
-        self.road_tool_tunnel = tunnel;
-    }
-
     /// Sets the road tool's median (`ROAD-80`) for every later hover check, preview, commit and
     /// refusal report of the tool: `style` 0 none, 1 painted, 2 kerbed grass, 3 kerbed paving,
     /// `width_m` within the style's range. Returns the empty string when set, else the refusal
@@ -34,6 +26,7 @@ impl SimulationNode {
         match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
             Ok(median) => {
                 self.road_tool_median = median;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -50,6 +43,7 @@ impl SimulationNode {
         match crate::simulation::network::graph::RoadParking::from_code(code) {
             Some(parking) => {
                 self.road_tool_parking = parking;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             None => "parking_code_out_of_range".into(),
@@ -77,20 +71,25 @@ impl SimulationNode {
         match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights) {
             Ok(attributes) => {
                 self.road_tool_attributes = attributes;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             Err(reason) => reason.into(),
         }
     }
 
-    /// Sets pockets requested on the next stroke's new junction approaches (`ROAD-114`).
+    /// Sets pockets requested on the next stroke's new junction approaches (`ROAD-118`).
     /// Uses the same body-length limits as the Junction window; invalid settings keep the old value.
     #[func]
     pub fn set_road_tool_pockets(&mut self, pockets: VarDictionary) -> GString {
         let pockets = super::super::road_types::pockets_from_variant(&pockets);
         match pockets.validate() {
             Ok(()) => {
-                self.road_tool_pockets = pockets;
+                // The session's preview key holds no pockets: a change previews again.
+                if self.road_tool_pockets != pockets {
+                    self.road_tool_pockets = pockets;
+                    self.forget_road_tool_preview();
+                }
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -152,7 +151,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: RoadProfile::FollowGround,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -192,7 +191,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: RoadProfile::FollowGround,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -238,7 +237,7 @@ impl SimulationNode {
                 &query.region_graph,
                 &query.roadbed,
                 snap_to_existing_roads,
-                self.road_tool_tunnel,
+                RoadProfile::FollowGround,
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
                 &prepared_input,
@@ -283,7 +282,7 @@ impl SimulationNode {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel: self.road_tool_tunnel,
+                    profile: RoadProfile::FollowGround,
                     median: self.road_tool_median,
                     parking: self.road_tool_parking,
                     attributes: self.road_tool_attributes,
@@ -310,7 +309,27 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
         validation: VarDictionary,
     ) -> i64 {
+        self.log_road_tool_rejection_as(
+            points,
+            [fwd_lanes, bkw_lanes],
+            snap_to_existing_roads,
+            validation,
+            RoadProfile::FollowGround,
+        )
+    }
+
+    // [`Self::log_road_tool_rejection`] for a stroke of `profile` (a graded draft's stroke,
+    // `ROAD-112` round I).
+    pub(super) fn log_road_tool_rejection_as(
+        &self,
+        points: PackedVector3Array,
+        lanes: [i32; 2],
+        snap_to_existing_roads: bool,
+        validation: VarDictionary,
+        profile: RoadProfile,
+    ) -> i64 {
         use crate::nodes::sim::core::{RejectedBy, RoadAttempt, RoadRejection};
+        let [fwd_lanes, bkw_lanes] = lanes;
         let int = |key: &str| {
             validation
                 .get(key)
@@ -342,7 +361,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -358,7 +377,10 @@ impl SimulationNode {
     /// rebuilt pieces' triangles and the published runs they replace (`road_chunks`, below the
     /// chunk since `ROAD-68-H` round 3), indexing the resident chunks of `road_mesh_generation`.
     /// A click on the same stroke submits this preview, and the commit installs its pieces while
-    /// the fingerprint is current. Takes the context lock only, never the core lock.
+    /// the fingerprint is current. `graded_cut` (flat `(x, z)`, under `graded_epoch`): the tiles
+    /// whose installed graded tile draws its road cut as the backstop while it shows under this
+    /// pose (T65 option (c), `ROAD-112` round G2; empty when the pose draws no road). Takes the
+    /// context lock only, never the core lock.
     #[func]
     pub fn preview_road(
         &self,
@@ -367,8 +389,28 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
+        self.preview_stroke(
+            points.to_vec(),
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            RoadProfile::FollowGround,
+        )
+    }
+
+    // [`Self::preview_road`] for a stroke already in Rust (the road tool session's), with its
+    // `profile`.
+    pub(super) fn preview_stroke(
+        &self,
+        points: Vec<Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+        profile: RoadProfile,
+    ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
+        let mut graded_cut = Vec::new();
         let land = self.road_tool.land();
         let (
             preview,
@@ -389,11 +431,11 @@ impl SimulationNode {
             let preview = Arc::new(context.preview_road_with_pockets(
                 RoadPreviewRequest {
                     surface_generation,
-                    points: points.to_vec(),
+                    points,
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel: self.road_tool_tunnel,
+                    profile,
                     median: self.road_tool_median,
                     parking: self.road_tool_parking,
                     attributes: self.road_tool_attributes,
@@ -404,6 +446,18 @@ impl SimulationNode {
             context
                 .graded
                 .take_shown_changes(&mut graded_tiles, &mut graded_removed);
+            // T65 option (c): the tiles whose published cut this pose's road may leave open,
+            // none when it draws no road.
+            {
+                let context = &mut *context;
+                let delta = (preview.pieces.as_ref())
+                    .filter(|_| preview.validation.is_valid)
+                    .map(|pieces| &pieces.delta);
+                graded_cut.extend(
+                    (context.graded.cut_tiles(&context.view.roadbed, delta).iter())
+                        .flat_map(|tile| [tile.x, tile.z]),
+                );
+            }
             let demolish_lots = preview
                 .pieces
                 .as_ref()
@@ -441,7 +495,8 @@ impl SimulationNode {
             "terrain_source_generation",
             generation(fingerprint.terrain_source_generation),
         );
-        dict.set("tunnel", preview.plan.request().tunnel);
+        dict.set("tunnel", preview.plan.profile() == RoadProfile::Tunnel);
+        dict.set("profile", i64::from(preview.plan.profile().code()));
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
@@ -472,6 +527,9 @@ impl SimulationNode {
             graded_epoch,
             cell_m,
         );
+        // A pose's frame replaces its epoch's backstop tiles (flat `(x, z)`); a catch-up frame
+        // carries none and keeps them.
+        dict.set("graded_cut", PackedInt32Array::from(graded_cut.as_slice()));
         let has_road_chunks = preview
             .pieces
             .as_ref()
@@ -609,7 +667,7 @@ impl SimulationNode {
     // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as
     // `poll_graded_tile_results` packs its tiles, the token the epoch), `graded_removed` (flat
     // `(x, z)` pairs of the tiles shown no more) and `graded_epoch`.
-    fn set_graded_preview_changes(
+    pub(super) fn set_graded_preview_changes(
         dict: &mut VarDictionary,
         tiles: &[crate::simulation::terrain::graded::StagedTile],
         removed: &[crate::simulation::terrain::graded::TileKey],
@@ -634,7 +692,7 @@ impl SimulationNode {
     // The preview's chunks below the chunk (`ROAD-68-H` round 3): each overlay in the committed
     // publication's mesh format, with `hidden` (flat `[layer, start, end]` vertex ranges of the
     // resident chunk's runs it replaces) and `hidden_positions` (their published positions).
-    fn preview_road_chunk_updates(
+    pub(super) fn preview_road_chunk_updates(
         chunks: &std::collections::BTreeMap<
             crate::simulation::network::roadbed::SurfaceChunkKey,
             crate::simulation::network::render::road::PreviewChunk,
@@ -784,7 +842,7 @@ impl SimulationNode {
 
     // A previewed stroke's cost weight: its lanes, and the median, parking, attributes and class
     // its prepared input carries.
-    fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
+    pub(super) fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
         road_cost::stroke_weight(
             (lanes_u8(lanes.0), lanes_u8(lanes.1)),
             prepared.median,
@@ -794,7 +852,7 @@ impl SimulationNode {
         )
     }
 
-    fn road_build_length_m(points: &[Vector3]) -> f64 {
+    pub(super) fn road_build_length_m(points: &[Vector3]) -> f64 {
         points
             .windows(2)
             .map(|pair| {

@@ -73,8 +73,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
 	tool.simulation_node = simulation
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
@@ -83,13 +82,14 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool.active = true
 	tool.fwd_lanes = fixture.forward
 	tool.draw_mode = 1 if fixture.get("curve", false) else 0
-	tool._begin_stroke(_stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0), 1, Vector3.RIGHT)
+	var start := _stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0)
+	var control := _stream_point(fixture, 0.0, -24.0)
+	tool._begin_stroke(start)
 	if tool.draw_mode == 1:
-		_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "curve stream must begin with a free control point despite its road direction")
-		tool.control_pos = _stream_point(fixture, 0.0, -24.0)
-		tool.current_state = RoadToolScript.State.SETTING_END
+		# The curve's free control point (U1), even where the stroke starts on a road.
+		_expect(not tool._commit_segment(control), "a curve's control-point click sends nothing")
 	var generation := simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "stream source meshes must hydrate")
+	_expect(tool.chunks.update(generation) == generation, "stream source meshes must hydrate")
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	var before := simulation.get_road_benchmark_state()
@@ -114,13 +114,23 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		var displayed_us := Time.get_ticks_usec()
 		var frame_ms := float(displayed_us - input_us) / 1000.0
 		process_times.append(frame_ms)
-		final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
-		if tool.draw_mode == 1:
-			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
-			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
 		var preview: Dictionary = tool._preview
 		# The frame that sampled the pose previewed it; a valid pose is shown in that frame.
-		_expect(tool._preview_is_for(final_points), "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+		if tool.draw_mode == 1:
+			# The session's simple curve: the exact fillet arc from the start to this frame's pointer
+			# whose radius is T / tan(delta / 2) for the legs start -> control -> pointer.
+			final_points = tool._preview_points
+			_expect(tool.stroke_preview_current() and final_points[0] == start and final_points[-1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+			var leg_in := Vector2(control.x - start.x, control.z - start.z)
+			var leg_out := Vector2(point.x - control.x, point.z - control.z)
+			var deflection := absf(leg_in.angle_to(leg_out))
+			if deflection > 0.001:
+				var expected_radius := minf(leg_in.length(), leg_out.length()) / tan(0.5 * deflection)
+				_expect(absf(float(tool._session_hud.get("radius_m", -1.0)) - expected_radius) < 0.01, "the curve is the fillet arc of its clicks: fixture=%s frame=%d" % [fixture.name, index])
+		else:
+			# The session's straight stroke: the start and this frame's scripted pointer exactly.
+			final_points = tool._preview_points
+			_expect(final_points.size() == 2 and final_points[1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
 		var valid: bool = preview.get("is_valid", false)
 		var shown: bool = tool._preview_display.sequence == int(preview.get("sequence", -1))
 		_expect(not valid or shown, "a valid pose is shown in the frame that sampled it: fixture=%s frame=%d" % [fixture.name, index])
@@ -136,7 +146,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		samples.append({"frame": index, "input_us": input_us, "display_us": displayed_us, "sequence": int(preview.get("sequence", 0)), "valid": valid})
 		# Optional rendered pose diagnostics deliberately stall this trace; exclude them from timings.
 		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty() and index in [16, 24, 40]:
-			await _capture(tool.road_mesh_root, fixture.name + "_motion_" + str(index))
+			await _capture(tool.chunks.chunk_root, fixture.name + "_motion_" + str(index))
 		if input_interval_sec > 0.0:
 			await create_timer(input_interval_sec).timeout
 		else:
@@ -147,7 +157,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		_expect(before[field] == after[field], "stream must not mutate authoritative " + field)
 	tool.cancel_road()
-	for original in tool._road_chunk_instances.values():
+	for original in tool.chunks.chunks.values():
 		_expect(original.visible, "stream cancellation must restore originals")
 	tool.free()
 	var stages := {}

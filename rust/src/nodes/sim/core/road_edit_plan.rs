@@ -10,7 +10,7 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
+    PreparedRoadInput, RoadPreviewValidation, RoadProfile, RoadTopologyPlan, plan_road_edit,
 };
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -287,6 +287,23 @@ impl RoadLandTake {
     pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
         Self::of(&CoreLand::of(core), pieces, before, &[], None)
     }
+
+    /// [`Self::in_core`] of pieces whose plotted verdict a batch's dry run already gave on the
+    /// same pieces and land (`ROAD-112` round F2): the zoned take alone, `plotted` `None`. A
+    /// batch changes no plotted reservation (a stroke covering one refuses the batch), so the
+    /// verdict holds; debug builds judge it again.
+    pub(crate) fn in_core_judged(
+        core: &SimCore,
+        pieces: &[&PieceMesh],
+        before: &[&PieceMesh],
+    ) -> Self {
+        let land = CoreLand::of(core);
+        debug_assert!(
+            first_plotted_overlap(&land, pieces, before).is_none(),
+            "a batch stroke's dry run judged its pieces clear of plotted land"
+        );
+        Self::zoned(&land, pieces, before, &[])
+    }
 }
 
 // What newly covers land in a take: a piece the edit installs, or an extra footprint.
@@ -362,6 +379,23 @@ impl<B: Copy + Ord> RoadLandTake<B> {
                 ..Self::default()
             };
         }
+        Self::zoned(land, pieces, before, extra)
+    }
+
+    // [`Self::of`] past its plotted verdict: the cells, lots and buildings the covers newly
+    // cover.
+    fn zoned<S: RoadLandSource<Building = B>>(
+        land: &S,
+        pieces: &[&PieceMesh],
+        before: &[&PieceMesh],
+        extra: &[PolygonFootprint<'static>],
+    ) -> Self {
+        let covers = || {
+            pieces
+                .iter()
+                .map(|&mesh| Cover::Piece(mesh))
+                .chain(extra.iter().map(Cover::Footprint))
+        };
         let cells_store = land.cells();
         let mut keys = ZoningSystem::reserved_cells_newly_covered_by_road_pieces(
             cells_store,
@@ -507,7 +541,8 @@ impl RoadEditPlan {
     /// Builds the local road solution from one generation's terrain, graph and roadbed: the
     /// live core's at commit, the road tool's context in a preview (`ROAD-68-E`), through the
     /// same preparation and validation, so the stroke reads no piece its edit rebuilds (`ROAD-68`
-    /// open question 16). O(passes * (stroke points + local excerpt records)), one or two passes.
+    /// open question 16). The request's profile (`ROAD-112` round H) decides the preparation.
+    /// O(passes * (stroke points + local excerpt records)), one or two passes.
     pub(crate) fn compile_from(
         terrain: &TerrainSystem,
         graph: &RegionGraph,
@@ -523,7 +558,7 @@ impl RoadEditPlan {
             graph,
             roadbed,
             request.snap_to_existing_roads,
-            request.tunnel,
+            request.profile,
         );
         Self::new(
             request,
@@ -534,9 +569,22 @@ impl RoadEditPlan {
         )
     }
 
+    /// This plan stamped with a later road-tool surface generation, for a batch stroke whose
+    /// dry run planned it on exactly the graph, roadbed and terrain the commit now has
+    /// (`ROAD-112` round F, [`super::road_batch::DryRunStroke::rebased`]). O(1).
+    pub(crate) fn rebased_to(mut self, surface_generation: u64) -> Self {
+        self.request.surface_generation = surface_generation;
+        self
+    }
+
     /// The stroke this plan was compiled for.
     pub(crate) fn request(&self) -> &RoadPreviewRequest {
         &self.request
+    }
+
+    /// The stroke's profile (`ROAD-112` round H), part of its request's identity.
+    pub(crate) fn profile(&self) -> RoadProfile {
+        self.request.profile
     }
 
     /// The prepared stroke.
@@ -686,7 +734,7 @@ mod tests {
             &RegionGraph::new(),
             &RoadbedSystem::new(16.0),
             true,
-            false,
+            crate::simulation::network::road_edit::RoadProfile::FollowGround,
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
@@ -695,7 +743,7 @@ mod tests {
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

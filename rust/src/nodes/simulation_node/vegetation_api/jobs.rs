@@ -21,12 +21,15 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Most patch jobs out at once, from the request until the poll takes the result: twice the
-/// renderer's per-frame request budget (16 sub-patches), so a frame's requests never wait for
-/// the last frame's to be polled.
+/// renderer's per-frame request budget (16 sub-patches). Up to eight of them may be prepares
+/// (`RENDER-32-N`), which wait behind every request, leaving requests 24 when all are out.
 const MAX_IN_FLIGHT: usize = 32;
 /// Bytes of finished products the cache may hold before no job starts (`docs/terrain.md`
 /// "Streaming core": 64 MB a layer).
 const CACHE_CAP_BYTES: usize = 64 << 20;
+/// Spare product storage kept for the next jobs: one per job in flight, which is all a burst of
+/// starts can take before products come back (AUDIT-stream-2 finding 2).
+const SPARE_PRODUCTS: usize = MAX_IN_FLIGHT;
 
 /// Vegetation jobs running at once on the background pool. Each runs its queries sequentially,
 /// so this many of the pool's threads at most work for the vegetation while the frame runs beside
@@ -96,7 +99,7 @@ impl Default for VegetationJobs {
     fn default() -> Self {
         Self {
             queue: PrepareQueue::new(MAX_IN_FLIGHT),
-            cache: ProductCache::new(CACHE_CAP_BYTES),
+            cache: ProductCache::new(CACHE_CAP_BYTES, SPARE_PRODUCTS),
             catalogue: None,
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
@@ -116,15 +119,14 @@ fn ahead_running_limit(simulating: bool) -> usize {
     if simulating { 1 } else { MAX_RUNNING }
 }
 
-/// A finished poll: the request's key and serial, and its product (`None`: the inputs were
-/// busy, ask again).
+/// A finished poll: the request's key and serial, and its product.
 pub(crate) struct Delivered {
     /// The patch key.
     pub(crate) key: PatchKey,
     /// The request serial.
     pub(crate) serial: u64,
     /// The product; return it with [`VegetationJobs::recycle`].
-    pub(crate) product: Option<VegetationProduct>,
+    pub(crate) product: VegetationProduct,
 }
 
 impl VegetationJobs {
@@ -148,8 +150,8 @@ impl VegetationJobs {
     }
 
     /// Lands a job's result for the poll.
-    pub(super) fn land(&mut self, key: PatchKey, serial: u64, product: Option<VegetationProduct>) {
-        let bytes = product.as_ref().map_or(0, VegetationProduct::bytes);
+    pub(super) fn land(&mut self, key: PatchKey, serial: u64, product: VegetationProduct) {
+        let bytes = product.bytes();
         self.cache.land(key, serial, product, bytes);
     }
 
@@ -164,16 +166,35 @@ impl VegetationJobs {
                     product: landed.product,
                 });
             }
-            if let Some(product) = landed.product {
-                self.cache.recycle(product);
-            }
+            // Past the spare limit a stale product's storage is dropped here (rare: a request
+            // superseded while its job ran).
+            drop(self.cache.recycle(landed.product));
         }
         None
     }
 
-    /// Returns a delivered product's storage.
-    pub(crate) fn recycle(&mut self, product: VegetationProduct) {
-        self.cache.recycle(product);
+    /// Returns a delivered product's storage; past the spare limit it comes back, for the
+    /// caller to drop outside the jobs' lock.
+    #[must_use]
+    pub(crate) fn recycle(&mut self, product: VegetationProduct) -> Option<VegetationProduct> {
+        self.cache.recycle(product)
+    }
+
+    /// A prepare a request adopted (AUDIT-stream-2 finding 3): waiting in the prepare lane, it
+    /// moves to the front of the requests' queue, no longer paced as a prepare; running (or being
+    /// snapshotted) it needs nothing. `O(prepares waiting)`, at most `PREPARE_IN_FLIGHT`.
+    pub(crate) fn promote(&mut self, key: PatchKey, serial: u64) {
+        let Some(at) = self
+            .ahead
+            .iter()
+            .position(|waiting| waiting.request.key == key && waiting.serial == serial)
+        else {
+            return;
+        };
+        if let Some(mut waiting) = self.ahead.remove(at) {
+            waiting.ahead = false;
+            self.waiting.push_front(waiting);
+        }
     }
 
     /// Drops `key`'s live request: its result will not be delivered.
@@ -260,7 +281,7 @@ pub(crate) fn pump(spawner: &Spawner) {
             if jobs.queue.is_live(waiting.request.key, waiting.serial) {
                 batch.push(waiting);
             } else {
-                jobs.land(waiting.request.key, waiting.serial, Some(waiting.product));
+                jobs.land(waiting.request.key, waiting.serial, waiting.product);
             }
         }
         if batch.is_empty() {
@@ -352,7 +373,7 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
         product.span = request.span;
         {
             let mut jobs = next.jobs.lock().unwrap();
-            jobs.land(request.key, serial, Some(product));
+            jobs.land(request.key, serial, product);
             jobs.running -= 1;
             if ahead {
                 jobs.running_ahead -= 1;
@@ -443,6 +464,11 @@ impl PatchJobs for Spawner {
             settings: settings.product,
         };
         spawn_request(self, request, order.ahead)
+    }
+
+    fn promote(&mut self, key: PatchKey, serial: u64) {
+        self.jobs.lock().unwrap().promote(key, serial);
+        pump(self);
     }
 
     fn cancel(&mut self, key: PatchKey) {

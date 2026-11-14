@@ -10,7 +10,7 @@
 use crate::debug_log;
 use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_types::RoadAttributes;
-use crate::simulation::network::road_edit::RoadPreviewValidation;
+use crate::simulation::network::road_edit::{RoadPreviewValidation, RoadProfile};
 use godot::prelude::Vector3;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,8 +42,9 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap: bool,
-    /// The road tool's tunnel intent (`ROAD-61`), which a replay sets before it draws.
-    pub(crate) tunnel: bool,
+    /// The stroke's profile (`ROAD-112` round H; the tunnel intent of `ROAD-61`), which the
+    /// replay record carries.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`).
@@ -135,7 +136,7 @@ impl RoadRejection {
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
-            tunnel: attempt.tunnel,
+            profile: attempt.profile.code(),
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
             parking: attempt.parking.code(),
@@ -160,7 +161,10 @@ struct AttemptRecord<'a> {
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
-    tunnel: bool,
+    // `RoadProfile::code` (`ROAD-112` round H): 0 follow ground, 1 held ground, 2 bridge, 3
+    // tunnel. A record from before it has a `tunnel` flag instead, which the replay reads as 3 or
+    // 0.
+    profile: i32,
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
@@ -451,7 +455,7 @@ mod tests {
             fwd_lanes: 2,
             bkw_lanes: 1,
             snap: true,
-            tunnel: true,
+            profile: RoadProfile::Tunnel,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
@@ -475,7 +479,7 @@ mod tests {
             (2.into(), 1.into())
         );
         assert_eq!(record["snap"], true);
-        assert_eq!(record["tunnel"], true);
+        assert_eq!(record["profile"], 3);
         assert_eq!(record["speed_kmh"], 100);
         assert_eq!(record["sidewalks"], 1, "the side code, left only");
         assert_eq!(record["zoning"], false);
@@ -534,7 +538,7 @@ mod tests {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap: false,
-            tunnel: false,
+            profile: RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

@@ -25,7 +25,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParki
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
+    PreparedRoadInput, RoadPreviewValidation, RoadProfile, prepare_road_input_for_tool,
     validate_road_candidate_fast,
 };
 use crate::simulation::network::roadbed::{
@@ -36,15 +36,17 @@ use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::water::WaterSystem;
 
 /// One road-tool stroke submitted for preview or commit planning.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadPreviewRequest {
     pub(crate) surface_generation: u64,
     pub(crate) points: Vec<Vector3>,
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
-    /// The road tool's tunnel intent (`ROAD-61`): part of the preview's and the plan's identity.
-    pub(crate) tunnel: bool,
+    /// The stroke's profile (`ROAD-112` round H, [`RoadProfile`]): following the ground, a held
+    /// ground road or an explicit bridge of a segmented draft, or the tunnel intent (`ROAD-61`).
+    /// Part of the preview's and the plan's identity.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
     pub(crate) median: Option<RoadMedian>,
@@ -225,9 +227,10 @@ impl RoadToolQuerySnapshot {
             &self.region_graph,
             &self.roadbed,
             request.snap_to_existing_roads,
-            request.tunnel,
+            request.profile,
         );
         prepared.median = request.median;
+        prepared.parking = request.parking;
         prepared.attributes = request.attributes;
         let validation = validate_road_candidate_fast(
             &prepared,
@@ -359,7 +362,7 @@ pub(crate) struct RoadPreview {
 }
 
 impl RoadPreview {
-    /// True when this preview was made for exactly this stroke.
+    /// True when this preview was made for exactly this stroke, its `profile` included.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
@@ -367,7 +370,7 @@ impl RoadPreview {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-        tunnel: bool,
+        profile: RoadProfile,
         (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
@@ -375,7 +378,7 @@ impl RoadPreview {
             && request.fwd_lanes == fwd_lanes
             && request.bkw_lanes == bkw_lanes
             && request.snap_to_existing_roads == snap_to_existing_roads
-            && request.tunnel == tunnel
+            && self.plan.profile() == profile
             && request.median == median
             && request.parking == parking
             && request.attributes == attributes

@@ -6,6 +6,7 @@
 //! roads through the same path as the player.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::frame::record_crash_phase_for_core;
@@ -17,8 +18,11 @@ use super::road_tool_context::RoadToolPublication;
 use super::state::SimCore;
 use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
-use crate::simulation::network::road_edit::FinalizedRoadGeometry;
+use crate::simulation::core::pure_job::JobStart;
+use crate::simulation::network::road_edit::{FinalizedRoadGeometry, RoadProfile};
 use crate::simulation::network::road_types::RoadTypePockets;
+use crate::simulation::network::roadbed::RoadbedDelta;
+use crate::simulation::zoning::cells::CellBounds;
 use godot::prelude::Vector3;
 
 /// One player road stroke as submitted by the road tool.
@@ -31,9 +35,10 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) bkw_lanes: i32,
     /// Whether authored endpoints may snap to nearby existing road nodes.
     pub(crate) snap_to_existing_roads: bool,
-    /// The road tool's tunnel intent (`ROAD-61`): a preview made without it is not this
-    /// stroke's, and a fresh plan prepares the stroke with it.
-    pub(crate) tunnel: bool,
+    /// How the stroke's heights are made (`ROAD-112` round H; the tunnel intent of `ROAD-61` is
+    /// `RoadProfile::Tunnel`): a preview made with another is not this stroke's, and a fresh
+    /// plan prepares the stroke with it.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
     /// the stroke's edge carries it.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
@@ -58,6 +63,9 @@ pub(crate) struct RoadCommitAck {
     /// The road-tool surface generation after the command: the render generation whose road
     /// chunks replace the preview's (`ROAD-68-E`).
     pub(crate) generation: u64,
+    /// The stroke that refused a batch (`ROAD-112` round F); `None` for a single stroke or a
+    /// committed batch.
+    pub(crate) refused_stroke: Option<usize>,
     /// Refused optional pockets, with the junction and approach that could not receive them.
     pub(crate) pocket_refusals: Vec<StrokePocketRefusal>,
 }
@@ -142,45 +150,94 @@ impl SimCore {
         request: RoadCommitRequest,
         pockets: RoadTypePockets,
         road_total: Instant,
-        mut edit_metrics: RoadEditMetrics,
+        edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
+        let preview = request.preview.clone();
+        let submitted = SubmittedStroke::of(&request);
+        let mut stroke = self.commit_stroke_core(
+            request,
+            StrokePlan::Preview(preview),
+            pockets,
+            true,
+            road_total,
+            edit_metrics,
+        );
+        let tail = self.commit_tail(
+            stroke.committed,
+            stroke.deferred_lots.take(),
+            stroke.kept_tiles.take().into_iter().collect(),
+            &mut stroke.metrics,
+        );
+        self.finish_commit(stroke, tail, road_total, &submitted)
+    }
+
+    // The per-stroke core of a commit (`ROAD-112` round F, plan 6.1): plan (or the preview's or
+    // the batch's), add, finalize geometry, install pieces, take land, local lanes and agents,
+    // entrances, and the charge. With `defer_lots` the lot regions the edit queued are left for
+    // the tail's deferred plan; otherwise they are planned here, with the entrances that follow
+    // them, which a deferred plan's adoption equals bitwise (`ROAD-68-G` part 7). A refused
+    // stroke leaves the network unchanged. `O(the stroke's local work)`.
+    pub(super) fn commit_stroke_core(
+        &mut self,
+        request: RoadCommitRequest,
+        plan: StrokePlan,
+        pockets: RoadTypePockets,
+        defer_lots: bool,
+        road_total: Instant,
+        mut edit_metrics: RoadEditMetrics,
+    ) -> StrokeCore {
         let RoadCommitRequest {
             points,
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            tunnel,
+            profile,
             median,
             parking,
             attributes,
-            preview,
+            preview: _,
         } = request;
         self.last_road_rejection = None;
-        // The report of a refusal carries the stroke exactly as submitted.
-        let submitted_points = points.clone();
         // Bulk-load defers per-edge rebuilds until finalization.
         let add_internal_start = Instant::now();
         // Complete the local road plan before opening the transaction; it never clones the city.
         // A preview of exactly this stroke on the live generation is the commit's plan, and its
-        // pieces are what the commit installs (`ROAD-68-E`); otherwise plan here.
+        // pieces are what the commit installs (`ROAD-68-E`); so is a batch's dry run of it while
+        // the batch's chain holds (`ROAD-112` round F); otherwise plan here.
         let live_fingerprint = RoadPreviewFingerprint::live(self);
-        let preview = preview.filter(|preview| {
-            preview.pockets == pockets
-                && preview.fingerprint == live_fingerprint
-                && preview.is_for(
-                    &points,
-                    fwd_lanes,
-                    bkw_lanes,
-                    snap_to_existing_roads,
-                    tunnel,
-                    (median, parking, attributes),
+        let (reused_plan, reused_pieces) = match plan {
+            StrokePlan::Preview(preview) => {
+                let preview = preview.filter(|preview| {
+                    preview.pockets == pockets
+                        && preview.fingerprint == live_fingerprint
+                        && preview.is_for(
+                            &points,
+                            fwd_lanes,
+                            bkw_lanes,
+                            snap_to_existing_roads,
+                            profile,
+                            (median, parking, attributes),
+                        )
+                });
+                (
+                    preview.as_ref().map(|preview| PlanSource::Preview(Arc::clone(preview))),
+                    preview.map(PiecesSource::Preview),
                 )
-        });
-        edit_metrics.preview_plan_reused = preview.is_some();
+            }
+            StrokePlan::Batch(dry) => match (*dry).rebased(self, live_fingerprint) {
+                Some((plan, delta)) => (
+                    Some(PlanSource::Owned(Box::new(plan))),
+                    Some(PiecesSource::Delta(delta)),
+                ),
+                None => (None, None),
+            },
+        };
+        edit_metrics.preview_plan_reused = reused_plan.is_some();
         record_crash_phase_for_core(self, "add road plan compile");
         let fresh_plan;
-        let edit_plan = match &preview {
-            Some(preview) => &preview.plan,
+        let edit_plan = match &reused_plan {
+            Some(PlanSource::Preview(preview)) => &preview.plan,
+            Some(PlanSource::Owned(plan)) => &**plan,
             None => {
                 fresh_plan = RoadEditPlan::compile(
                     self,
@@ -190,7 +247,7 @@ impl SimCore {
                         fwd_lanes,
                         bkw_lanes,
                         snap_to_existing_roads,
-                        tunnel,
+                        profile,
                         median,
                         parking,
                         attributes,
@@ -242,16 +299,23 @@ impl SimCore {
                 (pockets.left || pockets.right).then(|| self.transit_network.roadbed.snapshot());
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
-            // A pocket preview shows the complete stroke. The base transaction installs only
-            // its base pieces; accepted pockets follow through the shared checks below.
-            let preview_pieces = preview
-                .as_ref()
-                .filter(|_| !pockets.left && !pockets.right)
-                .and_then(|preview| preview.pieces.as_ref());
+            // A batch's dry run judged its pieces' plotted land (`ROAD-112` round F2). A pocket
+            // preview shows the complete stroke: the base transaction installs only its base
+            // pieces, and accepted pockets follow through the shared checks below.
+            let (delta, graded, plotted_judged) = match &reused_pieces {
+                _ if roadbed_before.is_some() => (None, None, false),
+                Some(PiecesSource::Preview(preview)) => match preview.pieces.as_ref() {
+                    Some(pieces) => (Some(&pieces.delta), Some(&pieces.graded), false),
+                    None => (None, None, false),
+                },
+                Some(PiecesSource::Delta(delta)) => (Some(delta), None, true),
+                None => (None, None, false),
+            };
             road_add.committed = self.validate_staged_road_render_installing(
-                preview_pieces.map(|pieces| &pieces.delta),
-                preview_pieces.map(|pieces| &pieces.graded),
+                delta,
+                graded,
                 &road_add.regeneration,
+                plotted_judged,
                 &mut edit_metrics,
                 roadbed_before.is_none(),
             );
@@ -260,13 +324,13 @@ impl SimCore {
                 pocket_refusals = self.apply_stroke_pockets(&stroke_edges, pockets, &mut dirty);
                 if let Some(before) = roadbed_before {
                     let graded_start = Instant::now();
-                    let graded = self.stage_committed_graded_tiles(
-                        before,
-                        preview
-                            .as_ref()
-                            .and_then(|p| p.pieces.as_ref())
-                            .map(|p| &p.graded),
-                    );
+                    let preview_graded = match &reused_pieces {
+                        Some(PiecesSource::Preview(preview)) => {
+                            preview.pieces.as_ref().map(|pieces| &pieces.graded)
+                        }
+                        _ => None,
+                    };
+                    let graded = self.stage_committed_graded_tiles(before, preview_graded);
                     if !self.benchmark_mode
                         && let Some(record) = self.undo_stack.back_mut()
                     {
@@ -308,8 +372,13 @@ impl SimCore {
                 let buildings_start = Instant::now();
                 record_crash_phase_for_core(self, "add road entrance rebuild");
                 // Lots the edit queued are planned off the commit and adopted, with the
-                // entrances that follow them, at the next frame (question 33 (c)).
-                let regions = self.take_commit_cell_lot_regions();
+                // entrances that follow them, at the next frame (question 33 (c)); a batch's
+                // earlier strokes plan theirs here, before the next stroke reads them.
+                let regions = if defer_lots {
+                    self.take_commit_cell_lot_regions()
+                } else {
+                    Vec::new()
+                };
                 if regions.is_empty() {
                     self.rebuild_building_entrances_for_commit(&dirty);
                 } else {
@@ -336,15 +405,43 @@ impl SimCore {
                 );
                 debug_log!("road", "{}", msg);
                 self.last_road_timing = msg;
-                if !self.benchmark_mode {
-                    self.treasury.deduct_build_cost(road_add.build_cost);
-                }
+                // The record keeps the charge, which undo refunds (U5).
+                self.charge_undoable_build_cost(road_add.build_cost);
             }
         } else {
             self.transit_network.bulk_load = false;
             self.transit_network.accept_road_edit();
         }
         let finalize_ms = (finalize_start.elapsed().as_secs_f64() * 1000.0 - surface_ms).max(0.0);
+        // The undo record's kept terrain tiles (`TERRAIN-07-E`), queued by the tail.
+        let kept_tiles = if road_add.committed {
+            self.take_kept_graded_tiles_start()
+        } else {
+            None
+        };
+        edit_metrics.add_ms = add_internal_ms;
+        edit_metrics.finalize_ms = finalize_ms;
+        edit_metrics.surface_ms = surface_ms;
+        StrokeCore {
+            committed: road_add.committed,
+            pocket_refusals,
+            deferred_lots,
+            kept_tiles,
+            metrics: edit_metrics,
+        }
+    }
+
+    // The once-per-command tail (`ROAD-112` round F, plan 6.1): mesh precompute, the road tool
+    // view's publication with the commit's one `O(city)` graph copy, the routing rebuild's
+    // schedule, the deferred lot plan's spawn and the kept graded tiles' jobs. A batch pays it
+    // once for all its strokes.
+    pub(super) fn commit_tail(
+        &mut self,
+        committed: bool,
+        deferred_lots: Option<(Vec<CellBounds>, HashSet<usize>)>,
+        kept_tiles: Vec<JobStart>,
+        edit_metrics: &mut RoadEditMetrics,
+    ) -> CommitTail {
         let mesh_start = Instant::now();
         record_crash_phase_for_core(self, "add road mesh precompute");
         self.precompute_road_mesh_data();
@@ -355,7 +452,7 @@ impl SimCore {
         // graph and adopted a fixed number of frames later; route readers wait for it. That
         // copy is the commit's one `O(city)` copy, made by the publication; the road tool's
         // view shares it and its replica copies only the rebuilt owners' records (`ROAD-68-E`).
-        let (routing_graph, road_snapshot) = if road_add.committed {
+        let (routing_graph, road_snapshot) = if committed {
             let (graph, publication) = self.publish_committed_road_tool_view();
             (Some(graph), publication)
         } else {
@@ -365,15 +462,14 @@ impl SimCore {
         // The background jobs start after the commit's last stage (`ROAD-68-G` part 7), so they
         // take none of its workers' cores. The routing rebuild starts when the lot plan ends
         // (part 8), so it does not share the background pool with the plan, which the next
-        // frame adopts; the rebuild's adoption frame comes later. The undo record's kept
+        // frame adopts; the rebuild's adoption frame comes later. The undo records' kept
         // terrain tiles (`TERRAIN-07-E`) are queued last (part 10).
-        let kept_tiles = self.take_kept_graded_tiles_start();
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();
             let routing = self
                 .transit_network
-                .schedule_cch_rebuild_unstarted(std::sync::Arc::clone(&graph));
+                .schedule_cch_rebuild_unstarted(Arc::clone(&graph));
             edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
             match deferred_lots {
                 Some((regions, dirty)) => {
@@ -392,58 +488,161 @@ impl SimCore {
                 None => routing.start(),
             }
         }
-        if let Some(kept_tiles) = kept_tiles {
-            kept_tiles.start();
+        for kept in kept_tiles {
+            kept.start();
         }
+        CommitTail {
+            road_snapshot,
+            mesh_ms,
+            snapshot_ms,
+        }
+    }
+
+    // The command's outcome and metrics after its tail; a refused stroke is reported on `events`
+    // with its exact inputs.
+    pub(super) fn finish_commit(
+        &mut self,
+        stroke: StrokeCore,
+        tail: CommitTail,
+        road_total: Instant,
+        submitted: &SubmittedStroke,
+    ) -> RoadCommitOutcome {
+        let StrokeCore {
+            committed,
+            pocket_refusals,
+            metrics: mut edit_metrics,
+            ..
+        } = stroke;
+        let add_internal_ms = edit_metrics.add_ms;
+        let finalize_ms = edit_metrics.finalize_ms;
+        let surface_ms = edit_metrics.surface_ms;
         edit_metrics.generation = self.road_tool_surface_generation;
-        edit_metrics.committed = road_add.committed;
+        edit_metrics.committed = committed;
         edit_metrics.core_work_ms =
             road_total.elapsed().as_secs_f64() * 1000.0 - edit_metrics.lock_wait_ms;
-        edit_metrics.add_ms = add_internal_ms;
-        edit_metrics.finalize_ms = finalize_ms;
-        edit_metrics.surface_ms = surface_ms;
-        edit_metrics.mesh_ms = mesh_ms;
-        edit_metrics.snapshot_ms = snapshot_ms;
+        edit_metrics.mesh_ms = tail.mesh_ms;
+        edit_metrics.snapshot_ms = tail.snapshot_ms;
         self.last_road_edit_metrics = edit_metrics;
-        let rejection_reason = if road_add.committed {
+        let rejection_reason = if committed {
             String::new()
         } else {
-            let rejection = self
-                .last_road_rejection
-                .take()
-                .unwrap_or_else(|| RoadRejection::new("unknown", self.last_road_timing.clone()));
-            rejection.report(
-                RejectedBy::Commit,
-                RoadAttempt {
-                    points: &submitted_points,
-                    fwd_lanes,
-                    bkw_lanes,
-                    snap: snap_to_existing_roads,
-                    tunnel,
-                    median,
-                    parking,
-                    attributes,
-                },
-                self.road_tool_surface_generation,
-            );
-            rejection.reason
+            self.report_refused_stroke(submitted)
         };
         RoadCommitOutcome {
-            committed: road_add.committed,
+            committed,
             rejection_reason,
-            rejection: if road_add.committed {
+            rejection: if committed {
                 String::new()
             } else {
                 self.last_road_timing.clone()
             },
-            road_snapshot,
+            road_snapshot: tail.road_snapshot,
             add_internal_ms,
             finalize_ms,
             surface_ms,
-            mesh_ms,
-            snapshot_ms,
+            mesh_ms: tail.mesh_ms,
+            snapshot_ms: tail.snapshot_ms,
             generation: self.road_tool_surface_generation,
             pocket_refusals,
+        }
+    }
+
+    // Reports the refusal `last_road_rejection` holds for `submitted` on `events` and returns
+    // its reason key.
+    pub(super) fn report_refused_stroke(&mut self, submitted: &SubmittedStroke) -> String {
+        let rejection = self
+            .last_road_rejection
+            .take()
+            .unwrap_or_else(|| RoadRejection::new("unknown", self.last_road_timing.clone()));
+        rejection.report(
+            RejectedBy::Commit,
+            submitted.attempt(),
+            self.road_tool_surface_generation,
+        );
+        rejection.reason
+    }
+}
+
+/// Where a stroke's core takes its plan and pieces from.
+pub(super) enum StrokePlan {
+    /// The road tool's preview of the stroke, used when its fingerprint is current; else (or
+    /// `None`) the core plans here.
+    Preview(Option<Arc<RoadPreview>>),
+    /// The batch's dry run of the stroke (`ROAD-112` round F), used while the batch's chain
+    /// holds ([`super::road_batch::DryRunStroke::rebased`]).
+    Batch(Box<super::road_batch::DryRunStroke>),
+}
+
+// The plan a core reuses, and the pieces it installs.
+enum PlanSource {
+    Preview(Arc<RoadPreview>),
+    Owned(Box<RoadEditPlan>),
+}
+
+enum PiecesSource {
+    Preview(Arc<RoadPreview>),
+    Delta(RoadbedDelta),
+}
+
+/// What one stroke's core leaves to the command's tail.
+pub(super) struct StrokeCore {
+    /// Whether the stroke was accepted.
+    pub(super) committed: bool,
+    /// Refused optional pockets of an accepted stroke.
+    pub(super) pocket_refusals: Vec<StrokePocketRefusal>,
+    /// The lot regions the stroke queued and its dirty edges, for the tail's deferred plan.
+    pub(super) deferred_lots: Option<(Vec<CellBounds>, HashSet<usize>)>,
+    /// The undo record's kept graded tiles' job, which the tail starts.
+    pub(super) kept_tiles: Option<JobStart>,
+    /// The stroke's stage times.
+    pub(super) metrics: RoadEditMetrics,
+}
+
+/// What the tail published, and its times.
+pub(super) struct CommitTail {
+    /// Road-tool context publication for the committed generation.
+    pub(super) road_snapshot: Option<RoadToolPublication>,
+    pub(super) mesh_ms: f64,
+    pub(super) snapshot_ms: f64,
+}
+
+/// A stroke as submitted, for the refusal report.
+pub(super) struct SubmittedStroke {
+    points: Vec<Vector3>,
+    fwd_lanes: i32,
+    bkw_lanes: i32,
+    snap: bool,
+    profile: RoadProfile,
+    median: Option<crate::simulation::network::graph::RoadMedian>,
+    parking: crate::simulation::network::graph::RoadParking,
+    attributes: crate::simulation::network::road_types::RoadAttributes,
+}
+
+impl SubmittedStroke {
+    /// The stroke exactly as `request` submits it.
+    pub(super) fn of(request: &RoadCommitRequest) -> Self {
+        Self {
+            points: request.points.clone(),
+            fwd_lanes: request.fwd_lanes,
+            bkw_lanes: request.bkw_lanes,
+            snap: request.snap_to_existing_roads,
+            profile: request.profile,
+            median: request.median,
+            parking: request.parking,
+            attributes: request.attributes,
+        }
+    }
+
+    fn attempt(&self) -> RoadAttempt<'_> {
+        RoadAttempt {
+            points: &self.points,
+            fwd_lanes: self.fwd_lanes,
+            bkw_lanes: self.bkw_lanes,
+            snap: self.snap,
+            profile: self.profile,
+            median: self.median,
+            parking: self.parking,
+            attributes: self.attributes,
         }
     }
 }
@@ -546,7 +745,7 @@ mod tests {
                 fwd_lanes: 2,
                 bkw_lanes: 1,
                 snap_to_existing_roads: false,
-                tunnel: false,
+                profile: RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

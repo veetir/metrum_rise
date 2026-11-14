@@ -59,8 +59,8 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
-        /// The road tool's tunnel intent at submission (`ROAD-61`).
-        tunnel: bool,
+        /// The stroke's profile at submission (`ROAD-112` round H; the tunnel intent of `ROAD-61`).
+        profile: crate::simulation::network::road_edit::RoadProfile,
         /// The road tool's median at submission (`ROAD-80`).
         median: Option<crate::simulation::network::graph::RoadMedian>,
         /// The road tool's kerbside parking at submission (`PARK-05`).
@@ -75,6 +75,15 @@ pub(crate) enum SimCommand {
         completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
         /// The road tool's synchronous preview of this stroke (`ROAD-68-E`).
         preview: Option<Arc<RoadPreview>>,
+    },
+    /// Place several road strokes as one transaction and one undo step (`ROAD-112` round F).
+    AddRoadBatch {
+        /// The strokes in commit order.
+        request: super::road_batch::RoadBatchRequest,
+        /// Dispatch timestamp for queue latency, independent of core mutex contention.
+        enqueued_at: Instant,
+        /// Single nonblocking acknowledgment after acceptance/refusal and query publication.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -269,7 +278,7 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel,
+                    profile,
                     median,
                     parking,
                     attributes,
@@ -311,7 +320,7 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
-                                tunnel,
+                                profile,
                                 median,
                                 parking,
                                 attributes,
@@ -344,6 +353,61 @@ pub(crate) fn run_sim_thread(
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
                         generation: outcome.generation,
+                        refused_stroke: None,
+                        pocket_refusals: outcome.pocket_refusals,
+                    });
+                }
+                Ok(SimCommand::AddRoadBatch {
+                    request,
+                    enqueued_at,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    add_road_commands += 1;
+                    let road_total = Instant::now();
+                    let mut edit_metrics =
+                        crate::nodes::sim::benchmark::road_edit::RoadEditMetrics {
+                            queue_wait_ms: enqueued_at.elapsed().as_secs_f64() * 1000.0,
+                            ..Default::default()
+                        };
+                    let points: Vec<_> = request
+                        .strokes
+                        .iter()
+                        .flat_map(|stroke| stroke.points.iter().copied())
+                        .collect();
+                    let lock_wait_start = Instant::now();
+                    let batch = {
+                        let mut c = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
+                        edit_metrics.lock_wait_ms =
+                            lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+                        let first = request.strokes.first();
+                        record_crash_command_for_core(
+                            &c,
+                            CrashCommand::AddRoad {
+                                point_count: points.len(),
+                                fwd_lanes: first.map_or(0, |stroke| stroke.fwd_lanes),
+                                bkw_lanes: first.map_or(0, |stroke| stroke.bkw_lanes),
+                                snap_to_existing_roads: first
+                                    .is_some_and(|stroke| stroke.snap_to_existing_roads),
+                                geometry: crate::debug::CrashRoadGeometry::from_points(&points),
+                            },
+                        );
+                        let batch = c.commit_road_batch(request, road_total, edit_metrics);
+                        lots_completion = c.cell_lot_completion();
+                        batch
+                    };
+                    let outcome = batch.outcome;
+                    if let Some(query_snapshot) = outcome.road_snapshot {
+                        road_tool.publish(query_snapshot);
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed: outcome.committed,
+                        reason: outcome.rejection_reason,
+                        detail: outcome.rejection,
+                        generation: outcome.generation,
+                        refused_stroke: batch.refused_stroke,
                         pocket_refusals: outcome.pocket_refusals,
                     });
                 }
@@ -490,10 +554,7 @@ pub(crate) fn run_sim_thread(
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.
         let snapshot_write_start = Instant::now();
-        let previous_snapshot = {
-            let mut current = snapshot.write().expect("render snapshot lock poisoned");
-            std::mem::replace(&mut *current, new_snapshot)
-        };
+        let previous_snapshot = new_snapshot.install(&snapshot);
         recycled_snapshot = Some(previous_snapshot);
         let snapshot_write_ms = snapshot_write_start.elapsed().as_secs_f64() * 1000.0;
         let active_ms = frame_start.elapsed().as_secs_f64() * 1000.0;

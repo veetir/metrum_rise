@@ -26,10 +26,9 @@
 //! - **Requests**: a queue, missing patches before drawn ones and nearest first as of the last
 //!   evaluation, taken up to the upload budget a frame.
 //!
-//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch) while no stand-in
-//! waits, else `O(stand-ins x subdivision²)` (every frame puts away the stand-ins whose area is
-//! built: a key copy and sort, then `area_built` each; stand-ins last while the wanted patches
-//! over them are not installed, which a refused request or a full pool does not bound); a crossing
+//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch), stand-ins waiting
+//! or not: they are checked only after an evaluation or an install, the only changes that can
+//! build their area (`O(stand-ins x subdivision²)` then); a crossing
 //! `O(ring boundary blocks + changes + queue log queue)`; a moving frame `O(patches due + buckets
 //! passed)`; an edit `O(patches of the edited blocks)`; a request `O(1)`. Nothing allocates once
 //! the storage has grown.
@@ -72,6 +71,9 @@ pub(crate) trait PatchJobs {
     /// Starts `order` with `settings`' draw distances; its serial, or `None` while the jobs are
     /// full (ask again next frame).
     fn request(&mut self, order: &PatchOrder, settings: &ResidencySettings) -> Option<u64>;
+    /// A request adopted the prepare `serial` of `key` (`RENDER-32-N`): it leaves the prepare
+    /// lane and runs as a request would (AUDIT-stream-2 finding 3).
+    fn promote(&mut self, key: PatchKey, serial: u64);
     /// Makes the live request of `key` stale.
     fn cancel(&mut self, key: PatchKey);
     /// Makes every live request stale.
@@ -150,8 +152,6 @@ pub(crate) struct ResidencyWork {
     pub(crate) requests: usize,
     /// Installs taken.
     pub(crate) installs: usize,
-    /// Products that came back busy.
-    pub(crate) busy: usize,
     /// Stand-ins put away.
     pub(crate) released: usize,
 }
@@ -192,8 +192,9 @@ pub(crate) struct VegetationResidency {
     scratch: Vec<PatchKey>,
     entering: Vec<PatchKey>,
     leaving: Vec<PatchKey>,
-    // Wanted patches retired out of the drawn set (tests), restored as the next evaluation finds
-    // them, as the script's pass over every wanted key did.
+    // Wanted patches retired out of the drawn set (tests of the restore path), restored as the
+    // next evaluation finds them, as the script's pass over every wanted key did.
+    #[cfg(test)]
     retired: Vec<PatchKey>,
     tree_count: i64,
     generated: u64,
@@ -240,6 +241,7 @@ impl Default for VegetationResidency {
             scratch: Vec::new(),
             entering: Vec::new(),
             leaving: Vec::new(),
+            #[cfg(test)]
             retired: Vec::new(),
             tree_count: 0,
             generated: 0,
@@ -279,6 +281,7 @@ impl VegetationResidency {
         self.queue.clear();
         self.queued.clear();
         self.requested.clear();
+        #[cfg(test)]
         self.retired.clear();
         self.vegetation.clear();
         self.epoch = -1;
@@ -427,13 +430,15 @@ impl VegetationResidency {
         Some(settings.bands(distance, span, previous))
     }
 
-    /// Queues `key` for a request check (probes: an obsolete band request must not rebuild).
+    /// Queues `key` for a request check (tests: an obsolete band request must not rebuild).
+    #[cfg(test)]
     pub(crate) fn queue(&mut self, key: PatchKey) {
         self.queue_patch(key);
     }
 
     /// Takes a drawn patch out of the drawn set as if it had left it (hidden into the cache, or
     /// freed out of range; `_retire_patch`), for tests of the restore path.
+    #[cfg(test)]
     pub(crate) fn retire(
         &mut self,
         key: PatchKey,
@@ -474,7 +479,8 @@ impl VegetationResidency {
         let cell = camera_cell(camera, span);
         let moved = self.last_eye.map_or(0.0, |last| travel(last, eye));
         self.last_eye = Some(eye);
-        if !self.evaluated || self.revised || self.last_cell != Some(cell) {
+        let evaluate = !self.evaluated || self.revised || self.last_cell != Some(cell);
+        if evaluate {
             self.evaluate(&settings, camera, layer, backend, jobs);
             self.last_cell = Some(cell);
         }
@@ -485,14 +491,16 @@ impl VegetationResidency {
             self.check_stale_owners(&settings);
         }
         self.request(&settings, camera, layer, jobs);
-        if !self.standins.is_empty() {
+        // Whether a stand-in's area is built changes only with the wanted set and the drawn
+        // patches: the evaluation here and the installs (`take_installs`, which checks after
+        // them), so a frame without either has nothing to put away (AUDIT-stream finding 14).
+        if evaluate && !self.standins.is_empty() {
             self.release_standins(&settings, camera, layer, backend);
         }
     }
 
     /// Takes the install layer's events after an install pass: an installed patch becomes drawn
-    /// with its request's record (queued again if the camera or an edit moved since); a busy one
-    /// is queued again; then the stand-ins whose area is now built are put away, in the same
+    /// with its request's record (queued again if the camera or an edit moved since); then the stand-ins whose area is now built are put away, in the same
     /// pass, so a tier change draws one tier in every frame.
     pub(crate) fn take_installs(
         &mut self,
@@ -501,6 +509,9 @@ impl VegetationResidency {
     ) {
         let Some(settings) = self.settings else {
             layer.clear_events();
+            // No record to keep them with: the installed products are spent (AUDIT-stream-2
+            // finding 12: they stayed in the layer until its reset).
+            self.retain_installed(&[], layer);
             return;
         };
         let mut installs = 0;
@@ -523,11 +534,6 @@ impl VegetationResidency {
                 continue;
             };
             self.requested.remove(&key);
-            if event[4] < 0 {
-                self.work.busy += 1;
-                self.queue_patch(key);
-                continue;
-            }
             if let Some(old) = self.patches.get(&key) {
                 self.tree_count -= old.tree_count;
             }
@@ -794,11 +800,13 @@ impl VegetationResidency {
             self.queue.retain(|key| queued.contains(key));
         }
         for &key in &leaving {
-            if self.requested.remove(&key).is_some() {
+            if self.requested.contains_key(&key) {
                 jobs.cancel(key);
-                layer.forget(key);
+                self.forget_pending(key, layer);
+                self.requested.remove(&key);
             }
         }
+        #[cfg(test)]
         entering.extend(
             self.retired
                 .drain(..)
@@ -942,8 +950,8 @@ impl VegetationResidency {
             {
                 continue;
             }
-            // A product of an older request still waiting for its install is dropped first.
-            layer.forget(key);
+            // A product of an older request still waiting for its install is held again first.
+            self.forget_pending(key, layer);
             // A product prepared ahead for these generations and bands is taken instead of a
             // job (`RENDER-32-N`): it needs no job, so it takes none of the frame's requests.
             if let Some(serial) = self.take_ahead(key, surface, vegetation, bands, layer, jobs) {

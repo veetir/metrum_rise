@@ -338,33 +338,37 @@ impl SimCore {
                 PackedColorArray::from_iter(mesh_data.median_grass_colors.iter().copied()),
             );
         }
-        // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
-        dict.set(
-            "street_lights",
-            PackedFloat32Array::from_iter(mesh_data.street_lights.iter().flat_map(|light| {
-                [
-                    light.position.x,
-                    light.position.y,
-                    light.position.z,
-                    light.yaw,
-                    f32::from(light.kind as u8),
-                ]
-            })),
-        );
-        // Same five-float pose contract as street lights, with RoadSignKind indices.
-        dict.set(
-            "road_signs",
-            PackedFloat32Array::from_iter(mesh_data.road_signs.iter().flat_map(|sign| {
-                [
-                    sign.position.x,
-                    sign.position.y,
-                    sign.position.z,
-                    sign.yaw,
-                    f32::from(sign.kind as u8),
-                ]
-            })),
-        );
+        dict.set("street_lights", Self::road_mesh_lights(mesh_data));
+        dict.set("road_signs", Self::road_mesh_signs(mesh_data));
         dict
+    }
+
+    /// A chunk's street lights in its payload's `street_lights` form: five floats per light,
+    /// chunk-local pole base x, y, z, yaw and model kind.
+    pub(crate) fn road_mesh_lights(mesh_data: &NetworkMeshData) -> PackedFloat32Array {
+        PackedFloat32Array::from_iter(mesh_data.street_lights.iter().flat_map(|light| {
+            [
+                light.position.x,
+                light.position.y,
+                light.position.z,
+                light.yaw,
+                f32::from(light.kind as u8),
+            ]
+        }))
+    }
+
+    /// A chunk's road signs in its payload's `road_signs` form: the street lights' five-float
+    /// pose contract, with `RoadSignKind` indices.
+    pub(crate) fn road_mesh_signs(mesh_data: &NetworkMeshData) -> PackedFloat32Array {
+        PackedFloat32Array::from_iter(mesh_data.road_signs.iter().flat_map(|sign| {
+            [
+                sign.position.x,
+                sign.position.y,
+                sign.position.z,
+                sign.yaw,
+                f32::from(sign.kind as u8),
+            ]
+        }))
     }
 
     /// Returns road-surface debug line data for editor visualization. `ROAD-68-A` has no pieces,

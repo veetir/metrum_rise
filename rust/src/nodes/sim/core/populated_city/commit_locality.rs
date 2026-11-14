@@ -51,8 +51,8 @@ use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::zoning::ZoneType;
 
 // The world every tier shares, and the neighbourhood: the zoned grid around the origin.
-const WORLD_M: f32 = 12_288.0;
-const NEIGHBOURHOOD_SIDE_M: f32 = 800.0;
+pub(super) const WORLD_M: f32 = 12_288.0;
+pub(super) const NEIGHBOURHOOD_SIDE_M: f32 = 800.0;
 // Everything west of this x is the neighbourhood (the grid, its trunk and the branches).
 const LOCAL_MAX_X: f32 = 700.0;
 // Background streets are 480 m blocks running east-west, nine to a row from x = 800 m with 24 m
@@ -131,7 +131,7 @@ fn benchmark_commit_locality() {
 // Streets and one-site-per-cell lots east of the neighbourhood: `count` sites, parcels and
 // housed agents and one street per `SITES_PER_STREET` of them, with the indices and the road and
 // terrain state a loaded city has before its first commit.
-fn add_background(core: &mut SimCore, count: usize) {
+pub(super) fn add_background(core: &mut SimCore, count: usize) {
     let template = core
         .allocator
         .buildings
@@ -280,7 +280,7 @@ fn profile_demolitions(core: &mut SimCore, background: usize) -> serde_json::Val
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -849,7 +849,7 @@ fn benchmark_parking_locality() {
                     bkw_lanes: 1,
                     snap_to_existing_roads: true,
                     preview: None,
-                    tunnel: false,
+                    profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                     median: None,
                     parking: crate::simulation::network::graph::RoadParking::NONE,
                     attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -1045,7 +1045,7 @@ fn benchmark_preview_locality() {
                     fwd_lanes: 1,
                     bkw_lanes: 1,
                     snap_to_existing_roads: true,
-                    tunnel: false,
+                    profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                     median: None,
                     parking: crate::simulation::network::graph::RoadParking::NONE,
                     attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

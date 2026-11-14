@@ -48,7 +48,9 @@
 ## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
 ## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`), and the road
 ## chunks drawn (per chunk its key, place and every surface's arrays) in `road_digests` and the
-## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`). Settled
+## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`), and the
+## vegetation patches drawn (per visible installed patch its key, bands, detail and every batch's
+## identity and rows) in `vegetation_digests` (AUDIT-stream-2 finding 7). Settled
 ## also waits for a load's road chunks to stream in (`RENDER-32-P`; a control draws them at once).
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
@@ -213,6 +215,7 @@ func run(bench: Node) -> void:
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
 		"building_digests": [], "patch_digests": [], "road_digests": [], "parked_digests": [],
+		"vegetation_digests": [],
 		"water_pose": [], "shadows": shadows, "drawn_probe": {},
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
@@ -525,6 +528,7 @@ func _record_digest(label: String) -> void:
 	_record_patch_digest()
 	_record_road_digest()
 	_record_parked_digest()
+	_record_vegetation_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -669,10 +673,16 @@ func _record_patch_digest() -> void:
 			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
 	_report.patch_digests.append(entry)
 
+# The road chunks by key: the chunk renderer's (`RENDER-52`), or a control's road tool's index.
+func _road_chunks() -> Variant:
+	var renderer: Variant = _road_tool.get("chunks")
+	return renderer.chunks if renderer != null else _road_tool.get("_road_chunk_instances")
+
 # The road chunks drawn at a settle point (`RENDER-32-P`): per chunk its key, place, surface
-# layout and every surface's arrays, from the road tool's own index on either side.
+# layout and every surface as the RenderingServer holds it (`RENDER-52` part 2: a hydrated
+# chunk's surfaces are only there), from the chunks' own index on either side.
 func _record_road_digest() -> void:
-	var chunks: Variant = _road_tool.get("_road_chunk_instances")
+	var chunks: Variant = _road_chunks()
 	if chunks == null:
 		return
 	var lines := PackedStringArray()
@@ -682,8 +692,9 @@ func _record_road_digest() -> void:
 			continue
 		var mesh: ArrayMesh = node.mesh
 		var surfaces := PackedStringArray()
-		for surface in mesh.get_surface_count():
-			surfaces.append(_sha(var_to_bytes(mesh.surface_get_arrays(surface))))
+		var rid := mesh.get_rid()
+		for surface in RenderingServer.mesh_get_surface_count(rid):
+			surfaces.append(_sha(var_to_bytes(RenderingServer.mesh_get_surface(rid, surface))))
 		lines.append("%d,%d|%s|%s|%s|%d" % [key.x, key.y, node.position, mesh.get_meta("road_layer_surfaces", []),
 			",".join(surfaces), node.get_child_count()])
 	lines.sort()
@@ -713,6 +724,39 @@ func _record_parked_digest() -> void:
 	_report.parked_digests.append({"point": _settle_points,
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"batches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines})
+
+# The vegetation patches drawn at a settle point (AUDIT-stream-2 finding 7): per visible installed
+# patch its key, its record's bands, its detail and shadow state, and per batch its identity, count,
+# main instance's material and shadow, and the digest of its first `count` rows read back. Hidden
+# patches (cached ones) are left out: which are kept hidden depends on the path, not the view.
+func _record_vegetation_digest() -> void:
+	var stream: Node = _vegetation.get("stream")
+	if stream == null:
+		return
+	var lines := PackedStringArray()
+	var records: Dictionary = stream.get_vegetation_records()
+	for key: Vector3i in records:
+		var patch: Dictionary = stream.get_vegetation_patch(key)
+		if patch.is_empty() or not bool(patch.visible):
+			continue
+		var record: Dictionary = records[key]
+		var batches := PackedStringArray()
+		for batch: Dictionary in patch.batches:
+			var count := int(batch.count)
+			# The slot's row layout: 12 transform floats, then colour and custom data when used.
+			var stride := 12 + (4 if bool(batch.colors) else 0) + (4 if bool(batch.custom) else 0)
+			var rows := RenderingServer.multimesh_get_buffer(batch.multimesh).slice(0, count * stride)
+			var main: Dictionary = batch.get("main", {})
+			batches.append("%d,%d,%d,%d,%d,%d,%d|%s" % [int(batch.species), int(batch.lod), int(batch.variant),
+				int(batch.mesh), count, int(main.get("material", -2)), int(main.get("shadow", -1)),
+				_sha(rows.to_byte_array())])
+		lines.append("%d,%d,%d|%d%d%d|%d,%d,%d|%s" % [key.x, key.y, key.z, int(bool(record.understory)),
+			int(bool(record.near_band)), int(record.shadow_caster), int(patch.detail), int(bool(patch.branched)),
+			int(bool(patch.has_caster)), ";".join(batches)])
+	lines.sort()
+	_report.vegetation_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"patches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines})
 
 # The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
 # (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.
@@ -753,7 +797,8 @@ func _building_line(chunk: Vector2i, part: int, lod: int, deserted: bool, scheme
 
 # The street lights' two textures as uploaded, read back (night only: by day neither is built).
 func _record_lamp_digest() -> void:
-	var lights: Variant = _road_tool.get("_street_lights")
+	var renderer: Variant = _road_tool.get("chunks")
+	var lights: Variant = renderer.street_lights if renderer != null else _road_tool.get("_street_lights")
 	if lights == null:
 		return
 	var cells: Variant = lights.get("_cell_texture")
@@ -1052,7 +1097,7 @@ func _streams() -> Dictionary:
 		"vegetation": _vegetation_counters(),
 		"buildings": {"lod_parts": lods.evaluated_parts, "lod_chunks": lods.queried_chunks,
 			"upload_bytes": lods.uploaded_bytes},
-		"roads": {"chunks": _road_tool._road_chunk_instances.size()},
+		"roads": {"chunks": (_road_chunks() as Dictionary).size()},
 		"grass": {"mask_renders": _grass.mask_renders, "mask_syncs": _grass.mask_mirror_syncs},
 	}
 

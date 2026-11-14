@@ -8,6 +8,7 @@ use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
 use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
 use crate::nodes::sim::render::stream::backend::{GodotBackend, slot_census};
 use crate::nodes::sim::render::stream::probe;
+use crate::nodes::sim::render::stream::schedule::{Owner, with_ledger};
 use crate::nodes::sim::render::stream::layers::buildings::{
     Applied, BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
 };
@@ -111,6 +112,7 @@ impl SimulationNode {
                 backend,
                 layer: BuildingLayer::new(SLOT_LIMIT, SPARE_LIMIT),
                 applied: Applied::default(),
+                waited: 0,
             });
         }
     }
@@ -264,11 +266,15 @@ impl SimulationNode {
         let update_us = update_start.elapsed().as_secs_f64() * 1e6;
         drop(core);
         result.set("busy", false);
-        // Microseconds: the frame before the tier update (lock, site queries, bounds), the update.
-        result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
-        result.set("update_us", update_us);
-        result.set("placing_us", self.building_lods.placing_us);
-        result.set("evaluating_us", self.building_lods.evaluating_us);
+        // Microseconds: the frame before the tier update (lock, site queries, bounds), the update;
+        // only while the perf channel is on (each key a Godot string: AUDIT-stream finding 10).
+        let perf = crate::debug::Channel::Perf.enabled();
+        if perf {
+            result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
+            result.set("update_us", update_us);
+            result.set("placing_us", self.building_lods.placing_us);
+            result.set("evaluating_us", self.building_lods.evaluating_us);
+        }
         result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
         let waiting = self
@@ -288,7 +294,9 @@ impl SimulationNode {
         if missing.is_empty() {
             let publish_start = std::time::Instant::now();
             result.set("uploaded_bytes", self.publish_building_lods());
-            result.set("publish_us", publish_start.elapsed().as_secs_f64() * 1e6);
+            if perf {
+                result.set("publish_us", publish_start.elapsed().as_secs_f64() * 1e6);
+            }
         } else {
             result.set("missing", missing);
         }
@@ -308,13 +316,28 @@ impl SimulationNode {
         if !draw.layer.missing(lods.changes()).is_empty() {
             return -1;
         }
+        let start = std::time::Instant::now();
         let applied = draw
             .layer
             .apply(&mut draw.backend, &lods.removed, lods.changes());
         draw.applied = applied;
-        // A frame the pool could not take whole keeps its changes for the next offer.
-        if !draw.layer.waiting() {
-            lods.acknowledge();
+        // Charged to the frame's install ledger (`RENDER-32-Q`): a frame's publication is one
+        // atomic unit (`RENDER-42`), so it is accounted, not split.
+        let us = start.elapsed().as_secs_f64() * 1e6;
+        let frame = godot::classes::Engine::singleton().get_process_frames();
+        with_ledger(frame, |ledger| ledger.charge(Owner::BuildingPublication, us, us));
+        // A chunk the pool could not take keeps its changes for the next offer; the removals
+        // and every drawn chunk are done.
+        let layer = &draw.layer;
+        lods.acknowledge_except(|chunk| layer.waits(chunk));
+        draw.waited = if layer.waiting() { draw.waited + 1 } else { 0 };
+        if draw.waited == WAIT_NOTICE_FRAMES {
+            crate::debug_log!(
+                "buildings",
+                "building LOD: {} slots short for {} frames; chunks wait undrawn (RENDER-42)",
+                applied.blocked,
+                WAIT_NOTICE_FRAMES
+            );
         }
         applied.bytes as i64
     }
@@ -341,7 +364,7 @@ impl SimulationNode {
 
     /// The stream benchmark's drawn probe (`RENDER-32-N`): every chunk of the building LOD's
     /// current query with live batches, as `stream::probe` records; drawn when each live batch
-    /// is, covered when some is (a frame waiting whole keeps the chunk's last batches). Benchmark
+    /// is, covered when some is (a chunk waiting for slots keeps its last batches). Benchmark
     /// only, `O(resident batches)`.
     #[func]
     pub fn probe_building_chunks(&self) -> PackedFloat32Array {
@@ -402,7 +425,12 @@ pub(crate) struct BuildingDraw {
     backend: GodotBackend,
     layer: BuildingLayer,
     applied: Applied,
+    // Consecutive published frames with chunks waiting for slots.
+    waited: u32,
 }
+
+// Published frames a chunk may wait for slots before the debug channel says so, once per wait.
+const WAIT_NOTICE_FRAMES: u32 = 60;
 
 impl SimulationNode {
     // The groups of the waiting frame without a look, four lanes each.
@@ -426,13 +454,19 @@ impl SimulationNode {
         out
     }
 
-    // A new catalogue or the node leaving the tree: every slot and look goes.
+    // A new catalogue or the node leaving the tree: every slot and look goes, and the LOD state
+    // forgets what it drew, so a later frame publishes every batch again (AUDIT-stream-2
+    // finding 10: a node entering a tree again drew nothing until each batch changed).
     pub(super) fn reset_building_draw(&mut self) {
         if let Some(draw) = self.building_draw.as_mut() {
             draw.layer.reset(&mut draw.backend);
             draw.backend
                 .set_catalogue(Vec::new(), Vec::new(), reflection_parameters());
+            draw.waited = 0;
         }
+        self.building_lods.invalidate_world();
+        // No slot is left for the removals to return.
+        self.building_lods.removed.clear();
     }
 }
 

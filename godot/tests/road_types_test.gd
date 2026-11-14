@@ -68,7 +68,7 @@ func _await_generation(generation: int) -> bool:
 func _draw(z: float) -> int:
 	var points := PackedVector3Array([_ground(-100.0, z), _ground(100.0, z)])
 	var generation: int = _simulation.get_network_render_generation()
-	_tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	_tool._begin_stroke(points[0])
 	_tool.set_scripted_pointer(true, points[-1])
 	_tool._process(1.0 / 60.0)
 	_expect(bool(_tool._preview.get("is_valid", false)), "the stroke at z %.0f previews: %s" % [z, _tool._preview.get("invalid_reason", "")])
@@ -210,7 +210,7 @@ func _run() -> void:
 		"the custom type picks the Road tool and the drop-down shows it")
 	for other in builtin_ids:
 		_expect(not menu.button_for(other).button_pressed, "a custom type unmarks %s" % other)
-	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-114` polish).
+	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-118` polish).
 	var card_builder = menu.custom_menu.get_meta(&"hud_tooltip_card", null)
 	_expect(card_builder is Callable, "the custom tile carries the road type card")
 	if card_builder is Callable:

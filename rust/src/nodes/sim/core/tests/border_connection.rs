@@ -17,7 +17,7 @@ fn commit(core: &mut SimCore, start: (f32, f32), end: (f32, f32)) {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: Default::default(),
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

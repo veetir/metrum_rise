@@ -4598,7 +4598,10 @@ km.
     pieces (a junction) still shows the background where the published tiles cut the replaced
     pieces until its selection displays, and a fast click's newly graded tile waits for its
     patch's list beside an installed one: both carried to [T65](#terrain-07-open-questions)
-    (the user, 2026-10-29), not accepted.
+    (the user, 2026-10-29), not accepted. The fast click's: fixed in `RENDER-32-K` part 5
+    (`TERRAIN-23`). The junction's: since `ROAD-112` round G2 (T65 option (c)) the published tiles
+    meeting the replaced pieces draw their cut ground behind every drawn surface while they show
+    under the pose ([record](#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14)).
   - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
     `ceil((|W| - 1) / 2)` catch-up frames, bitwise its fresh bake and the commit's tiles.
   - *The commit.* The click offers the tiles the preview shows at that moment (the latest
@@ -11735,6 +11738,12 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       fast click's crack belong here, not accepted. Since 2026-11-11 option (3) is built as the
       streaming core's edit batches in `RENDER-32-K` (G2c,
       [streaming core](#streaming-core-render-32)).
+    - **Option (c), chosen by the user (2026-11-12), built in `ROAD-112` round G2 (2026-11-14, for
+      review):** the spike found the last junction frames are steps, not uncovered cut (the pose's
+      junction lies up to 0.22 m lower or 2.84 m higher than the published cut's edge); while a pose
+      replaces published pieces, the published tiles meeting them draw their cut ground behind every
+      drawn surface (the backstop), so it shows only where the background showed;
+      [record](#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14).
     - **A third layer: the vegetation (`ROAD-68-H` round 7, 2026-10-29).** Round 6's clip of
       `kuopio_03` attempt 8 showed a pine and ground plants standing on the drawn road in the
       final tip's panel (the undo's frame; the converged commit's last frames), not in the
@@ -11888,7 +11897,11 @@ line goes; per-instance calls and object churn do.
   owns these objects and the engine neither frees them nor lets go of a freed mesh:
   `RENDER-39`, `RENDER-41`); `StreamStatus` per layer (wanted, prepared,
   installed, holes in view, holes in the near ring) for `TERRAIN-15`'s hand-over, `UI-08` and
-  every test's "settled" wait.
+  every test's "settled" wait. *Target, not built* (`RENDER-32-Q`, AUDIT-stream finding 16):
+  `LayerStatus` exists for the vegetation only, without those fields, and each layer still takes
+  its own camera (the stream node the viewport's, the graded book `terrain.gd`'s with its height
+  over the ground, the buildings the camera transform and projection, the street lights position
+  and forward); the hand-over and the settle waits read per-layer functions.
 - **The line.** Rust owns and calls `RenderingServer` directly for every instance layer it keeps
   the books for (vegetation, graded cells and walls, street lights, parked cars, building
   batches, agents). GDScript keeps what is a Godot resource or a scene object with other users
@@ -11900,15 +11913,26 @@ line goes; per-instance calls and object churn do.
   (`RENDER-32-N`, only if measured necessary) holds products along the camera's reach: the orbit
   circle, the zoom line through the eye and the pivot (in and out at the camera's zoom rate, part
   2) and a pan disc of 0.5 s at keyboard speed. The retained set
-  keeps today's hysteresis margins; a leaving chunk hides at once and frees under the budget.
+  keeps today's hysteresis margins; a leaving chunk hides at once and frees at once, its frees
+  measured and charged to the frame's install ledger (the `free` class, `RENDER-32-Q`), which
+  narrows what the frame's installs may spend; a spare limit absorbs most releases.
   Built for the vegetation in `RENDER-32-N` (2026-11-13: prepared and retained products under a
-  64 MB cap, held by patch and bands; the graded bands' prepared bakes not built).
-- **The scheduler.** One streaming budget a frame for all layers (2.0 ms, a setting) on a
-  monotonic clock; a unit starts only if its predicted cost (fixed constants, no adaptive
-  estimate) fits, the first unit of a frame always runs. Edits are atomic batches outside the
-  budget with `ROAD-68`'s 2.0 ms stage as their bar (T65 option (3), in `RENDER-32-K`). Order:
-  edit batch, hole in view, hole in the near ring, hole elsewhere, upgrade in view, upgrade
-  elsewhere, free; nearest first inside a class, ties by key.
+  cap counted as the storage they hold, 120 MiB since AX (96 on lengths from its fix round), held by
+  patch and bands; the graded bands' prepared bakes not built).
+- **The scheduler.** One install ledger a frame for every owner of main-thread install work
+  (2.0 ms, `RENDER-32-Q`; built as the plan's one budget, revised to what is built): the
+  terrain's dirty-patch stages and commit and the graded tiles (`terrain.gd`), the water's mesh
+  pipeline (`water.gd`), the building batches' publication and the sites (`buildings.gd`), then
+  the streaming node's patch units, vegetation installs, prepared-set walks and frees charge it in
+  the frame's process order, on a monotonic clock; a unit starts only if its predicted cost (fixed
+  constants, no adaptive estimate) fits what is left, each owner's first unit of a frame always
+  runs. Order across owners: holes before upgrades, by a reserve (1.0 ms) that the upgrade owners
+  ahead of the node (the dirty commit, the graded tiles, the patches' level changes) leave while
+  the node's last frame left holes waiting; inside an owner, its classes and nearest first, ties
+  by key. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
+  stage, T65 option (3)), the post-load window (5.2 ms, until the patches first settle, at most
+  30 s) and a load's road hydration (4.0 ms); the building publication and the sites are charged,
+  not split (each building chunk's changes atomic, `RENDER-42`; the sites' frame, `RENDER-30`).
 - **Main-thread rule.** No blocking core lock on a frame path: only `try_lock` snapshots and the
   published render snapshot.
 - **Invariants tested in Rust without Godot**, against the recording backend on scripted view
@@ -11943,7 +11967,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included. Round C1 (2026-11-13, branch `stream-c1`, for review): measured no-go (terrain, water, graded patches and buildings pass; the vegetation misses on both inputs, the 30k graded tiles as level upgrades); the vegetation's prepared and retained set built under a 64 MB cap; the bar not met: Kuopio's remaining waits are the install budget's (`-Q`), the 30k fine tier's are preparation (products prepared for other bands), the zoom-out ray and the graded GL0/GL1 bakes not built ([record](#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)). Round C2 (2026-11-13, branch `stream-c2`, for review): the fine tier's band variants (held by patch and bands), the reach's zoom line in and out at the camera's zoom rate, holes prepared first, prepares behind every request; the 30k city passes on every motion; Kuopio's turns wait for the install budget only (`-Q`); Kuopio's far zooms still miss, their preparation frames below the control's; after the review's fix round (prepares yield the core and pace with the simulation, the held cap 96 MiB from Kuopio's measured 79) the 30k 1x still is level ([record](#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)) |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Landed 2026-11-12 (coordinator, delegation, for review; the 100k 1x still p99 in the post-load graded frames carried to `-K` part 3, which timed it level with control, three runs a side; [record](#agent-draw-distances-render-32-o-2026-11-12)) |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms. Landed 2026-11-12 (branch `stream-r1`, coordinator under night delegation, for review): the road work at most 31.3 ms in any frame of the 100k load (control one 1,412 ms frame), all in the held load, the hand-over 1.5 s earlier; parked cars through the pools; zoning masks on a 2 km ring; `RENDER-42` fixed; digests and stills equal; the 30k zooms' `zoom_out` p50 (+0.1 ms) and `zoom_in` maximum flagged after the one rerun ([record](#road-hydration-at-a-load-parked-cars-and-zoning-masks-on-the-core-render-32-p-2026-11-12)) |
-| `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it |
+| `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it. Round Q (2026-11-13, branch `stream-q`, for review): over 2.0 ms measured, so one install ledger a frame for every owner, holes before upgrades by a reserve; paused, every 30k and Kuopio turn frame inside it and one 100k frame of 132 at 2.24 ms; with the simulation running the frames over are `RENDER-40`'s remainder (needs `CODE-26`) and `RENDER-30`'s sites; the graded totals decided with the sum; the track's acceptance re-measured: timed scripts and night against day met, a frame over 33.3 ms (Godot's draw, `RENDER-43`/`RENDER-46`) and the 1 s turn's CPU gap (`RENDER-46`, `CODE-26`, `RENDER-47`) not, carried by those rows ([record](#the-frames-install-ledger-and-the-tracks-close-out-render-32-q-2026-11-13)) |
 
 Track acceptance, on the stream benchmark at 30k, 1080p, paused, after `-A` to `-H` and `-L`:
 timed scripts at most 4 ms mean in every moving phase, no frame over 33.3 ms, the 1 s turn's p50
@@ -12056,8 +12080,9 @@ tools/stream_benchmark.py census "$ARTIFACTS/c30-census.census"
   only) applies the sun-shadow variants of `godot/scripts/benchmarks/shadow_variants.gd` (`full`,
   `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `medium`, `medium_blend`,
   `no_cloud_shadows`, `no_casters`, the caster classes `no_buildings`, `no_trees`, `no_cars`,
-  `no_walkers`, `no_parked`, `no_furniture`, the range `far<m>`, `agents_near`, and parts joined
-  by `+` (`RENDER-15` SH2); the idle matrix shares them as `no_shadows`,
+  `no_walkers`, `no_parked`, `no_furniture`, the range `far<m>`, `agents_all` (the agents cast from their whole
+  bucket nodes, as before R47's twins; SH2's `agents_near` prototype is the game's default now),
+  and parts joined by `+` (`RENDER-15` SH2); the idle matrix shares them as `no_shadows`,
   `no_blend_splits` and the same other names, and its stills take any of them). Rows record the
   shadow passes' draws, objects and primitives (`shadow_pass`) and `compare --gpu` the GPU p50
   delta beside them. One
@@ -13178,8 +13203,10 @@ hand-over, which touches no simulation path). Carried to `-J`: the cell set buil
 V2a. The streaming core gets its install side, and the vegetation is its first layer to draw
 through it: `vegetation.gd` creates no node per patch any more.
 
-**The backend** (`stream/backend.rs`). The only code of the core that calls `RenderingServer`,
-behind the `RenderBackend` trait: `MultiMesh` create, re-allocate, mesh, buffer, visible count and
+**The backend** (`stream/backend.rs`). The core's `RenderingServer` calls, behind the
+`RenderBackend` trait (one exception since `RENDER-32-K` part 1: the graded book's material sync
+reads and writes the terrain patches' material parameters directly, unrecorded; `RENDER-32-Q`
+corrected this sentence): `MultiMesh` create, re-allocate, mesh, buffer, visible count and
 custom bounds; instance create (main or reflection scenario), origin, visibility, shadow casting,
 visibility range (no fade, no margins), custom bounds, material override and a float instance
 parameter; free. Meshes, materials and parameter names are indices into what the layer registered
@@ -14834,6 +14861,134 @@ only with the perf channel on or on an edit batch's frame, as before): met. Grad
 than control: met. Rows level: level at p50 everywhere after the one rerun, the 30k `turn_out` 1 s and Kuopio's two 1 s maxima flagged and attributed to work this round does not touch (above; for review). One instrumented 100k load a side: taken. `PERF-07` at
 level F: level or better. Not relaxed.
 
+### T65 option (c): the backstop under a replaced road (`ROAD-112` round G2, 2026-11-14)
+
+The user chose [T65](#terrain-07-open-questions) option (c) on 2026-11-12: the graded terrain's
+road cut follows the road pieces drawn in the frame (preview or published), without holding the
+road. Built on branch `roadtools-g2` (`dev` `05915359`, rebased onto `2783c90a` once round D
+landed), spike first as the user ordered
+(2026-10-29), decided under the night delegation where a choice was open, for review.
+
+**The spike: what the junction frames are.** A Rust-only replay of `kuopio_03` attempt 8 (its
+case's earlier strokes committed, the stroke dragged and caught up as the probe drags it,
+`t65_cut_spike_kuopio`) and of the 30k commit city's three trunk branches
+(`benchmark_populated_graded_drags` with `METRUM_CUT_SPIKE`), sampled every 0.25 m over the
+replaced pieces: on every frame where a pose replaces published pieces (Kuopio's last pose and its
+three catch-up frames; the 30k branches from their second pose on) the drawn pose covers the
+published cut entirely in XZ (0 sampled points of the cut without a drawn road). The background
+shows through **steps**: the pose's rebuilt junction and span lie up to 0.22 m lower (Kuopio;
+0.12 m at 30k) or up to 2.84 m higher (Kuopio) than the published road at the published cut's edge
+(139 edge points on Kuopio's frames), and the published ground, graded to the published edge,
+leaves an opening at a grazing view. So a cut that follows the drawn road in XZ alone would not
+remove one frame; what removes them is ground where the drawn road leaves the published cut open.
+The published inside-rule ground at its own depth would stand above the drawn road at 80 sampled
+points on Kuopio's frames (up to 0.196 m) and 264-330 at 30k (up to 0.12 m), so it must not draw
+at its own depth.
+
+**The rule.** While a pose that replaces published pieces draws, every tile meeting a replaced
+piece's bounds (`graded_stage.rs` `replaced_cut_tiles`, `O(replaced pieces x their tiles)`) is a
+**backstop tile** of the pose's preview epoch (the preview dictionary's `graded_cut`). A backstop
+tile that draws its installed (published) tile draws its cells in the behind-the-road variant with
+the backstop bit (the fourth custom channel's bit 6), and there the cut ground is drawn instead of
+discarded, at the depth of its own ray's point a hundredth of the way short of the far plane: every
+surface drawn in front of it hides it, so it shows only where nothing is drawn, which is where the
+background showed. A preview tile (the pose's own bake) draws as itself. The epoch's backstop tiles
+go with its preview tiles: at a cancel, a refused commit, or in the frame its commit's edit batch
+installs (the committed tiles are cut for the committed road the released chunks draw); a frame
+of a released epoch (a refused stroke's preview shown again) sets none. A set holding a new
+backstop tile takes the variant in the pose's own frame. Not narrowed to the pose's selection: the
+renderer may hold a tile at another level than the selection's rule gives it, where its bake can
+change unselected.
+
+How the rule answers option (2)'s open problems: under a bridge deck nothing changes (only the
+grounded cut is in question, and the deck draws in front of the backstop); a hill in front of the
+road hides the backstop by depth (no screen-space cut); in the shadow pass the backstop lies at the
+far end of the light's range and shadows nothing; and nothing depends on draw order. The road is
+never held, and one road version draws: the pose's pieces in place of the replaced ones (the
+replay test checks every replaced owner draws its rebuilt piece). The vegetation (T65's third
+layer) is unchanged.
+
+**What changed.** `GradedPreview::cut_tiles` and the bridge's `graded_cut` (`preview.rs`); the
+book's `CutTiles` (`cells.rs`: `set_cut`, `release_cut`, `backstop_in`, the cell mesh and custom
+data), `preview_changes` taking the cut and its epoch, the batch and epoch releases dropping it;
+`terrain_graded_tiles.gd` passing it, the trace's `preview_cut` line (recorded before its frame's
+preview line, replayed with it); the behind variant's backstop (`terrain_surface.gdshaderinc`,
+`terrain_cells.gdshaderinc`: a flat varying only in that variant, so the plain graded shader is
+unchanged). The road drawing holds' rule (T61 (2), the chunk install's serial and the held
+commit preview's generation) is Rust's `RoadDrawHolds`
+(`simulation_node/network_api/road_holds.rs`); its GDScript call sites change after round E
+(`roads.md`, round G2).
+
+**Fresh results** (2026-11-14; control `dev` `05915359`'s release library and release lib test
+binary built in a side worktree, with its scripts; the branch's release library, `$ARTIFACTS` of
+the round).
+
+- Spike cost (the rule, per pose; a catch-up frame keeps the set and costs nothing): Kuopio 1.6-5.3
+  us (5 replaced pieces, 13 tiles), the 30k city up to 17.4 us (16 pieces, 38 tiles, the first pose
+  growing the scratch), against the pose's 3.0 ms terrain stage. No cost problem, so built.
+- Tests (Rust, no engine): the replay on the junction fixtures (T, Y, four-way, split trunk, flat
+  and on the slope; poses and catch-up frames): every point of a published cut the drawn road
+  leaves open lies in a backstop tile, and every replaced owner draws its rebuilt piece
+  (`a_pose_replacing_published_pieces_leaves_no_open_cut_outside_its_backstop`); Kuopio's
+  `kuopio_03` attempt 8 likewise (`t65_cut_spike_kuopio`, manual); the book's backstop: set in the
+  pose's frame with the variant, a preview tile drawing as itself, replaced by the next pose, kept
+  by a catch-up frame, released by a cancel and by its commit's edit batch, a released epoch's
+  frame setting none (`a_poses_backstop_tiles_draw_their_cut_until_their_epoch_is_released`); the
+  holds' rule (`road_holds`).
+- The drag probe (gamescope headless, swing 30 degrees with pauses, background pixels counted,
+  Kuopio's 39 strokes, same session): branch 0 of 6,138 frames show the background, PASS; control
+  17 of 6,146, all `kuopio_03` attempt 8, FAIL on them (`kuopio_03` alone earlier the same session:
+  control 18, branch 0). The fast commit installs in one batch frame on every stroke on both sides;
+  43 cell set variants made on both sides.
+  On the final library (two changes after the probe's, neither in a frame path: the holds' class
+  and a scoped borrow in the bridge) `kuopio_03` again: 0 on attempt 8, PASS.
+- Timing, level F (`./run.sh --timing --level F --base 05915359`, 10:11-10:30, release test
+  binaries, P-cores, eight workers): 30k 1x mean 2.261 / 2.257 ms, p99 3.85 / 3.83, p99.9 4.29 /
+  4.37, every metric level; the branch's acceptance PASS, the control's FAIL on its unpreempted
+  maximum (8.03 ms, 2,510 preempted frames); 30k 32x C B B C level on every metric (two rows
+  flagged noisy, tolerances doubled; the `PERF-17` known exception on all four); K22 30k
+  click-to-ack 7.16 / 6.72 ms. No simulation-thread code changed. (The timing session ran before
+  the user's reduction of the road tool rounds' timing reached the round.)
+- Preview rows (`ROAD-68-H`'s paused rows `sloped_t`, `sloped_branch`, `flat_cross`,
+  `sloped_cross`, `dense`, every one with poses that replace published pieces; gamescope headless,
+  1920x1080, four workers, 100 samples after 8 warm-ups, C B B C, 10:35-10:42, one pass by the
+  coordinator's decision, the desktop in use meanwhile): poses exact within 16.7 ms, control 51.8
+  and 51.2 % of the sampled poses, branch 52.1 and 48.1 % (1,823 of 3,540 against 1,664 of
+  3,320); the viewport's GPU p95 is 0.08-0.14 ms higher on the branch in every case and run (1.66-1.76
+  against 1.58-1.64 ms): the backstop tiles' cells draw in the behind variant, which writes depth
+  and so runs without the early depth test, on the frames a pose replaces published pieces.
+- Products (untimed, the same libraries): Kuopio's stills `close`, `mid`, `forest_low`
+  byte-identical (4,000 warm-up frames, one a side); settled installs by digest on the 30k city
+  (load, still and turns, one a side): graded 4 of 4, buildings 4 of 4, roads 4 of 4, parked 4 of 4,
+  vegetation 4 of 4, water 1 of 1 equal. The 30k city's stills were not taken (decided under the
+  delegation: no still frame has a preview, and the plain graded shader is unchanged; Kuopio's
+  byte identity covers the behind variant with the bit clear). The nine tracked traces hold no
+  preview frame, so they replay as before by construction (the gate replays them); a
+  `kuopio_03` drag-probe trace recorded with the branch after the rebase (330,756 lines, 217 preview
+  frames, 123 of them carrying a pose's backstop tiles) replays bit for bit through the branch's
+  renderer (`graded_replay`), and the rebased library's probe on `kuopio_03` shows the background
+  in 0 frames (PASS).
+- Gates on the rebased tree (`2783c90a` plus this round): clippy `--all-targets` warning set equal
+  to `2783c90a`'s (`asset_document.rs:15` only); debug `cargo test --lib` 2,659 passed, 0 failed,
+  228 ignored; `./run.sh --test` PASS (nextest 2,663 of 2,663, 229 skipped; both Godot chains, 0
+  `SCRIPT ERROR`, no Godot script skipped; the eight self-recorded zoning traces, the bridge trace
+  and the nine tracked goldens replay bit for bit); `cargo doc` before the rebase: no missing-docs
+  warning. The timing, the rows and the products above ran on the tree before the rebase (round D changed no
+  file of this round's; the probe and the trace were taken again after it).
+
+**Against the bars.** `kuopio_03` attempt 8's junction frames 16-18 to 0 and the probe passing
+otherwise: met. A pose replacing published pieces never shows two road versions or a hole for the
+drawn set, by test (the fixtures) and on Kuopio: met. The moving preview rows' target (the drawn
+pose the sampled one within 16.7 ms) not worse than control: not shown either way, for review: the branch's runs straddle the
+control's (52.1 and 48.1 % against 51.8 and 51.2 %), one above and one 3.1 points below its spread,
+in one noisy pass; what the branch measurably adds is 0.08-0.14 ms of GPU p95 on frames whose pose
+replaces published pieces (the backstop's behind variant, which loses the early depth test).
+Options if that cost matters: narrow the backstop tiles from the replaced pieces' bounds to the
+tiles their grounded top triangles meet (fewer tiles for long diagonal spans; the close-up rows'
+junction tiles stay), or accept it. Recommended: accept (it lasts only while such a pose shows and
+replaces visible background with ground). Replayed traces: met. Digests and Kuopio's stills: equal.
+Timing level F: level. Not relaxed.
+
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
 B1, with `RENDER-37` first. The building LOD's per-frame rule (a part's projected size in render
@@ -16200,6 +16355,259 @@ the base's recorded set); missing docs 0; debug `cargo test --lib` 2,535 passed,
 ignored; `./run.sh --test` PASS (nextest 2,539 passed, 225 skipped; godot-main and godot-vehicle PASS, no script skipped, 0 SCRIPT ERROR); the stream benchmark's tool tests (two new census cases)
 pass.
 
+### One body surface per car mesh; street lights left in their cells (`RENDER-46`, 2026-11-13)
+
+Round CS1, the owner's decision of 2026-11-13: lever 1 (one body surface per car mesh) built when
+the mesh is built, on whatever models the game loads, with no visible change; lever 5 (street
+lights in chunk batches) folded in under the same bar. Branch `stream-cs1` on `dev` `0fffb6a2`.
+The branch changes no Rust: its library is the control's (`dev` `0fffb6a2`, release, SHA-256
+`e9160f7c`), so every comparison below is the same library with `dev`'s scripts (control) and the
+branch's (branch). Godot 4.7.2 Forward+, RADV on the RX 7900 XTX, gamescope headless at 1920x1080,
+P-cores, eight workers, isolated profile; the 30k city, the 100k commit city, Kuopio.
+
+**Lever 1, built.** `vehicle_resources.gd` read every glTF primitive of a car (the body panels and
+the four wheels) into a surface of its own, all with the model's one atlas material, then added
+the two lamp surfaces (moving cars only). It now concatenates the primitives into one surface in
+node order, each primitive's indices offset by the vertices before it: the vertices, normals,
+UVs, triangles, winding and bounds are the primitives' own (`parking_test.gd` compares the merged
+body with its primitives as Godot stores them: arrays, index buffer and bounds equal, one body
+surface, a surface per material). A parked car's MultiMesh draws once instead of 5-6 times, a
+moving car's three times (body, glow, beam) instead of 7-8. R44's estimate (30k still 6,009 to
+about 4,100 main-pass draws) counted three surfaces for every car; parked cars carry no lamp
+surfaces, so they fall to one.
+
+**Lever 5, stopped (no build kept on the branch).** The street lights draw one MultiMesh per 64 m
+cell, kind and level of detail (R44 read the batching right: 604 drawn of 11,677 at the 30k still,
+a median 2 poles), and the cells are what keeps the look: each level's batch shows by Godot's
+visibility range measured from the centre of its own bounds, with 10 m margins as hysteresis.
+A chunk batch per kind and level, with the cells chosen outside the engine by the engine's own
+rule, was built and tested (`stream-cs1-lights` `1a4e730b`: `street_lights/poles.rs` keeps each
+cell's centre as the engine computes its batch bounds, bit for bit against Godot's AABB math in
+`street_lights_test.gd`, and applies the range rule with its hysteresis from the main camera just
+before each frame draws). Its night `saved` still differed from the control by 605 px (far lamp
+lenses near the 1.4 km band edge; `city` identical; the same 605 px in both branch runs, the
+control's two runs identical); the car change alone gave identical bytes on both night poses. The
+cause is in Godot: an instance with no visibility dependencies sits in bin 0 of
+`RendererSceneCull::_visibility_cull`, which that pass skips, and its range and hysteresis are
+checked only in the cull loop after the layer and frustum tests (`VIS_CHECK` after
+`IN_FRUSTUM`), for the main view and each shadow split. A cell's level inside the margins
+therefore depends on when its batch was last inside a frustum; reproducing that would mean
+reproducing Godot's view and shadow-split culling. What it would save (census, the withdrawn
+build over this branch): 30k still 2,736 to 2,210 main-pass draws and 860 to 757 shadow, 100k
+5,242 to 4,695 and 863 to 741; primitives +0.01 M (off-screen poles inside chunk batches). The
+choice goes to the user (see the roadmap row).
+
+**Draws and primitives** (Godot's counters at the census poses, main pass / shadow pass; the
+primitives are equal to the digit at every pose on both inputs):
+
+| Input, pose | Control draws | Branch draws | Main-pass primitives (M) | GPU ms (census frame) |
+|---|---:|---:|---:|---:|
+| 30k still | 6,009 / 2,631 | 2,736 / 860 | 48.25 | 7.59 / 7.55 |
+| 30k mid-turn | 5,997 / 2,866 | 2,727 / 1,005 | 47.22 | 7.52 / 7.44 |
+| 30k street level (3 views) | 4,286-4,503 / 3,001-3,114 | 2,010-2,169 / 995-1,095 | 33.84-37.12 | 5.84-5.95 / 5.77-5.99 |
+| 30k mid height | 4,592 / 2,682 | 2,227 / 887 | 39.24 | 7.10 / 7.05 |
+| 100k still | 12,676 / 2,478 | 5,242 / 863 | 98.79 | 14.43 / 12.20 |
+| 100k mid-turn | 12,774 / 2,663 | 5,258 / 968 | 101.3 | 16.27 / 11.86 |
+| 100k street level (3 views) | 9,597-10,387 / 2,736-2,850 | 4,113-4,375 / 968-995 | 72.99-84.36 | 10.85-12.09 / 9.14-10.37 |
+
+By layer (30k still / 100k still, main pass): parked cars 3,860 to 702 and 8,946 to 1,627 draws,
+moving cars 190 to 75; nothing else moved. The `RenderingDevice` draws follow (R44's relation,
+twice the main pass plus the shadow pass: 30k still about 14,600 to 6,300). Kuopio's 25 empty
+moving-car batches still count draws: 1,515 to 1,400 at its still, primitives equal.
+
+**Render CPU and the command replay** (PL1's method: `perf record` of Godot's main thread,
+cpu-clock every 250 us with frame pointers, joined to the rows by `t_unix`; the chain under
+`RenderingServerDefault::_draw`; paused 30k, a 6 s still and the 1 s turns, one run a side):
+
+| ms a frame | Control still | Branch still | Control 1 s turns | Branch 1 s turns |
+|---|---:|---:|---:|---:|
+| Under `_draw` | 4.82 | 3.42 | 8.51 | 5.41 |
+| viewport draw (`_draw_3d`) | 3.04 | 2.13 | 4.99 | 3.20 |
+| command replay (`_end_frame`) | 1.47 | 0.96 | 2.71 | 1.54 |
+| `render_cpu_ms` p50 (series rows) | 3.58-3.66 | 2.33-2.47 | 5.50-5.73 | 3.50-3.79 |
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> \
+    --ctl-library <dev .so> --ctl-scripts <dev godot/scripts> --library <dev .so> --out "$ARTIFACTS"
+tools/stream_benchmark.py run --label c30-br --save <...30000...> --phases census,still,turns --turns 1 --still-s 6 ...
+perf record -k realtime -e cpu-clock/period=250000/ --call-graph fp -t <godot main thread>   # from LOAD_END
+```
+
+**Rows** (C B B C, `compare`): 30k every moving phase better at p50, the 1 s turns by 3.7-4.2 ms
+(12.2-13.4 to 8.3-9.1 ms, now within 1.5 ms of the GPU's 7.3-7.5), the 0.5 s turns by 2.1-3.4, the
+far zoom-out by 3.3, the night turns by 3.0-3.5; still level (GPU-bound at 7.5). One flag:
+`pan_back` max +3.6 against a spread of 2.4. Instrumented (`--detail`, one run a side): the
+worst `pan_back` frame is a draw-stage wait on both sides (branch 21.3 ms with 13.5 ms between
+`frame_pre_draw` and `frame_post_draw` at 2.9 ms render CPU and 6.9 ms GPU; control 17.8 ms with
+14.7 ms there), not the scripts (under 1 ms) nor Godot's render CPU. The one rerun (30k pan, C B
+B C): all three pans better at p50 by 0.2, `pan_back` max +0.2 against 1.5: level. Kuopio (no
+cars; its 25 empty moving-car batches draw 115 fewer times, nothing the branch changed runs a
+frame there): first series level or within 0.1 ms at p50 on 1.7-2.2 ms frames, flags on
+`turn_out`, `pan_out`, `far_zoom_out`, `far_to_ground`, the night turn and pan; instrumented, the
+worst `far_to_ground` and `night_pan_out` frames are draw-stage waits (12.2 ms at 3.6 ms render
+CPU and 0.9 ms GPU) and the street lights' night pass (0.9 ms, unchanged code); the rerun of
+Kuopio's flagged phases: those rows level, the flags moved to `turn_repeat` 0.5 s and `pan_back`
+(p50 +0.1 at a spread of 0.1) and the night still and turn back (max +1.3 and +2.1): rows that
+were level in the first series. Kuopio's flags follow the run, not the rows.
+
+**Stills and digests.** Kuopio close, mid, forest_low identical bytes (control and branch; the
+first branch capture carried the withdrawn lights, a later one without them: identical). 30k
+saved, city, city_low three runs a side: city and city_low identical but for one 1 px residue
+(delta 1) that the branch's own two runs show too; saved 1-2 px against control's own 2 px
+(`RENDER-45`); `systematic`: none on all three. Night (hour 23) city and saved, the car change
+alone: identical bytes. Digests 30k (still, 1 s turns) graded 4/4, buildings 4/4, roads 4/4,
+parked 4/4, water 1/1 equal; Kuopio buildings, roads, parked 8/8, water 1/1 equal.
+
+Gates (fresh, on the branch's code commit): no Rust change, so clippy was not re-run (the
+withdrawn lights build added none to the base set); debug `cargo test --lib` 2,552 passed, 0 failed, 224 ignored; `./run.sh --test` PASS
+(nextest 2,556 passed, 225 skipped; godot-main, godot-vehicle PASS, 0 SCRIPT ERROR). `PERF-07` at
+level F not rerun: the branch's Rust tree and so its test binary equal the control's.
+
+### Parked cars' draw distance (`RENDER-48`, 2026-11-13)
+
+Round R48, the owner's decision of 2026-11-13: the parked cars get the moving cars' draw distance
+(2.5 km) and fade, with no far mesh or level of detail (those come with the replacement car models,
+`RENDER-26`); stills to the owner before it lands. Branch `stream-r48` on `dev` `c5f15f29`; control
+`c5f15f29`'s release library with its own scripts. Godot 4.7.2 Forward+, RADV on the RX 7900 XTX,
+gamescope headless at 1920x1080, P-cores, eight workers, isolated profile, simulation paused; the
+timing cache's 30k city, the 100k commit city and Kuopio.
+
+**What changed.** One setting for both kinds of car: `CAR_FADE_START_M` 2,000 m and
+`CAR_DRAW_DISTANCE_M` 2,500 m (`config.rs`), read by the moving cars and now by the parked cars too.
+
+- *Per instance, the moving cars' mechanism.* `parked_cars.gd` builds the parked meshes with the
+  band from `get_agent_draw_distances()`, so their body material is the moving cars' own
+  `AGENT_DRAW_FADE` variant of `building_windows.gdshader` (one shader for both, `parking_test`
+  checks it): a car fades by its own origin's distance from the main camera, dithered out over the
+  band and collapsed to nothing beyond it, in the main pass and the shadow pass alike (the shadow
+  pass measures from the main camera too). It fits as it is: the parked cars draw through the same
+  window material builder, and a bucket that straddles the range needs nothing else.
+- *Per bucket, the engine's visibility range.* Each parked bucket's batch carries a range
+  `[0, CAR_DRAW_DISTANCE_M + reach]`, where reach is the farthest car origin's distance from the
+  centre of the batch's bounds (the farthest corner of the origins' box, as the vegetation's canopy
+  ranges do). Godot measures a range from that centre (`_visibility_range_check`, no margins, so no
+  state), so a batch it skips holds no car within the draw distance, where every car would have
+  faded out whole anyway. To know the centre exactly the layer computes the batch's bounds the
+  engine's way (the mesh's bounds through each pose, merged in pose order: `Aabb::through_instances`,
+  moved from the vegetation product into `godot_math` and shared) and sends them as the
+  `MultiMesh`'s own; `parked_cars.gd` registers each bucket's mesh with `Mesh.get_aabb()`. The
+  engine checks a range only as it culls, in the main view and every shadow split from the main
+  camera's position: nothing runs a frame on our side, no slot is shown or hidden for it (no
+  install churn, `RENDER-46`), and the engine's cost is `O(buckets in view)`. An install computes
+  the bounds and reach in `O(poses)`, the order it already copied the poses in; nothing allocates.
+- Why not hide the slots from the stream core's view sample: a show or hide per bucket as the
+  camera moves is the install churn R44 measured (Godot rebuilds the slot's surfaces), and a CPU
+  test per bucket a frame would cost `O(drawn buckets)` where the range costs nothing.
+- Every parked car is still published and installed: the digests (the drawn buckets' uploaded
+  poses) cannot see the range, and only what Godot draws changes.
+- The sun's shadows end at 420 m (`SHADOW_MAX_DISTANCE_M`), so no parked car near the range casts
+  into the shadow pass: its primitives and draws are equal at every census pose.
+
+Tests: `parked::tests::a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance` (cameras
+on 60 rings of 64 around a 40-car bucket, the engine's range rule mirrored: never cut while a car
+is within 2.5 km, cut beyond, buckets straddling the range drawn; the range ends within its
+extent), the existing layer tests with the engine's bounds sent; `parking_test.gd` (every parked
+bucket's body shares the moving cars' shader and band; every drawn bucket's range reaches past the
+draw distance).
+
+**Primitives, draws and GPU** (census poses, Godot's counters; main pass, shadow pass; GPU at the
+census frame). Build identities: control library SHA-256 `a1ebd175`, branch `6208879b` (code
+`ab8bd0e9`).
+
+| Input, pose | Main primitives (M) ctl / br | Main draws ctl / br | Parked draws ctl / br | Shadow (M, draws) | GPU ms ctl / br |
+|---|---:|---:|---:|---|---:|
+| 100k still | 98.79 / 76.33 | 5,242 / 4,256 | 1,610 / 633 | 68.99, 863 both | 12.33 / 10.73 |
+| 100k mid-turn | 101.20 / 78.28 | 5,252 / 4,239 | 1,630 / 625 | 69.85, 968 / 967 | 12.09 / 11.67 |
+| 100k mid height | 85.68 / 70.74 | 4,519 / 3,830 | 1,318 / 633 | 62.64, 884 both | 11.32 / 10.34 |
+| 100k street level (3 views) | 72.99-84.36 / 64.52-71.50 | 4,113-4,375 / 3,559-3,726 | 1,190-1,307 / 636-650 | equal | 9.11-10.54 / 8.53-9.51 |
+| 30k still | 48.25 / 47.37 | 2,736 / 2,673 | 697 / 634 | 53.49, 860 both | 7.70 / 7.66 |
+| 30k mid-turn | 47.22 / 46.27 | 2,728 / 2,662 | 695 / 630 | 50.74, 1,005 both | 7.49 / 7.37 |
+| 30k mid height | 39.24 / 39.14 | 2,227 / 2,211 | 500 / 484 | equal | 7.07 / 7.06 |
+| 30k street level (3 views) | 33.84-37.12, equal | equal | equal | equal | 5.82-6.02 / 5.81-6.16 |
+
+- **100k: 22.5 M fewer main-pass primitives at the still** (R44 estimated 24.2 M beyond 2.5 km):
+  a bucket straddling the range still submits its whole mesh count, its cars beyond 2.5 km
+  collapsed in the vertex shader (5.7 M of the parked layer's 13.4 M lie at 2-4 km by instance
+  centre, against 22.8 M before). Sub-pixel parked instances 21.3 M to 3.5 M. Draws -986 (the
+  parked layer's 1,610 batches to 633).
+- **GPU: 1.6 ms at the 100k still's census frame** (12.33 to 10.73), 0.4-1.0 ms at the other
+  100k poses; the timed still's GPU p50 12.06 to 11.38 ms and frame p50 12.18 to 11.53 (one run a
+  side). R44's 2.5-3 ms used the parked layer's cost before `RENDER-46` (4.48 ms hidden at 100k);
+  after CS1's one body surface the whole parked layer costs 2.83 ms hidden, and this round's branch
+  leaves 1.26 of it: the 1.6 ms saved is the 22.5 M primitives at that layer's own 0.07 ms a
+  million.
+- **30k: the city lies mostly within 2.5 km of the benchmark's poses**: 0.9 M fewer at the still,
+  nothing at street level (every bucket straddles or lies inside the range). GPU level at the
+  census frames.
+- Shadow pass: equal everywhere (no parked car within the sun's 420 m shadow reach is near the
+  range).
+
+**Rows** (series C B B C, `compare --gpu`; the 30k city and Kuopio, default phases). 30k: still
+and 1 s turns level (GPU p50 7.45 against 7.47, 7.29-7.31 against 7.30-7.34); the far zoom-out
+1.9 ms better at p50 (GPU 8.83 to 6.01) and the zoom to the ground 1.1 ms (GPU 5.05 to 3.94);
+night rows level or better. Flags: `pan_repeat` and `zoom_out` p50 +0.1 ms (spreads 0.1 and 0.0)
+and GPU +0.04-0.13 ms on `turn_back` 0.5 s, `pan_out` and the three near zooms. The one rerun of
+the flagged rows (30k pan and zoom): `pan_repeat`, `zoom_out` level; `zoom_in` p50 +0.1 (spread
+0.0); GPU +0.02-0.07 on the pans and near zooms, again 2.7 and 1.2 ms better on the far zooms.
+**Attributed** (Godot's pass timestamps, `--gpu-profile`, one run a side on the same phases): the
+near views' extra GPU is in the depth pre-pass (+0.05-0.26 ms), the opaque pass (+0.07-0.36) and
+the shadow pass (+0.03): the parked cars within 2 km now draw with the fade material, whose
+fragment `discard` (the dither) costs the depth and opaque passes their early depth test on those
+cars, as it does the moving cars'. This is the cost of the moving cars' fade on the 4,000-8,000
+parked cars the 30k poses draw; it is a miss against "rows level" on near views, kept for the owner (options
+below). Kuopio (no parked cars; nothing the branch changed runs a frame there): level or better at
+p50 but `pan_out` max +3.5 and `pan_repeat` max +1.1. Instrumented (`--detail`, one run a side):
+the worst pan frames on both sides are script-process spikes (control 6-11 ms of process time at
+11-17 ms frames, branch 5-15 at 9-16; GPU 1.5 ms). The rerun of the Kuopio pan: those rows level,
+the flag moved to `pan_back` (p50 +0.1 at a spread of 0.0, max +3.2), a row level in the first
+series: as CS1 found, Kuopio's flags follow the run, not the rows.
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> --ctl-library <dev .so> \
+    --ctl-scripts <dev godot/scripts> --library <branch .so> --scripts <branch godot/scripts> --out "$ARTIFACTS"
+tools/stream_benchmark.py compare --gpu "$ARTIFACTS" 30k
+tools/stream_benchmark.py run --label g30-br --save <...30000...> --gpu-profile --phases pan,zoom ...
+tools/stream_benchmark.py run --label c100-br --save <commit_city_100000_...> --phases census,still --still-s 6 ...
+```
+
+**Options for the near-view cost** (the owner's): (a) keep it (recommended: it is the fade the
+owner chose, the moving cars pay it already, and the far views and the 100k gain 0.7-2.8 ms);
+(b) parked cars collapse at 2.5 km without the dither (no `discard`, so no cost, but each car
+vanishes at once instead of dissolving: stills first); (c) the range alone with no per-car fade
+(straddling buckets keep their far cars; not the moving cars' rule).
+
+**`PERF-07` at level F** (`./run.sh --timing --level F`, test binaries control `1d41c7c4`, branch
+`07aa4beb`, boot `978f0c18`, P-cores, eight workers): 30k 1x acceptance PASS both (mean 2.287
+against 2.294 ms, every metric level, `max_unpreempted` better); 30k 32x every metric level (one
+noisy control row, tolerances doubled), the `PERF-17` known exception on both sides. The branch's
+Rust change runs only when a parked chunk installs.
+
+**Digests** (30k post-load, still and 1 s turns; Kuopio still, turns, pan and zoom; one run a
+side): every family equal, parked 4/4 and 8/8. That is the expected result everywhere, not only
+where no distance applies: the parked digests hash the drawn buckets' uploaded poses, and the
+branch uploads every car as before; the distance lives in Godot's cull (the range) and in the
+material (the fade), which the census and the stills measure.
+
+**Stills** (`stills capture`, `compare`, `systematic`). Identity bar: Kuopio close, mid and far
+(overview) identical bytes; 30k `city` and `city_low` identical bytes in both pairs, `saved` 1-4
+px (the `RENDER-45` residue, control against control 3 px); `systematic` none on all three. The
+owner's set (index `$ARTIFACTS/stills-owner/index.html`: side by side, 1:1 crops of the densest
+change and the difference x8, a 30k pull-out from 1.0 to 4.0 km as a 2 fps clip): the 30k high
+and horizon views, night (hour 23) high, horizon and saved, the 100k high, horizon and saved.
+Differences beyond any two runs' are specks where far parked cars were (pixels over a delta of 8:
+30k high 2,586 against a control pair's 1,419, horizon 401 against 0; 100k high 8,268 against
+4,204, horizon 2,007 against 668, saved 59 against 2, `systematic` 149 px at the far horizon of
+the 100k's saved view); the sky and the far streamed city vary between any two runs, so
+`systematic` finds nothing beyond that spread on the high and horizon views. No pose shows an edge
+at full frame, so no longer (3.5 km) variant was made.
+
+Gates (fresh, on `ab8bd0e9`): `cargo clippy --all-targets` warning set equal to the base's (one
+warning, `asset_document.rs`; the first build's two `chunks_exact` warnings fixed); debug
+`cargo test --lib` 2,562 passed, 0 failed, 224 ignored; `./run.sh --test` PASS on the rerun
+(nextest 2,566 passed, 225 skipped; godot-main, godot-vehicle PASS, 0 SCRIPT ERROR) after the first
+run's `profile_guard_test` exit 134 once its refusal was logged (`TOOLS-22`); `parking_test` alone
+PASS.
+
 ### Entered-to-drawn, and the vegetation's prepared set (`RENDER-32-N`, `CODE-12`, 2026-11-13)
 
 Round C1: first the go/no-go measurement, then (it said no-go) plan 5.3's prepared set for the
@@ -16634,6 +17042,886 @@ Gates (fresh, code `121b4e2b`): `cargo clippy --all-targets` warning set equal t
 Godot script skipped, 0 SCRIPT ERROR); the isolated-profile grep finds nothing. Digests and stills
 not rerun in this round: the pacing only delays prepares and the cap changes only what is held;
 what a request takes, installs and a settled view draws is unchanged.
+
+### The frame's install ledger, and the track's close-out (`RENDER-32-Q`, 2026-11-13)
+
+Round Q (branch `stream-q` on `dev` `2f4f87c8`, for review). The rounds had left the frame's
+install work under budgets nobody summed (the review's finding 11): the stream node's 2.0 ms
+(vegetation, terrain and water patch units), the graded poll's own 1.0 ms, building batches,
+sites and the terrain's dirty-patch commit with none, the water's mesh pipeline with its own,
+and the load windows (post-load 5.2 ms, road hydration 4.0 ms). The round measured their sum,
+built one ledger for it, and re-measured the track's acceptance.
+
+**Method.** The stream benchmark, instrumented (`--detail`; shares, not times), Godot 4.7.2
+Forward+, gamescope headless, 1920x1080, P-cores, eight workers, isolated profiles. Inputs: the
+30k city of record, the 100k commit city, Kuopio. Configurations: paused still and turns (0.5 s
+and 1 s; 100k 1 s and the load's `post_load`), 1x (30 s still, 1 s turns). Owners a frame, from
+the perf records: the stream node's install budget spent (vegetation installs and patch units),
+the patch units in the post-load window, the node's frees (backend `free_rid`s, new timer), the
+road hydration's units, the graded poll with its edit batch and the cell and wall rewrites they
+cause, the building batches' publication, `water.gd`'s frame with `terrain.gd`'s water sync, the
+terrain's dirty-patch commit (`RENDER-40`) and the plots' and construction sites' frame
+(`RENDER-30`, new `sites_ms`). Analysis script `$ARTIFACTS/sum.py` (per phase group: the sum's
+p50, p99, max, frames over 2.0 ms and the largest owner of each such frame). Base: `dev` with the
+two timers (`83554c30`); branch: the final code.
+
+**The sum, base against branch** (frames over 2.0 ms of the group's, and who carries them):
+
+| Group | Base p50 / p99 / max | over 2.0 | carried by | Branch p50 / p99 / max | over 2.0 | carried by |
+|---|---|---:|---|---|---:|---|
+| 30k paused still | 0.07 / 0.10 / 0.10 | 0 | - | 0.10 / 0.14 / 0.17 | 0 | - |
+| 30k paused 0.5 s turns | 1.11 / 2.16 / 2.16 | 1 | graded | 1.11 / 1.53 / 1.53 | 0 | - |
+| 30k paused 1 s turns | 0.79 / 1.39 / 1.95 | 0 | - | 0.84 / 1.38 / 1.74 | 0 | - |
+| 30k 1x still (30 s) | 0.10 / 8.29 / 24.9 | 48 | terrain commit 48 | 0.11 / 5.92 / 12.3 | 33 | terrain commit 33 |
+| 30k 1x 1 s turns | 0.97 / 7.77 / 8.62 | 6 | sites 3, commit 3 | 0.97 / 7.24 / 7.31 | 6 | sites 3, commit 3 |
+| 100k paused still | 0.07 / 0.10 / 0.10 | 0 | - | 0.11 / 0.16 / 0.21 | 0 | - |
+| 100k paused 1 s turns | 1.25 / 2.59 / 3.14 | 13 | graded 11, publication 2 | 1.24 / 1.92 / 2.24 | 1 | graded 1 |
+| 100k 1x still (30 s) | 0.13 / 14.4 / 71.3 | 71 | sites 42, commit 29 | 0.14 / 11.3 / 18.1 | 67 | sites 43, commit 24 |
+| 100k 1x 1 s turns | 1.38 / 18.4 / 18.4 | 21 | graded 14, sites 3, commit 3 | 1.46 / 10.0 / 10.0 | 10 | sites 3, commit 3, publication 2, graded 2 |
+| 100k load (`post_load`, a load window) | 5.49 / 16.4 / 34.3 | 176 | road hydration 166 | 6.27 / 14.9 / 37.6 | 176 | road hydration 166 |
+| Kuopio paused 0.5 s turns | 0.14 / 1.25 / 1.65 | 0 | - | 0.16 / 1.15 / 1.19 | 0 | - |
+| Kuopio paused 1 s turns | 0.08 / 0.54 / 2.31 | 1 | stream node | 0.10 / 0.81 / 1.31 | 0 | - |
+
+Every branch row is of the final code (the 1x rows from the release library the session timed).
+A 1x row is one 30 s run: its maxima move with the size of the growth edits that fell in it. Every frame of the paused 30k turns and Kuopio's turns is inside 2.0 ms;
+the 100k paused turns keep one frame at 2.24 ms (the graded cell rewrites of 20 patches whose
+level changed, after its poll). With the simulation running the frames over 2.0 ms are the
+terrain commit's remainder (below) and the sites' frame (`RENDER-30`, charged, not bounded: its
+fix is that row's, off the main thread); the load's frames are the road hydration's (its own
+4.0 ms window; single chunks of 28-31 ms build in `network_tool.gd`, `RENDER-36`/R1's note).
+
+**Decision: over 2.0 ms, so one ledger** (for review; the plan's sentence revised in the Design
+above). `schedule.rs` `FrameLedger`: one account a process frame on the main thread, 2.0 ms,
+charged by every owner in the frame's process order (`terrain.gd`'s dirty commit and graded
+tiles, `water.gd`, `buildings.gd`, then the stream node). An owner's unit starts if its
+predicted cost fits what the ledger has left; each owner's first unit of a frame always runs,
+so the worst frame overruns by one unit an owner. Holes before upgrades across owners: while the
+node's last frame left holes waiting (vegetation hole classes, terrain or water patches
+missing), the upgrade owners ahead of it (the dirty commit, the graded tiles, the patches' level
+changes) leave a 1.0 ms reserve. The building publication (one atomic frame, `RENDER-42`) and
+the sites are charged, not split; the frees and the prepared set's reach walks (AUDIT-stream-2
+finding 8: 0.02-0.03 ms a still frame) are charged as measured time. Named exceptions keep their
+budgets: an edit's atomic batch, the post-load window (now closing after 30 s at most:
+AUDIT-stream-2 finding 5, and a refused terrain payload no longer holds it open), and a load's
+road hydration. Cost: `O(1)` a charge, one `Engine.get_process_frames()` a pass, no
+allocation; `O(pending)` once a frame for the vegetation's hole check.
+
+Built with it:
+
+- **The graded tiles** keep to `min(1.0 ms, the ledger's room)` in every check (results, cell set
+  builds, material syncs), and charge, as `CELL_CHARGE_US` charges a placed tile, 80 us for each
+  patch queued for a whole cell rewrite and each resident patch whose level changed since the
+  last frame (measured: 50-90 us a patch on the 30k and 100k turns; the rewrites run after the
+  poll in the replayed step order, so they are charged ahead). Patches that became resident (a
+  load) rewrite none and are not charged.
+- **Kuopio's ready-and-waiting** (C1, C2: 99-100 % of the vegetation's waits ready, for the
+  install budget) was the patches' level changes: predicted 60 us (terrain) and 40 us (water),
+  measured 11 us at the median (25-36 us at p95, frames of level changes only, every input), so
+  a turn's level changes filled the frame's predicted budget at 0.2-0.4 ms of real time and the
+  vegetation's holes waited a frame or several. Now 20 us each, behind the holes' reserve. The
+  drawn probe on Kuopio's turns: vegetation p95 7 / 5 frames (turn out, turn repeat; MISS) to
+  1 / 1 (pass), the longest coarse hole 6 frames to 1; every motion passes.
+- **`RENDER-40`**: the dirty stage uses the payload's land cover (built on the payload worker,
+  `RENDER-32-M`) while it is current, and the dirty patches stage a patch a unit while the
+  ledger has room, the staged ones kept across frames while their payload and spare resources
+  hold, the commit atomic. 30k 1x: the commit's frames 8-25 ms to 6-12 ms (mean a frame 0.16 to
+  0.08 ms, frames over 2.0 ms 48 to 33); 100k 1x: worst 71 to 18 ms. What remains in one stage is
+  a land cover gone stale since its payload (the live query: 1.8-2.8 ms with its Rayon join) and
+  the blocking currency checks (24-66 `lock_core` a commit frame, 1-2 ms waiting for the
+  simulation's tick). Both need `CODE-26`'s published values first (the land cover's generations
+  published, so a stage can tell a stale payload without the core and ask the payload worker
+  again): the round stops at that line.
+
+**Carried.** The graded totals (bars 0.5 ms on the 30k 1 s turn, 1.0 ms at 100k): 0.75-0.78 ms
+and 1.26-1.36 ms, base and branch alike; decided with the sum (for review): their install part
+is inside the frame's one ledger and the turns' sum within 2.0 ms; the rest is the cell
+rewrites of the patches whose level the camera changes (charged now) and the re-level, which
+are the graded book's own work (`TERRAIN-13`), not install work. The 100k load's settle
+(13.1 s against 11.6 at `-M`): the control now settles in 11.1-12.1 s and the branch in
+10.9-12.1 s over this round's instrumented loads (two and four; the spread is in the load's first
+30 frames, `RENDER-43`'s stalls; graded installs a frame after them are level): met.
+
+**The paused 30k 1 s turn's CPU gap** (PL1: frame 15.0-15.7 ms against GPU 8.7-8.9). Streaming
+work in it, fresh (instrumented, branch): the install ledger 0.84 ms a frame (graded 0.65, the
+stream node 0.07, the publication 0.03, water 0.06), the graded book's other work 0.13 ms (the
+re-level and requests), the stream node's residency under 0.1 ms. The rest is attributed to its
+rows by PL1's profile (not re-profiled): Godot's draw and its command replay (`RENDER-46`, 8.7 ms
+on the CPU, 2.7 of it the replay outside `render_cpu_ms`), the blocking core waits (`CODE-26`,
+1.7 ms), the car smoothing's Rayon join (`RENDER-47`, 0.9 ms), X11 round trips through
+gamescope (0.9 ms) and the culling workers (0.35 ms).
+
+**The streaming audits' findings routed here.** AUDIT-stream: 6 (frees: measured and charged,
+not deferred; the design sentence revised), 8 (a product whose count does not match its buffer,
+or a lane out of `u8`, is refused), 9 (the backend's and this document's sentences corrected; the
+material sync stays beside the backend, unrecorded), 10 (the building frame's timing lanes only
+with the perf channel, in Rust and in `building_lods.gd`; the graded effect arrays were closed by
+`-K` part 7, whose `apply_own_effects` calls the renderer only for its own effects), 12 (the
+three `StreamNode` test functions deleted, the residency's retire path test-only;
+`GradedTileLevels` was gone already), 14 (stand-ins checked only after an evaluation or an
+install, the only changes that can build their area: a still frame `O(1)` with stand-ins
+waiting), 16 (`StreamStatus` and one view sample marked as target, not built, in the Design).
+The staged commit's Godot check (`graded_tile_renderer_test`, the production renderer: a sculpt
+dirties four patches; with the ledger spent before the terrain's frame every frame, at most one
+patch stages a frame and the commit completes) first sculpted at a point outside its 1,020 m
+world, where `sculpt_terrain` grows the process without bound on the control build as well (a
+gate's Godot reached 35.7 GB before the kernel killed it): `TERRAIN-28`. The check sculpts
+inside the world (357 MB peak).
+AUDIT-stream-2: 5 (above, with a test), 8 (above: the pull takes landed products under the
+jobs' lock and handles them, the eviction's sort included, after it), 15 (the 96 MiB cap, the
+jobs' in-flight comment, the eviction's cost line).
+
+**The track's acceptance, re-measured** (plan section 7; the session below, 30k unless named).
+Timed scripts a moving phase (one instrumented run of every phase, branch): 0.7-3.6 ms a frame,
+the highest the 0.5 s turns (3.3-3.6, agents 1-2.5 of it), 1.9-2.3 on the 1 s and night turns,
+2.2 on the far zoom-out: **met** (at most 4 ms; control 16-32 at the plan). Frames over 33.3 ms:
+one on the 30k `zoom_in` and one on Kuopio's 0.5 s `turn_out`, on both sides in every run, each
+a single frame whose Godot draw segment alone takes 45-56 ms (first-use pipeline class,
+`RENDER-43`; the draw is `RENDER-46`'s); the rerun added one 34 ms branch frame on
+`far_zoom_out` and one control frame on `turn_repeat`: **not met**, owners outside install work.
+The 1 s turn's p50 against its GPU time: 12.4-14.3 ms against 7.8 (4.6-6.5 over): **not met**,
+the gap is the CPU gap above (`RENDER-46`, `CODE-26`, `RENDER-47`, X11), streaming under
+1.1 ms of it; Kuopio 1.9-2.0 against 1.1-1.2, met. Night within 1 ms of day: night turns
+11.6-13.3 against the day's 12.4-14.3, night pans 6.4 against 6.8, Kuopio 2.0-2.6 against
+1.8-2.1: **met**. `RENDER-32`'s own bars are met; the two that are not are carried by
+`RENDER-43`, `RENDER-46`, `CODE-26` and `RENDER-47`.
+
+**Session and gates** (fresh, this round; release libraries: control `dev` `2f4f87c8`, branch
+`020126b7`; release test binaries of the same; one boot, P-cores, eight workers):
+
+- Rows (`stream_benchmark.py series`, C B B C, every phase): 30k level or better but `still`
+  p50 +0.1 (spread 0.1), `turn_out` 1 s max +3.0, `far_zoom_out` max +1.9, `jump_back` max
+  +4.7; Kuopio level or better but `jump` p50 +1.3, the night turns p50 +0.3-0.4, `turn_out`
+  1 s p50 +0.1, `zoom_in_repeat` +0.2, `turn_back` 0.5 s and `night_pan_back` maxima. Attributed
+  before the rerun (instrumented, a side): the 30k maxima's worst frames are Godot's draw, agents
+  and the terrain script on both sides, the branch's instrumented maxima equal or lower; Kuopio's
+  jump does the same work in fewer frames (46 against 57 frames, 15.2 level changes a frame
+  against 13.5, settled in 67-69 ms against 105-110), its night turns instrumented level. The one
+  rerun of the flagged groups: 30k level or better everywhere but `far_to_ground` p50 +0.1
+  (spread 0.1; level in the first series); Kuopio level but `jump` p50 +1.2 (the same
+  attribution: the ledger spends its real 2.0 ms where the old predictions spent about 0.6 ms of
+  it, and the jump settles 37 % sooner; for review), `turn_repeat` 1 s and `night_still` p50
+  +0.1 on 2 ms frames, `zoom_in` and `far_to_ground` maxima on 8-13 ms frames. Not rerun again.
+- The 100k load, one instrumented run a side: settled 11.3 s (branch) against 12.1 (control);
+  over this round's six instrumented loads the branch 10.9-12.1 s, the control 11.1-12.1, the
+  spread in the first 30 frames.
+- Digests: 30k graded, buildings, roads, parked 4 of 4 equal, water 1 of 1; Kuopio 8 of 8 equal
+  in every family. Stills: Kuopio three poses byte-identical; 30k `city` and `city_low`
+  identical in three runs a side, `saved` 2, 2 and 3 px (delta 2, `RENDER-45`'s residue; control
+  against control 2 px). The drag probe: populated 282 frames, 0 with the background; Kuopio 16
+  of 6,036 (control 16 of 6,039, T65's known frames).
+- Timing level L (`./run.sh --timing --level L`): `PERF-07` 30k 1x PASS on both sides, every
+  metric level (mean 2.225-2.239 ms against 2.218); 32x level (`PERF-17`'s known exception on
+  both sides); K22 at 30k 6.49 ms click-to-ack. The economy contract fails the same five parked
+  work-scaling limits on the control (run on its test binary for this check: `buyer_sites_built`,
+  `staffing_trials`, `supplier_searches`, `supplier_routes`, `job_search_keys`, identical counts)
+  and every time limit holds on both (day hourly 0.95 / 3.47 ms against 0.94 / 3.50): unaffected.
+- Gates: clippy `--all-targets` warning set equal to the base's (`asset_document.rs`); debug
+  `cargo test --lib` 2,552 passed, 0 failed, 224 ignored; `./run.sh --test` PASS (nextest 2,556
+  passed, 225 skipped; `godot-main` and `godot-vehicle` PASS, 0 SCRIPT ERROR). An earlier gate
+  run was killed by the kernel (the test's sculpt outside its world, `TERRAIN-28`, above).
+
+### The second streaming audit's fixes (AX, 2026-11-13)
+
+Round AX (branch `stream-ax` on `dev` `0fffb6a2`, for review): the findings of AUDIT-stream-2
+routed to it (1-4, 6, 7, 9-13) and the first audit's 4 and 11. Findings 5, 8 and 15 were `-Q`'s;
+14 was not routed. No visual change was the bar; none was made.
+
+**The building layer** (`RENDER-42`). A chunk's changes are applied whole or not at all, no longer
+the frame's: the removals of chunks that left go first, then the chunks that give up at least the
+slots they take, then the rest in the frame's publication order while the pool has room. A chunk
+that does not fit sends nothing, the bridge keeps its changes unacknowledged and offers them again
+with what later frames add; every drawn chunk and the removals are acknowledged, so `removed` is
+cleared at every publication (finding 6: it grew without bound while a frame waited). A view
+needing more than the 16,384 slots keeps drawing and updating the chunks that fit instead of
+freezing every building; a wait of 60 published frames is logged once on the `buildings` channel.
+A building changes tier inside its chunk, so "drawn once" still holds. `Chunk::synchronize`
+carries an unacknowledged change across a layout rebuild (finding 1: a batch emptied while its
+chunk waited lost its change at a resync and kept drawing its old rows beside the new tier). Cost:
+`O(removed + changed batches + their instances)` a frame, as before; one map entry a changed chunk,
+reused. Tests: a real LOD chunk through a full pool, an emptied batch, a resync and a freed slot
+(fails without the carry-over); a view over the limit draws the chunks that fit; the outgrow test
+follows the per-chunk rule. Teardown (finding 10): `reset_building_draw` (the node leaving the
+tree, a new catalogue) invalidates the LOD state with the slots, so a node entering a tree again
+publishes every batch.
+
+**The vegetation's held store** (`CODE-12`). The cap counts the storage a product holds
+(capacities of its batches and of every buffer, the spare buffers kept past its buffer count
+included; finding 2), and the product cache keeps at most 32 spare products (the jobs in flight),
+storage returned past that dropped after the jobs' lock (an eviction pass's or a reset's products
+stayed for the process's life). An adopted prepare leaves the prepare lane for the front of the
+requests' queue (finding 3). A product taken into the install backlog whose request is superseded
+or whose patch leaves before it installs is held again when it is the live request's product with
+the patch's current generations (finding 4: Kuopio's turns dropped them). Over the store's
+low-water mark a prepare farther than the last eviction pass kept is not started for the view
+(finding 9: it was evicted as it landed and prepared again at the next still view). Tests for each.
+
+Counted as storage, the 96 MiB cap was too tight: Kuopio's turns and zooms reach 95.8 MiB at the
+far zoom back to the ground, where the control's length count (93.7 MiB) never evicts; at 96 MiB
+the branch evicted 134 products the zoom down needed (drawn probe, `far_to_ground` coarse: ready
+share 100 % to 42 %, hole frames 123 to 221). **Decision (for review): 120 MiB**, the cap's own
+rule (the measured peak with a fifth to spare) on the honest count; now a bound on what the store
+holds. Heaptrack (`--record-only`, Kuopio's zoom phase, release libraries; the peak of the
+allocation sites building products): control 105.7 MiB of product storage with 88.0 MiB counted
+held (lengths, nothing evicted); branch at 96 MiB 102.0 MiB with 95.8 counted (561 evicted);
+branch at 120 MiB 118.4 MiB with 110.6 counted (nothing evicted, 4,853 products held against the
+control's 3,813: the products held again). Whole-process peak 1.68 GB on each side (the load's).
+
+**The drawn probe on Kuopio's turns and far zooms** (instrumented, `--drawn`; vegetation p95 of
+entered-to-drawn frames, coarse / fine, and hole frames): every turn passes on both sides.
+`far_to_ground`: control 1 / 1 (123 / 149 holes) and 1 / 2 (127 / 99); branch at 120 MiB 3 / 4
+(105 / 77), 1 / 1 (74 / 65); zoom phase alone, control 1 / 1 (70 / 87), branch 1 / 1 (81 / 71).
+The 3 / 4 run had the largest install backlog of any (146 waiting, all ready: the install
+budget), its holes fewer than either control; three more branch runs and the zoom-alone pair are
+level, and a diagnostic build with the promotion at the back of the queue or without the re-hold
+was level too, so it is read as one run's spread, not a regression. `far_zoom_out` level on every
+run (coarse 1, fine 2-3).
+
+**Digests** gain the vegetation family (finding 7): per visible installed patch its key, record
+bands, detail and shadow state, and per batch its identity, count, main material and shadow and
+the digest of its rows read back (lines kept, so a differing point names its patch); `digests`
+compares it with the others. 30k: every family 4 of 4 equal, water 1 of 1. Kuopio: every family
+8 of 8 equal on two pairs (and against the 120 MiB build); the first pair read `different` at
+`far_to_ground` in the vegetation only (409 visible patches against 408), and the first control
+run differs from two later control runs at that point the same way: run-to-run on the control,
+added to `TERRAIN-27`.
+
+**The graded trace** (the first audit's 4). `apply_cells` writes a line for each cell effect
+that changes what a set draws without a publication or wall line of its own: `count`, `show`,
+`hide`, `park`, `bind` (a level's page) and `variant`. `terrain_graded_trace.gd` replays a trace
+with `METRUM_GRADED_TRACE_REWRITE` set and writes it back with those kinds inserted where they now
+occur, every recorded line still matched: the nine tracked goldens were rewritten so (no line
+removed or changed; 43 `bind`, 99 `count`, 17 `park`, 4 `show`, 2 `variant` added) and replay in
+the gate. The preview placement (the first audit's 11) reads the shown entry's copies into the
+reused scratch instead of cloning them twice.
+
+**Smaller.** The zoom line starts at the camera's distance clamped into its range (finding 11: an
+infinite distance never ended); `take_installs` without settings spends what the layer installed
+(finding 12); a landed vegetation job always has its product, so the busy event, `deliver_busy`,
+`ResidencyWork::busy` (and its perf detail) and `prepared_busy` are gone (finding 13).
+
+**Session and gates** (fresh, this round; release libraries: control `dev` `0fffb6a2`, branch
+`139539a9`; release test binaries of the same; one boot, P-cores, eight workers):
+
+- Rows (`stream_benchmark.py series`, C B B C, every phase): 30k level or better but
+  `turn_back` 0.5 s max +5.9 (spread 4.1) and `night_pan_back` max +3.0 (spread 2.6); Kuopio
+  level or better but `turn_out` 1 s p50 +0.2 and max +5.8, `turn_back` 1 s p50 +0.1 and max
+  +6.3, `night_turn_out` 1 s max +4.0. Attributed before the rerun (instrumented, a side): the
+  30k flagged phases' worst frames are agents, terrain and Godot's draw on both sides, the
+  branch's maxima lower (0.5 s `turn_back` 20.0 against 21.1 ms, `night_pan_back` 11.1 against
+  11.4); Kuopio's worst turn frames are Godot's draw (a 47-49 ms first-use frame on both sides,
+  `RENDER-43`) and the terrain and street lights' scripts, the vegetation 0.6-0.7 ms in them on
+  both sides, its mean a frame 0.06-0.09 ms against 0.06-0.07. The one rerun of the flagged
+  groups (30k 0.5 s turns and night, Kuopio 1 s turns and night): every flagged row level; two
+  rows level in the first series flag in it alone (30k `turn_repeat` 0.5 s p50 +1.1 and max
+  +7.1 on a 33-frame phase, its instrumented branch run lower: 3.66 against 3.99 ms timed;
+  Kuopio `night_pan_back` max +4.2 against a spread of 4.1). Not rerun again.
+- Timing level F (`./run.sh --timing --level F`): `PERF-07` 30k 1x PASS on both sides, every
+  metric level (mean 2.289 against 2.253 ms, +1.6 % within 1.7 %); 30k 32x level (`PERF-17`'s
+  known exception on both sides).
+- Digests: as above (30k 4 of 4 in every family, water 1 of 1; Kuopio 8 of 8 on two pairs and
+  against the final build).
+- Stills: Kuopio three poses byte-identical (both branch builds); 30k `city` and `city_low`
+  identical in three runs a side, `saved` 1, 3 and 4 px (delta at most 2; control against control
+  2-4 px, `RENDER-45`'s residue; `systematic`: none).
+- Gates (code `139539a9`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,561 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,565 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 18 graded replays, 0 SCRIPT ERROR). The digests tool's unit tests 25 passed.
+
+### Per-frame queries read published values (`CODE-26`, round C26, 2026-11-13)
+
+Round C26 (`CODE-26`, raised to `P1` by the owner on 2026-11-13 from PL1's numbers): the
+per-frame queries of the renderers, the camera and the HUD no longer take the core. The
+inventory (PL1's counts and this round's): every frame `terrain.gd` waited in
+`get_land_cover_epoch`, `is_vegetation_land_cover_current` (up to 28 a frame at 100k),
+`get_coal_pit_overlay_revision` and `get_world_surface_height` (the graded tiles' eye height),
+`grass.gd` in `get_world_surface_height`, `main_ui.gd` in `get_growth_overview` (every game
+minute, so every frame at 32x), and the camera, while it moves, in `get_height_at` and
+`get_camera_water_surface_at` (the last found by this round's paused turn). Left: the non-road
+tools' hovers (zoning previews and dependencies, the select tool's edge and crosswalk hovers)
+wait while their tool is active (`CODE-26`'s remainder), and the terrain's stale land cover query
+(`get_vegetation_land_cover` on the main thread, `RENDER-40`'s rest). The roundabout hover reads
+the road tool's land (`ZONE-09`) and takes no core.
+
+**What is published.** The render snapshot carries a per-frame publication (`FrameQueries`,
+`nodes/sim/core/snapshot/frame_queries.rs`; the snapshot's own mechanism, no third one): the land
+cover epoch, the terrain payload and vegetation patch revisions (the currency check's nine
+pairs), the coal pit revision, the growth summary's three strings, and the visible surface: the
+heightmap, the roadbed, the water and the building sites the road tool's terrain inputs capture
+per render patch, each shared by `Arc`. A height query evaluates the graded surface over them
+(the index-free gather the road tool's view queries, bitwise the core's answer); the camera's
+water level the same reconstruction. Every query is `O(1)` apart from the surface's own sampling,
+allocation-free once the thread's scratch is warm, and never touches the core lock.
+
+**Publish cost.** A key compare (world epoch, terrain payload counter and global revision,
+vegetation epoch, coal pit revision, the growth summary's inputs, terrain source generation,
+roadbed generation, the terrain inputs' site revision, water render generation, surface stamp):
+`O(1)` and allocation-free while nothing changed. A change republishes only what moved: the
+growth strings on the hourly assessment, the vegetation revisions (`O(edited patches)`), the
+terrain payload revisions (`O(revised patches)`; the snapshot now shares this map instead of
+copying it every frame), and the surface: the noted patches' terrain inputs (the road tool's
+rebuild, `O(noted patches × sites near each)`), the roadbed in `O(1)`, and heightmap and water
+copies made once per edit and shared with the road tool's view (sample-chunk handles: no sample
+copied, and no second copy where the road tool copied before). The readers' rebuild of the
+terrain inputs readies only the site part of a stale building index (`ALLOC-05`) and owes the
+full readying to the simulation's next rebuild, so whether and when the readers rebuilt never
+moves the simulation's order.
+
+**Freshness rule.** A published value is at most one publication old, and an edit is visible to
+the frame that made it: the simulation thread publishes with the snapshot after every frame and
+edit; a bridge call that held the core on Godot's thread republishes as it releases it (the core
+guard: the key compare under the core, the snapshot written after the core is released), before
+the frame's readers run, so the camera and the hover heights follow a sculpt in the same frame.
+Publications are ordered by a sequence taken under the core lock, and an older one never replaces
+a newer one (a snapshot built before a main-thread edit keeps the edit's publication). Test
+(`published_frame_queries_follow_every_kind_of_edit`): after a road commit, an undo, a load, two
+site placements (one rebuilt first by the road tool's path), a bulldoze, a slope, a sculpt, a
+vegetation edit, the growth cheat and a pond, every published value equals the core's: the
+surface, terrain and camera-water heights bit for bit on a 41 × 35 grid over roads, pads, graded
+ground and water, every patch's land cover revisions, the coal pit revision and the growth
+summary; an unchanged core publishes nothing.
+
+**Measured** (fresh, 2026-11-13; release libraries, control `dev` `2a5f2220` with its scripts
+against the branch `b17ac153`; Godot 4.7.2 Forward+, gamescope headless at 1000 Hz,
+1920x1080, P-cores, eight workers, isolated profile; PL1's play rows, instrumented (`--detail`):
+a 60 s still and three 1 s turns with the simulation running from the hand-over, the 30k
+timing-cache city and the 100k commit city):
+
+```bash
+tools/stream_benchmark.py run --label <row>-<side> --out "$ARTIFACTS/play" --library <.so> \
+    [--scripts <control scripts>] --save <city> --speed 1|32 --phases still,turns --turns 1 \
+    --still-s 60 --detail --timeout 900 --settle-timeout 300 [--settle-cap-s 20]
+```
+
+The control's 30k 1x, 30k 32x and 100k 1x rows never settled (growth keeps the terrain dirty:
+the turn's start or the base pose timed out after 300 s; the branch settled every row) and were
+rerun with PL1's settle cap of 20 s, as the 100k 32x rows run on both sides. "Core waits" sums
+every blocking core lock a frame from the main thread (`core_locks`, perf channel); "tries busy"
+is the share of the frame's `try_lock`s that found the core held.
+
+| Configuration | side | still p50 / p99 | still > 33.3 | still core waits | tries busy | turns p50 / p99 | turns > 33.3 | turns core waits | simulation |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Paused 30k | control | 7.6 / 10.5 | 0 of 7813 | 0.14 | 3 % | 9.6 / 14.1 | 0 of 306 | 0.79 | 0.0x |
+| Paused 30k | branch | 7.6 / 9.6 | 0 of 7820 | 0.00 | 9 % | 8.9 / 13.1 | 0 of 335 | 0.00 | 0.0x |
+| 30k 1x | control | 8.4 / 19.5 | 0 of 6695 | 0.59 | 7 % | 16.8 / 35.3 | 2 of 168 | 1.93 | 1.0x |
+| 30k 1x | branch | 7.8 / 16.9 | 0 of 7211 | 0.04 | 19 % | 11.6 / 24.9 | 1 of 241 | 0.16 | 1.0x |
+| 30k 32x | control | 9.2 / 44.6 | 87 of 5053 | 2.08 | 12 % | 23.1 / 57.4 | 12 of 125 | 7.13 | 31.3x |
+| 30k 32x | branch | 8.8 / 19.9 | 6 of 6116 | 0.19 | 46 % | 13.9 / 26.7 | 0 of 214 | 0.08 | 31.2x |
+| 100k 1x | control | 17.2 / 46.7 | 145 of 3034 | 4.01 | 17 % | 28.5 / 55.7 | 28 of 102 | 7.70 | 1.0x |
+| 100k 1x | branch | 14.7 / 28.8 | 10 of 3782 | 0.16 | 54 % | 18.1 / 31.6 | 0 of 157 | 0.00 | 1.0x |
+| 100k 32x | control | 43.1 / 284.6 | 761 of 987 | 38.80 | 72 % | 49.5 / 146.9 | 54 of 57 | 30.52 | 22.9x |
+| 100k 32x | branch | 17.8 / 33.5 | 32 of 3169 | 0.00 | 97 % | 16.9 / 26.5 | 1 of 175 | 0.00 | 18.2x |
+
+- The paused 30k turn's core wait (PL1's split: 1.7 ms of the profiled turn) is gone: no blocking
+  core lock on the paused still or turns (0.14 and 0.79 ms a frame on the control); the turn's
+  frame p50 9.6 to 8.9 ms.
+- Running, the only blocking site left on a frame path is `get_vegetation_land_cover`, the
+  terrain's stale land cover query (`RENDER-40`'s rest): 0.04-0.19 ms a frame on average, at most
+  8-20 ms at 30k 1x and 100k 1x and 61 ms at 30k 32x, where it is the largest owner of five of the
+  six frames over 33.3 ms. The 30k 32x frames over 33.3 ms at the hourly pass: 87 to 6 in the
+  60 s still (turns 12 to 0).
+- The try sites find the core busy more often now that no blocking wait lines the main thread up
+  behind the simulation's frame: 30k 1x 7 to 19 %, 30k 32x 12 to 46 %, 100k 1x 17 to 54 %, 100k
+  32x 72 to 97 % (graded results, building LOD batches, asset and water polls, vegetation jobs,
+  the terrain payload drain). A busy try answers at once and asks again next frame, so their
+  products land later while the simulation's frames overrun (`CODE-26`'s remainder).
+- At 100k 32x the simulation reached 18.2x against the control's 22.9x while Godot drew 53
+  frames a second against 16: the simulation frame's phases are each slower (instrumented
+  `sim_frame` lines: agents +4 %, minute +11 %, snapshot +32 %), consistent with the shared pool
+  serving 3.3 times the frames; at 30k 32x both reach 31x. Not an acceptance timing (the owner's
+  100k policy); recorded for `PERF-09`.
+- Rows (the stream benchmark's series, C B B C in one lock, paused): 30k level or better in
+  every phase, turns 0.9-2.8 ms better at p50 (the paused turn's core waits); one flag,
+  `far_to_ground` p50 +0.04 ms (5.37 against 5.42 ms, a same-binary spread of 0.01) with its mean
+  0.44 ms and its max 4.6 ms better and 7 % more frames in the fixed-length move: recorded, not
+  rerun. Kuopio level or better; `turn_repeat 0.5s` p50 +0.0 ms (spread 0.0) and
+  `night_turn_back 1s` max +3.1 ms (one 10.5 ms frame in one run; spread 2.7). The instrumented
+  night run puts that phase's worst frame in Godot's draw after the scripts on both sides (branch
+  10.1 ms with 8.1 ms of draw, control 11.4 ms with 10.1), no core lock in it: not this change.
+- Level F (`./run.sh --timing --level F`, the publish runs in the snapshot of every simulation
+  frame): `PERF-07` 30k 1x PASS on both sides and level in every metric (mean 2.193 against 2.214
+  ms, snapshot 0.996 against 1.017 ms: the publication's key compare and its republications cost
+  0.02 ms a frame); 30k 32x level (mean 4.345 against 4.446, snapshot 1.366 against 1.418 ms, one
+  branch row noisy, `PERF-17`'s known exception on both sides); K22 click-to-ack 6.57 against 6.81
+  ms (reported).
+- Untimed: stills byte-identical (Kuopio `close`, `mid`, `forest_low` one a side; 30k `city` and
+  `city_low` three a side; 30k `saved` 2 px of max delta 1 on every pair, as control against
+  control: `RENDER-45`'s residue; systematic none); digests equal (30k graded, buildings, roads,
+  parked 4 of 4, water 1 of 1; Kuopio 8 of 8 and 1 of 1); the graded replay passes all 21 traces
+  of record bit for bit.
+- Gates (code `b17ac153`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,553 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,557 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 0 SCRIPT ERROR); missing docs 0.
+
+### Terrain edits outside the world; the road tool's water copy (`TERRAIN-28`, `ROAD-114`, round T28, 2026-11-13)
+
+**Cause (`TERRAIN-28`).** `TerrainSystem::brush_grid_bounds` clamped a brush's sample rectangle
+as `i32` and cast it to `usize`. A footprint wholly before the grid (the `RENDER-32-Q` sculpt:
+510 m beyond a 1,020 m world's corner, radius 24 m, grid centre -51) gave a negative upper bound,
+which wrapped to about 2^64. The brush's own loops skipped every sample, but
+`mark_render_patches_for_grid_rect` passed the wrapped bound to `record_height_grid_rect`, which
+maps it to world metres (about 10^20) and loops over the 512 m draping regions up to `i32::MAX`
+on both axes, inserting one `height_region_revisions` entry per region. Attributed on `dev`
+6e312470 under a 4 GB scope cap: the kernel killed the call after 17 s; with a 3 GB address
+limit, heaptrack (`--record-only`) showed the whole 214.8 MB peak in that map's rehash before
+the next 1.14 GB rehash failed. A radius larger than the world was a second unbounded case: the
+brushes looped over the unclamped square (about `(2r)^2` samples) and the edit's graded base
+rectangle and cell-lot bounds were not clamped (`O(r^2)` tiles and chunks).
+
+**Fix.** Every terrain brush edit (sculpt, level, smooth, slope; single edits and stroke steps)
+goes through one `SimCore` entry, `terrain_brush_edit`: `TerrainSystem::brush_world_bounds`
+clamps the footprint to the world grown by the render patches' border margin and refuses an edit
+that can write no sample (wholly outside the world, or a position or radius that is not finite
+or not above zero) before it pushes an undo record or marks anything (a `world-editor`
+`terrain_edit_refused` debug line). The edit's graded base rectangle, cell-lot bounds and render
+patches come from the clamped bounds. In `TerrainSystem`, `brush_grid_bounds` saturates and
+returns `None` for an empty rectangle, every brush loops over that rectangle alone (`O(clamped
+samples)`), and `mark_render_patches_for_grid_rect` clamps whatever bounds it is passed, so the
+region marks are bounded by the world for every caller. An edit whose footprint reaches the world
+writes what it wrote before: a digest of the samples' bits, the dirty patches with their payload
+generations, the draped regions' revisions and the undo count after thirteen edits (every entry,
+at the interior, edges, corners, partly outside and with a radius twice the world) equals the one
+recorded on `dev` 6e312470. One deliberate change: a radius of zero is refused (it wrote `NaN` to a
+sample exactly at the centre). No frame or tick path changed (terrain edits are editor actions),
+so no timing level.
+
+**`ROAD-114`.** The road tool's view kept its water copy by the water's render generation alone;
+a water edit replaces `WaterSystem` whole and restarts that generation, so two edits in a row
+left equal generations and the view kept the first edit's water. The view now keys the copy by
+`SimCore::water_copy_key` (world epoch, render generation, surface stamp), the key the published
+surface's `shared_water_copy` uses, and shares that copy. The key moves with every road edit's
+surface stamp too, so a road edit's publication may now take the shared copy (`O(storage
+chunks)` handles, made once per key for both readers).
+
+**Tests.** `brushes_reaching_past_the_world_are_clamped_and_outside_it_refused` (terrain: each
+brush at the corners and edges, 510 m out, 1.5 samples out, non-finite inputs, a radius 10^6
+samples; the marks' counts against the world's patches and 16 regions; the wrapped bound passed
+straight to the marks), `edits_wholly_outside_the_world_are_refused`,
+`edits_partly_outside_or_larger_than_the_world_are_clamped_to_it` and
+`edits_reaching_the_world_write_what_they_wrote_before_the_clamp` (`SimCore`, the `-Q` fixture
+world), `the_road_tool_view_follows_two_water_edits_in_a_row`. Against a build with the fixes
+taken out, the outside tests were killed at the 4 GB cap (15-16 s), the partly-outside test
+found a graded rectangle past the world and the water test the first edit's depths; the digest
+test passes on both, as it must.
+
+**Gates** (code at `stream-t28`): clippy `--all-targets` warning set equal to the base's
+(`asset_document.rs`); debug `cargo test --lib` 2,568 passed, 0 failed, 224 ignored;
+`./run.sh --test` PASS (nextest 2,572 passed, 225 skipped; `godot-main` and `godot-vehicle` PASS,
+0 SCRIPT ERROR); missing docs 0.
+
+### Car smoothing a frame ahead, and near-only agent shadow casters (`RENDER-47`, `RENDER-15`, round R47, 2026-11-13)
+
+The owner's decisions (2026-11-13): one round for both; `agents_near` built in Rust (the moving
+cars and walkers cast the sun's shadow only within reach of the shadow range, the main pass
+unchanged); the other caster cuts of SH2 not taken; no visual change.
+
+**The agents' frame a frame ahead** (`nodes/sim/render/agent_frame.rs`,
+`simulation_node/agent_frame_api.rs`). Everything that turns a snapshot into the agents' drawn
+buffers is one frame (`AgentFrame`): the walkers' compare-and-copy, the cars' smoothing with the
+off-lane ground solve (`car_visual.rs`, unchanged), the snapshot's parked publication and the
+shadow casters' candidates. `agents.gd` calls `advance_agent_frame(delta, full)` once a frame: it
+installs the frame a background-pool job prepared (the changed buckets copied into Godot arrays,
+the parked chunks packed) and hands the frame to the next job through `AsyncJobs` (the pool's
+`spawn`, the vegetation jobs' mechanism: no new thread mechanism). The job reads the newest
+snapshot under one read of its lock (cars, walkers and parked chunks together, so a car crossing a
+bay's edge is still drawn exactly once), smooths, takes the core once with `try_lock` for the
+solve (a busy core leaves those cars on their snapshot poses, as before), and lands the frame.
+On the background worker the smoothing's and the solve's `thread_pools::install` run inline and
+their parallel passes share that pool: the main thread runs no Rayon pass and joins none for the
+agents. The synchronous `smooth_car_render_data` remains for the tests that feed their own poses
+(`vehicle_ground_support_test`, `agent_inspector_test`); the inspector's camera follow reads the
+watched car's drawn origin from the installed frame.
+
+**Latency rule.** The job started in frame N takes frame N's delta and the snapshot newest when
+it runs, and computes what the main thread computed in frame N before; frame N+1 draws it. The
+drawn poses are the control's sequence one frame later. A job still running when frame N+1 asks
+is late: N+1 draws what N drew, starts nothing, and the next job smooths over both deltas (one
+step of `alpha(delta_N+1 + delta_N+2)`, the motion's time kept, its shape one step coarser).
+A snapshot with no agent to draw (an empty world, a view past every draw distance) is prepared on
+the main thread instead, `O(buckets)` and no pool, and lands the same way (`595b1625`, from
+Kuopio's flag below).
+Proof: `pipelined_frames_draw_the_control_sequence_one_frame_later` drives the old synchronous
+path and the lane through the real background pool over 60 frames of moving cars at fixed,
+varying frame times (three buckets, off-lane cars with a deterministic solve that is busy every
+seventh frame, a car leaving and a bucket emptying) and asserts every installed frame equal bit
+for bit to the control's frame before; `a_late_job_carries_its_delta_to_the_next` the late rule.
+The simulation is untouched (the job reads the snapshot and tries the core read-only).
+
+**Near-only casters** (`stream/layers/agent_casters.rs`, `StreamNode`). `agents.gd`'s bucket
+nodes (one MultiMesh per walker type and per car model and colour, the whole view out to the draw
+distances) draw every agent in the main pass and cast nothing. Each bucket has a shadow-only twin
+in the stream node's pools (its mesh, the bucket node's material override, the dynamic casters'
+12 m margin) holding only the agents that can shade ground the sun's shadow reaches: view depth
+within the range plus 30 m either way and distance within 1.9 times the range plus 30 m (SH2's
+prototype's test, `within_reach`). The job keeps, per bucket, the drawn agents within that reach
+plus 200 m of the job's eye (`candidate_radius_m`: the camera's travel before the frame draws,
+the snapshot cull's padding); just before the frame draws (`frame_pre_draw`) the stream node runs
+the exact test over the candidates with the drawing camera and the sun's
+`directional_shadow_max_distance`, writes the twins whose kept rows changed bit for bit, and
+charges its time to the frame's install ledger (`Owner::AgentCasters`, never deferred). Costs: the
+job `O(drawn agents)` for the candidates when an agent, its eye or the range moved (nothing on a
+still frame); the main thread `O(candidates)` when the candidates, the camera or the range
+changed, `O(1)` otherwise, and a write `O(kept agents)`; no node is made, slots grow a capacity
+class when outgrown and shrink at a quarter, the pool's spares serve the swaps, and steady frames
+allocate nothing but the pool's spawn of the job. The shadow benchmark's `agents_all` variant
+casts from the bucket nodes again (the twins off), the saving's control on one binary;
+`no_cars` / `no_walkers` reach the twins.
+
+**Measured** (fresh, 2026-11-13; release libraries: control `dev` `a2d9da92` with its own scripts
+(SHA-256 `2e7a7c47`), branch `a3b542a7` (`d36982e7`) for every row unless named, and the final
+`595b1625` (`0c11ad1c`: the agent-free frame on the main thread) for Kuopio's rerun; Godot 4.7.2
+Forward+, gamescope headless at 1000 Hz, 1920x1080, P-cores, eight workers, isolated profile; the
+30k timing-cache city and the 100k commit city):
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> \
+    --ctl-library <ctl.so> --ctl-scripts <dev scripts> --library <br.so> ...   # and kuopio
+tools/stream_benchmark.py run --label c30-1x-<side> --save <30k> --speed 1 --phases still,turns \
+    --turns 1 --still-s 60 --detail --timeout 900 --settle-timeout 300   # PL1's rows: p30, c30-32x, c100-1x
+tools/stream_benchmark.py run --label g30 --save <30k> --phases still,turns --turns 1 \
+    --shadows full,agents_all,agents_all,full; tools/stream_benchmark.py split ...; compare --gpu
+./run.sh --timing --level F --control $TEST_BINARY --branch $TEST_BINARY --base a2d9da92
+```
+
+PL1's play rows (instrumented: `--detail`, shares, not acceptance times; a 60 s still then three
+1 s turns, the turns' mean), control against branch. "Agents" is the agents' record on the main
+thread (`agents.gd`'s update with Rust's install and the next job's start); the twins' keep runs in
+the stream node's pre-draw pass, beside it:
+
+| Row | Frame p50 still / turns, ms | Agents mean still / turns, ms (p99 still) | Twins' keep, ms | Blocking core waits, ms a frame (still) | Shadow-pass primitives (still) |
+|---|---|---|---|---|---|
+| 30k paused | 7.82 to 6.90 / 9.11 to 8.91 | 0.19 to 0.03 / 0.57 to 0.16 (0.32 to 0.05) | 0.00 / 0.04 | 0 / 0 | 53.5 to 23.3 M |
+| 30k 1x | 7.95 to 6.82 / 11.64 to 9.71 | **1.29 to 0.25** / 1.60 to 0.30 (1.94 to 0.41) | 0.05 / 0.06 | 0.05 / 0.03 | 52.1 to 23.5 M |
+| 30k 32x | 8.55 to 8.02 / 12.08 to 10.26 | 1.70 to 0.56 / 2.57 to 0.66 (3.36 to 1.65) | 0.06 / 0.08 | 0.03 / 0.21 | 60.8 to 23.2 M |
+| 100k 1x | 12.73 to 11.14 / 16.72 to 15.05 | 1.62 to 0.34 / 2.22 to 0.44 (3.77 to 0.71) | 0.06 / 0.07 | 0.24 / 0.39 | 67.8 to 22.7 M |
+
+The job itself takes 0.99 ms a frame on the pool at 30k 1x and 32x and 1.17 ms at 100k 1x (the
+smoothing and solve the main thread did before: 0.98-1.22 ms); late jobs (frames that drew
+what they drew before and carried their delta on): none in the paused and 30k 1x rows, 12 of
+7,161 measured frames at 30k 32x (20 counting the load), 5 of 4,951 at 100k 1x. 100k at 32x was
+not measured (the brief's rows: 30k paused, 1x and 32x, 100k 1x). The 30k 1x row's agents and
+twins together are 0.30 ms a frame (bar 0.6). The blocking core waits are all in the terrain's
+stale land cover query (`get_vegetation_land_cover`, `RENDER-40`'s remaining blocking site): at
+30k 32x the control's worst still frames (25-29 ms) were the agents' Rayon join waiting 16-21 ms
+for the pool during the simulation's hourly pass; the branch's main thread no longer waits there,
+reaches the land cover query instead and waits for the simulation to release the core.
+
+**The 30k 32x tail, attributed** (the coordinator's flag; a second instrumented row a side and one
+experiment). Over each whole row (60 s still and three 1 s turns), control / branch:
+
+| 30k 32x row | Frames | Over 16.7 / 33.3 ms | Main-thread core waits over 5 ms | Agents over 5 ms (the pool join) | Simulation speed |
+|---|---|---|---|---|---|
+| control, run 1 / 2 | 6,877 / 6,752 | 83 / 1, 69 / 0 | 8 (206 ms), 4 (205 ms) | 63 (660 ms), 51 (641 ms) | 31.6x / 31.7x |
+| branch, run 1 / 2 | 7,161 / 7,377 | 133 / 8, 108 / 4 | 86 (1,462 ms), 71 (1,161 ms) | 0, 0 | 30.9x / 31.1x |
+| branch, the job never taking the core (experiment) | 7,442 | 96 / 1 | 64 (1,067 ms) | 0 | 31.0x |
+
+Every branch frame over 33.3 ms (35-77 ms) is a blocking wait of 22-67 ms in
+`get_vegetation_land_cover` (`vegetation_api.rs`, `terrain.gd`'s land cover staging), most of them
+at the hourly pass; the control's worst frames (24-35 ms) are the agents' Rayon join waiting
+16-26 ms for the pool the simulation's frame occupies. With the job forbidden the core (an
+attribution build only: off-lane cars stay on their snapshot poses), the waits stay (64 of them,
+1,067 ms): the job's own core holds are not their cause. The branch uncovers them: its main thread
+no longer stalls in the agents' join while the simulation works, draws 4-10 % more frames, and
+meets the busy core in the one blocking query left on a frame path. That wait is `RENDER-40`'s
+rest (the land cover query to the payload worker), not this round's scope; the simulation runs
+2 % slower beside the extra frames (30.9-31.1x against 31.6-31.7x).
+
+The shadow pass by SH2's method, on the branch library alone: one load a city, the chain `full,
+agents_all, agents_all, full` (`agents_all`: every agent cast from its bucket node, as before),
+`split`, `compare --gpu`; the pass from `--gpu-profile` runs of the same chain:
+
+| Still | Shadow pass, `agents_all` to twins | Shadow-pass primitives | GPU p50 saved (spread) | Frame p50 |
+|---|---|---|---|---|
+| 30k | 2.16 to 1.24 ms | 53.5 to 23.3 M | 0.91 ms (0.05) | 7.8 to 6.9 ms |
+| 100k | 2.99 to 1.22 ms | 69.0 to 22.8 M | 1.66 ms (0.02) | 11.0 to 9.4 ms |
+
+SH2's prototype measured 1.00 / 1.55 ms; the twins keep the same agents. The 30k 1 s turns save
+0.89-0.91 ms of GPU each (21.2-21.4 M primitives against 49.7-50.3 M).
+
+- **Series C B B C, 30k** (default phases): every phase's p50 level or better, 0.6-1.0 ms better
+  wherever the sun casts (still 7.5 to 6.7 ms, 1 s turns 8.0 to 7.0-7.2, pans 6.6 to 5.8, zooms
+  6.5 to 5.6); GPU p50 0.80-1.02 ms better on every daylight phase (still 7.49 to 6.59 ms), the
+  shadow pass's primitives 53.5 M to 23.3 M (still) and 48-52 M to 21-24 M on the motions, its
+  draws level (860 to 847). Night: frame p50 level or 0.3-0.4 ms better; the night turns' GPU
+  p50 +0.09 ms (spread 0.03-0.07) with the same draws and primitives and no shadow pass (the sun
+  is hidden at night, the twins empty): the `--gpu-profile` pair puts it in the depth pre-pass
+  and the opaque pass, +0.02 to +0.17 ms by phase and level on the night pan back, no pass the
+  change draws in. Flags: maxima on `pan_back` (+6.9 ms), `zoom_out` (+1.9), `zoom_in_repeat`
+  (+4.2), attributed before any rerun by an instrumented run of the pans and zooms a side: the
+  branch's worst frames there are Godot's draw (3.7-5.8 ms of render CPU) and the terrain script
+  (0.4-0.8 ms) with the agents under 0.3 ms, while the control's carry 0.4-5.0 ms of agents; not
+  rerun. `night_still` and `night_pan_out` read "worse p50" at +0.0 (under 0.05 ms, spread 0.0).
+- **Series, Kuopio** (no agents): first `still` p50 +0.1 ms (1.7 to 1.8), every main-thread owner
+  slower alike in an instrumented pair and the render CPU +0.06-0.2 ms: a pool worker woken every
+  frame for a job with nothing to do. Fixed (`595b1625`: a snapshot with no agent to draw is
+  prepared on the main thread, `O(buckets)`); the one rerun of the row, with that library, reads
+  every phase level or better (still p50 +0.0, max -0.4). The first run's maxima (`zoom_in_repeat`
+  +7.3, `night_pan_out` +4.9, `zoom_in` +2.1, `far_zoom_out` +2.4) do not recur in the rerun.
+- **Level F**: `PERF-07` 30k 32x level on every metric (mean 4.338 against 4.345 ms; `PERF-17`'s
+  known exception both sides). 30k 1x PASS on every row, but flagged against the one control row:
+  mean +2.8 % (2.176 against 2.237 ms, tolerance 1.7 %), p99, p99.9 and snapshot; the one rerun of
+  the branch rows read mean +3.8 %, agent phase +4.7 %. The headless runner executes no changed
+  code (no file under `simulation/`, `nodes/sim/core/`, `thread_pools.rs` or `config.rs` changed;
+  the agents' frame and twins run only under Godot), but the two test binaries differ: 2,391 of
+  16,390 simulation functions compiled to different sizes (inlining moved across codegen units
+  as the crate grew), so the difference is the build's layout, not this change. Reported, for
+  the coordinator. **Settled at landing** (coordinator, owner's choice, same binaries, a fresh
+  30k 1x session `ctl, br, br, ctl`, every row PASS): branch mean 2.232 against 2.268 ms (-1.6 %,
+  better), agent phase -2.9 % (better), p99, p99.9, snapshot and load level; the first session's
+  single control row was the outlier.
+- **Untimed** (branch `a3b542a7`; Kuopio again with `595b1625`): stills byte-identical (Kuopio
+  `close`, `mid`, `overview` with both branch libraries; 30k `city`, `city_low` three runs a side;
+  `saved` 1-3 px of max delta 1-2, as control against control: `RENDER-45`'s residue; systematic
+  none); in clear weather (scenario 0, hard sun shadows) `city` identical on two pairs, the two
+  shadow-edge views (eye 25-36 m up, looking along the streets through the 420 m of shadowed view depth) differ only in the sky
+  by as much as control against control (systematic none), `saved` 1-4 px of residue; the night
+  views and the far views of the save's weather differ only in the sky, run to run alike
+  (systematic none). Digests equal (30k graded, buildings, roads, parked, vegetation 4 of 4, water
+  1 of 1; Kuopio 8 of 8 and 1 of 1). Graded replay of the 21 traces of record (release libraries): the same result on both sides,
+  trace for trace: the 9 goldens in the tree and both `kuopio-swing.1` pass; the 10 traces recorded
+  before AX's trace lines (`56619860`, `bind` and `count` lines) stop at the same line on both.
+- **Gates** (code `595b1625`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,568 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,572 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 0 SCRIPT ERROR); `vehicle_ground_support_test` (4,840 poses), `agent_inspector_test` and
+  `parking_test` PASS alone on the release library; the new unit tests (pose trace, late rule,
+  candidates, twins against the recorder) pass.
+
+### The road chunk renderer out of the road tool (`RENDER-52`, round CB part 1, 2026-11-13)
+
+Round CB (`ROAD-112` lane Y), part 1 of `RENDER-52`. The committed network's road chunks (the
+resident set, staged updates, T61 (2)'s holds, payload validation, the chunk build and each
+chunk's street lights and road signs) were drawn by `network_tool.gd`, the road tool's base class,
+and R1's hydration (`road_chunk_hydration.gd`) called its private builder and commit. They now
+live in `godot/scripts/renderers/road_chunk_renderer.gd`, the road tool's child `chunks`
+(first among its children, so chunks, lights and signs keep their tree order); `network_tool.gd`
+keeps tool code only (847 to 275 lines). `NetworkRenderer`, the hydration, the preview display,
+the select tool and the terrain's sculpt refresh call its public functions (call points in
+[`roads.md`](roads.md#road-tools-road-112-road-113)); the road tool hears it through
+`road_chunks_installed` and `road_chunks_released`, and the hold's serial check moved with it
+from `road_tool.gd`. The code is moved, not changed: chunks are still `MeshInstance3D` nodes
+built by GDScript, one hydration unit a chunk, and no Rust changed.
+
+**Measured first (control `dev` `9488992a`'s release library and scripts; 1080p, gamescope
+headless, P-cores, eight workers, paused, instrumented `--detail` runs, `$ARTIFACTS`
+art-cb/stream; the drag probe with the perf channel on, art-cb/drag).** Road work a frame is the
+network refresh's road share plus the hydration's units:
+
+| Input | Frames with road work | Max a frame | Median | Over 4.0 ms | Chunks | Largest unit |
+|---|---:|---:|---:|---:|---:|---:|
+| 30k load (`post_load`) | 59 | 11.9 ms | 5.4 ms | 49 | 66 | 9.1 ms |
+| 100k load (`post_load`, diagnosis) | 185 | 26.4 ms | 5.7 ms | 154 | 197 | 26.4 ms |
+| 30k and 100k pans | 0-1 | 0.3 ms | - | 0 | 0 | - |
+
+A unit costs about 52 ns a vertex on both cities (medians over chunks above 20k vertices: pack
+8, build 28, commit 17), and chunks reach 148k vertices, so a whole-chunk unit is 6-8 ms (one
+26 ms outlier at 100k) against the 4.0 ms hydration budget; the budget's prediction (0.1 us a
+vertex) is twice too high, which only makes every large chunk run alone as its frame's first
+unit. Edit frames on Kuopio (39 strokes: a fast commit, its undo, the converged commit): road
+work at most 3.6 ms on a commit frame and 1.4 ms on an undo, except kuopio_01's first two fast
+commits, one frame each of 207-222 ms of road work (the network refresh's road staging and
+commit; not attributed further here). So the bar (no road install frame above the budget) is a
+whole-chunk unit's to miss, and part 2 must split chunks.
+
+**Part 1's results (2026-11-13, one boot; the branch runs the control's library, since no Rust
+changed, with its own scripts; `$ARTIFACTS` art-cb).** Settled products by digest (`--digests`, one
+run a side): the 30k city's road chunks 5 of 5 settle points equal (66 chunks, every surface's
+arrays, place and layout), graded, buildings, parked cars, vegetation and water equal too; Kuopio 8
+of 8 in every family. Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up
+frames byte-identical; the 30k city's `saved`, `city` and `city_low` three runs a side: the third
+pair byte-identical in all three, `systematic` none on the second set (control 2-3 against branch
+2-3) and one pixel (delta at most 2) on `saved` in the first set, where control against control
+differs by 3 pixels (the `RENDER-45` residue). The load's road work is the control's (30k: at most
+12.0 ms a frame, 49 of 59 frames over 4.0 ms; 100k: 23.5 ms, 149 of 185), as the code is. Kuopio's
+drag probe passes on both sides with the holds drawn (17-22 held frames a run), its edit frames'
+road work at most 2.7-3.5 ms on a commit, 2.6-5.3 on a fast commit and 2.0-2.9 on an undo against
+the control's 2.8-3.6, 2.8-3.7 and 1.4-1.8 (two runs a side, untimed, the second pair beside other
+rounds' builds: noise of the shared machine on the same code), and kuopio_01's two 207-268 ms frames
+on both. Stream rows (C B B C, 30k and Kuopio, level F's stream half): every p50 level or better
+after the one rerun (the first series flagged 30k `turn_repeat 0.5s`, `pan_out` and `zoom_in` p50 by
++0.0-0.1 ms on spreads of 0.0-0.1, level in the rerun, and Kuopio's `jump` p50 +0.2, level in the
+rerun); single-frame maxima flagged on 5-13 ms frames (30k `pan_out` +1.4 and `zoom_in_repeat` +3.8
+ms in the rerun, level or better in the first series; Kuopio `turn_repeat 1s` +2.7, `pan_out` +2.2,
+`zoom_in_repeat` +1.6), for review: Kuopio has no road, the frames run the same code but for one
+renamed call a frame, and other rounds' builds ran beside parts of both series. Teardown (BX1's
+probe, a new game on Kuopio with roads, the 30k city loaded once, quit): no mesh-null, leaked-RID,
+leaked-dependency or error line at any step or at exit on either side. `./run.sh --test` passes
+(nextest 2,577 of 2,577, 225 skipped; Godot main and vehicle chains, no script error, no Godot test
+skipped, the graded replays of every recorded trace included); debug `cargo test --lib` 2,573
+passed, 0 failed, 224 ignored. No simulation code changed, so the level F session's `./run.sh
+--timing` half has nothing to time (the test binary is the control's).
+
+**Part 2 (next).** Chunk surfaces encoded in Rust off the main thread in Godot's own layout,
+installed by the stream `roads` layer through `RenderingServer` in budgeted parts (a surface a
+unit onto a hidden mesh, then one swap, so no frame shows two versions or a hole), the preview
+display's run collapse on the mesh RID, teardown through the pools. Godot 4.7.2's layout for a
+road layer, read back from `RenderingServer.mesh_get_surface` (format `0x8_0000_001f`, with the
+road layer's `CUSTOM0` RGBA float `0x8_0000_e05f`): `vertex_data` holds the positions (f32 x 3,
+stride 12) then, at 12 n, a normal and tangent stream of stride 8 (the normal octahedral-encoded
+as two u16 truncated from x 65535, then a tangent the engine generates from the normal, since the
+format gains its tangent bit); `attribute_data` holds per vertex the colour as RGBA8 (truncated
+from x 255.0), the UV as f32 x 2 and, on the road layer, `CUSTOM0` as f32 x 4 (stride 12 or 28);
+the AABB is the positions' exact bounds with each extent raised to at least `1e-5` (part 2's
+probe; not a running `expand_to`); `uv_scale` is zero.
+
+
+### The road chunk renderer's Rust half (`RENDER-52`, round CB part 2, 2026-11-13)
+
+Round CB2 (`ROAD-112` lane Y), on `dev` `5b790031`, for review. A load's road chunks no longer
+build in GDScript one whole chunk a unit:
+
+- **Encoder** (`rust/src/nodes/sim/render/stream/layers/roads/surfaces.rs`): a chunk's layers in
+  the `RenderingServer`'s own surface layout (above), bitwise equal to
+  `ArrayMesh.add_surface_from_arrays`: positions, the octahedral normal and the engine's generated
+  tangent (`Vector3(n.z, -n.x, n.y).cross(n.normalized()).normalized()`, sign folded into `y`),
+  RGBA8 colours, UVs and the road layer's `CUSTOM0`, the AABB as above; a tunnel lining's
+  shadow caster as a vertex-only surface. Pinned by Rust tests on bytes Godot stored for the
+  same arrays (CB's format probe, CB2's AABB and edge-normal probe: axis normals, negative z, a
+  zero normal) and by `road_render_publication_test`, which compares every chunk's
+  `RenderingServer.mesh_get_surface` with Rust's bytes (format, count, both streams, AABB, the
+  lining caster) at each of its 64 strokes and after its save and load. `O(vertices)` a chunk.
+- **Parts** (`stream/layers/roads.rs`, `simulation_node/road_hydration_api.rs`,
+  `road_chunk_hydration.gd`): the stream node orders the pending chunks as before (view, near
+  ring, nearest, key) and asks for the head of the order (`PREPARE_AHEAD` 8) to be encoded on the
+  background pool (at most 4 jobs out; builds outside the head dropped). A prepared chunk runs in
+  parts: each surface onto its hidden `ArrayMesh` through `RenderingServer.mesh_add_surface`
+  (predicted 20 us + 0.5 ns a byte), then its street lights, whose batch nodes cost about 9 us a
+  lamp, as much as its surfaces: `street_lights.gd` `begin_chunk` gives the book the lamps and
+  `build_chunk_part` makes the nodes in 1.0 ms slices, the chunk's lamps drawn once all are made;
+  then the swap (`install_built`: the chunk node on the finished mesh, its signs, through the
+  renderer's own `install`, so T61 (2)'s holds are unchanged). A chunk whose surfaces are not
+  encoded yet is passed over until they are. The chunk meshes are `ArrayMesh` resources used as
+  the server's mesh handles: their surfaces exist only in the server, so every reader reads the
+  server's surfaces (`server_surfaces`), the preview display collapses runs through
+  `RenderingServer.mesh_surface_update_vertex_region` on the mesh RID with the layer metas
+  `road_layer_counts` and `road_layer_formats`, and a dropped build or a freed chunk node frees
+  its mesh with the resource.
+- **Edits** still build their changed chunks in GDScript (`update`, `commit_staged`), unchanged.
+- **Kuopio's first fast commits' 207-222 ms frames** (CB part 1): the lamp and sign models and
+  kinds, made at the first chunk with a lamp or a sign; the load call made them only for a world
+  with roads, so a new game's first commits paid them. The load call now makes them for every
+  world (`road_chunk_hydration.gd` `prewarm`).
+
+**Measured (fresh, 2026-11-13; the branch's release library, instrumented `stream_benchmark.py
+run --detail --phases post_load,pan`, 1080p, gamescope headless, P-cores, eight workers; road
+work a frame = the network refresh's `road_mesh` share plus the hydration's parts, `$ARTIFACTS`
+art-cb2/stream and `roads.py`):**
+
+| Input | Frames with road work | Max a frame | Median | Over 4.0 ms | Largest part |
+|---|---:|---:|---:|---:|---:|
+| 30k load, branch (two runs) | 60-61 | 3.48-3.66 ms | 2.44-2.49 ms | 0 | 1.76-1.81 ms |
+| 30k load, control (`5b790031`, same boot) | 59 | 11.5 ms | 5.34 ms | 49 | 11.5 ms |
+| 100k load, branch (diagnosis) | 205 | 22.0 ms | 2.52 ms | 4 | 20.7 ms |
+| 100k load, control (CB part 1's `9488992a`, historical) | 185 | 26.4 ms | 5.73 ms | 154 | 26.4 ms |
+| 30k and 100k pans | 0 | - | - | 0 | - |
+
+The 30k load meets the bar: no frame of road work above the 4.0 ms hydration budget. At 100k
+four frames are over: two single surface parts of 15.6 and 20.7 ms (a multi-megabyte surface
+handed to `mesh_add_surface` in a load frame heavy with other uploads, read as the engine's
+staging buffer stalling; not split further: a surface is one buffer) and two lamp or swap parts
+of 4.7 ms with one 2-3 ms engine spike inside a single batch node (seen at 30k too before the
+1.0 ms slice). The analysis counts the network refresh's road share only: CB part 1's tables
+counted its whole time, whose first frame is the terrain's visuals (5 ms), not road work.
+
+**Products and edits (fresh, the same boot; control `dev` `5b790031`'s release library with its
+scripts and this branch's benchmark script).** Digests (`--digests`, one run a side): the 30k
+city's road chunks 5 of 5 settle points equal, graded, buildings, parked cars, vegetation and
+water equal too; Kuopio 8 of 8 in every family. Kuopio's drag probe (39 strokes, perf channel,
+untimed): the first commits' 222-273 ms frames of road work on the control are gone on the branch
+(road work at most 1.5-2.0 ms on a commit, 1.8-2.7 on a fast commit, 1.4-3.7 on an undo, against
+the control's 1.2-1.8, 1.7-2.0 apart from those frames, and 1.6-2.9); the probe passes on two of
+three branch runs and both control runs: the failing run's first stroke's undo installed its
+graded batch without a batch frame of its own (the graded renderer's one-batch-frame check):
+timing-dependent, the first stroke now running without the long frame before its undo, and not
+seen in the other two runs; for review (CB2b: 5 of 5 a side passed). The teardown probe (BX1's: a new Kuopio game with roads, Zoning on and off, the 30k city
+loaded, quit): no mesh-null, leaked-RID, leaked-dependency or error line at any step or at exit
+(CB2c adds the mesh ledger's count, below).
+Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up frames
+byte-identical; the 30k city two runs a side: `city` and `city_low` byte-identical in both pairs,
+`saved` 2-3 pixels (delta at most 3) where control against control differs by 2, `systematic`
+none on all three (the `RENDER-45` residue). Stream rows (level F's stream half, C B B C, 30k
+and Kuopio, two series, `$ARTIFACTS` art-cb2/series and series2): every flag is a single-frame
+maximum of a 5-60 ms frame or a p50 of +0.1-0.4 ms on a spread of 0.0-0.3, and none repeats in
+the second series (first: 30k `zoom_in`, `zoom_in_repeat` and `jump` maxima, Kuopio `turn_out
+0.5s`, `pan_back`, `zoom_in_repeat` and `far_to_ground` maxima; second: 30k `turn_repeat 0.5s` and
+`turn_out 1s` maxima, `pan_out` and `far_to_ground` p50, Kuopio `post_load` p50 +0.3 and max
++65 ms, `turn_back 1s`, `far_zoom_out` and `jump_back` p50), for review: no phase after the load
+runs road code, and Kuopio's load call now makes the lamp and sign models (decided above), which
+its first `post_load` frames may carry. No simulation-thread code changed, so the session's
+`./run.sh --timing` half has nothing to time.
+
+**Round CB2c (2026-11-14, rebased on `dev` `04505c09`, for review): the teardown count and the
+load's lamp parts.** The hydration has an opt-in mesh ledger (`set_road_hydration_mesh_ledger`,
+`get_road_hydration_meshes_alive`, `get_road_hydration_meshes_made`, `get_road_hydration_build_meshes`;
+off it costs one thread-local check a mesh made). A freed `ArrayMesh` frees its server mesh and
+the hydration makes no other server handle, so "every alive ledger mesh is drawn by a chunk or held
+by a build" proves its handles freed. `road_render_publication_test` now reloads as the game does
+(the renderer reset, so its post-load byte audit reads hydrated chunks; it kept the old chunks
+before) and checks the ledger: made, each alive one drawn, none alive after the chunks drop. The
+teardown probe (`METRUM_TEARDOWN_PAN=1`: pans during each load's hydration, 147 meshes made for 66
+kept, the dropped builds' freed; a road dragged, committed and undone inside a hydrated chunk,
+whose mesh is freed) has no unaccounted mesh and no error line at any step. Without a streaming
+core (tests) the hydration installs inside NetworkRenderer's commit, where the network is still
+dirty: its parts no longer answer busy there (they left the chunk out). The 30k load (fresh, same
+measure as above, `$ARTIFACTS` art-cb2/stream2): five runs of the rebased branch had 1-3 frames of
+road work over 4.0 ms (max 4.3-5.6 ms), lamp parts in 13 of 14: the first lights part paid the
+street light book's buffers (3.3 ms, made in its first `set_chunk`) and the engine's first batch
+node (1.7-4.4 ms); both are now paid in the load call's prewarm (`set_kinds`). Three runs after:
+0, 1 and 1 frames over (4.24 and 4.39 ms, max 3.56 in the clean run), median 2.41-2.46 ms. The
+frames left are single engine stalls of 1.5-3 ms inside one lamp batch node's creation
+(`MultiMeshInstance3D.new()`, `MultiMesh.instance_count`) mid-load: the bar is not met on every
+run; pooled server instances for the lamps (no node per batch) are the fix, not a slice size.
+Digests (30k 5/5, Kuopio 8/8, every family) equal and Kuopio's stills byte-identical on the final
+library; Kuopio's drag probe passes.
+
+**Round CB3 (2026-11-14, for review): the street lamps on pooled server slots, built in the load
+call.** Measured first on CB2c's tip (`3e74ccc8`, five instrumented 30k loads, `$ARTIFACTS`
+art-cb3/stream `base-*`): 2, 2, 1, 4 and 0 frames of road work over 4.0 ms (max 10.4, 4.3, 4.5,
+9.1, 3.8 ms); all but one are lights parts of 4.0-9.0 ms predicted at 1.0 (the first batches of
+the 15 lamp and glow meshes CB2c's prewarm did not make), the other a hydration start of 10.4 ms. The
+lamp book (`street_lights.rs`, `street_lights/draw.rs`) now draws each 64 m cell and kind's three
+level-of-detail batches and each chunk's glow on the stream backend's `SlotPool` (one `MultiMesh`
+and one instance a slot, no node, resource or engine object), with what the nodes gave the server:
+the lamp material, the band's range with its 10 m hysteresis margins, the first two levels
+casting with a 32 m extra margin, the last and the glow a 2 m one, the chunk's frame origin;
+batches show together once all are made. Slots alone were not enough (`$ARTIFACTS` art-cb3 `cb3a`-`cb3c`,
+`[CB3]` timers, removed): lights parts fell to about 0.6 ms, but a new slot's creation stalls
+0.4-2.9 ms now and then and a buffer's upload 0.3-2.8 ms (the engine's allocations and staging,
+not predictable from the call), and the hydration's first-frame reset freed the prewarmed spares.
+So the load call's prewarm (`road_chunk_hydration.gd` `prewarm`) now builds every road chunk's
+batches hidden (`get_road_mesh_lights_all`, `StreetLightBook.prebuild_draw`: 11,670 slots for the
+30k city's 61 lit chunks, 62-98 ms of the load call), a reset keeps them, and a load frame's
+lights part only shows a chunk whose lights match its prebuilt ones (0.05-0.08 ms a chunk); a
+chunk that differs builds in its own parts as before. The chunk layers' materials' first use
+(3.2 ms in one run's first frame) moved to the prewarm too. Costs: the prebuild `O(lamps +
+batches)` once a load; a shown chunk `O(its slots)` visibility flips; an edit's chunk `O(lamps)`
+floats written into reused slots; a removal or reset `O(slots)`; at most 65,536 spares. Five
+instrumented 30k loads of the final library (`fin-*`, roads.py): 0 frames over 4.0 ms in every
+run, max 1.81, 3.32, 3.98, 2.48 and 2.02 ms (median 0.97-1.07, 47 frames with road work, 66
+chunks); pans have no road work. The teardown probe counts the lamp slot ledger at each step (made
+less freed equals live plus spares, none live after the new game; the exit's leaked-RID lines
+cover the rest). `shadow_variants.gd` toggles the lamps' casting through the book
+(`set_cast_shadows`); its node census no longer counts lamps.
+Fresh on the final library against CB2's control (`5b790031`, same boot): digests 30k 5/5 and
+Kuopio 8/8, every family equal; Kuopio's stills byte-identical; the 30k stills (two a side)
+identical at `city` and `city_low`, `saved` 3-4 px (the control against itself 2 px), `stills
+systematic` none on all three. The teardown probe (two loads with pans, a city road and its undo,
+a new game) passes with no error line; the lamp ledger balances at every step (after the first
+load 11,775 made, 89 freed, 11,677 live, 9 spare; after the new game none live, the prewarm's 16
+spares, freed at exit). Kuopio's drag probe passes 2 of 2 a side, its edit frames level or better.
+Level F series C B B C (`$ARTIFACTS` art-cb3/series): every moving phase level or better at 30k
+but `far_zoom_out` (p50 +0.5 ms, spread 0.5); `post_load` p50 -1.3 ms and its maximum (the held
+load frame) +155 ms over a spread of 111: the load call now builds the lamps (the road prewarm
+122-131 ms, 62-98 of it the prebuild; the engine then takes up the 11,670 new instances in that
+frame; the instrumented first frames 1,305-1,401 ms against 777-1,253 on CB2c's tip, settle
+7.0-7.6 s against 6.8-7.2): the lamps' cost moved from the load frames into the held load, for
+review. The 100k load (diagnosis, one run): lights parts 0.04-0.07 ms; 2 of 158 road frames over
+4.0 ms, the two single multi-megabyte surfaces (15.7 and 16.4 ms) CB2 left open. Kuopio (no roads: no lamp work in its frames) flags p50 +0.0-0.3 ms on `turn_out 0.5s`,
+`turn_repeat 1s`, `pan_back`, `zoom_out` and `jump` (spreads 0.0-0.3), read as noise for review.
+A second series (`$ARTIFACTS` art-cb3/series2): only the `post_load` maximum repeats (+107 ms over a spread of
+73); 30k `far_zoom_out` is +0.5 ms again but within its spread (0.6), with the same draw calls and
+primitives as the control (a review item); none of the Kuopio flags repeats.
 
 ## Implemented Runtime Contract
 
@@ -18180,6 +19468,9 @@ Current deterministic rules:
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
   not the visible graded surface
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
+- every terrain brush edit clamps its footprint to the world; one that can write no sample
+  (wholly outside the world, a position or radius that is not finite or not above zero) is
+  refused before it pushes an undo record or marks anything (`TERRAIN-28`)
 - completing a terrain brush stroke re-grades the touched graded tiles and rebuilds the derived
   terrain outputs from the updated source terrain
 - terrain brushes must not directly deform road top surfaces, placed flat pads, or future local

@@ -219,7 +219,7 @@ fn populated_ring_join_scaling() {
 }
 
 #[test]
-#[ignore = "unprofiled ROAD-114 hover locality; run alone with --release --ignored --nocapture"]
+#[ignore = "unprofiled ROAD-118 hover locality; run alone with --release --ignored --nocapture"]
 fn populated_road_type_pocket_scaling() {
     measure_populated_road_plan_scaling(
         false,
@@ -357,7 +357,7 @@ fn measure_populated_road_plan_scaling(
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
-                tunnel,
+                profile: crate::simulation::network::road_edit::RoadProfile::from_tunnel(tunnel),
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -498,7 +498,7 @@ fn measure_populated_road_plan_scaling(
             building.facing_dir = Vector2::new(0.0, -1.0);
             building.edge_idx = 1 + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
-            // ROAD-114 holds roughly 30k agents at the largest tier, like commit locality.
+            // ROAD-118 holds roughly 30k agents at the largest tier, like commit locality.
             building.occupancy = if measured == Measured::PocketStroke { 1 } else { 6 };
             if fields {
                 let p = Vector2::new(building.center_x, building.center_y + 12.0);
@@ -663,7 +663,7 @@ fn measure_populated_road_plan_scaling(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel,
+            profile: crate::simulation::network::road_edit::RoadProfile::from_tunnel(tunnel),
             median: (measured == Measured::Divided).then_some(GRASS),
             attributes: if measured == Measured::OneSided {
                 one_sided()
@@ -1172,7 +1172,7 @@ fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: 
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
-        tunnel: false,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
         median: None,
         parking: Default::default(),
         attributes: RoadAttributes::DEFAULT,
@@ -1209,7 +1209,7 @@ fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: 
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median: None,
                 parking: Default::default(),
                 attributes: RoadAttributes::DEFAULT,

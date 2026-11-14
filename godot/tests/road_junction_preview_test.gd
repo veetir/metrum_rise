@@ -44,6 +44,7 @@ const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
 var _failures := 0
 var simulation: SimulationNode
@@ -161,29 +162,27 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.simulation_node = simulation
 	var terrain_stub := TerrainStub.new()
 	tool.terrain_node = terrain_stub
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
 	tool.fwd_lanes = fixture["forward"]
 	tool.bkw_lanes = fixture["backward"]
 	tool.active = true
 	var generation := simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "original chunks must hydrate before preview")
+	_expect(tool.chunks.update(generation) == generation, "original chunks must hydrate before preview")
 	# Drive the real process path without node overlays.
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
-	var originals: Dictionary = tool._road_chunk_instances.duplicate()
+	var originals: Dictionary = tool.chunks.chunks.duplicate()
 	# The resident chunks' payloads, which the preview's hidden runs index.
 	var resident := {}
 	for chunk in simulation.get_road_mesh_data(true)["chunks"]:
 		resident[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
-		await _capture(tool.road_mesh_root, fixture["name"] + "_before", true)
+		await _capture(tool.chunks.chunk_root, fixture["name"] + "_before", true)
 	if fixture["name"] == "water_reset":
 		simulation.begin_world_open_water_fill_preview(Vector2(160.0, 160.0), 5.0)
 		_expect(simulation.cancel_world_open_water_fill_preview(), "water preview must cancel")
@@ -197,7 +196,7 @@ func _fixture(fixture: Dictionary) -> void:
 	for index in points.size():
 		points[index].y += float(fixture.get("height", 0.0))
 	# One frame samples the stroke, previews it synchronously and shows its chunks.
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	var preview: Dictionary = tool._preview
@@ -207,7 +206,7 @@ func _fixture(fixture: Dictionary) -> void:
 		return
 	_expect(preview.get("has_road_chunks", false), "%s preview must return its compiled chunks" % fixture["name"])
 	_expect(tool._preview_display.sequence == int(preview.get("sequence", -1)), "the frame that sampled the stroke must show its chunks")
-	_expect(not tool._info_label.text.contains("Checking"), "a synchronous preview is never pending")
+	_expect(not tool.hud.text().contains("Placing"), "a synchronous preview is never pending: '%s'" % tool.hud.text())
 	_expect(tool.blueprint_mesh.mesh == null, "the preview shows chunks, never a ribbon")
 	if not isolated and not fixture.get("sloped", false):
 		_expect_existing_road_height(preview)
@@ -238,7 +237,7 @@ func _fixture(fixture: Dictionary) -> void:
 		if not chunk.get("road_vertices", PackedVector3Array()).is_empty():
 			chunk["road_normals"] = PackedVector3Array()
 			break
-	_expect(not tool._preview_display.show(tool, malformed, sequence + 1), "incomplete mesh batches must fail atomically")
+	_expect(not tool._preview_display.show(tool.chunks, malformed, sequence + 1), "incomplete mesh batches must fail atomically")
 	_expect(instances == tool._preview_display._instances, "failed staging must preserve the complete previous preview")
 	# A scripted pointer moves without a motion event; queue the update as input would.
 	tool.set_scripted_pointer(true, points[-1] + Vector3(1.0, 0.0, 0.0))
@@ -252,13 +251,13 @@ func _fixture(fixture: Dictionary) -> void:
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
-		await _capture(tool.road_mesh_root, fixture["name"])
+		await _capture(tool.chunks.chunk_root, fixture["name"])
 	tool.cancel_road()
 	for original in originals.values():
 		_expect(original.visible, "cancel must restore original road instances")
 	_expect(tool._preview_display._instances.is_empty() and tool._preview_display._collapsed.is_empty(), "cancel must remove the overlays and restore every collapsed run")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
-		await _capture(tool.road_mesh_root, fixture["name"] + "_cancelled")
+		await _capture(tool.chunks.chunk_root, fixture["name"] + "_cancelled")
 	await _commit_previewed(tool, points, preview, resident, not isolated, fixture["name"])
 	tool.free()
 	terrain_stub.free()
@@ -268,7 +267,7 @@ func _fixture(fixture: Dictionary) -> void:
 # shown until the committed generation's chunks are installed, which replace it in one call.
 # `crossed`: the stroke's closure holds crossings, whose paint the preview must carry.
 func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, resident: Dictionary, crossed: bool, label: String) -> void:
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	# The frames after the pose stage the rest of its graded tiles (T27 (d)); the click then
@@ -295,7 +294,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	_expect(tool._swap_display == held and not held._instances.is_empty(), "the preview stays shown until the committed chunks are installed")
 	# The next stroke previews on the committed context before its chunks are installed.
 	tool.cancel_road()
-	tool._begin_stroke(_ground_point(-48.0, 40.0), 0, Vector3.ZERO)
+	tool._begin_stroke(_ground_point(-48.0, 40.0))
 	tool.set_scripted_pointer(true, _ground_point(48.0, 40.0))
 	tool._process(1.0 / 60.0)
 	# A next stroke the tool refuses (one crossing the cross's arm by its end) shows nothing.
@@ -303,13 +302,13 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	if next_shows:
 		_expect(tool._preview_display.sequence == 0 and not tool._preview_display._pending.is_empty(), "the next stroke waits for the chunks its runs index")
 	generation = simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "committed chunks must replace the source generation")
+	_expect(tool.chunks.update(generation) == generation, "committed chunks must replace the source generation")
 	_expect(tool._swap_display == null and held._instances.is_empty() and held._collapsed.is_empty(), "installing the committed chunks ends the preview in the same call")
 	_expect(tool._preview_display.sequence > 0 or not next_shows, "the install shows the next stroke's preview in the same call")
 	for key in tool._preview_display._collapsed:
-		_expect(tool._preview_display._collapsed[key]["instance"] == tool._road_chunk_instances.get(key), "the next stroke collapses runs of exactly the installed chunks")
+		_expect(tool._preview_display._collapsed[key]["instance"] == tool.chunks.chunks.get(key), "the next stroke collapses runs of exactly the installed chunks")
 	tool.cancel_road()
-	for instance in tool._road_chunk_instances.values():
+	for instance in tool.chunks.chunks.values():
 		_expect(instance.visible, "the committed generation must be visible")
 	# The resident chunks with the hidden runs collapsed, under the overlays, draw the committed
 	# chunks' triangles, crosswalk paint included: both are built from the same pieces
@@ -332,7 +331,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	if crossed:
 		_expect(painted and signed, "a crossing stroke's preview carries crosswalk paint (%s); its commit places signs (%s)" % [painted, signed])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
-		await _capture(tool.road_mesh_root, preview.get("name", "fixture") + "_committed")
+		await _capture(tool.chunks.chunk_root, preview.get("name", "fixture") + "_committed")
 	await _check_graded_tiles(shown, epoch, label)
 
 # TERRAIN-07-E: the tiles the converged preview showed are the commit's staged tiles, a fresh bake

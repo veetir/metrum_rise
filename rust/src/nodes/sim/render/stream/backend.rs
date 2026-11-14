@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The render backend (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): the only code of the
-//! streaming core that calls `RenderingServer`, behind [`RenderBackend`], and the pools of
-//! `MultiMesh` and instance objects the layers draw with.
+//! The render backend (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): the streaming core's
+//! `RenderingServer` calls behind [`RenderBackend`], and the pools of `MultiMesh` and instance
+//! objects the layers draw with. One exception calls the server beside it: the graded book's
+//! material sync (`graded/book.rs` `MaterialSync`) reads and writes the terrain patches' material
+//! parameters directly, unrecorded (AUDIT-stream finding 9).
 //!
 //! A layer draws a batch through a [`Slot`]: one `MultiMesh`, its instance in the main scenario
 //! and, lazily, a shadow caster instance and a water reflection instance on the same
@@ -692,6 +694,17 @@ impl SlotPool {
         }
     }
 
+    /// Frees every spare slot (a layer that sizes its spares itself ahead of its installs, the
+    /// street lights' load reserve, `RENDER-52` part 2). `O(slots)`.
+    pub(crate) fn free_spares(&mut self, backend: &mut impl RenderBackend) {
+        let spares: Vec<SlotId> = self.spare.drain().flat_map(|(_, list)| list).collect();
+        for id in spares {
+            self.free_slot(backend, id);
+        }
+        self.spare_order.clear();
+        self.spares = 0;
+    }
+
     /// Frees every slot (a renderer reset or the end of the backend).
     pub(crate) fn clear(&mut self, backend: &mut impl RenderBackend) {
         for id in 0..self.slots.len() {
@@ -792,6 +805,9 @@ mod godot_backend {
         scratch: Map<usize, PackedFloat32Array>,
         // Microseconds spent copying rows into the upload arrays since the last take.
         copy_us: f64,
+        // Microseconds spent in `free_rid` since the last take (`RENDER-32-Q`: the frees' share
+        // of the frame, outside the install budget).
+        free_us: f64,
         // The texture layer writes (`RENDER-32-K` part 2): one reused upload array per layer
         // length (a page copy alternates its slot layer and its atlas layers); the
         // `RenderingDevice` where this thread may call it (Forward+ and Mobile, Godot's default
@@ -824,6 +840,7 @@ mod godot_backend {
                 scenarios: [Some(scenario), None],
                 scratch: Map::default(),
                 copy_us: 0.0,
+                free_us: 0.0,
                 uploads: Map::default(),
                 device,
                 images: Map::default(),
@@ -920,6 +937,11 @@ mod godot_backend {
         /// The microseconds spent copying rows into upload arrays since the last call.
         pub(crate) fn take_copy_us(&mut self) -> f64 {
             std::mem::take(&mut self.copy_us)
+        }
+
+        /// The microseconds spent freeing objects since the last call.
+        pub(crate) fn take_free_us(&mut self) -> f64 {
+            std::mem::take(&mut self.free_us)
         }
     }
 
@@ -1097,7 +1119,9 @@ mod godot_backend {
         }
 
         fn free(&mut self, handle: Handle) {
+            let start = std::time::Instant::now();
             self.server.free_rid(Rid::new(handle));
+            self.free_us += start.elapsed().as_secs_f64() * 1e6;
         }
 
         fn material_create(&mut self, shader: Handle) -> Handle {

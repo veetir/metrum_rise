@@ -36,10 +36,14 @@
 ## (`ROAD-68-H` round 7) adds a vegetation row to every frame (the plants drawn on a drawn road
 ## around the stroke, and the drawn plants against Rust's placement now) and records n frames after
 ## the converged click, the last of which must show the vegetation of the committed road.
+## METRUM_GRADED_DRAG_PRODUCTS=1 (check-only, `ROAD-112` round C) records each commit's request and
+## products (`commit_products.gd`) in its drag's `products`, for a bitwise comparison of two runs.
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
 const Vegetation := preload("res://scripts/renderers/vegetation.gd")
+const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
+const CommitProducts := preload("res://scripts/benchmarks/commit_products.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
@@ -404,12 +408,15 @@ func _drag(record: Dictionary, start: Vector2, end: Vector2, stroke: Dictionary,
 	var kind := "commit" if converge else "fast_commit"
 	_kind = kind
 	var queued: bool = tool._commit_segment(end_pos)
+	var request: PackedVector3Array = tool._commit_points
 	tool.active = false
 	_expect(queued, record, "the %s queues" % kind)
 	if queued:
 		var edit := await _edit(record, kind)
 		out["committed"] = bool(edit.get("installed", false))
 		out["edit"] = edit
+		if OS.get_environment("METRUM_GRADED_DRAG_PRODUCTS") == "1":
+			out["products"] = CommitProducts.record(_bench.simulation_node, _bench.terrain, request)
 	out["frames"] = _frames
 	return out
 
@@ -440,6 +447,11 @@ func _begin_frames() -> void:
 	_frames = []
 	_last_us = Time.get_ticks_usec()
 	_remember()
+	# With the perf channel on (METRUM_DEBUG_PERF=1, instrumented), each row gets its frame's road
+	# chunk work (`RENDER-52`): the network refresh's road staging and commit, the chunk units.
+	if PerfDebug.is_enabled():
+		PerfDebug.begin_frame_capture()
+		PerfDebug.take_frame()
 
 func _remember() -> void:
 	for name in ["uploads", "upload_bytes", "preview_frames", "edit_batches", "edit_adopted", "cell_builds"]:
@@ -479,7 +491,7 @@ func _next_frame() -> void:
 	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
 		_unroaded += 1
 		row["unroaded"] = true
-	row["chunks_held"] = tool._held_serial >= 0
+	row["chunks_held"] = tool.chunks.is_holding()
 	if _clip and not _capture_dir.is_empty() and _kind != "settled":
 		DirAccess.make_dir_recursive_absolute(_capture_dir)
 		_bench.get_viewport().get_texture().get_image().save_png(_capture_dir.path_join("clip_%05d_%s.png" % [_clip_frames, _kind]))
@@ -502,9 +514,23 @@ func _next_frame() -> void:
 		row["batch_tiles"] = int(counters["edit_tiles_last"])
 		row["batch_adopted"] = int(counters["edit_adopted"]) - int(_seen["edit_adopted"])
 		row["batch_parts"] = (counters["edit_frame_parts"] as Dictionary).duplicate()
+	if PerfDebug.is_enabled():
+		_road_share(row, PerfDebug.take_frame())
 	_frames.append(row)
 	_last_us = now
 	_remember()
+
+# The road chunk work of the frame `row` records, from its perf records: `network_ms` (the
+# network refresh, terrain included), `road_ms` (its road staging and commit plus any road chunk
+# units), `road_units` (units installed).
+static func _road_share(row: Dictionary, perf: Dictionary) -> void:
+	var network: Dictionary = perf.get("network", {})
+	var road := float(network.get("details", {}).get("road_mesh", 0.0))
+	var units: Dictionary = perf.get("road_hydration", {})
+	road += float(units.get("elapsed_ms", 0.0))
+	row["road_units"] = int(units.get("details", {}).get("installed", 0))
+	row["network_ms"] = float(network.get("elapsed_ms", 0.0))
+	row["road_ms"] = road
 
 # The harness's idle wait, then the graded tiles idle (no tile or list in flight, no count queued,
 # no cell set to build) for three frames in a row.
@@ -624,7 +650,7 @@ func _placement(origin: Vector2, span: float, understory: bool, near_band: bool)
 # (road_preview_display.gd names them RoadPreview_<x>_<z>).
 func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 	var binned: Array[Dictionary] = []
-	for chunk in _bench.road_tool.road_mesh_root.get_children():
+	for chunk in _bench.road_tool.chunks.chunk_root.get_children():
 		if not chunk is MeshInstance3D or not chunk.visible or String(chunk.name).begins_with("RoadPreview_") != preview:
 			continue
 		var id: int = chunk.get_instance_id()
@@ -657,13 +683,13 @@ func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 # vertical faces cover no ground and are left out. Once per chunk node.
 func _road_cells(chunk: MeshInstance3D) -> Dictionary:
 	var out := {}
-	var mesh: Mesh = chunk.mesh
-	var box := mesh.get_aabb()
 	var shift := chunk.position
-	if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
-		return out
-	for surface in mesh.get_surface_count():
-		var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
+	# The server's surfaces: a hydrated chunk's are only there (`RENDER-52` part 2).
+	for surface in RoadChunkRenderer.server_surfaces(chunk.mesh):
+		var box: AABB = surface["aabb"]
+		if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
+			continue
+		var vertices := RoadChunkRenderer.surface_positions(surface)
 		for v in range(0, vertices.size(), 3):
 			var a := Vector2(vertices[v].x + shift.x, vertices[v].z + shift.z)
 			var b := Vector2(vertices[v + 1].x + shift.x, vertices[v + 1].z + shift.z)

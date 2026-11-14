@@ -664,8 +664,12 @@ the player's profile: at its Scene initialisation stage (before Godot creates a 
 `--benchmark`, `--generate-benchmark`), the project keeps its own name and Godot's data directory
 is the platform's default one (`OS.get_data_dir()` against `$HOME/.local/share`, `$HOME/Library/Application
 Support` or `%APPDATA%`; no home directory counts as the player's), it logs the reason and exits
-with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). Godot's own
-log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
+with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). The exit is
+the C runtime's `_exit` (`TOOLS-22`, an `unsafe` call the owner approved): `std::process::exit`
+calls the C runtime's `exit`, whose atexit handlers and C++ static destructors tore Godot down
+while its threads still ran and under load crashed (`pure virtual method called`, exit 134
+instead of 3). Nothing of the extension needs flushing or dropping that early, and the error line
+is written before it. Godot's own log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
 `profile_guard_test` runs the same script in its isolated profile (it writes its marker) and in a
 copy of that project keeping the player's name, under a throwaway `HOME` with the XDG homes unset
 (refused, exit 3, no marker).
@@ -737,6 +741,20 @@ rule for game code (`CODE-25`):
   ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)).
   `core_busy_input_test` holds the core through a ring hover and a building hover:
   both answer at once.
+- **Renderers, the camera and the HUD read published values** (`CODE-26`). The land cover's
+  epoch and currency checks (`get_land_cover_epoch`, `is_vegetation_land_cover_current`), the
+  coal pit revision, the growth summary (`get_growth_overview`) and the terrain and surface
+  heights (`get_height_at`, `get_world_surface_height`) read the render snapshot's per-frame
+  publication (`FrameQueries`) and never take the core. A publication is at most one publication
+  old: the simulation thread publishes with the snapshot after every frame and edit, and a
+  bridge call that held the core on Godot's thread republishes as it releases it
+  (`CoreGuard`), so an edit is visible to the frame that made it, the camera and the hover
+  heights included. Publications are ordered by a sequence taken under the core lock; an older
+  one never replaces a newer one. Unchanged values cost a key compare; a change republishes only
+  what moved (the surface shares the heightmap's chunks, the roadbed in `O(1)` and the road
+  tool's terrain inputs of the noted patches). The non-road tools' hovers that still wait
+  (zoning previews and dependencies, the select tool's edge and crosswalk hovers) are
+  `CODE-26`'s remainder.
 - **Godot's readers never rebuild the simulation's order** (`ALLOC-05`). Every per-frame query,
   hover, overlay and inspector, and the render snapshot the simulation thread builds after every
   frame and edit, readies only the site part of a stale building index

@@ -4,11 +4,14 @@
 
 use std::fmt::Write;
 
-use super::diagnostics::{BuildingActionDiagnostics, HouseholdAdmissionDiagnostics};
+use super::diagnostics::{
+    BuildingActionDiagnostics, BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics,
+};
 use super::system::DemandSystem;
 
 /// One zone's growth for the HUD: the figures as numbers for icons, the conditions they cannot
 /// show as sentences, and the whole account as text.
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct GrowthDisplay {
     pub(crate) projects: usize,
     /// (key, value) in display order; empty before the first assessment.
@@ -19,7 +22,25 @@ pub(crate) struct GrowthDisplay {
     pub(crate) text: String,
 }
 
+/// Everything [`DemandSystem::growth_display`] reads: equal keys give equal summaries, so a
+/// publisher rebuilds the strings only when the key moves (`CODE-26`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GrowthDisplayKey {
+    actions: BuildingActionDiagnosticsByUse,
+    admission: HouseholdAdmissionDiagnostics,
+    cheat: bool,
+}
+
 impl DemandSystem {
+    /// The inputs of [`Self::growth_display`]. O(1), no allocation.
+    pub(crate) fn growth_display_key(&self) -> GrowthDisplayKey {
+        GrowthDisplayKey {
+            actions: self.last_building_action_diagnostics,
+            admission: self.last_admission_diagnostics,
+            cheat: self.cheat_max_demands_enabled,
+        }
+    }
+
     /// Three R/C/I project counts and explanations from the last hourly assessment.
     /// O(1) in city size. Strings allocate only when the UI requests presentation data.
     pub(crate) fn growth_display(&self) -> [GrowthDisplay; 3] {

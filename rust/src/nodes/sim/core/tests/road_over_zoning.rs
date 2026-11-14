@@ -47,7 +47,7 @@ fn commit(core: &mut SimCore, points: &[Vector3]) -> String {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -864,6 +864,8 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
     assert_eq!(commit(&mut core, &bridge_at(100.0)), "");
 }
 
+mod batch;
+mod batch_preview;
 mod edits;
 mod placements;
 mod preview;
@@ -882,7 +884,7 @@ fn road_type_pockets_undo_composes_erased_and_inherited_paint() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: Default::default(),
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

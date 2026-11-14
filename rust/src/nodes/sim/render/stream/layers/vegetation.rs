@@ -65,7 +65,7 @@ pub(crate) const HANDS_OVER: u32 = 0;
 pub(crate) const DETAIL_FULL: u8 = 0;
 const DETAIL_REDUCED: u8 = 1;
 const DETAIL_BLEND: u8 = 2;
-// Install events: key, serial, plants drawn (-1: the core was busy, ask again), install time.
+// Install events: key, serial, plants drawn, install time.
 const EVENT_LANES: usize = 6;
 // Predicted backend calls of one batch's install (fill, draw, the reflection or caster).
 const CALLS_PER_BATCH: usize = 12;
@@ -249,7 +249,9 @@ impl VegetationLayer {
 
     /// Takes a prepared product: it waits for its install, replacing a waiting one of its patch.
     pub(crate) fn deliver(&mut self, delivery: Delivery) {
-        self.forget(delivery.key);
+        if let Some(old) = self.forget(delivery.key) {
+            self.spent.push(old.product);
+        }
         let heights = product_heights(&delivery.product);
         self.pending.push(Pending {
             delivery,
@@ -260,29 +262,15 @@ impl VegetationLayer {
         });
     }
 
-    /// Reports a request whose core was busy: the residency asks for the patch again.
-    pub(crate) fn deliver_busy(&mut self, key: PatchKey, serial: u64) {
-        let event: [i64; EVENT_LANES] = [
-            i64::from(key[0]),
-            i64::from(key[1]),
-            i64::from(key[2]),
-            serial as i64,
-            -1,
-            0,
-        ];
-        self.events.extend_from_slice(&event);
-    }
-
-    /// Drops a waiting product of `key` (its request was superseded or cancelled). `O(pending)`.
-    pub(crate) fn forget(&mut self, key: PatchKey) {
-        if let Some(at) = self
+    /// Takes back a waiting product of `key` (its request was superseded or cancelled), for the
+    /// residency to hold again or spend. `O(pending)`.
+    #[must_use]
+    pub(crate) fn forget(&mut self, key: PatchKey) -> Option<Delivery> {
+        let at = self
             .pending
             .iter()
-            .position(|pending| pending.delivery.key == key)
-        {
-            let pending = self.pending.swap_remove(at);
-            self.spent.push(pending.delivery.product);
-        }
+            .position(|pending| pending.delivery.key == key)?;
+        Some(self.pending.swap_remove(at).delivery)
     }
 
     /// Products whose storage can go back to the jobs.
@@ -392,6 +380,12 @@ impl VegetationLayer {
     /// The slot pool, for inspection.
     pub(crate) fn pool(&self) -> &SlotPool {
         &self.pool
+    }
+
+    /// Whether a waiting product would fill a hole (`RENDER-32-Q`: the ledger's reserve), by the
+    /// classes of the last install pass. `O(pending)`.
+    pub(crate) fn holes_waiting(&self) -> bool {
+        self.pending.iter().any(|pending| pending.class <= Class::Hole)
     }
 
     /// Products waiting.

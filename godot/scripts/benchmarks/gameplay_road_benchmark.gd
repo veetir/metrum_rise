@@ -5,6 +5,8 @@
 ## Loads a controlled synthetic world or pinned authored state, drives production RoadTool paths, waits for
 ## the matching terrain/road/water render work to settle, and verifies a controlled layout matrix.
 ## The harness is only attached when `--gameplay-road-benchmark` is passed on the command line.
+## METRUM_GAMEPLAY_ROAD_PRODUCTS=1 (untimed) records each fixture commit's request and products
+## (`commit_products.gd`) in its result, for a bitwise comparison of two builds.
 extends Node
 
 const RoadToolScript = preload("res://scripts/tools/road_tool.gd")
@@ -704,14 +706,17 @@ func _find_fixture_anchor(
 func _align_fixture_anchor(anchor: Vector2, fixture: Dictionary) -> Vector2:
 	if fixture.get("anchor_alignment", "free") != "chunk_corner":
 		return anchor
-	var chunk_span_m: float = road_tool._road_chunk_span_m
+	var chunks: Object = _road_chunk_state()
+	var chunk_span_m: float = chunks.get("span_m" if chunks != road_tool else "_road_chunk_span_m")
 	if chunk_span_m <= 0.0:
 		return anchor
+	var origin_x: float = chunks.get("origin_x_m" if chunks != road_tool else "_road_chunk_origin_x_m")
+	var origin_z: float = chunks.get("origin_z_m" if chunks != road_tool else "_road_chunk_origin_z_m")
 	return Vector2(
-		road_tool._road_chunk_origin_x_m
-			+ round((anchor.x - road_tool._road_chunk_origin_x_m) / chunk_span_m) * chunk_span_m,
-		road_tool._road_chunk_origin_z_m
-			+ round((anchor.y - road_tool._road_chunk_origin_z_m) / chunk_span_m) * chunk_span_m
+		origin_x
+			+ round((anchor.x - origin_x) / chunk_span_m) * chunk_span_m,
+		origin_z
+			+ round((anchor.y - origin_z) / chunk_span_m) * chunk_span_m
 	)
 
 func _fixture_fits_world(
@@ -746,25 +751,25 @@ func _anchor_supports_fixture(anchor: Vector2, fixture: Dictionary) -> bool:
 			return false
 	return true
 
+# The stroke a segment draws: a straight segment's two surface points; a curve's polyline as the
+# road tool's session draws it (`ROAD-112` round D: the simple curve through the control point),
+# read from a scripted draft that is dropped again.
 func _segment_surface_points(anchor: Vector2, segment: Dictionary) -> PackedVector3Array:
 	var start_pos := _surface_point(anchor + segment["start_offset"])
 	var end_pos := _surface_point(anchor + segment["end_offset"])
-	var curve := Curve3D.new()
-	curve.bake_interval = 0.5
-	curve.up_vector_enabled = false
 	if int(segment["draw_mode"]) == 0:
-		curve.add_point(start_pos)
-		curve.add_point(end_pos)
-	else:
-		var control_pos := _surface_point(anchor + segment["control_offset"])
-		var start_tangent := control_pos - start_pos
-		var end_tangent := end_pos - control_pos
-		curve.add_point(start_pos, Vector3.ZERO, start_tangent)
-		curve.add_point(end_pos, -end_tangent, Vector3.ZERO)
+		return PackedVector3Array([start_pos, end_pos])
+	var was_active: bool = road_tool.active
 	var previous_draw_mode: int = road_tool.draw_mode
+	road_tool.cancel_road()
 	road_tool.draw_mode = int(segment["draw_mode"])
-	var points: PackedVector3Array = road_tool._road_surface_points_from_curve(curve)
+	road_tool._begin_stroke(start_pos)
+	road_tool._commit_segment(_surface_point(anchor + segment["control_offset"]))
+	simulation_node.road_tool_pointer_at(end_pos)
+	var points: PackedVector3Array = simulation_node.road_tool_frame().get("points", PackedVector3Array())
+	road_tool.cancel_road()
 	road_tool.draw_mode = previous_draw_mode
+	road_tool.active = was_active
 	return points
 
 func _run_fixture(
@@ -1001,6 +1006,7 @@ func _run_segment(
 	var dispatch_start_us := Time.get_ticks_usec()
 	var queued: bool = road_tool._commit_segment(end_pos)
 	var dispatch_ms := _elapsed_ms(dispatch_start_us)
+	var request: PackedVector3Array = road_tool._commit_points
 	if not queued:
 		var rejected := {
 			"ok": false,
@@ -1035,6 +1041,9 @@ func _run_segment(
 		"frame_time_ms": Metrics.distribution(_frame_samples),
 		"state_after": simulation_node.get_road_benchmark_state(),
 	}
+	if OS.get_environment("METRUM_GAMEPLAY_ROAD_PRODUCTS") == "1":
+		# Untimed parity runs (`ROAD-112` round C): the commit's request and products.
+		result["products"] = preload("res://scripts/benchmarks/commit_products.gd").record(simulation_node, terrain, request)
 	if preview_wait.has("ready_ms"):
 		result["preview_ready_ms"] = preview_wait.ready_ms
 		result["pointer_idle_to_ready_ms"] = float(preview_wait.ready_ms) - float(last_pointer_us - preview_start_us) / 1000.0
@@ -1084,19 +1093,12 @@ func _begin_scripted_road(
 	road_tool.draw_mode = int(segment["draw_mode"])
 	road_tool.fwd_lanes = int(segment["fwd_lanes"])
 	road_tool.bkw_lanes = int(segment["bkw_lanes"])
-	road_tool.start_pos = start_pos
-	road_tool.control_pos = (
-		_surface_point(anchor + segment["control_offset"])
-		if segment.has("control_offset")
-		else start_pos
-	)
-	road_tool.current_state = RoadToolScript.State.SETTING_END
+	# Every mode is the road tool session's (`ROAD-112` rounds C, D): a scripted start, a curve's
+	# scripted control point, then the scripted pointer at the end.
+	road_tool._begin_stroke(start_pos)
+	if road_tool.draw_mode != 0:
+		road_tool._commit_segment(_surface_point(anchor + segment["control_offset"]))
 	road_tool.set_scripted_pointer(true, end_pos)
-	road_tool.current_path = Path3D.new()
-	road_tool.current_path.curve = Curve3D.new()
-	road_tool.current_path.curve.bake_interval = 0.5
-	road_tool.current_path.curve.up_vector_enabled = false
-	road_tool.add_child(road_tool.current_path)
 	road_tool._queue_preview_update()
 
 func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
@@ -1105,9 +1107,8 @@ func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
 	while _elapsed_ms(start_us) < timeout_sec * 1000.0:
 		await get_tree().process_frame
 		# The preview is synchronous: the frame that sampled the stroke previewed and staged it.
-		var points: PackedVector3Array = road_tool._road_surface_points_from_curve(road_tool.current_path.curve)
 		var preview: Dictionary = road_tool._preview
-		var current: bool = not road_tool._preview_update_pending and road_tool._preview_is_for(points)
+		var current: bool = road_tool.stroke_preview_current()
 		if current and not bool(preview.get("is_valid", false)):
 			return {
 				"ok": false,
@@ -1166,7 +1167,7 @@ func _wait_for_generation(previous_generation: int, timeout_sec: float, start_us
 				milestones["generation_ready_ms"] = _elapsed_ms(start_us)
 		if (
 			generation_advanced and not milestones.has("render_ack_ms")
-			and road_tool._road_mesh_generation == expected_generation
+			and _road_chunk_generation() == expected_generation
 			and not simulation_node.is_network_dirty()
 		):
 			milestones["render_ack_ms"] = _elapsed_ms(start_us)
@@ -1218,13 +1219,23 @@ func _wait_for_idle(timeout_sec: float) -> Dictionary:
 		"pending": _pending_work_snapshot(),
 	}
 
+# The committed chunks' state: the chunk renderer (`RENDER-52`), or a control's road tool, which
+# held it before (this script also runs over a control's scripts).
+func _road_chunk_state() -> Object:
+	var chunks: Variant = road_tool.get("chunks")
+	return chunks if chunks != null else road_tool
+
+# The installed road chunk generation, -1 while the chunks wait for the whole network.
+func _road_chunk_generation() -> int:
+	var chunks: Object = _road_chunk_state()
+	return int(chunks.get("generation" if chunks != road_tool else "_road_mesh_generation"))
+
 func _is_idle() -> bool:
 	return (
 		not simulation_node.is_network_dirty()
 		and not simulation_node.is_terrain_dirty()
-		and not road_tool.needs_main_mesh_hydration()
+		and _road_chunk_generation() >= 0
 		and road_tool._commit_request_id == 0
-		and road_tool._pending_border_checks.is_empty()
 		and not terrain.has_pending_render_work(false)
 		and not water.has_pending_render_work(false)
 	)
@@ -1234,8 +1245,7 @@ func _pending_work_snapshot() -> Dictionary:
 		"network_dirty": simulation_node.is_network_dirty(),
 		"terrain_dirty": simulation_node.is_terrain_dirty(),
 		"water_dirty": simulation_node.is_water_dirty(),
-		"road_hydration": road_tool.needs_main_mesh_hydration(),
-		"border_checks": road_tool._pending_border_checks.size(),
+		"road_hydration": _road_chunk_generation() < 0,
 		"terrain": terrain.get_pending_render_work_counts(),
 		"terrain_failures": terrain.get_blocked_dirty_patch_failures(),
 		"water": water.get_pending_render_work_counts(),

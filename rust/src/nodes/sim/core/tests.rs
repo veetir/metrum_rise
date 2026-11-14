@@ -26,12 +26,15 @@ mod road_plan_scaling;
 mod road_pockets;
 mod road_roundabouts;
 mod road_preview;
+mod road_profiles;
 mod road_terrain_plan;
 mod road_over_tunnels;
 mod road_over_zoning;
 mod surface_over_tunnels;
 mod road_tunnels;
+mod strand_dump;
 mod stranded_fixture;
+mod terrain_edit_bounds;
 mod routing_adoption;
 mod zoning_buildability;
 
@@ -594,7 +597,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
-        tunnel: false,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
         median: None,
         parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -830,7 +833,7 @@ fn planned_topology_rejection_restores_split_dependents() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -887,7 +890,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

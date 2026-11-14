@@ -5,8 +5,12 @@
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
+use crate::nodes::sim::road_tool::batch::draft_requests;
+use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
+use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 
+mod road_holds;
 pub(super) mod road_tool;
 mod road_types;
 mod roundabouts;
@@ -109,7 +113,7 @@ impl SimulationNode {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            self.road_tool_tunnel,
+            RoadProfile::FollowGround,
             (
                 self.road_tool_median,
                 self.road_tool_parking,
@@ -127,7 +131,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: RoadProfile::FollowGround,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -156,6 +160,136 @@ impl SimulationNode {
             );
         }
         self.road_commit_request_id
+    }
+
+    /// Queues `strokes` (each a `PackedVector3Array` polyline, in commit order) as one road
+    /// transaction with the road tool's current lanes and options (`ROAD-112` round F): all
+    /// strokes commit or none does, no land is taken before every stroke's verdict, and one undo
+    /// takes back the whole batch. Returns the completion identity, polled with
+    /// `get_road_commit_result` like a single stroke's, whose `stroke` names the refusing
+    /// stroke's index (-1 when none). An element that is not a polyline is an empty stroke,
+    /// which refuses the batch.
+    #[func]
+    pub fn add_road_batch(
+        &mut self,
+        strokes: VarArray,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> i64 {
+        let strokes = strokes
+            .iter_shared()
+            .map(|stroke| crate::nodes::sim::core::RoadCommitRequest {
+                points: stroke
+                    .try_to::<PackedVector3Array>()
+                    .map(|points| points.to_vec())
+                    .unwrap_or_default(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+                profile: RoadProfile::FollowGround,
+                median: self.road_tool_median,
+                parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
+                preview: None,
+            })
+            .collect();
+        self.send_road_batch(crate::nodes::sim::core::RoadBatchRequest {
+            strokes,
+            preview: None,
+        })
+    }
+
+    /// Queues one stroke with the stroke profile `profile` (`ROAD-112` round H,
+    /// `RoadProfile::code`: 0 follow ground, 1 held ground, 2 bridge, 3 tunnel) and the road
+    /// tool's other options, as a batch of one (which commits exactly as a single stroke). The
+    /// replay of a refused stroke's record uses it for every profile but the tool's own. Returns
+    /// the completion identity for `get_road_commit_result`; 0 for a profile out of range.
+    #[func]
+    pub fn add_road_with_profile(
+        &mut self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+        profile: i32,
+    ) -> i64 {
+        let Some(profile) = RoadProfile::from_code(profile) else {
+            return 0;
+        };
+        let stroke = crate::nodes::sim::road_tool::height::DraftStroke {
+            points: points.to_vec(),
+            profile,
+        };
+        let section = self.road_draft_section(fwd_lanes, bkw_lanes, snap_to_existing_roads);
+        self.send_road_batch(draft_batch(vec![stroke], section))
+    }
+
+    /// Segments a draft along `path` whose grade line runs from `start_m` to `end_m` (world
+    /// heights at its first and last point) into ground, bridge and tunnel strokes on the road
+    /// tool's published view (`ROAD-112` round H, `docs/roads.md` "Heights and automatic bridges
+    /// and tunnels") and queues them as one batch: one undo step. Returns `request_id` (0 when
+    /// refused before sending), `reason` (empty, or the segmentation's refusal such as
+    /// `cut_too_deep`), `strokes` (one dictionary per stroke: `points`, `profile` as
+    /// `RoadProfile::code`) and `previewed` (whether a finished batch preview of exactly these
+    /// strokes, `preview_road_draft`, planned them for the commit). Round I's height handles
+    /// call the same segmentation per pose.
+    #[func]
+    pub fn add_road_draft(
+        &mut self,
+        path: PackedVector3Array,
+        start_m: f32,
+        end_m: f32,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> VarDictionary {
+        let section = self.road_draft_section(fwd_lanes, bkw_lanes, snap_to_existing_roads);
+        let (segmented, surface_generation) = {
+            let view = self.road_tool.view.read().unwrap();
+            let segmented = segment_draft(
+                &path.to_vec(),
+                [start_m, end_m],
+                section,
+                &view.terrain,
+                &view.region_graph,
+                &view.roadbed,
+            );
+            (segmented, view.surface_generation)
+        };
+        let mut result = VarDictionary::new();
+        match segmented {
+            Ok(strokes) => {
+                let mut listed = VarArray::new();
+                for stroke in &strokes {
+                    listed.push(&vdict! {
+                        "points": PackedVector3Array::from(stroke.points.as_slice()),
+                        "profile": stroke.profile.code(),
+                    }.to_variant());
+                }
+                result.set("strokes", listed);
+                result.set("reason", "");
+                // A finished tier 2 of exactly these strokes hands its plans and pieces to the
+                // commit (`ROAD-112` round G1); otherwise the commit's dry run plans them.
+                let requests = draft_requests(&strokes, section, surface_generation);
+                let preview = self
+                    .road_tool
+                    .context
+                    .lock()
+                    .expect("road tool context lock poisoned")
+                    .take_batch_products(&requests);
+                result.set("previewed", preview.is_some());
+                let mut batch = draft_batch(strokes, section);
+                batch.preview = preview;
+                result.set("request_id", self.send_road_batch(batch));
+            }
+            Err(reason) => {
+                result.set("strokes", VarArray::new());
+                result.set("reason", reason);
+                result.set("request_id", 0_i64);
+            }
+        }
+        result
     }
 
     /// Consumes the latest placement's acceptance or rejection without locking the simulation:
@@ -188,6 +322,7 @@ impl SimulationNode {
                     "reason": ack.reason,
                     "detail": ack.detail,
                     "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
+                    "stroke": ack.refused_stroke.map_or(-1, |stroke| stroke as i64),
                     "pocket_refusals": pockets,
                 }
             }
@@ -486,7 +621,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }
@@ -686,7 +821,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }
@@ -830,7 +965,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }
@@ -966,4 +1101,39 @@ fn cross_section_spec(
                 RoadRejection::new(reason, format!("{speed_kmh} km/h, sidewalks {sidewalks}"))
             })?;
     Ok((median, parking, attributes))
+}
+
+impl SimulationNode {
+    // The road tool's options as a draft's shared section (`ROAD-112` round H).
+    fn road_draft_section(
+        &self,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> DraftSection {
+        DraftSection {
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            median: self.road_tool_median,
+            parking: self.road_tool_parking,
+            attributes: self.road_tool_attributes,
+        }
+    }
+
+    // Queues a batch (`ROAD-112` round F) and returns its completion identity for
+    // `get_road_commit_result`.
+    fn send_road_batch(&mut self, request: crate::nodes::sim::core::RoadBatchRequest) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        let _ = self
+            .cmd_tx
+            .send(crate::nodes::sim::core::SimCommand::AddRoadBatch {
+                request,
+                enqueued_at: Instant::now(),
+                completion,
+            });
+        self.road_commit_request_id
+    }
 }

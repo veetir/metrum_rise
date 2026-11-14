@@ -684,6 +684,32 @@ crossings).
     path ends, and the old rule dropped the lane: it stood lane-less at the node with no trip, and
     once rehoused would have planned from the node (with the watchdog's three retries and move
     home behind a failed plan).
+  - *Standing walkers leave the lane buckets* (`TRAFFIC-37`, round FSTRAND, 2026-11-13). A walker
+    that stands with no route, stranded (`ACCESS_WALK_STRANDED`) or with no plan (its trip taken
+    and waiting for its household's next home, the case `TRAFFIC-24` left on its lane; or waiting
+    for its replan gate), keeps its lane, distance and node, so its replans still start from its
+    own sidewalk (the `TRAFFIC-19` rule), but holds no place in the lane's bucket: the bucket
+    fill's overlap correction no longer stops the walkers behind it 2.7 m short, and they pass it,
+    as traffic passes a car waiting off its lane (`TRAFFIC-29`, `TRAFFIC-31`; a car drops its lane
+    for that, which a walker must not, so the cars' helper does not fit). One shared test,
+    `lane_bucket_member(transit_mode, access_flags)`, beside `live_lane_bucket_transit`, serves the
+    fill (`group_lane_agents`), its patches (`agent_bucket_lanes`: join, leave, swap-remove) and
+    the test-only rebuild check, so they cannot disagree: O(1), two column reads per lane agent,
+    no allocation, and the buckets get smaller. Membership changes in the tick (a plan set, a
+    stranding) are read by the next fill; the mutators outside the tick that clear a walker's plan
+    on the road (rehousing, eviction, a job's end) move its entries with it
+    (`update_lane_bucket_membership`, O(entries on its lanes)), and an evacuation or road edit
+    rebuilds the snapshot as before. A walker that gets a plan again rejoins at the next fill; one
+    within 2.7 m behind is then pushed back once. The live lane-agent count is unchanged. Walkers
+    draw through a standing one (no sideways offset). Found with round STRAND's dump: 77 walkers
+    stood single file behind 5 homeless families on the district's only sidewalk from the border.
+    Tests: `a_walker_waiting_for_a_home_at_its_lane_end_lets_the_walkers_behind_it_pass` and
+    `a_moving_in_walker_whose_home_a_road_takes_becomes_an_unhoused_household_and_frees_its_sidewalk`
+    (each fails without the rule: the walker behind never gets home). Timing (level F, one session
+    against `dev` `7ecb1320`): 30k 1x level, acceptance passing; 30k 32x mean level, its worst
+    unpreempted frame flagged +9.9% on spawn-minute frames of a differently prepared city. Settled
+    at landing on one shared prepared city: worst unpreempted frame +0.2 % (level), mean -1.7 %
+    (better) (`TRAFFIC-37` in the roadmap).
   - *Off the network* (round T19b, 2026-11-02, the user's decision; `walk_home::walk_to_sidewalk`).
     A walker off every sidewalk, its road removed under it and no sidewalk end into its node
     within 30 m, looks for the nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m,
@@ -2087,14 +2113,23 @@ Dirty chunks publish immutable versioned model and colour buffers, stable car ID
 MultiMesh transforms. Unchanged chunks send nothing. Shared `vehicle_resources.gd` keeps moving
 meshes and materials identical; parked meshes omit lamps and beams.
 
+Parked cars have the moving cars' draw distance (`RENDER-48`, 2026-11-13): their materials fade a
+car out by its own distance from the camera over the same band (`CAR_FADE_START_M` 2,000 m to
+`CAR_DRAW_DISTANCE_M` 2,500 m, the one setting both read), and each parked bucket's batch ends its
+visibility range where none of its cars can be within the draw distance, so the engine skips it
+in the main and shadow passes. Every parked car is still published and installed; only what Godot
+draws changes ([record](terrain.md#parked-cars-draw-distance-render-48-2026-11-13)).
+
 Moving cars and parked chunks reach Godot from one `RenderSnapshot`, and the render path takes no
 core lock for them:
 
 - The sim thread rebuilds dirty chunks while it builds the snapshot, in the same lock as the
   agent poses (`SimCore::publish_parked_chunks`), and the snapshot lists every chunk Godot has not
-  acknowledged as shared `Arc` buffers. `get_vehicle_frame` reads cars and chunks under one read
-  of that snapshot, so a car crossing a bay's edge is in exactly one of them on every frame Godot
-  draws, including when it skips snapshots: a skipped chunk stays listed. There is no `busy`
+  acknowledged as shared `Arc` buffers. The agents' frame job reads cars and chunks under one
+  read of that snapshot and Godot installs both in the same frame (`advance_agent_frame`,
+  `RENDER-47`; `get_vehicle_frame` reads them the same way for tests), so a car crossing a bay's
+  edge is in exactly one of them on every frame Godot draws, including when it skips snapshots: a
+  skipped chunk stays listed. There is no `busy`
   answer and no epoch to compare. Model and colour persist across the switch.
 - Godot answers through atomics, never the lock. `acknowledge_parked_cars(epoch, serial)` says it
   installed everything up to a publication serial; an answer from a replaced world is dropped and
@@ -2123,9 +2158,9 @@ core lock for them:
   one it replaced is free as soon as its last holder lets go, acknowledged or not. Headless, where
   nothing answers, a chunk is listed once and keeps one spare: list and pool stay bounded by the
   chunks ever touched, and each dirty frame copies that many pointers.
-- One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
-  off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
-  still updates.
+- One off-lane path still try-locks the core: the agents' frame job re-grounds interpolated
+  off-lane cars (on the background pool since `RENDER-47`). It is `dev`'s, and failing it draws
+  the snapshot's own validated pose, so the car still updates.
 
 **A parked car stands on its own street or lot.** `SimCore::parked_ground_pose` reads its own
 surface, not `dev`'s visible one: a bay on the ground takes the road on the ground
@@ -2510,12 +2545,21 @@ Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 - derives S-curve tangent from blended lane tangents plus the lateral blend derivative
 
 Render-side car interpolation runs in Rust (`nodes/sim/render/car_visual.rs`, `RENDER-14`).
-Each frame `godot/scripts/renderers/agents.gd` passes `get_car_render_data()` to
-`smooth_car_render_data(car_data, delta)` and uploads the returned per-bucket buffers:
+Each frame `godot/scripts/renderers/agents.gd` calls `advance_agent_frame(delta, full)`, which
+installs the frame a background-pool job prepared from the snapshot in the frame before (walkers,
+smoothed and grounded cars, the snapshot's parked chunks) and starts the next job; the script
+uploads the changed per-bucket buffers (`RENDER-47`, `nodes/sim/render/agent_frame.rs`; record
+[Car smoothing a frame ahead](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
+Frame N+1 draws the poses the main thread drew in frame N before: one frame of added latency,
+the drawn sequence unchanged; a job still running when the next frame asks leaves that frame
+drawing what it drew and carries its delta into the next job. `smooth_car_render_data(car_data,
+delta)` runs the same frame synchronously for tests that feed their own poses:
 
-- cars have stable render IDs from Rust; drawn poses are main-thread presentation state on
-  `SimulationNode`, never saved or read by the simulation
-- pedestrian and vehicle MultiMeshes use the shared dynamic shadow-caster policy
+- cars have stable render IDs from Rust; drawn poses are presentation state the frame job keeps,
+  never saved or read by the simulation
+- pedestrian and vehicle MultiMeshes draw every agent in the main pass and cast no shadow: the
+  stream node's shadow-only twins cast for the agents within reach of the sun's shadow range
+  (`RENDER-15`, round R47)
 - origin interpolation smooths per-tick position updates
 - basis interpolation smooths rotation (Godot's `Basis.slerp` formula, reimplemented on `glam`;
   godot-rust's `Quaternion::slerp` is an engine call per car)
@@ -2600,6 +2644,13 @@ luxury SUV; `freight/` delivery van) with their colormap atlas variants. Generic
 were tried on this branch and withdrawn as not good enough to ship; they are kept off-tree. The
 Kenney meshes carry no lamp data, so `vehicle_lamps.gd` holds a measured table of front and rear
 lamp anchors per model (left lamps mirror X); procedural cars derive theirs from the AABB.
+`vehicle_resources.gd` builds a car's body as one surface (`RENDER-46`): the loader gives every
+glTF primitive of a model (the body panels and four wheels) the model's one atlas material, so it
+concatenates them in node order with their indices offset; their vertices, triangles and winding
+stay the model's own, and a MultiMesh of moving or parked cars draws the body once. The lamp
+surfaces keep their own materials. Any model the game loads goes through the same build, so
+replacement models need no merged assets; a loader that reads several materials from a model
+would merge per material.
 
 At night (sun below 4 to -2 degrees, as the street lights):
 
@@ -2990,4 +3041,5 @@ The measured ignored tests are
   must keep connector lanes and `next_lanes` in sync
 - a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
   single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
-- walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction
+- walkers walking a route keep car spacing (2.7 m) in lane buckets, connector entry claims and
+  overlap correction; a walker standing with no route is in no bucket (`TRAFFIC-37`)

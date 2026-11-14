@@ -79,8 +79,8 @@
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
-//! | | `get_road_tool_cursor_pos` | `road_tool.gd` |
-//! | | `get_road_tool_start_direction` | `road_tool.gd` |
+//! | | `road_tool_pointer`, `road_tool_pointer_at` | `road_tool.gd` |
+//! | | `road_tool_event`, `road_tool_set_option`, `road_tool_frame` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
@@ -103,12 +103,12 @@
 //! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
-//! | **Agents** | `update_walker_buffers` | `agents.gd` (`get_changed_walker_buckets`: the walker buckets to upload) |
+//! | **Agents** | `advance_agent_frame` | `agents.gd` (installs the frame a background job prepared, starts the next; `RENDER-47`) |
 //! | | `get_agent_draw_distances` | `agents.gd` (the fade bands of the agents' shaders) |
 //! | | `get_car_render_data` | `agents.gd` |
-//! | | `smooth_car_render_data` | `agents.gd` |
+//! | | `smooth_car_render_data` | `vehicle_ground_support_test.gd`, `agent_inspector_test.gd` (the same frame, synchronous) |
 //! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
-//! | | `get_changed_car_buckets` | `agents.gd` (the car buckets to upload) |
+//! | | `get_changed_car_buckets` | `vehicle_ground_support_test.gd` (the car buckets to upload) |
 //! | | `update_agent_view` | `agents.gd` (culling rectangle from the camera) |
 //! | | `set_camera_aabb` | tests (culling update) |
 
@@ -117,9 +117,8 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest,
-    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
-    run_sim_thread,
+    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolShared,
+    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;
@@ -143,6 +142,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+mod agent_frame_api;
 mod agent_inspection_api;
 mod asset_api;
 mod async_jobs;
@@ -212,8 +212,9 @@ pub struct SimulationNode {
     /// The road tool's published view (cursor picking, hover, terrain jobs) and its preview
     /// context, both read without locking SimCore (`ROAD-68-E`).
     pub(crate) road_tool: Arc<RoadToolShared>,
-    /// The road tool's tunnel intent (`ROAD-61`), copied into every request the tool sends.
-    pub(crate) road_tool_tunnel: bool,
+    /// The road tool session (`ROAD-112`): cursor, stroke, chain and commit of the drawing modes
+    /// it drives, and the preview the bridge ran for its stroke. Main thread only.
+    pub(crate) road_tool_session: network_api::road_tool::RoadToolBridge,
     /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
@@ -237,19 +238,27 @@ pub struct SimulationNode {
     /// The network a load's road chunks hydrate from (`RENDER-32-P`), until the hydration ends;
     /// presentation state like `building_lods`.
     pub(crate) road_hydration: Option<road_hydration_api::RoadHydrationSource>,
-    /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
-    pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
-    /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
-    /// buckets its last call changed (`RENDER-28`); presentation state like `car_visuals`.
+    /// The agents' frame (walkers, smoothed cars, parked publication, caster candidates)
+    /// between the main thread and its background job (`RENDER-47`); presentation state, never
+    /// serialized or read by the simulation.
+    agent_lane: crate::nodes::sim::render::agent_frame::AgentFrameLane,
+    /// The installed frame's outputs: the drawn car buffers by bucket and the buckets it
+    /// changed, the drawn walker buffers by type and the types it changed (`RENDER-28`), its
+    /// split, and where the watched car was drawn.
     car_buffers: VarDictionary,
     changed_car_buckets: PackedInt64Array,
-    /// The drawn walker buffers (`RENDER-28`): Rust's copy, the bucket dictionary
-    /// `update_walker_buffers` returns and the buckets its last call changed.
-    walker_visuals: crate::nodes::sim::render::walker_visual::DrawnWalkers,
     walker_buffers: VarDictionary,
     changed_walker_buckets: PackedInt64Array,
+    agent_parts: agent_frame_api::AgentParts,
+    watched_origin: Option<(i64, glam::Vec3)>,
+    /// The render ID whose drawn origin the next frame reports (the agent inspector's).
+    watched_car: std::cell::Cell<i64>,
+    /// The caster candidates handed to the stream node's shadow-only twins (`RENDER-15`).
+    agent_caster_feed: crate::nodes::sim::render::agent_frame::SharedCasterFeed,
     /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
     pub(crate) render_camera_position: Option<Vector2>,
+    /// The camera's position with it, the eye the caster candidates are kept about.
+    render_eye: Option<Vector3>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
     junction_stalls:
         Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
@@ -291,8 +300,11 @@ impl SimulationNode {
     /// potentially partial state after a failed phase.
     #[inline]
     #[track_caller]
-    fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
-        Self::wait_for_shared_core(&self.core_turnstile, &self.core)
+    fn lock_core(&self) -> CoreGuard<'_> {
+        CoreGuard::new(
+            Self::wait_for_shared_core(&self.core_turnstile, &self.core),
+            &self.snapshot,
+        )
     }
 
     /// [`Self::lock_core`] for a caller that holds its own reference to the core.
@@ -318,8 +330,8 @@ impl SimulationNode {
     /// waiting for an in-progress road placement.
     #[inline]
     #[track_caller]
-    fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
-        Self::try_lock_shared_core(&self.core)
+    fn try_lock_core(&self) -> Option<CoreGuard<'_>> {
+        Self::try_lock_shared_core(&self.core).map(|guard| CoreGuard::new(guard, &self.snapshot))
     }
 
     /// [`Self::lock_core`] when `wait`, else [`Self::try_lock_core`]: a per-frame query that
@@ -327,10 +339,7 @@ impl SimulationNode {
     /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
     #[inline]
     #[track_caller]
-    fn lock_core_if(
-        &self,
-        wait: bool,
-    ) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
+    fn lock_core_if(&self, wait: bool) -> Option<CoreGuard<'_>> {
         if wait {
             Some(self.lock_core())
         } else {
@@ -356,29 +365,9 @@ impl SimulationNode {
             }
         }
     }
+    // Whether `pos` lies within `threshold` of the map's edge (the road tool's rule, `pick.rs`).
     fn road_tool_is_near_border(pos: Vector3, half_w: f32, half_h: f32, threshold: f32) -> bool {
-        pos.x < -half_w + threshold
-            || pos.x > half_w - threshold
-            || pos.z < -half_h + threshold
-            || pos.z > half_h - threshold
-    }
-
-    fn road_tool_snap_to_border(mut pos: Vector3, half_w: f32, half_h: f32) -> Vector3 {
-        let d_left = pos.x + half_w;
-        let d_right = half_w - pos.x;
-        let d_top = pos.z + half_h;
-        let d_bottom = half_h - pos.z;
-        let min_d = d_left.min(d_right).min(d_top).min(d_bottom);
-        if min_d == d_left {
-            pos.x = -half_w;
-        } else if min_d == d_right {
-            pos.x = half_w;
-        } else if min_d == d_top {
-            pos.z = -half_h;
-        } else {
-            pos.z = half_h;
-        }
-        pos
+        crate::nodes::sim::road_tool::pick::is_near_border(pos, half_w, half_h, threshold)
     }
 
     /// Returns the dimensions of the heightmap.
@@ -400,6 +389,12 @@ impl SimulationNode {
         }
     }
 
+    /// The latest publication of the values per-frame queries read (`CODE-26`): never the
+    /// core lock, O(1).
+    fn frame_queries(&self) -> crate::nodes::sim::core::FrameQueries {
+        self.snapshot.read().unwrap().queries.clone()
+    }
+
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
         let (snapshot, road_tool_publication, road_tool_land) = {
@@ -408,12 +403,74 @@ impl SimulationNode {
             let road_tool_publication = core.publish_road_tool_view();
             (snapshot, road_tool_publication, core.refresh_road_tool_land())
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = road_tool_publication {
             self.road_tool.publish(publication);
         }
         if let Some(land) = road_tool_land {
             self.road_tool.publish_land(land);
+        }
+    }
+}
+
+/// The core, held by a bridge call on Godot's thread. Releasing it republishes the values the
+/// per-frame queries read when the call changed them (`CODE-26`), so an edit is visible to the
+/// frame that made it: the key compare is `O(1)` and allocation-free while nothing changed.
+/// The core is released before the snapshot is written.
+pub(crate) struct CoreGuard<'a> {
+    // Fields drop in order: the core first, then the publication.
+    core: std::sync::MutexGuard<'a, SimCore>,
+    publication: FrameQueriesPublication<'a>,
+}
+
+// The publication a released core guard leaves for the render snapshot.
+struct FrameQueriesPublication<'a> {
+    snapshot: &'a RwLock<RenderSnapshot>,
+    pending: Option<crate::nodes::sim::core::FrameQueries>,
+}
+
+impl<'a> CoreGuard<'a> {
+    fn new(core: std::sync::MutexGuard<'a, SimCore>, snapshot: &'a RwLock<RenderSnapshot>) -> Self {
+        Self {
+            core,
+            publication: FrameQueriesPublication {
+                snapshot,
+                pending: None,
+            },
+        }
+    }
+}
+
+impl std::ops::Deref for CoreGuard<'_> {
+    type Target = SimCore;
+
+    fn deref(&self) -> &SimCore {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for CoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut SimCore {
+        &mut self.core
+    }
+}
+
+impl Drop for CoreGuard<'_> {
+    fn drop(&mut self) {
+        // A failed authoritative phase poisoned the core: publish nothing from it.
+        if !std::thread::panicking() {
+            self.publication.pending = self.core.refresh_frame_queries();
+        }
+    }
+}
+
+impl Drop for FrameQueriesPublication<'_> {
+    fn drop(&mut self) {
+        if let Some(queries) = self.pending.take() {
+            let mut snapshot = self.snapshot.write().expect("render snapshot lock poisoned");
+            if queries.newer(&snapshot.queries) {
+                snapshot.queries = queries;
+            }
         }
     }
 }
@@ -517,7 +574,7 @@ impl INode3D for SimulationNode {
             road_commit_request_id: 0,
             road_commit_result: None,
             road_tool,
-            road_tool_tunnel: false,
+            road_tool_session: Default::default(),
             road_tool_median: None,
             road_tool_parking: Default::default(),
             road_tool_pockets: Default::default(),
@@ -527,13 +584,17 @@ impl INode3D for SimulationNode {
             building_lods: Default::default(),
             building_draw: None,
             road_hydration: None,
-            car_visuals: Default::default(),
+            agent_lane: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),
-            walker_visuals: Default::default(),
             walker_buffers: VarDictionary::new(),
             changed_walker_buckets: PackedInt64Array::new(),
+            agent_parts: Default::default(),
+            watched_origin: None,
+            watched_car: std::cell::Cell::new(-1),
+            agent_caster_feed: Default::default(),
             render_camera_position: None,
+            render_eye: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),

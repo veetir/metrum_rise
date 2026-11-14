@@ -2,7 +2,11 @@
 
 ## Seed 6807 reproduces the full-page migration deadlock at stroke attempt 52.
 ## Drives the production road tool and renderers; checks meshes, materials, cell references and
-## GPU bytes against fresh native bakes, then repeats the comparison after save/load.
+## GPU bytes against fresh native bakes, then repeats the comparison after save/load. Every road
+## chunk's surfaces as the RenderingServer holds them must equal the bytes Rust encodes for the
+## hydration (`RENDER-52` part 2), whichever path built the chunk. The hydration's mesh ledger
+## counts its meshes after the load: each alive one drawn by a chunk, none left once the chunks
+## are dropped (every server mesh it made is freed).
 ## Use -- --extended for 100 attempts (Metal); the 64-attempt gate fits headless
 ## device limits. No authored assets or player saves are needed.
 extends SceneTree
@@ -10,6 +14,8 @@ extends SceneTree
 const RoadTool := preload("res://scripts/tools/road_tool.gd")
 const Terrain := preload("res://scripts/renderers/terrain.gd")
 const Network := preload("res://scripts/renderers/network_renderer.gd")
+const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
 var sim: SimulationNode
 var terrain
@@ -59,12 +65,12 @@ func _run():
 	tool.name = "RoadTool"
 	tool.simulation_node = sim
 	tool.terrain_node = terrain
-	tool.road_mesh_root = Node3D.new()
-	host.add_child(tool.road_mesh_root)
+	tool.make_chunks()
+	tool.chunks.remove_child(tool.chunks.chunk_root)
+	host.add_child(tool.chunks.chunk_root)
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._node_visuals_visible = true
 	network = Network.new()
 	network.simulation_node = sim
@@ -87,7 +93,7 @@ func _run():
 		camera.look_at(b)
 		tool.active = true
 		tool._node_visuals_dirty = false
-		tool._begin_stroke(a, 0, Vector3.ZERO)
+		tool._begin_stroke(a)
 		tool.set_scripted_pointer(true, b)
 		for frame in 5:
 			tool.set_scripted_pointer(true,b + Vector3((4-frame)*8,0,0))
@@ -110,15 +116,71 @@ func _run():
 		check(await settle("cancel"), "final preview releases")
 		var path := OS.get_user_data_dir().path_join("road_render_publication.sqlite")
 		check(sim.save_game(path), "fixture saves")
+		sim.set_road_hydration_mesh_ledger(true)
 		check(sim.load_game(path), "fixture reloads")
 		sim.set_simulation_speed(0)
+		# As the game's load does (input_manager): the renderer drops its chunks and hydrates the
+		# loaded network, so the audit below reads hydrated chunks.
+		tool.active = false
+		tool.reset_main_mesh_chunks()
+		check(await settle("reload"), "the reload hydrates")
 		await audit(strokes.size())
 		DirAccess.remove_absolute(path)
-	print("Road render publication: seed=6807 attempts=%d generation=%d failures=%d" % [strokes.size(), tool._road_mesh_generation, failures])
+		await _audit_ledger()
+	print("Road render publication: seed=6807 attempts=%d generation=%d failures=%d" % [strokes.size(), tool.chunks.generation, failures])
 	tool.free()
 	network.free()
 	host.free()
 	quit(0 if failures == 0 else 1)
+
+# The chunk's surfaces as the server holds them against the bytes Rust encodes for a hydration:
+# format, count, both byte streams and the AABB of every layer, and the lining's shadow caster.
+func _audit_bytes(stroke: int, key: Vector2i, instance: MeshInstance3D, held: Array[Dictionary]) -> void:
+	var encoded: Array = sim.get_road_chunk_surfaces(key.x, key.y)
+	var layers := 0
+	for rust: Dictionary in encoded:
+		var godot: Dictionary
+		if rust.layer < 0:
+			var caster := instance.get_node_or_null("LiningShadow") as MeshInstance3D
+			check(caster != null, "lining caster missing stroke=%d chunk=%s" % [stroke, key])
+			if caster == null:
+				continue
+			godot = RoadChunkRenderer.server_surfaces(caster.mesh)[0]
+		else:
+			var surfaces: PackedInt32Array = instance.mesh.get_meta("road_layer_surfaces")
+			check(surfaces[rust.layer] == layers, "layer order stroke=%d chunk=%s" % [stroke, key])
+			godot = held[layers]
+			layers += 1
+		for field in ["format", "vertex_count", "vertex_data", "aabb"]:
+			check(godot[field] == rust[field], "bytes %s stroke=%d chunk=%s layer=%d" % [field, stroke, key, rust.layer])
+		check(godot.get("attribute_data", PackedByteArray()) == rust.attribute_data,
+			"bytes attribute_data stroke=%d chunk=%s layer=%d" % [stroke, key, rust.layer])
+	check(layers == held.size(), "surface count stroke=%d chunk=%s" % [stroke, key])
+	if instance.get_node_or_null("LiningShadow") != null:
+		check(encoded.any(func(rust: Dictionary) -> bool: return rust.layer < 0), "lining caster not encoded %s" % key)
+
+# The ledger after the load's hydration: it made meshes, those still alive are the chunks' (layers
+# and lining casters), then none is alive once the renderer drops its chunks (the next frame
+# frees the nodes).
+func _audit_ledger() -> void:
+	var drawn := {}
+	for instance: MeshInstance3D in tool.chunks.chunks.values():
+		drawn[instance.mesh.get_instance_id()] = true
+		var caster := instance.get_node_or_null("LiningShadow") as MeshInstance3D
+		if caster != null:
+			drawn[caster.mesh.get_instance_id()] = true
+	var alive: PackedInt64Array = sim.get_road_hydration_meshes_alive()
+	var made: int = sim.get_road_hydration_meshes_made()
+	check(made > 0, "the load's hydration made no mesh")
+	for id in alive:
+		check(drawn.has(id), "hydration mesh %d alive but drawn by no chunk" % id)
+	tool.chunks.reset()
+	await process_frame
+	await process_frame
+	alive = sim.get_road_hydration_meshes_alive()
+	check(alive.is_empty(), "hydration meshes alive after the chunks were dropped: %d" % alive.size())
+	print("Road render publication: hydration ledger made=%d drawn=%d freed after reset" % [made, drawn.size()])
+	sim.set_road_hydration_mesh_ledger(false)
 
 func settle(label: String) -> bool:
 	var deadline := Time.get_ticks_msec() + 20000
@@ -128,31 +190,33 @@ func settle(label: String) -> bool:
 		terrain._process(1.0/60)
 		network._process(1.0/60)
 		await process_frame
-		var idle: bool = tool._commit_request_id == 0 and not sim.is_network_dirty() and not sim.is_terrain_dirty() and terrain.is_render_settled() and tool._held_serial < 0
+		var idle: bool = tool._commit_request_id == 0 and not sim.is_network_dirty() and not sim.is_terrain_dirty() and terrain.is_render_settled() and not tool.chunks.is_holding()
 		stable = stable + 1 if idle else 0
 		if stable == 3:
 			return true
 	var g = terrain.graded_tiles
-	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool._held_serial, sim.get_graded_edit_serial(), g.installed_edit_serial(), g._book.edit_batch_len(), g._edit_staged.keys(), g.wanted_count(), g.get_pool_counters(), terrain.get_pending_render_work_counts()])
+	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool.chunks.holds.held_serial(), sim.get_graded_edit_serial(), g.installed_edit_serial(), g._book.edit_batch_len(), g._edit_staged.keys(), g.wanted_count(), g.get_pool_counters(), terrain.get_pending_render_work_counts()])
 	return false
 
 func audit(stroke: int):
 	var full: Dictionary = sim.get_road_mesh_data(true)
-	check(tool._road_chunk_instances.size() == full.chunks.size(), "chunk count %d" % stroke)
+	check(tool.chunks.chunks.size() == full.chunks.size(), "chunk count %d" % stroke)
 	for chunk: Dictionary in full.chunks:
 		var key := Vector2i(chunk.chunk_x, chunk.chunk_z)
-		check(tool._road_chunk_instances.has(key), "missing %s" % key)
-		if not tool._road_chunk_instances.has(key):
+		check(tool.chunks.chunks.has(key), "missing %s" % key)
+		if not tool.chunks.chunks.has(key):
 			continue
-		var instance: MeshInstance3D = tool._road_chunk_instances[key]
+		var instance: MeshInstance3D = tool.chunks.chunks[key]
 		check(instance.visible, "hidden %s" % key)
 		var surfaces: PackedInt32Array = instance.mesh.get_meta("road_layer_surfaces")
+		var held := RoadChunkRenderer.server_surfaces(instance.mesh)
 		for layer in LAYERS.size():
 			if surfaces[layer] < 0:
 				continue
-			var arrays: Array = instance.mesh.surface_get_arrays(surfaces[layer])
-			check(arrays[Mesh.ARRAY_VERTEX] == chunk[LAYERS[layer] + "_vertices"], "mesh mismatch stroke=%d chunk=%s layer=%s" % [stroke, key, LAYERS[layer]])
-			check(instance.mesh.surface_get_material(surfaces[layer]) != null, "missing material")
+			var vertices := RoadChunkRenderer.surface_positions(held[surfaces[layer]])
+			check(vertices == chunk[LAYERS[layer] + "_vertices"], "mesh mismatch stroke=%d chunk=%s layer=%s" % [stroke, key, LAYERS[layer]])
+			check(RenderingServer.mesh_surface_get_material(instance.mesh.get_rid(), surfaces[layer]).is_valid(), "missing material")
+		_audit_bytes(stroke, key, instance, held)
 	var g = terrain.graded_tiles
 	# Every set's every tile is one instance holding what it would be written as now.
 	var stale: int = g._book.stale_cells()

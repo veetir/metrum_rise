@@ -6,7 +6,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-`ROAD-114` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
+`ROAD-118` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
 applies them to the new road's junction approaches, with local hover, refusal feedback and one
 undo. Built on the branch, waiting for the user's in-game test ([contract](roads.md#turn-pockets-road-95)).
 
@@ -138,6 +138,14 @@ commit on growth edits (`RENDER-40`: 8-23 ms frames at 30k, up to 442 ms at 100k
 draw (`RENDER-46`); the paused 30k turn's 6 ms over its GPU time is the draw's command replay, the
 core waits, Rayon joins and X11 round trips
 ([record](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
+The renderers, the camera and the HUD no longer wait for the simulation core (`CODE-26`,
+2026-11-13, for review): their per-frame queries (land cover revisions, coal pit revision, growth
+summary, terrain, surface and camera-water heights) read values published with the render
+snapshot, fresh in the frame of an edit. With the simulation running, the main thread's blocking
+core waits fall from 0.6-39 ms a frame to at most 0.2 (the terrain's stale land cover query,
+`RENDER-40`), and the 100k city's frame p50 at 32x from 43 to 18 ms; the non-road tools' hovers
+still wait while their tool is active
+([record](terrain.md#per-frame-queries-read-published-values-code-26-round-c26-2026-11-13)).
 Where the GPU goes (`RENDER-44`, `RENDER-46`, measured 2026-11-13, no behaviour change): the
 100k still's 99 M main-pass primitives are mostly building batches and parked cars beyond 1 km
 (parked cars are drawn to the horizon; cars and walkers have no far mesh), and 73 % of them draw no
@@ -146,6 +154,48 @@ of the draws. A turn draws and binds what a still does: its dearer draws are cac
 install churn, not state changes. Ranked levers: one body surface per car mesh, the parked cars'
 draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), occlusion later
 (`RENDER-50`) ([record](terrain.md#where-the-gpu-goes-render-44-render-46-2026-11-13)).
+A car mesh's body is one surface since `RENDER-46` (round CS1, 2026-11-13, for review; no
+visible change): the 30k still draws 2,736 instead of 6,009 times in the main pass and 860 instead
+of 2,631 in the shadow pass, Godot's draw costs 1.4 ms less a still frame and 3.1 ms less a turn
+frame, and the 30k 1 s turns run 3.7-4.2 ms faster. Street lights in chunk batches stopped at the
+no-visible-change bar (Godot's level-of-detail hysteresis follows each batch's frustum history); the
+choice is the user's ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
+Parked cars have the moving cars' draw distance since `RENDER-48` (round R48, 2026-11-13, stills
+approved by the owner): they fade out between 2.0 and 2.5 km like the moving cars, and Godot skips a
+parked batch with no car within 2.5 km. The 100k still draws 22 M fewer primitives (99 to 76 M) and
+1,000 fewer batches, about 1.6 ms of GPU; the 30k city, mostly within 2.5 km, changes little
+(far zooms 1.2-2.8 ms faster on the GPU, near views 0.02-0.07 ms slower: the fade's dither on the
+near parked cars, kept by the owner). The
+far car meshes wait for the replacement models (`RENDER-26`)
+([record](terrain.md#parked-cars-draw-distance-render-48-2026-11-13)).
+The agents' frame is prepared a frame ahead on the background pool since `RENDER-47` (round R47,
+2026-11-13, for review): the walkers, the cars' smoothing and ground solve and the parked chunks of
+one snapshot are prepared while the frame before is drawn, and the main thread only installs them
+(the agents' main-thread time at 30k 1x from 1.3 to 0.3 ms a frame, at 100k 1x from 1.6 to 0.3). The moving cars and walkers cast the sun's shadow from shadow-only copies holding
+only those within reach of the shadow range (`RENDER-15`'s `agents_near`, the owner's pick): the
+30k city's shadow pass draws 23 M instead of 53 M primitives and takes 1.24 instead of 2.16 ms (the
+100k city's 1.22 instead of 2.99 ms), 0.9 and 1.7 ms of GPU a frame by day, with stills identical ([record](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
+The road tool's base class no longer draws the committed road chunks: `RENDER-52`'s first part
+(round CB, 2026-11-13, for review) moved the chunk renderer (resident set, staging, holds,
+validation, build, lights and signs) into `road_chunk_renderer.gd`, the road tool's child, with
+no behaviour change, so the road tool rounds B-D build on a `network_tool.gd` that holds tool
+code only. Measured first: a load installs a road chunk in one unit of 6-8 ms (most 30k and 100k
+load frames with road work exceed the 4 ms hydration budget). Its second part (round CB2,
+2026-11-13, for review) encodes a load's chunks in Godot's surface layout on the background pool,
+bitwise equal to the GDScript build, and installs them a surface a part, the street lights in
+1.0 ms slices, then one swap: a 30k load's road work is at most 3.6-4.4 ms a frame, 0-1 frames a
+run over the 4 ms budget, single engine stalls in one lamp batch node (CB2c, 2026-11-14; control
+9.1 ms, 49 frames over); round CB3 (2026-11-14, for review) draws the lamps on pooled server slots
+built hidden in the load call, and no 30k load frame's road work passes 4.0 ms (five of five runs,
+max 1.8-4.0 ms). Kuopio's first commits no longer make the lamp and sign models in one
+frame; a mesh ledger shows the hydration's server meshes freed; edits still build in GDScript ([record](terrain.md#the-road-chunk-renderers-rust-half-render-52-round-cb-part-2-2026-11-13)).
+Several road strokes can commit as one transaction (`ROAD-112` rounds F and F2, 2026-11-13/14,
+ready to land; no tool uses it yet): every stroke is judged before any land is taken, a refused
+stroke changes nothing, one undo takes the batch back, and undo now refunds what a road edit
+charged (strokes, widenings, pockets, roundabouts). A batch equals its strokes committed one by
+one, bitwise (the user kept exact lots, 2026-11-14); at 30k eight strokes take 73-75 ms, 0.96-0.98
+of the bar of eight single cores, the lot plans between strokes and one tail
+([record](roads.md#batch-commit-grouped-undo-and-undo-refund-round-f)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
@@ -162,6 +212,20 @@ city trees now draw within two frames on every measured motion; Kuopio's turns w
 install budget, its far zooms still partly for preparation (less than before); with the
 simulation running the preparation now yields to the game and costs a still view nothing measurable
 ([record](terrain.md#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)).
+`RENDER-32-Q` (2026-11-13, for review) closes the streaming track: every renderer's per-frame
+install work (vegetation, terrain and water patches, graded ground, building batches and
+construction sites, the terrain's edit commits, the water's meshes) now shares one 2.0 ms ledger a
+frame, with gaps in view served before upgrades. Paused, every turn frame of the 30k city and
+Kuopio stays inside it; Kuopio's trees no longer wait for the budget on turns (worst waits 7
+frames to 1). With the simulation running, a growing city's terrain commits spread over frames
+(the 30k city's worst commit frame 25 ms to 12, the 100k city's 71 ms to 18); what remains waits
+for `CODE-26` (the core published to the renderers) and `RENDER-30` (construction sites off the
+main thread) ([record](terrain.md#the-frames-install-ledger-and-the-tracks-close-out-render-32-q-2026-11-13)).
+The second streaming audit's fixes (AX, 2026-11-13, for review) change nothing on screen: a view
+needing more building slots than the pool has keeps updating the parts that fit instead of
+freezing every building, the trees' prepared store is bounded by the memory it really holds
+(120 MiB), and the settle-point digests now cover the vegetation
+([record](terrain.md#the-second-streaming-audits-fixes-ax-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.
@@ -257,10 +321,11 @@ plain junction lacks until `TRAFFIC-09`, so a ring on a city's busiest junction 
 ([traffic.md](traffic.md#give-way-on-entry-to-a-roundabout-road-62)). Save format 117
 ([ROAD-62](roads.md#roundabouts-road-62); landed on `dev` 2026-11-06).
 
-The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
-checkbox) a stroke keeps its drawn height through the ground, the stretch where the hill stands
-5 m above the road across its whole width becomes a tunnel between two approaches and cars drive
-through; without the toggle a stroke is always a grounded road. Tunnels under water, crossing
+The road tool can build a tunnel through a hill: with Straight grade (`T` or the road options
+checkbox; the tunnel toggle until `ROAD-112` round I) or an end's height handle lowered, a draft
+keeps a straight grade through the ground, the stretch where the hill stands 5 m above the road
+across its whole width becomes a tunnel between two approaches (on flat ground too: a cut ramp
+down to a portal) and cars drive through; a draft that follows the ground is a grounded road. Tunnels under water, crossing
 tunnels, strokes without enough cover across the bore and junctions below the ground in an
 approach are refused with a reason. The tunnel is closed: a 0.5 m thick concrete lining (walls
 and ceiling) around the road, lit by lamp strips every 10 m, and a flat concrete collar round
@@ -1621,6 +1686,22 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-112` round CT2 (2026-11-14, branch `roadtools-ct2`, for review): with Continuous on, a Straight or Curve stroke whose first click lands on an existing road (mid-span, a junction or a dead end the tool did not just build) aims freely instead of being held along that road; only the end of the stroke just built carries its direction, in every mode ([record](roads.md#continuous-carries-a-direction-only-for-a-chained-start-round-ct2)).
+- `ROAD-112` round CT (2026-11-14, branch `roadtools-ct`, for review): with Continuous on, an S-curve or a freeform draft built after another road continues from its end in the same direction (the S-curve skips its "start direction" click; freeform's first span leaves along the road), and switching mode at the chain's start keeps the chain ([record](roads.md#continuous-chains-for-the-s-curve-and-freeform-round-ct)).
+- `ROAD-112` round SC (2026-11-14, branch `roadtools-sc`, for review): the S-curve shows its road from the first click (a line to the cursor, then the curve through the start direction, then the S-curve), and the S-curve and the simple curve show a hint chip naming the next click ("Click to set the start direction", "Click to set the end direction", "Click to place the end") ([record](roads.md#s-curve-preview-and-step-hints-round-sc)).
+- `ROAD-112` round H2 (2026-11-14, branch `roadtools-h2`, for review): the road tool shows how high or deep each end of a draft is: an end off the ground gets a line down (or up) to the ground under it with a ring on that ground, and a chip with its signed height and what it is built as ("+6.5 m bridge", "-10.0 m tunnel", "-3.0 m cut"); the ground is the one the automatic bridge/tunnel split reads, so an end over a lower road measures from that road ([record](roads.md#height-display-round-h2)).
+- `ROAD-112` round I (2026-11-14, branch `roadtools-i`, for review): each end of a road draft has a height handle (a grip above the end; drag it up or down in 0.5 m steps, or PageUp/PageDown on the active one; an end on a road is locked to it). A raised or lowered end, or Straight grade (T, the checkbox that replaces the tunnel toggle), runs the road on a straight grade that Rust cuts into ground, bridge and tunnel strokes, previewed as one stroke or a batch and built as one undo step; a lowered end on flat ground ramps down in a cut into a tunnel portal. Details in [`roads.md`](roads.md#height-handles-and-graded-drafts-round-i).
+- `ROAD-112` round G1 (2026-11-14, branch `roadtools-g1`, with fix round G1b landed on `dev` over round N by round LG1): a draft that becomes several strokes (automatic bridges and tunnels) previews in two tiers: every pose checks each stroke as the hover does and draws a ghost ribbon with exact cost and length; while the pointer rests the exact pieces build one stroke a frame and replace the ghost, and a click then commits those plans. Batches are capped at 40 strokes and 8 km (`batch_too_large`). The stroke profile now travels inside the preview request. Round G1b (2026-11-14, branch `roadtools-g1b`, for review) builds the accepted batch's exact pieces over the next frames, one share of the batch a frame, so no frame costs more than a single stroke's preview ([record](roads.md#batch-preview-round-g1)).
+- `ROAD-112` round V (2026-11-14, branch `roadtools-v`, for review): the road tool's lines are thick on screen and drawn over the terrain (the stroke solid, every guide line one dashed look), the HUD is label chips on the geometry (lengths, radius, angles, grade, cost, bearing, design speed; no upkeep), with zoning-depth guides, alignment guides from their source, the grid snap's curb lines, and a hint plus clickable Build / Cancel chips for an open freeform draft. Round V2 (2026-11-14, branch `roadtools-v2`, for review) puts round V onto `dev` over rounds G1, G1b and I, draws the batch ghost in the same look, moves every chip's text and the road refusal texts into Rust (one place for the strings), and meets the 0.2 ms per-frame overlay bar at p95 ([record](roads.md#lines-labels-and-guides-restyle-round-v)).
+- `ROAD-112` round N (2026-11-14, branch `roadtools-n`, for review): the road options panel gains S-curve (four clicks, two arcs meeting tangent; the tighter arc is judged, both radii and every piece's length are in the frame for the coming restyle) and Freeform (clicked nodes of Bezier spans, then an edit phase: drag nodes and handles, Ctrl breaks a joint, Enter or a click elsewhere builds, Esc or right-click drops it); the road chunk renderer and the road tool take their holds from the Rust rule `RoadDrawHolds` ([`roads.md`](roads.md#s-curve-and-freeform-with-edit-before-build-round-n)).
+- `ROAD-112` round E (2026-11-14, branch `roadtools-e`, for review): the road options panel gains the snapping toggles (roads, guide lines, zoning grid) and steps (angle lock, length step), sent to the Rust session and re-sent whenever the tool is switched on; the radius check now reads a flattened arc's radius exactly, so a curve at or above the illegal radius is never refused and the tool refuses exactly those below it ([`roads.md`](roads.md#snapping-options-and-the-radius-reading-round-e)).
+- `ROAD-112` round G2 (2026-11-14, branch `roadtools-g2`, for review): T65 option (c). The drag probe's last background frames (`kuopio_03` attempt 8) were steps between the published graded terrain's road cut and a pose's rebuilt junction; while a pose replaces published pieces, the published tiles meeting them now draw their cut ground behind every drawn surface, so the ground shows exactly where the background showed, without holding the road (Kuopio's 39 strokes: 0 of 6,138 frames show the background against the control's 17 of 6,146, the same session). The road drawing holds' rule moves to Rust (`RoadDrawHolds`); its GDScript call sites change after round E ([`terrain.md`](terrain.md#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14), [`roads.md`](roads.md#the-terrains-cut-under-a-replaced-road-round-g2)).
+- `ROAD-112` round D (2026-11-14, branch `roadtools-d`, for review): every road tool mode runs on the Rust session; Curve is the exact simple curve (three clicks, the arc tangent to both legs), Continuous starts a stroke along the road or chain it leaves, gizmos (centreline, tangent legs, handles) and a HUD of Rust's numbers (length, angle or bearing, radius and design speed, grade, cost and upkeep, warnings); the GDScript `Curve3D` path and its cursor query are deleted; a curve the radius check would refuse is refused before the preview ([record](roads.md#curves-gizmos-and-hud-record-round-d)).
+- `ROAD-112` round H (2026-11-14, branch `roadtools-h`, for review): every road stroke carries a profile (follow ground, held ground, bridge, tunnel; the tunnel toggle becomes one of them), and a draft whose ends are raised or lowered is cut along its grade line into ground, bridge and tunnel strokes that commit as one batch and undo as one step; no tool UI until round I, today's strokes unchanged ([record](roads.md#heights-and-automatic-bridges-and-tunnels-round-h)).
+- `ROAD-112` round C (2026-11-14, landed on `dev`): straight road strokes run on the Rust road tool session (cursor, snapping with guide lines on by default and the 45° magnet gone (U2), chain, preview and commit); `road_tool.gd` forwards input and shows the frame; committed products bitwise the control's on Kuopio's 39 strokes and the gameplay fixtures; curves keep the GDScript path until round D; the external-connection prompt moves to the committed acknowledgement.
+- `ROAD-112` round B (2026-11-14, landed on `dev`): the road tool's Rust session core (pick, snapping precedence, straight, simple and complex curve modes, chain rules, HUD numbers, `nodes/sim/road_tool/`), not wired yet; a cursor ray that misses the roads no longer walks the roadbed index under the ground to the far side of the city. The pick's remaining cache growth with city size is `ROAD-116` ([record](roads.md#session-benchmark-round-b)).
+- `ECON-29` and `TRAFFIC-37` round FSTRAND (2026-11-13, landed on `dev`): a family moving in whose new home a road, the player or redevelopment demolishes becomes an unhoused household at once (the owner's rule): no longer "moving in" forever, it waits for a home through the housing queue or leaves by the exit rules, and older saves load such a family the same way ([arrival](demand.md#household-admission)). Walkers standing with no route (stranded, or waiting for a home) keep their place but no longer block the sidewalk: the walkers behind pass ([walkers](traffic.md#walkers-follow-their-routes-sidewalks-road-74)). The owner's dump replayed: 3 of the 5 families housed within a game day, the other 2 left by the exit rules with no home free; the 77 walkers queued behind them moved on. Timing level F: 30k 1x level; 30k 32x level on one shared prepared city at landing (worst unpreempted frame +0.2 %, mean -1.7 %); landed on `dev` 2026-11-13.
+- `TOOLS-22` (2026-11-13, branch `stream-t22`): the test guard's refusal ends Godot with `_exit(3)` instead of `std::process::exit(3)`, skipping the C++ teardown that crashed under load (exit 134 in 1,012 of 9,695 loaded runs before, none in 9,969 after) ([guard](debug.md#godot-test-guard)).
 - `TOOLS-19` part 2 (2026-11-12, branch `stream-g2c4`): a test script, benchmark or probe started in the player's real profile exits with status 3 before any script runs ([guard](debug.md#godot-test-guard)); the graded drag probe has a tracked runner that fails loudly (`tools/graded_drag_probe.py`, `TERRAIN-23`).
 - `TOOLS-19` part 1 and `TOOLS-20` (2026-11-12, branch `stream-tl1`, landed on `dev`): every scripted Godot run (tests, benchmarks, probes, imports) goes through `tools/godot_isolated.py`, an absolute throwaway profile that refuses a relative or home XDG path ([guard](debug.md#godot-test-guard)); the stream benchmark's verdicts are tracked subcommands, `series` (C B B C in one lock), `compare`, `digests` (equal, band or different; the benchmark records the level rule's ends) and `stills` ([tools](terrain.md#stream-benchmark-perf-23)).
 - `TOOLS-16` (2026-11-10, landed on `dev`, open until the packages are tried on a Mac and on Windows): release builds. Every push to `main` builds Linux, Windows and macOS packages on GitHub Actions, smoke-tests Linux and (under Wine) Windows by starting both bundled worlds without the build checkout, and publishes a GitHub Release `vYYYY.M.N`; `dev` never does. Saves record the release version as `game_build` and the main menu shows it (`dev` for a checkout). Two full runs passed on the test branch. See [`release.md`](release.md).

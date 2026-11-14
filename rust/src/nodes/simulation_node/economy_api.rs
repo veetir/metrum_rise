@@ -6,17 +6,18 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Returns cached hourly R/C/I construction opportunities and their concrete constraints:
-    /// per zone `projects`, the full `detail` text, `figures` (name -> count, e.g. `queued`,
+    /// Returns cached hourly R/C/I construction opportunities and their concrete constraints,
+    /// from the published per-frame values (`CODE-26`): never the core lock. Per zone
+    /// `projects`, the full `detail` text, `figures` (name -> count, e.g. `queued`,
     /// `free_lots`, residential `vacant_homes`; empty before the first assessment) and `notes`
     /// (the constraint sentences the figures do not show).
     #[func]
     pub fn get_growth_overview(&self) -> VarDictionary {
-        let core = self.lock_core();
+        let queries = self.frame_queries();
         let mut result = VarDictionary::new();
         for (key, growth) in ["residential", "commercial", "industrial"]
             .into_iter()
-            .zip(core.demand.growth_display())
+            .zip(queries.growth.iter())
         {
             let mut figures = VarDictionary::new();
             for (name, value) in &growth.figures {

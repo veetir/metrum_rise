@@ -25,6 +25,8 @@ const RoadOptionsView = preload("res://scripts/ui/road_options_view.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
 const TerrainPanel = preload("res://scripts/ui/terrain_panel.gd")
+# The length step offered first: the zoning cell (`WorldConfig`'s zone_cell_m, 10 m).
+const LENGTH_STEP_DEFAULT_M := 10.0
 
 @onready var input_manager = $"../InputManager"
 @onready var road_tool = $"../RoadTool"
@@ -56,9 +58,17 @@ var road_builder: RoadBuilderWindow
 
 # Road options
 var straight_btn: Button
-var spline_btn: Button
+var curve_btn: Button
+var s_curve_btn: Button
+var freeform_btn: Button
+var continuous_check: Button
 var zoning_grid_snap_check: Button
-var tunnel_check: Button
+var network_snap_check: Button
+var guide_lines_check: Button
+var angle_step_option: OptionButton
+var length_step_check: Button
+var length_step_spin: SpinBox
+var straight_grade_check: Button
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
@@ -190,13 +200,16 @@ func _build_ui():
 	options_padding.add_child(road_options_menu)
 	
 	straight_btn = road_options.straight_btn
-	spline_btn = road_options.spline_btn
-	zoning_grid_snap_check = road_options.snap_btn
-	tunnel_check = road_options.tunnel_btn
-	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
-	tunnel_check.toggled.connect(func(enabled: bool): road_tool.set_tunnel(enabled))
+	curve_btn = road_options.curve_btn
+	s_curve_btn = road_options.s_curve_btn
+	freeform_btn = road_options.freeform_btn
+	continuous_check = road_options.continuous_btn
+	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
+	_wire_snapping_options(road_options)
+	straight_grade_check = road_options.straight_grade_btn
+	straight_grade_check.toggled.connect(func(enabled: bool): road_tool.set_straight_grade(enabled))
 	if road_tool:
-		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
+		road_tool.straight_grade_toggled.connect(func(enabled: bool): straight_grade_check.set_pressed_no_signal(enabled))
 
 	# The roundabout tool's size (`ROAD-62`, D12): only while that tool is on.
 	roundabout_row = HBoxContainer.new()
@@ -446,7 +459,9 @@ func _connect_signals():
 	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
-	spline_btn.pressed.connect(func(): _set_draw_mode(1))
+	curve_btn.pressed.connect(func(): _set_draw_mode(1))
+	s_curve_btn.pressed.connect(func(): _set_draw_mode(2))
+	freeform_btn.pressed.connect(func(): _set_draw_mode(3))
 
 # Both menu visibility and input transitions are event-driven, including keyboard/Esc paths.
 func _refresh_hud_marks(_tool: int = 0) -> void:
@@ -620,10 +635,42 @@ func _on_road_types_changed(created_id: String) -> void:
 		road_combined_hbox.visible = true
 		_select_road_type(created_id, false)
 
+# The Snapping and Steps controls (`ROAD-112` round E): the session's snapping toggles and steps,
+# each sent to Rust by the road tool under its option name. The controls start at the tool's
+# values (the session's defaults: network snap and guide lines on, grid, angle lock and length
+# step off). Shift frees the cursor of all but the network while held.
+func _wire_snapping_options(view: RoadOptionsView) -> void:
+	network_snap_check = view.network_snap_btn
+	network_snap_check.button_pressed = road_tool.network_snap_enabled if road_tool else true
+	network_snap_check.toggled.connect(func(enabled: bool): road_tool.network_snap_enabled = enabled)
+	guide_lines_check = view.guide_lines_btn
+	guide_lines_check.button_pressed = road_tool.guide_lines_enabled if road_tool else true
+	guide_lines_check.toggled.connect(func(enabled: bool): road_tool.guide_lines_enabled = enabled)
+	zoning_grid_snap_check = view.snap_btn
+	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
+	angle_step_option = view.angle_step_option
+	var steps: Array = RoadOptionsView.ANGLE_STEPS_DEG
+	var angle_step := int(road_tool.angle_step_deg) if road_tool else 0
+	angle_step_option.select(maxi(steps.find(angle_step), 0))
+	angle_step_option.item_selected.connect(func(index: int): road_tool.angle_step_deg = float(steps[index]))
+	length_step_check = view.length_step_btn
+	length_step_spin = view.length_step_spin
+	var length_step: float = road_tool.length_step_m if road_tool else 0.0
+	length_step_spin.value = length_step if length_step > 0.0 else LENGTH_STEP_DEFAULT_M
+	length_step_spin.editable = length_step > 0.0
+	length_step_check.button_pressed = length_step > 0.0
+	length_step_check.toggled.connect(func(_enabled: bool): _send_length_step())
+	length_step_spin.value_changed.connect(func(_value: float): _send_length_step())
+
+func _send_length_step() -> void:
+	length_step_spin.editable = length_step_check.button_pressed
+	road_tool.length_step_m = length_step_spin.value if length_step_check.button_pressed else 0.0
+
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
-	spline_btn.button_pressed = (mode == 1)
-	zoning_grid_snap_check.disabled = mode != 0
+	curve_btn.button_pressed = (mode == 1)
+	s_curve_btn.button_pressed = (mode == 2)
+	freeform_btn.button_pressed = (mode == 3)
 	if road_tool:
 		road_tool.draw_mode = mode
 
