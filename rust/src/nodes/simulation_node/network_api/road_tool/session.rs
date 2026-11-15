@@ -1428,6 +1428,7 @@ fn snap_key(kind: SnapKind) -> &'static str {
         SnapKind::AngleEdge => "angle_edge",
         SnapKind::AngleGuide => "angle_guide",
         SnapKind::AngleGrid => "angle_grid",
+        SnapKind::GridEdge => "grid_edge",
         SnapKind::Border => "border",
         SnapKind::SelfPoint => "self",
     }

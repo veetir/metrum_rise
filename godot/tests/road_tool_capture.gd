@@ -7,7 +7,8 @@
 ## `gizmo_upload.json` (milliseconds per upload while a curve is dragged).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=snapping` writes round E's stills instead: the options panel's
 ## Snapping and Steps rows, a guide line and the angle lock taking the cursor, then the zoning
-## grid holding it beside the dead end (the grid snap's curbs, round V2).
+## grid holding it beside the dead end (the grid snap's curbs, round V2), then on the dead end's
+## centreline and a branch drawn from there (round GS).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_freeform` writes round N's: an S-curve mid-draw, a
 ## freeform draft in its edit phase, the committed freeform road, and
 ## `gizmo_upload_scurve_freeform.json` (uploads while an S-curve's end and a freeform handle are
@@ -229,14 +230,36 @@ func _capture_snapping() -> void:
 	await _capture("snapping_angle_lock")
 	ui.angle_step_option.select(0)
 	ui.angle_step_option.item_selected.emit(0)
-	# Round V2: the zoning-grid snap on, the cursor over the dead end's cells, so the grid holds it
-	# and the road's curbs show on the cell lines.
+	# Round V2: the zoning-grid snap on, the cursor over the dead end's cells near the start's
+	# east-west axis, so the grid holds it and the road's curbs show on the cell lines (round GS2:
+	# 0.9 m off the axis; the 32 degree pose before was outside the capture and only labelled grid).
 	_tool.zoning_grid_snap_enabled = true
-	_ray(Vector3(243.0, 0.0, 27.0))
+	_ray(Vector3(243.0, 0.0, 50.9))
 	var grid_snap := String(_simulation.road_tool_frame()["snap"])
 	_expect(grid_snap in ["grid", "angle_grid"], "the zoning grid takes the cursor (%s)" % grid_snap)
-	_ray(Vector3(243.0, 0.0, 27.0))
+	_ray(Vector3(243.0, 0.0, 50.9))
 	await _capture("snapping_grid_curbs")
+	# Round GS: with the grid on, the cursor over the dead-end road takes its centreline at the
+	# grid's position along it; a branch drawn from there shows its curbs on the cell lines.
+	_tool.cancel_road()
+	_ray(Vector3(231.3, 0.0, 0.9))
+	var on_road := String(_simulation.road_tool_frame()["snap"])
+	_expect(on_road == "grid_edge", "the grid holds the cursor on the road (%s)" % on_road)
+	_tool._read_press(_simulation.road_tool_event("press"))
+	var road_start: Vector3 = _simulation.road_tool_frame()["cursor"]
+	_ray(Vector3(232.1, 0.0, 41.0))
+	var branch := String(_simulation.road_tool_frame()["snap"])
+	_expect(branch == "grid", "the grid takes the branch's end (%s)" % branch)
+	_ray(Vector3(232.1, 0.0, 41.0))
+	await _capture("snapping_grid_on_road")
+	# Round GS2: nearer the road, where the guide line across it through the start took the end
+	# before, the end still takes whole cells, curbs on the cell lines.
+	var near := Vector3(road_start.x + 0.9, 0.0, 19.3)
+	_ray(near)
+	branch = String(_simulation.road_tool_frame()["snap"])
+	_expect(branch == "grid", "the grid takes a near end from a road start (%s)" % branch)
+	_ray(near)
+	await _capture("snapping_grid_from_road")
 	_tool.zoning_grid_snap_enabled = false
 	_tool.cancel_road()
 	_tool.set_process(true)

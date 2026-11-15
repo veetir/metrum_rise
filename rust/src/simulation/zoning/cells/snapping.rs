@@ -29,6 +29,8 @@ impl RoadGridSnap {
     /// Uses the edge R-tree and prepared alignment lookup: O(log E + K log A), no allocations,
     /// for K nearby edges and A alignment entries (persistent hash-trie lookups). An active stroke keeps its start fixed and snaps only near a grid axis.
     /// Without a nearby straight road, the first stroke uses cardinal steps with room for two same-width corners.
+    /// Tests only: the road tool takes [`Self::snap_road_cursor_on`] (round GS2).
+    #[cfg(test)]
     pub(crate) fn snap_road_cursor(
         &self,
         graph: &RegionGraph,
@@ -36,10 +38,25 @@ impl RoadGridSnap {
         start: Option<DVec2>,
         road_width_m: f64,
     ) -> DVec2 {
+        self.snap_road_cursor_on(graph, cursor, start, road_width_m)
+            .0
+    }
+
+    /// The cursor snapped to curb-compatible centreline coordinates (an active stroke keeps its
+    /// start fixed and snaps only near a grid axis) and the road whose centreline holds it: `Some` only
+    /// for a first point within 5 m of its nearest aligned road, which then lies on that road's
+    /// centreline across it and on the branch's curb-compatible coordinate along it. Same cost.
+    pub(crate) fn snap_road_cursor_on(
+        &self,
+        graph: &RegionGraph,
+        cursor: DVec2,
+        start: Option<DVec2>,
+        road_width_m: f64,
+    ) -> (DVec2, Option<usize>) {
         if let Some(start) = start
             && cursor.distance_squared(start) < 2.5 * 2.5
         {
-            return start;
+            return (start, None);
         }
         let cell_m = self.cell_m;
         let anchor = start.unwrap_or(cursor);
@@ -84,8 +101,8 @@ impl RoadGridSnap {
                 best = Some((distance, id, frame, closest, along));
             },
         );
-        let Some((distance, _, frame, closest, along)) = best else {
-            return start.map_or(cursor, |start| {
+        let Some((distance, edge, frame, closest, along)) = best else {
+            let point = start.map_or(cursor, |start| {
                 let delta = cursor - start;
                 let Some(axis) = nearby_axis(delta, cell_m) else {
                     return cursor;
@@ -98,6 +115,7 @@ impl RoadGridSnap {
                 result[axis] += delta[axis].signum() * (cells * cell_m + 2.0 * half_width);
                 result
             });
+            return (point, None);
         };
         let local = frame.local(cursor);
         let offset = half_width / frame.cell_m();
@@ -105,13 +123,13 @@ impl RoadGridSnap {
             let origin = frame.local(start);
             let delta = local - origin;
             let Some(axis) = nearby_axis(delta * frame.cell_m(), frame.cell_m()) else {
-                return cursor;
+                return (cursor, None);
             };
             let mut result = origin;
             // The terminating corner lies outside the last full cell, by half a road.
             let signed_offset = offset * delta[axis].signum();
             result[axis] = (local[axis] - signed_offset).round() + signed_offset;
-            frame.world(result.x, result.y)
+            (frame.world(result.x, result.y), None)
         } else {
             let mut result = local;
             for axis in 0..2 {
@@ -126,14 +144,16 @@ impl RoadGridSnap {
             }
             // Starting a branch on an existing road must remain on its centreline even
             // when the selected road has a different width from the supplying road.
-            if distance <= 25.0 {
+            let on = if distance <= 25.0 {
                 result[1 - along] = frame.local(closest)[1 - along];
+                Some(edge)
             } else {
                 let origin = frame.local(closest);
                 let sign = (local[1 - along] - origin[1 - along]).signum();
                 result[1 - along] = (local[1 - along] - sign * offset).round() + sign * offset;
-            }
-            frame.world(result.x, result.y)
+                None
+            };
+            (frame.world(result.x, result.y), on)
         }
     }
 }
