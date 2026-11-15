@@ -794,13 +794,12 @@ Godot's own crash handler, which faulted again while unwinding through the unmap
 extension installs no signal handlers; its only hooks are Rust panic hooks, which only the
 library's own code calls.
 
-Every thread the extension starts now ends before the library unloads:
+Every thread the extension starts now ends before the library unloads (the road-preview worker,
+its pool and its reclaim thread are gone with the asynchronous preview, `ROAD-68-A`):
 
 | Thread | Stopped by | Joined by |
 |--------|------------|-----------|
 | Simulation thread | `SimCommand::Stop`, sent when the node is freed; it runs the commands queued before it | `SimulationNode`'s drop |
-| Road-preview worker | Its request channel disconnecting when the node is freed; it finishes the running request | `SimulationNode`'s drop |
-| Preview Rayon pool (`road-preview-N`) and reclaim thread (`road-preview-reclaim`) | The worker returning; the reclaim thread frees what is queued first | The worker, before it returns |
 | Terrain and water payload jobs and water-mesh jobs | They run to completion | `SimulationNode`'s drop waits for them |
 | Shared and background Rayon pools (`metrum-N`, `metrum-bg-N`) | The Scene-level deinit hook (`thread_pools::stop`), the shared pool first, each once its running and spawned work is done | The same hook |
 | Hang watchdog (`metrum-hang-watchdog`) | The Scene-level deinit hook (`debug::shutdown`) | The same hook |
@@ -826,11 +825,11 @@ test binaries alike:
   commit or an undo never waits behind a routing rebuild (`TERRAIN-07-E` round 3).
 - The functions that do the parallel work enter the pool themselves, not the `#[func]` bodies:
   the frame step, the render snapshot, cell-chunk preparation, the road commit, undo and
-  bulldoze, loads and world resets, the routing rebuild, and leaf rebuilds such as the entrance
-  cache, site index, admission order, compile work, overlay images and car smoothing. Every caller,
-  tests and benchmarks included, takes the same path. The simulation thread keeps the core lock
-  while the work runs on a worker; a pool worker never waits for the core (`SIM-01`).
-- The road-preview worker keeps its own joined pool (`ROAD-38`).
+  bulldoze, the in-place road edits' land take (`CODE-33`), loads and world resets, the routing
+  rebuild, and leaf rebuilds such as the entrance cache, site index, admission order, compile
+  work, overlay images and car smoothing. Every caller, tests and benchmarks included, takes the
+  same path. The simulation thread keeps the core lock while the work runs on a worker; a pool
+  worker never waits for the core (`SIM-01`).
 - When the library loads (the Core init stage), `thread_pools::disable_global_pool` spends
   Rayon's one-time global initialization on a pool that cannot start. Any Rayon call outside the
   shared pool then panics at its call site with "The global thread pool has not been
@@ -844,8 +843,44 @@ Two checks find a call that bypasses the pool. A panicked `#[func]` returns a de
 GDScript errors exit 0, so grep the Godot test logs for `global thread pool has not been
 initialized`. `bridge_entry_points_never_use_the_global_pool` re-runs the library test binary as a
 child process that disables its global pool and then drives a town's tools, a day of growth,
-saves and loads, world resets, a bulk-loaded city, the simulation thread, the preview worker and
-spawned jobs.
+saves and loads, world resets, a bulk-loaded city, the simulation thread and spawned jobs.
+
+Both see only the paths they execute. The gate test
+`thread_pools::entry_gate::rayon_entries_stay_inside_the_extension_pools` (`CODE-33`, in the lib
+suite of `./run.sh --test`, under 0.1 s) reads all of the crate's non-test source instead:
+
+- It walks the `mod` declarations from `lib.rs` and skips every item and module that a non-test
+  build leaves out (`#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]`). `thread_pools.rs` itself
+  is the pool implementation and is not scanned.
+- A Rayon entry is a `.par_*` method or `.into_par_iter()`, or one of the `rayon::` free functions
+  that use the current registry (`join`, `scope`, `spawn`, `broadcast`, `current_num_threads`, their
+  variants, the `rayon::iter` constructors). Each counts once where it is written. An unknown
+  `rayon::` path, or a `use` that imports an entry, fails until the gate classifies it.
+- An entry is pooled when it lies lexically inside the argument list of
+  `thread_pools::install`, `install_background` or `spawn`, or of the wrappers that run their work
+  in a pool (`PureJob::spawn`, `PureJob::unstarted`, `async_jobs.spawn`).
+- Other entries are bare and counted per function (`file::Type::function`, under `rust/src`).
+  [`bare_entries.txt`](../rust/src/thread_pools/bare_entries.txt) lists the functions that had
+  them when the gate landed (127 functions, 210 entries; 103 and 175 after round P3, 21 and 46
+  after round P4, every remaining line one of the in-pool-only kind below); each
+  relies on every caller already being in a pool. Three sites that branch on whether they run in a pool by design are counted
+  waivers in the test, each with its reason (`RegionGraph::clone_on_pool`, `Chunk::update_due`,
+  `splice_chunks`).
+
+A failure lists each problem with its file and lines. A function that is not listed, or whose
+count rose, gets its parallel region wrapped in `crate::thread_pools::install(|| ..)`
+(`install_background` for background work), which runs inline on a pool worker; never add it to
+the list. The list is shrink-only: when a listed function loses entries, the same change lowers
+or removes its line, and the failure names the line to write. A listed function whose every
+caller, tests included, runs inside a pool may stay, with that reason in a `#` comment above its
+line naming the callers (the inner half of a self-installing entry such as
+`CellStore::generate_in_pool`, a helper under one, `bake_tile`); a function with any caller outside
+a pool enters the pool itself. Rounds P3 and P4 of `CODE-33` leave only such lines.
+
+The scan is lexical, so it does not see a parallel iterator or closure built inside a pool-entry
+closure and driven outside it, trait-object or closure dispatch, or where a crate `macro_rules!`
+expands (its body counts once at the definition). A closure built outside a pool-entry closure
+and passed into it by name reads as bare.
 
 ## Console
 
@@ -1178,6 +1213,24 @@ set only the starting value; the console switches them later.
 Removed debug aliases:
 
 - `--debug road-geometry` is intentionally rejected; use `--debug road`
+
+### Import Cache Check
+
+Before Godot starts, every launch mode checks the import cache of each source image and model
+under `godot/assets` and `godot/bootstrap` (`png`, `jpg`, `jpeg`, `exr`, `hdr`, `glb`, `gltf`).
+The first asset in `find` order whose `.import` is missing, older than the source, or names a
+`res://.godot/imported/...` output that is not a file triggers one `godot --headless --import`.
+A stamp in `godot/.godot/import_repair_attempt.sha256` (the hash of every source's path, mtime
+and size) stops the same incomplete cache from re-importing on every launch;
+`METRUM_FORCE_GODOT_IMPORT_REPAIR=1` repairs anyway and `METRUM_SKIP_GODOT_IMPORT_REPAIR=1`
+skips the check.
+
+`run.sh` must run on macOS's `/bin/bash` 3.2, so the per-asset check reads each `.import` with
+builtins only: no fork and no process substitution (`< <(...)`) in a function that runs once per
+item. Bash 3.2 keeps a process substitution's descriptor open inside a function, one per call,
+and past 255 of them overruns its own table and corrupts the heap (`TOOLS-25`: launches died
+with exit 133 or 134 before Godot started). The stamp's records come from one `find ... -exec
+stat {} +` (GNU `stat -c`, BSD and macOS `stat -f`).
 
 ### Terrain Grass Visual Modes
 

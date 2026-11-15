@@ -1,0 +1,61 @@
+# Functions with Rayon entries outside the extension's pools (`CODE-33`): one `count key` line
+# each, the key `file::Type::function` under rust/src, sorted. Read by the `entry_gate` test
+# (rust/src/thread_pools/entry_gate.rs); see docs/debug.md#shutdown.
+#
+# Each listed function relies on its callers already running inside one of the extension's pools.
+# A caller outside them (Godot's main thread, the simulation thread, a test thread) makes it panic
+# with "The global thread pool has not been initialized." Rounds P3 and P4 of `CODE-33` make each
+# enter the pool itself (`crate::thread_pools::install`), which costs nothing on a pool worker.
+#
+# Shrink-only: the gate fails when a function is missing here, when its count rose, and when its
+# count fell or reached zero without its line being lowered or removed in the same change. A
+# function that is only ever called from inside a pool may stay, with that reason in a comment
+# line above it.
+# In a pool only: called by build_snapshot_in_pool and the test agent_instances_both_ways,
+# each inside install.
+2 nodes/sim/core/snapshot/agents.rs::SimCore::build_agent_instances
+# In a pool only: called by build_agent_instances alone.
+3 nodes/sim/core/snapshot/agents.rs::bucket_posed_agents
+# In a pool only: called by ground_off_lane_cars and fill_buckets, both under build_agent_instances.
+1 nodes/sim/core/snapshot/agents.rs::par_for_each_bucket
+# Enters no pool: returns a lazy parallel iterator, which its callers drive only inside install
+# (vegetation_api.rs, placement.rs, and the test helper first_candidate).
+1 nodes/simulation_node/vegetation_api.rs::disc_cells
+# In a pool only: its three callers in remap.rs call it inside install.
+1 simulation/economy/agents/remap.rs::scan_agents
+# Enters no pool: returns a lazy parallel iterator, which its callers reset_accounts and
+# reset_finance_masks drive only inside install (routing.rs, finance_masks.rs).
+2 simulation/economy/customers/business/routing.rs::PortIndices::all_mut
+# In a pool only: called by rebuild_doors (under rebuild_candidates' install) and inside
+# publish_place_changes' install.
+1 simulation/parking/candidates.rs::ParkingSystem::door_lists
+# In a pool only: called by rebuild_doors (under rebuild_candidates' install) and inside
+# publish_place_changes' install.
+1 simulation/parking/candidates.rs::ParkingSystem::refresh_chunk_access
+# In a pool only: called by rebuild_doors and inside the installs of publish_place_changes,
+# refresh_economy_metadata and audit_parking_doors (tests).
+1 simulation/parking/candidates/table.rs::ParkingSystem::place_table
+# In a pool only: called inside publish_place_changes' install alone.
+3 simulation/parking/candidates/update.rs::ParkingSystem::read_list_ends
+# In a pool only: called by door_foot_graph and changed_reach, under the parking candidate installs.
+2 simulation/parking/candidates/walk.rs::FootGraph::around
+# In a pool only: the inner half of CchGraph::customize, called inside its install alone.
+4 simulation/pathing/cch.rs::CchGraph::customize_in_pool
+# In a pool only: called by bake_tile alone.
+1 simulation/terrain/graded/behind.rs::rises_above_a_seam
+# In a pool only: called by bake_tile alone.
+1 simulation/terrain/graded/extras.rs::square_extras
+# In a pool only: called per tile inside the installs of bake_tiles_with and bake_unless_held.
+8 simulation/terrain/graded/tile.rs::bake_tile
+# In a pool only: the inner half of CellStore::generate, called inside its install alone.
+9 simulation/zoning/cells/generation.rs::CellStore::generate_in_pool
+# In a pool only: called inside continuity::pinned_candidates' parallel iterator alone.
+1 simulation/zoning/cells/generation/continuity.rs::frame_candidates
+# In a pool only: called by generate_in_pool alone.
+1 simulation/zoning/cells/generation/continuity.rs::pinned_candidates
+# In a pool only: called by generate_in_pool alone.
+1 simulation/zoning/cells/generation/curves.rs::pinned_candidates
+# In a pool only: the inner half of CellLotPlanner::derive, called inside its install alone.
+1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::derive_cell_lots_in_pool
+# In a pool only: called by derive_cell_lots_in_pool alone.
+1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::refresh_existing_cell_lots
