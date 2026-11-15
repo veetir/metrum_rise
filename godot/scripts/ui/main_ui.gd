@@ -489,8 +489,14 @@ func _follow_tool(tool: int) -> void:
 		_last_tool = InputManager.Tool.NONE
 		return
 	_last_tool = tool
-	if tool in _ROAD_PANEL_TOOLS and not road_combined_hbox.visible:
-		_show_only_panel(road_combined_hbox)
+	if tool in _ROAD_PANEL_TOOLS:
+		if not road_combined_hbox.visible:
+			_show_only_panel(road_combined_hbox)
+		# The drawing options belong to the tools that draw, however they were switched on
+		# (R, a tile, a number key); Select draws nothing.
+		var draws := tool != InputManager.Tool.SELECT
+		get_meta("options_panel").visible = draws
+		get_meta("road_sep").visible = draws
 	elif tool in _TERRAIN_PANEL_TOOLS and not terrain_sub_menu.visible:
 		_show_only_panel(terrain_sub_menu)
 

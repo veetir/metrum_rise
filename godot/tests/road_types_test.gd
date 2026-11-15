@@ -354,7 +354,21 @@ func _run() -> void:
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	_ui.refresh_road_types()
 	_expect(not menu.listed_ids().has(avenue), "a deleted type leaves the row")
+
+	# The Road tool switched on with the palette closed (R) opens the drawing options with it;
+	# Select, which draws nothing, hides them.
+	while _ui.close_open_panel():
+		pass
+	_input._cancel_active_tool()
+	await process_frame
+	_input._toggle_tool(_input.Tool.ROAD)
+	await process_frame
+	_expect(_ui.road_combined_hbox.visible and _ui.get_meta("options_panel").visible,
+		"the Road tool opens the palette with its drawing options")
 	_input._toggle_tool(_input.Tool.SELECT)
+	await process_frame
+	_expect(_ui.road_combined_hbox.visible and not _ui.get_meta("options_panel").visible,
+		"Select keeps the palette without the drawing options")
 	_main.queue_free()
 	await process_frame
 	if _failures == 0:
