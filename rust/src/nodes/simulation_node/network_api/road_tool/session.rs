@@ -715,7 +715,7 @@ impl SimulationNode {
     }
 
     // Drops the standing preview, so the next frame previews the stroke again: for what the
-    // preview key does not hold, such as the type's pockets (`ROAD-118`).
+    // preview key does not hold, such as the type's pockets (`ROAD-119`).
     pub(super) fn forget_road_tool_preview(&mut self) {
         self.road_tool_session.previewed = None;
         self.road_tool_session.preview = None;

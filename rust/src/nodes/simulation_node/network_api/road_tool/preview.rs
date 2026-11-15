@@ -78,7 +78,7 @@ impl SimulationNode {
         }
     }
 
-    /// Sets pockets requested on the next stroke's new junction approaches (`ROAD-118`).
+    /// Sets pockets requested on the next stroke's new junction approaches (`ROAD-119`).
     /// Uses the same body-length limits as the Junction window; invalid settings keep the old value.
     #[func]
     pub fn set_road_tool_pockets(&mut self, pockets: VarDictionary) -> GString {

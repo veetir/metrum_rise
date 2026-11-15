@@ -526,7 +526,7 @@ func set_road_type(id: String) -> String:
 		reason = set_parking(int(type.get("parking", 0)))
 	if not reason.is_empty():
 		return reason
-	# The type's turn pockets (`ROAD-118`); Rust previews the stroke again when they change.
+	# The type's turn pockets (`ROAD-119`); Rust previews the stroke again when they change.
 	reason = simulation_node.set_road_tool_pockets(type.get("pockets", {}))
 	if not reason.is_empty():
 		return reason
