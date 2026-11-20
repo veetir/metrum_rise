@@ -13,6 +13,8 @@
 //!   box of those lanes' points ([`LaneSystem::planar_bounds`]), widened by
 //!   [`CULL_ROUNDING_MARGIN_M`] for interpolation rounding. Lanes the box cannot bound, and
 //!   non-finite lane distances, are posed.
+//! - A walker on a foot lane is drawn beside the lane's centre line, on its own side of the
+//!   sidewalk (`walker_gait`), so its box is widened by that side's reach too.
 //!
 //! The stored position cannot bound a lane agent's pose by any fixed margin: overlap
 //! correction moves a car back along its lane without rewriting it, by up to one car spacing
@@ -46,8 +48,15 @@ use super::{
 use crate::config::{AGENT_CULL_PADDING_M, CAR_DRAW_DISTANCE_M, WALKER_DRAW_DISTANCE_M};
 use crate::nodes::sim::core::state::SimCore;
 use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
+use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::economy::agents::walker_crowd::{Opposing, walker_lateral_m};
+use crate::simulation::economy::agents::walker_gait::{
+    SIDE_OFFSET_MAX_M, walker_look, walker_pace, walker_side_offset_m, walker_size,
+    walker_step_beat,
+};
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
 use crate::simulation::network::lanes::LanePlanarBox;
+use crate::simulation::network::lanes::LaneSystem;
 use godot::prelude::{Vector2, Vector3};
 
 // Agents per posing task. Agents inside the camera sit together in the index, so a task's cost
@@ -67,6 +76,8 @@ struct PosedAgent {
     render_id: i64,
     transform: [f32; 12],
     walk_phase: f32,
+    // The walker's clothes and hair (`walker_gait::walker_look`).
+    look: f32,
 }
 
 // Why an agent has no instance in this snapshot.
@@ -182,6 +193,114 @@ impl AgentView {
     }
 }
 
+// Over this distance from its attach and detach points a walker eases between its side of the
+// sidewalk and the centre line its door's path meets, rather than stepping sideways.
+const WALKER_SIDE_EASE_M: f32 = 3.0;
+// A walker faces where its drawn side takes it this far ahead, seconds: it turns into a
+// side-step instead of sliding sideways.
+const WALKER_TURN_AHEAD_S: f32 = 0.5;
+// The widest such turn from the lane's direction, radians (about 20 degrees).
+const WALKER_TURN_MAX_RAD: f32 = 0.35;
+// Below this speed, m/s, a walker faces along its lane.
+const WALKER_TURN_MIN_MS: f32 = 0.2;
+
+// Walker `i`'s drawn shift from foot lane `lane_id`'s centre line at its lane distance, along
+// `tangent`, and the direction it faces: its own side, or the room it makes for the walkers
+// around it (`walker_crowd`), turned toward where that side is going. Presentation only, never
+// stored. O(log bucket).
+fn walker_side_pose(
+    agents: &AgentSystem,
+    lanes: &LaneSystem,
+    i: usize,
+    lane_id: usize,
+    tangent: Vector3,
+) -> (Vector3, Vector3) {
+    // Left of travel in the ground plane (Y up): (t.z, -t.x).
+    let left = Vector3::new(tangent.z, 0.0, -tangent.x);
+    let len = left.length();
+    if len.is_nan() || len <= 1e-6 {
+        return (Vector3::ZERO, tangent);
+    }
+    let left = left / len;
+    let speed = agents.speed[i];
+    let side_now = walker_side_m(agents, lanes, i, lane_id, 0.0);
+    let mut forward = tangent;
+    if speed >= WALKER_TURN_MIN_MS {
+        let side_ahead = walker_side_m(agents, lanes, i, lane_id, WALKER_TURN_AHEAD_S);
+        let slope = (side_ahead - side_now) / (speed * WALKER_TURN_AHEAD_S);
+        let turn = slope
+            .atan()
+            .clamp(-WALKER_TURN_MAX_RAD, WALKER_TURN_MAX_RAD);
+        let flat = Vector3::new(tangent.x, 0.0, tangent.z) / len;
+        forward = flat * turn.cos() + left * turn.sin();
+        forward.y = tangent.y;
+    }
+    (left * side_now, forward)
+}
+
+// Walker `i`'s drawn side, metres left of lane `lane_id`'s centre line, `ahead_s` seconds on
+// with everyone at their last speed: eased to the centre line near its door's attach and detach
+// points. O(log bucket).
+fn walker_side_m(
+    agents: &AgentSystem,
+    lanes: &LaneSystem,
+    i: usize,
+    lane_id: usize,
+    ahead_s: f32,
+) -> f32 {
+    let speed_of = |agent: usize| agents.speed[agent];
+    let d = agents.lane_distance[i];
+    let d_ahead = d + speed_of(i) * ahead_s;
+    let mut ease = 1.0_f32;
+    for (plan_lane, plan_d) in [
+        (
+            agents.planned_attach_lane_id[i],
+            agents.planned_attach_lane_d[i],
+        ),
+        (
+            agents.planned_detach_lane_id[i],
+            agents.planned_detach_lane_d[i],
+        ),
+    ] {
+        if plan_lane as usize == lane_id {
+            ease = ease.min((d_ahead - plan_d).abs() / WALKER_SIDE_EASE_M);
+        }
+    }
+    let ease = ease.clamp(0.0, 1.0);
+    let ease = ease * ease * (3.0 - 2.0 * ease);
+    let pace_of = |agent: usize| walker_pace(agents.schedule_seed[agent]);
+    let preferred = walker_side_offset_m(agents.schedule_seed[i]);
+    let side = match (lanes.lanes.get(lane_id), agents.lane_buckets.get(lane_id)) {
+        (Some(lane), Some(bucket)) => {
+            let opposing = lanes.opposing_foot_lane(lane_id).and_then(|id| {
+                Some(Opposing {
+                    bucket: agents.lane_buckets.get(id)?,
+                    length: lanes.lanes[id].length,
+                })
+            });
+            let pace = pace_of(i);
+            walker_lateral_m(
+                preferred,
+                d,
+                i,
+                pace,
+                lane.length,
+                bucket,
+                opposing,
+                pace_of,
+                ahead_s,
+                speed_of,
+            )
+        }
+        _ => preferred,
+    };
+    side * ease
+}
+
+fn widen(b: LanePlanarBox, m: f32) -> LanePlanarBox {
+    [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
+}
+
 fn union(a: LanePlanarBox, b: LanePlanarBox) -> LanePlanarBox {
     [
         a[0].min(b[0]),
@@ -273,7 +392,12 @@ impl SimCore {
         if !self.agents.lane_distance[i].is_finite() {
             return None;
         }
-        let mut bounds = lane_box;
+        // A walker is drawn up to its side offset beside the lane.
+        let mut bounds = if car {
+            lane_box
+        } else {
+            widen(lane_box, SIDE_OFFSET_MAX_M)
+        };
         // A superset of the lane-change blend's condition in `pose_agent`.
         if car
             && self.agents.transit[i] == TRANSIT_NETWORK
@@ -318,9 +442,16 @@ impl SimCore {
             } else {
                 sample_lane_pose(lane, self.agents.lane_distance[i])
             };
-            if let Some((pos, _)) = lane_pose {
-                world_x = pos.x;
-                world_z = pos.z;
+            if let Some((pos, tangent)) = lane_pose {
+                let mut shift = Vector3::ZERO;
+                if self.agents.transit_mode[i] != MODE_CAR {
+                    let lanes = &self.transit_network.lane_system;
+                    let facing;
+                    (shift, facing) = walker_side_pose(&self.agents, lanes, i, lane_id, tangent);
+                    lane_pose = Some((pos, facing));
+                }
+                world_x = pos.x + shift.x;
+                world_z = pos.z + shift.z;
                 pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
             }
         }
@@ -349,13 +480,16 @@ impl SimCore {
             // GLTF export converts Blender -Y (character facing) to +Z, so the
             // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
             let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
+            let seed = self.agents.schedule_seed[i];
+            let basis = basis.map(|axis| axis * walker_size(seed));
             Ok(PosedAgent {
                 key: self.agents.pedestrian_type[i],
                 car: false,
                 ground_flag: 0,
                 render_id: 0,
                 transform: transform_floats(basis, Vector3::new(world_x, world_y, world_z)),
-                walk_phase: self.agents.walk_phase[i],
+                walk_phase: (self.agents.walk_phase[i] + walker_step_beat(seed)).fract(),
+                look: walker_look(seed),
             })
         } else {
             // Off-lane footprints are grounded per bucket after bucketing.
@@ -385,6 +519,7 @@ impl SimCore {
                 render_id: render_id.min(i64::MAX as u64) as i64,
                 transform: transform_floats(basis, Vector3::new(world_x, world_y, world_z)),
                 walk_phase: 0.0,
+                look: 0.0,
             })
         }
     }
@@ -432,7 +567,7 @@ fn bucket_posed_agents(chunks: &[Vec<PosedAgent>], snapshot: &mut RenderSnapshot
             fill_buckets(pedestrian_transforms, chunks, false, |buffer, agent| {
                 buffer.extend_from_slice(&agent.transform);
                 // Walk phase in CUSTOM_DATA0.x (the MultiMesh uses custom data).
-                buffer.extend_from_slice(&[agent.walk_phase, 0.0, 0.0, 0.0]);
+                buffer.extend_from_slice(&[agent.walk_phase, agent.look, 0.0, 0.0]);
             })
         },
         || {
@@ -557,9 +692,17 @@ impl SimCore {
                 } else {
                     sample_lane_pose(lane, self.agents.lane_distance[i])
                 };
-                if let Some((pos, _)) = lane_pose {
-                    world_x = pos.x;
-                    world_z = pos.z;
+                if let Some((pos, tangent)) = lane_pose {
+                    let mut shift = Vector3::ZERO;
+                    if self.agents.transit_mode[i] != MODE_CAR {
+                        let lanes = &self.transit_network.lane_system;
+                        let facing;
+                        (shift, facing) =
+                            walker_side_pose(&self.agents, lanes, i, lane_id, tangent);
+                        lane_pose = Some((pos, facing));
+                    }
+                    world_x = pos.x + shift.x;
+                    world_z = pos.z + shift.z;
                     pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
                 }
             }
@@ -574,7 +717,8 @@ impl SimCore {
             }
             if self.agents.transit_mode[i] != MODE_CAR {
                 let p_type = self.agents.pedestrian_type[i];
-                let walk_cycle = self.agents.walk_phase[i];
+                let seed = self.agents.schedule_seed[i];
+                let walk_cycle = (self.agents.walk_phase[i] + walker_step_beat(seed)).fract();
                 let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
                     self.get_world_surface_height_internal(Vector2::new(world_x, world_z))
                 }) + AGENT_SURFACE_CLEARANCE_M;
@@ -585,10 +729,11 @@ impl SimCore {
                     .map(|(_, tangent)| tangent)
                     .or_else(|| access_phase_direction(self, i, world_x, world_z));
                 let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
+                let basis = basis.map(|axis| axis * walker_size(seed));
                 let buffer = snapshot.pedestrian_transforms.entry(p_type).or_default();
                 push_transform(buffer, basis, Vector3::new(world_x, world_y, world_z));
                 buffer.push(walk_cycle);
-                buffer.push(0.0);
+                buffer.push(walker_look(seed));
                 buffer.push(0.0);
                 buffer.push(0.0);
             } else {
