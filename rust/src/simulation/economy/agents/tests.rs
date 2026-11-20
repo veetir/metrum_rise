@@ -31,3 +31,4 @@ mod u_turns;
 mod vehicle_flow;
 mod walk_home;
 mod walk_witness;
+mod walker_crowds;

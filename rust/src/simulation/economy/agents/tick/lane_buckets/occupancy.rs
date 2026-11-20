@@ -14,8 +14,9 @@ use super::super::traffic::{
     LANE_CHANGE_FINISH_EPS_M, lane_bucket_member, live_lane_bucket_transit,
 };
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
-use crate::simulation::economy::agents::TRANSIT_NETWORK;
 use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::economy::agents::walker_crowd::{WALKER_QUEUE_GAP_M, WALKER_STANDING_MS};
+use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
 use rayon::prelude::*;
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -54,6 +55,8 @@ struct FillInput<'a> {
     distances: &'a [f32],
     transit: &'a [u8],
     change_from: &'a [u32],
+    modes: &'a [u8],
+    speeds: &'a [f32],
     correct_overlaps: bool,
 }
 
@@ -256,6 +259,8 @@ impl AgentSystem {
             distances: &self.agents.lane_distance[..n],
             transit,
             change_from: &self.agents.lane_change_from_lane_id[..n],
+            modes,
+            speeds: &self.agents.speed[..n],
             correct_overlaps,
         };
         let ranges = &mut scratch.ranges[..range_count];
@@ -393,6 +398,16 @@ fn fill_lane_range(
         }
         let corrected = range.corrections.len();
         for j in (0..bucket.len().saturating_sub(1)).rev() {
+            let (rear, lead) = (bucket[j].1, bucket[j + 1].1);
+            // Walkers walk through each other's lane distance to pass (`walker_crowd`) and queue
+            // a step apart behind one standing still.
+            let min_sep = if input.modes[rear] == MODE_CAR || input.modes[lead] == MODE_CAR {
+                min_sep
+            } else if input.speeds[lead] < WALKER_STANDING_MS {
+                WALKER_QUEUE_GAP_M
+            } else {
+                continue;
+            };
             let max_rear = (bucket[j + 1].0 - min_sep).max(0.0);
             if bucket[j].0 > max_rear {
                 bucket[j].0 = max_rear;
