@@ -35,14 +35,15 @@ pub struct MistMap {
     pub data: Vec<f32>,
 }
 
-// Shortest interval between rebuilds while the water or terrain keeps changing, as a brush
-// stroke does every frame: a stroke then costs one rebuild per interval, not one per frame, and
-// the mist catches up within it. A new world rebuilds at once.
+// Shortest interval between rebuilds while the water or terrain keeps changing, as an editor
+// brush stroke does every frame: a stroke then costs one rebuild per interval, not one per frame,
+// and the mist catches up within it. A new world rebuilds at once.
 const MIST_REBUILD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl SimCore {
     /// Rebuilds the mist map when the world, its visible water or its visual terrain has
-    /// changed since it was built, at most once per `MIST_REBUILD_INTERVAL` within one world.
+    /// changed since it was built, at most once per `MIST_REBUILD_INTERVAL` within one world,
+    /// and not while a gameplay terrain stroke is open.
     /// Snapshots share the result.
     pub(crate) fn refresh_mist_map(&mut self) {
         let key = [
@@ -55,6 +56,11 @@ impl SimCore {
             return;
         }
         let same_world = key[0] == self.mist_map_key[0];
+        // A whole-world rebuild holds the core for tens of milliseconds on a large map, and the
+        // gameplay brush reads the core every frame of a stroke: the mist waits for the release.
+        if same_world && self.game_terrain_stroke.is_some() {
+            return;
+        }
         if same_world
             && self
                 .mist_map_built_at
@@ -227,6 +233,25 @@ mod tests {
         core.world_epoch += 1;
         core.refresh_mist_map();
         assert_eq!(core.mist_map_key[0], edited[0] + 1);
+    }
+
+    #[test]
+    fn an_open_gameplay_stroke_holds_the_rebuild_until_release() {
+        use crate::nodes::sim::editing::TerrainBrushMode;
+        use godot::prelude::{Vector2, Vector3};
+
+        let mut core = SimCore::new(WorldConfig::new(1024.0, 1024.0, 16.0, 16.0));
+        core.refresh_mist_map();
+        let built = core.mist_map_key;
+        let (pos, zero) = (Vector2::ZERO, Vector3::ZERO);
+        core.begin_game_terrain_stroke(TerrainBrushMode::Raise, pos, 40.0, 1.0, zero, zero);
+        assert_eq!(core.game_terrain_stroke_step(pos, 0.5), 0);
+        core.mist_map_built_at = Some(std::time::Instant::now() - MIST_REBUILD_INTERVAL * 2);
+        core.refresh_mist_map();
+        assert_eq!(core.mist_map_key, built, "the stroke changed the terrain but holds the rebuild");
+        assert!(core.finish_game_terrain_stroke());
+        core.refresh_mist_map();
+        assert_ne!(core.mist_map_key, built, "release rebuilds the mist on the new ground");
     }
 
     #[test]
