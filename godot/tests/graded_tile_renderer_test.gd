@@ -651,6 +651,8 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		"a changed payload refreshes the grass mask")
 	_expect(grass.mask_mirror_syncs > edit_mask_syncs_before,
 		"a changed payload refreshes the grass-mask mirrors")
+	if DisplayServer.get_name() != "headless":
+		await _check_grass_ground(grass, simulation, terrain)
 	var faces := 0
 	for tile: Vector2i in graded.installed.keys():
 		faces += (graded.installed[tile]["walls"] as PackedFloat32Array).size() / GradedTiles.WALL_FACE_FLOATS
@@ -682,6 +684,52 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	terrain.free()
 	camera.free()
 	water.free()
+
+# VEG-23: the grass masks carry the graded ground's rise and cut against the source heightmap. A
+# hill raised beside the main road is cut back to the road's level, and the blades on that cut
+# stand on the ground the terrain draws, not on the hill the source heightmap still holds.
+func _check_grass_ground(grass: Node3D, simulation: SimulationNode, terrain) -> void:
+	simulation.sculpt_terrain(Vector2(60.0, 30.0), 16.0, 0.25)
+	_expect(await _settle_production(terrain, simulation, simulation.get_graded_edit_serial()),
+		"the hill's terrain must settle: %s" % terrain.get_pending_render_work_counts())
+	for frame in 2:
+		await RenderingServer.frame_post_draw
+	var images: Array[Image] = []
+	var bounds: Array[Rect2] = []
+	for slot in grass._masks.size():
+		var mask_camera := (grass._masks[slot] as SubViewport).get_node("Camera") as Camera3D
+		var size := mask_camera.size
+		bounds.append(Rect2(mask_camera.position.x - size * 0.5, mask_camera.position.z - size * 0.5, size, size))
+		images.append((grass._masks[slot] as SubViewport).get_texture().get_image())
+	var checked := 0
+	var worst := 0.0
+	for i in 41:
+		for j in 31:
+			var at := Vector2(40.0 + 1.03 * i, 16.0 + 1.03 * j)
+			var delta: float = simulation.get_world_surface_height(at) - simulation.get_height_at(at)
+			if absf(delta) < 0.3:
+				continue
+			for slot in images.size():
+				if grass._keys[slot] == Vector2i(-1, -1) or not bounds[slot].has_point(at):
+					continue
+				var image := images[slot]
+				# Bilinear between texel centres, as the grass shader samples the mask.
+				var texel := (at - bounds[slot].position) / bounds[slot].size * Vector2(image.get_size()) - Vector2(0.5, 0.5)
+				var t0 := Vector2i(texel.floor())
+				var f := texel - Vector2(t0)
+				var p00 := image.get_pixelv(t0)
+				var p10 := image.get_pixelv(t0 + Vector2i(1, 0))
+				var p01 := image.get_pixelv(t0 + Vector2i(0, 1))
+				var p11 := image.get_pixelv(t0 + Vector2i(1, 1))
+				# Off the road's surface and paving only; the mask's own rule decides that.
+				if minf(minf(p00.r, p10.r), minf(p01.r, p11.r)) > 0.99:
+					var rise := lerpf(lerpf(p00.g - p00.b, p10.g - p10.b, f.x),
+						lerpf(p01.g - p01.b, p11.g - p11.b, f.x), f.y)
+					checked += 1
+					worst = maxf(worst, absf(rise - delta))
+				break
+	_expect(checked >= 20, "the cut beside the road holds natural ground off the source: %d" % checked)
+	_expect(worst < 0.05, "the grass mask's rise and cut match the graded ground within 5 cm: %.3f" % worst)
 
 # `RENDER-40`, `RENDER-32-Q`: a sculpt over a patch corner (away from the roads) dirties several
 # patches; with the frame's install ledger spent before the terrain's frame every frame, the

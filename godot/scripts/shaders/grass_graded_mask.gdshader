@@ -5,7 +5,8 @@ render_mode unshaded, cull_disabled, fog_disabled;
 
 // The mask draws the graded renderer's cell MultiMeshes into grass.gd's private top-down
 // viewport. A base cell has slot -1 and is natural; a graded cell keeps grass only outside the
-// road/portal SDF and outside authored paving classes.
+// road/portal SDF and outside authored paving classes. G and B carry the graded ground's rise and
+// cut against the source heightmap (the target is RGBA16F), so blades stand on the graded ground.
 uniform float terrain_cell_m = 5.0;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform float height_scale;
@@ -17,6 +18,8 @@ uniform vec2 inner_sample_offset_texels;
 
 varying vec2 mask_cell_local_m;
 varying flat ivec4 mask_cell;
+// Linear over each cell triangle, as the terrain surface interpolates its delta.
+varying float mask_delta_m;
 
 void vertex() {
 	int cell_hm = int(round(terrain_cell_m * 2.0));
@@ -27,6 +30,7 @@ void vertex() {
 	VERTEX = vec3(vec2(cell.origin_hm + p - patch_centre_hm) * 0.5, 0.0).xzy;
 	mask_cell_local_m = vec2(p) * 0.5;
 	mask_cell = ivec4(cell.slot, cell.code, cell.phase);
+	mask_delta_m = cell.slot < 0 ? 0.0 : cell_delta_m(cell, p);
 }
 
 void fragment() {
@@ -36,6 +40,7 @@ void fragment() {
 		CellMask mask = cell_mask(
 			cell_frame_from(mask_cell, int(round(terrain_cell_m * 2.0))), mask_cell_local_m
 		);
-		ALBEDO = vec3(float(mask.sdf >= 0.0 && mask.class_id == 0));
+		ALBEDO = vec3(float(mask.sdf >= 0.0 && mask.class_id == 0),
+			max(mask_delta_m, 0.0), max(-mask_delta_m, 0.0));
 	}
 }
