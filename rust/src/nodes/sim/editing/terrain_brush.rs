@@ -14,7 +14,6 @@ const RAISE_PER_DIAMETER: [f32; 3] = [0.03, 0.10, 0.30];
 const TARGET_SECONDS: [f32; 3] = [2.0, 0.7, 0.2];
 const ROAD: u8 = 1;
 const BUILDING: u8 = 2;
-const LOT: u8 = 4;
 const FIELD: u8 = 8;
 const OUTSIDE: i32 = 16;
 const WATER: i32 = 32;
@@ -78,7 +77,7 @@ impl TerrainStrokeHeights {
 /// One reusable texture-sized window of protected source samples, in row-major order.
 #[derive(Default)]
 pub(crate) struct TerrainProtection {
-    key: Option<([i32; 2], usize, [u64; 6])>,
+    key: Option<([i32; 2], usize, [u64; 5])>,
     /// Location of the first sample in grid coordinates, including off-world padding.
     pub(crate) origin: [i32; 2],
     /// Width and height of the square mask.
@@ -331,7 +330,6 @@ impl SimCore {
             self.world_epoch,
             self.transit_network.roadbed.generation(),
             self.road_terrain_inputs.site_revision(),
-            self.zoning.parcels.overlay_revision(),
             self.agriculture.visual_revision(),
             self.get_coal_pit_overlay_revision_internal(),
         ];
@@ -368,6 +366,10 @@ impl SimCore {
         self.terrain_brush_protection = mask;
     }
 
+    // A sample is reserved when its interpolation cell (`min..max`, one sample of margin) meets
+    // a road bed, a work area or a building's flat pad. The yard paving and lot ground around
+    // the pad follow the source, so the brush may reshape them; the margin keeps the source
+    // under the pad, and so its support height, unchanged.
     fn protection_in_rect(&self, min: Vector2, max: Vector2, candidates: u8) -> u8 {
         let rect = [min.x, min.y, max.x, max.y].map(f64::from);
         let mut status = 0;
@@ -383,17 +385,8 @@ impl SimCore {
         {
             status |= ROAD;
         }
-        if candidates & BUILDING != 0 && self.allocator.any_graded_site_in_bounds(rect) {
+        if candidates & BUILDING != 0 && self.allocator.any_site_pad_in_bounds(rect) {
             status |= BUILDING;
-        }
-        if candidates & (BUILDING | LOT) != 0 {
-            self.zoning.parcels.visit_in_bounds(min, max, |parcel| {
-                status |= if parcel.occupied_building().is_some() {
-                    BUILDING
-                } else {
-                    LOT
-                };
-            });
         }
         if candidates & FIELD != 0 {
             let corners = [
@@ -412,6 +405,14 @@ impl SimCore {
             }
         }
         status
+    }
+
+    /// Flatten's target under `pos`, in metres: a building's floor height on its pad or paved
+    /// yard, so one stroke levels the yard flush with the building, else the source height.
+    pub(crate) fn game_terrain_flatten_height_m(&self, pos: Vector2) -> f32 {
+        self.allocator
+            .site_support_height_at(pos)
+            .unwrap_or_else(|| self.get_height_at_internal(pos))
     }
 
     /// Starts a gameplay stroke, freezing the settings and initial flatten height.
@@ -451,7 +452,7 @@ impl SimCore {
                 mode,
                 radius,
                 speed,
-                target: self.get_height_at_internal(pos) / config::HEIGHT_SCALE,
+                target: self.game_terrain_flatten_height_m(pos) / config::HEIGHT_SCALE,
                 anchors: SlopeAnchors {
                     start_world: Vector2::new(anchor_a.x, anchor_a.z),
                     start_height_m: anchor_a.y,
