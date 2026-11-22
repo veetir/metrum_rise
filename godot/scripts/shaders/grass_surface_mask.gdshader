@@ -9,5 +9,6 @@ void vertex() {
 }
 
 void fragment() {
-	ALBEDO = vec3(1.0);
+	// Natural ground at the source height: no graded rise (G) or cut (B), see grass.gdshader.
+	ALBEDO = vec3(1.0, 0.0, 0.0);
 }

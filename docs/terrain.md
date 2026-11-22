@@ -218,6 +218,12 @@ switch is `GameSettings.GRASS_ENABLED`; it has no saved simulation state and no 
   **existing mesh** into a private 1024² top-down GPU coverage mask when the mesh or patch changes;
   it does not run every frame. Four footprint taps exclude edge roots, wet cells, coal pits
   and slopes over about 31 degrees. This is an extra mask draw, not a terrain/placement rebuild.
+- The graded cells also write their ground's rise and cut against the source heightmap into the
+  mask's green and blue channels (an RGBA16F target, 8 MiB a slot). The same four taps give each
+  root its graded height and slope, so blades on the cut or fill beside a road or building site
+  stand on the ground the terrain draws; at source height they floated over cuts and sank into
+  fills. The rendered `graded_tile_renderer_test` matches the mask to
+  `get_world_surface_height` within 5 cm on a cut beside a road.
 - Clumps are five tapered blades fanned about 0.2 m wide, darker at the base, lighter and
   drier at the tip, varying from clump to clump, so they read against the ground they are tinted
   from. Meadow blades are 0.25–0.5 m, thinning from 28 to 60 m camera distance. Closed canopy uses

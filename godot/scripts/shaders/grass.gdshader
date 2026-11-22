@@ -132,10 +132,19 @@ void vertex() {
 		vec2 mask_uv = (xz - mask_world_bounds.xy) / mask_world_bounds.zw;
 		// A footprint guard also keeps blade roots off narrow paths and mesh-cut site edges.
 		vec2 guard = vec2(0.4) / mask_world_bounds.zw;
-		float natural = min(min(textureLod(surface_mask, mask_uv + guard, 0.0).r,
-			textureLod(surface_mask, mask_uv - guard, 0.0).r),
-			min(textureLod(surface_mask, mask_uv + vec2(guard.x, -guard.y), 0.0).r,
-			textureLod(surface_mask, mask_uv + vec2(-guard.x, guard.y), 0.0).r));
+		vec3 pp = textureLod(surface_mask, mask_uv + guard, 0.0).rgb;
+		vec3 mm = textureLod(surface_mask, mask_uv - guard, 0.0).rgb;
+		vec3 pm = textureLod(surface_mask, mask_uv + vec2(guard.x, -guard.y), 0.0).rgb;
+		vec3 mp = textureLod(surface_mask, mask_uv + vec2(-guard.x, guard.y), 0.0).rgb;
+		float natural = min(min(pp.r, mm.r), min(pm.r, mp.r));
+		// The graded ground's rise (G) minus cut (B) against the source heightmap, as the terrain
+		// draws it beside roads and building sites. The four taps, 0.8 m apart on each axis, give
+		// its height at the root and its slope; blades on a cut or fill stand on it, not in the air.
+		vec4 delta = vec4(pp.g - pp.b, mm.g - mm.b, pm.g - pm.b, mp.g - mp.b);
+		surface.x += dot(delta, vec4(0.25));
+		surface.yz += vec2(delta.x + delta.z - delta.y - delta.w,
+			delta.x + delta.w - delta.y - delta.z) / 1.6;
+		root_position.y = surface.x - 0.025;
 		float cover = overlay_at(land_cover_texture, land_cover_world_bounds, xz);
 		forest_cover = cover * smoothstep(0.35, 0.7, cover) * (1.0 - field_cover);
 		keep = natural > 0.99 && textureLod(watermap, water_uv, 0.0).r < 0.001

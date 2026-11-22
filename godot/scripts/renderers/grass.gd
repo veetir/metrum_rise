@@ -235,6 +235,8 @@ static func pipeline_prewarm_surfaces() -> Array:
 func _create_mask() -> void:
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(MASK_SIZE, MASK_SIZE)
+	# RGBA16F, linear: the graded masks write the ground's rise and cut in metres (G, B).
+	viewport.use_hdr_2d = true
 	viewport.world_3d = World3D.new()
 	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	var environment := Environment.new()
