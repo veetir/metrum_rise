@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod catchments;
 mod docks;
+mod ground;
 mod kerb;
 mod poses;
 mod published;
@@ -207,6 +208,7 @@ fn parking_lot_needs_a_frontage_cars_can_use() {
         index,
         &c.region_graph,
         &c.transit_network.roadbed,
+        |p| c.get_world_surface_height_internal(p),
     );
     assert!(bays.is_empty(), "{bays:?}");
     assert!(issues[0].ends_with("not a walkway"), "{issues:?}");

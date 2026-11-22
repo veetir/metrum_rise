@@ -33,6 +33,7 @@ fn lot_size(core: &SimCore, site: usize) -> usize {
         site,
         &core.region_graph,
         &core.transit_network.roadbed,
+        |p| core.get_world_surface_height_internal(p),
     )
     .0
     .len()

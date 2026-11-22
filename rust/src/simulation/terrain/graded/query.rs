@@ -331,6 +331,37 @@ impl GradedSurface<'_> {
         answer
     }
 
+    /// Visible height at arbitrary XZ through the existing 8 m lattice block. Reuses its exact
+    /// GL0 vertices/coverage rather than re-evaluating three vertices at every half-metre sample.
+    /// Same bits as `surface_height_at`; O(local inputs) per new block, O(1) per cached vertex.
+    pub(crate) fn surface_height_in_block(
+        &self,
+        x: f64,
+        z: f64,
+        block: &mut LatticeBlock,
+        scratch: &mut QueryScratch,
+    ) -> f64 {
+        if let Some(height) = self.roadbed.exposed_height_at(x as f32, z as f32) {
+            return f64::from(height);
+        }
+        let [i, j] = [x, z].map(|v| (v / GL0_M).floor() as i64);
+        if !block.origin.is_some_and(|origin| {
+            (0..=BLOCK_CELLS).contains(&(i - origin[0]))
+                && (0..=BLOCK_CELLS).contains(&(j - origin[1]))
+        }) {
+            self.prepare_block(LatticeBlock::origin_of([i, j]), block, scratch);
+        }
+        if !block.indexed {
+            return self.ground_height_near(x, z, scratch);
+        }
+        self.prepare(block.rect, scratch);
+        let answer = self.lattice_ground(x, z, block, scratch);
+        self.debug_reference(x, z, answer, scratch, |surface, reference| {
+            surface.ground_height_at_unchecked(x, z, reference)
+        });
+        answer
+    }
+
     // [`Self::ground_height_near_unchecked`] at a lattice point of the prepared block, its
     // triangle's vertices from the block.
     fn lattice_ground(

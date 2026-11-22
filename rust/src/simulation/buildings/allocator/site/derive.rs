@@ -557,7 +557,8 @@ pub(crate) fn zoning_support_footprint(geometry: &ParcelGeometry) -> [Vector2; 4
     ]
 }
 
-fn lot_support_inset_m(lot_half_width: f32, lot_half_depth: f32) -> f32 {
+/// Width of the terrain-owned outer lot strip, clamped for very small lots.
+pub(crate) fn lot_support_inset_m(lot_half_width: f32, lot_half_depth: f32) -> f32 {
     BUILDING_SITE_LOT_TIE_IN_WIDTH_M
         .min(lot_half_width.max(0.0) * 0.5)
         .min(lot_half_depth.max(0.0) * 0.5)

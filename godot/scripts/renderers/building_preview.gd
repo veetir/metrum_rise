@@ -578,6 +578,10 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 			_parking_rejection_shapes[int(issue["anchor"])] = issue["shape"]
 		if issue.get("leg") is Array:
 			_parking_rejection_legs[int(issue["anchor"])] = issue["leg"]
+	for note: Dictionary in payload.get("notes", []):
+		var anchor := int(note["anchor"])
+		var text := str(note["reason"])
+		_parking_notes[anchor] = str(_parking_notes[anchor]) + "\n" + text if _parking_notes.has(anchor) else text
 	for dock: Dictionary in payload.get("docks", []):
 		_dock_routes[int(dock["anchor"])] = dock["route"]
 		if dock.has("route_in"):

@@ -202,7 +202,7 @@ pub(in crate::simulation::parking) fn validate_dock(
 /// dock that fails.
 pub(in crate::simulation::parking) fn dock_ways(
     docks: usize,
-    prove: impl Fn(usize, Option<usize>) -> Result<ProvenDock, Rejection>,
+    mut prove: impl FnMut(usize, Option<usize>) -> Result<ProvenDock, Rejection>,
 ) -> Vec<Result<ProvenDock, Rejection>> {
     let mut building = None;
     (0..docks)

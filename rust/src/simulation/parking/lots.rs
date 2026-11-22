@@ -2,6 +2,7 @@
 
 //! Public anchor bays with fixed driveway–aisle–bay swept-footprint proofs.
 
+use super::ground::{spot_issue, way_issue};
 use super::{
     Bay, DockRoute, DockWay,
     geometry::{precise, rectangle, structure_collision},
@@ -26,6 +27,8 @@ pub(crate) struct LotProof {
     pub bays: Vec<(u32, Bay)>,
     /// One reason per rejected parking anchor, or the lot's one reason.
     pub issues: Vec<String>,
+    /// Whether any refusal is caused by the visible ground rather than the authored layout.
+    pub ground_refused: bool,
     /// One dock per valid loading bay, by anchor index, all through the building's one gate:
     /// the gate its first dock proves through.
     pub docks: Vec<(u32, Bay)>,
@@ -38,13 +41,15 @@ pub(crate) struct LotProof {
 }
 
 /// [`lot_proof`]'s car half, for the callers that read no dock. Same bound.
+#[cfg(test)]
 pub(crate) fn lot_bays(
     allocator: &BuildingAllocator,
     index: usize,
     graph: &RegionGraph,
     roads: &RoadbedSystem,
+    height: impl FnMut(Vector2) -> f32,
 ) -> (Vec<(u32, Bay)>, Vec<String>) {
-    let proof = lot_proof(allocator, index, graph, roads);
+    let proof = lot_proof(allocator, index, graph, roads, height);
     (proof.bays, proof.issues)
 }
 
@@ -78,12 +83,14 @@ fn is_dock_anchor(anchor: &Anchor) -> bool {
 /// filter; disjoint support never runs an overlay. Unsupported sweeps return diagnostics and
 /// publish no bay. Loading bays are validated only when the asset has a freight Driveway, so
 /// an asset without one costs what it did before docks. No work depends on the city's total
-/// building count.
+/// building count. Visible-ground checks add O(A × samples) at 0.5 m spacing,
+/// using the supplied graded-surface query, never the source heightmap.
 pub(crate) fn lot_proof(
     allocator: &BuildingAllocator,
     index: usize,
     graph: &RegionGraph,
     roads: &RoadbedSystem,
+    mut height: impl FnMut(Vector2) -> f32,
 ) -> LotProof {
     let building = &allocator.buildings[index];
     let Some(asset) = allocator.registry.get(&building.asset_id) else {
@@ -261,7 +268,18 @@ pub(crate) fn lot_proof(
             |foot| structure_collision(allocator, ProofClass::Car, foot),
         );
         match checked {
-            Ok((path, _)) => proof.bays.push(place(anchor, path, pos, forward, width, length)),
+            Ok((path, _)) => {
+                if let Some(reason) = spot_issue(ProofClass::Car, pos, forward, &mut height)
+                    .or_else(|| way_issue(&path, roads, &mut height))
+                {
+                    proof.ground_refused = true;
+                    proof.issues.push(fail(&reason));
+                } else {
+                    proof
+                        .bays
+                        .push(place(anchor, path, pos, forward, width, length));
+                }
+            }
             Err(rejection) => proof.issues.push(fail(&rejection.reason)),
         }
     }
@@ -303,8 +321,9 @@ pub(crate) fn lot_proof(
             })
             .collect();
         // A dock never opens onto the street, and its routes also keep off the parking spots.
+        // Ground is part of the gate proof: an undrivable dock cannot choose the shared gate.
         let prove = |slot: usize, only: Option<usize>| {
-            validate_dock(
+            let dock = validate_dock(
                 slot,
                 &dock_geometry,
                 &dock_footprints,
@@ -315,7 +334,21 @@ pub(crate) fn lot_proof(
                 only,
                 &ways[slot],
                 |foot| structure_collision(allocator, freight, foot),
-            )
+            )?;
+            let (_, pos, forward, ..) = docks[slot];
+            let way_in = if dock.route_in.is_empty() {
+                &dock.path[..]
+            } else {
+                &dock.route_in
+            };
+            if let Some(reason) = spot_issue(freight, pos, forward, &mut height)
+                .or_else(|| way_issue(way_in, roads, &mut height))
+                .or_else(|| way_issue(&dock.route_out, roads, &mut height))
+            {
+                proof.ground_refused = true;
+                return Err(reason.into());
+            }
+            Ok(dock)
         };
         let routes = dock_ways(docks.len(), prove);
         for (&(anchor, pos, forward, width, length), route) in docks.iter().zip(routes) {

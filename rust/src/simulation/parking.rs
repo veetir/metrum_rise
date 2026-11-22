@@ -8,6 +8,7 @@ mod data;
 mod docks;
 mod edits;
 mod geometry;
+mod ground;
 pub(crate) mod kerb;
 pub(crate) mod validation;
 pub(crate) mod lots;

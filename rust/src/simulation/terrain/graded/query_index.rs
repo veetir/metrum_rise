@@ -74,6 +74,8 @@ pub(crate) struct TerrainQueryIndex {
     ready: bool,
     identity: u64,
     generation: u64,
+    road_generation: Option<u64>,
+    site_generation: Option<u64>,
     // A copy of the tiles of an inclusive tile range ([`Self::window`]): it answers only
     // queries whose tiles lie inside, and a query reaching outside takes the index-free path.
     // `None` for the live index, which holds every tile.
@@ -87,12 +89,22 @@ impl Default for TerrainQueryIndex {
             ready: true,
             identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             generation: 1,
+            road_generation: None,
+            site_generation: None,
             window: None,
         }
     }
 }
 
 impl TerrainQueryIndex {
+    /// Whether both indexed input sets match the live stores. O(1); edits may prove parking
+    /// before their journal updates the index, and must then use the exact local gather.
+    pub(crate) fn current_for(&self, roads: &RoadbedSystem, sites: &BuildingAllocator) -> bool {
+        self.ready
+            && self.road_generation == Some(roads.generation())
+            && self.site_generation == Some(sites.site_cells.generation())
+    }
+
     /// Collects the canonical owner ids from every indexed tile `rect` touches, or from the one
     /// present tile whose apron holds `rect`. A point reads one tile; a prepared vehicle-support
     /// window may read up to four. Duplicate owners at a tile boundary collapse back to the
@@ -220,6 +232,8 @@ impl TerrainQueryIndex {
             self.rebuild_tile(key, roadbed, sites);
         }
         self.ready = true;
+        self.road_generation = Some(roadbed.generation());
+        self.site_generation = Some(sites.site_cells.generation());
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -243,6 +257,7 @@ impl TerrainQueryIndex {
             push_tiles(grown(seam.box_xz(), GRADED_CHANGE_REACH_M), &mut keys);
         }
         self.rebuild_keys(keys, roadbed, sites);
+        self.road_generation = Some(roadbed.generation());
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -265,6 +280,7 @@ impl TerrainQueryIndex {
             );
         }
         self.rebuild_keys(keys, roadbed, sites);
+        self.site_generation = Some(sites.site_cells.generation());
         self.generation = self.generation.wrapping_add(1);
     }
 

@@ -195,3 +195,33 @@ fn every_dock_of_a_building_arrives_and_leaves_by_the_first_docks_gates() {
         )
     );
 }
+
+#[test]
+fn a_ground_refused_first_dock_does_not_choose_the_buildings_gate() {
+    use super::super::super::ground::spot_issue;
+    let mut calls = 0;
+    let routes = dock_ways(2, |slot, only| {
+        calls += 1;
+        assert_eq!(
+            only, None,
+            "the refused first dock must not bind the next gate"
+        );
+        let dock = prove(&DockWayInput::default(), nowhere())?;
+        if let Some(reason) = spot_issue(ProofClass::Freight, Vector2::ZERO, FORWARD, &mut |p| {
+            if slot == 0 { p.x * 0.5 } else { 0.0 }
+        }) {
+            return Err(reason.into());
+        }
+        Ok(dock)
+    });
+    assert_eq!(calls, 2);
+    assert!(
+        routes[0]
+            .as_ref()
+            .err()
+            .unwrap()
+            .reason
+            .contains("slopes 50.0 %")
+    );
+    assert!(routes[1].is_ok());
+}

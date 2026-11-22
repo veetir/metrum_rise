@@ -144,6 +144,9 @@ pub(crate) struct LoadedSimulation {
     /// Whether the save holds its docks (format 123, `PARK-19`); an older one's are derived once
     /// at load.
     pub docks_saved: bool,
+    /// Whether the save's lot and dock supply passed the visible-ground check (format 126,
+    /// `PARK-24`); an older one's lots holding supply are proven once at load.
+    pub ground_proven: bool,
     pub treasury: CityTreasury,
     pub service_policy: CityServicePolicy,
     pub fiscal_policy: CityFiscalPolicy,
@@ -580,6 +583,7 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
         row.get(0)
     })?;
     let retired_holes = version == SAVE_VERSION
+        || version == PRE_GROUND_SAVE_VERSION
         || version == PRE_STANDS_SAVE_VERSION
         || version == PRE_ROUTES_SAVE_VERSION
         || version == PRE_DOCKS_SAVE_VERSION;
@@ -605,8 +609,10 @@ pub(crate) fn load_from_sqlite(
     // Format 121 saves node, edge and lane ids as they are (`SAVE-11`); older formats compacted
     // them. Format 122 also saves retired nodes as holes without an alias (`ROAD-124`), and
     // format 123 dock rows (`PARK-19`), format 124 their drives (`PARK-21`), format 125 their
-    // stands (`PARK-23`).
-    let docks_saved = version == SAVE_VERSION
+    // stands (`PARK-23`). Format 126 supply passed the ground check (`PARK-24`).
+    let ground_proven = version == SAVE_VERSION;
+    let docks_saved = ground_proven
+        || version == PRE_GROUND_SAVE_VERSION
         || version == PRE_STANDS_SAVE_VERSION
         || version == PRE_ROUTES_SAVE_VERSION;
     let retired_holes = docks_saved || version == PRE_DOCKS_SAVE_VERSION;
@@ -948,6 +954,7 @@ pub(crate) fn load_from_sqlite(
         budget_history,
         parking,
         docks_saved,
+        ground_proven,
     })
 }
 

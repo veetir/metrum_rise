@@ -9,7 +9,7 @@ use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
 use crate::simulation::parking::{Bay, DockWay, ParkedPublication, PlaceSource, holds_parking};
 use crate::simulation::parking::lots::{
-    LotProof, dock_anchor_count, has_freight_anchors, lot_bays, lot_proof,
+    LotProof, dock_anchor_count, has_freight_anchors, lot_proof,
 };
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -84,7 +84,15 @@ impl SimCore {
         let mut points = Vec::new();
         let mut kerb_edges = edges.clone();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues, dock_ways, tail_in } = lot;
+            let LotProof {
+                bays,
+                issues,
+                docks,
+                dock_issues,
+                dock_ways,
+                tail_in,
+                ..
+            } = lot;
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
@@ -153,18 +161,63 @@ impl SimCore {
         }
     }
 
+    /// Proves one lot against the same visible graded surface as vehicle grounding. Edit/load
+    /// boundary only; O(lot geometry + bays × half-metre path samples), thread-local scratch.
+    pub(crate) fn prove_parking_lot(&self, index: usize) -> LotProof {
+        self.with_graded_surface(|surface, scratch| {
+            // A staged removal/undo can precede index publication. Check both input revisions
+            // before using the existing lattice cache; otherwise gather the live inputs once.
+            let indexed = self
+                .terrain_query_index
+                .current_for(&self.transit_network.roadbed, &self.allocator);
+            let surface = crate::simulation::terrain::graded::GradedSurface {
+                query_index: indexed.then_some(&self.terrain_query_index),
+                ..*surface
+            };
+            let mut block = crate::simulation::terrain::graded::LatticeBlock::default();
+            let Some(site) = self.allocator.building_sites.get(index) else {
+                return LotProof::default();
+            };
+            let (x0, z0, x1, z1) = site.bounds();
+            let center = godot::prelude::Vector2::new((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+            let reach = (x1 - x0).max(z1 - z0) * 0.5 + 8.0;
+            let mut gathered = false;
+            lot_proof(
+                &self.allocator,
+                index,
+                &self.region_graph,
+                &self.transit_network.roadbed,
+                |p| {
+                    if indexed {
+                        return surface.surface_height_in_block(
+                            f64::from(p.x),
+                            f64::from(p.y),
+                            &mut block,
+                            scratch,
+                        ) as f32;
+                    }
+                    if !gathered {
+                        surface.gather_near(
+                            f64::from(center.x),
+                            f64::from(center.y),
+                            f64::from(reach),
+                            scratch,
+                        );
+                        gathered = true;
+                    }
+                    surface.surface_height_near(f64::from(p.x), f64::from(p.y), scratch) as f32
+                },
+            )
+        })
+    }
+
     // Building `index`'s lot: the bays it offers as supply and its docks, their validation
     // issues, and the kerb blockers of its whole layout. A site under construction offers no
     // bay and no dock, and its door holds no list until completion publishes them (`PERF-25`,
     // the user's decision of 2026-11-16); its driveways and bay entries keep the kerb clear from
     // the start, so completion moves no kerbside bay. O(`lot_proof`).
     fn site_lot(&self, index: usize) -> (LotProof, Vec<KerbBlocker>) {
-        let mut lot = lot_proof(
-            &self.allocator,
-            index,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-        );
+        let mut lot = self.prove_parking_lot(index);
         let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &lot.bays);
         if !self.holds_parking(index) {
             lot.bays.clear();
@@ -299,8 +352,12 @@ impl SimCore {
     /// each such road holds the unbroken game's blockers. A road without one lays no kerb: the
     /// edit that adds its lane revalidates the buildings along it first (8 m of its geometry,
     /// as in the unbroken game). Lays no bay: the saved kerbs stand on these blockers already.
-    /// O(buildings + those buildings × lot validation), parallel, load only.
-    pub(crate) fn rebuild_loaded_kerb_blockers(&mut self) {
+    /// A save older than the ground check (format 125, `PARK-24`) also proves every lot holding
+    /// supply, queuing only its ground refusals for normal publication after dock restoration,
+    /// with the same proof: valid saved custody and missing rows stand. A newer save's supply
+    /// passed that check already (`ground_proven`), so only the parking roads' lots are proven,
+    /// as before. O(buildings + those buildings × lot validation), parallel, load only.
+    pub(crate) fn rebuild_loaded_kerb_blockers(&mut self, ground_proven: bool) {
         let kerbed = |index: usize| {
             let edge = self.allocator.buildings[index].edge_idx;
             self.region_graph
@@ -310,14 +367,38 @@ impl SimCore {
         let blockers: Vec<_> = crate::thread_pools::install(|| {
             (0..self.allocator.buildings.len())
                 .into_par_iter()
-                .filter(|&i| kerbed(i))
-                .map(|i| (self.allocator.building_handles.handle(i), self.site_lot(i).1))
+                .filter_map(|i| {
+                    let handle = self.allocator.building_handles.handle(i);
+                    let kerbed = kerbed(i);
+                    if !kerbed
+                        && (ground_proven
+                            || self.parking.building_place_count(handle.to_bits()) == 0)
+                        && self
+                            .parking
+                            .building_docks(handle.to_bits())
+                            .next()
+                            .is_none()
+                    {
+                        return None;
+                    }
+                    let (lot, blockers) = self.site_lot(i);
+                    Some((
+                        handle,
+                        kerbed.then_some(blockers),
+                        lot.ground_refused && !ground_proven,
+                    ))
+                })
                 .collect()
         });
         let mut laid = BTreeSet::new();
-        for (handle, blockers) in blockers {
-            self.parking
-                .set_kerb_blockers(handle.to_bits(), blockers, &mut laid);
+        for (handle, blockers, ground_refused) in blockers {
+            if let Some(blockers) = blockers {
+                self.parking
+                    .set_kerb_blockers(handle.to_bits(), blockers, &mut laid);
+            }
+            if ground_refused {
+                self.allocator.parking_site_changes.push(handle);
+            }
         }
     }
 
@@ -344,12 +425,7 @@ impl SimCore {
                     .into_par_iter()
                     .filter(|&i| freight(i))
                     .map(|i| {
-                        let lot = lot_proof(
-                            &self.allocator,
-                            i,
-                            &self.region_graph,
-                            &self.transit_network.roadbed,
-                        );
+                        let lot = self.prove_parking_lot(i);
                         (self.allocator.building_handles.handle(i).to_bits(), lot)
                     })
                     .collect()
@@ -376,8 +452,8 @@ impl SimCore {
 
     /// The reasons building `index`'s lot layout was rejected, as the building inspector shows
     /// them (`parking_rejected`); empty for a valid lot or a building without one. The live map
-    /// holds those of every lot an edit validated; a load leaves it empty (`PARK-17`), so a lot
-    /// it lacks is validated here when its supply shows a rejection. O(its anchors), plus one lot
+    /// holds those of every lot an edit validated and ground refusals found at load (`PARK-24`).
+    /// A lot it lacks is validated here when its supply shows a rejection. O(its anchors), plus one lot
     /// validation for such a lot.
     pub(crate) fn parking_rejections(&self, index: usize) -> Cow<'_, [String]> {
         let handle = self.allocator.building_handles.handle(index).to_bits();
@@ -391,7 +467,7 @@ impl SimCore {
     /// (`PARK-19`): the docks it publishes, the loading bays a truck may stop at, and each
     /// rejected loading bay's reason. `None` for an asset without a freight Driveway, whose
     /// loading bays are never proven. As [`Self::parking_rejections`], a lot the live map lacks
-    /// (a load keeps no reason) is validated here when it publishes fewer docks than it has
+    /// (a load retains only ground refusals) is validated here when it publishes fewer docks than it has
     /// such bays. O(its anchors and docks), plus one lot validation for such a lot.
     pub(crate) fn dock_lines(&self, index: usize) -> Option<(usize, usize, Cow<'_, [String]>)> {
         let building = &self.allocator.buildings[index];
@@ -405,13 +481,7 @@ impl SimCore {
         let reasons = match self.parking.dock_diagnostics.get(&handle) {
             Some(issues) => Cow::Borrowed(issues.as_slice()),
             None if usable < bays => Cow::Owned(
-                lot_proof(
-                    &self.allocator,
-                    index,
-                    &self.region_graph,
-                    &self.transit_network.roadbed,
-                )
-                .dock_issues,
+                self.prove_parking_lot(index).dock_issues,
             ),
             None => Cow::Borrowed(&[][..]),
         };
@@ -500,13 +570,7 @@ impl SimCore {
         if anchors == 0 || published {
             return Vec::new();
         }
-        lot_bays(
-            &self.allocator,
-            index,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-        )
-        .1
+        self.prove_parking_lot(index).issues
     }
 
     /// O(changed buildings × lot validation), consuming the allocator's
@@ -536,7 +600,15 @@ impl SimCore {
         let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues, dock_ways, tail_in } = lot;
+            let LotProof {
+                bays,
+                issues,
+                docks,
+                dock_issues,
+                dock_ways,
+                tail_in,
+                ..
+            } = lot;
             hosts.push(handle.to_bits());
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
@@ -696,17 +768,41 @@ impl SimCore {
     /// Forgets the parked poses within `reach` of each changed rectangle, plus the longest car's
     /// contacts. The graded edit journal's records call this, for every change of the ground a
     /// parked car stands on that they see, and counts the change for the drawn moving cars
-    /// ([`SimCore::vehicle_ground_generation`]). O(rectangles × their chunks' places).
+    /// ([`SimCore::vehicle_ground_generation`]). Queues local lots for the existing site
+    /// publication, including lots with no usable bay. O(rectangles × local places/sites).
     pub(crate) fn invalidate_parked_ground(
         &mut self,
         changed: impl IntoIterator<Item = [f64; 4]>,
         reach: f64,
     ) {
         self.vehicle_ground_generation += 1;
+        // Simulation invalidation uses the fixed proof class, never render-loaded model bounds.
+        let lot_reach = reach
+            + f64::from(
+                crate::simulation::parking::validation::ProofClass::Freight
+                    .proof()
+                    .body_length,
+            );
         let reach = reach + f64::from(self.vehicle_contact_reach_m());
         for [min_x, min_z, max_x, max_z] in changed {
-            self.parking
-                .invalidate_ground([min_x - reach, min_z - reach, max_x + reach, max_z + reach]);
+            let bounds = [min_x - reach, min_z - reach, max_x + reach, max_z + reach];
+            self.parking.invalidate_ground(bounds);
+            // Include refused lots too: they have no place in the parking index. The existing
+            // site-cell index covers the whole lot and its ways, not just parked centres.
+            let handles = &self.allocator.building_handles;
+            let pending = &mut self.allocator.parking_site_changes;
+            self.allocator.site_cells.visit(
+                [
+                    min_x - lot_reach,
+                    min_z - lot_reach,
+                    max_x + lot_reach,
+                    max_z + lot_reach,
+                ]
+                .map(|v| v as f32),
+                |i| {
+                    pending.push(handles.handle(i));
+                },
+            );
         }
     }
 }

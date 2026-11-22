@@ -2208,6 +2208,155 @@ and turn envelopes share the filter. Structure checks already use the site-cell 
 For A bays and D driveways the bound is O(A² D + A D (S + L + K overlay cost)), L local
 structure vertices. This is edit and load work and has no dependency on total city buildings.
 
+### Drivable lot ground (`PARK-24`)
+
+A geometric lot proof is necessary but insufficient: a car must be able to stand and drive on
+what is actually drawn. At asset/edit/load boundaries, `lot_proof` checks the visible graded
+surface (`GradedSurface::surface_height_at`, or its exact gathered `surface_height_near`),
+including roadbed triangles. It never checks the source heightmap or membership of the flat-pad
+outline. A level tyre in the outer strip passes; in particular the bundled medium lot retains
+all 20 bays on flat ground.
+
+A bay's four wheel contacts may differ by at most an **8%** grade between any pair, for cars and
+loading bays. The design limit for a parking stall is **5%** (Helsinki's 1:20 guidance, US federal
+parking criteria; `docs/terrain.md` T12 cites the sources), and 8% is interim: until site grading
+lays paving out to the lot edge on the level floor (`PARK-25`), a stall reaching the lot's outer
+strip stands over its **0.12 m** drop to flat ground, 7.5% across a car's track (at 5% the
+populated fixture refused 412 such stalls on flat ground). Runtime `VehicleGroundSupport` is
+render metadata populated by Godot mesh loading and is not canonical save/proof input, so the
+contacts are fixed per class (track × wheelbase): **1.6 × 2.8 m** inside the 1.8 × 4.5 m car,
+**2.1 × 5.0 m** inside the 2.6 × 8 m rigid truck. A body's overhang touches no ground.
+
+The proven connection–approach–aisle–bay way is sampled at global **0.5 m** arc-length stations,
+continuing across corners and including the endpoint. Its grade over every rolling car wheelbase
+(**2.8 m**; a short whole way over its actual length) must stay within **10%** (Helsinki's 1:10
+for a driveway; 12% is a house driveway's). A dip or bump shorter than a wheelbase is the step
+rule's: adjacent samples may differ by at most a kerb's height, **0.12 m**
+(`CURB_STEP_HEIGHT_M`). Authored loading-bay ways use their complete way in and way out, not the
+four-point summary's shortcut. One issue per refused anchor names the measured grade, climb/run
+or step. No car bay, dock, dock way or tail-in row is published for that anchor. The placed
+inspector's existing `parking_rejected` / `dock_rejected` lists show these reasons.
+
+A way leaving the carriageway crosses the footway at a lowered kerb, which the roadbed does not
+model: it draws the full 0.12 m kerb up and the footway's fall to the yard after it. The check
+passes over the footway's samples and requires the yard to start within a kerb's height, plus
+the drive grade over the band, of the carriageway's edge; the part of that rise above the drive
+grade is waived, its grade part stays in the wheelbase window. Elsewhere the roadbed's own kerb
+between carriageway and raised bands is subtracted once at one physical crossing, keeping the
+road plane's grade, and a road without a footway may meet the yard with one jump of at most a
+kerb's height. No yard-interior jump is waived. Numerical slack is 0.1 mm, not an extra
+gameplay grade allowance.
+
+On flat ground the lot's 2 m front strip currently dips to the bare ground between the footway
+and the pad (0.12 m, about 1.5 m wide); it passes the wheelbase grade, and `PARK-25` grades it
+to the road instead.
+
+The existing graded edit journal's changed rectangles invalidate both cached poses and nearby
+lot proofs through the allocator's **site-cell index**. The existing stable-handle site journal
+deduplicates and republishes them; zero-bay lots are included so a repair or undo can restore
+supply. A gameplay stroke publishes once at release and undo does the same. Road and neighbouring
+site edits use the same path. A save's supply passed this check when it was written (format 126,
+`SAVE_VERSION`), and the ground changes only by an edit that proves its lots again, so its load
+proves only the parking roads' lots, for their kerb blockers, as before. A format 125 save
+(`PRE_GROUND_SAVE_VERSION`) is checked once: the kerb-blocker restoration's proof also visits
+every lot holding saved supply, against the re-derived sites and the stored building floors, and
+only actual ground refusals enter the site journal, published with the normal replacement and
+towing helpers. There is no second full-city proof pass. (Proving every such lot on every load
+cost +12-17% `load_s` at 30k, as `PARK-15`'s first version did.)
+An O(1) comparison of the roadbed and site-cell generations checks whether the terrain query
+index is current. Published inputs reuse the existing exact 8 m GL0 lattice block, caching its
+coverage and vertices across half-metre samples. A staged removal/undo can precede index
+publication; it instead gathers live roadbed/sites locally, never reading retired piece IDs
+through a pending index. The cached and point-query heights are asserted bitwise, including
+the steepened brush fixture.
+
+Additional proof work is O(bays × path samples), with four wheel reads/six pair comparisons per
+bay and constant rolling-way scratch. The surface gather and invalidation visit only local
+indexed roads/sites, independent of background city population. There is no per-tick sampler.
+The asset editor has no terrain: each car or loading bay whose wheel contacts reach the derivation's outer lot strip (normally **2 m**) gets a **non-blocking note**, shown on
+the anchor and in Validate & export. Notes never enter the export-blocking issue list. Placement
+and grading must themselves make yards drivable; the brush is not a repair requirement. The
+unimplemented slope-following yard design is in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only).
+
+#### `PARK-24` verification, 2026-11-22
+
+Final build (limits above, wheel contacts, footway crossing, wheelbase window, format 126),
+fresh release: `cargo test --release --lib parking` **208 passed, 1 failed, 3 ignored**: the
+failure is the existing `the_fixtures_car_bays_and_rejections_keep_their_recorded_digest`, whose
+three hashes (`b19215463faad107`, `2ba3ad70d4efa643`, `bf687441d5fc8bfa`) equal the unchanged
+control's, freshly run on `f7e78df39`: no fixture bay is refused. `cargo test --release --lib --
+site placement graded save`: **409 passed, 44 ignored**. `cargo clippy --all-targets`: no warnings.
+Changed expectations, all in this landing's own tests: `parking_way_*` use the 10% drive limit
+and the kerb's height; the brush test's spot stands 8.7 m off the centre line (outer wheels beyond
+the pad's protection halo) and its pre-check save is written as format 125. The timing below was
+measured on an earlier build of this branch (body-corner contacts, 1 m window, every lot proven on
+every load) and does not validate the final one; **performance acceptance stays open**.
+
+Earlier build:
+
+Fresh release correctness: `cargo test --release --lib parking` **208 passed, 1 failed,
+3 ignored**; the failure is the existing
+`the_fixtures_car_bays_and_rejections_keep_their_recorded_digest`, reproduced on the unchanged
+control with the same product hash `b19215463faad107` against recorded `8576f0fdbbcced0d`.
+The reasons/editor hashes match their recorded values. **No expectation was changed.**
+`cargo test --release --lib site`: **88 passed, 12 ignored**; `... placement`: **86 passed,
+9 ignored**; `... graded`: **115 passed, 13 ignored**. `cargo clippy --all-targets`: no warnings.
+`cargo doc --no-deps`: zero missing-doc warnings (74 existing private-link warnings, all in
+unchanged documentation). The exact changed Godot preview consumer and export-panel note loop
+were exercised in an isolated Godot 4.7.2 project, without player saves/mods: notes show and
+remain outside blocking issues. The supplied read-only grocery save copy was also probed:
+seven street spots refused, wheel-envelope grades 53.6–127.4%; its stored floor retained.
+The temporary save probe was removed. The cache optimisation then passed bitwise cached/visible
+height comparisons across street/yard and steepened-brush ground; parking product/reason/editor
+hashes remain the same as the control.
+
+Fresh unprofiled release locality, eight Rayon workers, macOS (unpinned), C B B C order, two
+runs per side; table entries are means of each run's medians. Control: `f7e78df39`, binary
+SHA-256 `58017e97c2fef62e…`; branch binary `81a1d6dd78f5c12a…`. The existing
+`benchmark_parking_locality` holds 12 local lots and their road/catchment products fixed while
+background buildings, parcels, agents and roads increase (1,103→11,103 buildings,
+1,074→11,074 parcels, 0→10,000 background agents, 84→334 roads). Setup is excluded. Every
+local product remains identical; the added proof cost follows the local samples, not the
+background city.
+
+| Background | One 12-bay proof, control / branch ms | 12-lot site publication, control / branch ms | Frontage reconcile, control / branch ms |
+| --- | --- | --- | --- |
+| 0 | 0.309 / 0.524 | 1.525 / 2.086 | 4.147 / 4.786 |
+| 1,000 | 0.304 / 0.502 | 1.533 / 1.968 | 4.042 / 4.438 |
+| 10,000 | 0.295 / 0.509 | 1.536 / 1.936 | 4.074 / 4.520 |
+
+Command for each saved binary (`$TEST_BINARY`, the control copied to `$ARTIFACTS/control`):
+`RAYON_NUM_THREADS=8 METRUM_LOCALITY_TIERS=0,1000,10000 "$TEST_BINARY" benchmark_parking_locality --ignored --nocapture --test-threads=1`.
+An earlier exact whole-lot gather cost 2.64–2.66 ms per proof and was replaced by the existing
+lattice block before acceptance; those earlier timings do not validate the final build.
+**Full F-level session (same final binaries): not accepted, exit 2.** Fresh C B B C at
+both 30k 32× and 1×, six locality rows and K22, eight workers, unpinned. All 16 rows ran and
+all per-row correctness checks passed. Within each speed the control and branch end-of-day
+population/building/employment/treasury records are identical. Mean/p99 at 1× are level, but
+1× tails and load time are worse; 32× mean, p99, tails and load time are flagged. Both controls
+also miss the absolute 1× maximum-frame limit. This host reports `preemption_threads = 0`, so
+scheduler preemption is not classified; the cause of the tail pauses is **unresolved**, not
+excused by that limitation. `PARK-24` performance acceptance stays open.
+
+| Speed | Metric | Control | Branch |
+| --- | --- | --- | --- |
+| 1× | mean / p99 / p99.9 ms | 2.106 / 3.538 / 5.212 | 2.094 / 3.595 / 6.588 |
+| 1× | mean of run maxima, classified unpreempted, ms | 17.271 | 45.087 |
+| 1× | load seconds | 2.343 | 2.752 (+17.4%) |
+| 32× | mean / p99 / p99.9 ms | 4.361 / 6.929 / 11.999 | 4.430 / 7.294 / 16.193 |
+| 32× | load seconds | 2.414 | 2.716 (+12.5%) |
+
+The existing `PERF-17` exception applies at 30k 32×, not at 1×. K22's commit is 6.46 ms
+control / 6.50 ms branch (click-to-ack 6.50 / 6.54 ms). The first F candidate exposed a
+redundant load proof: the final build reuses blocker restoration rather than validating every
+lot twice. That correction reduces duplicated work but does not erase the measured final
+cold-load increase. These are edit/load-boundary costs; no grade sampler was added to agent
+ticks. The failed frame/load acceptance still needs review before landing.
+
+Reproduce the final session with the saved executables and a fresh artifact directory:
+`./run.sh --timing --level F --base HEAD --control "$ARTIFACTS/control" --branch "$TEST_BINARY" --control-cache "$ARTIFACTS/snapshots" --branch-cache "$ARTIFACTS/snapshots" --artifacts "$ARTIFACTS/session" --workers 8 --wait-min 0.5 --perf07 '30000:32:ctl,br,br,ctl' --perf07 '30000:1:ctl,br,br,ctl' --bench 'nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality;METRUM_LOCALITY_TIERS=0,1000,10000'`.
+
+
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
 Road and building edits reconcile the affected sources at the existing publication and edit hooks.

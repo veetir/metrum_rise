@@ -707,6 +707,9 @@ impl SimCore {
         // The editor re-grades the whole RegionGraph with sync_to_terrain. Gameplay keeps the
         // source under road beds unless "Roads follow" moved the roads locally at release.
         self.rebuild_building_entrances_internal();
+        // The graded base-edit journal queued nearby lots, including already refused ones.
+        // Release and undo publish only once, after all stroke samples/dependents are current.
+        self.publish_parking_sites();
         if self.has_authored_water_internal()
             && let Err(error) = self.rebuild_authored_water_preview_internal()
         {

@@ -39,7 +39,7 @@ pub(crate) use placement::construction_duration_hours;
 pub(crate) use placement::BUILDING_SITE_ROAD_SAMPLE_INSET_M;
 #[cfg(test)]
 pub(crate) use site::SiteRoads;
-pub(crate) use site::BuildingSiteSurfaceClient;
+pub(crate) use site::{BuildingSiteSurfaceClient, lot_support_inset_m};
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;

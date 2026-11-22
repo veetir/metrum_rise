@@ -6,6 +6,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Drivable yards (`PARK-24`, branch `feat/drivable-yards`, for review, save format 126): a
+parking or loading bay on undrivable visible ground (wheels over 8%, a way in over 10% or with a
+step over a kerb) is refused with its measured reason, ground edits prove their lots again, and
+the editor notes bays on the outer strip. Performance acceptance is open
+([verification](traffic.md#park-24-verification-2026-11-22)); the 5% stall limit waits on
+`PARK-25`, and placement that keeps street contacts drivable is
+[designed](terrain.md#drivable-yards-part-c-design-only), not built.
+
 Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool pick and highlights), with road
 types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-30`),
 landed on `dev` from the merge branch `icon-ui-merge`, ported to `dev`'s road tool: gated, and timed at level L in

@@ -296,3 +296,29 @@ fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
     }
     assert!(arc_waypoints(start, heading, 0.0, 90.0, true).is_err());
 }
+
+#[test]
+fn parking_edge_wheels_get_non_blocking_slope_notes_for_cars_and_loading_bays() {
+    let params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
+        "anchors":[
+            {"anchor_type":"parking", "position":[8.4,0,15], "forward":[0,0,-1], "width_m":2.5, "length_m":5},
+            {"anchor_type":"loading_bay", "position":[0,0,15], "forward":[0,0,-1], "width_m":3.5, "length_m":8},
+            {"anchor_type":"parking", "position":[0,0,0], "forward":[0,0,-1], "width_m":2.5, "length_m":5}],
+        "site_surfaces":[{"material":"asphalt", "vertices":[[-10,-15],[10,-15],[10,15],[-10,15]]}]});
+    let payload = editor_lot_payload(&params, &[]);
+    let notes = payload["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2, "{payload}");
+    for (index, note) in notes.iter().enumerate() {
+        assert_eq!(note["anchor"], index);
+        assert_eq!(note["blocks"], false);
+        assert!(note["reason"].as_str().unwrap().contains("lot's outer 2 m"));
+    }
+    // Notes are not rejections: the existing export gate only consumes blocking rejections.
+    assert!(
+        !payload["rejected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["anchor"] == 0)
+    );
+}

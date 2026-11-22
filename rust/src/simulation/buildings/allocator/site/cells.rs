@@ -27,6 +27,7 @@ struct CellEntry {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SiteCells {
     cells: CellMap,
+    generation: u64,
 }
 
 fn cell_of(value: f32) -> i32 {
@@ -45,20 +46,27 @@ fn site_bounds(site: &BuildingSiteClient) -> [f32; 4] {
 }
 
 impl SiteCells {
+    /// Advances on indexed site mutations, so a staged edit cannot read stale terrain inputs.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Indexes every site client by its building index. `O(sites x cells each meets)`.
     pub(crate) fn rebuild(&mut self, sites: &[BuildingSiteClient]) {
-        self.cells.clear();
+        self.clear();
         for (index, site) in sites.iter().enumerate() {
             self.insert(index, site);
         }
     }
 
     pub(crate) fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.cells.clear();
     }
 
     /// Adds the site at building index `index`. `O(cells it meets)`.
     pub(crate) fn insert(&mut self, index: usize, site: &BuildingSiteClient) {
+        self.generation = self.generation.wrapping_add(1);
         let bounds = site_bounds(site);
         self.for_each_cell(bounds, |cells, key| {
             cells.entry(key).or_default().push(CellEntry {
@@ -71,6 +79,7 @@ impl SiteCells {
     /// Removes the site at building index `index`, as it was indexed. `O(cells it meets x
     /// sites in each)`.
     pub(crate) fn remove(&mut self, index: usize, site: &BuildingSiteClient) {
+        self.generation = self.generation.wrapping_add(1);
         self.for_each_cell(site_bounds(site), |cells, key| {
             let Some(list) = cells.get_mut(&key) else {
                 return;
@@ -87,6 +96,7 @@ impl SiteCells {
     /// Renames the site at building index `from`, as it was indexed, to `to`: a swap-remove's
     /// move of the last building. `O(cells it meets x sites in each)`.
     pub(crate) fn rename(&mut self, from: usize, to: usize, site: &BuildingSiteClient) {
+        self.generation = self.generation.wrapping_add(1);
         self.for_each_cell(site_bounds(site), |cells, key| {
             if let Some(entry) = cells
                 .get_mut(&key)

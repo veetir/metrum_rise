@@ -12,6 +12,7 @@
 //! road's width are left to the placed building's inspector.
 
 use super::super::geometry::{overlaps, precise, rectangle};
+use super::super::ground::wheel_area;
 use super::route::{arc_waypoints, drive_envelopes};
 use super::{
     AnchorBay, DockWayInput, ProofClass, Rejection, STREET_APPROACH_M, dock_ways,
@@ -22,7 +23,9 @@ use crate::assets::asset::passage::{
     check_passages_in_bounds, class_structure_footprints, lot_axis_forward, passage_rectangle,
 };
 use crate::assets::asset::{MeshPart, Passage};
-use crate::simulation::buildings::allocator::BUILDING_SITE_ROAD_SAMPLE_INSET_M;
+use crate::simulation::buildings::allocator::{
+    BUILDING_SITE_ROAD_SAMPLE_INSET_M, lot_support_inset_m,
+};
 use godot::prelude::Vector2;
 use serde_json::{Map, Value, json};
 
@@ -382,6 +385,28 @@ impl<'a> EditorLot<'a> {
         Some(payload)
     }
 
+    fn slope_notes(&self) -> Vec<Value> {
+        let Some((_, half)) = self.street else {
+            return Vec::new();
+        };
+        let inset = lot_support_inset_m(half.x, half.y);
+        [("parking", ProofClass::Car), ("loading_bay", ProofClass::Freight)]
+            .into_iter()
+            .flat_map(|(kind, class)| {
+                self.bays(kind, |_| true)
+                    .into_iter()
+                    .filter(move |(_, bay)| {
+                        wheel_area(class, bay.pos, bay.forward).iter().any(|p| {
+                            p.x.abs() > half.x - inset || p.y.abs() > half.y - inset
+                        })
+                    })
+                    .map(move |(index, _)| json!({"anchor":index, "blocks":false, "reason":format!(
+                        "on sloping ground this spot may be refused: its wheels stand on the lot's outer {inset} m, which slopes to the ground around"
+                    )}))
+            })
+            .collect()
+    }
+
     // Every passage's ground rectangle (no eaves margin), its mouth and far end, for drawing.
     // A passage off a lot axis has no rectangle; manifest validation names it.
     fn passages_json(&self) -> Vec<Value> {
@@ -551,6 +576,10 @@ pub(crate) fn editor_lot_payload(params: &Value, part_bounds: &[f32]) -> Value {
     let lot = EditorLot::parse(params, part_bounds);
     let mut payload = lot.car_payload();
     payload.extend(lot.dock_payload().into_iter().flatten());
+    let notes = lot.slope_notes();
+    if !notes.is_empty() {
+        payload.insert("notes".into(), Value::Array(notes));
+    }
     Value::Object(payload)
 }
 

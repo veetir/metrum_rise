@@ -567,7 +567,7 @@ func validate() -> void:
 		if not bool(rejected.get("blocks", true)):
 			continue
 		var anchor := int(rejected["anchor"])
-		var name := list.get_item_text(anchor) if list and anchor < list.item_count else "Access point %d" % (anchor + 1)
+		var label := list.get_item_text(anchor) if list and anchor < list.item_count else "Access point %d" % (anchor + 1)
 		_issues.append({"section": "site", "field": "anchors", "anchor": anchor,
 			"message": "%s is rejected: %s" % [name, str(rejected["reason"])]})
 	for issue: Dictionary in diagnostics.get("passage_issues", []):
@@ -582,6 +582,13 @@ func validate() -> void:
 		child.queue_free()
 	for issue: Dictionary in _issues:
 		var button: Button = view.button(view.issues_box, str(issue["message"]), func(): resolve_issue(issue))
+		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# Terrain notes are visible here and on the anchor, but never enter the export-blocking list.
+	for note: Dictionary in diagnostics.get("notes", []):
+		var anchor := int(note["anchor"])
+		var label := list.get_item_text(anchor) if list and anchor < list.item_count else "Access point %d" % (anchor + 1)
+		var issue := {"section": "site", "field": "anchors", "anchor": anchor}
+		var button: Button = view.button(view.issues_box, "%s: %s" % [label, str(note["reason"])], func(): resolve_issue(issue))
 		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	view.status.text = "%s\n%s" % ["Unsaved changes" if document.is_dirty() else "No unsaved changes", "Ready to export" if _issues.is_empty() else "%d issue(s) — open Validate & export" % _issues.size()]
 	view._apply_editor_theme(view.issues_box)

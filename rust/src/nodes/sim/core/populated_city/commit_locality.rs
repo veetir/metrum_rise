@@ -820,7 +820,7 @@ fn local_products(core: &mut SimCore, samples: &serde_json::Value) -> serde_json
 #[test]
 #[ignore = "PARK-01 matched release locality; setup excluded, run alone with eight workers"]
 fn benchmark_parking_locality() {
-    use crate::simulation::parking::{PlaceSource, lots::lot_bays};
+    use crate::simulation::parking::PlaceSource;
     use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
     use crate::nodes::sim::core::RoadCommitRequest;
     use std::collections::BTreeSet;
@@ -946,15 +946,10 @@ fn benchmark_parking_locality() {
             for &owner in &owners {
                 let index = core.allocator.building_handles.resolve(owner).unwrap();
                 let start = Instant::now();
-                let result = lot_bays(
-                    &core.allocator,
-                    index,
-                    &core.region_graph,
-                    &core.transit_network.roadbed,
-                );
+                let result = core.prove_parking_lot(index);
                 lot_samples.push(start.elapsed().as_secs_f64() * 1000.0);
-                assert_eq!(result.0.len(), 12);
-                assert!(result.1.is_empty());
+                assert_eq!(result.bays.len(), 12);
+                assert!(result.issues.is_empty());
             }
         }
         candidate_samples.sort_by(f64::total_cmp);
