@@ -1641,3 +1641,29 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
     }
 }
 
+
+#[test]
+fn gameplay_terrain_frees_the_yard_and_flattens_it_to_the_floor() {
+    let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
+    let mut core = road_edit_order::committed(&strokes, &[0], true);
+    let asset = register_yard(&mut core);
+    let building = place_yard(&mut core, 0, 1.0, &asset).expect("terrain protection fixture");
+    core.prepare_site_queries();
+    let site = &core.allocator.building_sites[building];
+    let support = site.support_height_m;
+    let pad =
+        site.footprint_world.iter().copied().sum::<Vector2>() / site.footprint_world.len() as f32;
+    // The fixture's front yard is paved from the lot edge to inside the pad; this strip is
+    // paved yard but not pad.
+    let yard = Vector2::new(pad.x, site.lot_bounds().3 - 1.0);
+    let near = |at: Vector2| [at.x - 0.5, at.y - 0.5, at.x + 0.5, at.y + 0.5].map(f64::from);
+    assert!(core.allocator.any_site_pad_in_bounds(near(pad)));
+    assert!(!core.allocator.any_site_pad_in_bounds(near(yard)));
+    let outside = Vector2::new(pad.x, site.lot_bounds().3 + 30.0);
+    assert_eq!(core.game_terrain_flatten_height_m(pad).to_bits(), support.to_bits());
+    assert_eq!(core.game_terrain_flatten_height_m(yard).to_bits(), support.to_bits());
+    assert_eq!(
+        core.game_terrain_flatten_height_m(outside).to_bits(),
+        core.get_height_at_internal(outside).to_bits()
+    );
+}

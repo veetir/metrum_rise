@@ -24,6 +24,42 @@ const SITE_REACH_SLACK_M: f32 = 0.5;
 // Growth of a graded terrain rectangle before its f32 site query, metres.
 const SITE_RECT_SLACK_M: f64 = 0.01;
 
+// Whether a closed polygon and an axis-aligned rectangle share any point: an edge clipped to the
+// rectangle (Liang-Barsky) is non-empty, or the rectangle lies wholly inside the polygon.
+fn polygon_meets_rect(polygon: &[Vector2], [min_x, min_z, max_x, max_z]: [f32; 4]) -> bool {
+    if polygon.is_empty() {
+        return false;
+    }
+    let mut prev = polygon[polygon.len() - 1];
+    for &next in polygon {
+        let delta = next - prev;
+        let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+        let clips = [
+            (-delta.x, prev.x - min_x),
+            (delta.x, max_x - prev.x),
+            (-delta.y, prev.y - min_z),
+            (delta.y, max_z - prev.y),
+        ];
+        let inside = clips.iter().all(|&(p, q)| {
+            if p == 0.0 {
+                return q >= 0.0;
+            }
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            t0 <= t1
+        });
+        if inside {
+            return true;
+        }
+        prev = next;
+    }
+    point_in_polygon_slice(Vector2::new(min_x, min_z), polygon)
+}
+
 // The 512 m chunks whose indexed sites a query within `margin_m` of `pos` visits.
 fn site_chunk_range(pos: Vector2, margin_m: f32) -> [i32; 4] {
     let chunk_size = RegionGraph::CHUNK_SIZE;
@@ -78,6 +114,45 @@ impl BuildingAllocator {
                 .is_some_and(|site| query.holds(site));
         });
         found
+    }
+
+    /// Whether any site's flat support pad meets `rect`. The pad is the graded terrain's `Pad`
+    /// class, the part held at the support height; paving outside it follows the ground.
+    /// O(candidate sites in the 64 m cells × footprint corners).
+    pub(crate) fn any_site_pad_in_bounds(&self, rect: [f64; 4]) -> bool {
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        let mut found = false;
+        self.site_cells.visit(query.rect, |idx| {
+            found |= self.building_sites.get(idx).is_some_and(|site| {
+                query.holds(site) && polygon_meets_rect(&site.footprint_world, query.rect)
+            });
+        });
+        found
+    }
+
+    /// The support height of the site whose pad or paved surfaces hold `pos`, if any. When
+    /// sites overlap, the lowest index wins so the answer does not depend on cell order.
+    pub(crate) fn site_support_height_at(&self, pos: Vector2) -> Option<f32> {
+        let rect = [pos.x, pos.y, pos.x, pos.y].map(f64::from);
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        let mut best: Option<(usize, f32)> = None;
+        self.site_cells.visit(query.rect, |idx| {
+            let Some(site) = self.building_sites.get(idx) else {
+                return;
+            };
+            if best.is_some_and(|(best_idx, _)| best_idx <= idx) || !query.holds(site) {
+                return;
+            }
+            let on_site = site_footprint_contains(&site.footprint_world, pos)
+                || site
+                    .surfaces
+                    .iter()
+                    .any(|surface| point_in_polygon_slice(pos, &surface.vertices_world));
+            if on_site {
+                best = Some((idx, site.support_height_m));
+            }
+        });
+        best.map(|(_, height)| height)
     }
 
     // Visits the sites a graded terrain query of `rect` reads, through the 64 m site cells.

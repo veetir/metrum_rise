@@ -62,6 +62,13 @@ impl SimulationNode {
         }
     }
 
+    /// Returns Flatten's target height in metres under `pos`: a building's floor height on its
+    /// pad or paved yard, otherwise the source terrain height.
+    #[func]
+    pub fn game_terrain_flatten_height(&self, pos: Vector2) -> f32 {
+        self.lock_core().game_terrain_flatten_height_m(pos)
+    }
+
     /// Returns the footprint's protection kinds, and exports the mask only when it changes.
     #[func]
     pub fn game_terrain_brush_preview(

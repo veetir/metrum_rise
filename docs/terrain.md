@@ -21686,15 +21686,20 @@ the diameter per second. Flatten, Ramp and Smooth reach the centre target in abo
 0.7 and 0.2 seconds. Right mouse inverts Raise and Lower. In Flatten, Smooth and Ramp it backs out one level instead: placed ramp anchors first, then back to Raise; selecting the active mode's button again does the same. Size, strength and mode persist
 for the session.
 
-Flatten holds the source height sampled at press. Smooth uses the pre-stroke heights in
+Flatten holds the source height sampled at press; pressed on a building's pad or paved yard,
+it holds that building's floor (support) height, so one stroke levels the yard flush with it.
+The preview and label show the same target. Smooth uses the pre-stroke heights in
 each sample's 3 × 3 neighbourhood. For Ramp, click A and B on the terrain, then drag.
 The target follows the grade between them and clamps at the ends. The label shows the
 target, anchor elevations and grade. Select Ramp again to reset the anchors.
 
 The shaders paint a disc on the world surface. The tint follows the tool's influence.
 Amber marks an active plain stroke, orange marks cut, and blue marks fill. Red marks
-source samples reserved by a road bed, building site, zoned lot, field or extraction area,
-with a one-sample interpolation margin. The brush edits every free sample and the
+source samples reserved by a road bed, a building's flat pad, a field or an extraction area,
+with a one-sample interpolation margin. Yard paving, parking and lot ground around the pad
+follow the source, so they are editable and re-laid on the new ground at release; the margin
+keeps the source under the pad, and so its support height, unchanged. Parking validation is
+plan-view and reads no ground height, so a reshaped yard keeps its parking. The brush edits every free sample and the
 label names the reserved kinds in the footprint. The stroke skips a fully protected
 footprint. Terrain beneath water is editable. Authored water fills are rebuilt on release.
 

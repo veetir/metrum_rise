@@ -174,7 +174,7 @@ func _press(hit: Vector3, button: MouseButton) -> void:
 	_stroke_mode = mode
 	if button == MOUSE_BUTTON_RIGHT:
 		_stroke_mode = Mode.LOWER if mode == Mode.RAISE else Mode.RAISE
-	_flatten_height = _sim.get_height_at(Vector2(hit.x, hit.z))
+	_flatten_height = _sim.game_terrain_flatten_height(Vector2(hit.x, hit.z))
 	_sim.begin_game_terrain_stroke(_stroke_mode, Vector2(hit.x, hit.z), diameter_m * 0.5,
 		strength_index, _anchor_a, _anchor_b)
 	stroke_button = button
@@ -276,7 +276,10 @@ func _show_preview(hit: Vector3, mouse: Vector2) -> void:
 	var shown_mode := mode if stroke_button == MOUSE_BUTTON_NONE else _stroke_mode
 	var target := 0.0
 	if shown_mode == Mode.FLATTEN:
-		target = hit.y if stroke_button == MOUSE_BUTTON_NONE else _flatten_height
+		if stroke_button == MOUSE_BUTTON_NONE:
+			# On a building's pad or paved yard the target is its floor height.
+			_flatten_height = _sim.game_terrain_flatten_height(pos)
+		target = _flatten_height
 	var grade := Vector4(shown_mode, target, _anchor_a.y, _anchor_b.y)
 	if grade != _grade:
 		_grade = grade
@@ -297,8 +300,7 @@ func _update_label(hit: Vector3) -> void:
 	var shown_mode := mode if stroke_button == MOUSE_BUTTON_NONE else _stroke_mode
 	var heading: String = MODE_NAMES[shown_mode]
 	if shown_mode == Mode.FLATTEN:
-		var height := hit.y if stroke_button == MOUSE_BUTTON_NONE else _flatten_height
-		heading += "  %.1f m" % height
+		heading += "  %.1f m" % _flatten_height
 	elif shown_mode == Mode.RAMP:
 		match _anchor_count:
 			0: heading += "   Set A"
@@ -326,7 +328,6 @@ func _reason(status: int) -> String:
 	var kinds := PackedStringArray()
 	if status & 1: kinds.append("road")
 	if status & 2: kinds.append("building")
-	if status & 4: kinds.append("lot")
 	if status & 8: kinds.append("work area")
 	var names := " and ".join(kinds)
 	if names.is_empty():
