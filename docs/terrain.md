@@ -21917,8 +21917,13 @@ empty protection textures made the preview expensive. The preview now shades the
 and Ramp guides and uploads a protection texture only where the mask is needed. At 30 FPS
 the visible probe averaged 33.33 ms. The 200 m, 1× case measured 34.15 ms at p99 and 34.31 ms
 maximum. In the paused 200 m case a live ray query waited about 34 ms for the core and the
-frame took 51.35 ms. The strict capped frame target remains open. The trace is in
-`$ARTIFACTS/visible-trace.log`.
+frame took 51.35 ms. The trace is in `$ARTIFACTS/visible-trace.log`. The core was held by
+the whole-world mist map rebuild (`render/mist.rs`), 27-36 ms on that city, which the
+stroke's terrain changes triggered every 500 ms. The mist now waits for the release. The same
+driver, run headless with `METRUM_DEBUG_PERF`, had longest per-frame brush work of 24.0 and
+31.8 ms at 60 and 200 m before the change and 1.0 and 9.5 ms after it. No paused stroke frame
+held the core for 8 ms or more. The release pays one rebuild. Headless frame pacing put p99
+near 42 ms in both builds, so the strict capped frame target needs a rendered rerun.
 
 The round 2 Level F session against `2aadcc737` used four workers and equal 30k snapshot keys.
 Both control and branch missed the 30k 1× tail limit. Branch p99 was 5.08 ms across two runs
