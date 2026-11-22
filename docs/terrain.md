@@ -21715,8 +21715,30 @@ plus local protection queries when the mask moves. The live upload is proportion
 the affected patch textures.
 
 Release updates local grading, zoning and entrances and rebuilds authored water when
-present. The world editor's terrain-authoring path explicitly re-grades the network.
-Gameplay leaves the authored graph and roadbed in place. The stroke stores the
+present. The world editor's terrain-authoring path explicitly re-grades the whole network.
+Gameplay leaves the authored graph and roadbed in place unless **Roads follow** is on.
+
+**Roads follow** is a toggle beside the modes, off by default and kept for the session. While
+it is on, road beds are not reserved, so the brush also reshapes the ground under roads. At
+release the standard roads over the changed rectangle move with the ground: each control point
+and each node whose roads are all standard rises by the change of the source under it, so a road
+keeps its cut or fill. Points the stroke missed stay where they are. The moved profile is then
+built within the road grade rule inside the 5 m source band, holding those points and the node
+ends, as the editor's sync builds it (`ROAD-68` open question 37). Bridges, tunnels and nodes
+that join one hold their height. The moved roads' clips, junction profiles, lanes with their
+agents, roadbed, lots, doors and render chunks rebuild locally, as the border connection's
+in-place edit does (`ROAD-122`), and the routing hierarchy rebuilds off the edit's path. A
+stroke that would leave a road steeper than the 1:3 maximum, or a junction without a layout, is
+undone whole, and the label says why. Buildings keep the floor height they were placed at.
+The roads' undo record and the stroke's form one undo group, so Ctrl+Z restores both exactly
+and Ctrl+Shift+Z moves the roads again.
+
+The release cost follows the stroke, not the city. In a matched release test on the M2 Pro
+(a temporary probe test, since removed: one 300 m road under a 60 m Normal Raise,
+with 0, 500 and 2,000 background roads), the followed road was bit-identical at every size.
+The release took a median 0.43, 0.73 and 0.85 ms with Roads follow and 0.02 ms without. The
+growth is the routing rebuild's copy of the live graph, `O(graph)` and shared by every in-place
+road edit and undo; the road move itself stayed about 0.05 ms. The stroke stores the
 before-and-after source heights of its changed rectangle. On a 10 m grid a stationary
 stroke centred on a free sample stores 200 bytes of height data at 60 m diameter and
 2,888 bytes at 200 m. Ctrl+Z restores the rectangle and Ctrl+Shift+Z reapplies it. A new

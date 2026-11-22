@@ -559,12 +559,13 @@ impl SimCore {
             let Some(SimulationRuntimeSnapshot::TerrainStroke(heights)) = &forward.runtime else {
                 unreachable!("redo contains only terrain stroke records");
             };
-            let backward = Self::terrain_history_record(Box::new(heights.inverse()));
+            let backward = Box::new(heights.inverse());
             let remaining = std::mem::take(&mut self.terrain_redo);
-            self.push_undo_snapshot(backward);
-            self.terrain_redo = remaining;
             self.restore_undo_record(forward, true, false);
-            true
+            // The stroke's roads move with the ground again, in the same group as its terrain.
+            let stands = self.record_game_terrain_stroke(backward);
+            self.terrain_redo = remaining;
+            stands
         })
     }
 

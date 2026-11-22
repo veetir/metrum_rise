@@ -24,10 +24,13 @@ const RAMP_COUNT := &"terrain_brush_ramp_count"
 static var _session_mode := Mode.RAISE
 static var _session_diameter_m := 60.0
 static var _session_strength_index := 1
+static var _session_roads_follow := false
 
 var mode := _session_mode
 var diameter_m := _session_diameter_m
 var strength_index := _session_strength_index
+## "Roads follow": road beds are free to shape and the roads move with the ground at release.
+var roads_follow := _session_roads_follow
 var stroke_button := MOUSE_BUTTON_NONE
 var active := false
 
@@ -83,6 +86,7 @@ func setup(manager: Node) -> void:
 	_panel.add_child(_label)
 	_panel.hide()
 	get_window().mouse_exited.connect(interrupt)
+	_sim.set_game_terrain_roads_follow(roads_follow)
 
 func _exit_tree() -> void:
 	_clear_preview()
@@ -120,6 +124,13 @@ func step_back() -> void:
 func reset_ramp() -> void:
 	_anchor_count = 0
 	RenderingServer.global_shader_parameter_set(RAMP_COUNT, 0)
+
+func set_roads_follow(enabled: bool) -> void:
+	end_stroke()
+	roads_follow = enabled
+	_session_roads_follow = enabled
+	_sim.set_game_terrain_roads_follow(enabled)
+	mode_changed.emit()
 
 func cycle_strength() -> void:
 	end_stroke()
@@ -198,6 +209,10 @@ func end_stroke() -> void:
 	stroke_button = MOUSE_BUTTON_NONE
 	_sim.end_game_terrain_stroke()
 	_manager.terrain_node.finish_game_terrain_heights()
+	# A stroke the roads could not follow is undone whole; say why.
+	var rejection := _sim.take_game_terrain_rejection()
+	if not rejection.is_empty():
+		_show_notice(rejection + ", so the stroke was undone")
 
 func interrupt() -> void:
 	end_stroke()
@@ -318,6 +333,8 @@ func _update_label(hit: Vector3) -> void:
 				heading += "  %.1f m   %+.1f%%\nA %.1f m   B %.1f m" % [
 					lerpf(_anchor_a.y, _anchor_b.y, fraction), grade, _anchor_a.y, _anchor_b.y]
 	var content := "%s\n%.0f m   %s" % [heading, diameter_m, STRENGTH_NAMES[strength_index]]
+	if roads_follow:
+		content += "   Roads follow"
 	if not _protection_text.is_empty():
 		content += "\n" + _protection_text
 	if _notice_left > 0.0:

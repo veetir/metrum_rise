@@ -4555,6 +4555,117 @@ mod tests {
         );
     }
 
+    // A straight 300 m road along x with a control point every 10 m, its products built.
+    fn roads_follow_core() -> SimCore {
+        let mut core = test_core();
+        let a = core
+            .region_graph
+            .add_node(Vector3::new(-150.0, 0.0, 0.0), NodeType::Junction);
+        let b = core
+            .region_graph
+            .add_node(Vector3::new(150.0, 0.0, 0.0), NodeType::Junction);
+        let edge = add_test_road_edge(&mut core.region_graph, a, b);
+        let points: Vec<_> = (-15..=15)
+            .map(|i| Vector3::new(i as f32 * 10.0, 0.0, 0.0))
+            .collect();
+        let record = core.region_graph.edge_mut(edge);
+        record.geometry.clone_from(&points);
+        record.physical_geometry = points;
+        core.region_graph.rebuild_adjacency_list();
+        finalize_network_render_for_test(&mut core);
+        core.game_terrain_roads_follow = true;
+        core
+    }
+
+    fn road_bits(core: &SimCore) -> Vec<u32> {
+        let graph = &core.region_graph;
+        let edge = graph.edge(0);
+        edge.geometry
+            .iter()
+            .chain(&edge.physical_geometry)
+            .chain([&graph.node(0).pos, &graph.node(1).pos])
+            .flat_map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+            .collect()
+    }
+
+    fn raise_at(core: &mut SimCore, at: Vector2, radius: f32, strength: f32, seconds: f64) -> bool {
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            at,
+            radius,
+            strength,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        core.game_terrain_stroke_step(at, seconds);
+        core.finish_game_terrain_stroke()
+    }
+
+    #[test]
+    fn gameplay_roads_follow_moves_the_road_with_the_ground_and_undo_restores_it() {
+        let mut core = roads_follow_core();
+        let at = Vector2::ZERO;
+        assert_eq!(core.game_terrain_brush_status(at, 30.0, true), 0);
+        let before = road_bits(&core);
+        let samples = core.heightmap.clone_source_dense();
+        let ground = core.get_height_at_internal(at);
+        let bed = core.get_world_surface_height_internal(at);
+        assert!(raise_at(&mut core, at, 30.0, 1.0, 0.5));
+        let rise = core.get_height_at_internal(at) - ground;
+        assert!(rise > 1.0);
+        let edge = core.region_graph.edge(0);
+        let middle = edge.geometry[15];
+        assert!((middle.y - rise).abs() < 0.01, "{} vs {rise}", middle.y);
+        // The far ends, and the nodes, stand on ground the stroke missed.
+        for point in edge.geometry[..3].iter().chain(&edge.geometry[28..]) {
+            assert_eq!(point.y.to_bits(), 0.0f32.to_bits());
+        }
+        assert!(core.get_world_surface_height_internal(at) > bed + 1.0);
+        assert_eq!(core.undo_stack.len(), 2);
+        let groups: Vec<_> = core.undo_stack.iter().map(|record| record.group).collect();
+        assert_eq!(groups[0], groups[1]);
+        assert!(core.undo_stack[0].trans_graph.is_some());
+        let followed = road_bits(&core);
+
+        assert!(core.undo_action_internal());
+        assert_eq!(road_bits(&core), before);
+        assert!(
+            core.heightmap
+                .clone_source_dense()
+                .iter()
+                .zip(&samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert!(core.undo_stack.is_empty());
+        assert!(core.redo_terrain_action_internal());
+        assert_eq!(road_bits(&core), followed);
+        assert_eq!(core.undo_stack.len(), 2);
+        assert!(core.undo_action_internal());
+        assert_eq!(road_bits(&core), before);
+    }
+
+    #[test]
+    fn gameplay_roads_follow_undoes_a_stroke_too_steep_for_the_road() {
+        let mut core = roads_follow_core();
+        let before = road_bits(&core);
+        let samples = core.heightmap.clone_source_dense();
+        // A 24 m spike 20 m across: no road profile within 1:3 climbs it.
+        assert!(raise_at(&mut core, Vector2::ZERO, 10.0, 2.0, 4.0));
+        assert_eq!(
+            core.game_terrain_rejection,
+            Some("A road would be steeper than 1:3")
+        );
+        assert_eq!(road_bits(&core), before);
+        assert!(
+            core.heightmap
+                .clone_source_dense()
+                .iter()
+                .zip(&samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert!(core.undo_stack.is_empty());
+    }
+
     #[test]
     fn gameplay_terrain_strength_scales_with_diameter() {
         for (radius, speed) in [(30.0, 6.0), (100.0, 20.0)] {

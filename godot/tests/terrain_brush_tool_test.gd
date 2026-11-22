@@ -127,6 +127,12 @@ func _run() -> void:
 		var enabled := disc_probe.get_texture().get_image().get_pixel(1, 1)
 		_expect(enabled.r > 0.9 and enabled.g > 0.9, "The shader should receive an enabled footprint")
 
+	tool.set_roads_follow(true)
+	tool._show_preview(Vector3.ZERO, cursor)
+	_expect(tool.roads_follow and tool._label.text.contains("Roads follow"), "The label should show Roads follow")
+	tool.set_roads_follow(false)
+	tool._show_preview(Vector3.ZERO, cursor)
+	_expect(not tool._label.text.contains("Roads follow"), "Roads follow should switch off")
 	var initial_height := sim.get_height_at(Vector2.ZERO)
 	manager._unhandled_input(_mouse(MOUSE_BUTTON_LEFT, true, cursor))
 	_expect(tool.stroke_button == MOUSE_BUTTON_LEFT, "World press should start a stroke")

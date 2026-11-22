@@ -56,6 +56,8 @@ pub(crate) struct TerrainStrokeHeights {
     bounds: GridRect,
     before: Arc<[f32]>,
     after: Arc<[f32]>,
+    /// Whether the roads moved with the ground ("Roads follow"), so a redo moves them again.
+    pub(crate) roads_follow: bool,
 }
 
 impl TerrainStrokeHeights {
@@ -65,7 +67,29 @@ impl TerrainStrokeHeights {
             bounds: self.bounds,
             before: Arc::clone(&self.after),
             after: Arc::clone(&self.before),
+            roads_follow: self.roads_follow,
         }
+    }
+
+    /// The source height change from `before` to `after` at world `(x, z)`, in metres:
+    /// bilinear over the recorded samples as the terrain samples heights, zero where none of
+    /// the four samples around the point changed. O(1).
+    pub(crate) fn delta_m(&self, terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
+        let [x0, z0, x1, z1] = self.bounds;
+        let width = x1 - x0 + 1;
+        let sample = |i: i64, j: i64| -> f32 {
+            if i < x0 as i64 || i > x1 as i64 || j < z0 as i64 || j > z1 as i64 {
+                return 0.0;
+            }
+            let k = (j as usize - z0) * width + (i as usize - x0);
+            self.after[k] - self.before[k]
+        };
+        let (gx, gz) = terrain.world_to_grid_coords(x, z);
+        let (fx, fz) = (gx.floor(), gz.floor());
+        let (i, j) = (fx as i64, fz as i64);
+        let (tx, tz) = (gx - fx, gz - fz);
+        let row = |j| sample(i, j) * (1.0 - tx) + sample(i + 1, j) * tx;
+        (row(j) * (1.0 - tz) + row(j + 1) * tz) * config::HEIGHT_SCALE
     }
     /// Bytes of persisted sample data, excluding the history record and slice headers.
     #[cfg(test)]
@@ -77,7 +101,7 @@ impl TerrainStrokeHeights {
 /// One reusable texture-sized window of protected source samples, in row-major order.
 #[derive(Default)]
 pub(crate) struct TerrainProtection {
-    key: Option<([i32; 2], usize, [u64; 5])>,
+    key: Option<([i32; 2], usize, [u64; 6])>,
     /// Location of the first sample in grid coordinates, including off-world padding.
     pub(crate) origin: [i32; 2],
     /// Width and height of the square mask.
@@ -108,6 +132,8 @@ struct TerrainDab {
 /// The frozen settings, cursor and local journal of an open gameplay stroke.
 pub(crate) struct GameTerrainStroke {
     dab: TerrainDab,
+    // "Roads follow" as it stood at press.
+    roads_follow: bool,
     cursor: Vector2,
     /// The source revision published to asynchronous terrain readers until release.
     pub(crate) published_source_generation: u64,
@@ -332,6 +358,7 @@ impl SimCore {
             self.road_terrain_inputs.site_revision(),
             self.agriculture.visual_revision(),
             self.get_coal_pit_overlay_revision_internal(),
+            u64::from(self.game_terrain_roads_follow),
         ];
         let key = (anchor, side, revisions);
         if self.terrain_brush_protection.key == Some(key) {
@@ -351,8 +378,14 @@ impl SimCore {
             mask.origin[1] as f32 * margin - half_z,
         );
         let padding = Vector2::new(margin, margin);
+        // "Roads follow" frees the road beds: the roads move with the ground at release.
+        let candidates = if self.game_terrain_roads_follow {
+            !ROAD
+        } else {
+            u8::MAX
+        };
         let broad =
-            self.protection_in_rect(origin - padding, origin + padding * side as f32, u8::MAX);
+            self.protection_in_rect(origin - padding, origin + padding * side as f32, candidates);
         if broad != 0 {
             for (j, row) in mask.samples.chunks_exact_mut(side).enumerate() {
                 for (i, sample) in row.iter_mut().enumerate() {
@@ -460,6 +493,7 @@ impl SimCore {
                     end_height_m: anchor_b.y,
                 },
             },
+            roads_follow: self.game_terrain_roads_follow,
             cursor: pos,
             published_source_generation: self.heightmap.source_generation(),
             original: HashMap::with_capacity(side * side),
@@ -522,8 +556,8 @@ impl SimCore {
             bounds,
             before: before.into(),
             after: after.into(),
+            roads_follow: stroke.roads_follow,
         };
-        self.push_undo_snapshot(Self::terrain_history_record(Box::new(heights)));
 
         let mut patches: Vec<_> = stroke.affected_patches.into_iter().collect();
         patches.sort_unstable_by_key(|&(key, _)| key);
@@ -540,8 +574,106 @@ impl SimCore {
                 (z1 + margin).min(d),
             ]);
         }
-        self.finish_game_terrain_dependents();
+        // An undone stroke's restore rebuilds its own dependents.
+        if self.record_game_terrain_stroke(Box::new(heights)) {
+            self.finish_game_terrain_dependents();
+        }
         true
+    }
+
+    /// Pushes a stroke's history, moving the roads with the ground first when the stroke had
+    /// "Roads follow" on: the roads' undo record and the terrain's form one group, the terrain's
+    /// on top, so undo restores both and redo finds the stroke. A move that leaves a road
+    /// steeper than the 1:3 maximum, or a junction without a layout, undoes the whole stroke and
+    /// leaves its reason in `game_terrain_rejection`. Returns whether the stroke stands.
+    pub(in crate::nodes::sim) fn record_game_terrain_stroke(
+        &mut self,
+        heights: Box<TerrainStrokeHeights>,
+    ) -> bool {
+        let group = self.next_undo_group();
+        self.undo_batch_group = Some(group);
+        let rejection = if heights.roads_follow {
+            self.follow_roads_to_game_terrain(&heights)
+        } else {
+            None
+        };
+        self.push_undo_snapshot(Self::terrain_history_record(heights));
+        self.undo_batch_group = None;
+        let Some(reason) = rejection else {
+            return true;
+        };
+        crate::debug_log!("terrain", "gameplay stroke undone: {}", reason);
+        self.game_terrain_rejection = Some(reason);
+        self.undo_action_in_pool();
+        false
+    }
+
+    // Moves the standard roads under a stroke with the ground (`follow_local_ground_change`)
+    // and rebuilds what stands on them locally, as the border connection's in-place edit does
+    // (`ROAD-122`): the graph's undo record first, then the routing graph, lots, roadbed,
+    // render chunks, lanes with their agents, and the doors. Returns the reason to undo the
+    // stroke, if any. O(roads under the stroke and their lane closure), independent of the city.
+    fn follow_roads_to_game_terrain(
+        &mut self,
+        heights: &TerrainStrokeHeights,
+    ) -> Option<&'static str> {
+        let cell = self.heightmap.cell_size_m();
+        let [x0, z0, x1, z1] = world_bounds(&self.heightmap, heights.bounds);
+        // Bilinear reads reach one cell past the changed samples.
+        let (min, max) = (
+            Vector3::new(x0 - cell, 0.0, z0 - cell),
+            Vector3::new(x1 + cell, 0.0, z1 + cell),
+        );
+        let mut candidates = Vec::new();
+        self.region_graph
+            .visit_edges_near_aabb(min, max, |edge| candidates.push(edge));
+        candidates.sort_unstable();
+        candidates.dedup();
+        if candidates.is_empty() {
+            return None;
+        }
+        let roads: HashSet<usize> = candidates.iter().copied().collect();
+        let grades_before: HashMap<usize, f32> = candidates
+            .iter()
+            .map(|&edge| {
+                (
+                    edge,
+                    crate::nodes::sim::core::edge_grade(&self.region_graph, edge),
+                )
+            })
+            .collect();
+        let checkpoint = self
+            .region_graph
+            .capture_undo_for_local_topology(roads, HashSet::new());
+        let (mut edges, mut nodes) = (HashSet::new(), HashSet::new());
+        let terrain = &self.heightmap;
+        self.region_graph.follow_local_ground_change(
+            terrain,
+            &candidates,
+            |x, z| heights.delta_m(terrain, x, z),
+            &mut edges,
+            &mut nodes,
+        );
+        if edges.is_empty() {
+            return None;
+        }
+        self.push_network_undo_delta(checkpoint, None, None);
+        self.schedule_cch_rebuild_of_live_graph();
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
+        self.transit_network
+            .mark_surface_dirty_from_sets(&edges, &nodes);
+        self.mark_local_network_render_dirty();
+        // Godot's main thread runs the release; the lane passes are parallel (CODE-17).
+        crate::thread_pools::install(|| self.rebuild_in_place_edit_locally(&edges, &nodes));
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        if !self.transit_network.roadbed.failed_nodes().is_empty() {
+            return Some("A junction can't follow this ground");
+        }
+        crate::nodes::sim::core::steepened_profile(&self.region_graph, &edges, &grades_before)
+            .map(|_| "A road would be steeper than 1:3")
     }
 
     /// Restores the rectangle captured by gameplay terrain history.
@@ -572,8 +704,8 @@ impl SimCore {
     }
 
     fn finish_game_terrain_dependents(&mut self) {
-        // The editor re-grades the RegionGraph explicitly with sync_to_terrain.
-        // Gameplay preserves the source samples beneath roads and their authored profiles.
+        // The editor re-grades the whole RegionGraph with sync_to_terrain. Gameplay keeps the
+        // source under road beds unless "Roads follow" moved the roads locally at release.
         self.rebuild_building_entrances_internal();
         if self.has_authored_water_internal()
             && let Err(error) = self.rebuild_authored_water_preview_internal()
