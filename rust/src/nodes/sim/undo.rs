@@ -261,6 +261,7 @@ impl SimCore {
         {
             self.pop_oldest_undo_group();
         }
+        self.terrain_redo.clear();
         self.undo_stack.push_back(snapshot);
     }
 
@@ -528,7 +529,61 @@ impl SimCore {
         // part 7).
         self.adopt_pending_cell_lots();
         // The restore's rebuilds are parallel: shared pool (CODE-17).
-        crate::thread_pools::install(|| self.undo_action_in_pool())
+        crate::thread_pools::install(|| {
+            let forward = self.undo_stack.back().and_then(|record| {
+                let Some(SimulationRuntimeSnapshot::TerrainStroke(heights)) = &record.runtime
+                else {
+                    return None;
+                };
+                Some(Self::terrain_history_record(Box::new(heights.inverse())))
+            });
+            if !self.undo_action_in_pool() {
+                return false;
+            }
+            if let Some(forward) = forward {
+                self.terrain_redo.push(forward);
+            } else {
+                self.terrain_redo.clear();
+            }
+            true
+        })
+    }
+
+    /// Reapplies the most recently undone gameplay stroke, if its history is still current.
+    pub(crate) fn redo_terrain_action_internal(&mut self) -> bool {
+        self.adopt_pending_cell_lots();
+        crate::thread_pools::install(|| {
+            let Some(forward) = self.terrain_redo.pop() else {
+                return false;
+            };
+            let Some(SimulationRuntimeSnapshot::TerrainStroke(heights)) = &forward.runtime else {
+                unreachable!("redo contains only terrain stroke records");
+            };
+            let backward = Self::terrain_history_record(Box::new(heights.inverse()));
+            let remaining = std::mem::take(&mut self.terrain_redo);
+            self.push_undo_snapshot(backward);
+            self.terrain_redo = remaining;
+            self.restore_undo_record(forward, true, false);
+            true
+        })
+    }
+
+    pub(super) fn terrain_history_record(
+        heights: Box<crate::nodes::sim::editing::TerrainStrokeHeights>,
+    ) -> SimulationSnapshot {
+        SimulationSnapshot {
+            terrain: None,
+            trans_graph: None,
+            runtime: Some(SimulationRuntimeSnapshot::TerrainStroke(heights)),
+            water: None,
+            roadbed: None,
+            graded: None,
+            zoning: None,
+            cells: None,
+            alignments: None,
+            group: 0,
+            charged: 0.0,
+        }
     }
 
     pub(super) fn undo_action_in_pool(&mut self) -> bool {
@@ -695,6 +750,9 @@ impl SimCore {
             match runtime {
                 SimulationRuntimeSnapshot::CellZoningEdit(_) => {
                     unreachable!("handled before restoring snapshot fields")
+                }
+                SimulationRuntimeSnapshot::TerrainStroke(heights) => {
+                    self.restore_game_terrain_heights(&heights);
                 }
                 SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
                     self.pending_demand_spawns = pending;

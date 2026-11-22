@@ -177,6 +177,7 @@ void vertex() {
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 #include "res://scripts/shaders/zoning_ground.gdshaderinc"
+#include "res://scripts/shaders/terrain_brush.gdshaderinc"
 
 void fragment() {
 	// cull_disabled flips back-face normals before fragment(); keep the authored soft-up basis.
@@ -215,6 +216,13 @@ void fragment() {
 	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
 	if (zoning_mask_enabled) {
 		apply_zoning_ground(root_position, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
+
+	if (terrain_brush_enabled) {
+		// Use fragment XZ for the edge derivative and the blade's root for cut/fill.
+		vec3 world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		world.y = root_position.y + 0.025;
+		apply_terrain_brush(world, ALBEDO, EMISSION);
 	}
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);

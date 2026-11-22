@@ -2,6 +2,12 @@
 
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 
+mod terrain_brush;
+
+pub(crate) use terrain_brush::{
+    GameTerrainStroke, TerrainBrushMode, TerrainProtection, TerrainStrokeHeights,
+};
+
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
@@ -550,6 +556,7 @@ enum TerrainBrushEdit {
 }
 
 // The slope brush's two world-space anchors and their rendered heights.
+#[derive(Clone, Copy)]
 struct SlopeAnchors {
     start_world: Vector2,
     start_height_m: f32,
@@ -615,7 +622,7 @@ impl SimCore {
         radius: f32,
         edit: TerrainBrushEdit,
         brush: impl FnOnce(&mut TerrainSystem, f32, f32, f32),
-    ) {
+    ) -> Option<[f32; 4]> {
         let margin_m = self.heightmap.render_patch_border_margin_m();
         let Some(bounds) = self
             .heightmap
@@ -628,12 +635,14 @@ impl SimCore {
                 pos.y,
                 radius
             );
-            return;
+            return None;
         };
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
         match edit {
-            TerrainBrushEdit::Single => self.push_undo_state(true, false, true),
+            TerrainBrushEdit::Single => {
+                // A commit's deferred lots first (`ROAD-68-G` part 7).
+                self.adopt_pending_cell_lots();
+                self.push_undo_state(true, false, true);
+            }
             TerrainBrushEdit::StrokeStep => self.prepare_batched_terrain_edit_internal(),
         }
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
@@ -643,6 +652,7 @@ impl SimCore {
         if edit == TerrainBrushEdit::Single {
             self.finish_terrain_authoring_edit_internal();
         }
+        Some(bounds)
     }
 
     // Marks what a brush that wrote inside `[min_x, min_z, max_x, max_z]` (world metres, the
@@ -3235,7 +3245,7 @@ impl<L> RoadEditSite<'_, L> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BulldozeTargetKind, SimCore};
+    use super::{BulldozeTargetKind, SimCore, TerrainBrushMode};
     use crate::nodes::sim::core::PendingDemandSpawnAction;
 
     use crate::simulation::buildings::allocator::Building;
@@ -4306,6 +4316,308 @@ mod tests {
         assert!(core.end_terrain_stroke_internal());
         assert!(!core.terrain_stroke_active);
         assert!(!core.terrain_stroke_has_changes);
+    }
+
+    #[test]
+    fn gameplay_terrain_stroke_batches_undo_and_redo() {
+        let mut core = test_core();
+        let pos = Vector2::ZERO;
+        let before = core.get_height_at_internal(pos);
+        let before_samples = core.heightmap.clone_source_dense();
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            pos,
+            30.0,
+            1.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        for _ in 0..60 {
+            assert_eq!(core.game_terrain_stroke_step(pos, 1.0 / 60.0), 0);
+        }
+        assert!(!core.terrain_dirty);
+        let mut patches = 0;
+        assert!(core.visit_game_terrain_visual_patches(|_, _| patches += 1));
+        assert!(patches > 0);
+        assert!(!core.visit_game_terrain_visual_patches(|_, _| unreachable!()));
+        assert!(core.undo_stack.is_empty());
+        assert!(core.finish_game_terrain_stroke());
+        assert!(core.terrain_dirty);
+        assert_eq!(core.undo_stack.len(), 1);
+        let after_samples = core.heightmap.clone_source_dense();
+        let record = core.undo_stack.back().unwrap();
+        assert!(record.terrain.is_none() && record.trans_graph.is_none());
+        let raised = core.get_height_at_internal(pos);
+        assert!((raised - before - 6.0).abs() < 0.0001);
+        assert!(core.undo_action_internal());
+        assert_eq!(core.get_height_at_internal(pos).to_bits(), before.to_bits());
+        assert!(
+            core.heightmap
+                .clone_source_dense()
+                .iter()
+                .zip(&before_samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert!(core.redo_terrain_action_internal());
+        assert_eq!(core.get_height_at_internal(pos).to_bits(), raised.to_bits());
+        assert!(
+            core.heightmap
+                .clone_source_dense()
+                .iter()
+                .zip(&after_samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert_eq!(core.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn gameplay_flatten_uses_the_height_at_press() {
+        let mut core = test_core();
+        let start = Vector2::ZERO;
+        let end = Vector2::new(100.0, 0.0);
+        core.sculpt_terrain_internal(start, 55.0, 0.2);
+        let target = core.get_height_at_internal(start);
+        assert!(target > core.get_height_at_internal(end) + 3.0);
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Flatten,
+            start,
+            30.0,
+            1.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        core.game_terrain_stroke_step(end, 1.0 / 60.0);
+        for _ in 0..60 {
+            core.game_terrain_stroke_step(end, 1.0 / 60.0);
+        }
+        assert!(core.finish_game_terrain_stroke());
+        assert!((core.get_height_at_internal(end) - target).abs() < 0.0001);
+    }
+
+    #[test]
+    fn gameplay_fast_sweep_leaves_a_continuous_trail() {
+        let mut core = test_core();
+        let start = Vector2::new(-100.0, 0.0);
+        let end = Vector2::new(100.0, 0.0);
+        let before = core.get_height_at_internal(start);
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            start,
+            30.0,
+            2.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        core.game_terrain_stroke_step(end, 1.0 / 60.0);
+        assert!(core.finish_game_terrain_stroke());
+        for x in (-100..=100).step_by(10) {
+            assert!(core.get_height_at_internal(Vector2::new(x as f32, 0.0)) > before);
+        }
+    }
+
+    #[test]
+    fn gameplay_terrain_applies_substep_pointer_samples_in_order() {
+        let mut core = test_core();
+        let start = Vector2::new(0.0, 0.0);
+        let corner = Vector2::new(50.0, 0.0);
+        let end = Vector2::new(50.0, 50.0);
+        let witness = Vector2::new(30.0, 0.0);
+        let before = core.get_height_at_internal(witness);
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            start,
+            10.0,
+            2.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        assert_eq!(core.game_terrain_stroke_step(corner, 1.0 / 480.0), 0);
+        assert!(core.visit_game_terrain_visual_patches(|_, _| {}));
+        assert!(core.get_height_at_internal(witness) > before);
+        assert_eq!(core.game_terrain_stroke_step(end, 1.0 / 480.0), 0);
+        assert!(core.visit_game_terrain_visual_patches(|_, _| {}));
+        assert!(core.finish_game_terrain_stroke());
+    }
+
+    #[test]
+    fn gameplay_terrain_rate_matches_across_frame_rates() {
+        let run = |rate: usize| {
+            let mut core = test_core();
+            core.begin_game_terrain_stroke(
+                TerrainBrushMode::Raise,
+                Vector2::ZERO,
+                30.0,
+                1.0,
+                Vector3::ZERO,
+                Vector3::ZERO,
+            );
+            for frame in 1..=rate {
+                let pos = Vector2::new(120.0 * frame as f32 / rate as f32, 0.0);
+                core.game_terrain_stroke_step(pos, 1.0 / rate as f64);
+            }
+            assert!(core.finish_game_terrain_stroke());
+            (0..=120)
+                .step_by(10)
+                .map(|x| core.get_height_at_internal(Vector2::new(x as f32, 0.0)))
+                .collect::<Vec<_>>()
+        };
+        let control = run(60);
+        assert_eq!(run(60), control);
+        for rate in [30, 120] {
+            for (actual, expected) in run(rate).into_iter().zip(&control) {
+                assert!((actual - expected).abs() < 0.0001);
+            }
+        }
+    }
+
+    #[test]
+    fn gameplay_terrain_keeps_protected_road_samples_and_graph() {
+        let mut core = test_core();
+        let a = core
+            .region_graph
+            .add_node(Vector3::new(-50.0, 0.0, 0.0), NodeType::Junction);
+        let b = core
+            .region_graph
+            .add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        add_test_road_edge(&mut core.region_graph, a, b);
+        core.region_graph.rebuild_adjacency_list();
+        finalize_network_render_for_test(&mut core);
+        let at = Vector2::ZERO;
+        assert_eq!(core.game_terrain_brush_status(at, 10.0, true), 65);
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            at,
+            10.0,
+            1.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        assert_eq!(core.game_terrain_stroke_step(at, 0.1), 65);
+        assert!(!core.finish_game_terrain_stroke());
+        assert!(core.undo_stack.is_empty());
+
+        let at = Vector2::new(0.0, 10.0);
+        assert_eq!(core.game_terrain_brush_status(at, 30.0, true), 1);
+        let origin = core.terrain_brush_protection.origin;
+        let side = core.terrain_brush_protection.side;
+        let protected: Vec<_> = core
+            .terrain_brush_protection
+            .samples
+            .iter()
+            .enumerate()
+            .filter(|&(_, kind)| *kind != 0)
+            .map(|(i, _)| {
+                let x = (origin[0] + (i % side) as i32) as usize;
+                let z = (origin[1] + (i / side) as i32) as usize;
+                (x, z, core.heightmap.source_sample(x, z).to_bits())
+            })
+            .collect();
+        assert!(!protected.is_empty());
+        let positions = [a, b].map(|id| core.region_graph.node(id).pos);
+        let edge = core.region_graph.edge(0).clone();
+        let bed = core
+            .get_world_surface_height_internal(Vector2::ZERO)
+            .to_bits();
+        let free = Vector2::new(0.0, 30.0);
+        let before_free = core.get_height_at_internal(free);
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            at,
+            30.0,
+            1.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        assert_eq!(core.game_terrain_stroke_step(at, 0.5), 0);
+        assert!(core.finish_game_terrain_stroke());
+        assert!(core.get_height_at_internal(free) > before_free);
+        for (x, z, before) in protected {
+            assert_eq!(core.heightmap.source_sample(x, z).to_bits(), before);
+        }
+        assert_eq!(
+            core.get_world_surface_height_internal(Vector2::ZERO)
+                .to_bits(),
+            bed
+        );
+        assert_eq!([a, b].map(|id| core.region_graph.node(id).pos), positions);
+        assert_eq!(core.region_graph.edge(0).geometry, edge.geometry);
+        assert_eq!(
+            core.region_graph.edge(0).physical_geometry,
+            edge.physical_geometry
+        );
+        assert_eq!(
+            core.region_graph.edge(0).start_clip.to_bits(),
+            edge.start_clip.to_bits()
+        );
+        assert_eq!(
+            core.region_graph.edge(0).end_clip.to_bits(),
+            edge.end_clip.to_bits()
+        );
+    }
+
+    #[test]
+    fn gameplay_terrain_strength_scales_with_diameter() {
+        for (radius, speed) in [(30.0, 6.0), (100.0, 20.0)] {
+            for (mode, sign) in [
+                (TerrainBrushMode::Raise, 1.0),
+                (TerrainBrushMode::Lower, -1.0),
+            ] {
+                let mut core = test_core();
+                let at = Vector2::ZERO;
+                let before = core.get_height_at_internal(at);
+                core.begin_game_terrain_stroke(mode, at, radius, 1.0, Vector3::ZERO, Vector3::ZERO);
+                core.game_terrain_stroke_step(at, 0.5);
+                assert!(core.finish_game_terrain_stroke());
+                let runtime = &core.undo_stack.back().unwrap().runtime;
+                let Some(crate::nodes::sim::core::SimulationRuntimeSnapshot::TerrainStroke(
+                    heights,
+                )) = runtime
+                else {
+                    panic!("gameplay stroke must record a terrain rectangle");
+                };
+                assert_eq!(
+                    heights.sample_bytes(),
+                    if radius == 30.0 { 200 } else { 2888 }
+                );
+                assert!(
+                    (core.get_height_at_internal(at) - before - sign * speed * 0.5).abs() < 0.001
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gameplay_ramp_and_smooth_reach_the_centre_by_strength_duration() {
+        for (strength, seconds) in [(0.0, 2.0), (1.0, 0.7), (2.0, 0.2)] {
+            let mut core = test_core();
+            core.sculpt_terrain_internal(Vector2::ZERO, 10.0, 0.5);
+            let (x, z) = core.heightmap.world_to_grid_coords(0.0, 0.0);
+            let mut sum = 0.0;
+            for j in (z as usize - 1)..=(z as usize + 1) {
+                for i in (x as usize - 1)..=(x as usize + 1) {
+                    sum += core.heightmap.source_sample(i, j);
+                }
+            }
+            let target = sum / 9.0 * crate::config::HEIGHT_SCALE;
+            for mode in [TerrainBrushMode::Smooth, TerrainBrushMode::Ramp] {
+                core.begin_game_terrain_stroke(
+                    mode,
+                    Vector2::ZERO,
+                    30.0,
+                    strength,
+                    Vector3::new(-20.0, 20.0, 0.0),
+                    Vector3::new(20.0, 40.0, 0.0),
+                );
+                core.game_terrain_stroke_step(Vector2::ZERO, seconds);
+                assert!(core.finish_game_terrain_stroke());
+                let expected = if matches!(mode, TerrainBrushMode::Ramp) {
+                    30.0
+                } else {
+                    target
+                };
+                assert!((core.get_height_at_internal(Vector2::ZERO) - expected).abs() < 0.001);
+            }
+        }
     }
 
     #[test]

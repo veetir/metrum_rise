@@ -160,6 +160,8 @@ pub(crate) enum SimulationRuntimeSnapshot {
     PendingDemandSpawns(VecDeque<PendingDemandSpawnAction>),
     /// Records changed by one building bulldoze operation.
     BuildingRemoval(Box<BuildingRemovalUndo>),
+    /// A gameplay terrain stroke whose inverse can also be traversed forward.
+    TerrainStroke(Box<crate::nodes::sim::editing::TerrainStrokeHeights>),
     /// Cells changed by one vegetation brush stroke.
     VegetationEdit(VegetationEditUndo),
     /// Previous designations and affected lots of one gesture; buildings are never snapshotted.

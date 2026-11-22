@@ -260,6 +260,8 @@ pub struct SimCore {
     pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
+    /// Forward snapshots for consecutive undos of gameplay terrain strokes.
+    pub(crate) terrain_redo: Vec<SimulationSnapshot>,
     /// The last undo group id handed out (`ROAD-112` round F): every pushed record takes a fresh
     /// one unless a batch holds `undo_batch_group` open.
     pub(crate) undo_group_counter: u64,
@@ -282,6 +284,10 @@ pub struct SimCore {
         HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
     /// True while the world editor is accumulating one terrain brush stroke.
     pub(crate) terrain_stroke_active: bool,
+    /// Fixed-step path sampler and frozen settings of the active gameplay stroke.
+    pub(crate) game_terrain_stroke: Option<crate::nodes::sim::editing::GameTerrainStroke>,
+    /// Reusable local protection mask, also consumed by the gameplay brush preview.
+    pub(crate) terrain_brush_protection: crate::nodes::sim::editing::TerrainProtection,
     /// True once the active terrain brush stroke has applied at least one terrain mutation.
     pub(crate) terrain_stroke_has_changes: bool,
     /// Set by terrain mutations until Godot acknowledges the exact dirty patch revisions.
@@ -460,6 +466,7 @@ impl SimCore {
             budget_history: VecDeque::new(),
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
+            terrain_redo: Vec::new(),
             undo_group_counter: 0,
             undo_batch_group: None,
             world_lake_fills: Vec::new(),
@@ -470,6 +477,8 @@ impl SimCore {
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
+            game_terrain_stroke: None,
+            terrain_brush_protection: Default::default(),
             terrain_stroke_has_changes: false,
             terrain_dirty: true,
             water_dirty: true,

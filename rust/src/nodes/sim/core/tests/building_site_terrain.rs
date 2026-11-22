@@ -93,6 +93,47 @@ fn place_yard_at(
     Ok(building)
 }
 
+#[test]
+fn gameplay_terrain_keeps_building_pad_height_when_free_ground_moves() {
+    use crate::nodes::sim::editing::TerrainBrushMode;
+
+    let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
+    let mut core = road_edit_order::committed(&strokes, &[0], true);
+    let asset = register_yard(&mut core);
+    let building = place_yard(&mut core, 0, 1.0, &asset).expect("terrain protection fixture");
+    core.prepare_site_queries();
+    let site = &core.allocator.building_sites[building];
+    let pad =
+        site.footprint_world.iter().copied().sum::<Vector2>() / site.footprint_world.len() as f32;
+    let original_pad = site.support_height_m.to_bits();
+    let surface = core.get_world_surface_height_internal(pad).to_bits();
+    let source = core.get_height_at_internal(pad).to_bits();
+    let terrain = core.heightmap.clone_source_dense();
+    assert_ne!(core.game_terrain_brush_status(pad, 100.0, false) & 2, 0);
+    core.begin_game_terrain_stroke(
+        TerrainBrushMode::Raise,
+        pad,
+        100.0,
+        1.0,
+        Vector3::ZERO,
+        Vector3::ZERO,
+    );
+    assert_eq!(core.game_terrain_stroke_step(pad, 0.5), 0);
+    assert!(core.finish_game_terrain_stroke());
+    assert_eq!(
+        core.allocator.building_sites[building]
+            .support_height_m
+            .to_bits(),
+        original_pad
+    );
+    assert_eq!(core.get_height_at_internal(pad).to_bits(), source);
+    assert_eq!(
+        core.get_world_surface_height_internal(pad).to_bits(),
+        surface
+    );
+    assert_ne!(core.heightmap.clone_source_dense(), terrain);
+}
+
 fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
     let mut fresh = TerrainQueryIndex::default();
     fresh.rebuild_all(&core.transit_network.roadbed, &core.allocator);

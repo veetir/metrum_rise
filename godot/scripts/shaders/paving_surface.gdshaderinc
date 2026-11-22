@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Shared surface program; wrappers only choose which faces are visible.
 #ifdef ZONING_SITE_SURFACE
 #include "res://scripts/shaders/zoning_ground.gdshaderinc"
+#include "res://scripts/shaders/terrain_brush.gdshaderinc"
 #endif
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -45,6 +48,10 @@ void fragment() {
 #ifdef ZONING_SITE_SURFACE
 	if (zoning_mask_enabled) {
 		apply_zoning_ground(world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
+
+	if (terrain_brush_enabled) {
+		apply_terrain_brush(world_pos, ALBEDO, EMISSION);
 	}
 #endif
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,

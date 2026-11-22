@@ -24,6 +24,7 @@ extends VBoxContainer
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const InputManager = preload("res://scripts/core/input_manager.gd")
+const TerrainBrushTool := preload("res://scripts/tools/terrain_brush_tool.gd")
 const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 ## Where the baked pictures live; see `picture_path`.
 const PICTURE_DIR := "res://assets/ui/vegetation/"
@@ -37,6 +38,8 @@ const CATEGORY_TILE := 64.0
 var _input_manager: Node
 var _tool: Node
 var _sculpt_button: Button
+var _sculpt_modes: HBoxContainer
+var _sculpt_mode_buttons: Array[Button] = []
 var _remove_button: Button
 var _group_buttons: Dictionary = {}
 var _option_buttons: Dictionary = {}
@@ -61,7 +64,20 @@ func build(input_manager: Node) -> void:
 	_sculpt_button = HudIcons.icon_button("sculpt", "Raise and lower", "Raise or lower the ground", CATEGORY_TILE)
 	_sculpt_button.toggle_mode = true
 	_sculpt_button.pressed.connect(_on_sculpt_pressed)
+	HudIcons.set_shortcut(_sculpt_button, "Y")
 	categories.add_child(_sculpt_button)
+	_sculpt_modes = HBoxContainer.new()
+	categories.add_child(_sculpt_modes)
+	var mode_icons := ["plus", "sculpt_lower", "sculpt_flatten", "curve", "straight_grade"]
+	var mode_details := ["Raise the ground", "Lower the ground", "Hold the height captured at press",
+		"Soften uneven ground", "Set two heights, then shape the grade"]
+	for i in TerrainBrushTool.MODE_NAMES.size():
+		var button := HudIcons.icon_button(mode_icons[i], TerrainBrushTool.MODE_NAMES[i], mode_details[i], 42.0)
+		button.toggle_mode = true
+		button.pressed.connect(_on_sculpt_mode_pressed.bind(i))
+		_sculpt_modes.add_child(button)
+		_sculpt_mode_buttons.append(button)
+	_sculpt_modes.hide()
 	categories.add_child(VSeparator.new())
 	for group in GROUPS:
 		var id: String = group[0]
@@ -94,6 +110,7 @@ func build(input_manager: Node) -> void:
 
 	_tool.option_changed.connect(func(_index: int): _follow_option())
 	_tool.mode_changed.connect(func(_mode: int): refresh_marks())
+	input_manager.terrain_brush.mode_changed.connect(refresh_marks)
 	input_manager.tool_changed.connect(func(_tool_id: int): refresh_marks())
 	visibility_changed.connect(_on_visibility_changed)
 
@@ -101,7 +118,13 @@ func build(input_manager: Node) -> void:
 func refresh_marks() -> void:
 	var current: int = _input_manager.current_tool
 	var planting: bool = current == InputManager.Tool.VEGETATION and _tool.mode == VegetationTool.Mode.PLANT
-	HudIcons.mark(_sculpt_button, current == InputManager.Tool.SCULPT)
+	var sculpting := current == InputManager.Tool.SCULPT
+	HudIcons.mark(_sculpt_button, sculpting)
+	_sculpt_modes.visible = sculpting
+	for i in _sculpt_mode_buttons.size():
+		HudIcons.mark(_sculpt_mode_buttons[i], i == _input_manager.terrain_brush.mode)
+	if sculpting:
+		_close_group()
 	HudIcons.mark(_remove_button, current == InputManager.Tool.VEGETATION and _tool.mode == VegetationTool.Mode.REMOVE)
 	for id in _group_buttons:
 		HudIcons.mark(_group_buttons[id], _options_panel.visible and id == _open_group)
@@ -145,6 +168,15 @@ func _number_group(id: String) -> void:
 func _on_sculpt_pressed() -> void:
 	_close_group()
 	_input_manager._toggle_tool(InputManager.Tool.SCULPT)
+	refresh_marks()
+
+func _on_sculpt_mode_pressed(index: int) -> void:
+	var brush: Node = _input_manager.terrain_brush
+	if index == brush.mode and index > TerrainBrushTool.Mode.LOWER:
+		# Selecting the active mode again backs out like right-click: ramp anchors, then Raise.
+		brush.step_back()
+	else:
+		brush.select_mode(index)
 	refresh_marks()
 
 # A category opens with its option planting: the tool's own option when it is in the category,

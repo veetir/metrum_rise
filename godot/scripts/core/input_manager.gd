@@ -34,6 +34,8 @@ var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
 var roundabout_tool: Node3D
 @onready var vegetation_tool = $"../VegetationTool"
+const TerrainBrushTool := preload("res://scripts/tools/terrain_brush_tool.gd")
+var terrain_brush := TerrainBrushTool.new()
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
@@ -77,7 +79,12 @@ var _alt_orbit := false
 var _last_gesture := ""
 var _camera_window_focused := true
 
+func _init() -> void:
+	add_child(terrain_brush)
+
 func _ready():
+	terrain_brush.setup(self)
+	tool_changed.connect(func(tool: int): terrain_brush.set_active(tool == Tool.SCULPT))
 	get_window().focus_exited.connect(_on_camera_focus_exited)
 	get_window().focus_entered.connect(func(): _camera_window_focused = true)
 	# Camera input and native clearance settling must precede RoadTool's cursor sample.
@@ -204,6 +211,7 @@ func _cancel_camera_motion() -> void:
 
 func _on_camera_focus_exited() -> void:
 	_camera_window_focused = false
+	terrain_brush.interrupt()
 	_cancel_camera_motion()
 
 ## Whether the loaded world was handed over: false from a load until the terrain renderer settles.
@@ -226,7 +234,16 @@ func _await_world_ready() -> void:
 	_world_ready = true
 	world_ready.emit()
 
+## The terrain brush captures only the exposed world, like the vegetation brush.
+func terrain_brush_world_input() -> bool:
+	return _world_ready and _camera_window_focused and not _alt_orbit \
+		and not Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE) and not _overlay_open()
+
 func _input(event):
+	# A release over a palette or popup still closes the world gesture that began it.
+	if event is InputEventMouseButton and not event.pressed \
+			and event.button_index == terrain_brush.stroke_button:
+		terrain_brush.release(event)
 	if not _world_ready or not _camera_window_focused:
 		return
 	# Godot 4.7.1 dispatches every gesture twice from Input._parse_input_event_impl: once from
@@ -241,7 +258,11 @@ func _input(event):
 		_last_gesture = key
 	# The pause menu and Options cover the city: the wheel scrolls them, it does not zoom.
 	if _ui_has_modal_popup() or _overlay_open():
+		terrain_brush.interrupt()
 		_cancel_camera_motion()
+		return
+	if current_tool == Tool.SCULPT and terrain_brush.apply_gesture(event):
+		get_viewport().set_input_as_handled()
 		return
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera:
@@ -316,6 +337,10 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
+			KEY_G:
+				if current_tool == Tool.SCULPT and not (event.ctrl_pressed or event.alt_pressed or event.meta_pressed):
+					terrain_brush.cycle_strength()
+					get_viewport().set_input_as_handled()
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_O: _toggle_tool(Tool.ROUNDABOUT)
 			KEY_E:
@@ -325,7 +350,12 @@ func _unhandled_input(event):
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
-					_handle_undo()
+					terrain_brush.end_stroke()
+					if event.shift_pressed:
+						simulation_node.redo_terrain_action()
+					else:
+						_handle_undo()
+					get_viewport().set_input_as_handled()
 				else:
 					if main_ui: main_ui._on_zoning_main_pressed()
 			KEY_S:
@@ -375,6 +405,10 @@ func _unhandled_input(event):
 				_handle_confirm()
 
 	if event is InputEventMouseButton:
+		if current_tool == Tool.SCULPT and event.pressed and terrain_brush_world_input() \
+				and terrain_brush.press(event):
+			get_viewport().set_input_as_handled()
+			return
 		_handle_mouse(event)
 
 func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
@@ -592,6 +626,7 @@ func _refresh_after_world_load():
 	_await_world_ready()
 
 func _handle_save_game():
+	terrain_brush.end_stroke()
 	SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_SAVE, SAVES_DIR, _finish_save_game_selection, _default_save_name())
 
 func _handle_load_game():
@@ -766,10 +801,7 @@ func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> vo
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.is_drawing():
 		road_tool.cancel_road()
-	elif current_tool == Tool.SCULPT:
-		pass # Right click is used for lowering ground during sculpting
-
-	else:
+	elif current_tool != Tool.SCULPT:
 		_cancel_active_tool()
 
 func _handle_confirm() -> void:
@@ -787,6 +819,7 @@ func menu_load_game() -> void:
 	_handle_load_game()
 
 func menu_load_game_from_path(path: String) -> bool:
+	terrain_brush.end_stroke()
 	if path.is_empty():
 		return false
 	if simulation_node.load_game(path):
@@ -798,6 +831,7 @@ func menu_load_game_from_path(path: String) -> bool:
 	return false
 
 func menu_load_world_definition(path: String) -> bool:
+	terrain_brush.end_stroke()
 	if path.is_empty():
 		return false
 	if simulation_node.load_world_definition(path):
@@ -811,6 +845,7 @@ func menu_load_world_definition(path: String) -> bool:
 ## Starts a game on a world definition with the vegetation parameters the dialog chose.
 ## Missing keys fall back to the Rust defaults, and Rust sanitises the values it receives.
 func menu_start_new_game(path: String, vegetation: Dictionary) -> bool:
+	terrain_brush.end_stroke()
 	if path.is_empty():
 		return false
 	var defaults: Dictionary = VegetationOptions.new().get_default_config()
