@@ -83,15 +83,24 @@ func _run() -> void:
 		manager._input(wheel)
 		_expect(tool.mode == next, "Shift-wheel should cycle and wrap the terrain mode")
 	tool.select_mode(tool.Mode.SMOOTH)
-	tool.step_back()
-	_expect(tool.mode == tool.Mode.RAISE, "Right-click should back Smooth out to Raise")
+	manager._input(_mouse(MOUSE_BUTTON_RIGHT, true, cursor))
+	manager._unhandled_input(_mouse(MOUSE_BUTTON_RIGHT, true, cursor))
+	_expect(tool.mode == tool.Mode.SMOOTH and tool.stroke_button == MOUSE_BUTTON_NONE,
+		"Right-click should do nothing in Smooth")
+	manager._unhandled_input(_key(KEY_ESCAPE))
+	_expect(tool.active and tool.mode == tool.Mode.RAISE, "Escape should back Smooth out to Raise")
 	tool.select_mode(tool.Mode.RAMP)
 	tool._anchor_count = 1
-	tool.step_back()
+	manager._unhandled_input(_key(KEY_ESCAPE))
 	_expect(tool.mode == tool.Mode.RAMP and tool._anchor_count == 0,
-		"Right-click should clear placed ramp anchors before leaving Ramp")
-	tool.step_back()
-	_expect(tool.mode == tool.Mode.RAISE, "A second right-click should leave Ramp for Raise")
+		"Escape should clear placed ramp anchors before leaving Ramp")
+	manager._unhandled_input(_key(KEY_ESCAPE))
+	_expect(tool.active and tool.mode == tool.Mode.RAISE, "A second Escape should leave Ramp for Raise")
+	manager._unhandled_input(_key(KEY_ESCAPE))
+	_expect(not tool.active, "Escape in Raise should close the brush")
+	manager._unhandled_input(_key(KEY_Y))
+	_expect(tool.active, "Y should reopen the brush")
+	tool.set_process(false)
 	wheel.shift_pressed = false
 	wheel.ctrl_pressed = true
 	manager._input(wheel)

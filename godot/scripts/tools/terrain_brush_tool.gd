@@ -104,8 +104,12 @@ func select_mode(next: int) -> void:
 	_session_mode = mode
 	mode_changed.emit()
 
-# Right-click outside Raise/Lower backs out one level: placed ramp anchors first, then the
-# mode itself, returning to the plain Raise brush.
+## Whether Escape has a level to back out of before it closes the tool.
+func can_step_back() -> bool:
+	return mode > Mode.LOWER
+
+# Escape outside Raise/Lower backs out one level: placed ramp anchors first, then the mode
+# itself, returning to the plain Raise brush.
 func step_back() -> void:
 	end_stroke()
 	if mode == Mode.RAMP and _anchor_count > 0:
@@ -153,7 +157,8 @@ func press(event: InputEventMouseButton) -> bool:
 	if stroke_button != MOUSE_BUTTON_NONE or get_viewport().gui_get_hovered_control() != null:
 		return true
 	if event.button_index == MOUSE_BUTTON_RIGHT and mode > Mode.LOWER:
-		step_back()
+		# Right mouse only inverts Raise and Lower; elsewhere it does nothing, so a stray
+		# click never changes the mode or the ground.
 		return true
 	var hit: Variant = _probe(event.position, true)
 	if hit is Vector3:

@@ -173,7 +173,7 @@ func _on_sculpt_pressed() -> void:
 func _on_sculpt_mode_pressed(index: int) -> void:
 	var brush: Node = _input_manager.terrain_brush
 	if index == brush.mode and index > TerrainBrushTool.Mode.LOWER:
-		# Selecting the active mode again backs out like right-click: ramp anchors, then Raise.
+		# Selecting the active mode again backs out like Escape: ramp anchors, then Raise.
 		brush.step_back()
 	else:
 		brush.select_mode(index)
