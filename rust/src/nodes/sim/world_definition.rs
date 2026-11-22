@@ -613,6 +613,7 @@ impl SimCore {
     /// Drops state tied to the previous world before the caller publishes fresh render generations.
     pub(crate) fn clear_world_transient_state(&mut self) {
         self.undo_stack.clear();
+        self.terrain_redo.clear();
         self.world_lake_fills.clear();
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
@@ -620,6 +621,7 @@ impl SimCore {
         self.terrain_payload_patch_generations.clear();
         self.road_terrain_inputs.note_all();
         self.terrain_stroke_active = false;
+        self.game_terrain_stroke = None;
         self.terrain_stroke_has_changes = false;
         self.last_tick_duration = 0.0;
         self.last_agent_tick_us = 0;
@@ -1363,6 +1365,37 @@ mod tests {
 
         assert!(core.world_lake_fill_preview.is_none());
         assert_eq!(core.world_lake_fills.len(), 1);
+    }
+
+    #[test]
+    fn gameplay_terrain_history_restores_authored_water() {
+        use crate::nodes::sim::editing::TerrainBrushMode;
+        use godot::prelude::Vector3;
+
+        let mut core = test_core_with_small_world();
+        carve_closed_basin(&mut core);
+        core.begin_world_lake_fill_preview_internal(Vector2::ZERO, 100.0)
+            .unwrap();
+        core.commit_world_lake_fill_preview_internal().unwrap();
+        let before = core.watermap.visible_depth_world(0.0, 0.0);
+        assert!(before > 0.0);
+
+        core.begin_game_terrain_stroke(
+            TerrainBrushMode::Raise,
+            Vector2::ZERO,
+            10.0,
+            2.0,
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        core.game_terrain_stroke_step(Vector2::ZERO, 0.5);
+        assert!(core.finish_game_terrain_stroke());
+        let after = core.watermap.visible_depth_world(0.0, 0.0);
+        assert!((after - before + 3.0).abs() < 0.001);
+        assert!(core.undo_action_internal());
+        assert_eq!(core.watermap.visible_depth_world(0.0, 0.0).to_bits(), before.to_bits());
+        assert!(core.redo_terrain_action_internal());
+        assert_eq!(core.watermap.visible_depth_world(0.0, 0.0).to_bits(), after.to_bits());
     }
 
     #[test]

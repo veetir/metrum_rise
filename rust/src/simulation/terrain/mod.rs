@@ -593,6 +593,22 @@ impl TerrainSystem {
         }
     }
 
+    /// Reads one authoritative source sample in grid coordinates.
+    pub(crate) fn source_sample(&self, x: usize, z: usize) -> f32 {
+        self.source_data.get(x, z)
+    }
+
+    /// Writes one in-bounds source sample. The caller registers the changed rectangle in bulk.
+    pub(crate) fn set_source_sample(&mut self, x: usize, z: usize, value: f32) {
+        self.source_data.set(x, z, value);
+    }
+
+    /// Registers a local batch of source edits without requesting a full terrain payload.
+    pub(crate) fn record_live_source_edit(&mut self, [x0, z0, x1, z1]: [usize; 4]) {
+        self.source_generation = self.source_generation.wrapping_add(1);
+        self.record_height_grid_rect(x0, x1, z0, z1);
+    }
+
     /// Returns a dense row-major snapshot of the authoritative source terrain buffer.
     pub(crate) fn clone_source_dense(&self) -> Vec<f32> {
         self.source_data.clone_dense()

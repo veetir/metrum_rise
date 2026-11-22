@@ -44,6 +44,130 @@ impl SimulationNode {
         Self::publish_terrain_render_state(&mut self.snapshot.write().unwrap(), &core);
     }
 
+    /// Raycasts the committed surface when hovering, or the current edited heights when held.
+    #[func]
+    pub fn game_terrain_brush_hit(
+        &self,
+        origin: Vector3,
+        direction: Vector3,
+        #[opt(default = true)] live: bool,
+    ) -> Variant {
+        if live {
+            Self::terrain_hit(&self.lock_core(), origin, direction)
+        } else {
+            self.frame_queries()
+                .surface
+                .and_then(|surface| surface.terrain_hit(origin, direction))
+                .map_or_else(Variant::nil, |p| p.to_variant())
+        }
+    }
+
+    /// Returns the footprint's protection kinds, and exports the mask only when it changes.
+    #[func]
+    pub fn game_terrain_brush_preview(
+        &self,
+        pos: Vector2,
+        radius: f32,
+        seen_revision: i32,
+        mut image: Gd<godot::classes::Image>,
+    ) -> Vector4 {
+        let mut core = self.lock_core();
+        let status = core.game_terrain_brush_status(pos, radius, true);
+        let margin = core.heightmap.cell_size_m();
+        let (half_x, half_z) = core.heightmap.half_world_extents();
+        let mask = &core.terrain_brush_protection;
+        let revision = (mask.revision & 0x00ff_ffff) as i32;
+        if revision != seen_revision && mask.side != 0 {
+            let side = mask.side as i32;
+            if image.get_width() != side {
+                let mut bytes = PackedByteArray::new();
+                bytes.resize(mask.samples.len());
+                image.set_data(side, side, false, godot::classes::image::Format::R8, &bytes);
+            }
+            // The preview uses binary red coverage. The local kind bits stay in the cache.
+            for (z, row) in mask.samples.chunks_exact(mask.side).enumerate() {
+                for (x, &kind) in row.iter().enumerate() {
+                    let coverage = if kind == 0 { 0.0 } else { 1.0 };
+                    image.set_pixel(x as i32, z as i32, Color::from_rgb(coverage, 0.0, 0.0));
+                }
+            }
+        }
+        Vector4::new(
+            mask.origin[0] as f32 * margin - half_x,
+            mask.origin[1] as f32 * margin - half_z,
+            status as f32,
+            revision as f32,
+        )
+    }
+
+    /// Captures gameplay brush settings and the flatten target for a new stroke.
+    #[func]
+    pub fn begin_game_terrain_stroke(
+        &mut self,
+        mode: i32,
+        pos: Vector2,
+        radius: f32,
+        strength: f32,
+        anchor_a: Vector3,
+        anchor_b: Vector3,
+    ) {
+        if let Some(mode) = crate::nodes::sim::editing::TerrainBrushMode::from_index(mode) {
+            self.lock_core()
+                .begin_game_terrain_stroke(mode, pos, radius, strength, anchor_a, anchor_b);
+        }
+    }
+
+    /// Applies the elapsed pointer segment in order, waiting for the current simulation tick.
+    #[func]
+    pub fn game_terrain_stroke_step(&mut self, pos: Vector2, elapsed: f64) -> i32 {
+        self.lock_core().game_terrain_stroke_step(pos, elapsed)
+    }
+
+    /// Exports the live height textures affected since the previous rendered frame.
+    #[func]
+    pub fn refresh_game_terrain_stroke_visuals(&mut self) -> VarArray {
+        let mut patches = VarArray::new();
+        self.lock_core()
+            .visit_game_terrain_visual_patches(|terrain, (x, z)| {
+                if let Some(patch) = terrain.source_patch_snapshot(x, z) {
+                    let mut data = VarDictionary::new();
+                    data.set("key", Vector2i::new(x as i32, z as i32));
+                    data.set(
+                        "size",
+                        Vector2i::new(patch.texture_width as i32, patch.texture_height as i32),
+                    );
+                    data.set(
+                        "bytes",
+                        PackedByteArray::from(Self::f32_bytes_vec(&patch.height_data).as_slice()),
+                    );
+                    patches.push(&data.to_variant());
+                }
+            });
+        patches
+    }
+
+    /// Finalizes a gameplay stroke and publishes the committed payload revisions.
+    #[func]
+    pub fn end_game_terrain_stroke(&mut self) -> bool {
+        let changed = self.lock_core().finish_game_terrain_stroke();
+        if changed {
+            self.refresh_snapshot_from_core();
+        }
+        changed
+    }
+
+    /// The terrain payload generation a live brush texture hands off to after release.
+    #[func]
+    pub fn game_terrain_patch_generation(&self, key: Vector2i) -> i64 {
+        let queries = self.frame_queries();
+        queries
+            .terrain_payload_patch_generations
+            .get(&(key.x as usize, key.y as usize))
+            .copied()
+            .unwrap_or(0)
+            .max(queries.terrain_payload_global_generation) as i64
+    }
+
     /// Moves terrain toward a clicked rendered heightmap level.
     #[func]
     pub fn level_terrain(

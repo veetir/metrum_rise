@@ -6,7 +6,7 @@
 ##   get_dirty_terrain_patch_payload_states(),
 ##   request_terrain_patch_payloads(), poll_ready_terrain_patch_payloads(),
 ##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
-##   is_terrain_dirty(), acknowledge_terrain_patches(), sculpt_terrain(), intersect_terrain(),
+##   is_terrain_dirty(), acknowledge_terrain_patches(), intersect_terrain(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_current_day(),
 ##   get_desirability_image_data(), get_coal_pit_overlay_data(),
 ##   get_coal_pit_overlay_size(), get_coal_pit_overlay_world_bounds(),
@@ -226,6 +226,8 @@ var _terrain_debug_frame_ms_max: float = 0.0
 var _terrain_debug_upload_ms_total: float = 0.0
 var _terrain_debug_border_ms_total: float = 0.0
 var _terrain_debug_water_sync_ms_total: float = 0.0
+# Patch textures written since press, awaiting the release's payload generations.
+var _game_brush_keys: Dictionary[Vector2i, bool] = {}
 var _terrain_debug_patch_creates: int = 0
 var _terrain_debug_patch_removes: int = 0
 var _terrain_debug_patch_uploads: int = 0
@@ -416,11 +418,6 @@ func _process(delta: float) -> void:
 
 	if graded_tiles != null:
 		_process_graded_tiles()
-
-	var input_manager = get_node_or_null("../InputManager")
-	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-			_sculpt_at_mouse(delta)
 
 	if _terrain_debug_enabled:
 		var frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
@@ -619,7 +616,7 @@ func get_patch_surface_generation(key: Vector2i) -> int:
 func get_patch_height_texture(key: Vector2i) -> Texture2D:
 	if not patches.has(key):
 		return null
-	return patches[key]["height_texture"]
+	return patches[key].get("live_brush_texture", patches[key]["height_texture"])
 
 func get_border_loop_positions() -> PackedVector3Array:
 	return border_loop_positions
@@ -881,6 +878,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	var material: ShaderMaterial = patch_resources["material"] as ShaderMaterial
 	material.shader = TERRAIN_SHADER
 	material.set_shader_parameter("heightmap", height_texture)
+	material.set_shader_parameter("terrain_brush_live_height", false)
 	var node_us := Time.get_ticks_usec() if _build_perf else 0
 	_apply_patch_masks(key, material, _terrain_patch_mask_image(patch_data), texture_width, texture_height)
 	var masks_us := Time.get_ticks_usec() if _build_perf else 0
@@ -1010,6 +1008,36 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	_commit_staged_patch_data(key, stage, total_start_us, fetch_ms)
 	return true
 
+## Updates only resident height textures touched by the current frame's gameplay stroke.
+## The normal payload commit installs masks, mesh and land cover together on release.
+func apply_game_terrain_heights(updates: Array) -> void:
+	for update: Dictionary in updates:
+		var key: Vector2i = update["key"]
+		if not patches.has(key):
+			continue
+		var patch: Dictionary = patches[key]
+		var size: Vector2i = update["size"]
+		# Update the installed texture in place. Grass and terrain can both reuse it.
+		var height_image: Image = patch.get("live_brush_image", patch["height_image"])
+		var height_texture := get_patch_height_texture(key) as ImageTexture
+		if height_texture == null or Vector2i(height_texture.get_width(), height_texture.get_height()) != size:
+			continue
+		var first := not patch.has("live_brush_generation")
+		_game_brush_keys[key] = true
+		patch["live_brush_generation"] = -1
+		height_image.set_data(size.x, size.y, false, Image.FORMAT_RF, update["bytes"])
+		height_texture.update(height_image)
+		if first:
+			(patch["material"] as ShaderMaterial).set_shader_parameter("terrain_brush_live_height", true)
+			_graded_material_changed(key)
+
+## A staged payload from a previous stroke must not replace a newer live texture.
+func finish_game_terrain_heights() -> void:
+	for key: Vector2i in _game_brush_keys:
+		if patches.has(key):
+			patches[key]["live_brush_generation"] = simulation_node.game_terrain_patch_generation(key)
+	_game_brush_keys.clear()
+
 ## `land_cover`: the patch's land cover stage when the caller staged it already; else it is
 ## staged here, and is `{}` while the land cover jobs build it (`RENDER-40`).
 func _stage_terrain_patch_update(
@@ -1135,7 +1163,20 @@ func _commit_staged_patch_data(
 	_commit_patch_land_cover(patch, stage["land_cover"])
 
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
-	material.set_shader_parameter("heightmap", stage["height_texture"])
+	var live_generation: int = patch.get("live_brush_generation", 0)
+	if live_generation == -1 or int(patch_data["surface_generation"]) < live_generation:
+		# Keep the displayed texture out of the staging pool until the new payload lands.
+		if not patch.has("live_brush_texture"):
+			patch["live_brush_texture"] = old_height_texture
+			patch["live_brush_image"] = old_height_image
+			patch["spare_height_texture"] = null
+			patch["spare_height_image"] = null
+	else:
+		if patch.erase("live_brush_generation"):
+			patch.erase("live_brush_texture")
+			patch.erase("live_brush_image")
+			material.set_shader_parameter("terrain_brush_live_height", false)
+		material.set_shader_parameter("heightmap", stage["height_texture"])
 	# The layer is written here, with the heightmap swap, so the masks never lead the heights.
 	_apply_patch_masks(key, material, stage["mask_image"],
 		int(stage["texture_width"]), int(stage["texture_height"]))
@@ -1315,6 +1356,7 @@ func _remove_patch(key: Vector2i) -> void:
 	_terrain_debug_patch_removes += 1
 
 func _clear_patches() -> void:
+	_game_brush_keys.clear()
 	patches_will_reset.emit()
 	if graded_tiles != null:
 		graded_tiles.clear()
@@ -2680,31 +2722,6 @@ func _bind_water_texture_from_binding(
 	patch["water_inner_offset_z"] = inner_offset_z
 	patch["water_sample_width"] = sample_width
 	patch["water_sample_height"] = sample_height
-
-func _sculpt_at_mouse(delta: float) -> void:
-	var mouse_pos := get_viewport().get_mouse_position()
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return
-
-	var ray_origin := camera.project_ray_origin(mouse_pos)
-	var ray_dir := camera.project_ray_normal(mouse_pos)
-	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-	if intersection == null:
-		return
-
-	var strength := 2.0 * delta
-	if Input.is_key_pressed(KEY_CTRL) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-		strength = -2.0 * delta
-	simulation_node.sculpt_terrain(
-		Vector2(intersection.x, intersection.z),
-		15.0,
-		strength / HEIGHT_SCALE
-	)
-
-	var road_tool = get_node_or_null("../RoadTool")
-	if road_tool:
-		road_tool.chunks.update()
 
 func _ensure_border_visuals() -> void:
 	if border_skirt_instance == null:

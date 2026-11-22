@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // The terrain surface shader (TERRAIN-04, -06, -07), shared by its two variants: terrain.gdshader
 // (the base: PlaneMesh patches and base cells, no discard, so ungraded ground keeps early depth)
 // and terrain_graded.gdshader (TERRAIN_GRADED: graded cells with height, normal, exact seam mask
 // and material class). Both share the grass and paving includes, the baked world noise, the
 // patch masks, the overlays, the shoreline sampling and the cloud shadow in light().
 uniform sampler2D heightmap;
+uniform bool terrain_brush_live_height = false;
 // Rust-baked per patch on the heightmap's texel grid (patch_masks.rs), one layer per patch slot:
 // R is local relief encoded as sqrt(relief / TERRAIN_MASK_RELIEF_MAX_M); G is nonzero wherever a
 // cliff face can be. A negative layer means no masks: flat ground, no cliff.
@@ -567,7 +570,8 @@ void vertex() {
 	h = texture(heightmap, centered_uv).r;
 	vec2 cell_delta_gradient_m = vec2(0.0);
 	if (cells) {
-		float base_m = cell_base_height_m(cell.origin_hm + cell_p, cell_hm);
+		float base_m = terrain_brush_live_height
+			? h * height_scale : cell_base_height_m(cell.origin_hm + cell_p, cell_hm);
 #ifdef TERRAIN_GRADED
 		var_cell_delta = cell_delta_m(cell, cell_p);
 		cell_delta_gradient_m = cell_delta_gradient(cell, cell_p);
@@ -616,6 +620,8 @@ float quad_mixed(float v) {
 	return edge + abs(dFdxFine(edge)) + abs(dFdyFine(edge));
 #endif
 }
+
+#include "res://scripts/shaders/terrain_brush.gdshaderinc"
 
 void fragment() {
 #ifdef TERRAIN_GRADED
@@ -1123,6 +1129,9 @@ void fragment() {
 		EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, vec3(0.0), vec3(0.0),
 			vec3(0.5, 0.5, 1.0), 1.0, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 #endif
+	}
+	if (terrain_brush_enabled && terrain_visual_debug_mode == 0 && !WATER_REFLECTION_UNDERSIDE) {
+		apply_terrain_brush(var_world_pos, ALBEDO, EMISSION);
 	}
 #ifdef TERRAIN_GRADED
 	if (cut) {

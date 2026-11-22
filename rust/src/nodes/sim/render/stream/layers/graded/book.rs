@@ -185,8 +185,9 @@ fn count_effect(counters: &mut frame::Counters, taken: &mut [i64], effect: &Effe
 
 // The patch material parameters whose change means a drawing set's materials must sync: the
 // textures and per-patch values `terrain.gd` swaps on commits, masks, water and overlays.
-const WATCHED: [&str; 8] = [
+const WATCHED: [&str; 9] = [
     "heightmap",
+    "terrain_brush_live_height",
     "terrain_mask_layer",
     "terrain_masks",
     "watermap",

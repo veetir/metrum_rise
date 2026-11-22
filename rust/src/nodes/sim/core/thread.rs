@@ -87,6 +87,8 @@ pub(crate) enum SimCommand {
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
+    /// Reapply the latest undone gameplay terrain stroke.
+    RedoTerrain,
     /// Delete one previously resolved building or road target on the simulation thread.
     Bulldoze {
         /// Immutable target token captured while the cursor still referenced the object.
@@ -216,7 +218,7 @@ pub(crate) fn run_sim_thread(
                     }
                     let _ = completion.try_send(());
                 }
-                Ok(SimCommand::Undo) => {
+                Ok(command @ (SimCommand::Undo | SimCommand::RedoTerrain)) => {
                     commands_processed += 1;
                     undo_commands += 1;
                     let road_snapshot = {
@@ -226,7 +228,11 @@ pub(crate) fn run_sim_thread(
                         record_crash_command_for_core(&core, CrashCommand::Undo);
                         record_crash_phase_for_core(&core, "undo command");
                         let generation_before = core.road_tool_surface_generation;
-                        if !core.undo_action_internal() {
+                        let restored = match command {
+                            SimCommand::Undo => core.undo_action_internal(),
+                            _ => core.redo_terrain_action_internal(),
+                        };
+                        if !restored {
                             None
                         } else if core.road_tool_surface_generation != generation_before {
                             record_crash_phase_for_core(&core, "undo network finalize");

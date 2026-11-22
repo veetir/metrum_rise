@@ -56,6 +56,15 @@ impl SurfaceView {
         self.terrain.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
     }
 
+    /// Raycasts the published source terrain without taking the simulation lock.
+    pub(crate) fn terrain_hit(
+        &self,
+        origin: godot::prelude::Vector3,
+        direction: godot::prelude::Vector3,
+    ) -> Option<godot::prelude::Vector3> {
+        self.terrain.raycast_terrain(origin, direction)
+    }
+
     /// The visible world-surface height, as `SimCore::get_world_surface_height_internal`: the
     /// road's where a road covers the point, else the graded ground. The graded query's own
     /// bound over the captured roadbed and sites (the index-free gather, as the road tool's
@@ -199,7 +208,7 @@ impl SimCore {
             vegetation_epoch: self.vegetation_edits.epoch(),
             coal_pit_overlay_revision: self.get_coal_pit_overlay_revision_internal(),
             growth: self.demand.growth_display_key(),
-            terrain_source_generation: self.heightmap.source_generation(),
+            terrain_source_generation: self.terrain_copy_key().1,
             roadbed_generation: self.transit_network.roadbed.generation(),
             terrain_inputs_site_revision: self.road_terrain_inputs.site_revision(),
             water_generation: self.watermap.render_generation(),
@@ -233,7 +242,13 @@ impl SimCore {
     /// generation. A replaced world may restart at an equal generation, so the key holds the
     /// epoch too (`ROAD-115`).
     pub(crate) fn terrain_copy_key(&self) -> (u64, u64) {
-        (self.world_epoch, self.heightmap.source_generation())
+        let generation = self
+            .game_terrain_stroke
+            .as_ref()
+            .map_or_else(|| self.heightmap.source_generation(), |stroke| {
+                stroke.published_source_generation
+            });
+        (self.world_epoch, generation)
     }
 
     /// The key a water copy is current for: the world epoch, the water's render generation and

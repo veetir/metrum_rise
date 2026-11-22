@@ -178,6 +178,7 @@ void vertex() {
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 #include "res://scripts/shaders/zoning_ground.gdshaderinc"
 #include "res://scripts/shaders/vegetation_brush.gdshaderinc"
+#include "res://scripts/shaders/terrain_brush.gdshaderinc"
 
 void fragment() {
 	// cull_disabled flips back-face normals before fragment(); keep the authored soft-up basis.
@@ -221,6 +222,13 @@ void fragment() {
 		// The root is constant along each blade. Fragment position gives the edge a derivative.
 		vec2 world_xz = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xz;
 		apply_vegetation_brush(world_xz, ALBEDO, EMISSION);
+	}
+
+	if (terrain_brush_enabled) {
+		// Use fragment XZ for the edge derivative and the blade's root for cut/fill.
+		vec3 world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		world.y = root_position.y + 0.025;
+		apply_terrain_brush(world, ALBEDO, EMISSION);
 	}
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);

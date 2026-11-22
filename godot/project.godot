@@ -22,6 +22,35 @@ window/stretch/mode="disabled"
 
 [shader_globals]
 
+terrain_brush_enabled={
+"type": "bool",
+"value": false
+}
+terrain_brush_grade={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+terrain_brush_protection={
+"type": "sampler2D",
+"value": ""
+}
+terrain_brush_protection_grid={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+terrain_brush_cursor={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+terrain_brush_ramp={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+terrain_brush_ramp_count={
+"type": "int",
+"value": 0
+}
+
 zoning_mask_enabled={
 "type": "bool",
 "value": false

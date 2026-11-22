@@ -21833,6 +21833,93 @@ Current deterministic rules:
 - the world-editor bottom toolbar is the primary authoring surface
 - a newly created blank world is dry and flat except for the authored base elevation
 
+### Gameplay terrain shaping
+
+**Y** opens Raise and lower. Pick a mode in the Terrain panel or cycle with **Shift + wheel**.
+**Ctrl + wheel** changes the diameter in 10 m steps from 20 to 200 m, starting at 60 m. **G**
+cycles Gentle, Normal and Strong. Raise and Lower move the centre by 3%, 10% and 30% of
+the diameter per second. Flatten, Ramp and Smooth reach the centre target in about 2.0,
+0.7 and 0.2 seconds. Right mouse inverts Raise and Lower. In Flatten, Smooth and Ramp it backs out one level instead: placed ramp anchors first, then back to Raise; selecting the active mode's button again does the same. Size, strength and mode persist
+for the session.
+
+Flatten holds the source height sampled at press. Smooth uses the pre-stroke heights in
+each sample's 3 × 3 neighbourhood. For Ramp, click A and B on the terrain, then drag.
+The target follows the grade between them and clamps at the ends. The label shows the
+target, anchor elevations and grade. Select Ramp again to reset the anchors.
+
+The shaders paint a disc on the world surface. The tint follows the tool's influence.
+Amber marks an active plain stroke, orange marks cut, and blue marks fill. Red marks
+source samples reserved by a road bed, building site, zoned lot, field or extraction area,
+with a one-sample interpolation margin. The brush edits every free sample and the
+label names the reserved kinds in the footprint. The stroke skips a fully protected
+footprint. Terrain beneath water is editable. Authored water fills are rebuilt on release.
+
+Release, Escape, tool changes, focus loss and leaving the world end the stroke. Each
+rendered pointer sample reaches Rust in order. Rust splits each pointer segment into dabs
+at most 1/240 s and a quarter-radius apart, applying the entire segment that frame. The raycast
+reads the source during the drag. The renderer uploads live heights for the patches
+touched since the previous frame. The installed textures carry those heights until the
+committed patch payloads are ready. Time per dab is proportional to the brush samples
+plus local protection queries when the mask moves. The live upload is proportional to
+the affected patch textures.
+
+Release updates local grading, zoning and entrances and rebuilds authored water when
+present. The world editor's terrain-authoring path explicitly re-grades the network.
+Gameplay leaves the authored graph and roadbed in place. The stroke stores the
+before-and-after source heights of its changed rectangle. On a 10 m grid a stationary
+stroke centred on a free sample stores 200 bytes of height data at 60 m diameter and
+2,888 bytes at 200 m. Ctrl+Z restores the rectangle and Ctrl+Shift+Z reapplies it. A new
+edit or an undo of another kind clears terrain redo history.
+
+The Phase 1 release probe on an Apple M2 Pro used the same paused test city and camera in Godot
+4.7.2 Forward+ (Metal, 1440 × 900, VSync off, `RAYON_NUM_THREADS=4`). A scripted pointer swept
+175 m in five seconds with Raise, 60 m diameter and 2 m/s strength. The control used the old
+immediate edit path at the matched diameter. Both runs started from the same saved terrain,
+three road edges, a power plant, a farm, a parking lot and an authored lake. The release
+builds were `2aadcc737` and the terrain-shaping worktree.
+
+| Wall time | Immediate edit | Batched stroke |
+|---|---:|---:|
+| Mean frame | 14.12 ms | 13.01 ms |
+| Max frame | 23.97 ms | 17.83 ms |
+| Mean brush call with preview or road-chunk update | 2.379 ms | 0.031 ms |
+| End-of-stroke call | Per-frame rebuild | 2.21 ms |
+
+The Phase 1 `./run.sh --timing --level F --base 2aadcc737 --workers 4` session used matched
+release test binaries and equal baseline snapshot keys. At 30k residents, the paired 32×
+mean was 4.89 → 4.82 ms and K22 click-to-ack was 7.16 → 7.26 ms. In the single 1× day per
+build, the mean was 2.79 → 2.68 ms and p99.9 was 6.82 → 8.47 ms. Both 1× runs missed the
+acceptance limit, with worst unpreempted frames of 57.95 and 58.49 ms. The 1× tail regression
+in this session remains unconfirmed by a repeat. The session report is at
+`$ARTIFACTS/level-f/summary.txt`.
+
+The round 2 probe used Godot 4.7.2 Forward+ on an M2 Pro at 1440 × 900, with VSync off
+and four Rayon workers. Each case swept 175 m in four seconds from the same save and camera.
+The script drove the Raise bridge directly with the preview hidden in both builds. The
+Phase 1 release library SHA-256 starts with `1f15346beaaf` and the round 2 release library with
+`6622cadec1f9`. The isolated run command is in `$ARTIFACTS/matched.py`, with the per-case records
+in `$ARTIFACTS/final-phase1.log` and `$ARTIFACTS/final-round2.log`.
+
+At 30 FPS the 200 m brush uploaded on 19 paused and 17 running frames
+in Phase 1 and on every sampled frame in round 2. At 200 m the mean live export and upload
+cost was 0.044–0.053 ms per frame, with a maximum of 0.11 ms. The longest capped frame
+was 34.31 ms in Phase 1 and 38.11 ms in round 2. The latter occurred in the 60 m running
+case. The synchronous release call took 1.95–2.36 ms in Phase 1 and 0.17–0.31 ms
+in round 2.
+
+A rendered probe with the disc visible found that shading across the whole screen and updating
+empty protection textures made the preview expensive. The preview now shades the footprint
+and Ramp guides and uploads a protection texture only where the mask is needed. At 30 FPS
+the visible probe averaged 33.33 ms. The 200 m, 1× case measured 34.15 ms at p99 and 34.31 ms
+maximum. In the paused 200 m case a live ray query waited about 34 ms for the core and the
+frame took 51.35 ms. The strict capped frame target remains open. The trace is in
+`$ARTIFACTS/visible-trace.log`.
+
+The round 2 Level F session against `2aadcc737` used four workers and equal 30k snapshot keys.
+Both control and branch missed the 30k 1× tail limit. Branch p99 was 5.08 ms across two runs
+against 4.86 ms for the control. At 32× mean frame time was 4.91 → 5.02 ms and p99 was
+8.50 → 8.19 ms. See `$ARTIFACTS/level-f-final/summary.txt`.
+
 ### 2. WorldEditor V1 Terrain And Water Authoring Is Live
 
 The current world editor uses the shared `SimulationNode` runtime but does not expose gameplay

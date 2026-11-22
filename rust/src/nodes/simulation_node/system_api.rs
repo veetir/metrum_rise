@@ -40,6 +40,16 @@ impl SimulationNode {
         true
     }
 
+    /// Queues redo of the latest undone gameplay terrain stroke.
+    #[func]
+    pub fn redo_terrain_action(&mut self) -> bool {
+        if self.cmd_tx.send(SimCommand::RedoTerrain).is_err() {
+            return false;
+        }
+        self.lock_terrain_patch_payload_jobs().clear();
+        true
+    }
+
     /// Test hook (`CODE-25`): the simulation thread holds the core, as a long frame would,
     /// until a call waits for it or `max_ms` passes. Returns once the core is held (true), or
     /// false if the simulation thread did not take it within `max_ms`. Tests use it to show

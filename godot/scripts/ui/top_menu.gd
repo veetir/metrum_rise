@@ -503,16 +503,22 @@ func _on_help_menu_pressed(id: int) -> void:
 					"O  Roundabout tool ([ and ] size)",
 					"Z  Zoning tool",
 					"V  Select tool",
-					"Y  Terrain sculpt",
+					"Y  Terrain shaping",
+					"Shift + wheel  Cycle terrain modes",
+					"Ctrl + wheel  Resize terrain brush",
+					"G  Cycle terrain brush strength",
+					"Right Mouse  Invert Raise / Lower",
+					"Ramp  Set A and B, then drag",
 					"Space  Pause / unpause",
 					"Escape  Cancel active tool",
 					"Ctrl+S  Save",
 					"Ctrl+L  Load",
 					"Ctrl+Z  Undo",
+					"Ctrl+Shift+Z  Redo terrain stroke",
 					"F12  +1000000 money and enable private growth cheat",
 					"7 / 8 / 9 / 0 / -  Overlay modes"
 				],
-				Vector2i(380, 340)
+				Vector2i(440, 500)
 			))
 		ActionId.HELP_ABOUT:
 			_open_window(_ensure_text_window(
