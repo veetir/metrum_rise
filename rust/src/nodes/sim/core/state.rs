@@ -288,6 +288,11 @@ pub struct SimCore {
     pub(crate) game_terrain_stroke: Option<crate::nodes::sim::editing::GameTerrainStroke>,
     /// Reusable local protection mask, also consumed by the gameplay brush preview.
     pub(crate) terrain_brush_protection: crate::nodes::sim::editing::TerrainProtection,
+    /// Whether gameplay strokes leave road beds free and move the roads with the ground at
+    /// release ("Roads follow"); off by default, so roads are protected.
+    pub(crate) game_terrain_roads_follow: bool,
+    /// Why the last released gameplay stroke was undone, for the brush to show once.
+    pub(crate) game_terrain_rejection: Option<&'static str>,
     /// True once the active terrain brush stroke has applied at least one terrain mutation.
     pub(crate) terrain_stroke_has_changes: bool,
     /// Set by terrain mutations until Godot acknowledges the exact dirty patch revisions.
@@ -483,6 +488,8 @@ impl SimCore {
             terrain_stroke_active: false,
             game_terrain_stroke: None,
             terrain_brush_protection: Default::default(),
+            game_terrain_roads_follow: false,
+            game_terrain_rejection: None,
             terrain_stroke_has_changes: false,
             terrain_dirty: true,
             water_dirty: true,

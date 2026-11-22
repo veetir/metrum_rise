@@ -40,6 +40,7 @@ var _tool: Node
 var _sculpt_button: Button
 var _sculpt_modes: HBoxContainer
 var _sculpt_mode_buttons: Array[Button] = []
+var _roads_follow_button: Button
 var _remove_button: Button
 var _group_buttons: Dictionary = {}
 var _option_buttons: Dictionary = {}
@@ -77,6 +78,12 @@ func build(input_manager: Node) -> void:
 		button.pressed.connect(_on_sculpt_mode_pressed.bind(i))
 		_sculpt_modes.add_child(button)
 		_sculpt_mode_buttons.append(button)
+	_sculpt_modes.add_child(VSeparator.new())
+	_roads_follow_button = HudIcons.icon_button("road", "Roads follow",
+		"Let the brush move roads: they follow the new ground when you release, within the road grade limits", 42.0)
+	_roads_follow_button.toggle_mode = true
+	_roads_follow_button.pressed.connect(_on_roads_follow_pressed)
+	_sculpt_modes.add_child(_roads_follow_button)
 	_sculpt_modes.hide()
 	categories.add_child(VSeparator.new())
 	for group in GROUPS:
@@ -123,6 +130,7 @@ func refresh_marks() -> void:
 	_sculpt_modes.visible = sculpting
 	for i in _sculpt_mode_buttons.size():
 		HudIcons.mark(_sculpt_mode_buttons[i], i == _input_manager.terrain_brush.mode)
+	HudIcons.mark(_roads_follow_button, _input_manager.terrain_brush.roads_follow)
 	if sculpting:
 		_close_group()
 	HudIcons.mark(_remove_button, current == InputManager.Tool.VEGETATION and _tool.mode == VegetationTool.Mode.REMOVE)
@@ -177,6 +185,11 @@ func _on_sculpt_mode_pressed(index: int) -> void:
 		brush.step_back()
 	else:
 		brush.select_mode(index)
+	refresh_marks()
+
+func _on_roads_follow_pressed() -> void:
+	var brush: Node = _input_manager.terrain_brush
+	brush.set_roads_follow(not brush.roads_follow)
 	refresh_marks()
 
 # A category opens with its option planting: the tool's own option when it is in the category,

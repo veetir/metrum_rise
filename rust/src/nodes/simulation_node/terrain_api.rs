@@ -153,14 +153,42 @@ impl SimulationNode {
         patches
     }
 
-    /// Finalizes a gameplay stroke and publishes the committed payload revisions.
+    /// Finalizes a gameplay stroke and publishes the committed payload revisions, and the
+    /// moved roads' render chunks when "Roads follow" moved any (`ROAD-121`).
     #[func]
     pub fn end_game_terrain_stroke(&mut self) -> bool {
-        let changed = self.lock_core().finish_game_terrain_stroke();
+        let (changed, publication) = {
+            let mut core = self.lock_core();
+            let generation_before = core.road_tool_surface_generation;
+            let changed = core.finish_game_terrain_stroke();
+            let publication = (core.road_tool_surface_generation != generation_before)
+                .then(|| core.finalize_network_render_products())
+                .flatten();
+            (changed, publication)
+        };
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
         if changed {
             self.refresh_snapshot_from_core();
         }
         changed
+    }
+
+    /// Sets "Roads follow": while on, gameplay strokes leave road beds free and move the roads
+    /// under them with the ground at release, within the road grade rule.
+    #[func]
+    pub fn set_game_terrain_roads_follow(&mut self, enabled: bool) {
+        self.lock_core().game_terrain_roads_follow = enabled;
+    }
+
+    /// Why the last released stroke was undone, once; empty when it stood.
+    #[func]
+    pub fn take_game_terrain_rejection(&mut self) -> GString {
+        self.lock_core()
+            .game_terrain_rejection
+            .take()
+            .map_or_else(GString::new, GString::from)
     }
 
     /// The terrain payload generation a live brush texture hands off to after release.
