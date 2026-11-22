@@ -21683,7 +21683,9 @@ Current deterministic rules:
 **Ctrl + wheel** changes the diameter in 10 m steps from 20 to 200 m, starting at 60 m. **G**
 cycles Gentle, Normal and Strong. Raise and Lower move the centre by 3%, 10% and 30% of
 the diameter per second. Flatten, Ramp and Smooth reach the centre target in about 2.0,
-0.7 and 0.2 seconds. Right mouse inverts Raise and Lower. In Flatten, Smooth and Ramp it backs out one level instead: placed ramp anchors first, then back to Raise; selecting the active mode's button again does the same. Size, strength and mode persist
+0.7 and 0.2 seconds. Right mouse inverts Raise and Lower and does nothing in the other modes. Escape in Flatten,
+Smooth and Ramp backs out one level: placed ramp anchors first, then back to Raise; Escape in
+Raise or Lower closes the brush. Selecting the active mode's button again also backs out. Size, strength and mode persist
 for the session.
 
 Flatten holds the source height sampled at press; pressed on a building's pad or paved yard,

@@ -457,7 +457,11 @@ func _handle_escape():
 		building_inspector.close_window()
 		get_viewport().set_input_as_handled()
 		return
-	if current_tool != Tool.NONE:
+	if current_tool == Tool.SCULPT and terrain_brush.can_step_back():
+		# Escape backs out of Flatten, Smooth or Ramp to Raise before it closes the brush.
+		terrain_brush.step_back()
+		get_viewport().set_input_as_handled()
+	elif current_tool != Tool.NONE:
 		_cancel_active_tool()
 	elif agent_inspector and agent_inspector.end_inspection():
 		get_viewport().set_input_as_handled()
