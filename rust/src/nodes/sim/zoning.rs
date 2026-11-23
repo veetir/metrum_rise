@@ -22,6 +22,69 @@ pub(crate) struct CellToolPreview {
 }
 
 impl SimCore {
+    /// Re-evaluates only edited/new lots at their publication boundary. The asset list is
+    /// shared across the release; independent solves run on the existing Rayon pool.
+    pub(crate) fn refresh_dirty_lot_yards(&mut self) {
+        use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
+        use rayon::prelude::*;
+        if self.cell_lots_pending() {
+            return;
+        }
+        let margin = crate::simulation::buildings::allocator::site_feasibility_dependency_margin_m(
+            &self.heightmap,
+        );
+        for bounds in self.lot_yard_changes.drain(..) {
+            self.zoning.parcels.mark_yards_in_bounds(
+                godot::prelude::Vector2::new(bounds[0] as f32 - margin, bounds[1] as f32 - margin),
+                godot::prelude::Vector2::new(bounds[2] as f32 + margin, bounds[3] as f32 + margin),
+            );
+        }
+        let ids = self.zoning.parcels.take_dirty_yards();
+        if ids.is_empty() {
+            return;
+        }
+        let assets = self
+            .allocator
+            .collect_spawn_asset_candidates_by_profile(&self.zoning, self.demand.runtime_catalog());
+        let results: Vec<_> = crate::thread_pools::install(|| {
+            ids.par_iter()
+                .map(|&id| {
+                    let yard = self.zoning.parcels.get(id).and_then(|p| {
+                        if let Some(index) = p.occupied_building() {
+                            return self
+                                .allocator
+                                .building_sites
+                                .get(index)
+                                .map(|s| s.yard.clone());
+                        }
+                        (p.zone_profile_runtime_id() != 0).then(|| {
+                            self.allocator.evaluate_lot_yard(
+                                p,
+                                &self.zoning,
+                                &self.region_graph,
+                                assets.get(&p.zone_profile_runtime_id()),
+                                BuildingSiteEnvironment {
+                                    terrain: &self.heightmap,
+                                    road_surface: &self.transit_network.roadbed,
+                                },
+                            )
+                        })
+                    });
+                    (id, yard)
+                })
+                .collect()
+        });
+        for (id, yard) in results {
+            self.zoning.parcels.set_yard(id, yard);
+        }
+    }
+
+    /// Marks contact dependencies using the existing parcel chunk index, including fixed-road
+    /// grading rays and terrain interpolation support. O(touched chunks + local parcels).
+    pub(crate) fn mark_lot_yards_in_bounds(&mut self, bounds: [f64; 4]) {
+        self.lot_yard_changes.push(bounds);
+    }
+
     /// Tests the visible chunk against the current world without preparing derived queries.
     pub(crate) fn cell_chunk_in_world(&self, chunk: (i32, i32)) -> bool {
         let bounds = CellStore::chunk_bounds(chunk);
@@ -207,6 +270,8 @@ impl SimCore {
         // empty lots never reuse their ids, so editing needs no scan of the city's queue.
         self.allocator.dirty = true;
         self.push_cell_zoning_undo(edit);
+        self.prepare_released_cell_lots(&selection.cells);
+        self.refresh_dirty_lot_yards();
         true
     }
 
@@ -227,6 +292,9 @@ impl SimCore {
             return false;
         }
         self.allocator.dirty = true;
+        let cells: Vec<_> = edit.paint.previous.iter().map(|&(key, _)| key).collect();
+        self.prepare_released_cell_lots(&cells);
+        self.refresh_dirty_lot_yards();
         true
     }
 
@@ -247,6 +315,11 @@ impl SimCore {
                 corners,
             )
         })
+    }
+
+    fn prepare_released_cell_lots(&mut self, cells: &[crate::simulation::zoning::cells::CellKey]) {
+        let mut regions = self.zoning.cell_release_regions(cells).into_iter();
+        self.regenerate_cell_lot_regions(|_| regions.next());
     }
 
     /// Rebuilds every queued painted neighborhood at once and installs asset-sized lots for
@@ -331,6 +404,7 @@ impl SimCore {
         if !result.created.is_empty() || !result.retired.is_empty() {
             self.allocator.dirty = true;
         }
+        self.refresh_dirty_lot_yards();
         if let Some(inherited) = result.inherited.take() {
             self.record_inherited_paint(inherited);
         }

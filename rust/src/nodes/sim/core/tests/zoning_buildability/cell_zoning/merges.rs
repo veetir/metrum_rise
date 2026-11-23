@@ -22,7 +22,10 @@ fn occupied_cells_survive_native_node_merge_regeneration_and_undo() {
             &[u * 96.0 + v * 30.0],
         );
         assert!(core.apply_cell_selection_internal(&clear, 0));
-        assert!(!core.prepare_cell_lots_internal().created.is_empty());
+        assert!(
+            !core.zoning.parcels().is_empty(),
+            "paint release already derives lots"
+        );
         let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
             &core.zoning,
             &core.region_graph,

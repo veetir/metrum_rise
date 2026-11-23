@@ -15,6 +15,8 @@ mod lifecycle;
 mod placement;
 mod production_changes;
 mod site;
+pub(crate) use site::grading::{LotYard, YardVerdict};
+pub(crate) use site::site_feasibility_dependency_margin_m;
 pub(crate) mod yard;
 
 #[cfg(test)]

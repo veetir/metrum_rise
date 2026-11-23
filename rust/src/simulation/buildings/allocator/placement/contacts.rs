@@ -5,14 +5,14 @@
 use super::*;
 use crate::simulation::buildings::allocator::entrance::building_local_xz_basis;
 use crate::simulation::buildings::allocator::site::grading::{
-    StreetContactIssue, site_support_intervals, fixed_road_issue, FRONTAGE_BANK_MAX_M,
-    BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M, SiteRoads, frontage_road_surface_sample,
-    entrance_road_surface_sample, visit_footprint_grading_rays,
-    building_site_surface_tie_in,
+    BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M, FRONTAGE_BANK_MAX_M, HARD_CONTACT_DIFFERENCE_M,
+    HARD_FRONTAGE_BANK_M, SiteRoads, StreetContactIssue, YardAssessment, YardVerdict,
+    entrance_road_surface_sample, frontage_road_surface_sample, measure_site_tie_in,
+    site_support_intervals, visit_footprint_grading_rays,
 };
 use crate::simulation::network::roadbed::CURB_STEP_HEIGHT_M;
 use crate::simulation::parking::ground::{
-    DRIVE_GRADE, MAX_GRADE_CHANGE, WINDOW_M, spot_issue, way_issue, way_constraint,
+    DRIVE_GRADE, MAX_GRADE_CHANGE, WINDOW_M, measure_way, spot_issue, way_issue,
 };
 use crate::simulation::parking::validation::ProofClass;
 use crate::simulation::terrain::graded::{
@@ -51,26 +51,24 @@ fn issue(
     limit: f32,
     unit: &'static str,
 ) -> DemandSpawnPlacementRejection {
-    DemandSpawnPlacementRejection::StreetContactInvalid(StreetContactIssue {
-        constraint,
-        measured: (measured * 100.0).round() as u32,
-        limit: (limit * 100.0).round() as u32,
-        unit,
-    })
+    DemandSpawnPlacementRejection::StreetContactInvalid(StreetContactIssue::new(
+        constraint, measured, limit, unit,
+    ))
 }
 
 // Adjacent supported yards must join continuously. Along a common boundary the bank envelope
 // is piecewise affine, so the union of both sets of arm crossings proves the entire join;
 // sampling every few metres would miss a short bank near a landing. Local indexed neighbours
 // only; O(shared edges × (P² + Q² + P log P + Q log Q)), P/Q the two level hull corner counts.
-fn yard_join_issue(
+fn yard_join_difference(
     terrace: &SiteTerrace,
     floor: f32,
     neighbor: &super::super::site::BuildingSiteClient,
     breaks: &mut Vec<f64>,
     other_breaks: &mut Vec<f64>,
     lines: &mut Vec<[f64; 3]>,
-) -> Option<DemandSpawnPlacementRejection> {
+) -> Option<f32> {
+    let mut maximum = 0.0_f32;
     let other = neighbor.terraces.first();
     let polygon = other.map_or(neighbor.footprint_world.as_slice(), |t| {
         t.footprint_world.as_slice()
@@ -107,35 +105,11 @@ fn yard_join_issue(
                 let p = p.lerp(q, t as f32);
                 let h = terrace.height_at(f64::from(p.x), f64::from(p.y), floor) as f32;
                 let difference = (h - neighbor.ground_height(p)).abs();
-                if difference > 0.0001 {
-                    return Some(issue("neighbour yard join", difference, 0.0001, "m"));
-                }
+                maximum = maximum.max(difference);
             }
         }
     }
-    None
-}
-
-fn height_interval_issue(
-    intervals: &[(f32, f32)],
-    constraints: &[(f32, f32, DemandSpawnPlacementRejection)],
-) -> DemandSpawnPlacementRejection {
-    for &(height, budget, reason) in constraints {
-        let required = intervals
-            .iter()
-            .map(|&(a, b)| (height - height.clamp(a, b)).abs())
-            .fold(f32::INFINITY, f32::min);
-        if required > budget + 0.0001
-            && let DemandSpawnPlacementRejection::StreetContactInvalid(mut issue) = reason
-        {
-            issue.measured = (required / budget.max(0.0001) * issue.limit as f32).round() as u32;
-            return DemandSpawnPlacementRejection::StreetContactInvalid(issue);
-        }
-    }
-    // Individually feasible contacts can jointly occupy a gap between soft-terrain intervals.
-    // In that case no single contact limit is violated: name the grading envelope, not a
-    // fictitious bank/entrance excess measured at the old preferred height.
-    DemandSpawnPlacementRejection::SiteSupportTieInInvalid
+    (maximum > 0.0001).then_some(maximum)
 }
 
 fn pad_contact(point: Vector2, inward: Vector2, footprint: &[Vector2]) -> Option<(Vector2, f32)> {
@@ -192,7 +166,7 @@ impl BuildingAllocator {
         taken: &[usize],
         graph: &RegionGraph,
         environment: BuildingSiteEnvironment<'_>,
-    ) -> Result<f32, DemandSpawnPlacementRejection> {
+    ) -> Result<(f32, YardAssessment), DemandSpawnPlacementRejection> {
         let roads = environment.road_surface;
         let terrain = environment.terrain;
         let entry = self
@@ -222,6 +196,7 @@ impl BuildingAllocator {
                 taken,
             )?
         };
+        let neighbor_interval = (low, high);
         let mut binding = DemandSpawnPlacementRejection::SiteSupportTieInInvalid;
         let mut constraints = Vec::new();
         let mut driveways = Vec::new();
@@ -240,18 +215,9 @@ impl BuildingAllocator {
             |height: f32, budget: f32, reason| -> Result<(), DemandSpawnPlacementRejection> {
                 let a = low.max(height - budget);
                 let b = high.min(height + budget);
-                if a > b + 0.0001 {
-                    let required = (height - height.clamp(low, high)).abs();
-                    if let DemandSpawnPlacementRejection::StreetContactInvalid(mut issue) = reason {
-                        issue.measured =
-                            (required / budget.max(0.0001) * issue.limit as f32).round() as u32;
-                        return Err(DemandSpawnPlacementRejection::StreetContactInvalid(issue));
-                    }
-                    return Err(reason);
-                }
                 constraints.push((height, budget, reason));
                 low = a;
-                high = b.max(a);
+                high = b;
                 binding = reason;
                 Ok(())
             };
@@ -428,15 +394,12 @@ impl BuildingAllocator {
         );
         base.sort_unstable_by(f32::total_cmp);
         candidates.push(base[base.len() / 2]);
-        let intervals = if footprint.is_empty() {
+        // A committed floor is measured directly below; it never projects into Good intervals.
+        // Avoid constructing the same ray intervals only to discard them for this one candidate.
+        let intervals = if footprint.is_empty() || placement.replaced_building.is_some() {
             vec![(f32::NEG_INFINITY, f32::INFINITY)]
         } else {
-            site_support_intervals(footprint, terrain, graph, roads).ok_or_else(|| {
-                fixed_road_issue(footprint, roads).map_or(
-                    DemandSpawnPlacementRejection::SiteSupportTieInInvalid,
-                    DemandSpawnPlacementRejection::StreetContactInvalid,
-                )
-            })?
+            site_support_intervals(footprint, terrain, graph, roads).unwrap_or_default()
         };
         let feasible: Vec<_> = intervals
             .iter()
@@ -447,25 +410,30 @@ impl BuildingAllocator {
                 (a <= b + 0.0001).then_some((a, b.max(a)))
             })
             .collect();
-        if feasible.is_empty() {
-            return Err(height_interval_issue(&intervals, &constraints));
-        }
         if placement.replaced_building.is_some() {
-            // A replacement validates all contacts on the stored floor, never selects a new one.
-            if !feasible.iter().any(|&(a, b)| {
-                placement.support_height_m >= a - 0.0001 && placement.support_height_m <= b + 0.0001
-            }) {
-                return Err(height_interval_issue(
-                    &[(placement.support_height_m, placement.support_height_m)],
-                    &constraints,
-                ));
-            }
             candidates.clear();
             candidates.push(placement.support_height_m);
+        } else {
+            let projected: Vec<_> = candidates
+                .iter()
+                .filter_map(|&candidate| {
+                    feasible
+                        .iter()
+                        .map(|&(a, b)| candidate.clamp(a, b))
+                        .min_by(|a, b| {
+                            (a - candidate)
+                                .abs()
+                                .total_cmp(&(b - candidate).abs())
+                                .then(a.total_cmp(b))
+                        })
+                })
+                .collect();
+            candidates.extend(projected);
         }
         let (structure_world, vehicle_structure_world) =
             super::super::site::site_structure_footprints(&entry.manifest.mesh_parts, world);
         let site = super::super::site::BuildingSiteClient {
+            yard: Default::default(),
             terraces: terrace.cloned().into_iter().collect(),
             footprint_world: yard_footprint.to_vec(),
             lot_footprint_world: self.placement_site_corners(placement),
@@ -488,33 +456,42 @@ impl BuildingAllocator {
             vehicle_structure_world,
             planting_world: Vec::new(),
         };
-        let geometry = crate::simulation::parking::lots::lot_proof_at(
-            self,
-            crate::simulation::parking::lots::LotPose {
-                asset_id: &placement.asset_id,
-                center: placement.center_2d,
-                facing_dir: placement.facing_dir,
-                edge_idx: placement.edge_idx,
-                side: placement.side,
-                width_cells: placement.width_cells as u16,
-                depth_cells: placement.depth_cells as u16,
-            },
-            &site,
-            graph,
-            roads,
-            false,
-            |class, foot| {
-                crate::simulation::parking::geometry::structure_collision_for_site(
-                    self,
-                    class,
-                    foot,
-                    placement.replaced_building,
-                    taken,
-                    Some(&site),
-                )
-            },
-            |_| 0.0,
-        );
+        // A stored floor is never scored by optional bay count. Without freight anchors the
+        // proof's dock/dock-way collections are empty by contract, so no geometry product is
+        // consumed here; D independently reproves parking in this same publication.
+        let geometry = if placement.replaced_building.is_some()
+            && !crate::simulation::parking::lots::has_freight_anchors(&entry.manifest.anchors)
+        {
+            crate::simulation::parking::lots::LotProof::default()
+        } else {
+            crate::simulation::parking::lots::lot_proof_at(
+                self,
+                crate::simulation::parking::lots::LotPose {
+                    asset_id: &placement.asset_id,
+                    center: placement.center_2d,
+                    facing_dir: placement.facing_dir,
+                    edge_idx: placement.edge_idx,
+                    side: placement.side,
+                    width_cells: placement.width_cells as u16,
+                    depth_cells: placement.depth_cells as u16,
+                },
+                &site,
+                graph,
+                roads,
+                false,
+                |class, foot| {
+                    crate::simulation::parking::geometry::structure_collision_for_site(
+                        self,
+                        class,
+                        foot,
+                        placement.replaced_building,
+                        taken,
+                        Some(&site),
+                    )
+                },
+                |_| 0.0,
+            )
+        };
         candidates.sort_unstable_by(f32::total_cmp);
         candidates.dedup_by(|a, b| a.to_bits() == b.to_bits());
         let dock_paths: Vec<Vec<Vector2>> = geometry
@@ -540,22 +517,39 @@ impl BuildingAllocator {
         // Each candidate checks local grading/contact rays, exact shared-bank joins and D's
         // wheel/half-metre way samples. The owning Part C cost contract includes the level hull
         // corners in those query bounds. Geometric bay proofs are built once above; no tick solve.
-        let mut best: Option<(usize, f32, f32)> = None;
+        let mut best: Option<(YardVerdict, f32, usize, f32, f32, YardAssessment)> = None;
         let mut previous_height = None;
         let mut join_breaks = Vec::new();
         let mut other_join_breaks = Vec::new();
         let mut join_lines = Vec::new();
         for candidate in candidates {
-            let height = feasible
-                .iter()
-                .map(|&(a, b)| candidate.clamp(a, b))
-                .min_by(|a, b| {
-                    (a - candidate)
-                        .abs()
-                        .total_cmp(&(b - candidate).abs())
-                        .then(a.total_cmp(b))
-                })
-                .unwrap();
+            let height = if placement.replaced_building.is_some() {
+                candidate
+            } else {
+                candidate.clamp(neighbor_interval.0, neighbor_interval.1)
+            };
+            let mut assessment = YardAssessment::default();
+            for &(target, budget, reason) in &constraints {
+                if let DemandSpawnPlacementRejection::StreetContactInvalid(reason) = reason {
+                    let rise = (height - target).abs();
+                    let limit = reason.limit as f32 / 100.0;
+                    assessment.measure(
+                        reason.constraint,
+                        rise / budget.max(0.0001) * limit,
+                        limit,
+                        reason.unit,
+                        rise > HARD_CONTACT_DIFFERENCE_M,
+                    );
+                    if rise > HARD_CONTACT_DIFFERENCE_M {
+                        assessment.hard_issue = Some(StreetContactIssue::new(
+                            "road-to-floor height difference",
+                            rise,
+                            HARD_CONTACT_DIFFERENCE_M,
+                            "m",
+                        ));
+                    }
+                }
+            }
             if previous_height == Some(height.to_bits()) {
                 continue;
             }
@@ -563,74 +557,81 @@ impl BuildingAllocator {
             if let Some(terrace) = &terrace {
                 let yard_height =
                     |p: Vector2| terrace.height_at(f64::from(p.x), f64::from(p.y), height) as f32;
-                let join = neighbors
+                for &i in neighbors
                     .iter()
                     .filter(|&&i| taken.binary_search_by(|probe| i.cmp(probe)).is_err())
-                    .find_map(|&i| {
-                        yard_join_issue(
-                            terrace,
-                            height,
-                            &self.building_sites[i],
-                            &mut join_breaks,
-                            &mut other_join_breaks,
-                            &mut join_lines,
-                        )
-                    });
-                if let Some(reason) = join {
-                    binding = reason;
-                    continue;
+                {
+                    if let Some(difference) = yard_join_difference(
+                        terrace,
+                        height,
+                        &self.building_sites[i],
+                        &mut join_breaks,
+                        &mut other_join_breaks,
+                        &mut join_lines,
+                    ) {
+                        assessment.measure(
+                            "neighbour yard join",
+                            difference,
+                            0.0001,
+                            "m",
+                            difference > HARD_CONTACT_DIFFERENCE_M,
+                        );
+                    }
                 }
-                if let Some(&(p, road)) = yard_banks.iter().find(|&&(p, road)| {
-                    (yard_height(p) - road).abs() > FRONTAGE_BANK_MAX_M + 0.0001
-                }) {
-                    binding = issue(
+                for &(p, road) in &yard_banks {
+                    let rise = (yard_height(p) - road).abs();
+                    assessment.measure(
                         "frontage bank",
-                        (yard_height(p) - road).abs(),
+                        rise,
                         FRONTAGE_BANK_MAX_M,
                         "m",
+                        rise > HARD_FRONTAGE_BANK_M,
                     );
-                    continue;
                 }
-                let mut refused = false;
                 for &(p, length, road) in &yard_drives {
                     let rise = (yard_height(p) - road).abs();
-                    if rise > DRIVE_GRADE * length + 0.0001 {
-                        binding = issue(
-                            "Driveway grade",
-                            rise / length.max(0.001) * 100.0,
-                            DRIVE_GRADE * 100.0,
-                            "%",
-                        );
-                        refused = true;
-                        break;
-                    }
-                    if rise > MAX_GRADE_CHANGE * length.max(WINDOW_M) + 0.0001 {
-                        binding = issue(
-                            "Driveway grade change per wheelbase",
-                            rise / length.max(WINDOW_M) * 100.0,
-                            MAX_GRADE_CHANGE * 100.0,
-                            "percentage points",
-                        );
-                        refused = true;
-                        break;
-                    }
+                    assessment.measure(
+                        "Driveway grade",
+                        rise / length.max(0.001) * 100.0,
+                        DRIVE_GRADE * 100.0,
+                        "%",
+                        false,
+                    );
+                    assessment.measure(
+                        "Driveway grade change per wheelbase",
+                        rise / length.max(WINDOW_M) * 100.0,
+                        MAX_GRADE_CHANGE * 100.0,
+                        "percentage points",
+                        false,
+                    );
+                    assessment.measure(
+                        "driveway road-to-yard height difference",
+                        rise,
+                        HARD_CONTACT_DIFFERENCE_M,
+                        "m",
+                        rise > HARD_CONTACT_DIFFERENCE_M,
+                    );
                 }
-                if refused {
-                    continue;
-                }
-                if let Err(reason) = building_site_surface_tie_in(
+                measure_site_tie_in(
                     &terrace.footprint_world,
                     yard_height,
                     terrain,
                     graph,
                     roads,
-                ) {
-                    binding = reason.map_or(
-                        DemandSpawnPlacementRejection::SiteSupportTieInInvalid,
-                        DemandSpawnPlacementRejection::StreetContactInvalid,
-                    );
-                    continue;
-                }
+                    &mut assessment,
+                );
+            }
+            measure_site_tie_in(
+                footprint,
+                |_| height,
+                terrain,
+                graph,
+                roads,
+                &mut assessment,
+            );
+            if let Some(reason) = assessment.hard_issue {
+                binding = DemandSpawnPlacementRejection::StreetContactInvalid(reason);
+                continue;
             }
             let sites = CandidateSite {
                 allocator: self,
@@ -648,7 +649,6 @@ impl BuildingAllocator {
             };
             let mut scratch = QueryScratch::default();
             let mut block = LatticeBlock::default();
-            let mut drive_issue = None;
             for path in driveways
                 .iter()
                 .map(|path| path.as_slice())
@@ -662,55 +662,69 @@ impl BuildingAllocator {
                         &mut scratch,
                     ) as f32
                 };
-                if let Some(measured) = way_constraint(path, roads, &mut sample) {
-                    drive_issue = Some(issue(
-                        measured.name,
-                        measured.measured,
-                        measured.limit,
-                        measured.unit,
-                    ));
-                    break;
-                }
+                measure_way(path, roads, &mut sample, |name, measured, limit, unit| {
+                    assessment.measure(
+                        name,
+                        measured,
+                        limit,
+                        unit,
+                        unit == "m" && measured > HARD_CONTACT_DIFFERENCE_M,
+                    );
+                });
             }
-            if let Some(reason) = drive_issue {
-                binding = reason;
+            if let Some(reason) = assessment.hard_issue {
+                binding = DemandSpawnPlacementRejection::StreetContactInvalid(reason);
                 continue;
             }
-            let refused = geometry
-                .bays
-                .iter()
-                .filter(|(_, bay)| {
-                    let pos = Vector2::new(bay.position[0], bay.position[2]);
-                    let anchor = &entry.manifest.anchors[bay.identity[1] as usize];
-                    let forward = (bx * anchor.forward[0] + bz * anchor.forward[2]).normalized();
-                    let path = bay.path.map(|p| Vector2::new(p[0], p[1]));
-                    let mut sample = |p: Vector2| {
-                        surface.surface_height_in_block(
-                            p.x as f64,
-                            p.y as f64,
-                            &mut block,
-                            &mut scratch,
-                        ) as f32
-                    };
-                    spot_issue(ProofClass::Car, pos, forward, &mut sample)
-                        .or_else(|| way_issue(&path, roads, &mut sample))
-                        .is_some()
-                })
-                .count();
+            let refused = if placement.replaced_building.is_some() {
+                0
+            } else {
+                geometry
+                    .bays
+                    .iter()
+                    .filter(|(_, bay)| {
+                        let pos = Vector2::new(bay.position[0], bay.position[2]);
+                        let anchor = &entry.manifest.anchors[bay.identity[1] as usize];
+                        let forward =
+                            (bx * anchor.forward[0] + bz * anchor.forward[2]).normalized();
+                        let path = bay.path.map(|p| Vector2::new(p[0], p[1]));
+                        let mut sample = |p: Vector2| {
+                            surface.surface_height_in_block(
+                                p.x as f64,
+                                p.y as f64,
+                                &mut block,
+                                &mut scratch,
+                            ) as f32
+                        };
+                        spot_issue(ProofClass::Car, pos, forward, &mut sample)
+                            .or_else(|| way_issue(&path, roads, &mut sample))
+                            .is_some()
+                    })
+                    .count()
+            };
             let cut_fill = base.iter().map(|b| (height - b).abs()).sum::<f32>();
-            let score = (refused, cut_fill, height);
-            if best.is_none_or(|old| {
+            let score = (
+                assessment.verdict,
+                assessment.excess,
+                refused,
+                cut_fill,
+                height,
+                assessment,
+            );
+            if best.as_ref().is_none_or(|old| {
                 score
                     .0
                     .cmp(&old.0)
                     .then(score.1.total_cmp(&old.1))
-                    .then(score.2.total_cmp(&old.2))
+                    .then(score.2.cmp(&old.2))
+                    .then(score.3.total_cmp(&old.3))
+                    .then(score.4.total_cmp(&old.4))
                     .is_lt()
             }) {
                 best = Some(score);
             }
         }
-        best.map(|s| s.2).ok_or(binding)
+        best.map(|s| (s.4, s.5)).ok_or(binding)
     }
 }
 
@@ -718,6 +732,7 @@ impl BuildingAllocator {
 mod tests {
     use super::*;
     use crate::assets::AssetManifest;
+    use crate::simulation::buildings::allocator::site::grading::building_site_surface_tie_in;
     use crate::simulation::network::roadbed::fixtures::road_edge;
     use crate::simulation::network::types::NodeType;
 
@@ -735,7 +750,7 @@ mod tests {
         width: usize,
         grade: f32,
         rear: Option<f32>,
-    ) -> Result<f32, DemandSpawnPlacementRejection> {
+    ) -> Result<YardAssessment, DemandSpawnPlacementRejection> {
         lot_with_rear_door(width, grade, rear, false)
     }
 
@@ -744,7 +759,7 @@ mod tests {
         grade: f32,
         rear: Option<f32>,
         rear_door: bool,
-    ) -> Result<f32, DemandSpawnPlacementRejection> {
+    ) -> Result<YardAssessment, DemandSpawnPlacementRejection> {
         let mut graph = RegionGraph::new();
         street(&mut graph, grade, 0.0, 20.0);
         let outer = graph.edge(0).frontage_half_width_m(-1) + side_band_width_m(graph.edge(0), -1);
@@ -776,6 +791,7 @@ mod tests {
         let asset_id = format!("test:{}", manifest.asset_id);
         allocator.registry.register("test", manifest, String::new());
         let mut placement = ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             replaced_building: None,
             asset_id,
@@ -819,90 +835,105 @@ mod tests {
         // Independently recheck the installed boundary heights, level landing, and visible
         // driveway. At 5/10% the yard rises 1/2 m (20 m) or 2/4 m (40 m); the floor only
         // supports the downhill door. Its contact is within .12 m; each pad bank stays 1:2.
-        if let Some(terrace) = placement.terraces.first() {
-            let h = placement.support_height_m;
-            assert!(building_site_support_tie_in_is_valid(
-                &terrace.level_footprint_world,
-                h,
-                &terrain,
-                &graph,
-                &roads
-            ));
-            building_site_surface_tie_in(
-                &terrace.footprint_world,
-                |p| terrace.height_at(p.x as f64, p.y as f64, h) as f32,
-                &terrain,
-                &graph,
-                &roads,
-            )
-            .unwrap();
-            assert!(
-                (h - (20.0 + (-half + 1.0) * grade + CURB_STEP_HEIGHT_M)).abs()
-                    <= CURB_STEP_HEIGHT_M + 0.0001
-            );
-            for station in 0..=(half * 4.0) as usize {
-                let x = -half + station as f32 * 0.5;
-                let yard = terrace.height_at(x as f64, outer as f64, h) as f32;
+        if placement.yard.verdict == YardVerdict::Good {
+            if let Some(terrace) = placement.terraces.first() {
+                let h = placement.support_height_m;
+                assert!(building_site_support_tie_in_is_valid(
+                    &terrace.level_footprint_world,
+                    h,
+                    &terrain,
+                    &graph,
+                    &roads
+                ));
+                building_site_surface_tie_in(
+                    &terrace.footprint_world,
+                    |p| terrace.height_at(p.x as f64, p.y as f64, h) as f32,
+                    &terrain,
+                    &graph,
+                    &roads,
+                )
+                .unwrap();
                 assert!(
-                    (yard - (20.0 + x * grade + CURB_STEP_HEIGHT_M)).abs()
-                        <= FRONTAGE_BANK_MAX_M + 0.0001
+                    (h - (20.0 + (-half + 1.0) * grade + CURB_STEP_HEIGHT_M)).abs()
+                        <= CURB_STEP_HEIGHT_M + 0.0001
                 );
+                for station in 0..=(half * 4.0) as usize {
+                    let x = -half + station as f32 * 0.5;
+                    let yard = terrace.height_at(x as f64, outer as f64, h) as f32;
+                    assert!(
+                        (yard - (20.0 + x * grade + CURB_STEP_HEIGHT_M)).abs()
+                            <= FRONTAGE_BANK_MAX_M + 0.0001
+                    );
+                }
+                let sites = CandidateSite {
+                    allocator: &allocator,
+                    footprint: &terrace.footprint_world,
+                    height: h,
+                    terrace: Some(terrace),
+                    replaced: None,
+                    taken: &[],
+                };
+                let surface = GradedSurface {
+                    terrain: &terrain,
+                    roadbed: &roads,
+                    sites: &sites,
+                    query_index: None,
+                };
+                let mut scratch = QueryScratch::default();
+                let x = -half + 1.0;
+                let path = [Vector2::new(x, outer - 5.0), Vector2::new(x, outer + 5.0)];
+                let mut check = YardAssessment::default();
+                measure_way(
+                    &path,
+                    &roads,
+                    &mut |p| surface.surface_height_at(p.x as f64, p.y as f64, &mut scratch) as f32,
+                    |name, value, limit, unit| check.measure(name, value, limit, unit, false),
+                );
+                assert_eq!(
+                    check.verdict,
+                    YardVerdict::Good,
+                    "visible driveway lost: {check:?}"
+                );
+            } else {
+                assert!(building_site_support_tie_in_is_valid(
+                    &allocator.placement_required_flat_support_footprint(&placement),
+                    placement.support_height_m,
+                    &terrain,
+                    &graph,
+                    &roads
+                ));
             }
-            let sites = CandidateSite {
-                allocator: &allocator,
-                footprint: &terrace.footprint_world,
-                height: h,
-                terrace: Some(terrace),
-                replaced: None,
-                taken: &[],
-            };
-            let surface = GradedSurface {
-                terrain: &terrain,
-                roadbed: &roads,
-                sites: &sites,
-                query_index: None,
-            };
-            let mut scratch = QueryScratch::default();
-            let x = -half + 1.0;
-            let path = [Vector2::new(x, outer - 5.0), Vector2::new(x, outer + 5.0)];
-            let reason = way_constraint(&path, &roads, &mut |p| {
-                surface.surface_height_at(p.x as f64, p.y as f64, &mut scratch) as f32
-            });
-            assert!(reason.is_none(), "visible driveway lost");
-        } else {
-            assert!(building_site_support_tie_in_is_valid(
-                &allocator.placement_required_flat_support_footprint(&placement),
-                placement.support_height_m,
-                &terrain,
-                &graph,
-                &roads
-            ));
         }
-        Ok(placement.support_height_m)
+        Ok(placement.yard)
     }
 
     #[test]
-    fn placement_disjoint_terrain_intervals_do_not_invent_a_contact_excess() {
-        // The two doors each reach one terrain interval, but their intersection [-.02,.02]
-        // occupies the gap between them. Neither door individually violates its .12 m limit.
-        let limits = [
-            (-0.1, 0.12, issue("entrance landing step", 0.1, 0.12, "m")),
-            (0.1, 0.12, issue("entrance landing step", 0.1, 0.12, "m")),
-        ];
+    fn placement_contact_measurements_keep_subtle_and_hard_bounds_distinct() {
+        // 0.10 m is within the 0.12 m step; 1.00 m is rough; 3.01 m exceeds 3.00 m.
+        let mut yard = YardAssessment::default();
+        yard.measure("entrance landing step", 0.10, 0.12, "m", false);
+        assert_eq!(yard.verdict, YardVerdict::Good);
+        assert_eq!(yard.measurements[0].measured, 10);
+        // A 0.1202 m step rounds to the same hundredth as 0.12 m, but must retain
+        // its missed-limit reason. The display adds precision rather than inventing 0.13 m.
+        let mut tiny = YardAssessment::default();
+        tiny.measure("entrance landing step", 0.1202, 0.12, "m", false);
+        assert_eq!(tiny.verdict, YardVerdict::Rough);
         assert_eq!(
-            height_interval_issue(&[(-1.1, -0.1), (0.1, 1.1)], &limits),
-            DemandSpawnPlacementRejection::SiteSupportTieInInvalid
+            tiny.reasons(),
+            vec!["entrance landing step requires 0.120200 m; at most 0.120000 m"]
         );
-        let reason = height_interval_issue(
-            &[(1.0, 2.0)],
-            &[(0.0, 0.12, issue("entrance landing step", 0.0, 0.12, "m"))],
-        );
-        let DemandSpawnPlacementRejection::StreetContactInvalid(issue) = reason else {
-            panic!("{reason:?}");
-        };
+        yard.measure("entrance landing step", 1.00, 0.12, "m", false);
+        assert_eq!(yard.verdict, YardVerdict::Rough);
         assert_eq!(
-            issue.message(),
-            "entrance landing step requires 1.00 m; at most 0.12 m"
+            yard.reasons(),
+            vec!["entrance landing step requires 1.00 m; at most 0.12 m"]
+        );
+        yard.measure("entrance landing step", 3.01, 0.12, "m", true);
+        assert_eq!(yard.verdict, YardVerdict::Impossible);
+        assert_eq!(
+            yard.hard_issue.unwrap().message(),
+            "entrance landing step requires 3.01 m; at most 3.00 m"
         );
     }
 
@@ -927,6 +958,7 @@ mod tests {
             level_footprint_world: Vec::new(),
         };
         let mut neighbor = super::super::super::site::BuildingSiteClient {
+            yard: Default::default(),
             footprint_world: right.footprint_world.clone(),
             lot_footprint_world: right.footprint_world.clone().try_into().unwrap(),
             support_height_m: 1.0,
@@ -938,17 +970,18 @@ mod tests {
         };
         let (mut a, mut b, mut lines) = (Vec::new(), Vec::new(), Vec::new());
         // Both planes meet at 0.5 m on x=10, even though their stored floors differ.
-        assert!(yard_join_issue(&left, 0.0, &neighbor, &mut a, &mut b, &mut lines).is_none());
+        assert!(yard_join_difference(&left, 0.0, &neighbor, &mut a, &mut b, &mut lines).is_none());
         neighbor.terraces[0].plane[2] = 0.2;
-        let DemandSpawnPlacementRejection::StreetContactInvalid(reason) =
-            yard_join_issue(&left, 0.0, &neighbor, &mut a, &mut b, &mut lines).unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(
-            reason.message(),
-            "neighbour yard join requires 0.20 m; at most 0.00 m"
-        );
+        let difference =
+            yard_join_difference(&left, 0.0, &neighbor, &mut a, &mut b, &mut lines).unwrap();
+        assert!((difference - 0.20).abs() < 0.00001);
+        // At x=10 the two planes differ by 2.1 + .2*z, from .10 m at z=-10
+        // to 4.10 m at z=10. The first small mismatch must not hide the hard cliff.
+        neighbor.terraces[0].plane = [0.05, 0.2, 2.1];
+        let difference =
+            yard_join_difference(&left, 0.0, &neighbor, &mut a, &mut b, &mut lines).unwrap();
+        assert!((difference - 4.10).abs() < 0.00001);
+        assert!(difference > HARD_CONTACT_DIFFERENCE_M);
 
         // A 1 cm bank dip over z=.2..0.4 lies between 2 m boundary stations. Its exact arm
         // crossings must still reject the discontinuity against the neighbour's .01 m plane.
@@ -961,7 +994,9 @@ mod tests {
             Vector2::new(9.0, 0.4),
         ];
         neighbor.terraces[0].plane = narrow.plane;
-        assert!(yard_join_issue(&narrow, 0.0, &neighbor, &mut a, &mut b, &mut lines).is_some());
+        assert!(
+            yard_join_difference(&narrow, 0.0, &neighbor, &mut a, &mut b, &mut lines).is_some()
+        );
     }
 
     #[test]
@@ -991,82 +1026,82 @@ mod tests {
         // A 20/40 m yard rises 1/2 m at 5%, 2/4 m at 10%, following the road.
         // A single level door pad at x=-9/-19 does not flatten that yard. At 20% the
         // 10% plane leaves 1/2 m residual at the frontage ends and must still prove C1.
-        for (width, grade, accepted) in [
-            (2, 0.0, true),
-            (4, 0.0, true),
-            (2, 0.05, true),
-            (4, 0.05, true),
-            (2, 0.10, true),
-            (4, 0.10, true),
-            (2, 0.20, false),
-            (4, 0.20, false),
-        ] {
-            let result = lot(width, grade, None);
-            if grade == 0.20 {
-                let DemandSpawnPlacementRejection::StreetContactInvalid(reason) =
-                    result.as_ref().unwrap_err()
-                else {
-                    panic!("{result:?}");
-                };
-                // Width 2: yard 19.22 - carriageway 18.20 = 1.02 m over the 1.51 m
-                // apron, i.e. 67.55%. Width 4: H=16.44, front bank 16.44+2.75/2
-                // against footway 16.12 = 1.695 m, rounded to 1.70 m.
+        for width in [2, 4] {
+            for grade in [0.0, 0.05, 0.10, 0.20] {
+                let yard = lot(width, grade, None).unwrap();
                 assert_eq!(
-                    reason.message(),
-                    if width == 2 {
-                        "Driveway grade requires 67.55 %; at most 10.00 %"
+                    yard.verdict,
+                    if grade < 0.20 {
+                        YardVerdict::Good
                     } else {
-                        "frontage bank requires 1.70 m; at most 1.00 m"
-                    }
+                        YardVerdict::Rough
+                    },
+                    "width={width} grade={grade}: {yard:?}"
                 );
+                if grade == 0.20 {
+                    assert!(!yard.reasons().is_empty());
+                    // Width 2: min(19.22,H+1.375)-18.20 = 1.02 m over 1.51 m,
+                    // 67.55%; over 2.8 m, 36.43 pp. Width 4: H=16.32, so
+                    // 16.32+1.375-16.20=1.495 m: 99.01%, 53.39 pp.
+                    let grade = yard
+                        .measurements
+                        .iter()
+                        .find(|i| i.constraint == "Driveway grade")
+                        .unwrap();
+                    let change = yard
+                        .measurements
+                        .iter()
+                        .find(|i| i.constraint == "Driveway grade change per wheelbase")
+                        .unwrap();
+                    assert_eq!(grade.measured, if width == 2 { 6755 } else { 9901 });
+                    assert_eq!(change.measured, if width == 2 { 3643 } else { 5339 });
+                }
             }
-            assert_eq!(
-                result.is_ok(),
-                accepted,
-                "width={width}, grade={grade}: {result:?}"
-            );
         }
     }
 
     #[test]
-    fn placement_store_on_twenty_one_percent_street_refuses_the_bank() {
-        let reason = lot(4, 0.21, None).unwrap_err();
-        let DemandSpawnPlacementRejection::StreetContactInvalid(issue) = reason else {
-            panic!("{reason:?}");
-        };
-        // At the last candidate the downhill landing permits H=20-19*.21+.24=16.25.
-        // Its level hull ends 2.75 m behind the front edge, so the 1:2 bank reaches
-        // at most 16.25+2.75/2=17.625 at x=-20. The footway there is
-        // 20-20*.21+.12=15.92: a 1.705 m bank rounds to 1.71 m, over the 1 m cap.
-
-        assert_eq!(
-            issue.message(),
-            "frontage bank requires 1.71 m; at most 1.00 m"
+    fn placement_store_on_twenty_one_percent_street_is_rough() {
+        let yard = lot(4, 0.21, None).unwrap();
+        assert_eq!(yard.verdict, YardVerdict::Rough);
+        assert!(
+            yard.measurements
+                .iter()
+                .any(|i| i.constraint == "frontage bank" && i.measured > i.limit)
         );
+        // At the uphill edge the road is 20+20*.21+.12=24.32 m; the capped
+        // yard plane is 20+20*.10+.12=22.12 m: 2.20 m > 1 m but below 3 m.
+        let bank = yard
+            .measurements
+            .iter()
+            .find(|i| i.constraint == "frontage bank")
+            .unwrap();
+        assert_eq!((bank.measured, bank.limit), (220, 100));
+        assert!(yard.hard_issue.is_none());
     }
 
     #[test]
     fn placement_fixed_rear_road_cannot_be_waived_by_distant_soft_ground() {
         assert!(lot(2, 0.0, Some(20.0)).is_ok());
-        let reason = lot(2, 0.0, Some(24.4)).unwrap_err();
+        let reason = lot(2, 0.0, Some(28.0)).unwrap_err();
         let DemandSpawnPlacementRejection::StreetContactInvalid(issue) = reason else {
             panic!("{reason:?}");
         };
         assert_eq!(
             issue.message(),
-            "frontage bank requires 4.38 m; at most 1.00 m"
+            "road-to-floor height difference requires 8.00 m; at most 3.00 m"
         );
     }
     #[test]
     fn placement_secondary_street_entrance_meets_its_own_footway() {
         assert!(lot_with_rear_door(2, 0.0, Some(20.0), true).is_ok());
-        let reason = lot_with_rear_door(2, 0.0, Some(24.4), true).unwrap_err();
+        let reason = lot_with_rear_door(2, 0.0, Some(28.0), true).unwrap_err();
         let DemandSpawnPlacementRejection::StreetContactInvalid(issue) = reason else {
             panic!("{reason:?}");
         };
         assert_eq!(
             issue.message(),
-            "entrance landing step requires 4.38 m; at most 0.12 m"
+            "road-to-floor height difference requires 8.00 m; at most 3.00 m"
         );
     }
 }

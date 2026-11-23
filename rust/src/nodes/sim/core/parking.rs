@@ -83,14 +83,38 @@ impl SimCore {
                         return None;
                     }
                     let (lot, blockers) = self.site_lot(index);
-                    Some((handle, lot, blockers))
+                    Some((
+                        handle,
+                        lot,
+                        blockers,
+                        Some(self.allocator.assess_placed_yard(
+                            index,
+                            self.zoning.config.zone_cell_m,
+                            &self.region_graph,
+                            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                                terrain: &self.heightmap,
+                                road_surface: &self.transit_network.roadbed,
+                            },
+                        )),
+                    ))
                 })
                 .collect()
         });
         // Geometry is independent; live occupancy reconciliation commits in source order.
         let mut points = Vec::new();
         let mut kerb_edges = edges.clone();
-        for (handle, lot, blockers) in lots {
+        for (handle, lot, blockers, yard) in lots {
+            if let Some(index) = self.allocator.building_handles.resolve(handle)
+                && let Some(yard) = yard
+                && self.allocator.building_sites[index].yard != yard
+            {
+                if let Some(bounds) = self.allocator.site_dirty_bounds(index) {
+                    self.mark_lot_yards_in_bounds(
+                        [bounds.0, bounds.1, bounds.2, bounds.3].map(f64::from),
+                    );
+                }
+                self.allocator.building_sites[index].yard = yard;
+            }
             let LotProof {
                 bays,
                 issues,
@@ -134,6 +158,7 @@ impl SimCore {
                 }),
         );
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
+        self.refresh_dirty_lot_yards();
         points
     }
 
@@ -580,17 +605,41 @@ impl SimCore {
                 .par_iter()
                 .map(|&handle| {
                     let Some(i) = self.allocator.building_handles.resolve(handle) else {
-                        return (handle, LotProof::default(), Vec::new());
+                        return (handle, LotProof::default(), Vec::new(), None);
                     };
                     let (lot, blockers) = self.site_lot(i);
-                    (handle, lot, blockers)
+                    (
+                        handle,
+                        lot,
+                        blockers,
+                        Some(self.allocator.assess_placed_yard(
+                            i,
+                            self.zoning.config.zone_cell_m,
+                            &self.region_graph,
+                            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                                terrain: &self.heightmap,
+                                road_surface: &self.transit_network.roadbed,
+                            },
+                        )),
+                    )
                 })
                 .collect()
         });
         let mut points = Vec::new();
         let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
-        for (handle, lot, blockers) in lots {
+        for (handle, lot, blockers, yard) in lots {
+            if let Some(index) = self.allocator.building_handles.resolve(handle)
+                && let Some(yard) = yard
+                && self.allocator.building_sites[index].yard != yard
+            {
+                if let Some(bounds) = self.allocator.site_dirty_bounds(index) {
+                    self.mark_lot_yards_in_bounds(
+                        [bounds.0, bounds.1, bounds.2, bounds.3].map(f64::from),
+                    );
+                }
+                self.allocator.building_sites[index].yard = yard;
+            }
             let LotProof {
                 bays,
                 issues,
@@ -624,6 +673,7 @@ impl SimCore {
         self.publish_site_catchments(&hosts, &points);
         changes.clear();
         self.allocator.parking_site_changes = changes;
+        self.refresh_dirty_lot_yards();
     }
 
     // A site edit's doors: the changed buildings' own, and those the changed bays can reach,

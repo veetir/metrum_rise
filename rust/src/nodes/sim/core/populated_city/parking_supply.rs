@@ -230,11 +230,47 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
     // No fixture asset has a freight Driveway (`PARK-19`): no dock, no dock rejection.
     assert!(core.parking.dock_rows().is_empty() && core.parking.dock_diagnostics.is_empty());
     assert!(core.allocator.freight_gates.is_empty());
+    // C3 materializes parcels at each paint release, before the next stroke. Their IDs
+    // (the asset-choice seed) change on 1,071 parcels, selecting another asset on 551
+    // sites. Every one of the 1,091 physical poses/floors remains the C2 product.
+    let poses = core
+        .allocator
+        .buildings
+        .iter()
+        .flat_map(|b| [b.center_x, b.center_y, b.support_height_m].map(|v| u64::from(v.to_bits())))
+        .fold(core.allocator.buildings.len() as u64, |hash, word| {
+            stable_hash64(hash ^ word)
+        });
+    assert_eq!(core.allocator.buildings.len(), 1091);
+    assert_eq!(poses, 0xf50b35410fb554d7);
     let digest = [lots, reasons, editor];
     let recorded = [
-        0x3299_1f90_451e_9fbf,
-        0x2ba3_ad70_d4ef_a643,
+        0xc9a8_aafe_12b5_8daa,
+        0xa937_08b1_80f6_ee84,
         0xbf68_7441_d5fc_8bfa,
     ];
     assert_eq!(digest, recorded, "{digest:016x?}");
+}
+
+#[test]
+#[ignore = "C3 matched flat-product attribution; set METRUM_YARD_PRODUCT"]
+fn record_yard_flat_products() {
+    let core = zoned_city(2.0 * CROSS_SPACING_M);
+    let mut lines = String::new();
+    use std::fmt::Write;
+    for (i, b) in core.allocator.buildings.iter().enumerate() {
+        writeln!(
+            lines,
+            "{} {} {} {} {} {} {:?}",
+            i,
+            b.parcel_id,
+            b.asset_id,
+            b.center_x,
+            b.center_y,
+            b.support_height_m,
+            core.parking_rejections(i)
+        )
+        .unwrap();
+    }
+    std::fs::write(std::env::var("METRUM_YARD_PRODUCT").unwrap(), lines).unwrap();
 }

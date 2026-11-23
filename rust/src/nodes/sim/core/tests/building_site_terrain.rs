@@ -517,32 +517,26 @@ fn placement_kuopio_yards_record_sloped_yard_contact_verdicts() {
     .unwrap();
     core.precompute_road_mesh_data();
     let asset = register_yard(&mut core);
-    let mut rejected = Vec::new();
+    use crate::simulation::buildings::allocator::YardVerdict;
+    let mut counts = [0usize; 3];
+    let mut records = Vec::new();
     for road in 0..KUOPIO_YARD_ROADS.len() {
         for side in [-1.0, 1.0] {
-            if let Err(reason) = place_kuopio_yard(&mut core, road, side, &asset) {
-                let constraint = match reason {
-                    DemandSpawnPlacementRejection::StreetContactInvalid(issue) => {
-                        assert!(issue.measured > issue.limit, "{}", issue.message());
-                        issue.constraint
-                    }
-                    DemandSpawnPlacementRejection::SiteSupportTieInInvalid => "terrain tie-in",
-                    _ => panic!("unexpected placement refusal: {reason:?}"),
-                };
-                rejected.push((road, side, constraint));
-            }
+            let verdict = match place_kuopio_yard(&mut core, road, side, &asset) {
+                Ok(index) => core.allocator.building_sites[index].yard.verdict,
+                Err(DemandSpawnPlacementRejection::StreetContactInvalid(issue)) => {
+                    assert!(issue.measured > issue.limit);
+                    YardVerdict::Impossible
+                }
+                Err(reason) => panic!("unmeasured terrain refusal: {reason:?}"),
+            };
+            counts[verdict as usize] += 1;
+            records.push((road, side, verdict));
         }
     }
-    assert_eq!(
-        rejected,
-        vec![
-            (1, 1.0, "terrain tie-in"),
-            (2, -1.0, "frontage bank"),
-            (2, 1.0, "frontage bank"),
-        ]
-    );
-    // C1 placed 2/8. Local yard heights now let both road-3 poses and road-1/-1 place.
-    assert_eq!(core.allocator.buildings.len(), 5);
+    // C2 accepted 5/8; the other three now miss only subtle contact limits.
+    assert_eq!(counts, [5, 3, 0]);
+    assert_eq!(core.allocator.buildings.len(), 8);
     assert_eq!(core.zoning.parcels().len(), 8);
 }
 
@@ -696,15 +690,16 @@ fn large_paved_yards_remain_flat_over_hills_and_depressions() {
             .register("test", manifest, String::new());
         for side in [-1.0, 1.0] {
             let result = place_yard(&mut core, 0, side, &asset);
-            if accepted {
-                result.unwrap();
-            } else {
-                assert_eq!(result, Err(crate::simulation::buildings::allocator::DemandSpawnPlacementRejection::SiteSupportTieInInvalid));
-            }
-        }
-        if !accepted {
-            assert!(core.allocator.buildings.is_empty());
-            continue;
+            let index = result.unwrap();
+            let yard = &core.allocator.building_sites[index].yard;
+            assert_eq!(
+                yard.verdict,
+                if accepted {
+                    crate::simulation::buildings::allocator::YardVerdict::Good
+                } else {
+                    crate::simulation::buildings::allocator::YardVerdict::Rough
+                }
+            );
         }
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);

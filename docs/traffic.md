@@ -2221,8 +2221,9 @@ A bay's four wheel contacts may differ by at most a **5%** grade between any pai
 their two triangles must have full gradient at most **5%**, for cars and loading bays (Helsinki's 1:20 guidance and the report's federal parking benchmark). `PARK-25`
 extends authored paving's support to the lot edge, removing the old 2 m strip's 0.12 m
 drop; C2 lets sloped yards follow their road while structures and entrance landings stay level; the bundled medium lot keeps all 20 bays, and the populated flat fixture has no ground
-refusals at 5%. Touching neighbours constrain candidate floors to the existing 0.10 m height
-compatibility interval, and immutable road samples constrain each ray at its own distance;
+refusals at 5%. Overlapping structure supports retain their 0.10 m compatibility interval;
+street contacts are now measured Good/Rough/Impossible under C3, including each fixed road's
+own ray distance;
 road surfaces retain ownership of their triangles. The front paving no longer dips below its
 own pad before meeting the road. Runtime `VehicleGroundSupport` is render metadata populated
 by Godot mesh loading and is not canonical save/proof input, so the
@@ -2253,7 +2254,7 @@ kerb's height. No yard-interior jump is waived. Numerical slack is 0.1 mm, not a
 gameplay grade allowance.
 
 Placement's C1 contacts and C2 yard policy are in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-automatic-grading-c2):
-fixed roads constrain each local surface at their own distance, nearby frontage banks are capped at **1.0 m**,
+fixed roads measure each local surface at their own distance, nearby frontage banks target **1.0 m**,
 Driveways meet their road within the shared **10%** grade and **5 percentage points/wheelbase**
 limits, and each street-facing entrance landing is within **0.12 m** of its footway. No authored
 pedestrian ramp corridor exists yet, so placement never assumes a ramp through arbitrary paving.
@@ -2263,10 +2264,18 @@ use that index's existing 8 m adjacent-road probe in the edge's outward half-pla
 road behind the edge cannot mask its frontage. A candidate's actual rendered driveway profile
 follows the authored gate approach and is also checked by D's way sampler. Floor
 candidates are the contact and frontage-midpoint road heights plus the sampled base-terrain
-median. Choose fewest D-refused parking bays, then least sampled absolute cut/fill, then lowest
-height. Replacements validate their stored floor rather than selecting a new one. Measured
-refusals travel through the shared explicit-placement preview/commit error and appear in the
-build tool's existing price/reason label; there is no silent placement failure.
+median, plus their Good-interval projections. C3 chooses **Good before Rough**, then least total
+native-unit limit excess, then fewest D-refused bays, least sampled absolute cut/fill and lowest
+height. Replacements and loaded sites retain their floor. A **3.00 m** frontage bank/contact
+height difference or **3.00 m** grading-envelope height excess is the initial hard tuning bound;
+missing required road access is Impossible. Only Impossible refuses placement with its measured
+reason. Rough places with an amber preview warning and a derived inspector alert containing
+each missed limit beside D's parking/dock reasons. No verdict is saved or recomputed per tick.
+The player may fix Rough yards with the terrain brush under the revised policy; **C3 takes the
+allowed Step 3 design fallback**, so the visible-yard override/save/undo implementation remains
+open. Merely unprotecting the source brush cannot repair a derived C2 terrace; see the concrete
+[terrain-layer design](terrain.md#c3-lot-evaluation-and-deferred-brush-repair-design-2026-11-23).
+D's 5%/10% limits remain unchanged: permitting a Rough building never turns on a refused spot.
 
 The existing graded edit journal's changed rectangles invalidate both cached poses and nearby
 lot proofs through the allocator's **site-cell index**. The existing stable-handle site journal
@@ -2297,6 +2306,50 @@ edge now supplies level support and gets no obsolete strip warning. Notes remain
 export-blocking issue list. Placement and grading must themselves make yards drivable; the
 brush is not a repair requirement. The automatic grading and future retaining-edge design are in
 [`terrain.md`, T12](terrain.md#drivable-yards-part-c-automatic-grading-c2).
+
+#### C3 verification (2026-11-23)
+
+Fresh matched release runs against `d8f5108ed`, eight workers, unpinned, no compiler or profiler
+alongside timing, three per side in **C B B C C B** order. The executable identities, full test
+matrix, changed expectations and placement/paint costs are in
+[terrain C3 verification](terrain.md#c3-verification-2026-11-23); those are the same final C3
+sources used here. Godot cells, road-zoning and placement-demolition suites pass through the
+isolated runner. No F session is included or claimed.
+
+```bash
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 METRUM_LOCALITY_TIERS=0,1000,10000 \
+  "$TEST_BINARY" \
+  nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality \
+  --ignored --nocapture --test-threads=1
+```
+
+The affected neighbourhood stays **12 lots / 72 bays / 1,656 candidate entries**. Both builds
+report identical local products at every tier, growing from 1,103/2,103/11,103 buildings,
+1,074/2,074/11,074 parcels, 0/1,000/10,000 agents and 84/109/334 roads. All values below are
+means of three printed per-run values; setup remains separate.
+
+| Added background | One-lot proof ms C2 → C3 | Site publication ms | Road reconcile ms | Candidate rebuild ms | Setup s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.4804 → 0.4774 | 1.8297 → 2.0621 | 4.2979 → 4.5746 | 0.4088 → 0.4293 | 1.4567 → 1.5940 |
+| 1,000 | 0.4788 → 0.4745 | 1.8125 → 2.0107 | 4.2480 → 4.4725 | 0.4006 → 0.4182 | 1.4845 → 1.6651 |
+| 10,000 | 0.4806 → 0.4767 | 1.8437 → 2.0155 | 4.3872 → 4.5216 | 0.4067 → 0.4228 | 2.0175 → 2.6118 |
+
+C3 publication is 2.01–2.06 ms as background grows; road reconciliation 4.47–4.57 ms and
+one-lot proof about 0.475 ms. The additional contact diagnostics cost a bounded local increment,
+not a city scan. A stored floor is never rescored by optional-bay count: without freight docks
+its duplicate geometric parking proof and discarded Good-interval construction are omitted;
+D's supply proof remains, and freight paths are still checked. Fresh flat product snapshots
+before/after this optimization are byte-identical.
+
+The medium lot retains 20 stalls. Immediate paint-release parcel creation changes seeded asset
+selection in the populated flat fixture: 1,091 poses/floors remain bitwise identical, 551 assets
+change, so the explained supply/reason digests become `c9a8aafe12b58daa` /
+`a93708b180f6ee84`; the editor digest remains `bf687441d5fc8bfa`.
+
+**Performance acceptance remains open.** The separate 1,024-project placement measurement rises
+33.9%; the 200-lot paint with two real assets takes 36.93 ms at release. Neither bounded locality
+nor passing tests closes the earlier C2 frame misses. Yard brush repair remains the documented
+Step 3 fallback design, not implemented functionality.
 
 #### `PARK-24` verification, 2026-11-22
 

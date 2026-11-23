@@ -21,6 +21,8 @@ pub(crate) struct BuildingSiteSurfaceClient {
 /// Runtime client that owns the required flat building-site support surface.
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {
+    /// Derived contact quality published with the parking/site journal.
+    pub(crate) yard: super::grading::LotYard,
     /// Automatically derived yard planes and their continuous banks; empty on flat frontage.
     pub(crate) terraces: Vec<SiteTerrace>,
     /// Legacy support/coverage corners; terraces replace the height within their boundary.

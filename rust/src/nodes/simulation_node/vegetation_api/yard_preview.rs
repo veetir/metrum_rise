@@ -149,6 +149,7 @@ pub(crate) fn plan(data: &Value, structures: &[[[f32; 2]; 2]], salt: u64) -> Vec
     ];
     let mut yard = FlatYard {
         site: BuildingSiteClient {
+            yard: Default::default(),
             terraces: Vec::new(),
             structure_world: structures
                 .iter()

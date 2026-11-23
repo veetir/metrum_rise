@@ -447,3 +447,56 @@ fn stocked_zone_profiles_follow_the_spawn_filter() {
     );
     assert_ne!(id(ZoneDensity::Low), id(ZoneDensity::Medium));
 }
+
+#[test]
+fn explicit_power_preview_warns_for_rough_yard_and_commit_places() {
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_power_service_asset(&mut allocator, "test", "rough_power");
+    network.add_road(
+        &mut graph,
+        vec![Vector3::ZERO, Vector3::new(200.0, 40.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    let point = Vector2::new(100.0, 25.0);
+    let preview = allocator
+        .preview_explicit_service_placement(
+            &asset,
+            point,
+            &zoning,
+            &graph,
+            &network.roadbed,
+            &terrain,
+            &catalog,
+        )
+        .unwrap();
+    assert!(preview.valid);
+    assert!(preview.rejection.is_none());
+    assert_eq!(
+        preview.yard.verdict,
+        crate::simulation::buildings::allocator::YardVerdict::Rough
+    );
+    assert!(!preview.yard.reasons().is_empty());
+    allocator
+        .execute_explicit_service_placement(
+            &asset,
+            point,
+            &zoning,
+            &graph,
+            &network.roadbed,
+            &terrain,
+            &catalog,
+            &tuning,
+        )
+        .unwrap();
+    assert_eq!(allocator.buildings.len(), 1);
+}

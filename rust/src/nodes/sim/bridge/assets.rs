@@ -134,6 +134,13 @@ impl SimCore {
         self.allocator
             .refresh_building_sites_after_asset_reload(self.zoning.config.zone_cell_m);
         self.zoning.invalidate_cell_lot_assets();
+        let (half_x, half_z) = self.heightmap.half_world_extents();
+        self.mark_lot_yards_in_bounds([
+            -f64::from(half_x),
+            -f64::from(half_z),
+            f64::from(half_x),
+            f64::from(half_z),
+        ]);
         self.rebuild_building_entrances_internal();
         self.publish_reloaded_building_site_changes();
         self.stocked_zone_profiles = self

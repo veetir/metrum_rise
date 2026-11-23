@@ -292,8 +292,30 @@ impl SimCore {
         self.restore_loaded_docks(docks_saved);
         // A format 125 save's blocker pass also queued its ground refusals (`PARK-24`).
         self.publish_parking_sites();
+        let yards: Vec<_> = crate::thread_pools::install(|| {
+            use rayon::prelude::*;
+            (0..self.allocator.buildings.len())
+                .into_par_iter()
+                .map(|i| {
+                    self.allocator.assess_placed_yard(
+                        i,
+                        self.zoning.config.zone_cell_m,
+                        &self.region_graph,
+                        crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                            terrain: &self.heightmap,
+                            road_surface: &self.transit_network.roadbed,
+                        },
+                    )
+                })
+                .collect()
+        });
+        for (site, yard) in self.allocator.building_sites.iter_mut().zip(yards) {
+            site.yard = yard;
+        }
+        self.refresh_dirty_lot_yards();
         let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
-        self.parking.refresh_retired_access(&self.transit_network, &self.region_graph);
+        self.parking
+            .refresh_retired_access(&self.transit_network, &self.region_graph);
         // Catchments are derived and unsaved: rebuilding them is not new supply, so no
         // waiting car wakes, as none did in the uninterrupted game.
         self.publish_parking_catchments(&buildings);

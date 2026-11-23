@@ -37,6 +37,7 @@ var parcel_gap_m: float = 0.0
 var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
+var _yard_hover: Label
 var preview_mesh: MeshInstance3D
 var _site_dependencies := PackedInt64Array()
 var dragging: bool = false
@@ -71,6 +72,12 @@ const DRAG_MODE_CREATE: int = 1
 const DRAG_MODE_REZONE: int = 2
 
 func _ready():
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	_yard_hover = Label.new()
+	_yard_hover.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_yard_hover.add_theme_color_override("font_color", Color(1.0, 0.65, 0.10))
+	layer.add_child(_yard_hover)
 	_reload_profiles()
 	_cell_tool = preload("res://scripts/tools/zoning_cells_tool.gd").new()
 	_cell_tool.controller = self
@@ -91,6 +98,14 @@ func _ready():
 	add_child(preview_mesh)
 
 func _process(_delta):
+	_yard_hover.visible = false
+	if active:
+		var at = _mouse_world_pos()
+		if at != null:
+			var yard: Dictionary = simulation_node.get_zoning_lot_yard_at(at.x, at.y)
+			_yard_hover.text = yard_hover_text(yard)
+			_yard_hover.position = get_viewport().get_mouse_position() + Vector2(18, 22)
+			_yard_hover.visible = not _yard_hover.text.is_empty()
 	_cell_tool.update_tool(active and workflow_cells)
 	if active and workflow_cells:
 		preview_mesh.visible = false
@@ -514,3 +529,8 @@ func _mouse_world_pos(click := false) -> Variant:
 		return _pointer_point
 	_pointer_point = null if hit == null else Vector2(hit.x, hit.z)
 	return _pointer_point
+
+## Formats a stored Rust verdict for the cursor; no placement rules are evaluated here.
+static func yard_hover_text(yard: Dictionary) -> String:
+	var reason := str(yard.get("reason", ""))
+	return str(yard.get("verdict", "")) + ": " + reason if not reason.is_empty() else ""

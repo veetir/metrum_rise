@@ -9706,9 +9706,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 12. **T12. Site placement feasibility.**
     - **Evidence.** The allocator's rays read base terrain and exposed road surfaces to the
       graded terrain's 64 m cap. A farther soft ring cannot waive a nearer fixed road.
-    - **Rule.** Soft terrain retains the union of its ring intervals; every fixed road interval
-      intersects the feasible floor at that sample's own distance and the existing 1:2 slope.
-      Functional contacts and the bounded frontage bank impose their separate, stricter limits.
+    - **Rule (C3).** Each fixed road is measured at its own ray distance against the 1:2
+      allowance; soft terrain keeps its any-reachable-ring rule. These and the functional
+      contact limits determine Good/Rough quality. Only hard-bound failures refuse construction.
+      Rough yards are allowed, flagged with measurements and intended to be repairable by brush;
+      the former “brush is never the remedy” policy is superseded.
     - **Decision.** C1 (`PARK-24`) replaces the any-ring fixed-road rule adopted in
       `TERRAIN-07-F`; `PARK-25` extends paved support to the lot edge.
     - **2026-11-22 C1 (`PARK-24`):** fixed road samples intersect the floor's feasible
@@ -9728,6 +9730,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       structure/entrance hull. All C1 contact limits remain; D proves stalls and required ways
       on the visible result. Flat products retain the old primitive. Derived yards rebuild on
       load at the stored floor; format 128 invalidates older ground certificates once.
+    - **2026-11-23 C3:** Good before Rough, then least summed native-unit excess, then C1's
+      refused-bay/cut-fill/lowest-floor order. Frontage banks and contact height differences
+      have a **3.00 m** hard bound; a missing required driveway/road connection is Impossible.
+      Fixed-road and soft-envelope excess over the distance allowance also has a **3.00 m**
+      hard bound. These are tuning values, not engineering standards. Zoning retains each lot's
+      best allowed-asset verdict, amber/red indicators and measured hover reason (`ZONE-15`).
+      The persistent brush override needed to repair derived yards is designed below; C3
+      implements Steps 1–2 under the explicitly allowed Step 3 fallback.
 13. **T13. Water against graded ground.**
     - **Evidence.** Depth is `surface - base`; a cut below a lake's level beside its shore changes
       the real ground. Water suppresses the mesh cells a road touches.
@@ -11856,10 +11866,13 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 
 ### Drivable yards: Part C, automatic grading (C2)
 
-**Status.** C2, on `wip/c1-placement` after `666b7dd44`, implements an automatic first slice of
-`PARK-24`/`PARK-25`. A building and its entrance landings retain one level stored floor; its yard
-can follow the frontage grade. Placement must produce usable contacts without a brush repair.
-No new asset fields, retaining walls, plinths, user choices or unrestricted optimiser are added.
+**Status.** C3 on `wip/c1-placement`, after C2 `d8f5108ed`, implements measured Good/Rough/
+Impossible verdicts and early zoning indicators (`PARK-24`, `PARK-25`, `ZONE-15`). Placement keeps
+C2's best automatic road-following yard and the stored level structure/entrance floor. Rough
+sites place with visible measured warnings; only Impossible sites refuse. The player may repair
+rough yards with the brush under the new policy. **The yard brush override is not implemented in
+this round:** Steps 1–2 ship for review with the Step 3 design below, using the brief's fallback.
+No new asset fields, retaining walls, plinths or unrestricted optimiser are added.
 
 **Smallest representation.** A non-horizontal frontage derives **one affine yard plane** over
 the lot. Its longitudinal grade is the secant of the road-side heights at the frontage ends,
@@ -11880,29 +11893,43 @@ float operations, ordering and input words. Flat products must remain bitwise id
 outward signed edge distances. The yard height is its plane clamped to
 `[floor - 0.5 d, floor + 0.5 d]`. Since `d` is no greater than Euclidean distance to the hull,
 each bank lies inside the existing 1:2 cone; it is a finite collection of planes, continuous
-at the hull, yard plane and bank-arm joins. No discontinuity is permitted. Along an outer
+at the hull, yard plane and bank-arm joins. Along an outer
 edge, a sorted upper envelope of those affine distances finds every active-arm interval;
 intersection with the two cone arms finds the exact breaks. Inactive crossings are merged,
 so an unobstructed planar edge remains one seam. Shared supported yard boundaries compare the
 union of both sets of exact affine breaks; a short landing bank cannot hide between stations.
-A join that needs a wall is refused rather than authorising an undrawn cliff.
+A mismatched neighbouring yard join is measured as Rough up to the 3 m hard height bound;
+a larger undrawn cliff is Impossible. Overlapping structure-support conflicts remain refused.
 
 **Contacts and floor selection.** C1's limits remain: fixed roads at their own ray distance
 and the 1:2 bound, a 1.0 m frontage bank cap, Driveways at 10% with at most 5 percentage points
 of grade change per 2.8 m wheelbase, and entrance landings within the 0.12 m kerb step of their
 own footway. Secondary doors and corner/rear frontages keep the existing directional road
 R-tree probes. Contacts now read their local yard height; only bearing/entrance constraints
-bind the level floor. Every proposed yard boundary also passes C1's fixed-road/soft-terrain
-ring rules. There is still no inferred pedestrian ramp through arbitrary paving.
+bind the level floor. Every proposed yard boundary is measured against C1's fixed-road/
+soft-terrain ring rules. There is still no inferred pedestrian ramp through arbitrary paving.
+Good meets every subtle limit. Rough misses at least one but no hard limit. Impossible exceeds
+**3.00 m** of frontage bank, door/driveway road-to-yard height difference, or grading-envelope
+height excess beyond its ray-distance allowance; a missing required road/driveway connection
+is also Impossible. These named hard bounds are initial tuning values. They prevent an extreme
+cliff or absent access from being presented as an ordinary brush repair.
 
 Floor candidates remain the contact/midpoint road heights and sampled base-terrain median,
-projected into feasible intervals; repeated projected heights are evaluated once. Choose the
-fewest D-refused car bays, then C1's sampled floor cut/fill score, then the lowest floor. D
+together with their projections into the Good intervals; repeated heights are evaluated once.
+Choose Good before Rough, then least total positive excess in each measurement's native units
+(metres, percent or percentage points), then fewest D-refused car bays, least C1 sampled floor
+cut/fill and lowest floor. The score uses unrounded values; display retains the binding maximum
+per rule, normally displayed in hundredths. Unrounded values are retained; six decimal places
+are shown when two-decimal rounding would hide a missed limit. Every neighbour and every exact
+shared-edge interval contributes, so a small early mismatch cannot hide a later hard cliff. Growth chooses a Good asset before any Rough asset for that lot and
+sorts Good lots before Rough lots. Impossible contributes to `unusable_lots`; the existing
+“lots cannot fit” diagnostic also includes growable Rough lots, with updated wording. D
 checks the visible GL0 product, including the required Driveway and complete dock ways, for
 each candidate. The geometric proof is built once. Ordinary stalls/loading bays retain D's
 5% limit; both wheel triangles now check the full gradient as well as pairwise wheel grades,
 so rotating a stall cannot conceal a >5% plane. Optional stalls may disappear with D's measured
-reason; required access may not silently disappear from an accepted case.
+reason. Rough placements can have refused required ways as well, visibly diagnosed by D;
+no unusable bay is enabled merely because its building was allowed to place.
 
 **One graded product.** `graded/sites.rs` appends terrace polygon/plane/level-hull records to
 the same site. They participate in canonical content order, exact adoption fingerprints,
@@ -11912,13 +11939,19 @@ whole changed seam envelope. Exact support radii retain their flat-ground meanin
 maximum in O(log distinct radii), including removal of its last owner; shrinking a yard never
 falls back to a city-wide radius reduction. This book is metadata, not another spatial index.
 Bake, gathered/indexed point queries, the existing lattice block, ray picking, vegetation and
-vehicle support read this product. Brush protection includes the graded yard; its flatten
-reference deliberately remains the stored floor, as before. Brush release and undo retain
-the existing local journal/publication path.
+vehicle support read this product. Placed contact verdicts live beside the site client and
+recompute on the same stable-handle journal that reproves D, including zero-bay lots, roads,
+ground changes, undo and load. They are never recomputed per tick or by inspector/hover reads.
+The inspector shows an amber “Rough yard” alert and each missed limit beside parking reasons;
+explicit placement previews keep `valid=true` and show the measured warning in amber.
+Until Step 3 lands, brush protection still includes the graded yard and flatten still references
+the stored floor. The policy permits repair; this fallback does not claim that in-yard repair
+already works.
 
 **Reload.** Sites remain derived and unsaved. Load re-derives their yard planes from the live
 asset, stored pose and local roads, **without choosing a new floor**. Format **128** changes no
-schema columns; its version marks the new visible-ground certificate. Formats 125, 126 and
+schema columns; its version marks the C2 visible-ground certificate. C3 adds no saved verdict,
+parcel field, terrain edit or format bump: all quality display state is rebuilt. Formats 125, 126 and
 127 recheck saved lot/dock supply once through D's existing kerb-blocker restoration path.
 Valid custody remains; only actual ground refusals enter normal replacement/towing publication.
 A current certificate still avoids a second whole-city proof pass.
@@ -11945,6 +11978,269 @@ start reuses an unchanged planning verdict; a missing/stale verdict solves direc
 creating a cache entry for a lot about to become occupied. Dependency captures still invalidate
 changed roads, terrain, neighbours and assets. Placement derives the yard proposal once; solving
 and installation reuse it. This fixes measured work, not the contact limits.
+
+#### C3 lot evaluation and deferred brush repair design (2026-11-23)
+
+A released paint of N derived lots and A eligible initial assets costs
+**O(N × A × C × (R P + W × local GL0 query cost + shared-join proof))**, plus existing local
+cell generation, chunk-index queries and deterministic sorting. At the observed ~0.3 ms per
+asset solve, 200 lots × A assets is roughly 60 A ms of serial solve work before Rayon and cache
+reuse. Paint dragging performs no contact solve. Each parcel owns a rebuilt verdict and reason;
+Good wins across all fitting assets. Local road/base/site journals queue dependency windows,
+including the 64 m grading reach, 8 m adjacent-road reach and terrain cell support. They query
+existing parcel chunks and publish only changed chunk revisions. A pending lot job shares its
+parcel store, so windows wait outside that snapshot until adoption; no write copies the city.
+Release derives only the stroke's chunks and conflict halo. Existing queued service may later
+visit the same chunks as a cached no-op, keeping unrelated queue order intact.
+
+**Step 3 is deferred, not implemented.** The source brush currently writes `TerrainSystem`;
+`graded/sites.rs` then replaces that source inside a site with its level support or terrace.
+Removing protection would therefore save edits that remain invisible. A real repair must enter
+the shared graded product after the derived yard, across query, bake, fingerprint and history
+paths. This is a larger terrain-layer change than protection-mask editing.
+
+The smallest proposed layer is a sparse **absolute edited-height override on the existing
+0.5 m GL0 lattice and 64 m tile grid**, with a validity mask. Keep the existing source heightfield
+for ordinary land. Brush samples in a yard start from its current visible GL0 surface and write
+absolute edited heights with the normal brush falloff. Apply overrides above derived yard
+heights, below exposed road ownership and the actual structure/entrance-landing footprints;
+protect those footprints rather than the whole convex support hull, halo or frontage strip.
+A finite feather band outside each override must meet unedited ground continuously. Reuse
+existing tile keys, site-cell/road indices and dirty tiles; do not add a city-wide yard scan or
+another spatial index. Empty/unmodified tiles allocate nothing. World-fixed edits survive yard
+re-derivation and demolition; a new structure/road temporarily masks their covered samples.
+
+Save review: format **128** currently stores only source samples in
+`terrain_state.height_blob_f32_le` (`save/world.rs`); derived sites are absent. That blob cannot
+represent a separate visible yard override. The follow-up should bump the format and add a
+sparse tile table keyed by tile X/Z with an explicit lattice encoding, validity mask and
+little-endian finite f32 absolute heights. Missing rows mean no override. Validate sizes,
+coordinates, masks and finite values on load; retain the source blob unchanged. No backwards
+compatibility flag or asset schema is needed. Baked/query inputs, dependency captures and shared
+snapshots must include override generations/content, so re-derivation cannot erase a repair.
+
+Undo must capture both old override presence/height and new presence/height in the existing
+terrain stroke record (source changes remain alongside it); restoring zero/absent is distinct.
+At release and undo, publish source/override dirty windows once, reprove D and assess the stored
+floor through the same site journal, then publish lot styles. The follow-up acceptance case
+must start with a >1 m, <=3 m bank and a refused bay, fill the bank through the gameplay brush,
+assert the bay restored and Good, save/load that repaired product, then undo to restore Rough
+and the refusal. Setup and saved bytes are separate from steady-state timing. Bound the write
+and rebuild by edited lattice samples, affected tiles and local lots; surface reads remain O(1)
+for the override lookup with existing gathered scratch.
+
+#### C3 verification (2026-11-23)
+
+**Fresh C3 evidence**, uncommitted on `wip/c1-placement` after `d8f5108ed`. This is Steps 1–2
+plus the explicitly allowed Step 3 design fallback, not an implemented yard brush override.
+C2 rows below this section are historical. No F session was run for C3.
+
+Build identities (SHA-256): preserved unmodified C2 release test executable
+`8394de90cd401adaaeeef41ac8d7ac45dc036ae1456b761979d519159dbc58bd`; final C3
+`71a67f87034defce36e07df1c4404ebc56fb75adfe6a7c91bcb8467a5404c9dc`. The separate C2 paint executable
+`5abc45f26a777572892a443b23c0e6589911fe7b6252cea9a98fc889a3f8a6e2` adds only the
+portable synthetic paint measurement and flat-product recorder to `d8f5108ed`; its implementation
+is unchanged. The final macOS arm64 GDExtension was built with `cargo build --release` for the
+isolated Godot checks, not packaged or published as a player release.
+
+**Correctness.** `cargo clippy --all-targets` passes with no warnings. Fresh release commands
+below use `RAYON_NUM_THREADS=8 METRUM_DEBUG=0` and `-- --test-threads=8`; overlapping filters
+are not unique test counts. The release test build still emits the two pre-existing unused
+`bits` method warnings in the untouched agent parking planner; C3 adds none.
+
+| Command (`rust/`) | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `cargo test --release --lib site` | 91 | 0 | 12 |
+| `cargo test --release --lib placement` | 96 | 0 | 9 |
+| `cargo test --release --lib parking` | 212 | 0 | 4 |
+| `cargo test --release --lib graded` | 116 | 0 | 13 |
+| `cargo test --release --lib save` | 139 | 0 | 17 |
+| `cargo test --release --lib zoning` | 283 | 0 | 21 |
+
+Godot **4.7.2 stable**, unmodified upstream: `zoning_cells_tool_test.gd`,
+`zoning_road_tool_test.gd`, and `placement_demolition_test.gd` all pass on the final extension
+through `tools/godot_isolated.py`. Added coverage preserves Rust's measured hover reason,
+transmits amber/red style and colour rows without changing mask coverage, and reads a stored
+binding reason immediately after paint release. The placement fixture was generated by the
+existing `record_placement_demolition_fixture` Rust recorder, in isolated temporary storage.
+No player's saves or mods were read or written. The installed pack copies came only from the
+read-only probe copy; the tests also seed their own bundled/test packs.
+
+```bash
+# $ARTIFACTS is isolated scratch; $TEST_BINARY is the freshly built release test executable.
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 \
+  METRUM_PLACEMENT_DEMOLITION_FIXTURE="$ARTIFACTS/placement.sqlite" \
+  "$TEST_BINARY" record_placement_demolition_fixture --ignored --nocapture
+# Linux example; substitute the platform's Godot runtime/library as appropriate.
+METRUM_PLACEMENT_DEMOLITION_FIXTURE="$ARTIFACTS/placement.sqlite" \
+  python3 tools/godot_isolated.py run --library "$ARTIFACTS/libmetrum_rise.so" \
+  -- godot --headless --path '{project}' --script res://tests/placement_demolition_test.gd
+# Run zoning_cells_tool_test.gd and zoning_road_tool_test.gd through the same runner.
+```
+
+On macOS the runner's `--library` copies to `bin/libmetrum_rise.so`; the actual runs used a
+small scratch wrapper to copy that Mach-O library to the extension's declared `.dylib` filename
+inside the isolated project, then invoke Godot. No runner or engine patch was introduced.
+
+**Changed expectations, explicitly accounted for.**
+
+- Both 20/40 m downhill-driveway lots remain **Good at 0/5/10%**. At **20%**, both now place
+  **Rough** instead of refusing. The hand-derived driveway measurements are **67.55% / 36.43 pp**
+  for the 20 m lot and **99.01% / 53.39 pp** for the 40 m lot (limits 10% / 5 pp); comments derive
+  the 1.02 m / 1.495 m rises and 1.51 m approach / 2.8 m wheelbase. The 40 m frontage bank is
+  2.00 m. The **21% store is Rough**, with **24.32 − 22.12 = 2.20 m** bank against 1.00 m,
+  below the 3.00 m hard bound; it no longer uses C2's refused-floor 1.71 m bank expectation.
+- Rear-road and secondary-door hard-refusal fixtures now use an **8 m opposed road rise**
+  (28 m rear versus 20 m front), beyond two 3 m contact budgets. Both assert the measured
+  `road-to-floor height difference requires 8.00 m; at most 3.00 m` refusal. The removed
+  refusal-only disjoint-interval helper test is replaced by measured quality tests: 0.10/0.12 m
+  Good, 1.00/0.12 m Rough, 3.01/3.00 m Impossible. A 0.1202 m subtle-step miss keeps its reason
+  as `0.120200 / 0.120000 m` instead of disappearing through hundredth rounding.
+- The shared-bank test still checks the 0.20 m mismatch and narrow 1 cm bank interval. It now
+  also proves the maximum of **2.1 + 0.2 z**, z ∈ [−10,10]: an early 0.10 m mismatch cannot hide
+  the **4.10 m** hard cliff. Every neighbouring site is measured, not only the first failure.
+- Kuopio new-construction poses: **5 Good, 3 Rough, 0 Impossible**, 8/8 place (C2 5/8).
+  Hillside lots 6/7/8/9/16: **Good/Rough/Rough/Good/Rough**, 5/5 place (C2 2/5).
+- Broad ±35% relief fixtures with a 3 m cap stay Good. The former 40 m-cap soft-envelope
+  refusals now place Rough: measured envelope excess is 2.72 m downhill / 2.48 m uphill,
+  below the 3 m hard excess bound. Their level-yard support assertions still run.
+- Curve/merge paint tests now assert lots already exist at release, rather than expecting a
+  subsequent queue drain to create them. The terrain stroke test checks the stored Impossible
+  verdict before any hourly planner query; undo restores eligibility. The cache regression now
+  tests the actual asset solve, including remote-edit reuse and local/stale-road invalidation,
+  instead of the retired asset-independent zoning refusal cache. The existing lot-order test
+  retains its all-Good order, then moves the earliest lot to Rough and asserts it sorts last.
+  Added power-service coverage checks that a Rough preview is valid, warns, and commits.
+- Godot road-zoning expectations change from terrain refusal to retaining zoning intent;
+  released no-asset lots immediately expose Impossible and their binding reason. Geometrical
+  overlap/access refusals remain independently tested.
+- The bundled medium lot still has **20 stalls**. All **1,091 flat positions/floors** retain
+  C2 fingerprint **`f50b35410fb554d7`**. Immediate release now assigns parcel IDs before the next
+  paint stroke: 1,071 IDs change, selecting a different seeded asset on **551 sites**. Therefore
+  supply digest changes **`32991f90451e9fbf` → `c9a8aafe12b58daa`**, reason digest
+  **`2ba3ad70d4efa643` → `a93708b180f6ee84`**; editor digest stays **`bf687441d5fc8bfa`**.
+  The fresh final flat recorder is byte-identical to the pre-optimization C3 recorder (SHA-256
+  `8d125d3f2c44693c1a72a44d597f8b4561e4416357527f17edb9f9d08822b414`).
+- C2 itself fails `hillside_houses_terrain_builds_clean` at (−8948,2657.5), with the same
+  3217384919/3213494437 bit mismatch as the first C3 run. Its helper incorrectly assumed closed
+  yard footprints never share ownership. The correction requires multiple holders before using
+  the existing canonical owner's height, keeps unique-pad checks strict, and checks the baked
+  value bitwise against that owner. It changes the assertion, not the terrain product. The
+  corrected test and full zoning group pass.
+
+**Matched performance.** Eight workers, unpinned, unprofiled release executables, no compiler,
+profiler or other test workload alongside timings. Three runs per side, **C B B C C B** for each
+benchmark; C is `d8f5108ed`, B final C3. Tables are arithmetic means of the three printed per-run
+values (the construction benchmark itself reports medians of five internal samples). Setup is
+kept separate from repeated planning/placement. These are targeted costs, not frame acceptance.
+
+```bash
+# Set $TEST_BINARY to the preserved C2 or final C3 binary for each run in C B B C C B order.
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  benchmark_successful_project_placement --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  benchmark_graded_site_placement --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  benchmark_zoning_paint_release_yards --ignored --nocapture --test-threads=1
+# Extra final-C3-only real-asset paint: three fresh runs, same 200 lots, two allowed houses.
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 METRUM_PAINT_ASSETS=houses "$TEST_BINARY" \
+  benchmark_zoning_paint_release_yards --ignored --nocapture --test-threads=1
+```
+
+| Placed projects | Setup ms C2 → C3 | Planning slot ms | Placement ms |
+| ---: | ---: | ---: | ---: |
+| 2 | 2.380 → 2.811 | 1.557 → 1.463 | 0.309 → 0.447 |
+| 16 | 8.272 → 10.518 | 1.989 → 1.984 | 2.549 → 3.549 |
+| 128 | 70.590 → 92.991 | 4.979 → 4.606 | 29.284 → 35.831 |
+| 1,024 | 811.485 → 1037.825 | 27.286 → 27.638 | 277.696 → 371.791 |
+
+The 1,024-project placement rises **33.9%** (277.696 → 371.791 ms); setup rises 27.9%,
+planning is +1.3%. This new cost is not presented as accepted gameplay performance. The fixed-
+floor diagnostic no longer rebuilds optional parking geometry without freight docks, or computes
+Good intervals that its stored floor never projects into. D still independently reproves supply,
+and freight dock paths are retained. Compared with the first measured C3 implementation,
+publication drops from about 2.9 ms to about 2.0 ms; final products remain identical.
+
+| Background sites (synthetic gather fixture, not a populated city) | Selection ms C2 → C3 | Bake ms | Total ms |
+| ---: | ---: | ---: | ---: |
+| 0 | 0.077 → 0.064 | 0.727 → 0.709 | 0.803 → 0.772 |
+| 1,092 | 0.064 → 0.067 | 0.698 → 0.704 | 0.762 → 0.772 |
+| 10,212 | 0.062 → 0.061 | 0.664 → 0.675 | 0.727 → 0.736 |
+| 100,100 | 0.061 → 0.054 | 0.716 → 0.672 | 0.777 → 0.725 |
+
+Every graded-placement row retains digest `f089f4da76b81b28`, one tile and the same tile key;
+these sub-millisecond results do not offset the construction throughput increase.
+
+For the matched **200-lot, one minimal-asset** paint, release is **0.657 → 11.052 ms**.
+C2 does **zero solves** and leaves lot derivation queued; the portable C2 recorder prepares its
+200 lots after the timer. C3 completes derivation and **200 solves** inside release. The additional
+**two real house assets** use **400 solves**, 36.630–37.444 ms,
+mean **36.932 ms** (C3-only measurement, not a paired C2 comparison). Input selection, road and
+asset setup are outside the timer. This is a blocking release cost, not per-drag-frame work.
+
+[Traffic C3 locality](traffic.md#c3-verification-2026-11-23) records the fixed 12-lot/72-bay
+comparison as background buildings, parcels, agents and roads grow. Local products match and
+repeated planning/publication costs follow that fixed neighbourhood. **`PARK-24` performance
+acceptance remains open**: the C3 placement increase and 37 ms real paint release are explicit
+review costs; the previous C2 F failures remain unresolved, and no C3 F session was requested.
+
+**Files changed.** Production changes are confined to contact/quality solving, derived lot/site
+state and its existing edit journals, bridge/display fields and their tests. Constructor-only
+vegetation/site test updates supply the new default derived field. No asset schema, save format,
+engine, dependency, player data, or release package changes. Exact source/doc inventory:
+
+```text
+docs/project.md
+docs/roadmap.md
+docs/terrain.md
+docs/traffic.md
+docs/zoning.md
+godot/scripts/shaders/zoning_ground.gdshaderinc
+godot/scripts/tools/industry_building_tool.gd
+godot/scripts/tools/service_building_tool.gd
+godot/scripts/tools/zoning_tool.gd
+godot/scripts/ui/building_inspector.gd
+godot/tests/zoning_cells_tool_test.gd
+godot/tests/zoning_road_tool_test.gd
+rust/src/nodes/sim/bridge/assets.rs
+rust/src/nodes/sim/core/graded_edits.rs
+rust/src/nodes/sim/core/parking.rs
+rust/src/nodes/sim/core/populated_city/parking_supply.rs
+rust/src/nodes/sim/core/state.rs
+rust/src/nodes/sim/core/tests/building_site_terrain.rs
+rust/src/nodes/sim/core/tests/zoning_buildability.rs
+rust/src/nodes/sim/core/tests/zoning_buildability/cell_zoning/curves.rs
+rust/src/nodes/sim/core/tests/zoning_buildability/cell_zoning/merges.rs
+rust/src/nodes/sim/core/tests/zoning_buildability/cell_zoning/terrain.rs
+rust/src/nodes/sim/editing.rs
+rust/src/nodes/sim/editing/terrain_brush.rs
+rust/src/nodes/sim/save_load.rs
+rust/src/nodes/sim/zoning.rs
+rust/src/nodes/simulation_node/asset_api.rs
+rust/src/nodes/simulation_node/cell_zoning_api.rs
+rust/src/nodes/simulation_node/vegetation_api/snapshot_tests.rs
+rust/src/nodes/simulation_node/vegetation_api/tests.rs
+rust/src/nodes/simulation_node/vegetation_api/yard_preview.rs
+rust/src/nodes/simulation_node/zoning_api.rs
+rust/src/simulation/buildings/allocator/mod.rs
+rust/src/simulation/buildings/allocator/placement.rs
+rust/src/simulation/buildings/allocator/placement/contacts.rs
+rust/src/simulation/buildings/allocator/placement/feasibility.rs
+rust/src/simulation/buildings/allocator/placement/feasibility/zoning.rs
+rust/src/simulation/buildings/allocator/site.rs
+rust/src/simulation/buildings/allocator/site/derive.rs
+rust/src/simulation/buildings/allocator/site/grading.rs
+rust/src/simulation/buildings/allocator/site/model.rs
+rust/src/simulation/buildings/allocator/site/tests.rs
+rust/src/simulation/buildings/allocator/tests/placement.rs
+rust/src/simulation/economy/demand/actions.rs
+rust/src/simulation/economy/demand/display.rs
+rust/src/simulation/parking/ground.rs
+rust/src/simulation/terrain/graded/site_tests.rs
+rust/src/simulation/zoning/parcels/store.rs
+rust/src/simulation/zoning/parcels/types.rs
+rust/src/simulation/zoning/system/cell_lots/dirty.rs
+```
 
 #### C2 verification (2026-11-23)
 

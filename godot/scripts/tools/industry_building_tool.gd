@@ -341,6 +341,8 @@ func _update_preview() -> void:
 	var mesh: Mesh = null
 	var is_valid := bool(payload.get("valid", false))
 	var error := str(payload.get("error", ""))
+	if is_valid:
+		error = str(payload.get("warning", ""))
 	var build_cost := float(payload.get("build_cost", 0.0))
 	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
 	var part_transforms: PackedFloat32Array = payload.get("part_transforms", PackedFloat32Array())
@@ -509,9 +511,9 @@ func _apply_preview_price_label(
 	if not _price_label:
 		return
 	var price_text := "price %s" % _money(build_cost) + _demolition_text(demolish)
-	if not is_valid and not error.is_empty():
-		price_text += "  " + error
-		_price_label.add_theme_color_override("font_color", Color(1.0, 0.28, 0.18, 0.98))
+	if not error.is_empty():
+		price_text += ("\nRough yard:\n" + error.replace("; ", ";\n")) if is_valid else ("  " + error)
+		_price_label.add_theme_color_override("font_color", Color(1.0, 0.65, 0.10, 0.98) if is_valid else Color(1.0, 0.28, 0.18, 0.98))
 	else:
 		_price_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
 	_price_label.text = price_text

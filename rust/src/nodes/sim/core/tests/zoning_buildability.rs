@@ -352,121 +352,64 @@ fn hillside_houses_terrain_builds_clean() {
 
 #[test]
 fn feasibility_invalidates_changed_terrain_and_assets() {
+    use crate::simulation::buildings::allocator::YardVerdict;
     let mut core = flat_fixture();
-    let p = core.zoning.parcel_by_raw_id(7).unwrap();
-    let geometry = core
-        .zoning
-        .parcel_geometry_at(p.center().x, p.center().y)
-        .unwrap();
     let check = |core: &SimCore| {
-        core.allocator.zoning_site_feasibility(
-            &geometry,
-            1,
+        let assets = core
+            .allocator
+            .collect_spawn_asset_candidates_by_profile(&core.zoning, core.demand.runtime_catalog());
+        let p = core.zoning.parcel_by_raw_id(7).unwrap();
+        core.allocator.evaluate_lot_yard(
+            p,
             &core.zoning,
             &core.region_graph,
+            assets.get(&p.zone_profile_runtime_id()),
             environment(core),
         )
     };
-    assert!(check(&core).is_ok());
+    assert_eq!(check(&core).verdict, YardVerdict::Good);
     let solves = core.allocator.site_feasibility_solve_count();
-    assert!(check(&core).is_ok());
+    assert_eq!(check(&core).verdict, YardVerdict::Good);
     assert_eq!(core.allocator.site_feasibility_solve_count(), solves);
-    core.allocator.clear();
-    assert_eq!(core.allocator.site_feasibility_solve_count(), 0);
-    assert!(check(&core).is_ok());
-    assert!(
-        core.allocator.site_feasibility_solve_count() > 0,
-        "reset must discard even empty-city cached verdicts"
-    );
-    let deeper = crate::simulation::zoning::parcels::geometry_from_attachment(
-        &core.region_graph,
-        geometry.edge_idx,
-        geometry.side,
-        geometry.frontage_center_t,
-        20.0,
-        30.0,
-    );
-    let solves = core.allocator.site_feasibility_solve_count();
-    assert!(
-        core.allocator
-            .zoning_site_feasibility(
-                &deeper,
-                2,
-                &core.zoning,
-                &core.region_graph,
-                environment(&core)
-            )
-            .is_ok()
-    );
-    assert_eq!(
-        core.allocator.site_feasibility_solve_count(),
-        solves + 1,
-        "changed lot dimensions must use their own terrain footprint"
-    );
-    core.zoning.clear();
-    core.allocator.prune_site_feasibility(&core.zoning);
-    core.zoning
-        .restore_parcel_from_attachment(
-            7,
-            geometry.edge_idx,
-            geometry.side,
-            geometry.frontage_center_t,
-            geometry.frontage_m,
-            geometry.depth_m,
-            1,
-            &core.region_graph,
-        )
-        .unwrap();
-    let solves = core.allocator.site_feasibility_solve_count();
-    assert!(check(&core).is_ok());
-    assert_eq!(
-        core.allocator.site_feasibility_solve_count(),
-        solves + 1,
-        "removed parcel cache entries must be pruned"
-    );
-    // A changed road generation must not reuse a cached success from retained old products.
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(geometry.edge_idx);
-    assert!(check(&core).is_err());
-    core.precompute_road_mesh_data();
-    assert!(check(&core).is_ok());
-    let solves = core.allocator.site_feasibility_solve_count();
-    // The road is at the world center; the corner sample is outside its local dependency chunks.
     core.heightmap.set_height(0, 0, 30.0);
-    assert!(check(&core).is_ok());
+    assert_eq!(check(&core).verdict, YardVerdict::Good);
     assert_eq!(
         core.allocator.site_feasibility_solve_count(),
         solves,
-        "remote terrain must reuse local feasibility"
+        "remote terrain keeps local cache"
     );
-    // Past the tie-in reach (the graded terrain's 64 m cap, `docs/terrain.md` T12 (a)), so no ray
-    // reaches the unedited ground.
-    let grid = core
+    core.transit_network.roadbed.mark_edge_dirty(0);
+    assert_eq!(
+        check(&core).verdict,
+        YardVerdict::Impossible,
+        "stale roads cannot authorize growth"
+    );
+    core.precompute_road_mesh_data();
+    assert_eq!(check(&core).verdict, YardVerdict::Good);
+    let p = core.zoning.parcel_by_raw_id(7).unwrap();
+    let rect = core
         .heightmap
         .grid_rect_for_world_bounds(
-            geometry.aabb_min.x - 75.0,
-            geometry.aabb_min.y - 75.0,
-            geometry.aabb_max.x + 75.0,
-            geometry.aabb_max.y + 75.0,
+            p.aabb_min().x - 75.0,
+            p.aabb_min().y - 75.0,
+            p.aabb_max().x + 75.0,
+            p.aabb_max().y + 75.0,
         )
         .unwrap();
-    for z in grid.2..=grid.3 {
-        for x in grid.0..=grid.1 {
+    // Every ray now sees 200 normalized units, far beyond a 64 m × 1:2 cone + 3 m.
+    for z in rect.2..=rect.3 {
+        for x in rect.0..=rect.1 {
             core.heightmap.set_height(x, z, 200.0);
         }
     }
-    assert!(
-        check(&core).is_err(),
-        "cached buildability must not survive a local terrain edit"
-    );
+    assert_eq!(check(&core).verdict, YardVerdict::Impossible);
     let before = core.allocator.buildings.len();
     assert!(
         core.allocator
             .execute_demand_spawn_action(
                 &DemandSpawnAction {
                     parcel_id: 7,
-                    asset_id: "kenney:building.residential.family_single_house".into()
+                    asset_id: "kenney:building.residential.family_single_house".into(),
                 },
                 &mut core.zoning,
                 &core.region_graph,
@@ -475,73 +418,55 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning()
             )
-            .is_err(),
-        "a stale queued action must revalidate before insertion"
+            .is_err()
     );
     assert_eq!(core.allocator.buildings.len(), before);
-    assert!(core.zoning.parcel_by_raw_id(7).unwrap().is_available());
     core.allocator.registry.clear();
-    let solves = core.allocator.site_feasibility_solve_count();
-    assert!(
-        check(&core).is_err(),
-        "missing assets cannot bypass the common terrain rule"
-    );
-    for profile in core.zoning.profiles.profiles() {
-        assert_eq!(
-            core.allocator.zoning_site_feasibility(
-                &geometry,
-                profile.runtime_id,
-                &core.zoning,
-                &core.region_graph,
-                environment(&core)
-            ),
-            check(&core),
-            "profile {}",
-            profile.id
-        );
-    }
-    assert_eq!(
-        core.allocator.site_feasibility_solve_count(),
-        solves,
-        "profiles and asset removal reuse one terrain verdict"
-    );
+    assert_eq!(check(&core).verdict, YardVerdict::Impossible);
+    let p = core.zoning.parcel_by_raw_id(7).unwrap();
+    let geometry = core
+        .zoning
+        .parcel_geometry_at(p.center().x, p.center().y)
+        .unwrap();
     assert!(
         core.allocator
             .zoning_site_feasibility(
                 &geometry,
-                0,
+                1,
                 &core.zoning,
                 &core.region_graph,
                 environment(&core)
             )
             .is_ok(),
-        "unzoning must remain possible"
+        "terrain quality is displayed after paint, never silently refuses zoning"
     );
 }
 
 #[test]
 fn hillside_placement_records_fixed_street_contact_verdicts() {
-    let mut records = Vec::new();
-    for id in [6, 7, 8, 9, 16] {
-        let core = fixture();
-        let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
-            &core.zoning,
-            &core.region_graph,
-            core.demand.runtime_catalog(),
-            &[],
-            environment(&core),
-        );
-        records.push((
-            id,
-            candidates
-                .residential
-                .iter()
-                .any(|c| c.action.parcel_id == id),
-        ));
-    }
+    use crate::simulation::buildings::allocator::YardVerdict;
+    let mut core = fixture();
+    core.refresh_dirty_lot_yards();
+    let records: Vec<_> = [6, 7, 8, 9, 16]
+        .map(|id| {
+            let yard = core
+                .zoning
+                .parcel_by_raw_id(id)
+                .unwrap()
+                .yard
+                .as_ref()
+                .unwrap();
+            (id, yard.verdict)
+        })
+        .into();
     assert_eq!(
         records,
-        // C1 refused all five poses; road-following yards make parcels 6 and 9 feasible.
-        vec![(6, true), (7, false), (8, false), (9, true), (16, false)]
+        vec![
+            (6, YardVerdict::Good),
+            (7, YardVerdict::Rough),
+            (8, YardVerdict::Rough),
+            (9, YardVerdict::Good),
+            (16, YardVerdict::Rough)
+        ]
     );
 }

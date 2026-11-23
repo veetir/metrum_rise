@@ -39,7 +39,10 @@ fn occupied_curved_grid_survives_native_branch_commit_and_undo() {
         .flat_map(|angle| [false, true].map(|erased| (angle, erased)))
     {
         let (mut core, u, v) = curved_core(angle);
-        assert!(!core.prepare_cell_lots_internal().created.is_empty());
+        assert!(
+            !core.zoning.parcels().is_empty(),
+            "paint release already derives lots"
+        );
         let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
             &core.zoning,
             &core.region_graph,

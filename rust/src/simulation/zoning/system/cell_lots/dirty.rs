@@ -280,6 +280,21 @@ impl ZoningSystem {
         )
     }
 
+    /// Only the chunks touched by released paint and its existing conflict halo, in stable
+    /// order. Unrelated queued regions remain queued; later service of these chunks is a
+    /// cache hit/no-op. O(stroke cells + touched chunks log touched chunks).
+    pub(crate) fn cell_release_regions(&self, cells: &[CellKey]) -> Vec<CellBounds> {
+        let mut chunks = BTreeSet::new();
+        for &key in cells {
+            if let Some(bounds) = self.cell_key_halo(key) {
+                for_each_chunk(bounds, |chunk| {
+                    chunks.insert(chunk);
+                });
+            }
+        }
+        chunks.into_iter().map(chunk_bounds).collect()
+    }
+
     /// True only for queued authoring work; idle demand updates do not enumerate cells.
     pub(crate) fn has_dirty_cell_lots(&self) -> bool {
         !self.cell_lot_queue.is_empty()

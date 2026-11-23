@@ -145,7 +145,7 @@ fn describe_growth(
         ),
         (
             record.sites.unusable_lots,
-            "lots cannot fit a legal building with usable road access and terrain",
+            "lots cannot fit a building without rough terrain or unusable road access",
         ),
         (
             record.spawn_rejected_absorption,

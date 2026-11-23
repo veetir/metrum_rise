@@ -39,6 +39,7 @@ pub struct ParcelStore {
     // Storage order, geometry and zone profiles; occupancy and cell-lot tags excluded.
     layout_revision: u64,
     next_id: u64,
+    yard_dirty: HashSet<ParcelId>,
 }
 
 /// The parcel chunks beside the stretch `range` (physical metres from its start) of road `edge`,
@@ -145,6 +146,7 @@ impl Default for ParcelStore {
             overlay_revision: 0,
             layout_revision: 0,
             next_id: 1,
+            yard_dirty: HashSet::new(),
         }
     }
 }
@@ -212,7 +214,44 @@ impl ParcelStore {
             .filter_map(|&id| self.get(id))
     }
 
+    /// Queues only indexed parcels within a changed dependency window. O(local candidates).
+    pub(crate) fn mark_yards_in_bounds(&mut self, min: Vector2, max: Vector2) {
+        let mut ids = Vec::new();
+        self.visit_in_bounds(min, max, |p| ids.push(p.id()));
+        self.yard_dirty.extend(ids);
+    }
+
+    /// Takes the local edit queue in stable order. No allocation when the queue is empty.
+    pub(crate) fn take_dirty_yards(&mut self) -> Vec<ParcelId> {
+        let mut ids: Vec<_> = self.yard_dirty.drain().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Publishes a derived quality change through the existing per-chunk render revisions.
+    pub(crate) fn set_yard(
+        &mut self,
+        id: ParcelId,
+        yard: Option<crate::simulation::buildings::allocator::LotYard>,
+    ) {
+        let Some(&index) = self.id_to_index.get(&id) else {
+            return;
+        };
+        let p = &mut self.parcels[index];
+        if p.yard == yard {
+            return;
+        }
+        p.yard = yard;
+        mark_chunk_revisions(
+            &mut self.chunk_revisions,
+            &mut self.overlay_revision,
+            p.aabb_min(),
+            p.aabb_max(),
+        );
+    }
+
     fn mark_overlay_bounds(&mut self, min: Vector2, max: Vector2) {
+        self.mark_yards_in_bounds(min, max);
         mark_chunk_revisions(
             &mut self.chunk_revisions,
             &mut self.overlay_revision,
@@ -250,6 +289,7 @@ impl ParcelStore {
     /// Returns a mutable parcel reference for one stable id.
     pub fn get_mut(&mut self, id: ParcelId) -> Option<&mut ZoningParcel> {
         let index = *self.id_to_index.get(&id)?;
+        self.yard_dirty.insert(id);
         self.parcels.get_mut(index)
     }
 
@@ -270,6 +310,7 @@ impl ParcelStore {
     /// Removes all parcels and resets id allocation.
     pub fn clear(&mut self) {
         self.parcels.clear();
+        self.yard_dirty.clear();
         self.id_to_index.clear();
         self.chunk_index.clear();
         self.edge_index.clear();

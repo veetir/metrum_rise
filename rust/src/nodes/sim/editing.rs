@@ -750,6 +750,7 @@ impl SimCore {
         // not repeatedly observe a newer source generation paired with the previous mesh.
         self.precompute_road_mesh_data();
         self.rebuild_building_entrances_internal();
+        self.refresh_dirty_lot_yards();
         if self.has_authored_water_internal()
             && let Err(err) = self.rebuild_authored_water_preview_internal()
         {

@@ -201,16 +201,35 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
         let handle = core.allocator.building_handles.handle(best_idx).to_bits();
-        dict.set("parking_valid_places", core.parking.building_place_count(handle) as i64);
+        dict.set(
+            "parking_valid_places",
+            core.parking.building_place_count(handle) as i64,
+        );
+        if let Some(site) = core.allocator.building_sites.get(best_idx) {
+            dict.set(
+                "rough_yard",
+                site.yard.verdict == crate::simulation::buildings::allocator::YardVerdict::Rough,
+            );
+            dict.set("yard_reason", GString::from(site.yard.reason.as_str()));
+        }
         let rejected = core.parking_rejections(best_idx);
-        dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
+        dict.set(
+            "parking_rejected",
+            PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))),
+        );
         // Docks beside the parking places, only for an asset with a freight Driveway (`PARK-19`).
         if let Some((usable, bays, reasons)) = core.dock_lines(best_idx) {
             dict.set("dock_usable", usable as i64);
             dict.set("dock_bays", bays as i64);
-            dict.set("dock_rejected", PackedStringArray::from_iter(reasons.iter().map(|s| GString::from(s.as_str()))));
+            dict.set(
+                "dock_rejected",
+                PackedStringArray::from_iter(reasons.iter().map(|s| GString::from(s.as_str()))),
+            );
             let drives = core.dock_drive_lines(best_idx);
-            dict.set("dock_drives", PackedStringArray::from_iter(drives.iter().map(|s| GString::from(s.as_str()))));
+            dict.set(
+                "dock_drives",
+                PackedStringArray::from_iter(drives.iter().map(|s| GString::from(s.as_str()))),
+            );
         }
         dict.set("building_id", best_idx as i64);
         // The outline the inspector rings, at the bulldoze highlight's height.

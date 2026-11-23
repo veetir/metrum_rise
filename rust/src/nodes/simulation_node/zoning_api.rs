@@ -270,6 +270,8 @@ impl SimulationNode {
                 vdict! {
                     "valid": preview.valid,
                     "error": GString::from(&preview.rejection.map(message).unwrap_or_default()),
+                    "warning": GString::from(&preview.yard.reasons().join("; ")),
+                    "rough_yard": preview.yard.verdict == crate::simulation::buildings::allocator::YardVerdict::Rough,
                     "corners": corners,
                     "center_x": f64::from(preview.center_2d.x),
                     "center_z": f64::from(preview.center_2d.y),
@@ -882,6 +884,7 @@ impl SimulationNode {
         match result {
             Ok(_) => {
                 core.allocator.dirty = true;
+                core.refresh_dirty_lot_yards();
                 true
             }
             Err(_) => false,
@@ -1087,6 +1090,7 @@ impl SimulationNode {
         {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
+                core.refresh_dirty_lot_yards();
                 true
             }
             _ => false,
@@ -1214,6 +1218,7 @@ impl SimulationNode {
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
+                core.refresh_dirty_lot_yards();
                 true
             }
             _ => false,
@@ -1249,6 +1254,7 @@ impl SimulationNode {
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
+                core.refresh_dirty_lot_yards();
                 true
             }
             _ => false,

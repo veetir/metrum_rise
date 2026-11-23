@@ -710,6 +710,7 @@ impl SimCore {
         // The graded base-edit journal queued nearby lots, including already refused ones.
         // Release and undo publish only once, after all stroke samples/dependents are current.
         self.publish_parking_sites();
+        self.refresh_dirty_lot_yards();
         if self.has_authored_water_internal()
             && let Err(error) = self.rebuild_authored_water_preview_internal()
         {

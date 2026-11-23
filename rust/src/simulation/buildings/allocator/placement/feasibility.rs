@@ -147,6 +147,7 @@ impl Dependencies {
 
 #[derive(Clone)]
 struct CachedSite {
+    yard: YardAssessment,
     epoch: Epoch,
     dependencies: Arc<Dependencies>,
     verdict: Verdict,
@@ -175,7 +176,6 @@ const SITE_CACHE_SHARDS: usize = 32;
 pub(crate) struct SiteFeasibilityCache {
     entries: [Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>; SITE_CACHE_SHARDS],
     previews: Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>,
-    zoning: zoning::ZoningSiteCache,
     #[cfg(test)]
     solves: std::sync::atomic::AtomicU64,
 }
@@ -258,6 +258,7 @@ impl BuildingAllocator {
                     old.epoch = epoch;
                 }
                 reused = true;
+                p.yard = previous.yard;
                 previous.verdict
             } else if capture_missing {
                 self.cache_site_solution(p, graph, env, key, epoch)
@@ -311,6 +312,7 @@ impl BuildingAllocator {
                 epoch,
                 dependencies,
                 verdict,
+                yard: p.yard.clone(),
             },
         );
         verdict
@@ -318,7 +320,6 @@ impl BuildingAllocator {
 
     /// Drops results for removed, occupied, rezoned or reattached parcels during hourly collection.
     pub(crate) fn prune_site_feasibility(&self, zoning: &ZoningSystem) {
-        self.site_feasibility.zoning.prune(zoning);
         for shard in &self.site_feasibility.entries {
             shard.lock().unwrap().retain(|asset, poses| {
                 let Some(building) = self

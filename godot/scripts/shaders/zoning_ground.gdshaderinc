@@ -27,8 +27,13 @@ vec4 zoning_rectangle(int row, int layer, vec2 point, float pixel_m, float dista
 	float edge = (1.0 - smoothstep(0.12 - aa, 0.12 + aa, edge_m))
 		* min(1.0, 0.24 / aa) * (1.0 - smoothstep(400.0, 1800.0, distance_m));
 	// Style: occupied=0 (quieter fill keeps the zone readable), unpainted=0.5, painted=1, preview=2.
-	float fill = extent.z > 1.5 ? 0.50 : (extent.z > 0.75 ? 0.30 : (extent.z > 0.25 ? 0.015 : 0.15));
+	float fill = extent.z > 2.5 ? 0.40 : (extent.z > 1.5 ? 0.50 : (extent.z > 0.75 ? 0.30 : (extent.z > 0.25 ? 0.015 : 0.15)));
 	vec3 color = zoning_row(row + 2, layer).rgb;
+	// Rust emits Rough=3 (amber), Impossible=4 (red); coverage stays analytic.
+	if (extent.z > 2.5) {
+		float stripe = 1.0 - smoothstep(0.35 - aa, 0.35 + aa, abs(mod(point.x + point.y, 2.0) - 1.0));
+		fill += stripe * 0.18;
+	}
 	color = mix(color, min(color * 1.4 + vec3(0.12), vec3(1.0)), edge);
 	return vec4(color, mix(fill, extent.z < 0.25 ? 0.35 : 0.75, edge));
 }

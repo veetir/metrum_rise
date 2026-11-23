@@ -1360,6 +1360,10 @@ pub(crate) fn assert_allocator_sites_bake(
             bake_tiles(terrain, roadbed, allocator, &tiles, level, &mut out).expect("sites bake");
             baked += out.len();
         }
+        // Closed yard footprints may share a boundary (including legacy Rough joins).
+        // Their canonical owner supplies one height, not both sites' individual heights.
+        let mut canonical = SiteBuffer::default();
+        canonical.gather(allocator, bounds);
         // Pads at GL0.
         let own = tiles_of(bounds, 1.0);
         let payloads = bake_with(
@@ -1379,7 +1383,6 @@ pub(crate) fn assert_allocator_sites_bake(
                     if texel[1] < 0.0 || !site.contains_point(point) {
                         continue;
                     }
-                    // The first site in canonical order holds it; sites do not overlap.
                     let base = surface.base_height_at(x, z, &mut scratch);
                     let height = site
                         .terraces
@@ -1388,7 +1391,21 @@ pub(crate) fn assert_allocator_sites_bake(
                         .map_or(f64::from(site.support_height_m), |t| {
                             t.height_at(x, z, site.support_height_m)
                         });
-                    let want = (height - base) as f32;
+                    let mut want = (height - base) as f32;
+                    if texel[0].to_bits() != want.to_bits() {
+                        let holders = allocator
+                            .building_sites
+                            .iter()
+                            .filter(|s| s.contains_point(point))
+                            .count();
+                        assert!(
+                            holders > 1,
+                            "unique pad sample ({x}, {z}) must keep its own height"
+                        );
+                        let owner = canonical.pad_at(x, z);
+                        assert_ne!(owner, super::sites::NO_SITE);
+                        want = (canonical.height(owner, x, z) - base) as f32;
+                    }
                     assert_eq!(texel[0].to_bits(), want.to_bits(), "pad sample ({x}, {z})");
                     pad_samples += 1;
                 }

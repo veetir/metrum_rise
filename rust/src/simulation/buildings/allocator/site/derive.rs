@@ -15,7 +15,6 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::network::{graph::RegionGraph, roadbed::RoadbedSystem};
 use crate::simulation::parking::validation::ProofClass;
 use crate::simulation::terrain::graded::SiteTerrace;
-use crate::simulation::zoning::ParcelGeometry;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
 
@@ -348,6 +347,7 @@ impl BuildingAllocator {
             .unwrap_or_default();
 
         BuildingSiteClient {
+            yard: Default::default(),
             terraces: yard_plane
                 .and_then(|plane| {
                     let manifest = &self.registry.get(&building.asset_id)?.manifest;
@@ -706,20 +706,6 @@ pub(super) fn frontage_projection_limit(
 fn default_support_footprint_local(lot_half_width: f32, lot_half_depth: f32) -> Vec<Vector2> {
     let inset = lot_support_inset_m(lot_half_width, lot_half_depth);
     lot_footprint_local(lot_half_width - inset, lot_half_depth - inset)
-}
-
-/// Uses the selected parcel interior as a level pad, reserving the shared lot-edge grading strip.
-/// Its dimensions and orientation depend only on parcel geometry, never on installed assets.
-pub(crate) fn zoning_support_footprint(geometry: &ParcelGeometry) -> [Vector2; 4] {
-    let inset = lot_support_inset_m(geometry.frontage_m * 0.5, geometry.depth_m * 0.5);
-    let along = geometry.tangent * inset;
-    let inward = geometry.normal * inset;
-    [
-        geometry.corners[0] + along + inward,
-        geometry.corners[1] - along + inward,
-        geometry.corners[2] - along - inward,
-        geometry.corners[3] + along - inward,
-    ]
 }
 
 /// Width of the terrain-owned outer lot strip, clamped for very small lots.

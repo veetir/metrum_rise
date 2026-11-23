@@ -6,7 +6,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-Drivable yards (`PARK-24`/`PARK-25`, C2 for review on `wip/c1-placement`, format 128): [automatic road-following yards](terrain.md#drivable-yards-part-c-automatic-grading-c2) join level structures/landings through continuous banks while retaining C1 contacts; both widths place at 5%/10%, Kuopio/hillside poses rise to 5/8 and 2/5, and flat parking supply is unchanged. Functional checks pass; [performance remains failed/open](traffic.md#c2-automatic-yard-grading-and-performance-attribution): F exit 2 (1× worst-frame mean 48.15 ms), yard-query p50 +55.2%.
+Drivable yards (`PARK-24`/`PARK-25`, C3 for review): [measured Good/Rough/Impossible contacts](terrain.md#drivable-yards-part-c-automatic-grading-c2), Rough placement warnings and [early amber/red lot indicators](zoning.md#early-lot-quality-indicators-zone-15-c3) (`ZONE-15`); Kuopio 5 Good + 3 Rough, hillside 2 Good + 3 Rough, none Impossible. Steps 1–2 implemented, persistent in-yard brush repair designed/deferred under the allowed fallback; format 128 unchanged. All requested Rust/Godot tests and clippy pass; matched timings retain bounded locality but show +33.9% at 1,024 placements and 36.93 ms for a real 200-lot paint release. `PARK-24` performance acceptance remains open ([evidence](terrain.md#c3-verification-2026-11-23)).
 
 Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool pick and highlights), with road
 types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-30`),

@@ -142,16 +142,12 @@ impl SimulationNode {
                 .frame(key.grid)
                 .expect("indexed cell frame");
             let profile = core.zoning.cells.profile(key).unwrap_or(0);
-            let occupied = core
-                .zoning
-                .cells
-                .lot(key)
-                .and_then(|id| {
-                    core.zoning
-                        .parcels
-                        .get(crate::simulation::zoning::ParcelId::from_raw(id))
-                })
-                .is_some_and(|parcel| parcel.occupied_building().is_some());
+            let parcel = core.zoning.cells.lot(key).and_then(|id| {
+                core.zoning
+                    .parcels
+                    .get(crate::simulation::zoning::ParcelId::from_raw(id))
+            });
+            let occupied = parcel.is_some_and(|p| p.occupied_building().is_some());
             let style = if occupied {
                 0.0
             } else if profile == 0 {
@@ -161,7 +157,11 @@ impl SimulationNode {
             };
             rectangles.push(MaskRectangle {
                 corners: frame.corners(key.x, key.y),
-                color_style: mask_color(zoning_parcel_color(&core, profile, false), style),
+                color_style: yard_mask_color(
+                    zoning_parcel_color(&core, profile, false),
+                    style,
+                    parcel.and_then(|p| parcel_yard(&core, p)),
+                ),
             });
         }
         // ParcelStore's query is indexed but not ordered. Stable IDs define render precedence.
@@ -184,9 +184,10 @@ impl SimulationNode {
                             corners: parcel
                                 .corners()
                                 .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
-                            color_style: mask_color(
+                            color_style: yard_mask_color(
                                 zoning_parcel_color(&core, parcel.zone_profile_runtime_id(), false),
                                 style,
+                                parcel_yard(&core, parcel),
                             ),
                         },
                     ));
@@ -298,6 +299,29 @@ impl SimulationNode {
         result
     }
 
+    /// Stored lot quality under the zoning cursor; never performs a placement solve.
+    #[func]
+    pub fn get_zoning_lot_yard_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
+        let Some(core) = self.try_lock_core() else {
+            return VarDictionary::new();
+        };
+        let Some(parcel) = core.zoning.parcel_at(Vector2::new(world_x, world_z)) else {
+            return VarDictionary::new();
+        };
+        let yard = parcel
+            .occupied_building()
+            .and_then(|i| core.allocator.building_sites.get(i).map(|s| &s.yard))
+            .or(parcel.yard.as_ref());
+        let Some(yard) = yard else {
+            return VarDictionary::new();
+        };
+        vdict! { "verdict": GString::from(match yard.verdict {
+            crate::simulation::buildings::allocator::YardVerdict::Good => "Good",
+            crate::simulation::buildings::allocator::YardVerdict::Rough => "Rough yard",
+            crate::simulation::buildings::allocator::YardVerdict::Impossible => "Impossible site",
+        }), "reason": GString::from(yard.reason.as_str()) }
+    }
+
     /// Applies exactly the retained preview, rejecting stale dependencies and malformed addresses.
     /// Profile zero is Erase and uses the same selection and one-gesture undo transaction.
     #[func]
@@ -338,6 +362,29 @@ fn mask_version(core: &crate::nodes::sim::core::SimCore, chunk: (i32, i32)) -> [
         core.zoning.parcels.chunk_revision(chunk) as i64,
         core.terrain_payload_global_generation as i64,
     ]
+}
+
+fn parcel_yard<'a>(
+    core: &'a crate::nodes::sim::core::SimCore,
+    parcel: &'a crate::simulation::zoning::ZoningParcel,
+) -> Option<&'a crate::simulation::buildings::allocator::LotYard> {
+    parcel
+        .occupied_building()
+        .and_then(|i| core.allocator.building_sites.get(i).map(|s| &s.yard))
+        .or(parcel.yard.as_ref())
+}
+
+fn yard_mask_color(
+    color: Color,
+    style: f32,
+    yard: Option<&crate::simulation::buildings::allocator::LotYard>,
+) -> [f32; 4] {
+    use crate::simulation::buildings::allocator::YardVerdict;
+    match yard.map(|y| y.verdict) {
+        Some(YardVerdict::Rough) => mask_color(Color::from_rgb(1.0, 0.65, 0.10), 3.0),
+        Some(YardVerdict::Impossible) => mask_color(Color::from_rgb(1.0, 0.18, 0.12), 4.0),
+        _ => mask_color(color, style),
+    }
 }
 
 fn mask_color(color: Color, style: f32) -> [f32; 4] {
@@ -412,6 +459,27 @@ fn decode_preview(addresses: &[i64], dependencies: &[i64]) -> Option<CellToolPre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoning_yard_styles_keep_good_colors_and_mark_rough_and_impossible() {
+        use crate::simulation::buildings::allocator::{LotYard, YardVerdict};
+        let good = mask_color(Color::GREEN, 1.0);
+        assert_eq!(yard_mask_color(Color::GREEN, 1.0, None), good);
+        let yard = |verdict| LotYard {
+            verdict,
+            reason: "measured test".into(),
+        };
+        assert_eq!(
+            yard_mask_color(Color::GREEN, 1.0, Some(&yard(YardVerdict::Good))),
+            good
+        );
+        let amber = yard_mask_color(Color::GREEN, 1.0, Some(&yard(YardVerdict::Rough)));
+        let red = yard_mask_color(Color::GREEN, 1.0, Some(&yard(YardVerdict::Impossible)));
+        assert_eq!(amber[3], 3.0);
+        assert_eq!(red[3], 4.0);
+        assert!(amber[0] > amber[1] && amber[1] > amber[2]);
+        assert!(red[0] > red[1] * 4.0);
+    }
 
     #[test]
     fn chunk_requests_are_bounded_and_retry_after_completion_or_disconnect() {

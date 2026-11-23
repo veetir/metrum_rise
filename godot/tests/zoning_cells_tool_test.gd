@@ -13,6 +13,8 @@ class CellSimulationStub extends Node3D:
 	var previews := 0
 	var commits: Array = []
 	var paths: Array = []
+	func get_zoning_lot_yard_at(_x: float, _z: float) -> Dictionary:
+		return {}
 	func get_zone_profiles() -> Array:
 		return [{"runtime_id": 1}, {"runtime_id": 2}]
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
@@ -31,6 +33,8 @@ class CellSimulationStub extends Node3D:
 		return true
 
 func _run() -> void:
+	_expect(ZoningToolScript.yard_hover_text({"verdict": "Rough yard", "reason": "frontage bank requires 2.20 m; at most 1.00 m"}) == "Rough yard: frontage bank requires 2.20 m; at most 1.00 m", "Hover must retain Rust's verdict and measured reason")
+	_expect(ZoningToolScript.yard_hover_text({"verdict": "Good", "reason": ""}).is_empty(), "Good lots need no warning")
 	_test_cell_controller()
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
@@ -205,6 +209,22 @@ func _test_preview_mask_lifecycle() -> void:
 	var uploads: int = renderer._masks.uploads
 	renderer.set_preview(payload)
 	_expect(renderer._masks.uploads == uploads, "An unchanged preview uploads nothing")
+	# Quality changes only analytic style/color rows; conservative coverage stays identical.
+	for style in [3.0, 4.0]:
+		var quality: Dictionary = payload.duplicate(true)
+		var chunk: Dictionary = quality.masks[0]
+		var rows: PackedByteArray = chunk.rows.duplicate()
+		rows.encode_float(24, style)
+		rows.encode_float(32, 1.0)
+		rows.encode_float(36, 0.38 if style == 3.0 else 0.03)
+		rows.encode_float(40, 0.01)
+		chunk.rows = rows
+		renderer.set_preview(quality)
+		var key := Vector3i(chunk.chunk.x, chunk.chunk.y, 1)
+		var stored: Dictionary = renderer._masks.entries[key].payload
+		_expect(stored.mask == chunk.mask, "Quality tint preserves exact cell coverage")
+		_expect(stored.rows.decode_float(24) == style, "Amber/red style reaches ground rows")
+		_expect(is_equal_approx(stored.rows.decode_float(36), 0.38 if style == 3.0 else 0.03), "Quality tint reaches ground color rows")
 	# Controller cancellation clears its Dictionary before notifying the renderer. Both hold
 	# that same Dictionary, so emptiness alone must not suppress removing resident layers.
 	payload.clear()

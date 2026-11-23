@@ -38,7 +38,9 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 
 use super::geometry::frontage_side_offset_m;
+#[cfg(test)]
 use super::site::building_site_support_tie_in_is_valid;
+use super::site::grading::{YardAssessment, YardVerdict};
 
 const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
 const EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M: f32 = 20.0;
@@ -82,6 +84,129 @@ impl BuildingAllocator {
         sizes.sort_unstable();
         sizes.dedup();
         sizes
+    }
+
+    /// Best contact verdict across every allowed fitting asset, using the same cached solve
+    /// as growth. O(A × candidates × local rays/way samples); no city-wide lookup.
+    pub(crate) fn evaluate_lot_yard(
+        &self,
+        parcel: &ZoningParcel,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+        assets: Option<&SpawnProfileAssetCandidates>,
+        env: BuildingSiteEnvironment<'_>,
+    ) -> super::site::grading::LotYard {
+        use super::site::grading::LotYard;
+        if graph
+            .get_edge(parcel.edge_idx())
+            .is_none_or(|e| e.deleted || e.physical_geometry.len() < 2 || e.physical_length < 0.1)
+            || !graph.takes_buildings(parcel.edge_idx(), parcel.side())
+        {
+            return LotYard {
+                verdict: YardVerdict::Impossible,
+                reason: "Frontage road is missing or cannot take buildings".into(),
+            };
+        }
+        let mut best: Option<YardAssessment> = None;
+        let mut least_hard_excess = u32::MAX;
+        let mut reason = "No allowed asset fits this lot".to_owned();
+        if let Some(assets) = assets {
+            for asset in &assets.candidates {
+                let Some(mut p) =
+                    self.resolve_slot(&asset.qualified_id, &asset.params, parcel, zoning, graph)
+                else {
+                    continue;
+                };
+                match self.prepare_site_support_cached(&mut p, graph, env) {
+                    Ok(()) => {
+                        if best.as_ref().is_none_or(|old| {
+                            (p.yard.verdict, p.yard.excess) < (old.verdict, old.excess)
+                        }) {
+                            best = Some(p.yard);
+                        }
+                    }
+                    Err(error) => {
+                        let excess = match error {
+                            DemandSpawnPlacementRejection::StreetContactInvalid(i) => {
+                                i.measured.saturating_sub(i.limit)
+                            }
+                            _ => u32::MAX - 1,
+                        };
+                        if excess < least_hard_excess {
+                            least_hard_excess = excess;
+                            reason = site_rejection_message(error);
+                        }
+                    }
+                }
+            }
+        }
+        best.map_or(
+            LotYard {
+                verdict: YardVerdict::Impossible,
+                reason,
+            },
+            |a| LotYard::from_assessment(&a),
+        )
+    }
+
+    /// Current placed-floor contacts, run by the same site journal as parking reproof.
+    pub(crate) fn assess_placed_yard(
+        &self,
+        index: usize,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        environment: BuildingSiteEnvironment<'_>,
+    ) -> super::site::grading::LotYard {
+        use super::site::grading::LotYard;
+        let building = &self.buildings[index];
+        let Some(edge) = graph.get_edge(building.edge_idx).filter(|e| !e.deleted) else {
+            return LotYard {
+                verdict: YardVerdict::Impossible,
+                reason: "Frontage road is missing".into(),
+            };
+        };
+        let p = ResolvedPlacement {
+            yard: YardAssessment::default(),
+            terraces: self.building_sites[index].terraces.clone(),
+            replaced_building: Some(index),
+            asset_id: building.asset_id.clone(),
+            build_generation: building.build_generation,
+            zone_profile_runtime_id: building.zone_profile_runtime_id,
+            zone_type: building.zone_type,
+            initial_level: building.level,
+            parcel_id: building.parcel_id,
+            edge_idx: building.edge_idx,
+            side: building.side,
+            cell_x: building.cell_x,
+            width_cells: building.width_cells as usize,
+            depth_cells: building.depth_cells as usize,
+            zone_cell_m,
+            center_2d: Vector2::new(building.center_x, building.center_y),
+            support_height_m: building.support_height_m,
+            facing_dir: building.facing_dir,
+            frontage_t: building.frontage_t,
+            side_offset_m: frontage_side_offset_m(edge, building.side),
+            front_gap_m: building.front_gap_m,
+        };
+        let result = self
+            .resolve_site_support_connections(&p, graph, environment.road_surface)
+            .and_then(|(_, connections)| {
+                self.solve_street_contacts(
+                    &p,
+                    &self.placement_required_flat_support_footprint(&p),
+                    &connections,
+                    &[],
+                    graph,
+                    environment,
+                )
+            });
+        match result {
+            Ok((_, yard)) => LotYard::from_assessment(&yard),
+            Err(error) => LotYard {
+                verdict: YardVerdict::Impossible,
+                reason: site_rejection_message(error),
+            },
+        }
     }
 
     /// Collects one preferred legal asset per lot, before economic reservations.
@@ -195,6 +320,9 @@ impl BuildingAllocator {
                             return candidates;
                         };
 
+                        if resolved.yard.verdict == YardVerdict::Rough {
+                            candidates.availability[index].unusable_lots += 1;
+                        }
                         let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
                         candidates.push_zone_type(
                             zone_type,
@@ -403,6 +531,7 @@ impl BuildingAllocator {
                     continue;
                 }
                 let selection_key = (
+                    resolved.yard.verdict,
                     priority,
                     stable_parcel_selection_hash(
                         profile_runtime_id,
@@ -557,6 +686,7 @@ impl BuildingAllocator {
         let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
         let placement = ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             replaced_building,
             asset_id: asset_id.to_owned(),
@@ -787,6 +917,7 @@ impl BuildingAllocator {
             facing_dir: placement.facing_dir,
             valid: rejection.is_none(),
             rejection,
+            yard: placement.yard,
         })
     }
 
@@ -1117,6 +1248,7 @@ impl BuildingAllocator {
         .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
 
         Ok(ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             replaced_building: None,
             asset_id: asset_id.to_owned(),
@@ -1465,39 +1597,6 @@ impl BuildingAllocator {
         false
     }
 
-    fn validate_site_support_tie_in(
-        &self,
-        placement: &ResolvedPlacement,
-        graph: &RegionGraph,
-        road_surface: &RoadbedSystem,
-        terrain: &TerrainSystem,
-    ) -> Result<(), DemandSpawnPlacementRejection> {
-        let footprint_world = self.placement_required_flat_support_footprint(placement);
-        if building_site_support_tie_in_is_valid(
-            &footprint_world,
-            placement.support_height_m,
-            terrain,
-            graph,
-            road_surface,
-        ) {
-            return Ok(());
-        }
-
-        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
-        debug_log!(
-            "economy",
-            "building placement rejected: asset={} parcel={} flat support footprint cannot tie into surrounding terrain/road within slope budget bounds=({:.1},{:.1})-({:.1},{:.1}) support_height_m={:.2}",
-            placement.asset_id,
-            placement.parcel_id,
-            min_x,
-            min_z,
-            max_x,
-            max_z,
-            placement.support_height_m,
-        );
-        Err(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)
-    }
-
     /// Validates new asset support at the committed pose/height, excluding only its own old site.
     pub(super) fn replacement_site_is_valid(
         &self,
@@ -1515,6 +1614,7 @@ impl BuildingAllocator {
             return false;
         };
         let mut placement = ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             replaced_building: Some(building_idx),
             asset_id: asset_id.to_owned(),
@@ -1594,7 +1694,7 @@ impl BuildingAllocator {
             .placement_yard_terrace(placement, graph, road_surface)
             .into_iter()
             .collect();
-        placement.support_height_m = self.solve_street_contacts(
+        let (height, yard) = self.solve_street_contacts(
             placement,
             &footprint,
             connections,
@@ -1605,10 +1705,8 @@ impl BuildingAllocator {
                 terrain,
             },
         )?;
-        if placement.terraces.is_empty() {
-            self.validate_neighbor_site_height(placement, placement.support_height_m, taken)?;
-            self.validate_site_support_tie_in(placement, graph, road_surface, terrain)?;
-        }
+        placement.support_height_m = height;
+        placement.yard = yard;
         Ok(())
     }
 
@@ -1799,6 +1897,7 @@ impl BuildingAllocator {
 
     // The site height against its neighbours' other than `taken` (descending), the buildings a
     // placement demolishes (`ZONE-11`).
+    #[cfg(test)]
     fn validate_neighbor_site_height(
         &self,
         placement: &ResolvedPlacement,
@@ -1820,6 +1919,7 @@ impl BuildingAllocator {
 
     // The neighbour height check of a flat support footprint, `replaced_building` and `taken`
     // (descending) excluded.
+    #[cfg(test)]
     fn validate_footprint_neighbor_height(
         &self,
         footprint_world: &[Vector2],
@@ -2279,6 +2379,8 @@ pub(crate) struct PreparedExplicitPlacement(ResolvedPlacement);
 
 /// World-space preview of one explicit service building footprint.
 pub(crate) struct ExplicitServicePlacementPreview {
+    /// Derived contact warnings; Rough previews remain committable.
+    pub(crate) yard: YardAssessment,
     /// Ground-plane footprint corners in metres, ordered around the lot perimeter.
     pub(crate) corners: [Vector2; 4],
     /// World-space centre of the snapped candidate footprint.
@@ -2299,6 +2401,28 @@ fn expected_utility_service_for_class(service_class: &str) -> Option<&'static st
         "water" => Some("water"),
         "waste" => Some("sewage"),
         _ => None,
+    }
+}
+
+fn site_rejection_message(error: DemandSpawnPlacementRejection) -> String {
+    match error {
+        DemandSpawnPlacementRejection::StreetContactInvalid(issue) => issue.message(),
+        DemandSpawnPlacementRejection::DrivewayConnectionMissing => {
+            "Driveway cannot reach its road connection".into()
+        }
+        DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing => {
+            "Driveway road surface is missing".into()
+        }
+        DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing => {
+            "Frontage road surface is missing".into()
+        }
+        DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
+            "Neighbouring structure support heights conflict".into()
+        }
+        DemandSpawnPlacementRejection::SiteSupportTieInInvalid => {
+            "Site has no feasible ground connection".into()
+        }
+        _ => "No allowed asset fits this lot".into(),
     }
 }
 
@@ -2466,6 +2590,7 @@ impl SpawnProfileAssetCandidates {
 }
 
 struct ResolvedPlacement {
+    yard: YardAssessment,
     terraces: Vec<crate::simulation::terrain::graded::SiteTerrace>,
     replaced_building: Option<usize>,
     // Redevelopment generation of the claimed parcel, carried so the placed building and the
@@ -2494,6 +2619,7 @@ struct ResolvedPlacement {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DemandSpawnCandidateSortKey {
+    yard: YardVerdict,
     edge_idx: usize,
     side_order: u8,
     cell_x: usize,
@@ -2506,6 +2632,7 @@ struct DemandSpawnCandidateSortKey {
 impl DemandSpawnCandidateSortKey {
     fn from_resolved(placement: &ResolvedPlacement) -> Self {
         Self {
+            yard: placement.yard.verdict,
             edge_idx: placement.edge_idx,
             side_order: spawn_side_order(placement.side),
             cell_x: placement.cell_x,
@@ -2783,6 +2910,7 @@ mod tests {
         allocator
             .building_sites
             .push(super::super::site::BuildingSiteClient {
+                yard: Default::default(),
                 terraces: Vec::new(),
                 structure_world: Vec::new(),
                 vehicle_structure_world: None,
@@ -2798,6 +2926,7 @@ mod tests {
                 surfaces: Vec::new(),
             });
         let touching = ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             build_generation: 0,
             replaced_building: None,
@@ -2820,6 +2949,7 @@ mod tests {
             front_gap_m: [0.0; 3],
         };
         let overlapping = ResolvedPlacement {
+            yard: YardAssessment::default(),
             terraces: Vec::new(),
             build_generation: 0,
             replaced_building: None,
@@ -2859,6 +2989,7 @@ mod tests {
         let mut candidates = vec![
             (
                 DemandSpawnCandidateSortKey {
+                    yard: YardVerdict::Good,
                     edge_idx: 3,
                     side_order: 0,
                     cell_x: 0,
@@ -2871,6 +3002,7 @@ mod tests {
             ),
             (
                 DemandSpawnCandidateSortKey {
+                    yard: YardVerdict::Good,
                     edge_idx: 2,
                     side_order: 1,
                     cell_x: 0,
@@ -2883,6 +3015,7 @@ mod tests {
             ),
             (
                 DemandSpawnCandidateSortKey {
+                    yard: YardVerdict::Good,
                     edge_idx: 2,
                     side_order: 0,
                     cell_x: 1,
@@ -2895,6 +3028,7 @@ mod tests {
             ),
             (
                 DemandSpawnCandidateSortKey {
+                    yard: YardVerdict::Good,
                     edge_idx: 2,
                     side_order: 0,
                     cell_x: 0,
@@ -2914,6 +3048,15 @@ mod tests {
             .collect();
 
         assert_eq!(parcel_ids, vec![40, 30, 20, 10]);
+        candidates[0].0.yard = YardVerdict::Rough;
+        sort_demand_spawn_candidates(&mut candidates);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|(_, c)| c.action.parcel_id)
+                .collect::<Vec<_>>(),
+            vec![30, 20, 10, 40]
+        );
     }
 
     #[test]

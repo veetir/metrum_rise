@@ -159,6 +159,10 @@ impl SimCore {
         // `pieces` holds every old and new piece, bridges and tunnels too, and a changed segment
         // lies in one of them.
         self.invalidate_parked_ground(changes.pieces.iter().copied(), GRADED_CHANGE_REACH_M);
+        for &bounds in &changes.pieces {
+            self.mark_lot_yards_in_bounds(bounds);
+        }
+        self.refresh_dirty_lot_yards();
         if !self.graded_edits.enabled {
             return;
         }
@@ -231,6 +235,10 @@ impl SimCore {
             changes.iter().map(|change| change.bounds.map(f64::from)),
             GRADED_CHANGE_REACH_M,
         );
+        for change in changes {
+            self.mark_lot_yards_in_bounds(change.bounds.map(f64::from));
+        }
+        self.refresh_dirty_lot_yards();
         if !self.graded_edits.enabled || changes.is_empty() {
             return;
         }
@@ -267,6 +275,7 @@ impl SimCore {
         // and the rectangle's outward rounding, as `dirty_tiles_for_base_area` selects.
         let cell_m = f64::from(self.heightmap.cell_size_m());
         self.invalidate_parked_ground([rect], 2.0 * cell_m + 1.0);
+        self.mark_lot_yards_in_bounds(rect);
         if self.graded_edits.enabled {
             self.push_graded_edit(GradedEditKind::Base(rect));
         }

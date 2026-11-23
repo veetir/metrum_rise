@@ -210,7 +210,7 @@ pub(crate) struct SpawnSiteAvailability {
     pub(crate) free_lots: usize,
     /// Free parcels with no eligible initial asset for their particular profile.
     pub(crate) missing_asset_lots: usize,
-    /// Free parcels whose roads, size, access or terrain prevent a legal placement.
+    /// Free parcels that are Impossible or need a Rough yard; a diagnostic, not a spawn veto.
     pub(crate) unusable_lots: usize,
 }
 

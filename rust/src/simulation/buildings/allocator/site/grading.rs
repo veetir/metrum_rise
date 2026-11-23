@@ -33,11 +33,45 @@ pub(crate) struct StreetContactIssue {
     pub(crate) limit: u32,
     /// Display unit (metres or percent).
     pub(crate) unit: &'static str,
+    // Unrounded values as f32 bits: preserve Eq and sub-centimetre diagnostic failures.
+    values: [u32; 2],
 }
 
 impl StreetContactIssue {
+    /// Retains exact measurements independently of their usual two-decimal presentation.
+    pub(crate) fn new(
+        constraint: &'static str,
+        measured: f32,
+        limit: f32,
+        unit: &'static str,
+    ) -> Self {
+        Self {
+            constraint,
+            measured: (measured * 100.0).round() as u32,
+            limit: (limit * 100.0).round() as u32,
+            unit,
+            values: [measured.to_bits(), limit.to_bits()],
+        }
+    }
+
+    fn excess(self) -> f32 {
+        (f32::from_bits(self.values[0]) - f32::from_bits(self.values[1])).max(0.0)
+    }
+
     /// Player-facing measured constraint, shared by preview and commit errors.
     pub(crate) fn message(self) -> String {
+        if self.measured == self.limit
+            && f32::from_bits(self.values[0]) > f32::from_bits(self.values[1])
+        {
+            return format!(
+                "{} requires {:.6} {}; at most {:.6} {}",
+                self.constraint,
+                f32::from_bits(self.values[0]),
+                self.unit,
+                f32::from_bits(self.values[1]),
+                self.unit
+            );
+        }
         format!(
             "{} requires {:.2} {}; at most {:.2} {}",
             self.constraint,
@@ -47,6 +81,167 @@ impl StreetContactIssue {
             self.unit
         )
     }
+}
+
+// More than three metres at the frontage needs engineered retaining works, not yard repair.
+pub(crate) const HARD_FRONTAGE_BANK_M: f32 = 3.0;
+// A three-metre discontinuity at a door, driveway or fixed-road tie-in is not a usable site.
+pub(crate) const HARD_CONTACT_DIFFERENCE_M: f32 = 3.0;
+
+/// Derived site quality, ordered for deterministic floor, asset and lot selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum YardVerdict {
+    /// Every subtle contact limit is met.
+    #[default]
+    Good,
+    /// At least one subtle limit is missed, but the site may be repaired.
+    Rough,
+    /// A hard physical bound or a required road connection fails.
+    Impossible,
+}
+
+/// Derived display state stored beside a free lot or a placed site's geometry; never saved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LotYard {
+    /// Best quality among allowed fitting assets (or the placed asset's current quality).
+    pub(crate) verdict: YardVerdict,
+    /// Binding measured reason, or all missed limits for a placed building.
+    pub(crate) reason: String,
+}
+
+impl LotYard {
+    /// Display product for one successful contact solve.
+    pub(crate) fn from_assessment(yard: &YardAssessment) -> Self {
+        Self {
+            verdict: yard.verdict,
+            reason: yard.reasons().join("\n"),
+        }
+    }
+}
+
+/// Measured contact maxima and total excess for one floor; derived only at edit boundaries.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct YardAssessment {
+    /// Best quality permitted by all measurements.
+    pub(crate) verdict: YardVerdict,
+    /// Worst measurement of each contact rule, including rules within their limit.
+    pub(crate) measurements: Vec<StreetContactIssue>,
+    /// Sum of positive native-unit excesses at all sampled contacts (before display rounding).
+    pub(crate) excess: f32,
+    /// First exceeded hard bound, measured against that bound.
+    pub(crate) hard_issue: Option<StreetContactIssue>,
+}
+
+impl YardAssessment {
+    /// Records a measurement without rounding the decision or the floor score.
+    pub(crate) fn measure(
+        &mut self,
+        name: &'static str,
+        value: f32,
+        limit: f32,
+        unit: &'static str,
+        hard: bool,
+    ) {
+        let issue = StreetContactIssue::new(name, value, limit, unit);
+        if let Some(old) = self.measurements.iter_mut().find(|i| i.constraint == name) {
+            if issue
+                .excess()
+                .total_cmp(&old.excess())
+                .then(value.total_cmp(&f32::from_bits(old.values[0])))
+                .is_gt()
+            {
+                *old = issue;
+            }
+        } else {
+            self.measurements.push(issue);
+        }
+        if value > limit + 0.0001 {
+            self.verdict = self.verdict.max(YardVerdict::Rough);
+            self.excess += value - limit;
+        }
+        if hard && self.hard_issue.is_none() {
+            self.verdict = YardVerdict::Impossible;
+            self.hard_issue = Some(StreetContactIssue::new(
+                name,
+                value,
+                HARD_CONTACT_DIFFERENCE_M,
+                unit,
+            ));
+        }
+    }
+
+    /// Measured missed limits for the inspector and preview; all decisions remain in Rust.
+    pub(crate) fn reasons(&self) -> Vec<String> {
+        self.measurements
+            .iter()
+            .filter(|i| f32::from_bits(i.values[0]) > f32::from_bits(i.values[1]) + 0.0001)
+            .map(|i| i.message())
+            .collect()
+    }
+}
+
+/// Measures every grading ray at its own road distance, retaining the binding values.
+/// O(boundary rays × grading rings × local road query cost), independent of city size.
+pub(crate) fn measure_site_tie_in(
+    footprint: &[Vector2],
+    height: impl Fn(Vector2) -> f32,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    roads: &RoadbedSystem,
+    result: &mut YardAssessment,
+) {
+    let context = SiteGradingContext::new(
+        terrain,
+        graph,
+        roads,
+        BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
+        BUILDING_SITE_SUPPORT_TIE_IN_REACH_M,
+    );
+    visit_footprint_grading_rays(footprint, context.safe_step_m, |seam, outward| {
+        let h = height(seam);
+        let mut soft_best = f32::INFINITY;
+        for d in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
+            let p = seam + outward * d;
+            if let Some(target) = roads.exposed_height_at(p.x, p.y) {
+                let rise = (target - h).abs();
+                result.measure(
+                    "fixed-road tie-in grade",
+                    rise / d * 100.0,
+                    crate::simulation::terrain::graded::TIE_IN_SLOPE as f32 * 100.0,
+                    "%",
+                    false,
+                );
+                // The road's allowed cone already accounts for its distance from the yard.
+                let excess = (rise - road_budget(d)).max(0.0);
+                if excess > HARD_CONTACT_DIFFERENCE_M && result.hard_issue.is_none() {
+                    result.measure(
+                        "fixed-road height excess",
+                        excess,
+                        HARD_CONTACT_DIFFERENCE_M,
+                        "m",
+                        true,
+                    );
+                }
+            } else {
+                let target =
+                    building_site_raw_tie_in_target_height(p, d, context.terrain, context.roads);
+                soft_best = soft_best.min(
+                    ((target - h).abs() - road_budget(d) - BUILDING_SITE_SUPPORT_TIE_IN_EPS_M)
+                        .max(0.0),
+                );
+            }
+        }
+        if soft_best.is_finite() {
+            result.measure(
+                "terrain grading envelope excess",
+                soft_best,
+                0.0,
+                "m",
+                soft_best > HARD_CONTACT_DIFFERENCE_M,
+            );
+        }
+        true
+    });
 }
 
 /// Roads seen by site grading: the graph for nearest-edge probes, the roadbed for heights.
@@ -116,6 +311,7 @@ struct FootprintEdge {
     sample_count: u32,
 }
 
+#[cfg(test)]
 pub(crate) fn building_site_support_tie_in_is_valid(
     footprint_world: &[Vector2],
     support_height_m: f32,
@@ -141,6 +337,7 @@ pub(crate) fn building_site_support_tie_in_is_valid(
 
 /// The same C1 ring/contact rules evaluated at each yard boundary's own height. A fixed road
 /// refusal retains its measured grade; soft-ground infeasibility has no invented road excess.
+#[cfg(test)]
 pub(crate) fn building_site_surface_tie_in(
     footprint: &[Vector2],
     height: impl Fn(Vector2) -> f32,
@@ -166,73 +363,18 @@ pub(crate) fn building_site_surface_tie_in(
             if let Some(target) = roads.exposed_height_at(p.x, p.y)
                 && (target - h).abs() > road_budget(d) + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M
             {
-                reason = Some(StreetContactIssue {
-                    constraint: "fixed-road tie-in grade",
-                    measured: ((target - h).abs() / d * 10_000.0).round() as u32,
-                    limit: (crate::simulation::terrain::graded::TIE_IN_SLOPE * 10_000.0).round()
-                        as u32,
-                    unit: "%",
-                });
+                reason = Some(StreetContactIssue::new(
+                    "fixed-road tie-in grade",
+                    (target - h).abs() / d * 100.0,
+                    crate::simulation::terrain::graded::TIE_IN_SLOPE as f32 * 100.0,
+                    "%",
+                ));
                 break;
             }
         }
         false
     });
     if valid { Ok(()) } else { Err(reason) }
-}
-
-/// Chooses the closest feasible level pad to the preferred road-connection height.
-/// Intersects exact unions of the existing ray-height intervals, plus driveway grade intervals;
-/// it does not raise the slope limit or move the road. Ties choose the lower height. The rays
-/// read the base terrain and the roads out to the graded terrain's cap (`docs/terrain.md` T12
-/// (a)).
-pub(crate) fn solve_building_site_support_height(
-    footprint: &[Vector2],
-    preferred: f32,
-    connections: &[(Vector2, f32)],
-    terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    surface: &RoadbedSystem,
-) -> Option<f32> {
-    if footprint.len() < 3 || !preferred.is_finite() || connections.is_empty() {
-        return None;
-    }
-    let mut low = f32::NEG_INFINITY;
-    let mut high = f32::INFINITY;
-    for &(point, height) in connections {
-        let distance = if point_in_polygon_slice(point, footprint) {
-            0.0
-        } else {
-            (0..footprint.len())
-                .map(|i| {
-                    let a = footprint[i];
-                    let delta = footprint[(i + 1) % footprint.len()] - a;
-                    let t = ((point - a).dot(delta) / delta.length_squared()).clamp(0.0, 1.0);
-                    point.distance_to(a + delta * t)
-                })
-                .fold(f32::INFINITY, f32::min)
-        };
-        let budget = distance * crate::simulation::terrain::graded::TIE_IN_SLOPE as f32;
-        low = low.max(height - budget);
-        high = high.min(height + budget);
-    }
-    if low > high {
-        return None;
-    }
-    let intervals = site_support_intervals(footprint, terrain, graph, surface)?;
-    intervals
-        .into_iter()
-        .filter_map(|(lo, hi)| {
-            let lo = lo.max(low);
-            let hi = hi.min(high);
-            (lo <= hi).then(|| preferred.clamp(lo, hi))
-        })
-        .min_by(|a, b| {
-            (a - preferred)
-                .abs()
-                .total_cmp(&(b - preferred).abs())
-                .then(a.total_cmp(b))
-        })
 }
 
 // An undrawn bank near a frontage may rise only one metre. Larger level differences need
@@ -300,42 +442,6 @@ pub(crate) fn site_support_intervals(
         !intervals.is_empty()
     });
     valid.then_some(intervals)
-}
-
-/// Reports incompatible immutable road samples using their actual ray distances.
-pub(crate) fn fixed_road_issue(
-    footprint: &[Vector2],
-    surface: &RoadbedSystem,
-) -> Option<StreetContactIssue> {
-    let mut lower = (f32::NEG_INFINITY, 0.0, 0.0);
-    let mut upper = (f32::INFINITY, 0.0, 0.0);
-    visit_footprint_grading_rays(
-        footprint,
-        BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
-        |seam, outward| {
-            for d in grading_ring_distances(
-                BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
-                BUILDING_SITE_SUPPORT_TIE_IN_REACH_M,
-            ) {
-                let p = seam + outward * d;
-                if let Some(h) = surface.exposed_height_at(p.x, p.y) {
-                    if h - road_budget(d) > lower.0 {
-                        lower = (h - road_budget(d), h, d);
-                    }
-                    if h + road_budget(d) < upper.0 {
-                        upper = (h + road_budget(d), h, d);
-                    }
-                }
-            }
-            true
-        },
-    );
-    (lower.0 > upper.0).then(|| StreetContactIssue {
-        constraint: "fixed-road tie-in grade",
-        measured: (((lower.1 - upper.1) / (lower.2 + upper.2)) * 10_000.0).round() as u32,
-        limit: (crate::simulation::terrain::graded::TIE_IN_SLOPE * 10_000.0).round() as u32,
-        unit: "%",
-    })
 }
 
 fn road_budget(distance: f32) -> f32 {
@@ -411,6 +517,7 @@ pub(crate) fn visit_footprint_grading_rays(
     true
 }
 
+#[cfg(test)]
 fn building_site_support_tie_in_ray_is_valid(
     seam_height_m: f32,
     seam: Vector2,

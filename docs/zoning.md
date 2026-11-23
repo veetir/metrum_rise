@@ -141,12 +141,10 @@ Single-parcel placement is all-or-nothing.
 - Missing compatible initial-level assets do not block zoning, including when installed assets
   have another density, require a later building level or exceed the selected lot dimensions.
   Such parcels retain their selected profile and wait for compatible content before growth.
-- Every density tests the selected lot's level interior and shared 2 m perimeter grading strip
-  through the existing site-support solver, independent of installed assets. The footprint follows
-  the selected frontage and depth; tiny lots use the same capped inset as building lots. Failed
-  road, terrain or neighboring-site tie-ins remain red and cannot become new zoned lots.
-  Preview and commit never stamp terrain or insert a building. Runtime id `0` remains available
-  for free/unzoned parcels even when terrain support fails.
+- Terrain quality does not refuse zoning intent. At paint release Rust evaluates every eligible
+  fitting initial asset for each new lot: Good before Rough before Impossible (`ZONE-15`).
+  Impossible lots remain painted, visibly red and unable to grow; Rough lots remain growable
+  with amber warnings. Preview and commit never stamp terrain or insert a building.
 - Successful parcel placement records only zoning/legal intent. Terrain integration is deferred
   until `BuildingAllocator` accepts an actual building placement and the `EARTH-02` building-site
   client is registered.
@@ -161,15 +159,12 @@ cancelling the whole preview or commit. If no generated candidate is legal, the 
 mutation. On curves, Rust may widen spacing between generated
 parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
 
-Site feasibility filters every geometrically legal layout; previews retain failed lots in red.
-The common lot result is cached by footprint and road attachment, without profile or asset keys,
-so switching density cannot change its terrain verdict. Road, terrain and neighboring-site edits
-invalidate affected solutions; asset registration alone does not. Geometry and reservations remain
-enforced independently. Existing saved parcels are not silently deleted when blocked. Demand uses
-the same grading solver with each actual asset's footprint and dependency-aware cache; a smaller
-building may still fit an existing lot whose full zoning pad fails. Redevelopment ignores the
-parcel's own occupied site, not neighbors. Buildings still require compatible assets, valid site
-support, demand and economic eligibility at construction time.
+The rebuilt verdict and binding reason live beside their parcel, not in the save. Profile and
+asset eligibility determine the best result; geometry/reservations remain independently enforced.
+Demand uses the same cached actual-asset contact solve, prefers Good assets/lots and only uses
+Rough when no Good asset fits the lot. Impossible contributes to `unusable_lots`; the existing
+“lots cannot fit” growth diagnostic also counts Rough, with wording that they cannot fit without
+rough terrain/access. Redevelopment retains its stored floor and ignores its own old site.
 
 When dragging from an existing parcel, the first generated parcel starts after:
 
@@ -1382,8 +1377,11 @@ free an occupied footprint for another building. A compatible repaint can cancel
 
 For cell mode, distinguish paintable geometry from actual building feasibility. Painting does not
 stamp terrain or promise construction; actual lot footprints use the existing terrain/site solver
-before growth. Manual-parcel terrain validation retains its current behavior. Terrain, road and
-neighboring-site changes invalidate only affected derived feasibility and lot candidates.
+before growth. Manual parcels also retain zoning intent on bad terrain. Terrain, road and
+neighboring-site changes invalidate only affected derived verdicts/lots through the existing edit
+journals and local parcel chunks; release/undo publishes the updated quality immediately. No
+contact solve runs each drag frame. A pending road lot snapshot is adopted before verdict writes;
+local windows wait outside it so they cannot copy the entire parcel store.
 
 Save both workflows: existing manual parcels, persistent frames/provenance, painted cell data,
 derived lot coverage/ids and redevelopment generations. Regenerate caches and overlay meshes on
@@ -1832,10 +1830,13 @@ u32 `2 * row + 1` (one rectangle) or an even `2 * row` (an interned candidate li
 rotated or sub-texel boundaries share a texel). The shader tests the exact rectangles, so edges
 are analytic at any zoom and the mask resolution never shows. Row layer zero maps world chunks to
 their committed and preview layers. Styles: painted 30 % fill, occupied 15 % (zone stays readable
-under buildings), unpainted 1.5 %, preview 50 %; brighter edges from world-position derivatives, fading over 400–1800 m.
+under buildings), unpainted 1.5 %, preview 50 %; C3 Rough=3 is amber and Impossible=4 red,
+40 % fill with diagonal hatching. Hover reads Rust's stored verdict and measured reason. Placed
+Rough sites retain amber ground style while zoning is visible and an amber inspector state alert.
+Brighter edges from world-position derivatives, fading over 400–1800 m.
 
-Refresh: cell, parcel/occupancy revisions and the world-reset epoch; height changes do not touch
-the mask. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
+Refresh: cell, parcel/occupancy revisions and the world-reset epoch. Height alone does not move
+mask geometry, but a changed lot verdict stamps its parcel chunk and uploads changed style rows. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
 most two committed chunks rebuild per frame, and a rebuild costs the indexed local query plus
 `O(C log C + T + B)` (C rectangles, T = 65,536 texels, B their clipped texel-AABB area), built
 after the simulation lock is released. Paint-only changes upload the rows layer, not the mask:
@@ -4060,3 +4061,21 @@ A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps it
 not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
 usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
 before.
+
+### Early lot-quality indicators (`ZONE-15`, C3)
+
+At released paint, evaluate the stroke's existing chunk/conflict halo immediately. A lot keeps
+its best Good/Rough/Impossible result across all allowed fitting initial assets, using the same
+asset/pose cache as the hourly growth planner. Road, base terrain, site edits and undo mark local
+dependency windows; unchanged background lots are not scanned. Load rebuilds this unsaved state.
+The cost for N lots and A assets is O(N A × placement solve); the detailed C/R/W bound and the
+~200-lot release measurement belong to [terrain C3](terrain.md#c3-verification-2026-11-23).
+The brush-repair policy and deferred persistent override design are owned by terrain Part C.
+
+Fresh C3 release measurement (eight unpinned workers): 200 lots × one minimal asset complete
+release in 11.052 ms mean versus C2's 0.657 ms deferred return (zero solves). The two real
+allowed house assets complete 400 solves at release in 36.630–37.444 ms, mean 36.932 ms;
+that extra real-asset measurement is C3-only. These are blocking release costs with setup and
+selection excluded; no contact solve runs during dragging. Commands, executable identities and
+the full cost/expectation ledger are in terrain C3 verification. This does not close the open
+placement/frame performance acceptance under `PARK-24`.

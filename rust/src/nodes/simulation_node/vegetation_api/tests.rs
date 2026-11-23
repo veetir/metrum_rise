@@ -1770,6 +1770,7 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     (building.center_x, building.center_y) = (10.0, 10.0);
     core.allocator.buildings.push(building);
     core.allocator.push_site_client(BuildingSiteClient {
+        yard: Default::default(),
         terraces: Vec::new(),
         structure_world: vec![[house[0], house[1], house[2], house[3]]],
         vehicle_structure_world: None,

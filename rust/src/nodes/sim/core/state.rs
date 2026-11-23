@@ -342,6 +342,8 @@ pub struct SimCore {
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
+    /// Local contact dependency windows held until pending lot snapshots are adopted.
+    pub(crate) lot_yard_changes: Vec<[f64; 4]>,
     /// Site boxes whose render-patch ownership the building removal queue left for later slots
     /// (`SIM-02-K`), oldest first: render state only, refreshed one a light slot. Derived.
     pub(crate) deferred_site_terrain_boxes: std::collections::VecDeque<(f32, f32, f32, f32)>,
@@ -507,6 +509,7 @@ impl SimCore {
             terrain_query_index_update_us: 0,
             last_surface_debug_edges: Vec::new(),
             deferred_site_terrain_boxes: Default::default(),
+            lot_yard_changes: Vec::new(),
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),

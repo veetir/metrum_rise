@@ -32,6 +32,8 @@ impl ParcelId {
 /// Authored parcel or cell-derived lot used as building-spawn authority.
 #[derive(Clone, Debug)]
 pub struct ZoningParcel {
+    // Rebuilt contact verdict, separate from persisted parcel authority.
+    pub(crate) yard: Option<crate::simulation::buildings::allocator::LotYard>,
     id: ParcelId,
     edge_idx: usize,
     side: i8,
@@ -191,6 +193,7 @@ impl ZoningParcel {
     ) -> Self {
         Self {
             id,
+            yard: None,
             edge_idx: geometry.edge_idx,
             side: geometry.side,
             frontage_center_t: geometry.frontage_center_t,

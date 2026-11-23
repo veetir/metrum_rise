@@ -243,6 +243,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	_fill_power(pages["Power"], info)
 	_fill_stock(pages["Stock"], info)
 	_row(pages["Parking"], "Valid places", str(info.get("parking_valid_places", 0)))
+	if info.get("rough_yard", false):
+		_add_alert(pages["Parking"], "Rough yard: " + str(info.get("yard_reason", "")), false)
 	var parking_rejected: PackedStringArray = info.get("parking_rejected", PackedStringArray())
 	for reason in parking_rejected:
 		_add_alert(pages["Parking"], reason, false)
@@ -267,7 +269,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			page.free()
 			continue
 		tabs.add_child(page)
-		if title == "Parking" and not (parking_rejected.is_empty() and dock_rejected.is_empty()):
+		if title == "Parking" and (info.get("rough_yard", false) or not (parking_rejected.is_empty() and dock_rejected.is_empty())):
 			var index := tabs.get_tab_count() - 1
 			tabs.set_tab_icon(index, load(HudIcons.ICON_DIR + "warning.svg") as Texture2D)
 			tabs.set_tab_icon_max_width(index, int(UIStyle.scaled_px(13.0)))
@@ -469,6 +471,8 @@ func _style_tabs(tabs: TabContainer, accent: Color) -> void:
 
 # Broken assets and economies in red; deserted, rezoning and construction in yellow.
 func _add_alerts(stats_body: VBoxContainer, info: Dictionary) -> void:
+	if info.get("rough_yard", false):
+		_add_alert(stats_body, "Rough yard", false)
 	if info.get("broken", false):
 		_add_alert(stats_body, "Asset broken", true)
 	if info.get("economy_broken", false):

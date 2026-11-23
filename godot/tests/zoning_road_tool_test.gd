@@ -18,6 +18,8 @@ class SimulationStub extends Node3D:
 		"corners": PackedVector3Array([Vector3(-10, 0, -6), Vector3(10, 0, -6), Vector3(10, 0, -26), Vector3(-10, 0, -26)]),
 		"color": Color.GREEN,
 	}
+	func get_zoning_lot_yard_at(_x: float, _z: float) -> Dictionary:
+		return {}
 	func get_zone_profiles() -> Array:
 		return [{"runtime_id": 1}, {"runtime_id": 2}]
 	func get_zoning_site_dependencies() -> PackedInt64Array:
@@ -177,7 +179,7 @@ func _test_terrain_consistency() -> void:
 	# (500 m) reaches the target wherever the brush's falloff exceeds 0.2.
 	simulation.level_terrain(Vector2(0, 60), 40.0, 100.0, 25.0)
 	var reference := simulation.get_zoning_road_preview_packed(edge, 1, 2, 2, 0.0)
-	_expect(reference.valid_count > 0 and reference.valid_count < reference.parcel_count, "Steep ground rejects only the affected lots without assets")
+	_expect(reference.valid_count == flat.valid_count, "Steep ground retains zoning intent; released lots carry quality")
 	var colors: PackedColorArray = reference.colors
 	for profile in simulation.get_zone_profiles():
 		if profile.zone_type != "residential":
@@ -185,10 +187,14 @@ func _test_terrain_consistency() -> void:
 		var preview := simulation.get_zoning_road_preview_packed(edge, profile.runtime_id, 2, 2, 0.0)
 		_expect(preview.valid_count == reference.valid_count and preview.corners == reference.corners, "Every density has identical terrain eligibility and geometry")
 		for index in range(colors.size()):
-			_expect((preview.colors[index].r > preview.colors[index].g) == (colors[index].r > colors[index].g), "Every density marks the same steep lots red")
-		_expect(not simulation.get_zoning_parcel_preview(0.0, 16.0, profile.runtime_id, 2, 2).get("valid", true), "Single lots use the same asset-independent terrain check")
-	_expect(simulation.apply_zoning_road_at(0.0, 0.0, 2, 2, 2, 0.0), "Medium-density road fill commits the terrain-valid subset")
+			_expect((preview.colors[index].r > preview.colors[index].g) == (colors[index].r > colors[index].g), "Density previews retain their ordinary profile styles until release")
+		_expect(simulation.get_zoning_parcel_preview(0.0, 16.0, profile.runtime_id, 2, 2).get("valid", false), "Single lots retain zoning intent on steep terrain")
+	_expect(simulation.apply_zoning_road_at(0.0, 0.0, 2, 2, 2, 0.0), "Medium-density road fill commits legal geometry on steep terrain")
 	_expect(simulation.get_zoning_parcels_overlay().size() == reference.valid_count, "Terrain preview and commit accept the same number of lots")
+	var corners: PackedVector3Array = reference.corners
+	var centre := (corners[0] + corners[2]) * 0.5
+	var yard: Dictionary = simulation.get_zoning_lot_yard_at(centre.x, centre.z)
+	_expect(yard.get("verdict", "") == "Impossible site" and not str(yard.get("reason", "")).is_empty(), "Released no-asset lots immediately expose their binding reason")
 
 func _test_manual_group_fill() -> void:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "Manual group zoning fixture must load")

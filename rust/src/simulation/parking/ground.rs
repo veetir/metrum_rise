@@ -120,39 +120,15 @@ fn visible_sample(
     }
 }
 
-/// A measured way limit, before rounding its player-facing diagnostic.
-pub(crate) struct WayConstraint {
-    /// Physical constraint that failed.
-    pub(crate) name: &'static str,
-    /// Measured rise or grade.
-    pub(crate) measured: f32,
-    /// Allowed rise or grade in the same unit.
-    pub(crate) limit: f32,
-    /// Metres, percent, or percentage points.
-    pub(crate) unit: &'static str,
-}
-
-/// Placement checks a driveway's actual rendered approach and retains the same measured
-/// failure as the parking proof, without parsing a display string.
-pub(crate) fn way_constraint(
+/// Visits every measured driveway rule, including passing measurements, for site verdicts.
+/// O(path samples), fixed scratch; parking still uses its first-refusal proof.
+pub(crate) fn measure_way(
     path: &[Vector2],
     roads: &RoadbedSystem,
     height: &mut impl FnMut(Vector2) -> f32,
-) -> Option<WayConstraint> {
-    let mut measured = None;
-    check_way_report(
-        path,
-        |p| visible_sample(p, roads, height),
-        |name, value, limit, unit| {
-            measured = Some(WayConstraint {
-                name,
-                measured: value,
-                limit,
-                unit,
-            });
-        },
-    );
-    measured
+    report: impl FnMut(&'static str, f32, f32, &'static str),
+) {
+    check_way_report::<true>(path, |p| visible_sample(p, roads, height), report);
 }
 
 // Global half-metre stations continue through corners (not restarted per leg). `HISTORY`
@@ -160,10 +136,10 @@ pub(crate) fn way_constraint(
 // station.
 // O(legs + samples), constant scratch, no work on a simulation tick.
 fn check_way(path: &[Vector2], sample: impl FnMut(Vector2) -> Sample) -> Option<String> {
-    check_way_report(path, sample, |_, _, _, _| {})
+    check_way_report::<false>(path, sample, |_, _, _, _| {})
 }
 
-fn check_way_report(
+fn check_way_report<const ALL: bool>(
     path: &[Vector2],
     mut sample: impl FnMut(Vector2) -> Sample,
     mut report: impl FnMut(&'static str, f32, f32, &'static str),
@@ -215,6 +191,14 @@ fn check_way_report(
         let rise = current.height - previous.height;
         if let Some(from) = crossing.take() {
             let run = distance - from;
+            if ALL && rise.abs() <= MAX_STEP_M + DRIVE_GRADE * run + HEIGHT_EPS_M {
+                report(
+                    "Driveway footway rise",
+                    rise.abs(),
+                    MAX_STEP_M + DRIVE_GRADE * run,
+                    "m",
+                );
+            }
             if rise.abs() > MAX_STEP_M + DRIVE_GRADE * run + HEIGHT_EPS_M {
                 report(
                     "Driveway footway rise",
@@ -222,12 +206,14 @@ fn check_way_report(
                     MAX_STEP_M + DRIVE_GRADE * run,
                     "m",
                 );
-                return Some(format!(
-                    "not drivable: the yard is {:.2} m {} the street across the footway (at most {:.2} m)",
-                    rise.abs(),
-                    if rise > 0.0 { "above" } else { "below" },
-                    MAX_STEP_M,
-                ));
+                if !ALL {
+                    return Some(format!(
+                        "not drivable: the yard is {:.2} m {} the street across the footway (at most {:.2} m)",
+                        rise.abs(),
+                        if rise > 0.0 { "above" } else { "below" },
+                        MAX_STEP_M,
+                    ));
+                }
             }
             // The kerb part of the rise is waived; its grade part stays in the wheelbase window,
             // which spans the crossing between the history's stations.
@@ -270,12 +256,14 @@ fn check_way_report(
             correction += rise;
         } else if rise.abs() > MAX_STEP_M + HEIGHT_EPS_M {
             report("Driveway step", rise.abs(), MAX_STEP_M, "m");
-            return Some(format!(
-                "not drivable: the way in from the street has a {:.2} m step in {:.2} m (at most {:.2} m)",
-                rise.abs(),
-                distance - history[HISTORY - 1].0,
-                MAX_STEP_M,
-            ));
+            if !ALL {
+                return Some(format!(
+                    "not drivable: the way in from the street has a {:.2} m step in {:.2} m (at most {:.2} m)",
+                    rise.abs(),
+                    distance - history[HISTORY - 1].0,
+                    MAX_STEP_M,
+                ));
+            }
         }
         let adjusted = current.height - correction;
         // Every whole wheelbase of way, or a whole way shorter than one.
@@ -293,6 +281,14 @@ fn check_way_report(
             };
             let climb = (adjusted - before).abs();
             let run = distance - target;
+            if ALL && climb <= DRIVE_GRADE * run + HEIGHT_EPS_M {
+                report(
+                    "Driveway grade",
+                    climb / run * 100.0,
+                    DRIVE_GRADE * 100.0,
+                    "%",
+                );
+            }
             if climb > DRIVE_GRADE * run + HEIGHT_EPS_M {
                 report(
                     "Driveway grade",
@@ -300,13 +296,15 @@ fn check_way_report(
                     DRIVE_GRADE * 100.0,
                     "%",
                 );
-                return Some(format!(
-                    "not drivable: the way in from the street climbs {:.2} m in {:.2} m ({:.1} %, at most {:.0} %)",
-                    climb,
-                    run,
-                    climb / run * 100.0,
-                    DRIVE_GRADE * 100.0,
-                ));
+                if !ALL {
+                    return Some(format!(
+                        "not drivable: the way in from the street climbs {:.2} m in {:.2} m ({:.1} %, at most {:.0} %)",
+                        climb,
+                        run,
+                        climb / run * 100.0,
+                        DRIVE_GRADE * 100.0,
+                    ));
+                }
             }
         }
         if distance >= 2.0 * WINDOW_M {
@@ -324,6 +322,14 @@ fn check_way_report(
             let middle = height_at(distance - WINDOW_M);
             let before = height_at(distance - 2.0 * WINDOW_M);
             let change = ((adjusted - middle) - (middle - before)).abs() / WINDOW_M;
+            if ALL && change <= MAX_GRADE_CHANGE + HEIGHT_EPS_M / WINDOW_M {
+                report(
+                    "Driveway grade change per wheelbase",
+                    change * 100.0,
+                    MAX_GRADE_CHANGE * 100.0,
+                    "percentage points",
+                );
+            }
             if change > MAX_GRADE_CHANGE + HEIGHT_EPS_M / WINDOW_M {
                 report(
                     "Driveway grade change per wheelbase",
@@ -331,12 +337,14 @@ fn check_way_report(
                     MAX_GRADE_CHANGE * 100.0,
                     "percentage points",
                 );
-                return Some(format!(
-                    "not drivable: the way in changes grade by {:.1} percentage points per {:.1} m wheelbase (at most {:.0})",
-                    change * 100.0,
-                    WINDOW_M,
-                    MAX_GRADE_CHANGE * 100.0
-                ));
+                if !ALL {
+                    return Some(format!(
+                        "not drivable: the way in changes grade by {:.1} percentage points per {:.1} m wheelbase (at most {:.0})",
+                        change * 100.0,
+                        WINDOW_M,
+                        MAX_GRADE_CHANGE * 100.0
+                    ));
+                }
             }
         }
         history.rotate_left(1);
