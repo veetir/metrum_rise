@@ -26,6 +26,7 @@ use godot::prelude::{Vector2, Vector3};
 #[test]
 fn site_radius_is_measured_from_the_indexed_lot_center() {
     let site = BuildingSiteClient {
+        terraces: Vec::new(),
         structure_world: Vec::new(),
         vehicle_structure_world: None,
         planting_world: Vec::new(),
@@ -387,6 +388,7 @@ fn road_test_edge(
 
 fn square_site_with_surface() -> BuildingSiteClient {
     BuildingSiteClient {
+        terraces: Vec::new(),
         structure_world: Vec::new(),
         vehicle_structure_world: None,
         planting_world: Vec::new(),
@@ -529,7 +531,7 @@ fn derived_site_client_uses_required_flat_support_footprint() {
     building.operating_budget = 0.0;
     building.profit_tax_budget_baseline = 0.0;
 
-    let site = allocator.derive_building_site_client(&building, 10.0);
+    let site = allocator.derive_building_site_client(&building, 10.0, None);
 
     assert!((signed_polygon_area(&site.footprint_world).abs() - 400.0).abs() <= 0.001);
     assert!((signed_polygon_area(&site.lot_footprint_world).abs() - 400.0).abs() <= 0.001);

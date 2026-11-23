@@ -67,6 +67,13 @@ impl SimCore {
         }
         buildings.sort_unstable();
         buildings.dedup();
+        for &i in &buildings {
+            self.allocator.regrade_building_site(
+                i,
+                &self.region_graph,
+                &self.transit_network.roadbed,
+            );
+        }
         let lots: Vec<_> = crate::thread_pools::install(|| {
             buildings
                 .into_par_iter()
@@ -175,37 +182,21 @@ impl SimCore {
                 ..*surface
             };
             let mut block = crate::simulation::terrain::graded::LatticeBlock::default();
-            let Some(site) = self.allocator.building_sites.get(index) else {
+            if self.allocator.building_sites.get(index).is_none() {
                 return LotProof::default();
-            };
-            let (x0, z0, x1, z1) = site.bounds();
-            let center = godot::prelude::Vector2::new((x0 + x1) * 0.5, (z0 + z1) * 0.5);
-            let reach = (x1 - x0).max(z1 - z0) * 0.5 + 8.0;
-            let mut gathered = false;
+            }
             lot_proof(
                 &self.allocator,
                 index,
                 &self.region_graph,
                 &self.transit_network.roadbed,
                 |p| {
-                    if indexed {
-                        return surface.surface_height_in_block(
-                            f64::from(p.x),
-                            f64::from(p.y),
-                            &mut block,
-                            scratch,
-                        ) as f32;
-                    }
-                    if !gathered {
-                        surface.gather_near(
-                            f64::from(center.x),
-                            f64::from(center.y),
-                            f64::from(reach),
-                            scratch,
-                        );
-                        gathered = true;
-                    }
-                    surface.surface_height_near(f64::from(p.x), f64::from(p.y), scratch) as f32
+                    surface.surface_height_in_block(
+                        f64::from(p.x),
+                        f64::from(p.y),
+                        &mut block,
+                        scratch,
+                    ) as f32
                 },
             )
         })

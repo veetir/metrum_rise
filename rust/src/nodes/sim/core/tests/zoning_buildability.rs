@@ -541,6 +541,7 @@ fn hillside_placement_records_fixed_street_contact_verdicts() {
     }
     assert_eq!(
         records,
-        vec![(6, false), (7, false), (8, false), (9, false), (16, false)]
+        // C1 refused all five poses; road-following yards make parcels 6 and 9 feasible.
+        vec![(6, true), (7, false), (8, false), (9, true), (16, false)]
     );
 }

@@ -134,6 +134,49 @@ fn gameplay_terrain_keeps_building_pad_height_when_free_ground_moves() {
     assert_ne!(core.heightmap.clone_source_dense(), terrain);
 }
 
+#[test]
+fn site_reload_rederives_the_same_sloped_yard_and_retains_the_floor() {
+    let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
+    let mut core = road_edit_order::committed(&strokes, &[0], true);
+    let asset = register_yard(&mut core);
+    let building = place_yard(&mut core, 0, 1.0, &asset).unwrap();
+    let site = &core.allocator.building_sites[building];
+    let floor = site.support_height_m.to_bits();
+    let terraces = site.terraces.clone();
+    assert!(!terraces.is_empty());
+    let p = &terraces[0].footprint_world;
+    let points: Vec<_> = [0.1, 0.4, 0.8]
+        .into_iter()
+        .flat_map(|u| {
+            [0.1, 0.4, 0.8]
+                .into_iter()
+                .map(move |v| p[0].lerp(p[1], u).lerp(p[3].lerp(p[2], u), v))
+        })
+        .collect();
+    let heights: Vec<_> = points
+        .iter()
+        .map(|&p| core.get_world_surface_height_internal(p).to_bits())
+        .collect();
+    let path = temp_save_path("sloped-yard-derived-reload");
+    core.save_game_settled(path.to_str().unwrap(), None)
+        .unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        core.allocator.buildings[building]
+            .support_height_m
+            .to_bits(),
+        floor
+    );
+    assert_eq!(core.allocator.building_sites[building].terraces, terraces);
+    for (&p, expected) in points.iter().zip(heights) {
+        assert_eq!(
+            core.get_world_surface_height_internal(p).to_bits(),
+            expected
+        );
+    }
+}
+
 fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
     let mut fresh = TerrainQueryIndex::default();
     fresh.rebuild_all(&core.transit_network.roadbed, &core.allocator);
@@ -464,7 +507,7 @@ fn kuopio_yard_edge(core: &SimCore, road: usize, side: f32) -> (usize, f32) {
 }
 
 #[test]
-fn placement_kuopio_yards_record_the_stricter_fixed_road_refusals() {
+fn placement_kuopio_yards_record_sloped_yard_contact_verdicts() {
     use crate::simulation::buildings::allocator::DemandSpawnPlacementRejection;
     let mut core = test_core();
     core.load_game_internal(concat!(
@@ -493,15 +536,13 @@ fn placement_kuopio_yards_record_the_stricter_fixed_road_refusals() {
     assert_eq!(
         rejected,
         vec![
-            (1, -1.0, "fixed-road tie-in grade"),
-            (1, 1.0, "fixed-road tie-in grade"),
+            (1, 1.0, "terrain tie-in"),
             (2, -1.0, "frontage bank"),
             (2, 1.0, "frontage bank"),
-            (3, -1.0, "fixed-road tie-in grade"),
-            (3, 1.0, "fixed-road tie-in grade")
         ]
     );
-    assert_eq!(core.allocator.buildings.len(), 2);
+    // C1 placed 2/8. Local yard heights now let both road-3 poses and road-1/-1 place.
+    assert_eq!(core.allocator.buildings.len(), 5);
     assert_eq!(core.zoning.parcels().len(), 8);
 }
 

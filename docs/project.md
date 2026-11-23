@@ -6,7 +6,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-Drivable yards (`PARK-24`/`PARK-25`, branch `feat/drivable-yards`, for review, format 127): placement constrains fixed roads, Driveways and entrances with measured refusals; paving supports stalls to the lot edge at 5%; terraces remain [design only](terrain.md#drivable-yards-part-c-design-only), and [performance acceptance](traffic.md#park-24-verification-2026-11-22) remains open after failed frame-tail comparisons and 1× limits.
+Drivable yards (`PARK-24`/`PARK-25`, C2 for review on `wip/c1-placement`, format 128): [automatic road-following yards](terrain.md#drivable-yards-part-c-automatic-grading-c2) join level structures/landings through continuous banks while retaining C1 contacts; both widths place at 5%/10%, Kuopio/hillside poses rise to 5/8 and 2/5, and flat parking supply is unchanged. Functional checks pass; [performance remains failed/open](traffic.md#c2-automatic-yard-grading-and-performance-attribution): F exit 2 (1× worst-frame mean 48.15 ms), yard-query p50 +55.2%.
 
 Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool pick and highlights), with road
 types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-30`),

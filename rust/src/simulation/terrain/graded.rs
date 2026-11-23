@@ -44,7 +44,7 @@ pub use select::{
     dirty_tiles_for_road_changes, dirty_tiles_for_road_changes_where, dirty_tiles_for_site_changes,
     road_change_extent, selection_site_reach_m,
 };
-pub use sites::{NoSites, SiteBuffer, SiteSource};
+pub use sites::{NoSites, SiteBuffer, SiteSource, SiteTerrace};
 pub use stage::{
     ALL_LEVELS, LevelRule, LevelView, StageScratch, StageStats, StagedTile, TileStage, stage_selected,
     stage_tiles,

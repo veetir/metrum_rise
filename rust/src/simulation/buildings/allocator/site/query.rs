@@ -124,7 +124,12 @@ impl BuildingAllocator {
         let mut found = false;
         self.site_cells.visit(query.rect, |idx| {
             found |= self.building_sites.get(idx).is_some_and(|site| {
-                query.holds(site) && polygon_meets_rect(&site.footprint_world, query.rect)
+                query.holds(site)
+                    && (polygon_meets_rect(&site.footprint_world, query.rect)
+                        || site
+                            .terraces
+                            .iter()
+                            .any(|t| polygon_meets_rect(&t.footprint_world, query.rect)))
             });
         });
         found
@@ -143,7 +148,7 @@ impl BuildingAllocator {
             if best.is_some_and(|(best_idx, _)| best_idx <= idx) || !query.holds(site) {
                 return;
             }
-            let on_site = site_footprint_contains(&site.footprint_world, pos)
+            let on_site = site.contains_point(pos)
                 || site
                     .surfaces
                     .iter()
@@ -348,7 +353,11 @@ impl BuildingSiteTerrainSnapshot {
                         .enumerate()
                         .filter(|(_, site)| {
                             query.holds_parts(site.lot_center, || {
-                                site_surface_bounds(&site.footprint_world, &site.surfaces)
+                                site_surface_bounds(
+                                    &site.footprint_world,
+                                    &site.surfaces,
+                                    &site.terraces,
+                                )
                             })
                         })
                         .map(|(site, _)| (index as u32, site as u32)),
@@ -359,6 +368,9 @@ impl BuildingSiteTerrainSnapshot {
             for candidate in candidates.iter() {
                 let site = client(candidate);
                 out.push_site(&site.footprint_world, site.support_height_m);
+                for terrace in &site.terraces {
+                    out.push_terrace(terrace);
+                }
                 for surface in &site.surfaces {
                     out.push_surface(surface.material, &surface.vertices_world);
                 }
@@ -378,6 +390,20 @@ impl BuildingSiteTerrainClient {
             .to_bits()
             .cmp(&other.support_height_m.to_bits())
             .then_with(|| bits(&self.footprint_world).cmp(bits(&other.footprint_world)))
+            .then_with(|| {
+                fn terraces(site: &BuildingSiteTerrainClient) -> impl Iterator<Item = u64> + '_ {
+                    site.terraces.iter().flat_map(|t| {
+                        t.plane
+                            .map(f64::to_bits)
+                            .into_iter()
+                            .chain(std::iter::once(t.footprint_world.len() as u64))
+                            .chain(bits(&t.footprint_world).flatten().map(u64::from))
+                            .chain(std::iter::once(t.level_footprint_world.len() as u64))
+                            .chain(bits(&t.level_footprint_world).flatten().map(u64::from))
+                    })
+                }
+                terraces(self).cmp(terraces(other))
+            })
             .then_with(|| self.surfaces.len().cmp(&other.surfaces.len()))
             .then_with(|| {
                 self.surfaces
@@ -396,6 +422,9 @@ impl BuildingSiteTerrainClient {
 
 fn push_graded_site(site: &BuildingSiteClient, out: &mut SiteBuffer) {
     out.push_site(&site.footprint_world, site.support_height_m);
+    for terrace in &site.terraces {
+        out.push_terrace(terrace);
+    }
     for surface in &site.surfaces {
         out.push_surface(surface.material, &surface.vertices_world);
     }
@@ -416,6 +445,7 @@ impl BuildingAllocator {
                 let site = self.building_sites.get(building_idx)?;
                 site.overlaps_bounds(min_x, min_z, max_x, max_z).then(|| {
                     BuildingSiteTerrainClient {
+                        terraces: site.terraces.clone(),
                         building_idx,
                         lot_center: site_lot_center(site),
                         footprint_world: site.footprint_world.clone(),
@@ -621,6 +651,10 @@ impl BuildingSiteClient {
 
     pub(crate) fn contains_point(&self, pos: Vector2) -> bool {
         point_in_polygon_slice(pos, &self.footprint_world)
+            || self
+                .terraces
+                .iter()
+                .any(|t| point_in_polygon_slice(pos, &t.footprint_world))
     }
 
     /// Walls and paving, where even a yard plant cannot stand. A site without imported mesh
@@ -644,10 +678,36 @@ impl BuildingSiteClient {
             .any(|area| point_in_polygon_slice(pos, area))
     }
 
+    pub(crate) fn ground_height(&self, pos: Vector2) -> f32 {
+        self.terraces
+            .iter()
+            .find(|t| site_footprint_contains(&t.footprint_world, pos))
+            .map_or(self.support_height_m, |t| {
+                t.height_at(f64::from(pos.x), f64::from(pos.y), self.support_height_m) as f32
+            })
+    }
+
+    pub(super) fn terrace_height_range(&self) -> Option<[f32; 2]> {
+        if self.terraces.is_empty() {
+            return None;
+        }
+        Some(
+            self.terraces
+                .iter()
+                .flat_map(|t| {
+                    t.footprint_world.iter().map(|p| {
+                        (f64::from(p.x) * t.plane[0] + f64::from(p.y) * t.plane[1] + t.plane[2])
+                            as f32
+                    })
+                })
+                .fold([self.support_height_m; 2], |[a, b], h| [a.min(h), b.max(h)]),
+        )
+    }
+
     #[cfg(test)]
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
         // Aprons are owned by the graded terrain, not an independent flat plane.
-        self.contains_point(pos).then_some(self.support_height_m)
+        self.contains_point(pos).then(|| self.ground_height(pos))
     }
 
     #[cfg(test)]
@@ -733,6 +793,7 @@ impl BuildingAllocator {
         Some(SiteChange {
             bounds: bounds.into(),
             support_height_m: self.building_sites[building_idx].support_height_m,
+            height_range_m: self.building_sites[building_idx].terrace_height_range(),
         })
     }
 

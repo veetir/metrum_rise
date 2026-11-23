@@ -52,6 +52,7 @@ impl TestSite {
         SiteChange {
             bounds: self.bounds(),
             support_height_m: self.height,
+            height_range_m: None,
         }
     }
 }
@@ -261,6 +262,223 @@ fn polygon_holds_is_closed_and_exact_on_lattice_points() {
             "square ({x}, {z})"
         );
         assert_eq!(polygon_holds(&ell, x, z), inside_ell, "ell ({x}, {z})");
+    }
+}
+
+#[test]
+fn graded_yard_plane_banks_bake_queries_selection_and_drivability_agree() {
+    use crate::simulation::parking::ground::{spot_issue, way_issue};
+    use crate::simulation::parking::validation::ProofClass;
+    struct Yard(SiteTerrace);
+    impl SiteSource for Yard {
+        fn ready(&self) -> bool {
+            true
+        }
+        fn sites_in_bounds(&self, _: [f64; 4], out: &mut SiteBuffer) {
+            out.push_site(&self.0.footprint_world, 0.0);
+            out.push_terrace(&self.0);
+        }
+    }
+    let terrain = TerrainSystem::with_chunking(129, 129, 1.0, 64, 0.0);
+    let roads = RoadbedSystem::new(64.0);
+    let yard = Yard(SiteTerrace {
+        footprint_world: rectangle([0.0, 0.0], [10.0, 10.0], 0.0),
+        plane: [0.1, 0.0, 0.0],
+        level_footprint_world: rectangle([0.0, 0.0], [1.0, 1.0], 0.0),
+    });
+    let surface = GradedSurface {
+        terrain: &terrain,
+        roadbed: &roads,
+        sites: &yard,
+        query_index: None,
+    };
+    let mut scratch = QueryScratch::default();
+    let mut block = LatticeBlock::default();
+    let mut cached = SiteBuffer::default();
+    yard.sites_in_bounds([-10.0, -10.0, 10.0, 10.0], &mut cached);
+    for x in -32..=32 {
+        for z in -32..=32 {
+            let (x, z) = (x as f64 * 0.25, z as f64 * 0.25);
+            let expected = surface.surface_height_at(x, z, &mut scratch);
+            assert_eq!(
+                expected.to_bits(),
+                surface
+                    .surface_height_in_block(x, z, &mut block, &mut scratch)
+                    .to_bits()
+            );
+            let h = yard.0.height_at(x, z, 0.0);
+            assert_eq!(cached.height(0, x, z).to_bits(), h.to_bits());
+            // A 0.25 m move can rise at most 0.125 m on the 1:2 bank. The yard plane
+            // itself rises 0.025 m; inside the 2 x 2 m bearing pad the height is zero.
+            assert!((h - yard.0.height_at(x + 0.25, z, 0.0)).abs() <= 0.12500001);
+            assert!((h - yard.0.height_at(x, z + 0.25, 0.0)).abs() <= 0.12500001);
+            if x.abs() <= 1.0 && z.abs() <= 1.0 {
+                assert_eq!(h, 0.0);
+            }
+        }
+    }
+    let mut height =
+        |p: Vector2| surface.surface_height_at(p.x as f64, p.y as f64, &mut scratch) as f32;
+    // At x=5, the 1.6 m wheel track gains .16 m: 10%, exceeding D's .08 m / 5%.
+    // A driveway on this same plane follows z: zero longitudinal grade, no grade break.
+    let reason = spot_issue(
+        ProofClass::Car,
+        Vector2::new(5.0, 0.0),
+        Vector2::UP,
+        &mut height,
+    )
+    .unwrap();
+    assert_eq!(
+        reason,
+        "not drivable: the ground under this spot slopes 10.0 %, a parked car needs at most 5 %"
+    );
+    assert!(
+        way_issue(
+            &[Vector2::new(5.0, -6.0), Vector2::new(5.0, 6.0)],
+            &roads,
+            &mut height
+        )
+        .is_none()
+    );
+
+    let tiles: Vec<_> = (-1..=0)
+        .flat_map(|x| (-1..=0).map(move |z| TileKey { x, z }))
+        .collect();
+    let baked = bake_with(
+        &terrain,
+        &roads,
+        &yard,
+        &tiles,
+        Level::Gl0,
+        Evaluation::Lanes,
+    );
+    let mut buffer = SiteBuffer::default();
+    yard.sites_in_bounds([-64.0, -64.0, 64.0, 64.0], &mut buffer);
+    let mut seams = Vec::new();
+    buffer.push_pad_seams(&mut seams);
+    assert_eq!(
+        seams.len(),
+        4,
+        "inactive bank arms do not split planar yard edges"
+    );
+    struct Mixed<'a>(&'a Yard, TestSites, bool);
+    impl SiteSource for Mixed<'_> {
+        fn ready(&self) -> bool {
+            true
+        }
+        fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
+            if self.2 {
+                self.1.sites_in_bounds(rect, out);
+            }
+            self.0.sites_in_bounds(rect, out);
+            if !self.2 {
+                self.1.sites_in_bounds(rect, out);
+            }
+        }
+    }
+    for workers in [1, 8] {
+        for reverse in [false, true] {
+            let mixed = Mixed(
+                &yard,
+                TestSites(vec![TestSite {
+                    footprint: rectangle([400.0, 400.0], [10.0, 10.0], 0.0),
+                    height: 55.0,
+                    surfaces: Vec::new(),
+                }]),
+                reverse,
+            );
+            let repeated = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap()
+                .install(|| {
+                    bake_with(
+                        &terrain,
+                        &roads,
+                        &mixed,
+                        &tiles,
+                        Level::Gl0,
+                        Evaluation::Lanes,
+                    )
+                });
+            for (a, b) in baked.iter().zip(&repeated) {
+                assert_eq!(a.texels, b.texels);
+                assert_eq!(a.inputs, b.inputs);
+            }
+        }
+    }
+    let mut shifted = yard.0.clone();
+    shifted.plane[2] += 0.25;
+    let mut shifted_inputs = TileInputs::default();
+    tile_inputs(
+        &terrain,
+        &roads,
+        &Yard(shifted),
+        tiles[0],
+        Level::Gl0,
+        &mut shifted_inputs,
+    )
+    .unwrap();
+    assert_ne!(
+        baked[0].inputs, shifted_inputs,
+        "plane changes participate in adoption fingerprints"
+    );
+    let unpruned = bake_with(
+        &terrain,
+        &roads,
+        &yard,
+        &tiles,
+        Level::Gl0,
+        Evaluation::Unpruned,
+    );
+    let mut xs = Vec::new();
+    let mut zs = Vec::new();
+    for (tile, reference) in baked.iter().zip(&unpruned) {
+        assert_eq!(tile.texels, reference.texels);
+        lattice(&terrain, tile.tile, Level::Gl0, &mut xs, &mut zs);
+        for (j, &z) in zs.iter().enumerate() {
+            for (i, &x) in xs.iter().enumerate() {
+                if x.abs() <= 10.0 && z.abs() <= 10.0 {
+                    assert_eq!(
+                        tile.texels[j * xs.len() + i][0].to_bits(),
+                        (surface.surface_height_at(x, z, &mut scratch) as f32).to_bits()
+                    );
+                }
+            }
+        }
+    }
+    let before = TestSites(vec![TestSite {
+        footprint: yard.0.footprint_world.clone(),
+        height: 0.0,
+        surfaces: Vec::new(),
+    }]);
+    let old = bake_with(
+        &terrain,
+        &roads,
+        &before,
+        &tiles,
+        Level::Gl0,
+        Evaluation::Lanes,
+    );
+    let change = SiteChange {
+        bounds: [-10.0, -10.0, 10.0, 10.0],
+        support_height_m: 0.0,
+        height_range_m: Some([-1.0, 1.0]),
+    };
+    let mut dirty = Vec::new();
+    dirty_tiles_for_site_changes(
+        &terrain,
+        &roads,
+        &yard,
+        &[change],
+        Level::Gl0,
+        &mut SelectScratch::default(),
+        &mut dirty,
+    );
+    for (a, b) in old.iter().zip(&baked) {
+        if a.texels != b.texels {
+            assert!(dirty.contains(&b.tile));
+        }
     }
 }
 
@@ -1163,7 +1381,14 @@ pub(crate) fn assert_allocator_sites_bake(
                     }
                     // The first site in canonical order holds it; sites do not overlap.
                     let base = surface.base_height_at(x, z, &mut scratch);
-                    let want = (f64::from(site.support_height_m) - base) as f32;
+                    let height = site
+                        .terraces
+                        .iter()
+                        .find(|t| site_footprint_contains(&t.footprint_world, point))
+                        .map_or(f64::from(site.support_height_m), |t| {
+                            t.height_at(x, z, site.support_height_m)
+                        });
+                    let want = (height - base) as f32;
                     assert_eq!(texel[0].to_bits(), want.to_bits(), "pad sample ({x}, {z})");
                     pad_samples += 1;
                 }

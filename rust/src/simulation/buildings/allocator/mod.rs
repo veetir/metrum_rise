@@ -608,6 +608,9 @@ pub struct BuildingAllocator {
     pub(crate) max_site_radius_m: f32,
     /// Number of site records attaining the exact current maximum radius.
     pub(crate) max_site_radius_count: usize,
+    /// Exact non-negative radius bits to owners. Local yard shrink/removal must not rescan
+    /// every site when it loses the unique maximum; this is metadata, not a spatial index.
+    pub(crate) site_radius_counts: std::collections::BTreeMap<u32, usize>,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
     /// Per-family dirty flags in residential, commercial, industrial order (`BASELINE_PRIVATE_ZONES`).
@@ -1041,6 +1044,7 @@ impl BuildingAllocator {
             explicit_cell_sites: Vec::new(),
             max_site_radius_m: 0.0,
             max_site_radius_count: 0,
+            site_radius_counts: Default::default(),
             dirty_index: true,
             dirty_zones: [false; 3],
             entrances_dirty: false,
@@ -1322,6 +1326,7 @@ impl BuildingAllocator {
         self.explicit_cell_sites.clear();
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
+        self.site_radius_counts.clear();
         self.building_site_dirty_bounds.clear();
         self.graded_site_changes.clear();
         self.parking_site_changes.clear();

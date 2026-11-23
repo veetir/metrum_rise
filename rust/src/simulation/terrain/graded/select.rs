@@ -188,10 +188,12 @@ pub fn dirty_tiles_for_site_changes(
     let apron = level.spacing_m(grid.cell_m);
     scratch.changed.clear();
     scratch.changed.extend(changes.iter().map(|change| {
-        box_seam(
-            change.bounds.map(f64::from),
-            f64::from(change.support_height_m),
-        )
+        let [low, high] = change
+            .height_range_m
+            .unwrap_or([change.support_height_m; 2]);
+        let mut seam = box_seam(change.bounds.map(f64::from), f64::from(low));
+        seam.b[1] = f64::from(high);
+        seam
     }));
     scratch.candidates.clear();
     for seam in &scratch.changed {

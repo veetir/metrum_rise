@@ -923,7 +923,8 @@ fn bake_tile(
     if !wall_seams.is_empty() {
         let pad = |index: usize| {
             let site = pads.get(index).copied().unwrap_or(NO_SITE);
-            (site != NO_SITE).then(|| sites.height(site))
+            (site != NO_SITE)
+                .then(|| sites.height(site, xs[index % xs.len()], zs[index / xs.len()]))
         };
         let base_at = |i: usize, j: usize| base.at_stops(&columns[i].1, &base.stop(1, zs[j]));
         continue_ground_at_mouths(
@@ -1188,7 +1189,7 @@ impl Sampling<'_> {
                 };
                 let pad = |lane: usize| {
                     let site = pads.get(row + i + lane).copied().unwrap_or(NO_SITE);
-                    (site != NO_SITE).then(|| sites.height(site))
+                    (site != NO_SITE).then(|| sites.height(site, xs[i + lane], z))
                 };
                 let bare = |lane: usize| covering(lane).is_none() && pad(lane).is_none();
                 if list.is_empty() && (0..run).all(bare) {

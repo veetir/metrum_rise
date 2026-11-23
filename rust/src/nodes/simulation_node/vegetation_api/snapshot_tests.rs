@@ -107,6 +107,7 @@ fn populated() -> SimCore {
     core.allocator.buildings.push(building);
     let house = square(85.0, 95.0);
     core.allocator.push_site_client(BuildingSiteClient {
+        terraces: Vec::new(),
         structure_world: vec![[house[0], house[1], house[2], house[3]]],
         vehicle_structure_world: None,
         // A planting area reaching past the footprint, which the snapshot must still copy.

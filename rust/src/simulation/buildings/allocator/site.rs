@@ -8,6 +8,7 @@ mod geometry;
 pub(super) mod grading;
 mod model;
 mod query;
+mod yard;
 
 pub(crate) use cells::SiteCells;
 pub(crate) use derive::{lot_support_inset_m, zoning_support_footprint, site_structure_footprints};
@@ -22,6 +23,7 @@ pub(crate) use model::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
 pub use model::SiteChange;
 pub(crate) use query::site_footprint_contains;
 pub(crate) use query::SiteSnapshot;
+pub(crate) use yard::derive_yard_terrace;
 
 #[cfg(test)]
 mod tests;

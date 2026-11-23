@@ -203,6 +203,27 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         env: BuildingSiteEnvironment<'_>,
     ) -> Result<(), DemandSpawnPlacementRejection> {
+        self.prepare_site_support_memoized(p, graph, env, true)
+    }
+
+    /// Reuses the planning verdict at construction start, or solves directly without creating
+    /// a new memoization entry for a lot that is about to become occupied.
+    pub(super) fn prepare_site_support_at_commit(
+        &self,
+        p: &mut ResolvedPlacement,
+        graph: &RegionGraph,
+        env: BuildingSiteEnvironment<'_>,
+    ) -> Result<(), DemandSpawnPlacementRejection> {
+        self.prepare_site_support_memoized(p, graph, env, false)
+    }
+
+    fn prepare_site_support_memoized(
+        &self,
+        p: &mut ResolvedPlacement,
+        graph: &RegionGraph,
+        env: BuildingSiteEnvironment<'_>,
+        capture_missing: bool,
+    ) -> Result<(), DemandSpawnPlacementRejection> {
         // Failed or pending compilation must not authorize placement from retained old surfaces.
         if !env.road_surface.is_current() {
             return Err(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing);
@@ -222,6 +243,7 @@ impl BuildingAllocator {
                 .and_then(|poses| poses.get(&key))
                 .cloned()
         };
+        let mut reused = false;
         let verdict =
             if let Some(previous) = previous.filter(|old| old.is_current(epoch, self, env)) {
                 if previous.epoch != epoch
@@ -235,11 +257,29 @@ impl BuildingAllocator {
                 {
                     old.epoch = epoch;
                 }
+                reused = true;
                 previous.verdict
-            } else {
+            } else if capture_missing {
                 self.cache_site_solution(p, graph, env, key, epoch)
+            } else {
+                self.prepare_site_support(p, &[], graph, env.road_surface, env.terrain)
+                    .map(|()| p.support_height_m)
             };
         p.support_height_m = verdict?;
+        if reused {
+            p.terraces = self
+                .placement_yard_terrace(p, graph, env.road_surface)
+                .into_iter()
+                .collect();
+        }
+        let half = |cells: usize| cells as f32 * p.zone_cell_m * 0.5;
+        p.front_gap_m = super::super::geometry::lot_front_gaps(
+            graph,
+            p.center_2d,
+            p.facing_dir,
+            half(p.width_cells),
+            half(p.depth_cells),
+        );
         Ok(())
     }
 

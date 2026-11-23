@@ -2217,10 +2217,10 @@ including roadbed triangles. It never checks the source heightmap or membership 
 outline. A level tyre in the outer strip passes; in particular the bundled medium lot retains
 all 20 bays on flat ground.
 
-A bay's four wheel contacts may differ by at most a **5%** grade between any pair, for cars and
-loading bays (Helsinki's 1:20 guidance and the report's federal parking benchmark). `PARK-25`
-extends authored paving's level support to the lot edge, removing the old 2 m strip's 0.12 m
-drop; the bundled medium lot keeps all 20 bays, and the populated flat fixture has no ground
+A bay's four wheel contacts may differ by at most a **5%** grade between any pair, and each of
+their two triangles must have full gradient at most **5%**, for cars and loading bays (Helsinki's 1:20 guidance and the report's federal parking benchmark). `PARK-25`
+extends authored paving's support to the lot edge, removing the old 2 m strip's 0.12 m
+drop; C2 lets sloped yards follow their road while structures and entrance landings stay level; the bundled medium lot keeps all 20 bays, and the populated flat fixture has no ground
 refusals at 5%. Touching neighbours constrain candidate floors to the existing 0.10 m height
 compatibility interval, and immutable road samples constrain each ray at its own distance;
 road surfaces retain ownership of their triangles. The front paving no longer dips below its
@@ -2252,8 +2252,8 @@ road plane's grade, and a road without a footway may meet the yard with one jump
 kerb's height. No yard-interior jump is waived. Numerical slack is 0.1 mm, not an extra
 gameplay grade allowance.
 
-Placement's C1 policy is in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only):
-fixed roads intersect feasible floor intervals, nearby frontage banks are capped at **1.0 m**,
+Placement's C1 contacts and C2 yard policy are in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-automatic-grading-c2):
+fixed roads constrain each local surface at their own distance, nearby frontage banks are capped at **1.0 m**,
 Driveways meet their road within the shared **10%** grade and **5 percentage points/wheelbase**
 limits, and each street-facing entrance landing is within **0.12 m** of its footway. No authored
 pedestrian ramp corridor exists yet, so placement never assumes a ramp through arbitrary paving.
@@ -2272,10 +2272,10 @@ The existing graded edit journal's changed rectangles invalidate both cached pos
 lot proofs through the allocator's **site-cell index**. The existing stable-handle site journal
 deduplicates and republishes them; zero-bay lots are included so a repair or undo can restore
 supply. A gameplay stroke publishes once at release and undo does the same. Road and neighbouring
-site edits use the same path. A save's supply passed this check when it was written (format 127,
+site edits use the same path. A save's supply passed this check when it was written (format 128,
 `SAVE_VERSION`), and the ground changes only by an edit that proves its lots again, so its load
-proves only the parking roads' lots, for their kerb blockers, as before. Formats 125/126
-(`PRE_GROUND_SAVE_VERSION` / `PRE_CONTACT_SAVE_VERSION`) are checked once: the kerb-blocker restoration's proof also visits
+proves only the parking roads' lots, for their kerb blockers, as before. Formats 125/126/127
+(`PRE_GROUND_SAVE_VERSION` / `PRE_CONTACT_SAVE_VERSION` / `PRE_YARD_SAVE_VERSION`) are checked once: the kerb-blocker restoration's proof also visits
 every lot holding saved supply, against the re-derived sites and the stored building floors (floor selection never runs on
 load), and
 only actual ground refusals enter the site journal, published with the normal replacement and
@@ -2284,21 +2284,170 @@ cost +12-17% `load_s` at 30k, as `PARK-15`'s first version did.)
 An O(1) comparison of the roadbed and site-cell generations checks whether the terrain query
 index is current. Published inputs reuse the existing exact 8 m GL0 lattice block, caching its
 coverage and vertices across half-metre samples. A staged removal/undo can precede index
-publication; it instead gathers live roadbed/sites locally, never reading retired piece IDs
+publication; its lattice block instead gathers live roadbed/sites locally, never reading retired piece IDs
 through a pending index. The cached and point-query heights are asserted bitwise, including
 the steepened brush fixture.
 
-Additional proof work is O(bays × path samples), with four wheel reads/six pair comparisons per
-bay and constant rolling-way scratch. The surface gather and invalidation visit only local
+Additional proof work is O(bays × path samples), with four wheel reads, six pair comparisons
+and two full-gradient checks per bay and constant rolling-way scratch. The surface gather and invalidation visit only local
 indexed roads/sites, independent of background city population. There is no per-tick sampler.
 The asset editor has no terrain. A car/loading bay reaching an outer lot strip gets a
 **non-blocking note only when its wheels are outside paved support**; paving reaching the
 edge now supplies level support and gets no obsolete strip warning. Notes remain outside the
 export-blocking issue list. Placement and grading must themselves make yards drivable; the
-brush is not a repair requirement. The terrace/retaining-edge design remains in
-[`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only).
+brush is not a repair requirement. The automatic grading and future retaining-edge design are in
+[`terrain.md`, T12](terrain.md#drivable-yards-part-c-automatic-grading-c2).
 
 #### `PARK-24` verification, 2026-11-22
+
+##### C2: automatic yard grading and performance attribution
+
+**Tail attribution, before C2 geometry.** Fresh matched, unprofiled release runs used the
+preserved control `f7e78df39`, D `4bc448048` and C1 `666b7dd44` binaries, eight Rayon workers,
+unpinned. Order: control/D/C1, then C1/D/control. Each runs the same prepared 30k day at 32×.
+
+| Build | Mean ms (two runs) | p99.9 ms | Worst frame ms | Largest pending-spawn component ms |
+| --- | --- | --- | --- | --- |
+| Control | 4.201 / 4.185 | 9.796 / 8.260 | 15.791 / 15.053 | 0 / 0 |
+| D | 4.223 / 4.179 | 11.471 / 13.703 | 28.338 / 16.386 | 5.387 / 5.535 |
+| C1 | 4.638 / 4.432 | 15.767 / 15.976 | 16.788 / 19.977 | 11.841 / 13.366 |
+
+The repeatable extra spawn work is ours: D's visible-ground lot proof and C1's additional
+uncached candidate/Driveway proof both repeatedly gathered GL0 road/site inputs while the
+query index was pending. C1 also repeated a solve at construction start instead of reusing
+the unchanged planning verdict. Time Profiler stacks locate the work in `GradedSurface`,
+road coverage triangle queries, `prove_parking_lot` and `solve_street_contacts`; profiled
+timings are excluded. This macOS machine has no Samply installation; `xcrun xctrace`'s
+Time Profiler supplied the equivalent CPU stack capture. D's isolated 28.338 ms frame has a
+24.83 ms agent component; its source is unassigned, and that row remains recorded.
+
+The fix extends the existing lattice block to live local sources and reuses a valid planning
+verdict, solving directly on a miss without creating a soon-obsolete cache entry. A separate
+matched C1/fix/fix/C1 check before C2 geometry reduces the largest spawn component from
+11.32/11.08 to 5.34/5.33 ms; worst frames fall from 15.704/15.619 to 12.609/11.229 ms, and
+p99.9 from 13.668/14.269 to 11.552/10.914 ms. This establishes the removed repeated work;
+it does not establish an 8 ms final frame pass. The final F rows below decide that.
+
+Reproduction (the binary variables below are preserved release library test executables;
+`$ARTIFACTS` holds the copies and generated snapshot cache):
+
+```bash
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 METRUM_PERF_RESIDENTS=30000 \
+  METRUM_PERF_CACHE="$ARTIFACTS/cache" METRUM_PERF07_SPEED=32 \
+  "$TEST_BINARY" nodes::sim::core::populated_city::frame_budget::perf07_frame_budget \
+  --ignored --nocapture --test-threads=1
+xcrun xctrace record --template 'Time Profiler' --output "$ARTIFACTS/cpu.trace" \
+  --launch -- "$TEST_BINARY" \
+  nodes::sim::core::populated_city::frame_budget::perf07_frame_budget \
+  --ignored --nocapture --test-threads=1
+```
+
+The profile uses the same worker/snapshot/speed environment as the unprofiled command.
+An initial attribution session overlapped profile export, and an early fix run accidentally
+used the old C1 copy while compilation was active; neither is acceptance evidence. The first
+C2 prototype benchmark set and its interrupted partial F session are also superseded by the
+final frozen-binary runs below.
+
+**Final C1/C2 parking locality.** Same final release binary as the
+[`terrain.md` verification](terrain.md#c2-verification-2026-11-23), eight workers, unpinned,
+three runs per side, C1/C2/C2/C1/C1/C2. The repeated local operations hold 12 lots and
+72 bays fixed while the city grows from 1,103 to 11,103 buildings, 1,074 to 11,074 parcels,
+0 to 10,000 agents and 84 to 334 roads. Every row on both sides reports identical local
+products. Setup is timed separately.
+
+```bash
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 METRUM_LOCALITY_TIERS=0,1000,10000 \
+  "$TEST_BINARY" \
+  nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality \
+  --ignored --nocapture --test-threads=1
+```
+
+| Added background | One-lot proof ms C1 → C2 | Site publication ms | Road reconcile ms | Candidate rebuild ms | Setup s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.4769 → 0.4777 | 1.9073 → 1.8625 | 4.4618 → 4.3027 | 0.4242 → 0.4076 | 2.4466 → 1.4794 |
+| 1,000 | 0.4715 → 0.4746 | 1.8483 → 1.8167 | 4.2729 → 4.2885 | 0.3985 → 0.4229 | 2.4561 → 1.5262 |
+| 10,000 | 0.4750 → 0.4816 | 1.8210 → 1.8726 | 4.2984 → 4.4384 | 0.4294 → 0.4333 | 2.9879 → 2.0891 |
+
+At 10k background, proof/publication/reconcile are +1.4%/+2.8%/+3.3%; candidate rebuild
+is +0.9%. The largest candidate increase is +6.1% at 1k background (0.0244 ms).
+The repeated work remains local rather than growing with background city size. Setup falls
+with the removal of repeated uncached placement work. The medium lot retains all 20 flat
+stalls and the populated supply product remains **`32991f90451e9fbf`**. Full-gradient stall
+proof is an O(1) addition per bay (two triangles), with an unchanged flat-height fast path;
+the existing per-bay/per-way sampling bounds still apply. Regrading at a road/site edit
+visits only the existing indexed local sites; whole-load geometry derives in Rayon, followed
+by serial index publication. No per-tick yard solve is added. Grading bounds and measured
+yard-query cost are owned by [`terrain.md`](terrain.md#drivable-yards-part-c-automatic-grading-c2).
+
+**Final F session and K22 against control `f7e78df39`.**
+
+```bash
+PYTHONUNBUFFERED=1 ./run.sh --timing --level F \
+  --control "$ARTIFACTS/control-f7e78df39" --branch "$ARTIFACTS/c2-final" \
+  --base f7e78df39 --workers 8 --cpus '' \
+  --control-cache "$ARTIFACTS/cache" --branch-cache "$ARTIFACTS/cache" \
+  --artifacts "$ARTIFACTS/timing-final" --k22 \
+  --bench 'nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality;METRUM_LOCALITY_TIERS=0,1000,10000'
+```
+
+Completed 2026-11-23, 15:11–15:25 local. Control SHA-256
+`58017e97c2fef62e1c29460ad211393a7b95106870a5c2ac53b9311ec70b3158`, C2
+`8394de90cd401adaaeeef41ac8d7ac45dc036ae1456b761979d519159dbc58bd`.
+Preparation took 121 s (including a newly keyed 30k commit snapshot), outside the timed
+phase; timing took 684 s plus 1 s held. No build or profiler overlapped it. Control calibration
+failed: mean +24.8%, p99 +102.4%, p99.9 +253.7% against its cached session. The runner
+therefore timed the control's 1× day fresh; no cached control result replaces it.
+
+| Row, in session order | Mean ms | p99 ms | p99.9 ms | Worst/unpreempted ms | Absolute 8 ms result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 32× control 1 | 5.019 | 12.243 | 24.425 | 27.348 | fail, existing `PERF-17` exception |
+| 32× C2 1 | 4.616 | 11.635 | 19.897 | 25.227 | fail, existing `PERF-17` exception |
+| 32× C2 2 | 4.440 | 8.261 | 15.304 | 24.175 | fail, existing `PERF-17` exception |
+| 32× control 2 | 4.322 | 7.386 | 15.722 | 15.973 | fail, existing `PERF-17` exception |
+| 1× control | 2.155 | 3.676 | 7.616 | 33.186 | **FAIL**, worst frame |
+| 1× C2 1 | 2.210 | 3.813 | 8.196 | 50.923 | **FAIL**, worst frame and p99.9 |
+| 1× C2 2 | 2.321 | 3.975 | 10.953 | 45.385 | **FAIL**, worst frame and p99.9 |
+
+All rows report zero preempted frames and zero preempted-less-wait maximum. The second C2
+1× day was required because the first p99.9 was within 5% of 8 ms. The comparison below uses
+means across rows, as the runner does; a large isolated maximum is retained in the result.
+
+| Comparison metric | 1× control → C2 | Delta / verdict | 32× control → C2 | Delta / verdict |
+| --- | ---: | --- | ---: | --- |
+| Mean ms | 2.155 → 2.266 | +5.1%, **WORSE** | 4.670 → 4.528 | −3.0%, better |
+| p99 ms | 3.676 → 3.894 | +5.9%, **WORSE** | 9.814 → 9.948 | +1.4%, level |
+| p99.9 ms | 7.616 → 9.574 | +25.7%, **WORSE** | 20.070 → 17.600 | −12.3%, better |
+| Worst/unpreempted ms | 33.186 → 48.154 | +45.1%, **WORSE** | 21.660 → 24.701 | +14.0%, **WORSE** |
+| Mean agent ms | 1.360 → 1.433 | +5.3%, **WORSE** | 2.319 → 2.238 | −3.5%, better |
+| Mean snapshot ms | 0.7325 → 0.7695 | +5.0%, **WORSE** | 1.221 → 1.156 | −5.3%, better |
+| Mean slot ms | 0.04815 → 0.04964 | +3.1%, level | 1.111 → 1.116 | +0.5%, level |
+| Mean pathing ms | 0.0001775 → 0.0001933 | +8.9%, level (timer floor) | 0.0008798 → 0.0008396 | −4.6%, level (timer floor) |
+| Load s | 2.471 → 2.547 | +3.1%, level | 2.568 → 2.646 | +3.0%, level |
+| Reported max agent ms | 20.830 → 32.320 | reported | 13.100 → 14.620 | reported |
+| Reported max snapshot ms | 15.640 → 32.090 | reported | 17.150 → 20.760 | reported |
+| Reported max pathing ms | 0.3510 → 0.3469 | reported | 0.3485 → 0.3509 | reported |
+| Reported max cell ms | 0.01496 → 0.01200 | reported | 0.01813 → 0.002959 | reported |
+| Reported snapshot p99 ms | 1.573 → 1.675 | reported | 3.319 → 2.493 | reported |
+| Frames over 8 ms | 76 → 120.5 | reported | 42.5 → 42 | reported |
+
+K22 30k, eight workers, unpinned: click-to-ack **9.31 → 6.81 ms**, commit
+**9.25 → 6.76 ms**. These improvements do not cancel the frame failures. The runner's
+parking-locality rows all pass but parse zero scalar values from the JSON tag; explicit
+means of their logged `PARKING_LOCALITY` records are:
+
+| Added background | One-lot proof ms control → C2 | Publication ms | Road reconcile ms | Candidate rebuild ms | Setup s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.3147 → 0.4853 | 1.7639 → 1.9647 | 4.5187 → 4.4791 | 0.5011 → 0.4133 | 0.5264 → 1.5420 |
+| 1,000 | 0.2983 → 0.4915 | 1.5616 → 1.9994 | 4.1825 → 4.8278 | 0.4300 → 0.4662 | 0.5557 → 1.6032 |
+| 10,000 | 0.2948 → 0.4799 | 1.4980 → 2.0434 | 4.1138 → 4.8604 | 0.4363 → 0.4592 | 1.1267 → 2.1747 |
+
+**Session exit 2; performance acceptance remains failed/open.** In the largest C2 1× frame,
+the recorded agent and snapshot components are 32.268 and 13.957 ms, with zero pending-spawn
+time. In the largest control 1× frame they are 20.829 and 9.268 ms, also with no spawn. The
+underlying cause of those spikes is unassigned; they are not discarded as noise. The earlier
+matched attribution proves removal of repeated D/C1 spawn work, not resolution of every
+tail in this final session. Both the 1× comparison failures, 32× worst-frame increase and
+the +55.2% Kuopio yard-query cost remain visible acceptance concerns. `PARK-24` is not closed.
 
 ##### C1 and `PARK-25`: final verification
 

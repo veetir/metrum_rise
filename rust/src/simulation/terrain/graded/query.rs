@@ -142,7 +142,7 @@ impl GradedSurface<'_> {
     }
 
     /// The graded ground the terrain renders: `GL0` values on the `GL0` triangle under the
-    /// point; in a pad its support height. Under a road it is the hidden inside-rule surface,
+    /// point; bearings keep their floor and yards their solved planes/banks. Under a road it is the hidden inside-rule surface,
     /// so callers test [`Self::mask_at`] first.
     pub fn ground_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
         let answer = self.ground_height_at_unchecked(x, z, scratch);
@@ -313,7 +313,7 @@ impl GradedSurface<'_> {
         }
         let origin = block.origin.expect("a prepared block");
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
-        if !block.indexed {
+        if !block.prepared {
             return self.ground_height_near(x, z, scratch);
         }
         let read = LatticeBlock::slot(origin, [i, j]);
@@ -351,7 +351,7 @@ impl GradedSurface<'_> {
         }) {
             self.prepare_block(LatticeBlock::origin_of([i, j]), block, scratch);
         }
-        if !block.indexed {
+        if !block.prepared {
             return self.ground_height_near(x, z, scratch);
         }
         self.prepare(block.rect, scratch);
@@ -448,8 +448,10 @@ impl GradedSurface<'_> {
         block.quiet_tile = None;
         block.vertex.fill(f64::NAN);
         block.ground.fill(f64::NAN);
-        block.indexed = self.query_index.is_some_and(|index| index.ready_for(rect));
-        if !block.indexed {
+        // A live gather is just as canonical as an indexed one. Edit-boundary callers
+        // deliberately omit a stale index; their immutable surface still admits vertex reuse.
+        block.prepared = self.sites.ready();
+        if !block.prepared {
             return;
         }
         self.prepare(rect, scratch);
@@ -1081,7 +1083,7 @@ impl GradedSurface<'_> {
                 }))
         });
         let site = scratch.sites.pad_at(x, z);
-        let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
+        let pad = (site != NO_SITE).then(|| scratch.sites.height(site, x, z));
         let troughs = seams.iter().any(|seam| seam.retained);
         evaluate(x, z, base, road, pad, seams, all, band, portals, troughs)
     }
@@ -1300,9 +1302,9 @@ const BLOCK_POINTS: usize = BLOCK_CELLS as usize + 2;
 pub(crate) struct LatticeBlock {
     // The block's first lattice point; `None` before the first read.
     origin: Option<[i64; 2]>,
-    // Whether the block's window was prepared through the shared query index, and its
+    // Whether the block's immutable source was ready for preparation, and its
     // rectangle.
-    indexed: bool,
+    prepared: bool,
     rect: [f64; 4],
     // The last tile's corner the index called quiet or not.
     quiet_tile: Option<([f64; 2], bool)>,
@@ -1315,7 +1317,7 @@ impl Default for LatticeBlock {
     fn default() -> Self {
         Self {
             origin: None,
-            indexed: false,
+            prepared: false,
             rect: [0.0; 4],
             quiet_tile: None,
             road: [f32::NEG_INFINITY; BLOCK_POINTS * BLOCK_POINTS],

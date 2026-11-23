@@ -38,14 +38,21 @@ fn street_lot(c: &mut SimCore, x: f32) -> usize {
 // The cache reuses rendered GL0 vertices; compare its entire product bitwise with the
 // authoritative point query, on both sides of the street/yard and at non-lattice positions.
 fn assert_cached_surface(core: &SimCore) {
-    core.with_graded_surface(|surface, scratch| {
-        let mut block = crate::simulation::terrain::graded::LatticeBlock::default();
-        for x in -12..=12 {
-            for z in -18..=2 {
-                let (x, z) = (x as f64 + 0.17, z as f64 * 1.7 + 0.23);
-                let expected = surface.surface_height_at(x, z, scratch);
-                let cached = surface.surface_height_in_block(x, z, &mut block, scratch);
-                assert_eq!(cached.to_bits(), expected.to_bits(), "({x}, {z})");
+    core.with_graded_surface(|surface, _| {
+        for query_index in [surface.query_index, None] {
+            let surface = crate::simulation::terrain::graded::GradedSurface {
+                query_index,
+                ..*surface
+            };
+            let mut scratch = crate::simulation::terrain::graded::QueryScratch::default();
+            let mut block = crate::simulation::terrain::graded::LatticeBlock::default();
+            for x in -12..=12 {
+                for z in -18..=2 {
+                    let (x, z) = (x as f64 + 0.17, z as f64 * 1.7 + 0.23);
+                    let expected = surface.surface_height_at(x, z, &mut scratch);
+                    let cached = surface.surface_height_in_block(x, z, &mut block, &mut scratch);
+                    assert_eq!(cached.to_bits(), expected.to_bits(), "({x}, {z})");
+                }
             }
         }
     });
@@ -168,6 +175,7 @@ fn parking_legacy_ground_certificates_recheck_supply_without_moving_the_floor() 
     for version in [
         crate::simulation::save::schema::PRE_GROUND_SAVE_VERSION,
         crate::simulation::save::schema::PRE_CONTACT_SAVE_VERSION,
+        crate::simulation::save::schema::PRE_YARD_SAVE_VERSION,
     ] {
         let mut c = core();
         let index = street_lot(&mut c, LEVEL_X);

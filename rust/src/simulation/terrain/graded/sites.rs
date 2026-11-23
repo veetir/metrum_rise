@@ -6,8 +6,8 @@
 //! the nearest material edge within the band.
 //!
 //! The terrain is the pad (`T11`): inside a support footprint, by the allocator's own
-//! predicate, the graded height is the support height exactly. Sites are ordered by their
-//! content (footprint, height, surfaces), never by building index, which a swap-remove far away
+//! predicate, level bearing support keeps its floor; C2 terraces supply yard planes and banks.
+//! Sites are ordered by content, never by building index, which a swap-remove far away
 //! renumbers: the first surface holding a point, in that order and then in authored order, sets
 //! its class.
 
@@ -29,6 +29,217 @@ const SURFACE_PAD_M: f64 = 1.0e-6;
 // along its row, so the point needs no predicate test: far above the allocator predicate's 1 mm
 // tolerance and the f32 rounding of its crossings.
 const SPAN_MARGIN_M: f64 = 0.01;
+
+/// A derived yard plane and its level bearing/landing polygon in the same grading site.
+/// The plane joins the level polygon through the existing 1:2 cone, continuously, inside
+/// `footprint_world`. No retaining edge or independent heightfield is introduced.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SiteTerrace {
+    /// Closed outer yard boundary in world XZ.
+    pub footprint_world: Vec<Vector2>,
+    /// Affine height coefficients: `x * plane[0] + z * plane[1] + plane[2]`, metres.
+    pub plane: [f64; 3],
+    /// Level structure and entrance support, at the owning site's stored floor.
+    pub level_footprint_world: Vec<Vector2>,
+}
+
+impl SiteTerrace {
+    /// Continuous yard/pad height; banks never exceed the shared grading cone.
+    /// O(level polygon corners), with no allocation.
+    pub fn height_at(&self, x: f64, z: f64, floor: f32) -> f64 {
+        terrace_height(self.plane, &self.level_footprint_world, x, z, floor)
+    }
+
+    /// Exact affine-arm crossings along a boundary, for continuous joins. O(P log P),
+    /// P the level hull's corners; caller-owned scratch, no allocation once warm.
+    pub(crate) fn edge_breaks(
+        &self,
+        a: Vector2,
+        b: Vector2,
+        floor: f32,
+        out: &mut Vec<f64>,
+        lines: &mut Vec<[f64; 3]>,
+    ) {
+        terrace_breaks(
+            self.plane,
+            bank_planes(&self.level_footprint_world),
+            floor,
+            [f64::from(a.x), f64::from(a.y)],
+            [f64::from(b.x), f64::from(b.y)],
+            out,
+            lines,
+        );
+    }
+}
+
+fn level_area(level: &[Vector2]) -> f64 {
+    let area: f64 = (0..level.len())
+        .map(|j| {
+            let (a, b) = (level[j], level[(j + 1) % level.len()]);
+            f64::from(a.x) * f64::from(b.y) - f64::from(b.x) * f64::from(a.y)
+        })
+        .sum();
+    area
+}
+
+fn bank_plane(level: &[Vector2], i: usize, area: f64) -> [f64; 3] {
+    let a = level[i];
+    let b = level[(i + 1) % level.len()];
+    let (dx, dz) = (
+        f64::from(b.x) - f64::from(a.x),
+        f64::from(b.y) - f64::from(a.y),
+    );
+    let norm = dx.hypot(dz).copysign(area);
+    if norm == 0.0 {
+        return [0.0; 3];
+    }
+    [
+        dz / norm,
+        -dx / norm,
+        (dx * f64::from(a.y) - dz * f64::from(a.x)) / norm,
+    ]
+}
+
+fn terrace_height(plane: [f64; 3], level: &[Vector2], x: f64, z: f64, floor: f32) -> f64 {
+    height_with_banks(plane, bank_planes(level), x, z, floor)
+}
+
+fn bank_planes(level: &[Vector2]) -> impl ExactSizeIterator<Item = [f64; 3]> + '_ {
+    let area = level_area(level);
+    (0..if level.len() >= 3 { level.len() } else { 0 }).map(move |i| bank_plane(level, i, area))
+}
+
+fn height_with_banks(
+    plane: [f64; 3],
+    banks: impl ExactSizeIterator<Item = [f64; 3]>,
+    x: f64,
+    z: f64,
+    floor: f32,
+) -> f64 {
+    let height = x * plane[0] + z * plane[1] + plane[2];
+    if banks.len() == 0 {
+        return height;
+    }
+    // The largest outward half-plane distance is <= Euclidean distance to this convex
+    // bearing hull. Its banks are planes of gradient 1:2, continuous at their joins and
+    // inside the existing cone even at corners. No curved/approximated bank seams.
+    let distance = banks
+        .map(|p| x * p[0] + z * p[1] + p[2])
+        .fold(0.0_f64, f64::max);
+    let reach = super::grade::TIE_IN_SLOPE * distance;
+    height.clamp(f64::from(floor) - reach, f64::from(floor) + reach)
+}
+
+// Identifies the active affine arm without changing the height evaluation's float operations.
+// This removes inactive arm crossings from the seam product: an unobstructed yard edge is
+// one seam regardless of its length or how many internal bearing edges the site has.
+fn active_terrace_plane(
+    plane: [f64; 3],
+    banks: &[[f64; 3]],
+    x: f64,
+    z: f64,
+    floor: f32,
+) -> [f64; 3] {
+    if banks.is_empty() {
+        return plane;
+    }
+    let (mut distance, mut arm) = (0.0_f64, [0.0; 3]);
+    for &p in banks {
+        let d = x * p[0] + z * p[1] + p[2];
+        if d > distance {
+            distance = d;
+            arm = p;
+        }
+    }
+    let h = x * plane[0] + z * plane[1] + plane[2];
+    let scale = if h < f64::from(floor) - super::grade::TIE_IN_SLOPE * distance {
+        -super::grade::TIE_IN_SLOPE
+    } else if h > f64::from(floor) + super::grade::TIE_IN_SLOPE * distance {
+        super::grade::TIE_IN_SLOPE
+    } else {
+        return plane;
+    };
+    [
+        scale * arm[0],
+        scale * arm[1],
+        f64::from(floor) + scale * arm[2],
+    ]
+}
+
+// The upper envelope of the level hull's outward affine distances along an edge. Sort
+// slopes once, then each line enters/leaves the monotone envelope once. Intersect the yard
+// line with the two cone arms on each envelope interval: O(P log P), O(P) scratch/knots.
+#[allow(clippy::too_many_arguments)]
+fn terrace_breaks(
+    plane: [f64; 3],
+    banks: impl ExactSizeIterator<Item = [f64; 3]>,
+    floor: f32,
+    a: [f64; 2],
+    b: [f64; 2],
+    out: &mut Vec<f64>,
+    lines: &mut Vec<[f64; 3]>,
+) {
+    out.clear();
+    out.extend([0.0, 1.0]);
+    lines.clear();
+    if banks.len() == 0 {
+        return;
+    }
+    lines.push([0.0; 3]);
+    for p in banks {
+        let slope = p[0] * (b[0] - a[0]) + p[1] * (b[1] - a[1]);
+        lines.push([
+            // Numeric zero slopes are one family even when a normal supplies -0.0.
+            if slope == 0.0 { 0.0 } else { slope },
+            p[0] * a[0] + p[1] * a[1] + p[2],
+            0.0,
+        ]);
+    }
+    lines.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]).then(b[1].total_cmp(&a[1])));
+    lines.dedup_by(|a, b| a[0] == b[0]);
+    let mut count = 0;
+    for i in 0..lines.len() {
+        let mut line = lines[i];
+        loop {
+            if count == 0 {
+                line[2] = f64::NEG_INFINITY;
+                break;
+            }
+            let last = lines[count - 1];
+            line[2] = (last[1] - line[1]) / (line[0] - last[0]);
+            if line[2] > last[2] {
+                break;
+            }
+            count -= 1;
+        }
+        lines[count] = line;
+        count += 1;
+    }
+    lines.truncate(count);
+    let (pm, pc) = (
+        plane[0] * (b[0] - a[0]) + plane[1] * (b[1] - a[1]),
+        plane[0] * a[0] + plane[1] * a[1] + plane[2],
+    );
+    for (i, line) in lines.iter().enumerate() {
+        let low = line[2].max(0.0);
+        let high = lines.get(i + 1).map_or(1.0, |p| p[2].min(1.0));
+        if low >= high {
+            continue;
+        }
+        out.extend([low, high]);
+        for scale in [-super::grade::TIE_IN_SLOPE, super::grade::TIE_IN_SLOPE] {
+            let divisor = pm - scale * line[0];
+            if divisor != 0.0 {
+                let t = (f64::from(floor) + scale * line[1] - pc) / divisor;
+                if t > low && t < high {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out.sort_unstable_by(f64::total_cmp);
+    out.dedup();
+}
 
 /// What the graded terrain reads of building sites: the sites whose bounds meet a rectangle,
 /// through a spatial index (the allocator's 64 m site cells), never a scan of every site.
@@ -63,6 +274,16 @@ struct SiteRecord {
     bounds: [f64; 4],
     height: f32,
     surfaces: (u32, u32),
+    terraces: (u32, u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerraceRecord {
+    points: (u32, u32),
+    level: (u32, u32),
+    banks: (u32, u32),
+    plane: [f64; 3],
+    bounds: [f64; 4],
 }
 
 // One surface polygon: its material, corners and XZ bounds.
@@ -81,6 +302,7 @@ pub struct SiteBuffer {
     sites: Vec<SiteRecord>,
     points: Vec<Vector2>,
     surfaces: Vec<SurfaceRecord>,
+    terraces: Vec<TerraceRecord>,
     // Site positions in canonical order.
     order: Vec<u32>,
     // Material edges, oriented with the surface's interior on the left, sorted by key and
@@ -88,6 +310,10 @@ pub struct SiteBuffer {
     edges: Vec<[f64; 4]>,
     edge_keys: Vec<([u64; 4], usize)>,
     ring: Vec<[f64; 2]>,
+    breaks: Vec<f64>,
+    bank_lines: Vec<[f64; 3]>,
+    // Normalized once per gather, shared by height and seam evaluation.
+    bank_planes: Vec<[f64; 3]>,
 }
 
 impl SiteBuffer {
@@ -102,7 +328,38 @@ impl SiteBuffer {
             bounds: bounds_of(footprint),
             height: support_height_m,
             surfaces: (surfaces, surfaces),
+            terraces: (self.terraces.len() as u32, self.terraces.len() as u32),
         });
+    }
+
+    /// Appends a derived plane and its continuous pad bank to the last site. Scratch storage
+    /// is reused by gathers; O(yard and level polygon corners).
+    pub fn push_terrace(&mut self, terrace: &SiteTerrace) {
+        let start = self.points.len() as u32;
+        self.points.extend_from_slice(&terrace.footprint_world);
+        let end = self.points.len() as u32;
+        self.points
+            .extend_from_slice(&terrace.level_footprint_world);
+        let bounds = bounds_of(&terrace.footprint_world);
+        let banks_start = self.bank_planes.len() as u32;
+        self.bank_planes
+            .extend(bank_planes(&terrace.level_footprint_world));
+        self.terraces.push(TerraceRecord {
+            points: (start, end),
+            level: (end, self.points.len() as u32),
+            banks: (banks_start, self.bank_planes.len() as u32),
+            plane: terrace.plane,
+            bounds,
+        });
+        if let Some(site) = self.sites.last_mut() {
+            site.terraces.1 = self.terraces.len() as u32;
+            site.bounds = [
+                site.bounds[0].min(bounds[0]),
+                site.bounds[1].min(bounds[1]),
+                site.bounds[2].max(bounds[2]),
+                site.bounds[3].max(bounds[3]),
+            ];
+        }
     }
 
     /// Adds a surface polygon (world XZ) to the last site, after its earlier surfaces.
@@ -123,6 +380,8 @@ impl SiteBuffer {
         self.sites.clear();
         self.points.clear();
         self.surfaces.clear();
+        self.terraces.clear();
+        self.bank_planes.clear();
         self.order.clear();
         self.edges.clear();
     }
@@ -161,11 +420,18 @@ impl SiteBuffer {
             sites,
             points,
             surfaces,
+            terraces,
             order,
             ..
         } = self;
         order.sort_unstable_by(|&a, &b| {
-            compare_sites(points, surfaces, &sites[a as usize], &sites[b as usize])
+            compare_sites(
+                points,
+                surfaces,
+                terraces,
+                &sites[a as usize],
+                &sites[b as usize],
+            )
         });
         self.edge_keys.clear();
         for surface in 0..self.surfaces.len() {
@@ -213,15 +479,52 @@ impl SiteBuffer {
         &self.points[site.footprint.0 as usize..site.footprint.1 as usize]
     }
 
-    /// The support height of the site at buffer index `index` ([`Self::pad_at`]), metres.
-    pub(super) fn height(&self, index: u32) -> f64 {
-        f64::from(self.sites[index as usize].height)
+    /// Local solved height of the site at buffer index `index` ([`Self::pad_at`]), metres.
+    pub(super) fn height(&self, index: u32, x: f64, z: f64) -> f64 {
+        let site = &self.sites[index as usize];
+        for terrace in &self.terraces[site.terraces.0 as usize..site.terraces.1 as usize] {
+            if inside_box(terrace.bounds, x, z, FOOTPRINT_PAD_M)
+                && site_footprint_contains(
+                    self.polygon(terrace.points),
+                    Vector2::new(x as f32, z as f32),
+                )
+            {
+                return height_with_banks(
+                    terrace.plane,
+                    self.bank_planes[terrace.banks.0 as usize..terrace.banks.1 as usize]
+                        .iter()
+                        .copied(),
+                    x,
+                    z,
+                    site.height,
+                );
+            }
+        }
+        f64::from(site.height)
+    }
+
+    fn polygon(&self, range: (u32, u32)) -> &[Vector2] {
+        &self.points[range.0 as usize..range.1 as usize]
+    }
+
+    fn holds(&self, site: &SiteRecord, point: Vector2) -> bool {
+        site_footprint_contains(self.footprint(site), point)
+            || self.terraces[site.terraces.0 as usize..site.terraces.1 as usize]
+                .iter()
+                .any(|t| site_footprint_contains(self.polygon(t.points), point))
     }
 
     // Whether the site at buffer index `a` comes before the one at `b` in canonical order. Sites
     // equal in that order are equal in content, so either answers for both.
     fn precedes(&self, a: usize, b: usize) -> bool {
-        compare_sites(&self.points, &self.surfaces, &self.sites[a], &self.sites[b]).is_lt()
+        compare_sites(
+            &self.points,
+            &self.surfaces,
+            &self.terraces,
+            &self.sites[a],
+            &self.sites[b],
+        )
+        .is_lt()
     }
 
     /// The material edges, sorted by key: `[ax, az, bx, bz]`, interior on the left.
@@ -240,7 +543,7 @@ impl SiteBuffer {
     /// Visits the `Pad` seams of every site in the buffer's order: each footprint side at the
     /// support height, oriented counter-clockwise (positive signed area in XZ), each site's
     /// sides from its first corner. A footprint of fewer than three corners holds no point and
-    /// gives none. `O(corners)`.
+    /// gives none. Flat: O(corners); sloped: O(yard edges × level corners²).
     pub(super) fn for_each_pad_seam(&mut self, visit: impl FnMut(Seam)) {
         self.for_each_pad_seam_where(|_, _| true, visit);
     }
@@ -256,6 +559,65 @@ impl SiteBuffer {
     ) {
         for index in 0..self.sites.len() {
             let site = self.sites[index];
+            if site.terraces.0 != site.terraces.1 {
+                // Only sloped sites take this path. Exact affine-arm crossings describe
+                // the continuous banks; every reader receives the same seam product.
+                for terrace_index in site.terraces.0..site.terraces.1 {
+                    let terrace = self.terraces[terrace_index as usize];
+                    self.oriented_ring(terrace.points);
+                    for i in 0..self.ring.len() {
+                        let a = self.ring[i];
+                        let b = self.ring[(i + 1) % self.ring.len()];
+                        terrace_breaks(
+                            terrace.plane,
+                            self.bank_planes[terrace.banks.0 as usize..terrace.banks.1 as usize]
+                                .iter()
+                                .copied(),
+                            site.height,
+                            a,
+                            b,
+                            &mut self.breaks,
+                            &mut self.bank_lines,
+                        );
+                        let point = |t: f64| {
+                            let (x, z) = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+                            [x, self.height(index as u32, x, z), z]
+                        };
+                        let mut emit = |start, end| {
+                            let seam = Seam {
+                                a: point(start),
+                                b: point(end),
+                                kind: SeamKind::Pad,
+                                retained: false,
+                            };
+                            let (lo, hi) = seam.height_range();
+                            if keep(seam.box_xz(), lo) || keep(seam.box_xz(), hi) {
+                                visit(seam);
+                            }
+                        };
+                        let (mut start, mut active) = (0.0, None);
+                        for interval in self.breaks.windows(2) {
+                            let t = (interval[0] + interval[1]) * 0.5;
+                            let (x, z) = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+                            let arm = active_terrace_plane(
+                                terrace.plane,
+                                &self.bank_planes
+                                    [terrace.banks.0 as usize..terrace.banks.1 as usize],
+                                x,
+                                z,
+                                site.height,
+                            );
+                            if active.is_some_and(|old| old != arm) {
+                                emit(start, interval[0]);
+                                start = interval[0];
+                            }
+                            active = Some(arm);
+                        }
+                        emit(start, 1.0);
+                    }
+                }
+                continue;
+            }
             let height = f64::from(site.height);
             if site.footprint.1 - site.footprint.0 < 3 || !keep(site.bounds, height) {
                 continue;
@@ -282,7 +644,7 @@ impl SiteBuffer {
         let mut first = None;
         for (index, site) in self.sites.iter().enumerate() {
             if inside_box(site.bounds, x, z, FOOTPRINT_PAD_M)
-                && site_footprint_contains(self.footprint(site), point)
+                && self.holds(site, point)
                 && first.is_none_or(|first| self.precedes(index, first))
             {
                 first = Some(index);
@@ -332,19 +694,26 @@ impl SiteBuffer {
         pads.resize(xs.len() * zs.len(), NO_SITE);
         for rank in 0..self.sites.len() {
             let (index, site) = (self.order[rank], *self.ranked(rank));
-            if site.footprint.1 - site.footprint.0 < 3 {
-                continue;
-            }
-            self.oriented_ring(site.footprint);
-            let (ring, footprint) = (&self.ring, self.footprint(&site));
-            for_each_span_point(xs, zs, ring, FOOTPRINT_PAD_M, prune, |k, x, z, sure| {
-                if pads[k] == NO_SITE
-                    && (sure
-                        || site_footprint_contains(footprint, Vector2::new(x as f32, z as f32)))
-                {
-                    pads[k] = index;
+            for polygon in 0..=site.terraces.1 - site.terraces.0 {
+                let range = if polygon == 0 {
+                    site.footprint
+                } else {
+                    self.terraces[(site.terraces.0 + polygon - 1) as usize].points
+                };
+                if range.1 - range.0 < 3 {
+                    continue;
                 }
-            });
+                self.oriented_ring(range);
+                let (ring, footprint) = (&self.ring, self.polygon(range));
+                for_each_span_point(xs, zs, ring, FOOTPRINT_PAD_M, prune, |k, x, z, sure| {
+                    if pads[k] == NO_SITE
+                        && (sure
+                            || site_footprint_contains(footprint, Vector2::new(x as f32, z as f32)))
+                    {
+                        pads[k] = index;
+                    }
+                });
+            }
         }
     }
 
@@ -355,6 +724,10 @@ impl SiteBuffer {
     pub(super) fn mark_footprint_cells(&mut self, xs: &[f64], zs: &[f64], out: &mut [bool]) {
         for index in 0..self.sites.len() {
             let site = self.sites[index];
+            for terrace in site.terraces.0..site.terraces.1 {
+                self.oriented_ring(self.terraces[terrace as usize].points);
+                super::coverage::mark_met_cells(xs, zs, &self.ring, out);
+            }
             if site.footprint.1 - site.footprint.0 < 3 {
                 continue;
             }
@@ -481,6 +854,21 @@ impl SiteBuffer {
                     out,
                 );
             }
+            if site.terraces.0 != site.terraces.1 {
+                // No extra words on flat sites: their input fingerprints stay bitwise exact.
+                out.push(u32::MAX);
+                out.push(site.terraces.1 - site.terraces.0);
+                for terrace in &self.terraces[site.terraces.0 as usize..site.terraces.1 as usize] {
+                    bits(self.polygon(terrace.points), out);
+                    bits(self.polygon(terrace.level), out);
+                    out.extend(
+                        terrace
+                            .plane
+                            .iter()
+                            .flat_map(|p| [p.to_bits() as u32, (p.to_bits() >> 32) as u32]),
+                    );
+                }
+            }
         }
     }
 }
@@ -503,6 +891,7 @@ fn edge_points(edge: &[f64; 4]) -> ([f64; 3], [f64; 3]) {
 fn compare_sites(
     points: &[Vector2],
     surfaces: &[SurfaceRecord],
+    terraces: &[TerraceRecord],
     a: &SiteRecord,
     b: &SiteRecord,
 ) -> Ordering {
@@ -525,6 +914,22 @@ fn compare_sites(
         .then_with(|| corners(a.footprint).cmp(corners(b.footprint)))
         .then_with(|| a.height.to_bits().cmp(&b.height.to_bits()))
         .then_with(|| surface_list(a).cmp(surface_list(b)))
+        .then_with(|| {
+            let terrace_list = |site: &SiteRecord| {
+                terraces[site.terraces.0 as usize..site.terraces.1 as usize]
+                    .iter()
+                    .flat_map(|t| {
+                        t.plane
+                            .map(f64::to_bits)
+                            .into_iter()
+                            .chain(std::iter::once((t.points.1 - t.points.0) as u64))
+                            .chain(corners(t.points).map(u64::from))
+                            .chain(std::iter::once((t.level.1 - t.level.0) as u64))
+                            .chain(corners(t.level).map(u64::from))
+                    })
+            };
+            terrace_list(a).cmp(terrace_list(b))
+        })
 }
 
 // Visits the lattice points of `xs` x `zs` (row-major by `z`, as `(k, x, z, sure)`) the

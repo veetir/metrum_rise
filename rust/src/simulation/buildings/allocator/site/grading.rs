@@ -139,6 +139,48 @@ pub(crate) fn building_site_support_tie_in_is_valid(
     })
 }
 
+/// The same C1 ring/contact rules evaluated at each yard boundary's own height. A fixed road
+/// refusal retains its measured grade; soft-ground infeasibility has no invented road excess.
+pub(crate) fn building_site_surface_tie_in(
+    footprint: &[Vector2],
+    height: impl Fn(Vector2) -> f32,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    roads: &RoadbedSystem,
+) -> Result<(), Option<StreetContactIssue>> {
+    let context = SiteGradingContext::new(
+        terrain,
+        graph,
+        roads,
+        BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
+        BUILDING_SITE_SUPPORT_TIE_IN_REACH_M,
+    );
+    let mut reason = None;
+    let valid = visit_footprint_grading_rays(footprint, context.safe_step_m, |seam, outward| {
+        let h = height(seam);
+        if building_site_support_tie_in_ray_is_valid(h, seam, outward, &context) {
+            return true;
+        }
+        for d in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
+            let p = seam + outward * d;
+            if let Some(target) = roads.exposed_height_at(p.x, p.y)
+                && (target - h).abs() > road_budget(d) + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M
+            {
+                reason = Some(StreetContactIssue {
+                    constraint: "fixed-road tie-in grade",
+                    measured: ((target - h).abs() / d * 10_000.0).round() as u32,
+                    limit: (crate::simulation::terrain::graded::TIE_IN_SLOPE * 10_000.0).round()
+                        as u32,
+                    unit: "%",
+                });
+                break;
+            }
+        }
+        false
+    });
+    if valid { Ok(()) } else { Err(reason) }
+}
+
 /// Chooses the closest feasible level pad to the preferred road-connection height.
 /// Intersects exact unions of the existing ray-height intervals, plus driveway grade intervals;
 /// it does not raise the slope limit or move the road. Ties choose the lower height. The rays

@@ -4,6 +4,7 @@
 
 use super::geometry::polygon_slice_bounds;
 use crate::assets::SiteSurfaceMaterial;
+use crate::simulation::terrain::graded::SiteTerrace;
 use godot::prelude::Vector2;
 
 /// Runtime surface polygon authored inside a building site.
@@ -20,11 +21,13 @@ pub(crate) struct BuildingSiteSurfaceClient {
 /// Runtime client that owns the required flat building-site support surface.
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {
-    /// World-space flat support footprint corners.
+    /// Automatically derived yard planes and their continuous banks; empty on flat frontage.
+    pub(crate) terraces: Vec<SiteTerrace>,
+    /// Legacy support/coverage corners; terraces replace the height within their boundary.
     pub(crate) footprint_world: Vec<Vector2>,
     /// World-space lot reservation corners.
     pub(crate) lot_footprint_world: [Vector2; 4],
-    /// Flat building/yard support height; edge paving outside the pad follows engineered ground.
+    /// Level bearing/entrance floor, retained independently of the derived yard planes.
     pub(crate) support_height_m: f32,
     /// Authored site surface polygons transformed into world space.
     pub(crate) surfaces: Vec<BuildingSiteSurfaceClient>,
@@ -52,6 +55,8 @@ pub struct SiteChange {
     pub bounds: [f32; 4],
     /// Flat support height, metres.
     pub support_height_m: f32,
+    /// Conservative heights of changed plane/bank seams; absent for the legacy flat product.
+    pub height_range_m: Option<[f32; 2]>,
 }
 
 /// Minimal immutable building-site data needed by asynchronous terrain jobs.
@@ -66,6 +71,7 @@ pub(crate) struct BuildingSiteTerrainSnapshot {
 /// One stable building-site footprint detached from the authoritative allocator.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct BuildingSiteTerrainClient {
+    pub(super) terraces: Vec<SiteTerrace>,
     pub(super) building_idx: usize,
     // The lot centre the graded terrain's site test reads (`TERRAIN-07-E`).
     pub(super) lot_center: Vector2,
@@ -76,7 +82,7 @@ pub(super) struct BuildingSiteTerrainClient {
 
 impl BuildingSiteClient {
     pub(crate) fn bounds(&self) -> (f32, f32, f32, f32) {
-        site_surface_bounds(&self.footprint_world, &self.surfaces)
+        site_surface_bounds(&self.footprint_world, &self.surfaces, &self.terraces)
     }
 
     pub(crate) fn lot_bounds(&self) -> (f32, f32, f32, f32) {
@@ -113,10 +119,15 @@ impl BuildingSiteClient {
 pub(super) fn site_surface_bounds(
     footprint: &[Vector2],
     surfaces: &[BuildingSiteSurfaceClient],
+    terraces: &[SiteTerrace],
 ) -> (f32, f32, f32, f32) {
+    let initial = terraces.iter().fold(polygon_slice_bounds(footprint), |b, t| {
+        let o = polygon_slice_bounds(&t.footprint_world);
+        (b.0.min(o.0), b.1.min(o.1), b.2.max(o.2), b.3.max(o.3))
+    });
     surfaces
         .iter()
-        .fold(polygon_slice_bounds(footprint), |bounds, surface| {
+        .fold(initial, |bounds, surface| {
             let other = polygon_slice_bounds(&surface.vertices_world);
             (
                 bounds.0.min(other.0),

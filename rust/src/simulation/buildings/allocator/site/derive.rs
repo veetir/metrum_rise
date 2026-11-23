@@ -12,7 +12,9 @@ use crate::simulation::buildings::allocator::entrance::{
 };
 use crate::simulation::buildings::allocator::geometry::front_gap_at;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::network::{graph::RegionGraph, roadbed::RoadbedSystem};
 use crate::simulation::parking::validation::ProofClass;
+use crate::simulation::terrain::graded::SiteTerrace;
 use crate::simulation::zoning::ParcelGeometry;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -88,13 +90,26 @@ impl BuildingAllocator {
         // Filled in place with spare rows, so the first building appended after a load, whose
         // rebuild sized the clients exactly, does not copy them (`SIM-02-K`).
         let mut sites = std::mem::take(&mut self.building_sites);
+        let planes: Vec<_> = crate::thread_pools::install(|| {
+            sites
+                .par_iter()
+                .map(|site| site.terraces.first().map(|t| t.plane))
+                .collect()
+        });
         sites.clear();
         crate::utils::storage::reserve_rows(&mut sites, self.buildings.len());
         // Main-thread index repair and asset reloads reach here outside any pool (CODE-17).
         crate::thread_pools::install(|| {
             self.buildings
                 .par_iter()
-                .map(|building| self.derive_building_site_client(building, zone_cell_m))
+                .enumerate()
+                .map(|(i, building)| {
+                    self.derive_building_site_client(
+                        building,
+                        zone_cell_m,
+                        planes.get(i).copied().flatten(),
+                    )
+                })
                 .collect_into_vec(&mut sites)
         });
         self.building_sites = sites;
@@ -110,7 +125,8 @@ impl BuildingAllocator {
             self.rebuild_building_site_clients(zone_cell_m);
         } else {
             let client =
-                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
+                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m,
+                    self.building_sites[building_idx].terraces.first().map(|t| t.plane));
             let radius_m = site_radius_m(&client);
             let previous = site_radius_m(&self.building_sites[building_idx]);
             self.site_cells
@@ -124,7 +140,7 @@ impl BuildingAllocator {
     pub(crate) fn push_building_site_client(&mut self, building_idx: usize, zone_cell_m: f32) {
         if self.building_sites.len() == building_idx {
             let client =
-                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
+                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m, None);
             let radius = site_radius_m(&client);
             self.push_site_client(client);
             self.update_site_radius(None, Some(radius));
@@ -181,51 +197,59 @@ impl BuildingAllocator {
         self.site_cells.rebuild(&self.building_sites);
     }
 
-    // A tied maximum survives local replacement/removal. Only losing its last owner
-    // needs the existing O(site vertices) reduction; ordinary updates are O(local vertices).
+    // O(log distinct radii), including the last maximum's removal. Non-negative finite
+    // f32 radii sort by bits, so the existing maximum/count remain O(1) query inputs.
     fn update_site_radius(&mut self, previous: Option<f32>, current: Option<f32>) {
-        if previous == Some(self.max_site_radius_m) {
-            self.max_site_radius_count -= 1;
+        if previous == current {
+            return;
         }
-        if let Some(radius) = current {
-            if radius > self.max_site_radius_m {
-                self.max_site_radius_m = radius;
-                self.max_site_radius_count = 1;
-            } else if radius == self.max_site_radius_m {
-                self.max_site_radius_count += 1;
+        if let Some(radius) = previous {
+            let key = radius.to_bits();
+            if let Some(count) = self.site_radius_counts.get_mut(&key) {
+                *count -= 1;
+                if *count == 0 {
+                    self.site_radius_counts.remove(&key);
+                }
             }
         }
-        if self.max_site_radius_count == 0 {
-            self.recompute_max_site_radius_m();
+        if let Some(radius) = current {
+            *self.site_radius_counts.entry(radius.to_bits()).or_default() += 1;
         }
+        (self.max_site_radius_m, self.max_site_radius_count) = self
+            .site_radius_counts
+            .last_key_value()
+            .map_or((0.0, 0), |(&radius, &count)| {
+                (f32::from_bits(radius), count)
+            });
     }
 
     pub(crate) fn recompute_max_site_radius_m(&mut self) {
-        // Main-thread site edits reach here outside any pool (CODE-17).
-        (self.max_site_radius_m, self.max_site_radius_count) = crate::thread_pools::install(|| {
+        // Whole-index/load repair only. Geometry is independent in parallel; the ordered
+        // metadata book commits serially, O(site vertices / workers + sites log distinct radii).
+        let radii: Vec<_> = crate::thread_pools::install(|| {
             self.building_sites
                 .par_iter()
                 .with_min_len(4_096)
-                .map(|site| (site_radius_m(site), 1))
-                .reduce(
-                    || (0.0, 0),
-                    |a, b| {
-                        if a.0 == b.0 {
-                            (a.0, a.1 + b.1)
-                        } else if a.0 > b.0 {
-                            a
-                        } else {
-                            b
-                        }
-                    },
-                )
+                .map(site_radius_m)
+                .collect()
         });
+        self.site_radius_counts.clear();
+        for radius in radii {
+            *self.site_radius_counts.entry(radius.to_bits()).or_default() += 1;
+        }
+        (self.max_site_radius_m, self.max_site_radius_count) = self
+            .site_radius_counts
+            .last_key_value()
+            .map_or((0.0, 0), |(&radius, &count)| {
+                (f32::from_bits(radius), count)
+            });
     }
 
     pub(super) fn derive_building_site_client(
         &self,
         building: &Building,
         zone_cell_m: f32,
+        yard_plane: Option<[f64; 3]>,
     ) -> BuildingSiteClient {
         let frontage_forward = self
             .registry
@@ -324,6 +348,24 @@ impl BuildingAllocator {
             .unwrap_or_default();
 
         BuildingSiteClient {
+            terraces: yard_plane
+                .and_then(|plane| {
+                    let manifest = &self.registry.get(&building.asset_id)?.manifest;
+                    Some(SiteTerrace {
+                        footprint_world: lot_footprint_world.to_vec(),
+                        plane,
+                        level_footprint_world: level_support_footprint_local(
+                            manifest,
+                            lot_half_width,
+                            lot_half_depth,
+                        )
+                        .into_iter()
+                        .map(|p| center + basis_x * p.x + basis_z * p.y)
+                        .collect(),
+                    })
+                })
+                .into_iter()
+                .collect(),
             footprint_world,
             lot_footprint_world,
             support_height_m: building.support_height_m,
@@ -331,6 +373,100 @@ impl BuildingAllocator {
             structure_world,
             vehicle_structure_world,
             planting_world,
+        }
+    }
+
+    /// Installs the derived yard through the existing indexed site lifecycle. Caller records
+    /// the old/new captures. O(local vertices + log distinct radii), no global index rebuild.
+    pub(crate) fn set_site_terraces(&mut self, index: usize, terraces: Vec<SiteTerrace>) {
+        let old_radius = site_radius_m(&self.building_sites[index]);
+        self.site_cells.remove(index, &self.building_sites[index]);
+        self.building_sites[index].terraces = terraces;
+        self.site_cells.insert(index, &self.building_sites[index]);
+        let radius = site_radius_m(&self.building_sites[index]);
+        self.update_site_radius(Some(old_radius), Some(radius));
+    }
+
+    /// Re-derives only an edited building's unsaved yard, retaining its stored floor. Road
+    /// reconciliation, asset refresh and load call this before publishing ground or supply.
+    pub(crate) fn regrade_building_site(
+        &mut self,
+        index: usize,
+        graph: &RegionGraph,
+        roads: &RoadbedSystem,
+    ) {
+        let building = &self.buildings[index];
+        let Some(entry) = self.registry.get(&building.asset_id) else {
+            return;
+        };
+        let plane = super::yard::frontage_yard_plane(
+            self.building_sites[index].lot_footprint_world,
+            Vector2::new(building.center_x, building.center_y),
+            building.facing_dir,
+            building.edge_idx,
+            building.side,
+            graph,
+            roads,
+        );
+        if plane == self.building_sites[index].terraces.first().map(|t| t.plane) {
+            return;
+        }
+        let terraces: Vec<_> = super::yard::derive_yard_terrace(
+            &entry.manifest,
+            self.building_sites[index].lot_footprint_world,
+            Vector2::new(building.center_x, building.center_y),
+            building.facing_dir,
+            building.edge_idx,
+            building.side,
+            graph,
+            roads,
+        )
+        .into_iter()
+        .collect();
+        if terraces == self.building_sites[index].terraces {
+            return;
+        }
+        let old = self.site_change(index);
+        self.set_site_terraces(index, terraces);
+        self.record_building_site_change(index, old);
+        self.record_building_site_change(index, self.site_change(index));
+        self.bump_building_ref_revision();
+    }
+
+    /// Re-derives unsaved yards after loading a world. Geometry is independent in parallel;
+    /// index updates and captures commit in building order, O(buildings + changed vertices).
+    pub(crate) fn regrade_all_building_sites(
+        &mut self,
+        graph: &RegionGraph,
+        roads: &RoadbedSystem,
+    ) {
+        let changes: Vec<_> = crate::thread_pools::install(|| {
+            self.buildings
+                .par_iter()
+                .enumerate()
+                .filter_map(|(i, b)| {
+                    let entry = self.registry.get(&b.asset_id)?;
+                    let terraces: Vec<_> = super::yard::derive_yard_terrace(
+                        &entry.manifest,
+                        self.building_sites[i].lot_footprint_world,
+                        Vector2::new(b.center_x, b.center_y),
+                        b.facing_dir,
+                        b.edge_idx,
+                        b.side,
+                        graph,
+                        roads,
+                    )
+                    .into_iter()
+                    .collect();
+                    (terraces != self.building_sites[i].terraces).then_some((i, terraces))
+                })
+                .collect()
+        });
+        for (i, terraces) in changes {
+            let old = self.site_change(i);
+            self.set_site_terraces(i, terraces);
+            self.record_building_site_change(i, old);
+            self.record_building_site_change(i, self.site_change(i));
         }
     }
 
@@ -405,6 +541,24 @@ pub(super) fn required_flat_support_footprint_local(
     lot_half_width: f32,
     lot_half_depth: f32,
 ) -> Vec<Vector2> {
+    support_footprint_local(manifest, lot_half_width, lot_half_depth, true)
+}
+
+/// Bearing and entrance support without including the yard's paving in the level hull.
+pub(super) fn level_support_footprint_local(
+    manifest: &AssetManifest,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+) -> Vec<Vector2> {
+    support_footprint_local(manifest, lot_half_width, lot_half_depth, false)
+}
+
+fn support_footprint_local(
+    manifest: &AssetManifest,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    paving: bool,
+) -> Vec<Vector2> {
     let lot = LocalLotSupport {
         half_width: lot_half_width,
         half_depth: lot_half_depth,
@@ -419,7 +573,7 @@ pub(super) fn required_flat_support_footprint_local(
     }
     // Paving owns level support right to its lot boundary. Neighbour-height validation
     // constrains touching pads; fixed road samples constrain the road-side bank independently.
-    for surface in &manifest.site_surfaces {
+    for surface in manifest.site_surfaces.iter().filter(|_| paving) {
         points.extend(
             surface
                 .vertices
@@ -428,7 +582,11 @@ pub(super) fn required_flat_support_footprint_local(
         );
     }
     if points.is_empty() {
-        return default_support_footprint_local(lot_half_width, lot_half_depth);
+        return if paving {
+            default_support_footprint_local(lot_half_width, lot_half_depth)
+        } else {
+            Vec::new()
+        };
     }
 
     points.sort_by(|left, right| {
@@ -439,7 +597,11 @@ pub(super) fn required_flat_support_footprint_local(
     points.dedup_by(|left, right| left.distance_squared_to(*right) <= SITE_POINT_EPS_SQUARED_M2);
     let mut hull = convex_hull_from_sorted_points(points);
     if hull.len() < 3 || signed_polygon_area(&hull).abs() <= SITE_POINT_EPS_SQUARED_M2 {
-        hull = default_support_footprint_local(lot_half_width, lot_half_depth);
+        hull = if paving {
+            default_support_footprint_local(lot_half_width, lot_half_depth)
+        } else {
+            Vec::new()
+        };
     }
     if signed_polygon_area(&hull) < 0.0 {
         hull.reverse();

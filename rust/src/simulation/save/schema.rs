@@ -6,7 +6,11 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 127;
+pub const SAVE_VERSION: i64 = 128;
+
+/// Format 127 used level yards. Re-derive road-following yards at the stored floors and
+/// recheck their visible-ground parking supply once; the database schema itself is unchanged.
+pub const PRE_YARD_SAVE_VERSION: i64 = 127;
 
 /// Format 126 certified the interim 8% parking limit, before lot-edge support and driveway
 /// grade-change validation. Recheck saved supply once without changing any stored floor.

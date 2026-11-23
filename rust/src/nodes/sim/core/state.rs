@@ -1917,6 +1917,20 @@ impl SimCore {
     // graded terrain's site changes, which replace the last publication's; `every_site` for a
     // whole-catalog reload's.
     fn publish_pending_site_changes_but_terrain(&mut self, every_site: bool) {
+        // Resolve edited sites before the shared ground and parking publication. The journal
+        // may append old/new captures while regrading, so visit its original handles once.
+        self.allocator.parking_site_changes.sort_unstable();
+        self.allocator.parking_site_changes.dedup();
+        for slot in 0..self.allocator.parking_site_changes.len() {
+            let handle = self.allocator.parking_site_changes[slot];
+            if let Some(i) = self.allocator.building_handles.resolve(handle) {
+                self.allocator.regrade_building_site(
+                    i,
+                    &self.region_graph,
+                    &self.transit_network.roadbed,
+                );
+            }
+        }
         self.last_site_terrain_changes.clear();
         std::mem::swap(
             &mut self.last_site_terrain_changes,

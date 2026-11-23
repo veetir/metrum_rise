@@ -557,6 +557,7 @@ impl BuildingAllocator {
         let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
         let placement = ResolvedPlacement {
+            terraces: Vec::new(),
             replaced_building,
             asset_id: asset_id.to_owned(),
             build_generation: parcel.build_generation(),
@@ -659,7 +660,14 @@ impl BuildingAllocator {
         else {
             return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
-        self.prepare_site_support(&mut resolved, &[], graph, road_surface, terrain)?;
+        self.prepare_site_support_at_commit(
+            &mut resolved,
+            graph,
+            BuildingSiteEnvironment {
+                road_surface,
+                terrain,
+            },
+        )?;
         Ok(self.commit_resolved_slot(resolved, applicant_seed, zoning, catalog, tuning))
     }
 
@@ -1109,6 +1117,7 @@ impl BuildingAllocator {
         .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
 
         Ok(ResolvedPlacement {
+            terraces: Vec::new(),
             replaced_building: None,
             asset_id: asset_id.to_owned(),
             build_generation: 0,
@@ -1506,6 +1515,7 @@ impl BuildingAllocator {
             return false;
         };
         let mut placement = ResolvedPlacement {
+            terraces: Vec::new(),
             replaced_building: Some(building_idx),
             asset_id: asset_id.to_owned(),
             build_generation: building.build_generation,
@@ -1580,6 +1590,10 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
         let footprint = self.placement_required_flat_support_footprint(placement);
+        placement.terraces = self
+            .placement_yard_terrace(placement, graph, road_surface)
+            .into_iter()
+            .collect();
         placement.support_height_m = self.solve_street_contacts(
             placement,
             &footprint,
@@ -1591,8 +1605,11 @@ impl BuildingAllocator {
                 terrain,
             },
         )?;
-        self.validate_neighbor_site_height(placement, placement.support_height_m, taken)?;
-        self.validate_site_support_tie_in(placement, graph, road_surface, terrain)
+        if placement.terraces.is_empty() {
+            self.validate_neighbor_site_height(placement, placement.support_height_m, taken)?;
+            self.validate_site_support_tie_in(placement, graph, road_surface, terrain)?;
+        }
+        Ok(())
     }
 
     fn resolve_site_support_connections(
@@ -1858,7 +1875,11 @@ impl BuildingAllocator {
             }
             if flat_support_footprints_overlap(
                 footprint_world,
-                &site.footprint_world,
+                site.terraces
+                    .first()
+                    .map_or(site.footprint_world.as_slice(), |t| {
+                        t.level_footprint_world.as_slice()
+                    }),
                 -BUILDING_SITE_NEIGHBOR_EPS_M,
             ) {
                 low = low.max(site.support_height_m - BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M);
@@ -1935,6 +1956,24 @@ impl BuildingAllocator {
             max_z = max_z.max(point.y);
         }
         (min_x, min_z, max_x, max_z)
+    }
+
+    fn placement_yard_terrace(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+        roads: &RoadbedSystem,
+    ) -> Option<crate::simulation::terrain::graded::SiteTerrace> {
+        super::site::derive_yard_terrace(
+            &self.registry.get(&placement.asset_id)?.manifest,
+            self.placement_site_corners(placement),
+            placement.center_2d,
+            placement.facing_dir,
+            placement.edge_idx,
+            placement.side,
+            graph,
+            roads,
+        )
     }
 
     fn placement_required_flat_support_footprint(
@@ -2116,6 +2155,9 @@ impl BuildingAllocator {
             ));
         }
         self.push_building_site_client(building_idx, zone_cell_m);
+        if !placement.terraces.is_empty() {
+            self.set_site_terraces(building_idx, placement.terraces);
+        }
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
         self.record_building_site_change(building_idx, self.site_change(building_idx));
@@ -2424,6 +2466,7 @@ impl SpawnProfileAssetCandidates {
 }
 
 struct ResolvedPlacement {
+    terraces: Vec<crate::simulation::terrain::graded::SiteTerrace>,
     replaced_building: Option<usize>,
     // Redevelopment generation of the claimed parcel, carried so the placed building and the
     // asset selection that chose it agree on one value.
@@ -2740,6 +2783,7 @@ mod tests {
         allocator
             .building_sites
             .push(super::super::site::BuildingSiteClient {
+                terraces: Vec::new(),
                 structure_world: Vec::new(),
                 vehicle_structure_world: None,
                 planting_world: Vec::new(),
@@ -2754,6 +2798,7 @@ mod tests {
                 surfaces: Vec::new(),
             });
         let touching = ResolvedPlacement {
+            terraces: Vec::new(),
             build_generation: 0,
             replaced_building: None,
             asset_id: "test:asset".to_owned(),
@@ -2775,6 +2820,7 @@ mod tests {
             front_gap_m: [0.0; 3],
         };
         let overlapping = ResolvedPlacement {
+            terraces: Vec::new(),
             build_generation: 0,
             replaced_building: None,
             asset_id: "test:asset".to_owned(),

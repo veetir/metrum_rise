@@ -208,6 +208,8 @@ impl SimCore {
         // Transforms and entrances were restored before agent lane references.
         self.allocator
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
+        self.allocator
+            .regrade_all_building_sites(&self.region_graph, &self.transit_network.roadbed);
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.logistics.hour_ticks = loaded.scheduler.logistics_hour_ticks;

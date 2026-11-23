@@ -9723,7 +9723,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       bays, then least sampled absolute cut/fill, then lowest height. Replacement retains the
       stored floor; load does not select a new floor. `PARK-25` takes authored paving support
       to its lot edge; road intersections and neighbour-height checks remain hard constraints.
-      [Part C below](#drivable-yards-part-c-design-only) owns the future terrace/edge design.
+      [Part C below](#drivable-yards-part-c-automatic-grading-c2) owns the current yard contract.
+    - **2026-11-23 C2:** one road-following yard plane with continuous 1:2 banks to the level
+      structure/entrance hull. All C1 contact limits remain; D proves stalls and required ways
+      on the visible result. Flat products retain the old primitive. Derived yards rebuild on
+      load at the stored floor; format 128 invalidates older ground certificates once.
 13. **T13. Water against graded ground.**
     - **Evidence.** Depth is `surface - base`; a cut below a lake's level beside its shore changes
       the real ground. Water suppresses the mesh cells a road touches.
@@ -11850,109 +11854,195 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 - **40** (a clipped site loop in the shared-vertex height rule; recorded on branch `road68-D7`, not
   on `road`): superseded; nothing is clipped.
 
-### Drivable yards: Part C, design only
+### Drivable yards: Part C, automatic grading (C2)
 
-**Status and placement policy.** C1 (`PARK-24`) implements fixed-road feasibility and street
-contacts; `PARK-25` extends the current single level support to authored paving at the lot edge.
-Terraces and retaining edges below are **design only**. Automatic placement must produce usable
-contacts. The terrain brush is not a required repair step for a yard the game just created.
+**Status.** C2, on `wip/c1-placement` after `666b7dd44`, implements an automatic first slice of
+`PARK-24`/`PARK-25`. A building and its entrance landings retain one level stored floor; its yard
+can follow the frontage grade. Placement must produce usable contacts without a brush repair.
+No new asset fields, retaining walls, plinths, user choices or unrestricted optimiser are added.
 
-**What stays level.** The building bearing polygons and entrance landings keep the building's
-stored floor. Paving and parking become separate semantic regions, grouped into one or more
-terraces, each level or an explicitly bounded plane. Ordinary spots allow at most **5%** between
-wheel contacts, aisles and driveways **10%** over a **2.8 m** car wheelbase, and future accessible
-spots **2%** in every direction. A triangle's full gradient must satisfy its region's limit;
-checking its edges alone does not establish that. The shared `parking/ground.rs` constants own
-vehicle limits, the **0.12 m** step is `CURB_STEP_HEIGHT_M`, and driveway grade change is at most
-**5 percentage points per car wheelbase**. Access ways crossing the footway use the lowered-kerb
-interpretation, as in D. Accessibility is not implemented by relabelling an ordinary bay.
+**Smallest representation.** A non-horizontal frontage derives **one affine yard plane** over
+the lot. Its longitudinal grade is the secant of the road-side heights at the frontage ends,
+bounded by D's `DRIVE_GRADE` (10%); it passes through the **actual frontage-midpoint road-side
+height**, not the average of the end heights on a curved vertical profile. There is no invented
+crossfall. A structure/entrance bearing hull, derived from existing imported mesh bounds and
+entrance landing envelopes, remains at `support_height_m`. Paving is excluded from this level
+hull; existing paving, parking, passage clearances and proven access ways still supply the
+geometric parking proof. The whole remaining lot, lawn included, takes the yard plane or its
+continuous bank to that hull. Paving outside the lot continues on the existing graded apron.
 
-**Contacts and edges.** The Driveways and street-facing entrances are the functional street
-contacts. Driveways need feasible length from carriageway edge to terrace edge and vertical
-transitions at both ends; entrances need a level landing within a kerb step of the footway, or
-an explicitly available **5%** walking ramp (the report's Finland Decree 241/2017 guidance).
-Between contacts the frontage can meet the street through a bank. C1 bounds a nearby undrawn
-bank at **1.0 m**: larger residual level differences need an explicit retaining structure,
-rather than leaving a multi-metre cliff with no geometry or explanation. Its existing 1:2
-cone still bounds bank reach. A wall or plinth will be a first-class grading edge, never an
-implicit permission for a driving/walking route or wheel envelope to cross a discontinuity.
-A 21% street rises 0.63 m in 3 m; a 5% parking terrace rises at most 0.15 m. Following the
-whole frontage cannot solve that geometry. Local contacts, terraces and retaining edges can;
-otherwise choose a different lot/asset or refuse with the measured binding constraint.
+One plane is sufficient for both tested widths at 5% and 10%; D refuses optional stalls that
+cannot stand on it. More terraces would add ownership/connector rules without improving these
+acceptance cases. A flat frontage derives **no terrace record** and retains the old primitive,
+float operations, ordering and input words. Flat products must remain bitwise identical.
 
-**Smallest terrain-layer extension.** Today `graded/sites.rs` stores one footprint and one
-`support_height_m` in `SiteRecord`; `SiteBuffer::push_site(footprint, support_height_m)` adds its
-horizontal pad seams. Materials are separate polygons. `pad_at`, `rasterize_pads` and `height`
-read that one floor, while `select.rs` follows changed pad seams and their capped grading reach.
-Keep this primitive for structure/landing support. Add a range of terrace records to the same
-site: polygon range, affine plane `h(x,z)`, bounds and semantic use. A constant-height terrace
-is the zero-gradient case. Add explicit boundary records with endpoint heights on each side
-and kind: continuous join, bank, retaining wall or plinth. A retaining boundary prevents a cone
-on one side from enforcing continuity on the other; merely adding extra `push_site` calls is
-insufficient. The GL0 height query needs an explicit side/tie ownership rule at the edge, and
-the mesh needs duplicated edge vertices and vertical faces for a jump. Do not interpolate one
-GL0 triangle across a wall. This extends the existing graded layer, not a second heightfield.
+**Banks and exact joins.** The level hull is convex. Let `d` be the maximum of zero and its
+outward signed edge distances. The yard height is its plane clamped to
+`[floor - 0.5 d, floor + 0.5 d]`. Since `d` is no greater than Euclidean distance to the hull,
+each bank lies inside the existing 1:2 cone; it is a finite collection of planes, continuous
+at the hull, yard plane and bank-arm joins. No discontinuity is permitted. Along an outer
+edge, a sorted upper envelope of those affine distances finds every active-arm interval;
+intersection with the two cone arms finds the exact breaks. Inactive crossings are merged,
+so an unobstructed planar edge remains one seam. Shared supported yard boundaries compare the
+union of both sets of exact affine breaks; a short landing bank cannot hide between stations.
+A join that needs a wall is refused rather than authorising an undrawn cliff.
 
-Use the existing site-cell index, local roadbed queries and site snapshots. Include every
-terrace/edge in canonical ordering, content fingerprints, source generations, query-index
-inputs and before/after site-change captures. `select.rs` must compare all changed plane/edge
-seams and both old/new bounds and reaches. Bake, gathered queries, indexed queries, picking,
-vegetation and vehicle support must consume the same solved product. A distant site's insertion
-or swap-remove must change no local product. Structures remain at the saved floor on reload;
-never rerun floor selection for placed buildings. Old saved supply is rechecked by D's normal
-load path when its ground certificate predates the current rules.
+**Contacts and floor selection.** C1's limits remain: fixed roads at their own ray distance
+and the 1:2 bound, a 1.0 m frontage bank cap, Driveways at 10% with at most 5 percentage points
+of grade change per 2.8 m wheelbase, and entrance landings within the 0.12 m kerb step of their
+own footway. Secondary doors and corner/rear frontages keep the existing directional road
+R-tree probes. Contacts now read their local yard height; only bearing/entrance constraints
+bind the level floor. Every proposed yard boundary also passes C1's fixed-road/soft-terrain
+ring rules. There is still no inferred pedestrian ramp through arbitrary paving.
 
-**Asset contract.** A first authoring slice needs Transport Fever 2-style terrain-alignment
-polygons: structure/landing support, parking terrace envelopes, aisle corridors, driveway and
-pedestrian contact lines, and allowed retaining/bank edges. Existing paving, wheel envelopes
-and proven parking ways can derive a proposal, but paving alone cannot prove a walking ramp is
-free of walls, planting or other traffic. Ambiguous or overlapping proposals need validation
-and an editor correction, not guessed semantic ownership. Planes, terrace adjacency and any
-chosen elevations must have bounded deterministic inputs. Draw bank surfaces using terrain;
-retaining walls and plinth faces require actual geometry, terrain clipping, normals/materials,
-shadows, picking and clearance/collision participation. A line or inspector label cannot stand
-in for a wall. Any player choice that affects the solved geometry needs saved authoritative
-inputs and a format review.
+Floor candidates remain the contact/midpoint road heights and sampled base-terrain median,
+projected into feasible intervals; repeated projected heights are evaluated once. Choose the
+fewest D-refused car bays, then C1's sampled floor cut/fill score, then the lowest floor. D
+checks the visible GL0 product, including the required Driveway and complete dock ways, for
+each candidate. The geometric proof is built once. Ordinary stalls/loading bays retain D's
+5% limit; both wheel triangles now check the full gradient as well as pairwise wheel grades,
+so rotating a stall cannot conceal a >5% plane. Optional stalls may disappear with D's measured
+reason; required access may not silently disappear from an accepted case.
 
-**Slices and proof.**
+**One graded product.** `graded/sites.rs` appends terrace polygon/plane/level-hull records to
+the same site. They participate in canonical content order, exact adoption fingerprints,
+source/site-cell generations, snapshots, query-index bounds and before/after change captures.
+`SiteChange` carries the old/new height range as well as bounds, so `select.rs` follows the
+whole changed seam envelope. Exact support radii retain their flat-ground meaning. An ordered count book maintains the
+maximum in O(log distinct radii), including removal of its last owner; shrinking a yard never
+falls back to a city-wide radius reduction. This book is metadata, not another spatial index.
+Bake, gathered/indexed point queries, the existing lattice block, ray picking, vegetation and
+vehicle support read this product. Brush protection includes the graded yard; its flatten
+reference deliberately remains the stored floor, as before. Brush release and undo retain
+the existing local journal/publication path.
 
-1. C1 and `PARK-25`: fixed-road intersections, contact intervals, deterministic candidate floors,
-   lot-edge support and independent D checks. Prove downhill-driveway 4 × 3 / 21%, both lot
-   widths on 5/10/20% streets, a raised road behind the lot, flat 20-bay medium lot, populated
-   supply, neighbouring lots, brush/undo and fixed-floor reload. Record every changed expectation.
-2. Semantic regions and authoring validation: derive only unambiguous regions, expose ramp/edge
-   inputs, reject overlap/holes/undersized landings, and preserve current flat products bitwise.
-3. Multi-terrace data and planes: start with authored elevations and continuous connectors,
-   without an unrestricted optimisation solver. Prove slope/gradient bounds, wheel and whole-way
-   acceptance, canonical ownership, one/eight-worker equality, bake/query/picking equality,
-   snapshot/undo/reload and local invalidation.
-4. Discontinuous edges and drawn walls/plinths together: prove two heights at an edge, no GL0
-   interpolation or cone leakage through it, closed faces, road/neighbor clipping and no
-   pedestrian/vehicle crossing except a separately proven connector. Include rotated/corner
-   lots and both signs of grade.
-5. Automatic terrace choice and representative asset acceptance: enumerate a bounded authored
-   set of layouts/planes and floor candidates; accept only a checked feasible product, then
-   run D on its visible surface. Prove the steep grocery case without sacrificing required
-   access, and measure placements/reproof against fixed local geometry with increasing remote
-   buildings, parcels, roads and agents. Optional stalls may be refused with reasons; required
-   contacts may not silently disappear.
+**Reload.** Sites remain derived and unsaved. Load re-derives their yard planes from the live
+asset, stored pose and local roads, **without choosing a new floor**. Format **128** changes no
+schema columns; its version marks the new visible-ground certificate. Formats 125, 126 and
+127 recheck saved lot/dock supply once through D's existing kerb-blocker restoration path.
+Valid custody remains; only actual ground refusals enter normal replacement/towing publication.
+A current certificate still avoids a second whole-city proof pass.
 
-**Cost contract and open questions.** For C floor candidates, T terrace polygons, E boundary
-segments, R local constraint samples and S half-metre way samples, validation of a supplied
-layout is O(C × (T + E + R + S)) after existing indexed local gathering; storage O(T + E + R + S).
-The geometric parking proof is built once, outside the candidate loop. Local source gathering
-also pays for the actual nearby roads/sites, never total city population. Dirty selection
-follows changed boundaries and capped reach, as today. No per-tick/per-agent solve is added.
-These are validation bounds, **not** a claimed bound for an automatic optimiser. Before that
-slice, specify maximum authored layouts/polygons, numerical tolerances and a deterministic
-finite solve with a feasible certificate and measured worst case. An unresolved solve refuses.
+**Cost contract.** Let P be the bearing hull corners, E the yard boundary edges (four in this slice), C the finite
+floor candidates, R local grading/contact samples, W wheel/half-metre way samples and J shared
+neighbour edges. After the existing indexed local gather: deriving a plane/support hull is
+O(road polyline knots + asset vertices log asset vertices); a graded height is O(P), allocation
+free, with the flat height still O(1). Boundary envelope construction is O(E P log P), and
+canonical seam emission/merging, including endpoint height reads, is O(E P²). Shared-join
+proof is O(J (P² + Q² + P log P + Q log Q)), Q the neighbour's hull corners. Candidate validation
+adds O(C (R P + W × local GL0 query cost + shared-join proof)); storage is O(P + E P + R + W).
+Normalized bank coefficients are computed once in O(P) per local gather and retained in the
+existing site scratch buffer; height/seam reads reuse them. The uncached model and scratch
+heights agree bitwise. All loops follow the edited lot and local roads/sites, never background agents/buildings.
+Local radius maintenance is O(log distinct radii). Whole-index/load radius repair is
+O(site vertices / workers + buildings log distinct radii), with independent geometry parallel
+and the ordered count book committed serially. Load also derives the changed local yard geometry. No per-tick/per-agent yard solve is added.
 
-Open: who authors pedestrian ramp corridors, explicit door/street associations and landing
-setbacks; which assets require
-accessible spots; automatic derivation rules for ambiguous paving; the allowed retaining heights
-and cost/ownership at shared lots; exact discontinuity ownership on the GL0 lattice; whether
-terrace layout choices must be saved; and an explicit rebuild/relocation action for legacy
-infeasible sites. The research does not answer these product/data questions.
+The existing lattice block now also prepares from live local inputs when the query index is
+pending. It caches the same coverage/vertices as an indexed block, rather than re-evaluating
+three GL0 vertices for every half-metre way sample. Scratch is reused once warm. Construction
+start reuses an unchanged planning verdict; a missing/stale verdict solves directly without
+creating a cache entry for a lot about to become occupied. Dependency captures still invalidate
+changed roads, terrain, neighbours and assets. Placement derives the yard proposal once; solving
+and installation reuse it. This fixes measured work, not the contact limits.
+
+#### C2 verification (2026-11-23)
+
+Fresh final release tree on `666b7dd44`, not committed; library test executable SHA-256
+`8394de90cd401adaaeeef41ac8d7ac45dc036ae1456b761979d519159dbc58bd`.
+
+| Command (`rust/`) | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `cargo test --release --lib site` | 91 | 0 | 12 |
+| `cargo test --release --lib placement` | 95 | 0 | 9 |
+| `cargo test --release --lib parking` | 212 | 0 | 3 |
+| `cargo test --release --lib graded` | 116 | 0 | 13 |
+| `cargo test --release --lib save` | 139 | 0 | 17 |
+
+`cargo clippy --all-targets`: no warnings. The release test build retains the two existing
+dead-code warnings for untouched parking quote `bits` methods. Formatting uses
+`rustfmt --edition 2024` only on changed Rust files and retains changed-line hunks;
+`cargo fmt` is never run. These are Rust tests without Godot.
+`cargo doc --no-deps` reports zero missing-doc warnings and 74 existing private-link warnings;
+`git diff --check` passes.
+
+The placement matrix changes intentionally: both 20 m and 40 m widths now place at 5% and
+10%, with the original contact and bank limits independently checked on their solved yards.
+At 5% the frontages rise 1/2 m; at 10%, 2/4 m. Both still place on flat ground. Both 20%
+cases remain refused: width 2 reports **Driveway grade requires 67.55%; at most 10.00%**
+(1.02 m over a 1.51 m apron); width 4 reports **frontage bank requires 1.70 m; at most
+1.00 m**. The 21% store remains refused, now with its actual level-landing bank:
+**frontage bank requires 1.71 m; at most 1.00 m**. That case needs different geometry;
+C2 does not supply a wall or weaken C1 to accept it.
+
+New-construction Kuopio poses rise from C1's **2/8 to 5/8**. Road 1/-1 and both road-3
+poses newly place; road 1/+1 remains refused by terrain tie-in, both road-2 poses by the
+frontage bank. Hillside poses rise from **0/5 to 2/5** (parcels 6 and 9; 7, 8 and 16 still
+refused). The shared allocator bake assertion now expects each local yard/bank height rather
+than a single floor; that is the remaining changed existing expectation. No brush/undo,
+flat parking, radius-bound or custody expectation is relaxed. The medium flat lot keeps
+20 stalls and the populated parking digest remains **`32991f90451e9fbf`**.
+
+Targeted proofs cover continuous 1:2 pad banks, exact shared-yard joins (including a 1 cm bank
+dip between old sampling stations), canonical order/fingerprints/dirty selection, bitwise
+indexed/live-block/direct queries and pruned/unpruned baking, worker/order independence,
+reload retaining the stored floor and re-deriving identical terraces, and brush/undo. On the
+same visible 10% plane, D refuses the stall with its measured 10%/5% reason and accepts the
+contour driveway. A rotated 5.2% plane now also refuses: its axis and diagonal wheel grades
+are below 5%, while both full wheel-triangle gradients are 5.2%; no existing fixture digest
+changes from that correction.
+
+**Matched release grading/placement benchmarks against C1.** Eight workers, unpinned,
+three runs per side, order C1/C2/C2/C1/C1/C2; no compiler or profiler alongside the timed
+runs. C1 SHA-256 is `b00cd9594a686abeab29b9f74390fd5b4984ba1c23de935c05f04029a20497da`;
+C2 is the final executable above. Values are arithmetic means of the printed per-run values.
+
+```bash
+# Run each name below with the preserved C1 and final C2 $TEST_BINARY, in that order pattern.
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  benchmark_successful_project_placement --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  benchmark_graded_site_placement --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=8 METRUM_DEBUG=0 "$TEST_BINARY" \
+  graded_yard_height_query_benchmark --ignored --nocapture --test-threads=1
+```
+
+| Placed projects | Setup ms C1 → C2 | Planning slot ms | Placement ms |
+| ---: | ---: | ---: | ---: |
+| 2 | 2.356 → 2.511 | 1.360 → 1.680 | 0.345 → 0.320 |
+| 16 | 7.862 → 7.891 | 1.981 → 2.035 | 2.443 → 2.455 |
+| 128 | 66.348 → 66.800 | 4.781 → 4.633 | 26.920 → 26.443 |
+| 1,024 | 815.445 → 821.053 | 28.908 → 27.343 | 289.996 → 285.060 |
+
+The 1,024-project placement cost falls 1.7% against C1 in this session; the 2-project planning
+slot rises 23.6% (0.320 ms). These measured costs are retained, including the small-workload
+increase. Setup is separate from repeated planning/placement.
+
+| Background sites | Selection ms C1 → C2 | Bake ms | Total ms |
+| ---: | ---: | ---: | ---: |
+| 0 | 0.0572 → 0.0618 | 0.6939 → 0.7168 | 0.7511 → 0.7786 |
+| 1,092 | 0.0634 → 0.0520 | 0.6793 → 0.7049 | 0.7428 → 0.7568 |
+| 10,212 | 0.0658 → 0.0564 | 0.6805 → 0.6902 | 0.7464 → 0.7465 |
+| 100,100 | 0.0681 → 0.0601 | 0.7147 → 0.7078 | 0.7828 → 0.7679 |
+
+Every row selects exactly tile `[-1,0]` and retains texel digest **`f089f4da76b81b28`**.
+Cost follows the edited neighbourhood, with no background-sized work on selection/bake.
+The Kuopio yard-height benchmark (152 points, 10 samples of 100,000 queries) changes p50
+**2.1323 → 3.3090 µs (+55.2%)**, p90 **2.1877 → 3.4083 µs (+55.8%)**. This is the cost
+of the new sloped-yard/bank product, despite cached normalized coefficients; it is a measured
+regression, not a bitwise-preserving flat-ground cost claim. The first C2 prototype's p50
+was 4.3805 µs; that superseded measurement motivated the scratch cache. The final frame,
+parking-locality and K22 rows are recorded in
+[`traffic.md`](traffic.md#c2-automatic-yard-grading-and-performance-attribution).
+
+**Later authoring/geometry.** Multiple terraces, accessible bays/routes, authored pedestrian
+ramp corridors and contact associations, retaining edges and plinths remain future work. A wall
+must include both heights, explicit side/tie ownership, duplicated edge vertices and actual
+faces, normals/materials, shadows, picking and clearance/collision participation; GL0 must not
+interpolate across a discontinuity. Wall height/cost/ownership, ambiguous paving proposals,
+layout persistence for player choices, and an explicit legacy-site rebuild/relocation action
+remain product questions. C2 does not guess answers to them.
+
 
 ## Streaming core (`RENDER-32`)
 

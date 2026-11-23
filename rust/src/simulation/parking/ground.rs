@@ -8,7 +8,7 @@ use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
 use godot::prelude::{Vector2, Vector3};
 
 // Ordinary parking: Helsinki 1:20 / federal parking criteria. Driveways: Helsinki 1:10.
-/// Maximum pairwise wheel grade of an ordinary parked car or loading bay.
+/// Maximum wheel-envelope grade of an ordinary parked car or loading bay.
 pub(crate) const PARKED_GRADE: f32 = 0.05;
 /// Maximum longitudinal driveway/aisle grade shared by placement and visible-ground proof.
 pub(crate) const DRIVE_GRADE: f32 = 0.10;
@@ -41,7 +41,8 @@ pub(super) fn wheel_area(class: ProofClass, pos: Vector2, forward: Vector2) -> [
     rectangle(pos, forward, track, wheelbase)
 }
 
-/// A bay's maximum pairwise wheel grade on the visible ground, with its measured refusal.
+/// A bay's wheel-envelope grade on the visible ground, with its measured refusal. Both
+/// wheel triangles also check the full gradient, so rotating a bay cannot hide a steep plane.
 pub(crate) fn spot_issue(
     class: ProofClass,
     pos: Vector2,
@@ -50,6 +51,9 @@ pub(crate) fn spot_issue(
 ) -> Option<String> {
     let wheels = wheel_area(class, pos, forward);
     let heights = wheels.map(&mut *height);
+    if heights[0].is_finite() && heights[1..].iter().all(|&h| h == heights[0]) {
+        return None;
+    }
     let mut grade = 0.0_f32;
     for i in 0..4 {
         for j in 0..i {
@@ -63,6 +67,20 @@ pub(crate) fn spot_issue(
             if rise > PARKED_GRADE * run + HEIGHT_EPS_M {
                 grade = grade.max(rise / run);
             }
+        }
+    }
+    for [a, b, c] in [[0, 1, 2], [0, 2, 3]] {
+        let (u, v) = (wheels[b] - wheels[a], wheels[c] - wheels[a]);
+        let (hu, hv) = (heights[b] - heights[a], heights[c] - heights[a]);
+        let determinant = u.cross(v);
+        let gradient = Vector2::new(
+            (hu * v.y - hv * u.y) / determinant,
+            (u.x * hv - v.x * hu) / determinant,
+        )
+        .length();
+        let run = u.length().min(v.length());
+        if gradient * run > PARKED_GRADE * run + HEIGHT_EPS_M {
+            grade = grade.max(gradient);
         }
     }
     (grade > 0.0).then(|| format!(
@@ -332,6 +350,22 @@ fn check_way_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parking_wheels_check_full_plane_gradient_between_pair_directions() {
+        // A 5.2% plane at 30 degrees has 4.503% crossfall and 2.6% longitudinal
+        // grade. On the 1.6 x 2.8 m wheel rectangle even its steepest diagonal is <5%.
+        // The two visible wheel triangles still have full gradient 5.2%.
+        let angle = std::f32::consts::FRAC_PI_6;
+        let reason = spot_issue(ProofClass::Car, Vector2::ZERO, Vector2::UP, &mut |p| {
+            0.052 * (p.x * angle.cos() + p.y * angle.sin())
+        })
+        .unwrap();
+        assert_eq!(
+            reason,
+            "not drivable: the ground under this spot slopes 5.2 %, a parked car needs at most 5 %"
+        );
+    }
 
     #[test]
     fn parking_wheels_accept_flat_ground_and_refuse_a_one_in_two_cut() {
