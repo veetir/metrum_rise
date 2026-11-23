@@ -4,6 +4,7 @@
 //! that adopts a road edit has run. `audit_every_parking_catchment` is that rebuild.
 
 use super::*;
+use godot::prelude::Vector2;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RoadParking;
 use crate::simulation::parking::{Bay, PlaceSource};
@@ -326,8 +327,21 @@ fn graded_curve_with_lots(cross_first: bool) -> SimCore {
     let id = register_lot(&mut c);
     for x in [-100.0, -40.0, 40.0, 100.0] {
         let z = 40.0 * (1.0 - (x / 120.0_f32).powi(2)) - 22.0;
-        c.place_service_building_internal(&id, x, z).unwrap();
+        // Existing lots remain useful entrance-cache fixtures even where C1 refuses new
+        // construction; restore their established floors without invoking placement selection.
+        let catalog = load_runtime_economy_catalog().unwrap();
+        c.allocator.restore_legacy_site_fixture(
+            &id,
+            None,
+            Vector2::new(x, z),
+            &mut c.zoning,
+            &c.region_graph,
+            &c.transit_network.roadbed,
+            &catalog,
+            c.demand.runtime_tuning(),
+        );
     }
+    c.rebuild_building_entrances_internal();
     c.publish_pending_building_site_changes();
     settle(&mut c);
     assert_doors_on_the_roadbed(&mut c, "the fixture");
@@ -420,8 +434,21 @@ fn a_road_commit_on_a_graded_curve_derives_its_doors_on_lifted_lanes() {
         let mut c = graded_curve_with_lots(true);
         let id = register_lot(&mut c);
         for (x, z) in [(-22.0, 90.0), (22.0, 90.0), (-22.0, 140.0), (22.0, 140.0)] {
-            c.place_service_building_internal(&id, x, z).unwrap();
+            // Existing lots remain useful entrance-cache fixtures even where C1 refuses new
+            // construction; restore their established floors without invoking placement selection.
+            let catalog = load_runtime_economy_catalog().unwrap();
+            c.allocator.restore_legacy_site_fixture(
+                &id,
+                None,
+                Vector2::new(x, z),
+                &mut c.zoning,
+                &c.region_graph,
+                &c.transit_network.roadbed,
+                &catalog,
+                c.demand.runtime_tuning(),
+            );
         }
+        c.rebuild_building_entrances_internal();
         c.publish_pending_building_site_changes();
         settle(&mut c);
         assert_doors_on_the_roadbed(&mut c, "the lots");

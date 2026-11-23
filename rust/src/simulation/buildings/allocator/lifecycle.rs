@@ -227,9 +227,6 @@ impl DemandSpawnPlacementRejectionCounts {
             DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing => {
                 self.driveway_road_surface_missing += 1;
             }
-            DemandSpawnPlacementRejection::DrivewayHeightConflict => {
-                self.driveway_height_conflict += 1;
-            }
             DemandSpawnPlacementRejection::DrivewayConnectionMissing => {
                 self.driveway_connection_missing += 1;
             }
@@ -239,7 +236,8 @@ impl DemandSpawnPlacementRejectionCounts {
             DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
                 self.neighbor_site_height_conflict += 1;
             }
-            DemandSpawnPlacementRejection::SiteSupportTieInInvalid => {
+            DemandSpawnPlacementRejection::SiteSupportTieInInvalid
+            | DemandSpawnPlacementRejection::StreetContactInvalid(_) => {
                 self.site_support_tie_in_invalid += 1;
             }
         }

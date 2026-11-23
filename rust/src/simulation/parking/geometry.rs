@@ -108,8 +108,25 @@ pub(super) fn structure_collision(
     class: super::validation::ProofClass,
     points: &[Vector2],
 ) -> bool {
+    structure_collision_for_site(allocator, class, points, None, &[], None)
+}
+
+/// The same indexed wall query for a proposed replacement, with demolished sites excluded.
+/// Its candidate walls use the installed derivation, including class-specific passages.
+pub(crate) fn structure_collision_for_site(
+    allocator: &BuildingAllocator,
+    class: super::validation::ProofClass,
+    points: &[Vector2],
+    replaced: Option<usize>,
+    taken: &[usize],
+    proposed: Option<&crate::simulation::buildings::allocator::BuildingSiteClient>,
+) -> bool {
     let footprint = PolygonFootprint::new(points);
-    let mut collision = false;
+    let mut collision = proposed.is_some_and(|site| {
+        site.vehicle_structures(class)
+            .iter()
+            .any(|wall| footprint.overlaps(&PolygonFootprint::new(wall)))
+    });
     allocator.site_cells.visit(
         [
             footprint.min.x,
@@ -118,7 +135,10 @@ pub(super) fn structure_collision(
             footprint.max.y,
         ],
         |idx| {
-            if collision {
+            if collision
+                || Some(idx) == replaced
+                || taken.binary_search_by(|probe| idx.cmp(probe)).is_ok()
+            {
                 return;
             }
             if let Some(site) = allocator.building_sites.get(idx) {

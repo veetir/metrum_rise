@@ -178,6 +178,12 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
     let text_hash = |hash: u64, text: &str| {
         text.bytes().fold(stable_hash64(hash ^ text.len() as u64), |h, b| stable_hash64(h ^ u64::from(b)))
     };
+    assert!(
+        core.parking_rejection_lines()
+            .iter()
+            .all(|line| !line.contains("not drivable:")),
+        "all flat-fixture bays must pass the 5% visible-ground check"
+    );
     let lots = core.parking.place_product_hash();
     let reasons = (0..core.allocator.buildings.len())
         .flat_map(|i| core.parking_rejections(i).into_owned())
@@ -225,6 +231,10 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
     assert!(core.parking.dock_rows().is_empty() && core.parking.dock_diagnostics.is_empty());
     assert!(core.allocator.freight_gates.is_empty());
     let digest = [lots, reasons, editor];
-    let recorded = [0x8576_f0fd_bbcc_ed0d, 0x2ba3_ad70_d4ef_a643, 0xbf68_7441_d5fc_8bfa];
+    let recorded = [
+        0x3299_1f90_451e_9fbf,
+        0x2ba3_ad70_d4ef_a643,
+        0xbf68_7441_d5fc_8bfa,
+    ];
     assert_eq!(digest, recorded, "{digest:016x?}");
 }

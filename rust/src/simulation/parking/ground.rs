@@ -7,21 +7,20 @@ use super::validation::ProofClass;
 use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
 use godot::prelude::{Vector2, Vector3};
 
-// Design limits for paved parking, not what a car could physically stand on: 10% for an aisle
-// or a shop's driveway (Helsinki's 1:10; 12% is a house driveway's, which no lot here is). A
-// stall's design limit is 5% (Helsinki's 1:20, US federal parking criteria), but until site
-// grading lays paving out to the lot edge on the level floor (`PARK-25`), a stall reaching the
-// edge strip stands over its 0.12 m drop to flat ground, 7.5% across a car's track; the interim
-// 8% admits that and nothing steeper. A street-to-yard step without the roadbed's modelled kerb
-// may be at most that kerb's height (`docs/traffic.md` `PARK-24`).
-const PARKED_GRADE: f32 = 0.08;
-const DRIVE_GRADE: f32 = 0.10;
+// Ordinary parking: Helsinki 1:20 / federal parking criteria. Driveways: Helsinki 1:10.
+/// Maximum pairwise wheel grade of an ordinary parked car or loading bay.
+pub(crate) const PARKED_GRADE: f32 = 0.05;
+/// Maximum longitudinal driveway/aisle grade shared by placement and visible-ground proof.
+pub(crate) const DRIVE_GRADE: f32 = 0.10;
+/// Maximum algebraic grade change over a car wheelbase (TxDOT driveway transitions).
+pub(crate) const MAX_GRADE_CHANGE: f32 = 0.05;
 const SAMPLE_M: f32 = 0.5;
 // The grade a car feels is the one between its axles: measured over its wheelbase, a dip or
 // bump shorter than that is the step rule's, as a kerb is.
-const WINDOW_M: f32 = CAR_WHEELS_M[1];
-// The stations back to one wheelbase before the current one.
-const HISTORY: usize = (WINDOW_M / SAMPLE_M) as usize + 2;
+/// Car wheelbase used for rolling drive grades and their transitions.
+pub(crate) const WINDOW_M: f32 = CAR_WHEELS_M[1];
+// The stations back to two wheelbases before the current one.
+const HISTORY: usize = (2.0 * WINDOW_M / SAMPLE_M) as usize + 2;
 const MAX_STEP_M: f32 = CURB_STEP_HEIGHT_M;
 const HEIGHT_EPS_M: f32 = 0.0001;
 
@@ -43,7 +42,7 @@ pub(super) fn wheel_area(class: ProofClass, pos: Vector2, forward: Vector2) -> [
 }
 
 /// A bay's maximum pairwise wheel grade on the visible ground, with its measured refusal.
-pub(super) fn spot_issue(
+pub(crate) fn spot_issue(
     class: ProofClass,
     pos: Vector2,
     forward: Vector2,
@@ -82,30 +81,80 @@ struct Sample {
 }
 
 /// Checks the actual proven polyline, including authored dock ways, at half-metre stations.
-pub(super) fn way_issue(
+pub(crate) fn way_issue(
     path: &[Vector2],
     roads: &RoadbedSystem,
     height: &mut impl FnMut(Vector2) -> f32,
 ) -> Option<String> {
-    check_way(path, |p| {
-        let road = roads.exposed_height_and_normal_at(p.x, p.y);
-        Sample {
-            height: road.map_or_else(|| height(p), |(h, _)| h),
-            road: road.map(|(_, n)| n),
-            carriageway: road.is_some() && roads.carriageway_height_at(p.x, p.y).is_some(),
-        }
-    })
+    check_way(path, |p| visible_sample(p, roads, height))
+}
+
+fn visible_sample(
+    p: Vector2,
+    roads: &RoadbedSystem,
+    height: &mut impl FnMut(Vector2) -> f32,
+) -> Sample {
+    let road = roads.exposed_height_and_normal_at(p.x, p.y);
+    Sample {
+        height: road.map_or_else(|| height(p), |(h, _)| h),
+        road: road.map(|(_, n)| n),
+        carriageway: road.is_some() && roads.carriageway_height_at(p.x, p.y).is_some(),
+    }
+}
+
+/// A measured way limit, before rounding its player-facing diagnostic.
+pub(crate) struct WayConstraint {
+    /// Physical constraint that failed.
+    pub(crate) name: &'static str,
+    /// Measured rise or grade.
+    pub(crate) measured: f32,
+    /// Allowed rise or grade in the same unit.
+    pub(crate) limit: f32,
+    /// Metres, percent, or percentage points.
+    pub(crate) unit: &'static str,
+}
+
+/// Placement checks a driveway's actual rendered approach and retains the same measured
+/// failure as the parking proof, without parsing a display string.
+pub(crate) fn way_constraint(
+    path: &[Vector2],
+    roads: &RoadbedSystem,
+    height: &mut impl FnMut(Vector2) -> f32,
+) -> Option<WayConstraint> {
+    let mut measured = None;
+    check_way_report(
+        path,
+        |p| visible_sample(p, roads, height),
+        |name, value, limit, unit| {
+            measured = Some(WayConstraint {
+                name,
+                measured: value,
+                limit,
+                unit,
+            });
+        },
+    );
+    measured
 }
 
 // Global half-metre stations continue through corners (not restarted per leg). `HISTORY`
 // previous samples hold every rolling wheelbase window, including an interpolated final partial
 // station.
 // O(legs + samples), constant scratch, no work on a simulation tick.
-fn check_way(path: &[Vector2], mut sample: impl FnMut(Vector2) -> Sample) -> Option<String> {
+fn check_way(path: &[Vector2], sample: impl FnMut(Vector2) -> Sample) -> Option<String> {
+    check_way_report(path, sample, |_, _, _, _| {})
+}
+
+fn check_way_report(
+    path: &[Vector2],
+    mut sample: impl FnMut(Vector2) -> Sample,
+    mut report: impl FnMut(&'static str, f32, f32, &'static str),
+) -> Option<String> {
     let (&start, _) = path.split_first()?;
     let total: f32 = path.windows(2).map(|p| p[0].distance_to(p[1])).sum();
     let mut previous = sample(start);
     if !previous.height.is_finite() {
+        report("Driveway non-finite heights", 1.0, 0.0, "samples");
         return Some("not drivable: the way in from the street has no finite height".into());
     }
     let mut previous_point = start;
@@ -133,6 +182,7 @@ fn check_way(path: &[Vector2], mut sample: impl FnMut(Vector2) -> Sample) -> Opt
         );
         let current = sample(point);
         if !current.height.is_finite() {
+            report("Driveway non-finite heights", 1.0, 0.0, "samples");
             return Some("not drivable: the way in from the street has no finite height".into());
         }
         // A way leaving the carriageway crosses the footway at a lowered kerb, which the roadbed
@@ -148,6 +198,12 @@ fn check_way(path: &[Vector2], mut sample: impl FnMut(Vector2) -> Sample) -> Opt
         if let Some(from) = crossing.take() {
             let run = distance - from;
             if rise.abs() > MAX_STEP_M + DRIVE_GRADE * run + HEIGHT_EPS_M {
+                report(
+                    "Driveway footway rise",
+                    rise.abs(),
+                    MAX_STEP_M + DRIVE_GRADE * run,
+                    "m",
+                );
                 return Some(format!(
                     "not drivable: the yard is {:.2} m {} the street across the footway (at most {:.2} m)",
                     rise.abs(),
@@ -195,6 +251,7 @@ fn check_way(path: &[Vector2], mut sample: impl FnMut(Vector2) -> Sample) -> Opt
             road_edge_used = true;
             correction += rise;
         } else if rise.abs() > MAX_STEP_M + HEIGHT_EPS_M {
+            report("Driveway step", rise.abs(), MAX_STEP_M, "m");
             return Some(format!(
                 "not drivable: the way in from the street has a {:.2} m step in {:.2} m (at most {:.2} m)",
                 rise.abs(),
@@ -219,12 +276,48 @@ fn check_way(path: &[Vector2], mut sample: impl FnMut(Vector2) -> Sample) -> Opt
             let climb = (adjusted - before).abs();
             let run = distance - target;
             if climb > DRIVE_GRADE * run + HEIGHT_EPS_M {
+                report(
+                    "Driveway grade",
+                    climb / run * 100.0,
+                    DRIVE_GRADE * 100.0,
+                    "%",
+                );
                 return Some(format!(
                     "not drivable: the way in from the street climbs {:.2} m in {:.2} m ({:.1} %, at most {:.0} %)",
                     climb,
                     run,
                     climb / run * 100.0,
                     DRIVE_GRADE * 100.0,
+                ));
+            }
+        }
+        if distance >= 2.0 * WINDOW_M {
+            let height_at = |target: f32| {
+                let k = history.iter().rposition(|h| h.0 <= target).unwrap_or(0);
+                match history.get(k + 1) {
+                    Some(next) if next.0 > history[k].0 => {
+                        history[k].1
+                            + (next.1 - history[k].1)
+                                * ((target - history[k].0) / (next.0 - history[k].0))
+                    }
+                    _ => history[k].1,
+                }
+            };
+            let middle = height_at(distance - WINDOW_M);
+            let before = height_at(distance - 2.0 * WINDOW_M);
+            let change = ((adjusted - middle) - (middle - before)).abs() / WINDOW_M;
+            if change > MAX_GRADE_CHANGE + HEIGHT_EPS_M / WINDOW_M {
+                report(
+                    "Driveway grade change per wheelbase",
+                    change * 100.0,
+                    MAX_GRADE_CHANGE * 100.0,
+                    "percentage points",
+                );
+                return Some(format!(
+                    "not drivable: the way in changes grade by {:.1} percentage points per {:.1} m wheelbase (at most {:.0})",
+                    change * 100.0,
+                    WINDOW_M,
+                    MAX_GRADE_CHANGE * 100.0
                 ));
             }
         }
@@ -247,7 +340,7 @@ mod tests {
             let reason =
                 spot_issue(class, Vector2::ZERO, Vector2::UP, &mut |p| 10.0 + p.x * 0.5).unwrap();
             assert!(reason.contains("slopes 50.0 %"), "{reason}");
-            assert!(reason.contains("at most 8 %"), "{reason}");
+            assert!(reason.contains("at most 5 %"), "{reason}");
         }
     }
 
@@ -339,5 +432,26 @@ mod tests {
             })
             .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    #[test]
+    fn parking_way_grade_change_is_separate_from_its_ten_percent_limit() {
+        let path = [Vector2::ZERO, Vector2::new(0.0, 12.0)];
+        let check = |grade: f32| {
+            check_way(&path, |p| Sample {
+                height: (p.y - 5.6).max(0.0) * grade,
+                road: None,
+                carriageway: false,
+            })
+        };
+        assert!(check(0.05).is_none());
+        let reason = check(0.10).unwrap();
+        assert!(reason.contains("grade by"), "{reason}");
+        assert!(reason.contains("at most 5"), "{reason}");
     }
 }

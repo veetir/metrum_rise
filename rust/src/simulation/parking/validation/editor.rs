@@ -11,7 +11,7 @@
 //! `BUILDING_SITE_ROAD_SAMPLE_INSET_M` into the street. A curved street's verge and a real
 //! road's width are left to the placed building's inspector.
 
-use super::super::geometry::{overlaps, precise, rectangle};
+use super::super::geometry::{covered, overlaps, precise, rectangle};
 use super::super::ground::wheel_area;
 use super::route::{arc_waypoints, drive_envelopes};
 use super::{
@@ -396,12 +396,12 @@ impl<'a> EditorLot<'a> {
                 self.bays(kind, |_| true)
                     .into_iter()
                     .filter(move |(_, bay)| {
-                        wheel_area(class, bay.pos, bay.forward).iter().any(|p| {
-                            p.x.abs() > half.x - inset || p.y.abs() > half.y - inset
-                        })
+                        let wheels = wheel_area(class, bay.pos, bay.forward);
+                        wheels.iter().any(|p| p.x.abs() > half.x - inset || p.y.abs() > half.y - inset)
+                            && !covered(&wheels, &self.support)
                     })
                     .map(move |(index, _)| json!({"anchor":index, "blocks":false, "reason":format!(
-                        "on sloping ground this spot may be refused: its wheels stand on the lot's outer {inset} m, which slopes to the ground around"
+                        "on sloping ground this spot may be refused: its wheels reach the lot's outer {inset} m outside level paved support"
                     )}))
             })
             .collect()

@@ -12,6 +12,7 @@ use super::{
     },
 };
 use crate::assets::{Anchor, AnchorType};
+use crate::simulation::buildings::allocator::{Building, BuildingSiteClient};
 use crate::assets::asset::validation::ZONE_CELL_M;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
 use crate::simulation::network::graph::RegionGraph;
@@ -93,10 +94,67 @@ pub(crate) fn lot_proof(
     mut height: impl FnMut(Vector2) -> f32,
 ) -> LotProof {
     let building = &allocator.buildings[index];
-    let Some(asset) = allocator.registry.get(&building.asset_id) else {
+    let Some(site) = allocator.building_sites.get(index) else {
         return LotProof::default();
     };
-    let Some(site) = allocator.building_sites.get(index) else {
+    lot_proof_at(
+        allocator,
+        LotPose::from(building),
+        site,
+        graph,
+        roads,
+        true,
+        |class, foot| structure_collision(allocator, class, foot),
+        &mut height,
+    )
+}
+
+/// Only the placed geometry a bay proof reads; proposed placements use the same proof.
+pub(crate) struct LotPose<'a> {
+    /// Catalog identity of the authored anchors and surfaces.
+    pub(crate) asset_id: &'a str,
+    /// World-space lot centre.
+    pub(crate) center: Vector2,
+    /// Direction toward its claimed road.
+    pub(crate) facing_dir: Vector2,
+    /// Claimed road edge.
+    pub(crate) edge_idx: usize,
+    /// Claimed side of that edge.
+    pub(crate) side: i8,
+    /// Lot width in zoning cells.
+    pub(crate) width_cells: u16,
+    /// Lot depth in zoning cells.
+    pub(crate) depth_cells: u16,
+}
+
+impl<'a> From<&'a Building> for LotPose<'a> {
+    fn from(building: &'a Building) -> Self {
+        Self {
+            asset_id: &building.asset_id,
+            center: Vector2::new(building.center_x, building.center_y),
+            facing_dir: building.facing_dir,
+            edge_idx: building.edge_idx,
+            side: building.side,
+            width_cells: building.width_cells,
+            depth_cells: building.depth_cells,
+        }
+    }
+}
+
+/// Proves a proposed or installed lot. With `ground` false, returns its geometric paths once
+/// for placement's floor candidates; the candidates run the shared ground checks on those ways.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lot_proof_at(
+    allocator: &BuildingAllocator,
+    building: LotPose<'_>,
+    site: &BuildingSiteClient,
+    graph: &RegionGraph,
+    roads: &RoadbedSystem,
+    ground: bool,
+    collides: impl Fn(ProofClass, &[Vector2]) -> bool,
+    mut height: impl FnMut(Vector2) -> f32,
+) -> LotProof {
+    let Some(asset) = allocator.registry.get(building.asset_id) else {
         return LotProof::default();
     };
     let anchors = &asset.manifest.anchors;
@@ -123,7 +181,7 @@ pub(crate) fn lot_proof(
     let frontage = asset.manifest.building_frontage_forward();
     let local_outward = Vector2::new(frontage[0], frontage[2]).normalized();
     let (bx, bz) = building_local_xz_basis(building.facing_dir, frontage);
-    let center = Vector2::new(building.center_x, building.center_y);
+    let center = building.center;
     let position = |p: [f32; 3]| center + bx * p[0] + bz * p[2];
     let direction = |p: [f32; 3]| (bx * p[0] + bz * p[2]).normalized();
     // The anchor marks the bay's entry edge and the bay runs along `forward`, as asset
@@ -265,11 +323,11 @@ pub(crate) fn lot_proof(
                 .any(|a| a.anchor_type == AnchorType::Driveway),
             &paths,
             street,
-            |foot| structure_collision(allocator, ProofClass::Car, foot),
+            |foot| collides(ProofClass::Car, foot),
         );
         match checked {
             Ok((path, _)) => {
-                if let Some(reason) = spot_issue(ProofClass::Car, pos, forward, &mut height)
+                if ground && let Some(reason) = spot_issue(ProofClass::Car, pos, forward, &mut height)
                     .or_else(|| way_issue(&path, roads, &mut height))
                 {
                     proof.ground_refused = true;
@@ -333,7 +391,7 @@ pub(crate) fn lot_proof(
                 &gates,
                 only,
                 &ways[slot],
-                |foot| structure_collision(allocator, freight, foot),
+                |foot| collides(freight, foot),
             )?;
             let (_, pos, forward, ..) = docks[slot];
             let way_in = if dock.route_in.is_empty() {
@@ -341,7 +399,7 @@ pub(crate) fn lot_proof(
             } else {
                 &dock.route_in
             };
-            if let Some(reason) = spot_issue(freight, pos, forward, &mut height)
+            if ground && let Some(reason) = spot_issue(freight, pos, forward, &mut height)
                 .or_else(|| way_issue(way_in, roads, &mut height))
                 .or_else(|| way_issue(&dock.route_out, roads, &mut height))
             {

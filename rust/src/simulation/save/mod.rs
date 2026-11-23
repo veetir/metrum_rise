@@ -583,6 +583,7 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
         row.get(0)
     })?;
     let retired_holes = version == SAVE_VERSION
+        || version == PRE_CONTACT_SAVE_VERSION
         || version == PRE_GROUND_SAVE_VERSION
         || version == PRE_STANDS_SAVE_VERSION
         || version == PRE_ROUTES_SAVE_VERSION
@@ -609,9 +610,10 @@ pub(crate) fn load_from_sqlite(
     // Format 121 saves node, edge and lane ids as they are (`SAVE-11`); older formats compacted
     // them. Format 122 also saves retired nodes as holes without an alias (`ROAD-124`), and
     // format 123 dock rows (`PARK-19`), format 124 their drives (`PARK-21`), format 125 their
-    // stands (`PARK-23`). Format 126 supply passed the ground check (`PARK-24`).
+    // stands (`PARK-23`). Format 127 supply passed the 5% ground and grade-change checks (`PARK-24`/`PARK-25`).
     let ground_proven = version == SAVE_VERSION;
     let docks_saved = ground_proven
+        || version == PRE_CONTACT_SAVE_VERSION
         || version == PRE_GROUND_SAVE_VERSION
         || version == PRE_STANDS_SAVE_VERSION
         || version == PRE_ROUTES_SAVE_VERSION;

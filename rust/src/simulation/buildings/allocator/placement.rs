@@ -3,6 +3,7 @@
 //! Placement-mode discovery and shared roadside building-site preparation and installation.
 
 mod feasibility;
+mod contacts;
 pub(crate) use feasibility::{BuildingSiteEnvironment, SiteFeasibilityCache};
 
 use crate::assets::AnchorType;
@@ -660,6 +661,64 @@ impl BuildingAllocator {
         };
         self.prepare_site_support(&mut resolved, &[], graph, road_surface, terrain)?;
         Ok(self.commit_resolved_slot(resolved, applicant_seed, zoning, catalog, tuning))
+    }
+
+    /// Restores an established test site's pre-C1 floor and pose through the normal installation
+    /// helpers. Terrain/vehicle/entrance regressions use legacy sites independently of whether
+    /// new construction is now refused. This is not available in a gameplay build.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore_legacy_site_fixture(
+        &mut self,
+        asset_id: &str,
+        parcel: Option<u64>,
+        point: Vector2,
+        zoning: &mut ZoningSystem,
+        graph: &RegionGraph,
+        roads: &RoadbedSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> usize {
+        let mut placement = if let Some(id) = parcel {
+            let params = self.asset_placement_params(asset_id, catalog).unwrap();
+            self.resolve_slot(
+                asset_id,
+                &params,
+                zoning.parcel_by_raw_id(id).unwrap(),
+                zoning,
+                graph,
+            )
+            .unwrap()
+        } else {
+            let params = self
+                .explicit_service_placement_params(asset_id, catalog)
+                .unwrap();
+            self.resolve_explicit_service_placement(
+                asset_id,
+                &params,
+                point,
+                zoning.config.zone_cell_m,
+                graph,
+            )
+            .unwrap()
+        };
+        placement.support_height_m = self
+            .resolve_site_support_connections(&placement, graph, roads)
+            .unwrap()
+            .0;
+        let half = |cells: usize| cells as f32 * placement.zone_cell_m * 0.5;
+        placement.front_gap_m = super::geometry::lot_front_gaps(
+            graph,
+            placement.center_2d,
+            placement.facing_dir,
+            half(placement.width_cells),
+            half(placement.depth_cells),
+        );
+        if parcel.is_some() {
+            self.commit_resolved_slot(placement, None, zoning, catalog, tuning)
+        } else {
+            self.place_building_instance(placement, None, catalog, tuning)
+        }
     }
 
     /// Previews an explicit building of `kind` at the road frontage nearest `point`, validated
@@ -1521,15 +1580,17 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
         let footprint = self.placement_required_flat_support_footprint(placement);
-        placement.support_height_m = super::site::solve_building_site_support_height(
+        placement.support_height_m = self.solve_street_contacts(
+            placement,
             &footprint,
-            placement.support_height_m,
             connections,
-            terrain,
+            taken,
             graph,
-            road_surface,
-        )
-        .ok_or(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)?;
+            BuildingSiteEnvironment {
+                road_surface,
+                terrain,
+            },
+        )?;
         self.validate_neighbor_site_height(placement, placement.support_height_m, taken)?;
         self.validate_site_support_tie_in(placement, graph, road_surface, terrain)
     }
@@ -1565,25 +1626,6 @@ impl BuildingAllocator {
             let Some(primary_height) = primary.height_m else {
                 return Err(DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing);
             };
-            for candidate in driveway_candidates.iter().skip(1) {
-                let Some(height_m) = candidate.height_m else {
-                    return Err(DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing);
-                };
-                if (height_m - primary_height).abs() > BUILDING_SITE_DRIVEWAY_HEIGHT_CONFLICT_EPS_M
-                {
-                    debug_log!(
-                        "economy",
-                        "building placement rejected: asset={} parcel={} driveway '{}' height {:.2} conflicts with '{}' height {:.2}",
-                        placement.asset_id,
-                        placement.parcel_id,
-                        candidate.name,
-                        height_m,
-                        primary.name,
-                        primary_height,
-                    );
-                    return Err(DemandSpawnPlacementRejection::DrivewayHeightConflict);
-                }
-            }
             return Ok((
                 primary_height,
                 driveway_candidates
@@ -1769,9 +1811,27 @@ impl BuildingAllocator {
         replaced_building: Option<usize>,
         taken: &[usize],
     ) -> Result<f32, DemandSpawnPlacementRejection> {
-        if self.building_sites.is_empty() {
-            return Ok(support_height_m);
+        let (low, high) = self.footprint_neighbor_height_interval(
+            footprint_world,
+            zone_cell_m,
+            replaced_building,
+            taken,
+        )?;
+        if support_height_m < low || support_height_m > high {
+            return Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict);
         }
+        Ok(support_height_m)
+    }
+
+    fn footprint_neighbor_height_interval(
+        &self,
+        footprint_world: &[Vector2],
+        zone_cell_m: f32,
+        replaced_building: Option<usize>,
+        taken: &[usize],
+    ) -> Result<(f32, f32), DemandSpawnPlacementRejection> {
+        let mut low = f32::NEG_INFINITY;
+        let mut high = f32::INFINITY;
         let (min_x, min_z, max_x, max_z) = polygon_bounds(footprint_world);
         let candidate_indices = self.lot_candidate_indices_for_bounds(
             (min_x, min_z, max_x, max_z),
@@ -1796,26 +1856,19 @@ impl BuildingAllocator {
             {
                 continue;
             }
-            if (site.support_height_m - support_height_m).abs()
-                > BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M
-                && flat_support_footprints_overlap(
-                    footprint_world,
-                    &site.footprint_world,
-                    // Unlike the occupancy prefilter, height compatibility includes contact.
-                    -BUILDING_SITE_NEIGHBOR_EPS_M,
-                )
-            {
-                debug_log!(
-                    "economy",
-                    "site height {:.2} conflicts with overlapping neighboring building {} height {:.2}",
-                    support_height_m,
-                    building_idx,
-                    site.support_height_m,
-                );
-                return Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict);
+            if flat_support_footprints_overlap(
+                footprint_world,
+                &site.footprint_world,
+                -BUILDING_SITE_NEIGHBOR_EPS_M,
+            ) {
+                low = low.max(site.support_height_m - BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M);
+                high = high.min(site.support_height_m + BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M);
+                if low > high {
+                    return Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict);
+                }
             }
         }
-        Ok(support_height_m)
+        Ok((low, high))
     }
 
     fn lot_candidate_indices_for_bounds(
@@ -2155,7 +2208,6 @@ pub(crate) fn construction_duration_hours(
     levels.get(idx).copied().unwrap_or(0)
 }
 
-const BUILDING_SITE_DRIVEWAY_HEIGHT_CONFLICT_EPS_M: f32 = 0.35;
 const BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M: f32 = 0.10;
 const BUILDING_SITE_NEIGHBOR_EPS_M: f32 = 0.05;
 // How far inside the sidewalk's outer edge a Driveway's road connection lies; the asset editor
@@ -2215,9 +2267,6 @@ fn explicit_rejection_from_site_rejection(
         DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing => {
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing
         }
-        DemandSpawnPlacementRejection::DrivewayHeightConflict => {
-            ExplicitServicePlacementRejection::DrivewayHeightConflict
-        }
         DemandSpawnPlacementRejection::DrivewayConnectionMissing => {
             ExplicitServicePlacementRejection::DrivewayConnectionMissing
         }
@@ -2226,6 +2275,9 @@ fn explicit_rejection_from_site_rejection(
         }
         DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
             ExplicitServicePlacementRejection::NeighborSiteHeightConflict
+        }
+        DemandSpawnPlacementRejection::StreetContactInvalid(issue) => {
+            ExplicitServicePlacementRejection::StreetContactInvalid(issue)
         }
         DemandSpawnPlacementRejection::SiteSupportTieInInvalid => {
             ExplicitServicePlacementRejection::SiteSupportTieInInvalid

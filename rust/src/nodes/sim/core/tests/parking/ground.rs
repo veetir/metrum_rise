@@ -110,9 +110,9 @@ fn parking_visible_cut_is_refused_and_the_inspector_receives_its_measurement() {
 }
 
 #[test]
-fn parking_gameplay_brush_refuses_a_steepened_spot_and_undo_restores_it() {
-    // With 1 m source cells the pad's one-cell protection halo ends 1 m outside the pad. A spot
-    // whose outer wheels stand beyond the halo stands on ground the brush can lower.
+fn parking_gameplay_brush_keeps_paved_edge_spots_level_and_undo_restores_ground() {
+    // PARK-25 extends the protected level support from x=8 to the paved lot edge x=10.
+    // The same outer wheels at x=9.5 now stand on protected paving, not the grading strip.
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
             .with_chunking(128.0, 0.0)
@@ -147,49 +147,10 @@ fn parking_gameplay_brush_refuses_a_steepened_spot_and_undo_restores_it() {
     assert!(c.finish_game_terrain_stroke());
     assert_cached_surface(&c);
     let fresh = c.prove_parking_lot(index);
-    assert!(
-        fresh.ground_refused,
-        "the stroke must tilt the spot: {:?}",
-        fresh.issues
-    );
-    assert_eq!(c.parking.building_place_count(owner), 0);
-    let reasons = c.parking_rejections(index).into_owned();
-    assert_eq!(reasons, fresh.issues);
-    assert_eq!(reasons.len(), 1, "{reasons:?}");
-    assert!(
-        reasons[0].contains("not drivable: the ground under this spot slopes"),
-        "{reasons:?}"
-    );
-
-    // A save from before the ground check (format 125) can still hold the now-undrivable row.
-    // Loading must remove it using the same proof without changing the stored floor or relying
-    // on an inspector visit.
-    let floor = c.allocator.buildings[index].support_height_m;
-    c.parking.replace_building(owner, &before);
-    let path = temp_save_path("parking-undrivable-ground");
-    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
-        .unwrap();
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute_batch(&format!(
-            "UPDATE save_meta SET version = {};",
-            crate::simulation::save::schema::PRE_GROUND_SAVE_VERSION
-        ))
-        .unwrap();
-    let mut loaded = core();
-    loaded.allocator.registry = c.allocator.registry.clone();
-    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
-    std::fs::remove_file(path).unwrap();
-    assert_eq!(loaded.parking.building_place_count(owner), 0);
-    assert_eq!(
-        loaded.allocator.buildings[index].support_height_m.to_bits(),
-        floor.to_bits()
-    );
-    assert_eq!(
-        loaded.parking_rejections(index).as_ref(),
-        reasons.as_slice()
-    );
-    c.parking.replace_building(owner, &fresh.bays);
+    assert!(!fresh.ground_refused, "{:?}", fresh.issues);
+    assert!(fresh.issues.is_empty());
+    assert_eq!(fresh.bays, before);
+    assert_eq!(c.parking.building_place_count(owner), 1);
 
     assert!(c.undo_action_internal());
     assert_eq!(
@@ -200,4 +161,40 @@ fn parking_gameplay_brush_refuses_a_steepened_spot_and_undo_restores_it() {
     );
     assert!(c.parking_rejections(index).is_empty());
     assert_eq!(c.prove_parking_lot(index).bays, before);
+}
+
+#[test]
+fn parking_legacy_ground_certificates_recheck_supply_without_moving_the_floor() {
+    for version in [
+        crate::simulation::save::schema::PRE_GROUND_SAVE_VERSION,
+        crate::simulation::save::schema::PRE_CONTACT_SAVE_VERSION,
+    ] {
+        let mut c = core();
+        let index = street_lot(&mut c, LEVEL_X);
+        let owner = c.allocator.building_handles.handle(index).to_bits();
+        assert_eq!(c.parking.building_place_count(owner), 1);
+        // Deliberately inconsistent legacy fixture: a floor 4 m above the street with old
+        // published supply. Loading must refuse its way, never repair the stored floor.
+        c.allocator.buildings[index].support_height_m += 4.0;
+        let floor = c.allocator.buildings[index].support_height_m;
+        let path = temp_save_path("parking-legacy-contact-ground");
+        c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!("UPDATE save_meta SET version = {version};"))
+            .unwrap();
+        let mut loaded = core();
+        loaded.allocator.registry = c.allocator.registry.clone();
+        loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(loaded.parking.building_place_count(owner), 0);
+        assert_eq!(
+            loaded.allocator.buildings[index].support_height_m.to_bits(),
+            floor.to_bits()
+        );
+        let reasons = loaded.parking_rejections(index);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].contains("not drivable:"), "{reasons:?}");
+    }
 }

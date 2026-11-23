@@ -255,7 +255,7 @@ fn missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset()
 }
 
 #[test]
-fn hillside_residential_sites_select_constructible_houses() {
+fn legacy_hillside_houses_retain_their_floors_and_terrain_feasibility_cache() {
     hillside_houses();
 }
 
@@ -309,36 +309,24 @@ fn hillside_houses() -> SimCore {
         ),
         "zoning must not engineer the ground"
     );
+    // Keep every established hillside site for terrain bake coverage. New construction's
+    // stricter street-contact verdict is tested independently below.
     for id in [6, 7, 8, 9, 16] {
-        let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
-            &core.zoning,
-            &core.region_graph,
-            core.demand.runtime_catalog(),
-            &[],
-            environment(&core),
-        );
-        let action = &candidates
-            .residential
-            .iter()
-            .find(|c| c.action.parcel_id == id)
-            .expect("buildable candidate")
-            .action;
-        if id == 7 {
-            assert_eq!(
-                action.asset_id,
-                "kenney:building.residential.small_single_family_house"
-            );
-        }
-        let result = core.allocator.execute_demand_spawn_action(
-            action,
+        let asset = if id == 7 {
+            "kenney:building.residential.small_single_family_house"
+        } else {
+            "kenney:building.residential.family_single_house"
+        };
+        core.allocator.restore_legacy_site_fixture(
+            asset,
+            Some(id),
+            godot::prelude::Vector2::ZERO,
             &mut core.zoning,
             &core.region_graph,
             &core.transit_network.roadbed,
-            &core.heightmap,
             core.demand.runtime_catalog(),
             core.demand.runtime_tuning(),
         );
-        assert!(result.is_ok(), "parcel {id}: {result:?}");
         core.publish_pending_building_site_changes();
     }
     assert_eq!(core.allocator.buildings.len(), 5);
@@ -528,5 +516,31 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
             )
             .is_ok(),
         "unzoning must remain possible"
+    );
+}
+
+#[test]
+fn hillside_placement_records_fixed_street_contact_verdicts() {
+    let mut records = Vec::new();
+    for id in [6, 7, 8, 9, 16] {
+        let core = fixture();
+        let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
+            &core.zoning,
+            &core.region_graph,
+            core.demand.runtime_catalog(),
+            &[],
+            environment(&core),
+        );
+        records.push((
+            id,
+            candidates
+                .residential
+                .iter()
+                .any(|c| c.action.parcel_id == id),
+        ));
+    }
+    assert_eq!(
+        records,
+        vec![(6, false), (7, false), (8, false), (9, false), (16, false)]
     );
 }

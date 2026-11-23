@@ -9704,15 +9704,26 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (b) A site-owned pad mesh with the pad masked out of the terrain.
     - **Recommendation.** (a): no second mesh, no seam between pad and ground.
 12. **T12. Site placement feasibility.**
-    - **Evidence.** `building_site_support_tie_in_is_valid` and `solve_building_site_support_height`
-      cast their own rays on the visual terrain with the CDT's sample margin; B grades any pad.
-    - **Options.** (a) Keep the allocator's rule, re-pointed at the base and the new cap constant.
-      (b) Feasible when the pad's cones meet the roads without a conflict at a seam (ties to
-      [T2](#terrain-07-open-questions)).
-    - **Recommendation.** (a) in `TERRAIN-07-F`; changing placement belongs to `EARTH-02`.
-    - **2026-11-22 yard design:** [Part C below](#drivable-yards-part-c-design-only), design only.
-      The any-ring road tie-in is insufficient: a fixed road must constrain the floor/yard at
-      its actual distance, regardless of whether more distant natural ground would pass.
+    - **Evidence.** The allocator's rays read base terrain and exposed road surfaces to the
+      graded terrain's 64 m cap. A farther soft ring cannot waive a nearer fixed road.
+    - **Rule.** Soft terrain retains the union of its ring intervals; every fixed road interval
+      intersects the feasible floor at that sample's own distance and the existing 1:2 slope.
+      Functional contacts and the bounded frontage bank impose their separate, stricter limits.
+    - **Decision.** C1 (`PARK-24`) replaces the any-ring fixed-road rule adopted in
+      `TERRAIN-07-F`; `PARK-25` extends paved support to the lot edge.
+    - **2026-11-22 C1 (`PARK-24`):** fixed road samples intersect the floor's feasible
+      intervals at their own ring distance; soft terrain retains the union of its rings. Nearby
+      undrawn banks are bounded at 1.0 m. Driveways use the shared 10% grade and 5 percentage
+      point/wheelbase transition limits; street-facing landings use the 0.12 m kerb step (no
+      authored ramp corridor exists yet). Secondary doors resolve the nearest exposed road side
+      in front of the anchor through the existing road R-tree; coincident contacts still count.
+      Other adjacent frontages use outward-facing road probes for the same bank cap.
+      Candidates are contact/midpoint road heights and the
+      sampled base-terrain median, projected into feasible intervals; choose fewest D-refused
+      bays, then least sampled absolute cut/fill, then lowest height. Replacement retains the
+      stored floor; load does not select a new floor. `PARK-25` takes authored paving support
+      to its lot edge; road intersections and neighbour-height checks remain hard constraints.
+      [Part C below](#drivable-yards-part-c-design-only) owns the future terrace/edge design.
 13. **T13. Water against graded ground.**
     - **Evidence.** Depth is `surface - base`; a cut below a lake's level beside its shore changes
       the real ground. Water suppresses the mesh cells a road touches.
@@ -11841,121 +11852,107 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 
 ### Drivable yards: Part C, design only
 
-**Status:** not implemented. `PARK-24` implements refusal/diagnostics only; it does not make the
-existing flat-yard derivation acceptable. The player's rule is that placement and automatic
-grading create a usable yard in the first place. Landscaping is optional, never the remedy for
-a cliff the game created.
+**Status and placement policy.** C1 (`PARK-24`) implements fixed-road feasibility and street
+contacts; `PARK-25` extends the current single level support to authored paving at the lot edge.
+Terraces and retaining edges below are **design only**. Automatic placement must produce usable
+contacts. The terrain brush is not a required repair step for a yard the game just created.
 
-**Structures and yard have different height contracts.** Keep the building's structural bearing
-polygons and entrance landings at its one stored `support_height_m`. A door landing has a level
-connection to the door, and an accessible graded route out; extending one convex hull across all
-structures, paving and parking is no longer the definition of a level floor. Paving is material,
-not evidence that every point must share the building floor. Yard ground follows a deterministic
-piecewise planar grade from fixed street levels to the structure/landing boundaries. Parking
-wheel areas stay at most 8%; actual driving routes at most 12%; a street-edge discontinuity at
-most 0.25 m. Interior paving is continuous. A retaining wall may border unused ground, never a
-wheel area, driveway or entrance route. A lot whose authored access cannot satisfy these
-constraints is refused before placement with its failing connection and measured deficit.
+**What stays level.** The building bearing polygons and entrance landings keep the building's
+stored floor. Paving and parking become separate semantic regions, grouped into one or more
+terraces, each level or an explicitly bounded plane. Ordinary spots allow at most **5%** between
+wheel contacts, aisles and driveways **10%** over a **2.8 m** car wheelbase, and future accessible
+spots **2%** in every direction. A triangle's full gradient must satisfy its region's limit;
+checking its edges alone does not establish that. The shared `parking/ground.rs` constants own
+vehicle limits, the **0.12 m** step is `CURB_STEP_HEIGHT_M`, and driveway grade change is at most
+**5 percentage points per car wheelbase**. Access ways crossing the footway use the lowered-kerb
+interpretation, as in D. Accessibility is not implemented by relabelling an ordinary bay.
 
-Today `SiteBuffer::push_site(footprint, support_height_m)` supplies one constant-height support
-polygon, its horizontal pad seams and an independent list of material polygons. `pad_at`,
-`rasterize_pads` and `height` select that one height; the existing GL0 graded selection/cones
-blend outside it. `select.rs` selects changed sites and their grading reach. The smallest
-extension is to retain the flat support primitive for structures/landings and add bounded
-**height-varying yard patches** to the same site record/buffer: triangle corners with heights,
-an affine height evaluator, bounds and edge seams carrying their endpoint heights. Reuse the
-existing site-cell query, canonical ordering, GL0 triangle interpolation, terrain query index,
-local dirty selection and site snapshots. Materials remain independent of heights. Do not add a
-second spatial tree or a GDScript terrain layer. Canonical keys, snapshot/input fingerprints,
-`select.rs` bounds and the indexed and gathered query paths must all include the new patches;
-both mesh bake and point queries must evaluate the same surface. Unused natural-ground tie-ins
-may retain the existing 1:2 earthwork cone/cap; that grade is forbidden inside drivable areas.
+**Contacts and edges.** The Driveways and street-facing entrances are the functional street
+contacts. Driveways need feasible length from carriageway edge to terrace edge and vertical
+transitions at both ends; entrances need a level landing within a kerb step of the footway, or
+an explicitly available **5%** walking ramp (the report's Finland Decree 241/2017 guidance).
+Between contacts the frontage can meet the street through a bank. C1 bounds a nearby undrawn
+bank at **1.0 m**: larger residual level differences need an explicit retaining structure,
+rather than leaving a multi-metre cliff with no geometry or explanation. Its existing 1:2
+cone still bounds bank reach. A wall or plinth will be a first-class grading edge, never an
+implicit permission for a driving/walking route or wheel envelope to cross a discontinuity.
+A 21% street rises 0.63 m in 3 m; a 5% parking terrace rises at most 0.15 m. Following the
+whole frontage cannot solve that geometry. Local contacts, terraces and retaining edges can;
+otherwise choose a different lot/asset or refuse with the measured binding constraint.
 
-**Floor feasibility comes before grading.** Build a bounded, deterministic constraint problem
-from the authored structure/landing boundaries, parking wheel envelopes, proven drive routes,
-and every intersecting exposed road boundary. Road samples are immutable at their exact XZ
-positions and heights, including raised bands. Clip candidate road seams against the local
-influence window via the existing roadbed index; constrain the road at the nearest point and
-its actual distance to the required support, not the ring distance of a probe that happened to
-find it. An acceptable farther terrain ring cannot override an incompatible nearer road. Keep
-all road constraints until feasibility is decided, not just the first successful ray.
+**Smallest terrain-layer extension.** Today `graded/sites.rs` stores one footprint and one
+`support_height_m` in `SiteRecord`; `SiteBuffer::push_site(footprint, support_height_m)` adds its
+horizontal pad seams. Materials are separate polygons. `pad_at`, `rasterize_pads` and `height`
+read that one floor, while `select.rs` follows changed pad seams and their capped grading reach.
+Keep this primitive for structure/landing support. Add a range of terrace records to the same
+site: polygon range, affine plane `h(x,z)`, bounds and semantic use. A constant-height terrace
+is the zero-gradient case. Add explicit boundary records with endpoint heights on each side
+and kind: continuous join, bank, retaining wall or plinth. A retaining boundary prevents a cone
+on one side from enforcing continuity on the other; merely adding extra `push_site` calls is
+insufficient. The GL0 height query needs an explicit side/tie ownership rule at the edge, and
+the mesh needs duplicated edge vertices and vertical faces for a jump. Do not interpolate one
+GL0 triangle across a wall. This extends the existing graded layer, not a second heightfield.
 
-For a route of usable run d from road height R to a floor-height landing H, require
-`|H - R| <= 0.12 d + 0.25` (the 0.25 budget only at the road edge). Parking areas have the
-stronger pairwise 0.08 constraints. Intersect all resulting floor intervals. If empty, refuse;
-otherwise keep H as a variable in the joint fixed-XY yard solve, subject to route, wheel,
-continuity and structure constraints. Choose the feasible floor closest to the old preferred
-driveway-based height (clipping is sufficient only when the interval is the full feasible
-projection). After fixing that floor, minimise squared change from source heights to select
-one yard solution, with positive fixed weights and canonical vertex/road order. A floor that
-passes necessary route intervals must not be committed before the joint wheel/triangle
-constraints prove it feasible. Finally run the exact D proof on the resulting visible surface. Use a deterministic feasibility solver with specified precision/stopping rules, not
-successive heuristic smoothing. The bound on every triangle's gradient must also be enforced
-for a drivable area: edge differences alone do not bound the gradient in all directions. The
-solver's exact formulation and iteration/work bound are an implementation prerequisite, not
-permission to ship an unbounded optimiser. A road above/below an unrelated bridge/tunnel is
-not a frontage constraint; preserve the existing exposed-level ownership rules.
+Use the existing site-cell index, local roadbed queries and site snapshots. Include every
+terrace/edge in canonical ordering, content fingerprints, source generations, query-index
+inputs and before/after site-change captures. `select.rs` must compare all changed plane/edge
+seams and both old/new bounds and reaches. Bake, gathered queries, indexed queries, picking,
+vegetation and vehicle support must consume the same solved product. A distant site's insertion
+or swap-remove must change no local product. Structures remain at the saved floor on reload;
+never rerun floor selection for placed buildings. Old saved supply is rechecked by D's normal
+load path when its ground certificate predates the current rules.
 
-**Worked capacity estimates (not measured asset acceptance rates).** Slope and lot size alone
-cannot determine how many real lots pass: structure width, setback, entrance/parking layout,
-road curvature and transverse terrain matter. For a reproducible estimate, use 10 m cells,
-straight streets, identical repeated lots, a full-frontage flat landing line 10 m inside the
-lot, independent perpendicular access paths, and enough remaining depth to arrange the bays
-at at most 8%. Let W be frontage width, s street grade, road midpoint height zero. Both ends
-must reach one floor: road end heights are ±sW/2. The best floor is zero, the interval is
-`[sW/2 - (0.12d+0.25), -sW/2 + (0.12d+0.25)]`, and acceptance requires `sW <= 2(0.12d+0.25)`.
-At d = 10 m the allowance is 1.45 m each way (2.9 m frontage rise).
+**Asset contract.** A first authoring slice needs Transport Fever 2-style terrain-alignment
+polygons: structure/landing support, parking terrace envelopes, aisle corridors, driveway and
+pedestrian contact lines, and allowed retaining/bank edges. Existing paving, wheel envelopes
+and proven parking ways can derive a proposal, but paving alone cannot prove a walking ramp is
+free of walls, planting or other traffic. Ambiguous or overlapping proposals need validation
+and an editor correction, not guessed semantic ownership. Planes, terrace adjacency and any
+chosen elevations must have bounded deterministic inputs. Draw bank surfaces using terrain;
+retaining walls and plinth faces require actual geometry, terrain clipping, normals/materials,
+shadows, picking and clearance/collision participation. A line or inspector label cannot stand
+in for a wall. Any player choice that affects the solved geometry needs saved authoritative
+inputs and a format review.
 
-| Street grade | 2 × 3, W = 20 m: rise / minimum run d | 4 × 3, W = 40 m: rise / minimum run d | Identical lots accepted per 100, 2 × 3 / 4 × 3 |
-| --- | --- | --- | --- |
-| 5% | 1.0 m / (0.50−0.25)/0.12 = 2.08 m | 2.0 m / (1.00−0.25)/0.12 = 6.25 m | 100 / 100 |
-| 10% | 2.0 m / 6.25 m | 4.0 m / (2.00−0.25)/0.12 = 14.58 m | 100 / 0 |
-| 20% | 4.0 m / 14.58 m | 8.0 m / (4.00−0.25)/0.12 = 31.25 m | 0 / 0 |
+**Slices and proof.**
 
-These are conservative full-width flat-landing estimates under the stated 10 m setback, not a
-claim that 10% streets intrinsically reject wide lots: narrowing the required flat structures
-or giving them at least 14.58 m of drivable run changes that answer. Both lots are 30 m deep;
-31.25 m cannot fit even before structure depth, so the full-width 4 × 3 / 20% case fails that
-model at every setback. A single driveway at an uphill/downhill end doubles the worst floor
-difference versus the midpoint: it is a floor preference, not a way around the interval. A
-20% street cannot support a shared 20%-along-street yard aisle or parking wheel plane; separate
-perpendicular entries and grade transitions, or a different asset, are required. Real acceptance
-must be counted by running this solver over representative assets/roads, not guessed from slope.
+1. C1 and `PARK-25`: fixed-road intersections, contact intervals, deterministic candidate floors,
+   lot-edge support and independent D checks. Prove downhill-driveway 4 × 3 / 21%, both lot
+   widths on 5/10/20% streets, a raised road behind the lot, flat 20-bay medium lot, populated
+   supply, neighbouring lots, brush/undo and fixed-floor reload. Record every changed expectation.
+2. Semantic regions and authoring validation: derive only unambiguous regions, expose ramp/edge
+   inputs, reject overlap/holes/undersized landings, and preserve current flat products bitwise.
+3. Multi-terrace data and planes: start with authored elevations and continuous connectors,
+   without an unrestricted optimisation solver. Prove slope/gradient bounds, wheel and whole-way
+   acceptance, canonical ownership, one/eight-worker equality, bake/query/picking equality,
+   snapshot/undo/reload and local invalidation.
+4. Discontinuous edges and drawn walls/plinths together: prove two heights at an edge, no GL0
+   interpolation or cone leakage through it, closed faces, road/neighbor clipping and no
+   pedestrian/vehicle crossing except a separately proven connector. Include rotated/corner
+   lots and both signs of grade.
+5. Automatic terrace choice and representative asset acceptance: enumerate a bounded authored
+   set of layouts/planes and floor candidates; accept only a checked feasible product, then
+   run D on its visible surface. Prove the steep grocery case without sacrificing required
+   access, and measure placements/reproof against fixed local geometry with increasing remote
+   buildings, parcels, roads and agents. Optional stalls may be refused with reasons; required
+   contacts may not silently disappear.
 
-**Existing saves.** Sites re-derive on load; buildings retain their stored floor. Never silently
-move an occupied building to the newly preferred height. Re-solve its yard with that floor
-fixed. If infeasible, retain the building and its structure/landing support, expose the reason,
-and keep the unusable spots/docks refused by D. Do not silently flatten a road, route through a
-wall, or instruct the player to repair it with the brush. Decide separately whether to offer an
-explicit rebuild/relocation action for these legacy buildings. No saved floor migration is
-needed for the derived yard representation; any persisted grading inputs need their own format
-review.
+**Cost contract and open questions.** For C floor candidates, T terrace polygons, E boundary
+segments, R local constraint samples and S half-metre way samples, validation of a supplied
+layout is O(C × (T + E + R + S)) after existing indexed local gathering; storage O(T + E + R + S).
+The geometric parking proof is built once, outside the candidate loop. Local source gathering
+also pays for the actual nearby roads/sites, never total city population. Dirty selection
+follows changed boundaries and capped reach, as today. No per-tick/per-agent solve is added.
+These are validation bounds, **not** a claimed bound for an automatic optimiser. Before that
+slice, specify maximum authored layouts/polygons, numerical tolerances and a deterministic
+finite solve with a feasible certificate and measured worst case. An unresolved solve refuses.
 
-**Order and proof.** (1) Correct fixed-road feasibility and interval tests first. (2) Separate
-structural/landing support from material coverage and specify/bound the constrained yard
-solver. (3) Extend site records, snapshots, query index and bake/query selection together.
-(4) Use the same solved product for placement preview, commit, load and undo; keep D as an
-independent acceptance check. Tests: the grocery-front repro with the nearby uphill road and a
-passing farther ring; midpoint/end-driveway height choice; the table's interval boundaries;
-5/10/20% roads in both directions and rotated lots; door/landing height retained; wheels and
-complete ingress/egress on visible GL0 ground; bake/query bit equality; neighbouring road/site
-edits, brush/undo and legacy fixed-floor reload; one/eight workers with identical inputs. Keep
-the medium lot's flat 20-bay proof. Measure matched release placement/reproof cost with a fixed
-neighbourhood and growing background roads, buildings, parcels and agents.
-
-Work stays at placement/edit/load boundaries. For V local grade vertices, E constraints, R
-intersecting road-seam candidates and S half-metre route samples, gathering is existing indexed
-local-query cost, validation O(E + S), storage O(V + E + S). The grade constraints are a convex second-order cone feasibility problem: fixed-XY
-triangle gradients are affine in vertex heights, constrained by their 8%/12% Euclidean norms;
-wheel/route differences are linear. A deterministic primal-dual interior-point solve with a
-dense factorisation has a conservative arithmetic bound
-O(sqrt(E) × (V+E)^3 × log(1/epsilon)), O((V+E)^2) workspace. Epsilon and the iteration bound
-must be fixed for the chosen local dimensions, with a checked feasibility certificate before
-acceptance; residual uncertainty refuses rather than silently relaxing a grade. This is a
-design bound, not a measured performance acceptance: measure representative asset maxima
-before choosing this implementation or a provably equivalent sparse solve. Do not claim
-O(V+E) for the solve. Dirty selection costs changed patches and their existing grading reach,
-not total city size. There is no per-agent or per-tick yard solve.
+Open: who authors pedestrian ramp corridors, explicit door/street associations and landing
+setbacks; which assets require
+accessible spots; automatic derivation rules for ambiguous paving; the allowed retaining heights
+and cost/ownership at shared lots; exact discontinuity ownership on the GL0 lattice; whether
+terrace layout choices must be saved; and an explicit rebuild/relocation action for legacy
+infeasible sites. The research does not answer these product/data questions.
 
 ## Streaming core (`RENDER-32`)
 

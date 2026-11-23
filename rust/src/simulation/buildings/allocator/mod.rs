@@ -85,8 +85,6 @@ pub(crate) enum DemandSpawnPlacementRejection {
     SlotUnavailable,
     /// A driveway anchor could not resolve an adjacent road surface height.
     DrivewayRoadSurfaceMissing,
-    /// Multiple driveway anchors required incompatible flat-site heights.
-    DrivewayHeightConflict,
     /// The asset has driveway anchors, but none touch the claimed road edge.
     DrivewayConnectionMissing,
     /// The frontage fallback could not resolve an adjacent road surface height.
@@ -95,6 +93,8 @@ pub(crate) enum DemandSpawnPlacementRejection {
     NeighborSiteHeightConflict,
     /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
     SiteSupportTieInInvalid,
+    /// A fixed street contact cannot meet its measured grading limit.
+    StreetContactInvalid(site::grading::StreetContactIssue),
 }
 
 /// Final allocator-side reason an explicit service placement could not be committed.
@@ -120,8 +120,6 @@ pub(crate) enum ExplicitServicePlacementRejection {
     NoCarAccess,
     /// A driveway anchor could not resolve an adjacent road surface height.
     DrivewayRoadSurfaceMissing,
-    /// Multiple driveway anchors required incompatible flat-site heights.
-    DrivewayHeightConflict,
     /// The asset has driveway anchors, but none touch the claimed road edge.
     DrivewayConnectionMissing,
     /// The frontage fallback could not resolve an adjacent road surface height.
@@ -130,6 +128,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     NeighborSiteHeightConflict,
     /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
     SiteSupportTieInInvalid,
+    /// A fixed street contact cannot meet its measured grading limit.
+    StreetContactInvalid(site::grading::StreetContactIssue),
     /// The selected lot overlaps the lot of a placed (explicit) building (`ZONE-11`: a
     /// growable building's lot is taken instead).
     SiteOverlap,

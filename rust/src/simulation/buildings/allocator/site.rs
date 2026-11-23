@@ -5,12 +5,12 @@
 mod cells;
 mod derive;
 mod geometry;
-mod grading;
+pub(super) mod grading;
 mod model;
 mod query;
 
 pub(crate) use cells::SiteCells;
-pub(crate) use derive::{lot_support_inset_m, zoning_support_footprint};
+pub(crate) use derive::{lot_support_inset_m, zoning_support_footprint, site_structure_footprints};
 pub(crate) use grading::building_site_support_tie_in_is_valid;
 #[cfg(test)]
 pub(crate) use grading::SiteRoads;

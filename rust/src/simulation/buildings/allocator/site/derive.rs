@@ -296,34 +296,12 @@ impl BuildingAllocator {
             })
             .unwrap_or_default();
 
-        // The same wall rectangles the yard hedge plan keeps off, placed in the world.
-        let to_world = |[a, b]: [[f32; 2]; 2]| {
-            [[a[0], a[1]], [a[0], b[1]], [b[0], b[1]], [b[0], a[1]]]
-                .map(|[x, z]| building_local_xz_pos(building, [x, 0.0, z], frontage_forward))
-        };
         let parts = self
             .registry
             .get(&building.asset_id)
             .map_or(&[][..], |entry| &entry.manifest.mesh_parts[..]);
-        let structure_world = parts
-            .iter()
-            .filter_map(crate::assets::asset::structure_footprint)
-            .map(to_world)
-            .collect();
-        // Each vehicle class meets those walls less the passages it fits through (`PARK-19`).
-        // O(parts × P²) for P passages per part, once per derivation.
-        let vehicle_structure_world = parts.iter().any(|part| !part.passages.is_empty()).then(|| {
-            Box::new(ProofClass::ALL.map(|class| {
-                let mut local = Vec::new();
-                for part in parts {
-                    crate::assets::asset::passage::class_structure_footprints(
-                        part,
-                        class.proof().clear_height,
-                        &mut local,
-                    );
-                }
-                local.into_iter().map(to_world).collect()
-            }))
+        let (structure_world, vehicle_structure_world) = site_structure_footprints(parts, |p| {
+            building_local_xz_pos(building, p, frontage_forward)
         });
 
         let planting_world = self
@@ -391,6 +369,37 @@ impl BuildingAllocator {
     }
 }
 
+/// Class-specific wall rectangles, shared by proposed and installed lot proofs. Passages
+/// subtract the same clearance envelopes in both paths; O(parts × passages²).
+#[allow(clippy::type_complexity)]
+pub(crate) fn site_structure_footprints(
+    parts: &[MeshPart],
+    world: impl Fn([f32; 3]) -> Vector2,
+) -> (Vec<[Vector2; 4]>, Option<Box<[Vec<[Vector2; 4]>; 2]>>) {
+    let to_world = |[a, b]: [[f32; 2]; 2]| {
+        [[a[0], a[1]], [a[0], b[1]], [b[0], b[1]], [b[0], a[1]]].map(|[x, z]| world([x, 0.0, z]))
+    };
+    let structures = parts
+        .iter()
+        .filter_map(crate::assets::asset::structure_footprint)
+        .map(to_world)
+        .collect();
+    let vehicle = parts.iter().any(|p| !p.passages.is_empty()).then(|| {
+        Box::new(ProofClass::ALL.map(|class| {
+            let mut local = Vec::new();
+            for part in parts {
+                crate::assets::asset::passage::class_structure_footprints(
+                    part,
+                    class.proof().clear_height,
+                    &mut local,
+                );
+            }
+            local.into_iter().map(to_world).collect()
+        }))
+    });
+    (structures, vehicle)
+}
+
 pub(super) fn required_flat_support_footprint_local(
     manifest: &AssetManifest,
     lot_half_width: f32,
@@ -408,20 +417,14 @@ pub(super) fn required_flat_support_footprint_local(
     for anchor in &manifest.anchors {
         append_anchor_support_points(anchor, lot, &mut points);
     }
-    // Authored paving expands the existing support hull into a level, usable yard.
-    // Its lot-edge strips remain terrain-owned transitions, not a flat road seam.
-    let inset = lot_support_inset_m(lot_half_width, lot_half_depth);
-    let yard_lot = LocalLotSupport {
-        half_width: lot_half_width - inset,
-        half_depth: lot_half_depth - inset,
-        ..lot
-    };
+    // Paving owns level support right to its lot boundary. Neighbour-height validation
+    // constrains touching pads; fixed road samples constrain the road-side bank independently.
     for surface in &manifest.site_surfaces {
         points.extend(
             surface
                 .vertices
                 .iter()
-                .map(|p| yard_lot.clamp_point(Vector2::new(p[0], p[1]))),
+                .map(|p| lot.clamp_point(Vector2::new(p[0], p[1]))),
         );
     }
     if points.is_empty() {

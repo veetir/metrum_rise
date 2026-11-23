@@ -76,8 +76,12 @@ impl SimulationNode {
 
     fn service_placement_error_message(
         rejection: ExplicitServicePlacementRejection,
-    ) -> &'static str {
+    ) -> String {
+        if let ExplicitServicePlacementRejection::StreetContactInvalid(issue) = rejection {
+            return issue.message();
+        }
         match rejection {
+            ExplicitServicePlacementRejection::StreetContactInvalid(_) => unreachable!(),
             ExplicitServicePlacementRejection::AssetUnavailable => "service asset unavailable",
             ExplicitServicePlacementRejection::NotServiceBuilding => {
                 "selected asset is not an explicit service building"
@@ -106,9 +110,6 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"
             }
-            ExplicitServicePlacementRejection::DrivewayHeightConflict => {
-                "driveway anchors require incompatible site heights"
-            }
             ExplicitServicePlacementRejection::DrivewayConnectionMissing => {
                 "driveway anchors do not connect to the frontage road"
             }
@@ -119,7 +120,11 @@ impl SimulationNode {
                 "building site height conflicts with a neighbor"
             }
             ExplicitServicePlacementRejection::SiteSupportTieInInvalid => {
-                "building site cannot tie into surrounding terrain"
+                return format!(
+                    "building site cannot tie into terrain within {:.0}% over {:.0} m",
+                    crate::simulation::terrain::graded::TIE_IN_SLOPE * 100.0,
+                    crate::simulation::terrain::graded::CAP_M
+                );
             }
             ExplicitServicePlacementRejection::SiteOverlap => {
                 "building lot overlaps a placed building's lot"
@@ -134,12 +139,17 @@ impl SimulationNode {
                 "building lot overlaps a mine's extraction area"
             }
         }
+        .to_owned()
     }
 
     fn industry_placement_error_message(
         rejection: ExplicitServicePlacementRejection,
-    ) -> &'static str {
+    ) -> String {
+        if let ExplicitServicePlacementRejection::StreetContactInvalid(issue) = rejection {
+            return issue.message();
+        }
         match rejection {
+            ExplicitServicePlacementRejection::StreetContactInvalid(_) => unreachable!(),
             ExplicitServicePlacementRejection::AssetUnavailable => "industry asset unavailable",
             ExplicitServicePlacementRejection::NotIndustryBuilding => {
                 "selected asset is not an explicit industry building"
@@ -168,9 +178,6 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"
             }
-            ExplicitServicePlacementRejection::DrivewayHeightConflict => {
-                "driveway anchors require incompatible site heights"
-            }
             ExplicitServicePlacementRejection::DrivewayConnectionMissing => {
                 "driveway anchors do not connect to the frontage road"
             }
@@ -181,7 +188,11 @@ impl SimulationNode {
                 "building site height conflicts with a neighbor"
             }
             ExplicitServicePlacementRejection::SiteSupportTieInInvalid => {
-                "building site cannot tie into surrounding terrain"
+                return format!(
+                    "building site cannot tie into terrain within {:.0}% over {:.0} m",
+                    crate::simulation::terrain::graded::TIE_IN_SLOPE * 100.0,
+                    crate::simulation::terrain::graded::CAP_M
+                );
             }
             ExplicitServicePlacementRejection::SiteOverlap => {
                 "building lot overlaps a placed building's lot"
@@ -196,6 +207,7 @@ impl SimulationNode {
                 "building lot overlaps a mine's extraction area"
             }
         }
+        .to_owned()
     }
 
     fn empty_service_preview_dict(error: &str) -> VarDictionary {
@@ -257,7 +269,7 @@ impl SimulationNode {
                 }));
                 vdict! {
                     "valid": preview.valid,
-                    "error": GString::from(preview.rejection.map(message).unwrap_or("")),
+                    "error": GString::from(&preview.rejection.map(message).unwrap_or_default()),
                     "corners": corners,
                     "center_x": f64::from(preview.center_2d.x),
                     "center_z": f64::from(preview.center_2d.y),
@@ -268,7 +280,7 @@ impl SimulationNode {
                     "demolish_lots": road_tool::core_lot_outlines(&core, &hover.take),
                 }
             }
-            Err(rejection) => Self::empty_service_preview_dict(message(rejection)),
+            Err(rejection) => Self::empty_service_preview_dict(&message(rejection)),
         };
         dict.set("build_cost", build_cost);
         dict
@@ -435,7 +447,7 @@ impl SimulationNode {
                 self.refresh_snapshot_from_core();
                 GString::new()
             }
-            Err(rejection) => GString::from(Self::service_placement_error_message(rejection)),
+            Err(rejection) => GString::from(&Self::service_placement_error_message(rejection)),
         }
     }
 
@@ -513,7 +525,7 @@ impl SimulationNode {
                 dict.set("ok", false);
                 dict.set(
                     "error",
-                    GString::from(Self::industry_placement_error_message(rejection)),
+                    GString::from(&Self::industry_placement_error_message(rejection)),
                 );
                 dict.set("building_id", -1_i64);
             }

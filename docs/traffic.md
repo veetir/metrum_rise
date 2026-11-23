@@ -2217,20 +2217,25 @@ including roadbed triangles. It never checks the source heightmap or membership 
 outline. A level tyre in the outer strip passes; in particular the bundled medium lot retains
 all 20 bays on flat ground.
 
-A bay's four wheel contacts may differ by at most an **8%** grade between any pair, for cars and
-loading bays. The design limit for a parking stall is **5%** (Helsinki's 1:20 guidance, US federal
-parking criteria; `docs/terrain.md` T12 cites the sources), and 8% is interim: until site grading
-lays paving out to the lot edge on the level floor (`PARK-25`), a stall reaching the lot's outer
-strip stands over its **0.12 m** drop to flat ground, 7.5% across a car's track (at 5% the
-populated fixture refused 412 such stalls on flat ground). Runtime `VehicleGroundSupport` is
-render metadata populated by Godot mesh loading and is not canonical save/proof input, so the
+A bay's four wheel contacts may differ by at most a **5%** grade between any pair, for cars and
+loading bays (Helsinki's 1:20 guidance and the report's federal parking benchmark). `PARK-25`
+extends authored paving's level support to the lot edge, removing the old 2 m strip's 0.12 m
+drop; the bundled medium lot keeps all 20 bays, and the populated flat fixture has no ground
+refusals at 5%. Touching neighbours constrain candidate floors to the existing 0.10 m height
+compatibility interval, and immutable road samples constrain each ray at its own distance;
+road surfaces retain ownership of their triangles. The front paving no longer dips below its
+own pad before meeting the road. Runtime `VehicleGroundSupport` is render metadata populated
+by Godot mesh loading and is not canonical save/proof input, so the
 contacts are fixed per class (track × wheelbase): **1.6 × 2.8 m** inside the 1.8 × 4.5 m car,
 **2.1 × 5.0 m** inside the 2.6 × 8 m rigid truck. A body's overhang touches no ground.
 
 The proven connection–approach–aisle–bay way is sampled at global **0.5 m** arc-length stations,
 continuing across corners and including the endpoint. Its grade over every rolling car wheelbase
 (**2.8 m**; a short whole way over its actual length) must stay within **10%** (Helsinki's 1:10
-for a driveway; 12% is a house driveway's). A dip or bump shorter than a wheelbase is the step
+for a driveway; 12% is a house driveway's). The algebraic difference between adjacent rolling
+wheelbase mean grades is at most **5 percentage points**, shared with placement's driveway
+check (`MAX_GRADE_CHANGE`, the report's TxDOT transition guidance). Two wheelbases of stations
+are retained in constant scratch. A dip or bump shorter than a wheelbase is the step
 rule's: adjacent samples may differ by at most a kerb's height, **0.12 m**
 (`CURB_STEP_HEIGHT_M`). Authored loading-bay ways use their complete way in and way out, not the
 four-point summary's shortcut. One issue per refused anchor names the measured grade, climb/run
@@ -2247,19 +2252,32 @@ road plane's grade, and a road without a footway may meet the yard with one jump
 kerb's height. No yard-interior jump is waived. Numerical slack is 0.1 mm, not an extra
 gameplay grade allowance.
 
-On flat ground the lot's 2 m front strip currently dips to the bare ground between the footway
-and the pad (0.12 m, about 1.5 m wide); it passes the wheelbase grade, and `PARK-25` grades it
-to the road instead.
+Placement's C1 policy is in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only):
+fixed roads intersect feasible floor intervals, nearby frontage banks are capped at **1.0 m**,
+Driveways meet their road within the shared **10%** grade and **5 percentage points/wheelbase**
+limits, and each street-facing entrance landing is within **0.12 m** of its footway. No authored
+pedestrian ramp corridor exists yet, so placement never assumes a ramp through arbitrary paving.
+Secondary street-facing doors use the nearest exposed road side in front of their anchor,
+including a coincident contact, through the existing road R-tree. Corner/rear frontage banks
+use that index's existing 8 m adjacent-road probe in the edge's outward half-plane; a closer
+road behind the edge cannot mask its frontage. A candidate's actual rendered driveway profile
+follows the authored gate approach and is also checked by D's way sampler. Floor
+candidates are the contact and frontage-midpoint road heights plus the sampled base-terrain
+median. Choose fewest D-refused parking bays, then least sampled absolute cut/fill, then lowest
+height. Replacements validate their stored floor rather than selecting a new one. Measured
+refusals travel through the shared explicit-placement preview/commit error and appear in the
+build tool's existing price/reason label; there is no silent placement failure.
 
 The existing graded edit journal's changed rectangles invalidate both cached poses and nearby
 lot proofs through the allocator's **site-cell index**. The existing stable-handle site journal
 deduplicates and republishes them; zero-bay lots are included so a repair or undo can restore
 supply. A gameplay stroke publishes once at release and undo does the same. Road and neighbouring
-site edits use the same path. A save's supply passed this check when it was written (format 126,
+site edits use the same path. A save's supply passed this check when it was written (format 127,
 `SAVE_VERSION`), and the ground changes only by an edit that proves its lots again, so its load
-proves only the parking roads' lots, for their kerb blockers, as before. A format 125 save
-(`PRE_GROUND_SAVE_VERSION`) is checked once: the kerb-blocker restoration's proof also visits
-every lot holding saved supply, against the re-derived sites and the stored building floors, and
+proves only the parking roads' lots, for their kerb blockers, as before. Formats 125/126
+(`PRE_GROUND_SAVE_VERSION` / `PRE_CONTACT_SAVE_VERSION`) are checked once: the kerb-blocker restoration's proof also visits
+every lot holding saved supply, against the re-derived sites and the stored building floors (floor selection never runs on
+load), and
 only actual ground refusals enter the site journal, published with the normal replacement and
 towing helpers. There is no second full-city proof pass. (Proving every such lot on every load
 cost +12-17% `load_s` at 30k, as `PARK-15`'s first version did.)
@@ -2273,14 +2291,253 @@ the steepened brush fixture.
 Additional proof work is O(bays × path samples), with four wheel reads/six pair comparisons per
 bay and constant rolling-way scratch. The surface gather and invalidation visit only local
 indexed roads/sites, independent of background city population. There is no per-tick sampler.
-The asset editor has no terrain: each car or loading bay whose wheel contacts reach the derivation's outer lot strip (normally **2 m**) gets a **non-blocking note**, shown on
-the anchor and in Validate & export. Notes never enter the export-blocking issue list. Placement
-and grading must themselves make yards drivable; the brush is not a repair requirement. The
-unimplemented slope-following yard design is in [`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only).
+The asset editor has no terrain. A car/loading bay reaching an outer lot strip gets a
+**non-blocking note only when its wheels are outside paved support**; paving reaching the
+edge now supplies level support and gets no obsolete strip warning. Notes remain outside the
+export-blocking issue list. Placement and grading must themselves make yards drivable; the
+brush is not a repair requirement. The terrace/retaining-edge design remains in
+[`terrain.md`, T12](terrain.md#drivable-yards-part-c-design-only).
 
 #### `PARK-24` verification, 2026-11-22
 
-Final build (limits above, wheel contacts, footway crossing, wheelbase window, format 126),
+##### C1 and `PARK-25`: final verification
+
+Fresh release, 2026-11-23, `4bc448048` plus the uncommitted C1/`PARK-25` changes; final library
+test binary SHA-256 `b00cd9594a686abeab29b9f74390fd5b4984ba1c23de935c05f04029a20497da`.
+No Godot runtime is needed by these tests.
+
+| Command (`rust/`) | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `cargo test --release --lib site` | 89 | 0 | 12 |
+| `cargo test --release --lib placement` | 94 | 0 | 9 |
+| `cargo test --release --lib parking` | 211 | 0 | 3 |
+| `cargo test --release --lib graded` | 115 | 0 | 13 |
+| `cargo test --release --lib save` | 139 | 0 | 17 |
+
+`cargo clippy --all-targets`: no warnings. `cargo doc --no-deps`: zero missing-doc warnings,
+74 existing private-link warnings. Release test builds retain the two existing dead-code
+warnings for the untouched parking quote `bits` methods. Changed-line-only
+`rustfmt --edition 2024` and `git diff --check` pass; `cargo fmt` was not run.
+
+**Changed expectations and retained coverage.**
+
+- `frontage_paving_support_reaches_its_authored_lot_edges`: the front at −10 m and the formerly
+  excluded outer-strip points now belong to the level support. This is the `PARK-25` contract.
+- `gameplay_terrain_protects_paving_to_the_edge_and_uses_the_floor_for_flattening` and
+  `parking_gameplay_brush_keeps_paved_edge_spots_level_and_undo_restores_ground`: the former
+  paved strip is protected pad. The old brush fixture's wheels at x=9.5 m now remain supported
+  inside the x=10 m pad; supply stays bitwise equal through the stroke and undo. A separate
+  deliberately invalid legacy-floor test proves formats 125 **and** 126 refuse saved supply
+  without moving the stored floor.
+- Fully paved edge wheels no longer get the editor's obsolete strip note; the same car and dock
+  wheels outside paving still get two non-blocking notes. The export-blocking checks remain.
+- The strict populated-fixture product digest is now `32991f90451e9fbf`; reason/editor digests
+  remain `2ba3ad70d4efa643` / `bf687441d5fc8bfa`. The pre-C1 binary freshly produced
+  `b19215463faad107`, already different from the old recorded `8576f0fdbbcced0d`. The new floor
+  cost can choose base height rather than a footway 0.12 m above it on flat ground, moving bay Y
+  while retaining supply; extended support also changes graded ground. The test additionally
+  asserts **no ground refusal** in the populated fixture. The medium lot still proves all 20.
+  The internal shared wall/proof extraction retained the C1 product digest before and after it.
+- New construction on the eight Kuopio-yard poses accepts the first road's two sides and
+  explicitly refuses the other six: four fixed-road tie-in grades and two frontage banks.
+  The five hillside-house poses now have no constructible candidate. Rendering/vehicle/terrain
+  and entrance-cache tests retain **all eight yards, five houses and four curved-street lots**
+  as explicit legacy fixtures through test-only restoration; their coverage counts were not
+  reduced. New-construction verdicts are asserted separately, not bypassed in gameplay.
+- Ground-limit text in the parking-wheel test changes from 8% to 5%. No unrelated test
+  expectation was relaxed.
+
+For the portable downhill-Driveway matrix, cells are 10 m; paving fills the lot and the gate
+is 1 m from the downhill end. These are layout-specific results, not acceptance rates for all
+assets of these dimensions:
+
+| Street grade | 2 × 3 | 4 × 3 |
+| --- | --- | --- |
+| 0% | place | place |
+| 5% | refuse | refuse |
+| 10% | refuse | refuse |
+| 20% | refuse | refuse |
+
+At 5%, even the 20 m frontage's opposing d=1 m rays see road points 22 m apart: 1.10 m rise,
+against a combined 1.00 m 1:2 allowance (55% required, 50% allowed). The 4 × 3 / 21% store
+refuses at the first binding 2 m frontage station: the footway at x=−14 is
+`20 − 14×0.21 + 0.12 = 17.18 m`; the downhill gate allows at most
+`20 − 19×0.21 + 0.05×2.8 = 16.15 m`. Exact reason:
+`frontage bank requires 1.03 m; at most 1.00 m`. A rear road 4.4 m higher also refuses:
+`frontage bank requires 4.38 m; at most 1.00 m`. The same fixture independently asserts that
+its fixed-road intervals are empty and the fixed-floor ray validator fails, before contact
+validation: the opposed d=1 samples allow only 0.5+0.5=1.0 m combined rise, not 4.4 m. With a
+rear-facing entrance, the contact reason is `entrance landing step requires 4.38 m; at most
+0.12 m`; an equal-height rear footway passes. A coincident secondary-door contact is retained,
+and a road behind the door is not a street-facing contact. Flat equal-height double frontage
+passes. An analytic angled-gate test checks the actual authored approach length from the
+carriageway, and the independent way test accepts a 5-point grade break and refuses a 10-point
+break even though both running grades are within 10%.
+
+A disjoint-terrain-interval regression also asserts that no contact is falsely reported over its
+limit when the incompatible constraint is the terrain envelope.
+
+**Matched C1/`PARK-25` benchmarks.** Fresh unprofiled release, eight Rayon workers, macOS,
+unpinned, C B B C, two runs per side. C is the pre-C1 `4bc448048` binary
+`117f48d6ea96c4cb…`; B is the final `b00cd9594a686abe…` binary above. Entries are means of each
+run's reported medians. There is no building-placement Criterion target in `rust/benches/`;
+use the existing ignored library benchmarks. For each saved `$TEST_BINARY`:
+
+```sh
+for bench in benchmark_successful_project_placement benchmark_graded_site_placement \
+             graded_yard_height_query_benchmark benchmark_parking_locality; do
+  RAYON_NUM_THREADS=8 METRUM_DEBUG=0 METRUM_LOCALITY_TIERS=0,1000,10000 \
+    "$TEST_BINARY" "$bench" --ignored --nocapture --test-threads=1
+done
+```
+
+| Successful projects | Physical placement C / B ms | Planning slot C / B ms | Setup C / B ms |
+| --- | --- | --- | --- |
+| 2 | 0.292 / 0.323 | 1.905 / 1.500 | 2.322 / 2.139 |
+| 16 | 2.316 / 2.535 | 2.523 / 2.046 | 7.677 / 7.881 |
+| 128 | 23.534 / 25.811 | 4.398 / 4.326 | 59.614 / 66.038 |
+| 1,024 | 254.303 / 278.103 | 26.205 / 25.806 | 732.548 / 790.206 |
+
+| Background sites | Graded site selection+bake C / B ms |
+| --- | --- |
+| 0 | 0.770 / 0.725 |
+| 1,092 | 0.762 / 0.730 |
+| 10,212 | 0.738 / 0.727 |
+| 100,100 | 0.749 / 0.706 |
+
+Every tier and both binaries retain tile keys `[[-1,0]]` and texel digest `f089f4da76b81b28`.
+The 152 Kuopio-yard query points (10 × 100,000 queries) measure p50 **2.284 / 2.091 µs**,
+p90 **2.323 / 2.118 µs**.
+
+| Background | One lot proof C / B ms | 12-lot publication C / B ms | Frontage reconcile C / B ms | Candidate rebuild C / B ms | Setup C / B s |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0.474 / 0.469 | 1.789 / 1.798 | 4.232 / 4.261 | 0.414 / 0.409 | 0.499 / 2.348 |
+| 1,000 | 0.470 / 0.477 | 1.860 / 1.830 | 4.329 / 4.380 | 0.444 / 0.436 | 0.542 / 2.401 |
+| 10,000 | 0.466 / 0.472 | 1.776 / 1.783 | 4.246 / 4.193 | 0.396 / 0.412 | 1.061 / 2.899 |
+
+Setup is recorded separately from repeated planning/proof/publication work. Locality setup
+holds 12 lots/72 published bays fixed as background buildings/parcels/agents/roads grow
+1,103→11,103 / 1,074→11,074 / 0→10,000 / 84→334. Every local product is identical across
+background sizes. The physical placement increase at 1,024 projects is **+9.4%**. The locality setup increases above
+are also measured costs;
+passing correctness is not performance acceptance.
+
+**F timing and K22: acceptance remains open.** Both completed sessions use control
+`f7e78df39` (binary `58017e97c2fef62e…`), eight workers, unpinned, unprofiled release, on boot
+`9c273192`. Snapshots are prepared before timing: control baseline key `64d91d6616e3f4a6`,
+format-127 branch key `908480d7407b21d5`. The generated caches are isolated test data; no player
+saves or mods were read or written. `$ARTIFACTS` below is this round's local artifact root.
+
+The first complete session, `$ARTIFACTS/timing-final`, timed binary `010ace95d04a5508…` on
+2026-11-22/23, 23:55–00:08 Helsinki: 151 s prepare, 799 s timed, 1 s held. Its 16 rows all ran
+the intended test and exited 0; the session exited **2 (acceptance miss)**. The six locality
+rows' JSON fields are not recognised by the runner's numeric parser (it prints “0 values”);
+the tests did execute and their assertions passed. Numerical locality results above come
+from the separate, parsed matched benchmark runs.
+
+```sh
+PYTHONUNBUFFERED=1 ./run.sh --timing --level F \
+  --control "$ARTIFACTS/control" --branch "$ARTIFACTS/after" --base f7e78df39 \
+  --workers 8 --cpus '' --control-cache "$ARTIFACTS/cache" --branch-cache "$ARTIFACTS/cache" \
+  --artifacts "$ARTIFACTS/timing-final" --k22 \
+  --bench 'nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality;METRUM_LOCALITY_TIERS=0,1000,10000' \
+  --perf07 '30000:32:ctl,br,br,ctl' --perf07 '30000:1:ctl,br,br,ctl'
+```
+
+| Speed | Metric | Control | Branch | Delta | Tolerance | Verdict |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 32× | mean ms | 4.031 | 4.072 | +1.0% | 1.4% | level |
+| 32× | p99 ms | 6.238 | 6.259 | +0.3% | 3.4% | level |
+| 32× | p99.9 ms | 8.173 | 13.71 | +67.8% | 8.0% | **WORSE** |
+| 32× | worst unpreempted ms | 10.55 | 16.02 | +51.8% | 6.0% | **WORSE** |
+| 32× | mean slot ms | 1.026 | 1.059 | +3.2% | 2.5% | **WORSE** |
+| 1× | mean ms | 2.062 | 1.948 | −5.5% | 1.4% | better |
+| 1× | p99 ms | 3.266 | 3.032 | −7.1% | 3.4% | better |
+| 1× | p99.9 ms | 3.635 | 3.529 | −2.9% | 8.0% | level |
+| 1× | worst unpreempted ms | 8.035 | 15.66 | +95.0% | 6.0% | **WORSE** |
+
+Other comparisons: at 32× agent +0.1%, snapshot +0.6%, pathing +0.1%, load +1.4%; at 1× agent
+−6.3%, snapshot −4.4%, slot −0.2%, pathing −6.9%, load +1.4%. None is worse under the runner's
+component/load tolerance. The 32× absolute miss is the existing `PERF-17` exception; it does
+**not** exempt the comparison failures above. At 1× both branch days fail the 8 ms absolute
+limit: 14.26 and 17.07 ms worst unpreempted (controls 9.91 fail / 6.16 pass). Preempted-thread
+counts are zero in every row; the reported comparisons and misses stand. In the first branch
+32× row, minute 124's 16.086 ms frame records 11.312 ms pending-spawn and 12.377 ms minute work;
+this is component evidence, not a demonstrated cause or an exception. K22 control/branch:
+click-to-ack **6.60 / 5.97 ms**, commit **6.56 / 5.93 ms**.
+
+After that session, a diagnostic-only correction distinguished incompatible terrain intervals
+from an exceeded contact limit; accepted placement products did not change. The exact handoff
+binary was tested and measured again below. No performance fix was made between sessions, so
+the failed measurements above remain part of the evidence.
+
+The handoff session, `$ARTIFACTS/timing-handoff`, uses the final binary
+`b00cd9594a686abe…`, 2026-11-23. It runs the standard F plan with K22:
+
+```sh
+PYTHONUNBUFFERED=1 ./run.sh --timing --level F \
+  --control "$ARTIFACTS/control" --branch "$ARTIFACTS/after" --base f7e78df39 \
+  --workers 8 --cpus '' --control-cache "$ARTIFACTS/cache" --branch-cache "$ARTIFACTS/cache" \
+  --artifacts "$ARTIFACTS/timing-handoff" --k22 \
+  --bench 'nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality;METRUM_LOCALITY_TIERS=0,1000,10000'
+```
+
+The runner refused control reuse: its first fresh 32× p99.9 drifted −15.0%, just beyond the
+15% calibration limit. It therefore timed a fresh control 1× day. This is a new measured
+comparison, not an uncalibrated cached control.
+
+The usage limit interrupted the runner during the first control 1× attempt. That partial day
+has no completed record and is excluded. On the same boot and unchanged binaries, the remaining
+rows were explicitly resumed (including the second branch day) with:
+
+```sh
+PYTHONUNBUFFERED=1 ./run.sh --timing --artifacts "$ARTIFACTS/timing-handoff" \
+  --rerun p07-5-ctl,p07-6-br,p07-7-br,k22-1-ctl,k22-2-br
+```
+
+The 32× rows ran at 00:28–00:29 Helsinki; the resumed control/branch 1× days and K22 at
+03:30–03:39. These are separated phases, not one uninterrupted quiet window. Prepare took
+147 s; the runner reports 530 s for the resumed timed phase, excluding the interrupted phase.
+The **15 completed rows all exit 0**, totalling 615 s of row wall time; the session
+exits **2 (acceptance miss)**. All PERF-07 rows report zero preempted frames.
+
+| Speed | Metric | Control | Branch | Delta | Tolerance | Verdict |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 32× | mean ms | 4.022 | 4.104 | +2.0% | 1.4% | **WORSE** |
+| 32× | p99 ms | 6.048 | 6.316 | +4.4% | 3.4% | **WORSE** |
+| 32× | p99.9 ms | 6.905 | 13.77 | +99.4% | 8.0% | **WORSE** |
+| 32× | worst unpreempted ms | 8.32 | 16.42 | +97.3% | 6.0% | **WORSE** |
+| 32× | mean agent ms | 1.986 | 2.011 | +1.2% | 2.5% | level |
+| 32× | mean snapshot ms | 0.9941 | 1.017 | +2.3% | 2.5% | level |
+| 32× | mean slot ms | 1.026 | 1.06 | +3.3% | 2.5% | **WORSE** |
+| 32× | mean pathing ms | 0.0007237 | 0.0007337 | +1.4% | 2.5% | level |
+| 32× | load s | 2.32 | 2.33 | +0.5% | 7.0% | level |
+| 1× | mean ms | 1.959 | 1.98 | +1.0% | 1.7% | level |
+| 1× | p99 ms | 3.005 | 3.064 | +2.0% | 4.2% | level |
+| 1× | p99.9 ms | 3.469 | 3.517 | +1.4% | 9.8% | level |
+| 1× | worst unpreempted ms | 8.392 | 14.34 | +70.8% | 7.3% | **WORSE** |
+| 1× | mean agent ms | 1.237 | 1.253 | +1.3% | 3.1% | level |
+| 1× | mean snapshot ms | 0.6688 | 0.6713 | +0.4% | 3.1% | level |
+| 1× | mean slot ms | 0.04116 | 0.04269 | +3.7% | 3.1% | level |
+| 1× | mean pathing ms | 0.000107 | 0.0001094 | +2.2% | 3.1% | level |
+| 1× | load s | 2.258 | 2.312 | +2.4% | 8.6% | level |
+
+The 32× mean, p99, p99.9, worst-frame and slot comparisons fail; `PERF-17` covers the
+absolute 32× miss only, not these comparisons. At 1× the control's worst unpreempted frame is
+**8.392 ms (FAIL)**; branch days are **14.42 / 14.25 ms (both FAIL)** against 8 ms, and the
+branch/control worst-frame comparison is **+70.8% (WORSE)**. Their p99.9 values are control
+3.469 ms, branch 3.411 / 3.624 ms. The runner's verdicts above are retained exactly, including
+its small-component handling. K22 control/branch click-to-ack is **6.97 / 6.34 ms**, commit
+**6.93 / 6.30 ms**. No K22 speedup excuses the frame misses. **`PARK-24` performance acceptance
+remains open/failed; C1 and `PARK-25` are implemented for review, not accepted for performance.**
+
+A preliminary attempt before these two completed sessions used an unqualified benchmark name
+with the runner's exact filter, ran zero matching benchmark tests and was stopped. It provides
+no acceptance evidence; the completed sessions above use the qualified test name.
+
+##### Historical Part D verification
+
+Part D baseline (interim 8% limit, wheel contacts, footway crossing, wheelbase window, format 126),
 fresh release: `cargo test --release --lib parking` **208 passed, 1 failed, 3 ignored**: the
 failure is the existing `the_fixtures_car_bays_and_rejections_keep_their_recorded_digest`, whose
 three hashes (`b19215463faad107`, `2ba3ad70d4efa643`, `bf687441d5fc8bfa`) equal the unchanged

@@ -700,7 +700,7 @@ fn nearest_road_sample_on_a_road(sidewalks: bool) {
 }
 
 #[test]
-fn frontage_paving_has_a_flat_yard_and_separate_boundary_tie_ins() {
+fn frontage_paving_support_reaches_its_authored_lot_edges() {
     let mut manifest: AssetManifest = toml::from_str(
         r#"
 asset_id = "building.test.graded_frontage"
@@ -725,8 +725,8 @@ vertices = [[-10, -10], [10, -10], [10, -3.5], [-10, -3.5]]
     manifest.mesh_parts[0].imported_bounds = Some([[-0.75, 0.0, -0.75], [0.75, 1.0, 0.75]]);
     let support = required_flat_support_footprint_local(&manifest, 10.0, 10.0);
     assert!(
-        support.iter().all(|p| p.y > -9.0),
-        "paving forced a flat road-edge seam: {support:?}"
+        support.iter().any(|p| p.y == -10.0),
+        "paving must reach the front lot edge on the level floor: {support:?}"
     );
     assert!(super::geometry::point_in_polygon_slice(
         Vector2::new(0.0, 2.0),
@@ -740,8 +740,8 @@ vertices = [[-10, -10], [10, -10], [10, -3.5], [-10, -3.5]]
     }
     for point in [Vector2::new(0.0, -9.0), Vector2::new(9.0, -6.0)] {
         assert!(
-            !super::geometry::point_in_polygon_slice(point, &support),
-            "lot-edge tie-in must remain outside the flat pad: {point:?}"
+            super::geometry::point_in_polygon_slice(point, &support),
+            "paved lot-edge strip must share the flat pad: {point:?}"
         );
     }
 }
@@ -800,4 +800,32 @@ fn building_pick_needs_a_direct_hit_on_the_footprint() {
     assert_eq!(allocator.building_idx_containing(22.0, 0.0, 10.0), None);
     assert_eq!(allocator.building_idx_containing(0.0, 25.0, 10.0), None);
     assert_eq!(allocator.building_idx_containing(f32::NAN, 0.0, 10.0), None);
+}
+
+#[test]
+fn secondary_entrance_road_probe_keeps_a_coincident_contact_but_not_a_street_behind() {
+    use super::grading::entrance_road_surface_sample;
+    use crate::simulation::network::roadbed::fixtures::road_edge;
+    use crate::simulation::network::types::NodeType;
+    let mut graph = RegionGraph::new();
+    let points = vec![
+        Vector3::new(-20.0, 10.0, 0.0),
+        Vector3::new(20.0, 10.0, 0.0),
+    ];
+    let a = graph.add_node(points[0], NodeType::Junction);
+    let b = graph.add_node(points[1], NodeType::Junction);
+    graph.add_edge(road_edge(a, b, points, 6.0));
+    let mut roadbed = RoadbedSystem::new(64.0);
+    roadbed.compile_dirty(&graph);
+    let roads = SiteRoads::new(&graph, &roadbed);
+    let (point, height) =
+        nearest_building_site_road_surface_sample(roads, Vector2::new(0.0, 8.0), 8.0).unwrap();
+    assert_eq!(
+        entrance_road_surface_sample(roads, point, Vector2::new(0.0, 1.0)),
+        Some((point, height))
+    );
+    assert!(
+        entrance_road_surface_sample(roads, Vector2::new(0.0, 8.0), Vector2::new(0.0, 1.0))
+            .is_none()
+    );
 }

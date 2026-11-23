@@ -167,6 +167,27 @@ impl BuildingAllocator {
         });
     }
 
+    /// Proposed placement's live neighbours, excluding the sites it replaces or demolishes.
+    /// Uses the same site-cell and rectangle tests as the normal graded surface gather.
+    pub(crate) fn push_graded_sites_except(
+        &self,
+        rect: [f64; 4],
+        replaced: Option<usize>,
+        taken: &[usize],
+        out: &mut SiteBuffer,
+    ) {
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        self.site_cells.visit(query.rect, |idx| {
+            if Some(idx) != replaced
+                && taken.binary_search_by(|probe| idx.cmp(probe)).is_err()
+                && let Some(site) = self.building_sites.get(idx)
+                && query.holds(site)
+            {
+                push_graded_site(site, out);
+            }
+        });
+    }
+
     /// Copies the sites the graded terrain bakes and tile lists of rectangles inside `rects`
     /// read, so they can run off the simulation lock (`TERRAIN-07-D`, `TERRAIN-07-E`'s undo
     /// record); `None` while the site index is being rebuilt. `O(sites meeting each rectangle)`,

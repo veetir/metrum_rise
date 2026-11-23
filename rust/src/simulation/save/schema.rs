@@ -6,10 +6,14 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 126;
+pub const SAVE_VERSION: i64 = 127;
+
+/// Format 126 certified the interim 8% parking limit, before lot-edge support and driveway
+/// grade-change validation. Recheck saved supply once without changing any stored floor.
+pub const PRE_CONTACT_SAVE_VERSION: i64 = 126;
 
 /// Format 125, saved before parking supply was checked against the visible ground (`PARK-24`):
-/// its lot and dock rows may hold a bay a car cannot stand on. It loads as format 126 does, and
+/// its lot and dock rows may hold a bay a car cannot stand on. It loads as format 127 does, and
 /// the load proves the lots holding supply once, refusing those bays as an edit would. A newer
 /// save's supply already passed that check, and only an edit, which proves its lots again,
 /// changes the ground.

@@ -463,6 +463,48 @@ fn kuopio_yard_edge(core: &SimCore, road: usize, side: f32) -> (usize, f32) {
     (edge, if along < 0.0 { -side } else { side })
 }
 
+#[test]
+fn placement_kuopio_yards_record_the_stricter_fixed_road_refusals() {
+    use crate::simulation::buildings::allocator::DemandSpawnPlacementRejection;
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut rejected = Vec::new();
+    for road in 0..KUOPIO_YARD_ROADS.len() {
+        for side in [-1.0, 1.0] {
+            if let Err(reason) = place_kuopio_yard(&mut core, road, side, &asset) {
+                let constraint = match reason {
+                    DemandSpawnPlacementRejection::StreetContactInvalid(issue) => {
+                        assert!(issue.measured > issue.limit, "{}", issue.message());
+                        issue.constraint
+                    }
+                    DemandSpawnPlacementRejection::SiteSupportTieInInvalid => "terrain tie-in",
+                    _ => panic!("unexpected placement refusal: {reason:?}"),
+                };
+                rejected.push((road, side, constraint));
+            }
+        }
+    }
+    assert_eq!(
+        rejected,
+        vec![
+            (1, -1.0, "fixed-road tie-in grade"),
+            (1, 1.0, "fixed-road tie-in grade"),
+            (2, -1.0, "frontage bank"),
+            (2, 1.0, "frontage bank"),
+            (3, -1.0, "fixed-road tie-in grade"),
+            (3, 1.0, "fixed-road tie-in grade")
+        ]
+    );
+    assert_eq!(core.allocator.buildings.len(), 2);
+    assert_eq!(core.zoning.parcels().len(), 8);
+}
+
 // Places a yard beside yard road `road` (`KUOPIO_YARD_ROADS`), on its recorded `side`.
 fn place_kuopio_yard(
     core: &mut SimCore,
@@ -472,6 +514,35 @@ fn place_kuopio_yard(
 ) -> Result<usize, crate::simulation::buildings::allocator::DemandSpawnPlacementRejection> {
     let (edge, side) = kuopio_yard_edge(core, road, side);
     place_yard(core, edge, side, asset)
+}
+
+fn restore_legacy_kuopio_yard(core: &mut SimCore, road: usize, side: f32, asset: &str) -> usize {
+    let (edge, side) = kuopio_yard_edge(core, road, side);
+    let midpoint = BuildingAllocator::sample_pos_on_edge(&core.region_graph, edge, 0.5);
+    let tangent = BuildingAllocator::sample_tangent_on_edge(&core.region_graph, edge, 0.5);
+    let point = midpoint + Vector2::new(tangent.y, -tangent.x) * side * 20.0;
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let parcel = core
+        .zoning
+        .place_or_rezone_parcel_at(point.x, point.y, profile, 20.0, 20.0, &core.region_graph)
+        .unwrap();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let index = core.allocator.restore_legacy_site_fixture(
+        asset,
+        Some(parcel.raw()),
+        point,
+        &mut core.zoning,
+        &core.region_graph,
+        &core.transit_network.roadbed,
+        &catalog,
+        core.demand.runtime_tuning(),
+    );
+    core.publish_pending_building_site_changes();
+    index
 }
 
 fn kuopio_yard_fixture() -> SimCore {
@@ -505,20 +576,13 @@ fn kuopio_yard_core() -> SimCore {
     .unwrap();
     core.precompute_road_mesh_data();
     let asset = register_yard(&mut core);
-    let mut rejected = Vec::new();
+    // These surface and vehicle regressions cover the eight already established yards.
+    // C1's new-construction refusals are tested separately; loading keeps their old floors.
     for road in 0..KUOPIO_YARD_ROADS.len() {
         for side in [-1.0, 1.0] {
-            if let Err(reason) = place_kuopio_yard(&mut core, road, side, &asset) {
-                rejected.push((road, side, reason));
-            }
+            restore_legacy_kuopio_yard(&mut core, road, side, &asset);
         }
     }
-    // The third road's yards stood beside a four-way 29 m above the ground in the network
-    // recorded 2026-09-08; on the re-recorded network it lies on the ground and takes both. The
-    // first and fourth roads' yards on their +1 sides, refused while the tie-in rays reached the
-    // exact cut's 20 m margin, grade into the hillside within the graded terrain's 64 m cap
-    // (`docs/terrain.md` T12 (a), `TERRAIN-07-F`).
-    assert_eq!(rejected, vec![]);
     assert_eq!(core.allocator.buildings.len(), 8);
     assert_eq!(core.zoning.parcels().len(), 8);
     core
@@ -1286,7 +1350,7 @@ fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns()
         .registry
         .register("test", manifest, String::new());
     assert_eq!(yard_hedge_count(&core), 0);
-    let building = place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
+    let building = restore_legacy_kuopio_yard(&mut core, 0, -1.0, &asset);
     let laid = yard_hedge_count(&core);
     // Most of a 20 m x 20 m lot's 80 m perimeter, less its gaps and anything the site rejects.
     assert!(laid > 40, "laid {laid}");
@@ -1377,7 +1441,7 @@ fn a_house_reaching_its_back_line_lays_every_planned_module() {
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
+    restore_legacy_kuopio_yard(&mut core, 0, -1.0, &asset);
     // Every planned module is laid: none is refused on the house's own lawn. A joined corner
     // runs a row on by half the hedge's width, which can add one module per end.
     let lengths: Vec<f32> = rows
@@ -1436,14 +1500,14 @@ fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() 
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    let first = place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
+    let first = restore_legacy_kuopio_yard(&mut core, 0, -1.0, &asset);
     let first_plants = yard_planting(&core);
     let trees = first_plants
         .iter()
         .filter(|plant| plant.species < 2)
         .count();
     assert!(trees > 0 && first_plants.len() > trees, "{first_plants:?}");
-    let second = place_kuopio_yard(&mut core, 1, -1.0, &asset).unwrap();
+    let second = restore_legacy_kuopio_yard(&mut core, 1, -1.0, &asset);
     let both = yard_planting(&core);
     // The same asset grows a different yard: compare each yard's plants in its own lot frame.
     let local = |building: usize,
@@ -1523,7 +1587,7 @@ fn a_flower_bed_grows_drifts_of_flowers_that_keep_their_room() {
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
+    restore_legacy_kuopio_yard(&mut core, 0, -1.0, &asset);
     let plants = yard_planting(&core);
     // Flower variants are bush pins 16 to 21: the six flowers past the hedges.
     assert!(plants.len() >= 10, "{plants:?}");
@@ -1643,7 +1707,7 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
 
 
 #[test]
-fn gameplay_terrain_frees_the_yard_and_flattens_it_to_the_floor() {
+fn gameplay_terrain_protects_paving_to_the_edge_and_uses_the_floor_for_flattening() {
     let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
     let mut core = road_edit_order::committed(&strokes, &[0], true);
     let asset = register_yard(&mut core);
@@ -1653,12 +1717,11 @@ fn gameplay_terrain_frees_the_yard_and_flattens_it_to_the_floor() {
     let support = site.support_height_m;
     let pad =
         site.footprint_world.iter().copied().sum::<Vector2>() / site.footprint_world.len() as f32;
-    // The fixture's front yard is paved from the lot edge to inside the pad; this strip is
-    // paved yard but not pad.
+    // PARK-25 makes the entire paved front yard level support, including the former strip.
     let yard = Vector2::new(pad.x, site.lot_bounds().3 - 1.0);
     let near = |at: Vector2| [at.x - 0.5, at.y - 0.5, at.x + 0.5, at.y + 0.5].map(f64::from);
     assert!(core.allocator.any_site_pad_in_bounds(near(pad)));
-    assert!(!core.allocator.any_site_pad_in_bounds(near(yard)));
+    assert!(core.allocator.any_site_pad_in_bounds(near(yard)));
     let outside = Vector2::new(pad.x, site.lot_bounds().3 + 30.0);
     assert_eq!(core.game_terrain_flatten_height_m(pad).to_bits(), support.to_bits());
     assert_eq!(core.game_terrain_flatten_height_m(yard).to_bits(), support.to_bits());

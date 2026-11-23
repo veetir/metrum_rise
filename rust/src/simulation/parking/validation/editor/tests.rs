@@ -298,16 +298,19 @@ fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
 }
 
 #[test]
-fn parking_edge_wheels_get_non_blocking_slope_notes_for_cars_and_loading_bays() {
-    let params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
+fn parking_edge_wheels_get_notes_only_outside_level_paving() {
+    let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
         "anchors":[
             {"anchor_type":"parking", "position":[8.4,0,15], "forward":[0,0,-1], "width_m":2.5, "length_m":5},
             {"anchor_type":"loading_bay", "position":[0,0,15], "forward":[0,0,-1], "width_m":3.5, "length_m":8},
             {"anchor_type":"parking", "position":[0,0,0], "forward":[0,0,-1], "width_m":2.5, "length_m":5}],
         "site_surfaces":[{"material":"asphalt", "vertices":[[-10,-15],[10,-15],[10,15],[-10,15]]}]});
     let payload = editor_lot_payload(&params, &[]);
-    let notes = payload["notes"].as_array().unwrap();
-    assert_eq!(notes.len(), 2, "{payload}");
+    assert!(payload.get("notes").is_none(), "{payload}");
+    params["site_surfaces"][0]["vertices"] = json!([[-8, -13], [8, -13], [8, 13], [-8, 13]]);
+    let uncovered = editor_lot_payload(&params, &[]);
+    let notes = uncovered["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2, "{uncovered}");
     for (index, note) in notes.iter().enumerate() {
         assert_eq!(note["anchor"], index);
         assert_eq!(note["blocks"], false);
