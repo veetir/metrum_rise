@@ -4688,7 +4688,7 @@ mod tests {
                 };
                 assert_eq!(
                     heights.sample_bytes(),
-                    if radius == 30.0 { 200 } else { 2888 }
+                    if radius == 30.0 { 392 } else { 3528 }
                 );
                 assert!(
                     (core.get_height_at_internal(at) - before - sign * speed * 0.5).abs() < 0.001

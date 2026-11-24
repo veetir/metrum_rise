@@ -21,8 +21,9 @@ void apply_terrain_brush(vec3 world, inout vec3 albedo, inout vec3 emission) {
 		float stroke = min(2.5 * pixel_m, radius * 0.4);
 		float edge = smoothstep(-stroke - aa, -stroke + aa, edge_distance);
 		float falloff = 0.5 + 0.5 * cos(3.14159265 * min(distance_m / radius, 1.0));
-		vec3 ink = terrain_brush_cursor.w > 1.5 ? vec3(1.0, 0.70, 0.19) : vec3(0.28, 0.88, 0.86);
-		float opacity = disc * max(0.55 * falloff, 0.82 * edge);
+		vec3 ring_color = vec3(0.55, 0.92, 1.0);
+		vec3 ink = terrain_brush_cursor.w > 1.5 ? vec3(1.0, 0.70, 0.19) : ring_color;
+		float opacity = disc * max(0.24 * falloff, 0.85 * edge);
 		bool ramp = terrain_brush_grade.x == 4.0 && terrain_brush_ramp_count == 2;
 		bool flatten = terrain_brush_grade.x == 2.0;
 		if (ramp || flatten) {
@@ -37,7 +38,9 @@ void apply_terrain_brush(vec3 world, inout vec3 albedo, inout vec3 emission) {
 			vec3 grade = cut > 0.0 ? vec3(0.96, 0.40, 0.11) : vec3(0.30, 0.52, 1.0);
 			float change = smoothstep(0.025, 0.65, abs(cut));
 			ink = mix(ink, grade, change);
-			opacity = disc * max(0.67 * falloff * change, 0.66 * edge);
+			// Cut/fill belongs to the disc; its boundary and ramp guide share one cyan ink.
+			ink = mix(ink, ring_color, edge);
+			opacity = disc * max(0.30 * falloff * change, 0.85 * edge);
 		}
 		if (terrain_brush_protection_grid.w > 0.0) {
 			vec2 sample_pos = (world.xz - terrain_brush_protection_grid.xy) / terrain_brush_protection_grid.z;
@@ -52,20 +55,20 @@ void apply_terrain_brush(vec3 world, inout vec3 albedo, inout vec3 emission) {
 	}
 	if (terrain_brush_ramp_count > 0) {
 		vec2 a = terrain_brush_ramp.xy;
-		float guide_m = distance(world.xz, a);
-		float guide_pixel = max(length(fwidth(world.xz)), 0.001);
 		if (terrain_brush_ramp_count == 2) {
 			vec2 b = terrain_brush_ramp.zw;
 			vec2 ab = b - a;
 			float t = clamp(dot(world.xz - a, ab) / max(dot(ab, ab), 1.0), 0.0, 1.0);
-			guide_m = min(guide_m, distance(world.xz, b));
-			guide_m = min(guide_m, distance(world.xz, mix(a, b, t)) + max(1.4, 1.8 * guide_pixel));
+			float guide_m = distance(world.xz, mix(a, b, t));
+			// Differentiate the signed distance: abs(distance) can cancel across a pixel quad
+			// straddling the centreline, breaking the thin guide into dashes at far zoom.
+			float signed_m = dot(world.xz - a, vec2(-ab.y, ab.x)) / max(length(ab), 0.001);
+			float pixel_m = max(fwidth(signed_m), 0.0001);
+			// The vegetation ring's 2.5 px stroke and the road line's one-pixel soft edge.
+			float coverage = clamp(1.75 - guide_m / pixel_m, 0.0, 1.0);
+			vec3 guide = vec3(0.55, 0.92, 1.0);
+			albedo = mix(albedo, guide, 0.95 * coverage);
+			emission = mix(emission, 0.6 * guide, 0.95 * coverage);
 		}
-		float width = max(2.1, 3.5 * guide_pixel);
-		float outer = 1.0 - smoothstep(width, width + guide_pixel, guide_m);
-		float center = 1.0 - smoothstep(width * 0.62, width * 0.62 + guide_pixel, guide_m);
-		vec3 guide = mix(vec3(0.04, 0.018, 0.09), vec3(0.63, 0.22, 0.93), center);
-		albedo = mix(albedo, guide, outer);
-		emission = mix(emission, 0.55 * guide, outer);
 	}
 }

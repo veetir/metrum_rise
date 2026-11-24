@@ -21857,6 +21857,96 @@ each sample's 3 × 3 neighbourhood. For Ramp, click A and B on the terrain, then
 The target follows the grade between them and clamps at the ends. The label shows the
 target, anchor elevations and grade. Select Ramp again to reset the anchors.
 
+The ramp guide and disc boundary use the road tool's pale cyan (0.55, 0.92, 1.0),
+a 2.5 px stroke and a one-pixel antialiased edge. The disc uses the vegetation brush's
+inset ring construction and light fill; cut/fill uses the road hue's 0.30 opacity.
+Endpoints reuse `road_tool_handle.gdshader` and its 14 px placed-end palette entry,
+with screen-space A/B letters. The tooltip uses the road HUD's panel, padding and font;
+heights and grade round to the displayed precision before formatting, including zero.
+
+**Edge diagnosis and kernel (T2, 2026-11-24):** the old gameplay kernel did not write
+a constant-height binary disc: Raise/Lower already weighted their displacement by a cosine.
+But it admitted only sample centres inside the radius, and target modes weighted only their
+speed. A held ramp eventually reached the full target at every admitted sample, leaving
+a sharp lattice-shaped boundary. The capture fixture uses the fallback world's **10 m source
+spacing and 10 m near mesh spacing** (`_mesh_subdivision_factor_for_patch` is 1), no roads
+or building sites, hence no graded layer. Raise/Lower's remaining facets follow that mesh;
+the slope material uses continuous `smoothstep` blends, not a binary material boundary.
+The same source kernel is tested at 2 m spacing. No global resolution or material threshold changes.
+
+Each source sample now has continuous radial coverage across one cell: for distance `d`
+and radius `r` in source cells, `c = clamp(r + 0.5 - d, 0, 1)` and the influence is
+`c² (3 - 2c) × (0.5 + 0.5 cos(π d / (r + 0.5)))`. It is exactly 1 at the centre,
+zero outside `r + 0.5`, and has zero derivative at its outer boundary. Raise/Lower weight
+their displacement; target modes also cap displacement from the pre-stroke source by that
+influence, so holding cannot remove the feather. A weaker passing dab cannot pull a sample
+back from an already stronger result. The source-sample support extends half a cell beyond
+the indicated radius; bilinear reconstruction can influence ground up to a further cell diagonal.
+Protection includes the same fringe. Undo/redo still store and restore the original f32 bits.
+Work is `O(D × (R/h + 1)²)` for D dabs, metric radius R and source spacing h, plus
+the existing local indexed protection queries and touched-patch bookkeeping. No city-wide pass
+or new per-sample allocation is introduced.
+
+T2 verification on Apple M2 Pro, Godot 4.7.2 Forward+/Metal, 2026-11-24:
+`cargo test --release --lib gameplay_ -- --test-threads=1` passes 17 tests (the opt-in
+timing test is ignored); the final release executable's `terrain_stroke` filter passes
+6 tests. Coverage, unchanged centre strength, retained held-ramp falloff, weaker-dab
+monotonicity and bitwise undo/redo are checked at 10 m and 2 m source spacing.
+`cargo clippy --all-targets` adds no warnings (one existing `needless_range_loop` in
+`walker_gait.rs`; release test compilation also retains two existing parking `bits` warnings).
+The displayed isolated `terrain_brush_tool_test.gd` passes with the changed release library,
+including A/B visibility and negative-zero checks. The extra `terrain_overlay_shader_test.gd`
+has two canopy-lighting failures on Metal, identical with the original and changed brush
+shaders; its overlay checks pass. This is not a passing full shader suite.
+
+`terrain_polish_capture.gd` uses a fresh 1280 m blank world, a 38.1 m mound, guide views
+60 m and 300 m from the target, a 60 m wide oblique dragged ramp, and 80 m diameter
+raised/lowered discs. The five matched PNGs per build are local, unstaged, under
+`screenshots/2026-11-24-terrain-polish/{before,after}/`: `guide_60m`, `guide_300m`,
+`ramp_sides`, `raised_rim`, `lowered_rim`. Run each build with:
+
+```sh
+METRUM_TERRAIN_CAPTURE_PHASE=after ~/.local/bin/python3.12 tools/godot_isolated.py run --display -- godot --path '{project}' --script res://tests/terrain_polish_capture.gd
+```
+
+Matched, unprofiled release apply measurement: control `566b98c6bf1a` with the same
+test-only timing fixture, executable SHA256 prefix `ec1bd145bbeb5eb8`; T2 executable
+`fb462083ee213fa7`. Eight Rayon workers, one test thread, unpinned macOS; the apply loop
+itself is serial, retaining the existing ordered source/journal writes. A 640 m empty world,
+100 m radius, 240 warm-up dabs, nine timed batches of 2400 dabs at amount 0.000001
+(neither implementation saturates). Source writes, cached protection lookup and dirty marks
+are included; setup, begin/end, history finalisation, texture upload and dependent rebuilds
+are excluded. Three runs each in C B B C C B order; median of the three per-run medians:
+
+| Source spacing | Mode | Before µs/dab | After µs/dab | Change |
+| --- | --- | ---: | ---: | ---: |
+| 10 m | Raise | 9.236 | 10.759 | +16.5% |
+| 10 m | Ramp | 13.542 | 16.568 | +22.3% |
+| 2 m | Raise | 232.017 | 243.314 | +4.9% |
+| 2 m | Ramp | 339.196 | 395.627 | +16.6% |
+
+The extra work pays for the fringe samples and persistent target weighting; it is not a
+speedup. At 2 m spacing, multiplying the largest tested Ramp's dab cost by four gives an
+estimated 1.583 ms of apply work per 60 FPS frame, excluding the stages above. Reproduce the apply test on each release
+`$TEST_BINARY` with `gameplay_terrain_apply_timing --ignored --nocapture --test-threads=1`.
+The required round used:
+
+```sh
+./run.sh --timing --level R --control "$ARTIFACTS/control-tests" --branch "$TEST_BINARY" --control-cache "$ARTIFACTS/control-cache" --branch-cache "$ARTIFACTS/branch-cache" --artifacts "$ARTIFACTS/terrain-polish-timing" --workers 8 --wait-min 2 --bench nodes::sim::editing::terrain_brush::tests::gameplay_terrain_apply_timing
+```
+
+That round's 30k 32x C B B C rows all exited 0 with identical growth records, but the
+comparison exited 3: mean frame 3.743 → 3.826 ms (+2.2%), p99 5.762 → 6.325 ms,
+p99.9 7.240 → 8.382 ms and mean snapshot 0.7576 → 0.7870 ms were marked worse.
+The maximum was 8.50 ms in the control and 17.55 ms in T2; the runner applies the existing
+`PERF-17` acceptance exception to those rows. These city rows never exercise the brush;
+this unpinned round does not establish a passing city-performance comparison.
+A second C B B C round with the **same control executable on both sides**, reusing its
+prepared snapshot, also exited 3: maximum-frame comparison +19.3% on identical code.
+Its individual run means ranged from 3.825 to 4.272 ms and maxima from 15.17 to 26.02 ms.
+This demonstrates substantial host variance; it does not turn the first comparison into a pass.
+The broader city-performance gate remains inconclusive on this unpinned host.
+
 The shaders paint a disc on the world surface. The tint follows the tool's influence.
 Amber marks an active plain stroke, orange marks cut, and blue marks fill. Red marks
 source samples reserved by a road bed, a building's flat pad, a field or an extraction area,

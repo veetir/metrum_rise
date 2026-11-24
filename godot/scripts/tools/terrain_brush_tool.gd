@@ -9,6 +9,9 @@ signal mode_changed
 enum Mode { RAISE, LOWER, FLATTEN, SMOOTH, RAMP }
 
 const UIStyle := preload("res://scripts/ui/ui_style.gd")
+const RoadHUD := preload("res://scripts/ui/road_tool_hud.gd")
+const RoadGizmos := preload("res://scripts/renderers/road_tool_gizmos.gd")
+const HandleShader := preload("res://scripts/shaders/road_tool_handle.gdshader")
 const MODE_NAMES := ["Raise", "Lower", "Flatten", "Smooth", "Ramp"]
 const STRENGTH_NAMES := ["Gentle", "Normal", "Strong"]
 const ALL_PROTECTED := 64
@@ -58,6 +61,8 @@ var _cell_m := 0.0
 var _notice := ""
 var _notice_left := 0.0
 var _gesture_steps := 0.0
+var _handles: Array[MeshInstance3D] = []
+var _anchor_labels: Array[Label] = []
 
 func _ready() -> void:
 	# After camera motion, before the terrain renderer syncs its graded materials.
@@ -72,19 +77,48 @@ func setup(manager: Node) -> void:
 	add_child(layer)
 	_panel = PanelContainer.new()
 	_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var style := UIStyle.panel_style(UIStyle.BG_DARK, UIStyle.CORNER_PANEL)
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 5
-	style.content_margin_bottom = 5
+	var style := UIStyle.panel_style(RoadHUD.CHIP_BG, RoadHUD.CORNER)
+	style.content_margin_left = RoadHUD.PAD_X
+	style.content_margin_right = RoadHUD.PAD_X
+	style.content_margin_top = RoadHUD.PAD_Y
+	style.content_margin_bottom = RoadHUD.PAD_Y
 	_panel.add_theme_stylebox_override("panel", style)
 	layer.add_child(_panel)
 	_label = Label.new()
 	_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	UIStyle.set_font_size(_label, 13)
+	_label.add_theme_color_override("font_color", RoadHUD.CHIP_TEXT)
+	UIStyle.set_font_size(_label, RoadHUD.FONT_SIZE)
 	_panel.add_child(_label)
 	_panel.hide()
+	var handle_material := ShaderMaterial.new()
+	handle_material.shader = HandleShader
+	handle_material.set_shader_parameter("colors", PackedColorArray(RoadGizmos.PALETTE["handles"]))
+	handle_material.set_shader_parameter("sizes_px", PackedFloat32Array(RoadGizmos.PALETTE["handle_sizes_px"]))
+	handle_material.render_priority = 11
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_POINTS, arrays)
+	for letter in ["A", "B"]:
+		var handle := MeshInstance3D.new()
+		handle.mesh = mesh
+		handle.material_override = handle_material
+		handle.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		handle.hide()
+		add_child(handle)
+		_handles.append(handle)
+		var label := Label.new()
+		label.text = letter
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		UIStyle.set_font_size(label, RoadHUD.FONT_SIZE)
+		label.add_theme_color_override("font_color", RoadHUD.CHIP_TEXT)
+		label.add_theme_color_override("font_outline_color", RoadHUD.CHIP_BG)
+		label.add_theme_constant_override("outline_size", 4)
+		label.hide()
+		layer.add_child(label)
+		_anchor_labels.append(label)
 	get_window().mouse_exited.connect(interrupt)
 	_sim.set_game_terrain_roads_follow(roads_follow)
 
@@ -308,6 +342,7 @@ func _show_preview(hit: Vector3, mouse: Vector2) -> void:
 		RenderingServer.global_shader_parameter_set(RAMP,
 			Vector4(_anchor_a.x, _anchor_a.z, _anchor_b.x, _anchor_b.z))
 		RenderingServer.global_shader_parameter_set(RAMP_COUNT, _anchor_count)
+	_update_anchors()
 	if not _preview_enabled:
 		_preview_enabled = true
 		RenderingServer.global_shader_parameter_set(ENABLED, true)
@@ -316,22 +351,41 @@ func _show_preview(hit: Vector3, mouse: Vector2) -> void:
 	_panel.position = (mouse + Vector2(18, 24)).clamp(Vector2(6, 6), limit.max(Vector2(6, 6)))
 	_panel.show()
 
+func _update_anchors() -> void:
+	var camera := get_viewport().get_camera_3d()
+	for i in _handles.size():
+		var point := _anchor_a if i == 0 else _anchor_b
+		var shown := mode == Mode.RAMP and i < _anchor_count and camera != null and not camera.is_position_behind(point)
+		_handles[i].visible = shown
+		_anchor_labels[i].visible = shown
+		if shown:
+			_handles[i].global_position = point
+			_anchor_labels[i].position = camera.unproject_position(point) + Vector2(10, -24)
+
+# Round at the displayed precision before formatting so a small negative never prints -0.0.
+func _one_decimal(value: float, signed_value := false) -> String:
+	var rounded := snappedf(value, 0.1)
+	if is_zero_approx(rounded):
+		rounded = 0.0
+	return ("%+.1f" if signed_value else "%.1f") % rounded
+
 func _update_label(hit: Vector3) -> void:
 	var shown_mode := mode if stroke_button == MOUSE_BUTTON_NONE else _stroke_mode
 	var heading: String = MODE_NAMES[shown_mode]
 	if shown_mode == Mode.FLATTEN:
-		heading += "  %.1f m" % _flatten_height
+		heading += "  %s m" % _one_decimal(_flatten_height)
 	elif shown_mode == Mode.RAMP:
 		match _anchor_count:
 			0: heading += "   Set A"
-			1: heading += "   A %.1f m   Set B" % _anchor_a.y
+			1: heading += "   A %s m   Set B" % _one_decimal(_anchor_a.y)
 			2:
 				var start := Vector2(_anchor_a.x, _anchor_a.z)
 				var segment := Vector2(_anchor_b.x, _anchor_b.z) - start
 				var fraction := clampf((Vector2(hit.x, hit.z) - start).dot(segment) / segment.length_squared(), 0.0, 1.0)
 				var grade := 100.0 * (_anchor_b.y - _anchor_a.y) / segment.length()
-				heading += "  %.1f m   %+.1f%%\nA %.1f m   B %.1f m" % [
-					lerpf(_anchor_a.y, _anchor_b.y, fraction), grade, _anchor_a.y, _anchor_b.y]
+				heading += "  %s m   %s%%\nA %s m   B %s m" % [
+					_one_decimal(lerpf(_anchor_a.y, _anchor_b.y, fraction)), _one_decimal(grade, true),
+					_one_decimal(_anchor_a.y), _one_decimal(_anchor_b.y)]
 	var content := "%s\n%.0f m   %s" % [heading, diameter_m, STRENGTH_NAMES[strength_index]]
 	if roads_follow:
 		content += "   Roads follow"
@@ -358,6 +412,9 @@ func _reason(status: int) -> String:
 	return names + (" protected" if status & ALL_PROTECTED else " kept")
 
 func _clear_preview() -> void:
+	for i in _handles.size():
+		_handles[i].hide()
+		_anchor_labels[i].hide()
 	if not _preview_enabled:
 		return
 	_preview_enabled = false

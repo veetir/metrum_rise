@@ -133,6 +133,24 @@ func _run() -> void:
 	tool.set_roads_follow(false)
 	tool._show_preview(Vector3.ZERO, cursor)
 	_expect(not tool._label.text.contains("Roads follow"), "Roads follow should switch off")
+	tool.select_mode(tool.Mode.RAMP)
+	tool._anchor_a = Vector3(-20, -0.00001, 0)
+	tool._anchor_b = Vector3(20, -0.00002, 0)
+	tool._anchor_count = 2
+	tool._show_preview(Vector3.ZERO, cursor)
+	_expect(not tool._label.text.contains("-0.0") and not tool._label.text.contains("·"),
+		"Ramp heights and grade must round away negative zero without dot separators")
+	_expect(tool._anchor_labels[0].visible and tool._anchor_labels[0].text == "A"
+		and tool._anchor_labels[1].visible and tool._anchor_labels[1].text == "B",
+		"Both road-style handles should have matching endpoint letters")
+	tool.interrupt()
+	_expect(not tool._handles[0].visible and not tool._anchor_labels[1].visible,
+		"Interrupt should hide both endpoint handles and letters")
+	tool.select_mode(tool.Mode.FLATTEN)
+	tool._flatten_height = -0.00001
+	tool._update_label(Vector3.ZERO)
+	_expect(not tool._label.text.contains("-0.0"), "Flatten should round away negative zero too")
+	tool.select_mode(tool.Mode.RAISE)
 	var initial_height := sim.get_height_at(Vector2.ZERO)
 	manager._unhandled_input(_mouse(MOUSE_BUTTON_LEFT, true, cursor))
 	_expect(tool.stroke_button == MOUSE_BUTTON_LEFT, "World press should start a stroke")

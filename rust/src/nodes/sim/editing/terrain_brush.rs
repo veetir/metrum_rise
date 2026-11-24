@@ -173,7 +173,7 @@ impl GameTerrainStroke {
         let Some((center, radius)) = core.game_terrain_brush_grid(pos, self.dab.radius) else {
             return OUTSIDE;
         };
-        core.update_game_terrain_protection(center, radius);
+        core.update_game_terrain_protection(center, radius + 0.5);
         let mut changed = None;
         let mut protected = 0;
         let mut free = false;
@@ -185,10 +185,10 @@ impl GameTerrainStroke {
                 continue;
             }
             free = true;
-            if distance >= 1.0 {
+            let falloff = brush_weight(distance, radius);
+            if falloff == 0.0 {
                 continue;
             }
-            let falloff = 0.5 + 0.5 * (distance * std::f32::consts::PI).cos();
             let current = terrain.source_sample(x, z);
             let strength = amount * falloff;
             let next = match self.dab.mode {
@@ -202,10 +202,20 @@ impl GameTerrainStroke {
                         _ => unreachable!(),
                     };
                     let original = self.original.get(&(x, z)).copied().unwrap_or(current);
-                    let delta = target - current;
                     let step = strength * (target - original).abs();
-                    if delta.abs() <= step {
+                    // Falloff weights the final displacement too. Otherwise a long hold
+                    // saturates every interior sample and leaves a hard, lattice-shaped rim.
+                    let covered_target = if falloff == 1.0 {
                         target
+                    } else {
+                        original + (target - original) * falloff
+                    };
+                    let delta = covered_target - current;
+                    if delta * (target - original) <= 0.0 {
+                        // Leaving a sample must not pull it back to a weaker dab's target.
+                        current
+                    } else if delta.abs() <= step {
+                        covered_target
                     } else {
                         current + delta.signum() * step
                     }
@@ -290,6 +300,9 @@ fn brush_samples(
     center: Vector2,
     radius: f32,
 ) -> impl Iterator<Item = (usize, usize, f32)> + use<> {
+    // A source sample represents a cell-centred footprint. Include its half-cell fringe;
+    // brush_weight weights a continuous coverage transition over one complete cell.
+    let radius = radius + 0.5;
     let min_x = (center.x - radius).ceil().max(0.0) as usize;
     let min_z = (center.y - radius).ceil().max(0.0) as usize;
     let max_x = ((center.x + radius).floor() as usize).min(terrain.width - 1);
@@ -297,9 +310,17 @@ fn brush_samples(
     (min_z..=max_z).flat_map(move |z| {
         (min_x..=max_x).filter_map(move |x| {
             let distance_sq = center.distance_squared_to(Vector2::new(x as f32, z as f32));
-            (distance_sq <= radius * radius).then(|| (x, z, distance_sq.sqrt() / radius))
+            (distance_sq < radius * radius).then(|| (x, z, distance_sq.sqrt()))
         })
     })
+}
+
+// Cell-space radial coverage, C1 at both ends of the one-cell boundary band. The cosine
+// meets zero at the outside of that band; the centre keeps exactly its old strength.
+fn brush_weight(distance: f32, radius: f32) -> f32 {
+    let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+    let coverage = coverage * coverage * (3.0 - 2.0 * coverage);
+    coverage * (0.5 + 0.5 * (distance / (radius + 0.5) * std::f32::consts::PI).cos())
 }
 
 impl SimCore {
@@ -316,7 +337,7 @@ impl SimCore {
         Some((Vector2::new(x, z), radius / self.heightmap.cell_size_m()))
     }
 
-    /// Computes protected kinds strictly inside the footprint and whether any sample is free.
+    /// Computes protected kinds in the coverage footprint and whether any sample is free.
     pub(crate) fn game_terrain_brush_status(
         &mut self,
         pos: Vector2,
@@ -326,7 +347,7 @@ impl SimCore {
         let Some((center, radius)) = self.game_terrain_brush_grid(pos, radius) else {
             return OUTSIDE;
         };
-        self.update_game_terrain_protection(center, radius);
+        self.update_game_terrain_protection(center, radius + 0.5);
         let mut status = 0;
         let mut free = false;
         let mut wet = false;
@@ -479,7 +500,7 @@ impl SimCore {
             }
             _ => TARGET_SECONDS[index].recip(),
         };
-        let side = (2.0 * radius_cells.ceil() + 2.0) as usize;
+        let side = (2.0 * (radius_cells + 0.5).ceil() + 2.0) as usize;
         self.game_terrain_stroke = Some(GameTerrainStroke {
             dab: TerrainDab {
                 mode,
@@ -715,6 +736,162 @@ impl SimCore {
                 "gameplay terrain water rebuild failed: {}",
                 error
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::core::config::WorldConfig;
+
+    fn brush_core(cell_m: f32) -> SimCore {
+        SimCore::new(WorldConfig::new(640.0, 640.0, 10.0, 10.0).with_terrain_resolution(cell_m))
+    }
+
+    #[test]
+    fn gameplay_terrain_coverage_is_continuous_and_compact() {
+        for radius in [1.0, 4.0, 50.0] {
+            assert_eq!(brush_weight(0.0, radius).to_bits(), 1.0_f32.to_bits());
+            let mut previous = 1.0;
+            for step in 1..=1000 {
+                let d = (radius + 0.5) * step as f32 / 1000.0;
+                let weight = brush_weight(d, radius);
+                assert!((0.0..=previous).contains(&weight));
+                assert!(previous - weight < 0.005);
+                previous = weight;
+            }
+            assert_eq!(previous, 0.0);
+            assert!(brush_weight(radius, radius) > 0.0);
+            assert_eq!(brush_weight(radius + 0.6, radius), 0.0);
+        }
+    }
+
+    #[test]
+    fn gameplay_terrain_covered_edges_keep_centre_support_and_bitwise_history() {
+        for cell_m in [10.0, 2.0] {
+            for mode in [
+                TerrainBrushMode::Raise,
+                TerrainBrushMode::Lower,
+                TerrainBrushMode::Ramp,
+            ] {
+                let mut core = brush_core(cell_m);
+                let before = core.heightmap.clone_source_dense();
+                let at = Vector2::ZERO;
+                let radius = 40.0;
+                core.begin_game_terrain_stroke(
+                    mode,
+                    at,
+                    radius,
+                    1.0,
+                    Vector3::new(-40.0, 10.0, 0.0),
+                    Vector3::new(40.0, 30.0, 0.0),
+                );
+                core.game_terrain_stroke_step(at, 3.0);
+                let centre = core.get_height_at_internal(at);
+                let expected = match mode {
+                    TerrainBrushMode::Raise => 24.0,
+                    TerrainBrushMode::Lower => -24.0,
+                    _ => 20.0,
+                };
+                assert!((centre - expected).abs() < 0.001);
+                let (gx, gz) = core.heightmap.world_to_grid_coords(0.0, 0.0);
+                // The old strict centre-in-disc test left this sample completely unchanged.
+                let edge_x = gx as usize + (radius / cell_m) as usize;
+                let edge = core.heightmap.source_sample(edge_x, gz as usize).abs();
+                assert!(edge > 0.0 && edge < centre.abs() / config::HEIGHT_SCALE * 0.05);
+                for z in 0..core.heightmap.height {
+                    for x in 0..core.heightmap.width {
+                        let (wx, wz) = core.heightmap.grid_to_world_coords(x, z);
+                        if Vector2::new(wx, wz).length() >= radius + cell_m * 0.5 {
+                            let k = z * core.heightmap.width + x;
+                            assert_eq!(
+                                core.heightmap.source_sample(x, z).to_bits(),
+                                before[k].to_bits()
+                            );
+                        }
+                    }
+                }
+                // Another long hold cannot erase a ramp's lateral falloff.
+                if matches!(mode, TerrainBrushMode::Ramp) {
+                    core.game_terrain_stroke_step(at, 3.0);
+                    assert_eq!(
+                        core.heightmap
+                            .source_sample(edge_x, gz as usize)
+                            .abs()
+                            .to_bits(),
+                        edge.to_bits()
+                    );
+                    core.game_terrain_stroke_step(Vector2::new(30.0, 0.0), 1.0 / 240.0);
+                    assert_eq!(core.get_height_at_internal(at).to_bits(), centre.to_bits());
+                }
+                assert!(core.finish_game_terrain_stroke());
+                let after = core.heightmap.clone_source_dense();
+                assert!(core.undo_action_internal());
+                assert!(
+                    core.heightmap
+                        .clone_source_dense()
+                        .iter()
+                        .zip(&before)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+                assert!(core.redo_terrain_action_internal());
+                assert!(
+                    core.heightmap
+                        .clone_source_dense()
+                        .iter()
+                        .zip(&after)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+            }
+        }
+    }
+
+    // Measures only midpoint-dab apply: source writes, local protection and dirty tracking.
+    // Setup, begin, history finalisation, payload upload and dependency rebuilds are untimed.
+    // Total integrated amount stays below 1, so both kernels keep writing in every round.
+    #[test]
+    #[ignore = "opt-in matched release apply measurement; run with --nocapture --test-threads=1"]
+    fn gameplay_terrain_apply_timing() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for cell_m in [10.0, 2.0] {
+            for mode in [TerrainBrushMode::Raise, TerrainBrushMode::Ramp] {
+                let mut core = brush_core(cell_m);
+                core.begin_game_terrain_stroke(
+                    mode,
+                    Vector2::ZERO,
+                    100.0,
+                    1.0,
+                    Vector3::new(-100.0, 20.0, 0.0),
+                    Vector3::new(100.0, 0.0, 0.0),
+                );
+                let mut stroke = core.game_terrain_stroke.take().unwrap();
+                for _ in 0..240 {
+                    black_box(stroke.apply(&mut core, Vector2::ZERO, 0.000001));
+                }
+                let mut rounds = Vec::new();
+                for _ in 0..9 {
+                    let start = Instant::now();
+                    for _ in 0..2400 {
+                        black_box(stroke.apply(&mut core, Vector2::ZERO, black_box(0.000001)));
+                    }
+                    rounds.push(start.elapsed().as_secs_f64() * 1e6 / 2400.0);
+                }
+                rounds.sort_by(f64::total_cmp);
+                eprintln!(
+                    "terrain apply cell={cell_m}m mode={} radius=100m median={:.3}us range={:.3}..{:.3}us",
+                    if matches!(mode, TerrainBrushMode::Raise) {
+                        "raise"
+                    } else {
+                        "ramp"
+                    },
+                    rounds[4],
+                    rounds[0],
+                    rounds[8]
+                );
+            }
         }
     }
 }
