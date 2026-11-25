@@ -3,8 +3,9 @@ render_mode cull_back, depth_draw_opaque, specular_disabled;
 
 // Sidewalks and footpaths (`ROAD-56`). Roadside sidewalks keep the shared paving look
 // (paving_surface.gdshaderinc's uniforms and sampling). Footpath stretches carry road-space
-// UVs and COLOR.g = 1 (footpath_color in rust/src/simulation/network/render/road/mod.rs) and
-// draw as a Finnish light-traffic path instead.
+// UVs and COLOR.g = 1 (footpath_color in rust/src/simulation/network/render/road/mod.rs). A
+// paved walkway (surface kind 0) takes the sidewalk paving; the unpaved kinds draw as a Finnish
+// light-traffic path instead.
 
 varying vec3 world_pos;
 // Share of direct sunlight the clouds let through, from fragment() to light(), as the yards'
@@ -73,11 +74,14 @@ void fragment() {
 	);
 	vec3 paving_t = paving_tangent(NORMAL, VIEW_MATRIX);
 
-	TANGENT = footpath ? t * frame_scale : paving_t;
-	BINORMAL = footpath ? b * frame_scale : normalize(cross(paving_t, NORMAL));
-	NORMAL_MAP = footpath ? relief * 0.5 + 0.5 : paving.normal_map;
-	ALBEDO = footpath ? path_albedo : paving.albedo * tint.rgb;
-	ROUGHNESS = footpath ? path_roughness : paving.roughness;
+	// A paved walkway (kind 0) is a sidewalk away from a road: it takes the sidewalk paving so
+	// the two meet without a seam. Only the unpaved kinds draw the path look.
+	bool path_look = footpath && kind > 0.5;
+	TANGENT = path_look ? t * frame_scale : paving_t;
+	BINORMAL = path_look ? b * frame_scale : normalize(cross(paving_t, NORMAL));
+	NORMAL_MAP = path_look ? relief * 0.5 + 0.5 : paving.normal_map;
+	ALBEDO = path_look ? path_albedo : paving.albedo * tint.rgb;
+	ROUGHNESS = path_look ? path_roughness : paving.roughness;
 	METALLIC = 0.0;
 	SPECULAR = PAVING_SPECULAR;
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,

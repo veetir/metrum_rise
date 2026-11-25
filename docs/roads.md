@@ -19618,13 +19618,13 @@ residential. Lane-line quads stay continuous geometry; `road_marking.gdshader` c
 from UV.x (metres) and the pattern in UV.y (2 solid, 3 short, 4 long). Paint opacity rose from
 0.35 to 0.8. Edge lines (K6), warning lines (K4), wetness from weather, gravel roads and footpath surface variants are not wired yet.
 
-Footpaths draw as Finnish light-traffic asphalt (`godot/assets/materials/road_path.gdshader`
-and `godot/scripts/shaders/path_surface_finnish.gdshaderinc`). The asphalt shares its
-world-space grain across spans and joints. Span wear adds fine frost cracks and root
-heave. The asphalt colour reaches the mesh edge.
+A paved walkway (surface kind 0) draws with the roadside sidewalk's paving
+(`godot/assets/materials/road_path.gdshader`): it is a sidewalk away from a road, so the two
+meet without a change of colour. The unpaved kinds draw as Finnish light-traffic paths
+(`godot/scripts/shaders/path_surface_finnish.gdshaderinc`) in road space.
 
 - Footpath span quads carry road-space UVs and COLOR = (half-width in decimetres, 255
-  footpath marker, surface kind 0 for asphalt, 128 + 127 × age).
+  footpath marker, surface kind 0 for paved, 128 + 127 × age).
 - Footpath bands in node pieces carry the same marker with zero half-width and age.
   This selects world space through bends, end caps and the ribbons that reach sidewalks.
   Roadside sidewalk bands use the shared paving material.

@@ -1694,7 +1694,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
-- `ROAD-133` gives walkways compact asphalt joints and adjustable 1.5 to 5.0 m widths in the road builder and Road Properties. [Roads](roads.md#walkway-width-and-joints-road-133)
+- `ROAD-133` gives walkways compact joints in the sidewalk paving and adjustable 1.5 to 5.0 m widths in the road builder and Road Properties. [Roads](roads.md#walkway-width-and-joints-road-133)
 
 - `ROAD-132` adds per-side sidewalk widths to the road builder and Road Properties, with format 130 persistence and 1.5 m defaults for older cities. [Roads](roads.md#per-side-sidewalk-widths-road-132)
 - `ECON-31` paid supplies are reserve (2026-11-22, branch `econ-31`, for review): a household's housing reserve counts its pantry and a shopper's paid basket at the catalog price, besides its cash. Shopping may spend the whole budget, so solvent families that shopped before their daily review failed the stay reserve on the cash left and were evicted and rehoused every other day (10 evictions at 30,000 on `dev`). Now 0 stay failures and evictions in the four envelope cities; the 10,000 cities' records are unchanged ([economy](economy.md#household-housing-affordability-relocation-and-eviction)).
