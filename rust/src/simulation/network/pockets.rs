@@ -114,8 +114,8 @@ pub(crate) struct PocketApplied {
     pub(crate) transition: Option<u32>,
     /// The pocket edge, unless the pocket was removed.
     pub(crate) pocket_edge: Option<usize>,
-    // `first`'s physical length before the edit, for the join's frontage offset.
-    first_length_m: f32,
+    /// `first`'s physical length before the edit, for the join's frontage offset.
+    pub(crate) first_length_m: f32,
 }
 
 impl PocketApplied {
@@ -299,12 +299,16 @@ impl PocketEndView {
 // The pair joined into one record with `first`'s id: the base piece's lanes and attributes,
 // both polylines end to end. `O(points)`.
 fn joined_base(graph: &RegionGraph, pair: &Pair) -> Edge {
-    let (a, b) = (graph.edge(pair.first), graph.edge(pair.second));
     let base_id = if pair.pocket == pair.first {
         pair.second
     } else {
         pair.first
     };
+    joined_edge(graph, [pair.first, pair.second], base_id)
+}
+
+fn joined_edge(graph: &RegionGraph, [first, second]: [usize; 2], base_id: usize) -> Edge {
+    let (a, b) = (graph.edge(first), graph.edge(second));
     let mut base = graph.edge(base_id).clone();
     base.start_node = a.start_node;
     base.end_node = b.end_node;
@@ -544,7 +548,47 @@ fn cut_at(base: &Edge, station_m: f32, pocket: RoadPocket) -> Cut {
 // the dependents' candidates, and the far node's rules and crossing overrides move back to
 // `first`. O(points + far node rules).
 fn join_pair(graph: &mut RegionGraph, pair: &Pair, base: Edge) {
-    let (first, second, transition) = (pair.first, pair.second, pair.transition);
+    install_joined_pair(graph, [pair.first, pair.second], pair.transition, base);
+}
+
+/// Joins the two directed halves of a zebra split using the pocket pair's record and arm remaps.
+/// The caller already checked the node's other roles and both road profiles. O(points + rules).
+pub(crate) fn join_zebra_pair(
+    graph: &mut RegionGraph,
+    [first, second]: [usize; 2],
+    node: u32,
+) -> PocketApplied {
+    let first_length_m = graph.edge(first).physical_length;
+    let head = graph.edge(first);
+    let control_joint = head.geometry.len() - 1;
+    let physical_joint = head.physical_geometry.len() - 1;
+    let mut base = joined_edge(graph, [first, second], first);
+    if let Some(knots) = graph.nodes[node as usize].zebra_cut_knots.take() {
+        base.geometry
+            .splice(control_joint..=control_joint, knots.control);
+        base.physical_geometry
+            .splice(physical_joint..=physical_joint, knots.physical);
+    }
+    (base.base_cost, base.physical_length) =
+        crate::simulation::pathing::cost::CostCalculator::calculate_costs(&base);
+    install_joined_pair(graph, [first, second], node, base);
+    graph.retire_node(node);
+    PocketApplied {
+        first,
+        joined: Some(second),
+        split: None,
+        transition: Some(node),
+        pocket_edge: None,
+        first_length_m,
+    }
+}
+
+fn install_joined_pair(
+    graph: &mut RegionGraph,
+    [first, second]: [usize; 2],
+    transition: u32,
+    base: Edge,
+) {
     let far = graph.edge(second).end_node;
     graph.remove_from_spatial_index(first);
     graph.remove_from_spatial_index(second);
@@ -749,7 +793,7 @@ fn join_split_dependents(
         graph,
         [first, second],
         offset_cells,
-        graph.edge(first).physical_length,
+        first_length_m,
         cell_m,
         &mut rows,
     );

@@ -105,6 +105,19 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
         extra: &[PolygonFootprint<'static>],
         apply: impl FnOnce(&mut Self) -> HashSet<usize>,
     ) -> Result<TriedGraphEdit<L::Building>, RoadRejection> {
+        self.try_graph_edit_with(edges, nodes, extra, apply, |_, _| ())
+            .map(|(tried, ())| tried)
+    }
+
+    /// Tries an edit and reads its compiled products before restoring the graph.
+    pub(crate) fn try_graph_edit_with<T>(
+        &mut self,
+        edges: &HashSet<usize>,
+        nodes: &HashSet<u32>,
+        extra: &[PolygonFootprint<'static>],
+        apply: impl FnOnce(&mut Self) -> HashSet<usize>,
+        inspect: impl FnOnce(&RegionGraph, &RoadbedDelta) -> T,
+    ) -> Result<(TriedGraphEdit<L::Building>, T), RoadRejection> {
         let checkpoint = self
             .graph
             .capture_undo_for_local_topology(edges.clone(), nodes.clone());
@@ -115,11 +128,21 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
             .collect();
         let changed = apply(self);
         let dirty: HashSet<usize> = edges.iter().copied().chain(changed).collect();
-        let tried = self.closure_take(&dirty, nodes, extra).and_then(|take| {
-            steepened_profile(self.graph, &dirty, &grades_before).map_or(Ok(take), Err)
+        let delta = compile_closure(
+            self.graph,
+            self.roadbed,
+            self.scratch.as_deref_mut(),
+            &dirty,
+            nodes,
+        );
+        let tried = self.closure_take(&delta, extra).and_then(|take| {
+            if let Some(rejection) = steepened_profile(self.graph, &dirty, &grades_before) {
+                return Err(rejection);
+            }
+            Ok((take, inspect(self.graph, &delta)))
         });
         self.graph.restore_undo_delta_local(&checkpoint);
-        tried.map(|take| TriedGraphEdit { checkpoint, take })
+        tried.map(|(take, products)| (TriedGraphEdit { checkpoint, take }, products))
     }
 
     // What the pieces of a node-dirtying edit take (`ROAD-68` open questions 2 and 11 (c),
@@ -130,18 +153,10 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
     // owner the edit deletes (a ring's retired junction) counts as covering its land already.
     // O(closure pieces * reservations in their bounds).
     fn closure_take(
-        &mut self,
-        edges: &HashSet<usize>,
-        nodes: &HashSet<u32>,
+        &self,
+        delta: &RoadbedDelta,
         extra: &[PolygonFootprint<'static>],
     ) -> Result<RoadLandTake<L::Building>, RoadRejection> {
-        let delta = compile_closure(
-            self.graph,
-            self.roadbed,
-            self.scratch.as_deref_mut(),
-            edges,
-            nodes,
-        );
         if let Some((node, error)) = delta.failed_nodes().next() {
             return Err(RoadRejection::new(
                 "node_piece_failed",

@@ -55,12 +55,23 @@ pub struct Node {
     /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
     /// If an edge ID is missing, default procedural generation decides.
     pub crosswalk_overrides: HashMap<usize, bool>,
+    // The points absorbed by a Zebra split, kept for a live join and its undo.
+    pub(crate) zebra_cut_knots: Option<Box<ZebraCutKnots>>,
     /// Whether an edit retired this node (`ROAD-124`): a node the player never placed, left
     /// without a road by its tool (a removed pocket's transition, the junction a ring replaced,
     /// a removed ring's node without an arm). It is a hole, as a merged node is but without an
     /// alias: in no index, never snapped to, its other fields read by no one, saved as no row
     /// and loaded as a retired hole. Ids are never reused, so only an undo brings it back.
     pub(crate) retired: bool,
+}
+
+/// Original knots replaced by a Zebra cut, in road order.
+#[derive(Clone)]
+pub(crate) struct ZebraCutKnots {
+    /// The authored centreline knots at the cut.
+    pub(crate) control: Vec<Vector3>,
+    /// The solved profile knots at the cut.
+    pub(crate) physical: Vec<Vector3>,
 }
 
 /// A directed road segment connecting two [`Node`]s.
@@ -544,6 +555,7 @@ impl RegionGraph {
             node_type: NodeType::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            zebra_cut_knots: None,
             retired: false,
         };
         self.nodes.resize_with(node_count, placeholder);
@@ -809,6 +821,7 @@ impl RegionGraph {
             node_type: NodeType::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            zebra_cut_knots: None,
             retired: false,
         });
         self.adjacency.push(Vec::new());

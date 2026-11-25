@@ -3,8 +3,7 @@
 ## The Junction window for the select tool's junction clicks (`ROAD-95`, round R5c2), in the
 ## game's card chrome (`inspector_card.gd`, as Road Properties: the header drags it, × closes it).
 ## It opens beside the click (not over the junction), fits its rows (scrolling past four) and keeps
-## the game's keyboard (Ctrl+Z undoes with it open). The lane spheres and crosswalk toggles stay in
-## the world (the select tool draws them).
+## the game's keyboard (Ctrl+Z undoes with it open). The select tool draws lane spheres in the world.
 ## Turn pockets: one row per incoming car road (`junction_pocket_row.gd`), in Rust's order
 ## (clockwise from north). Each row's Left / Right / length ask Rust's verdict on that road end
 ## (no geometry preview, D11) and its Apply commits it ("Apply (+N)", Ctrl+Z undoes). The

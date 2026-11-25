@@ -1694,6 +1694,8 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-134` adds the Zebra tool to Roads. It places a walkable mid-road crossing and toggles existing crossings at the road surface. The cut snaps to nearby road knots, and a live removal restores the original knots. [Roads](roads.md#zebra-tool-road-134)
+
 - `ROAD-133` gives walkways compact joints in the sidewalk paving and adjustable 1.5 to 5.0 m widths in the road builder and Road Properties. [Roads](roads.md#walkway-width-and-joints-road-133)
 
 - `ROAD-132` adds per-side sidewalk widths to the road builder and Road Properties, with format 130 persistence and 1.5 m defaults for older cities. [Roads](roads.md#per-side-sidewalk-widths-road-132)

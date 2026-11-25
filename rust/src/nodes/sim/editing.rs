@@ -3222,7 +3222,12 @@ impl<L> RoadEditSite<'_, L> {
     // Sets the override and re-lays the node out on the graph: its clips and the profile solve
     // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
     // profiles changed.
-    fn apply_crosswalk_toggle(&mut self, node: u32, edge: usize, enabled: bool) -> HashSet<usize> {
+    pub(super) fn apply_crosswalk_toggle(
+        &mut self,
+        node: u32,
+        edge: usize,
+        enabled: bool,
+    ) -> HashSet<usize> {
         self.graph.set_crosswalk_override(node, edge, enabled);
         let nodes = HashSet::from([node]);
         self.graph.rebuild_intersection_clips_for_nodes(&nodes);

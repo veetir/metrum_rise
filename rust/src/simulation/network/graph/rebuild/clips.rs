@@ -173,10 +173,7 @@ impl RegionGraph {
     }
 
     /// Measures horizontal road station separation without importing the vertical profile.
-    pub(in crate::simulation::network) fn edge_profile_point_distance_m(
-        a: Vector3,
-        b: Vector3,
-    ) -> f32 {
+    pub(crate) fn edge_profile_point_distance_m(a: Vector3, b: Vector3) -> f32 {
         (a.x - b.x).hypot(a.z - b.z)
     }
 

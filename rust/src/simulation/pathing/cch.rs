@@ -387,6 +387,7 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                zebra_cut_knots: None,
                 retired: false,
             },
             Node {
@@ -394,6 +395,7 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                zebra_cut_knots: None,
                 retired: false,
             },
             Node {
@@ -401,6 +403,7 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                zebra_cut_knots: None,
                 retired: false,
             },
             Node {
@@ -408,6 +411,7 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                zebra_cut_knots: None,
                 retired: false,
             },
         ];

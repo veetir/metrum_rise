@@ -103,12 +103,6 @@ var selected_node: int = -1
 
 var lane_spheres = []
 var connection_lines = []
-var crosswalk_toggles = []
-# The hovered toggle and the commit's verdict on it: [node, edge, has_cw] and preview_crosswalk's
-# dictionary, asked once per hovered toggle.
-var _crosswalk_preview_key: Array = []
-var _crosswalk_preview: Dictionary = {}
-
 var _drag_source: Dictionary = {}
 var drag_line_mesh: MeshInstance3D
 
@@ -195,14 +189,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_last_click_screen_pos = event.position
 			var pos = _world_position(event.position, true)
 			
-			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
-				var clicked_cw = _get_hovered_cw_toggle(pos)
-				if clicked_cw != null:
-					if _preview_crosswalk(clicked_cw).get("is_valid", false) and simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw):
-						_build_node_visuals(selected_node)
-					return
-						
 				var clicked_lane = _get_hovered_lane_sphere(pos)
 				if clicked_lane != null and clicked_lane.is_incoming:
 					_drag_source = clicked_lane
@@ -260,8 +247,6 @@ func _process(_delta):
 	
 	if not _drag_source.is_empty():
 		_update_drag_line()
-	elif selected_node != -1:
-		_update_crosswalk_hover()
 	elif selected_node == -1 and _mouse_pressed:
 		var edge_idx := _hovered_edge()
 		if edge_idx != -1 and edge_idx != _last_hovered and not selected_edges.has(edge_idx):
@@ -280,18 +265,11 @@ func _clear_node_visuals():
 	for l in connection_lines:
 		l.queue_free()
 	connection_lines.clear()
-	for c in crosswalk_toggles:
-		c.mesh_inst.queue_free()
-		c.label_inst.queue_free()
-	crosswalk_toggles.clear()
-	_crosswalk_preview_key = []
-	_crosswalk_preview = {}
 	if drag_line_mesh: drag_line_mesh.mesh = null
 
 func _build_node_visuals(node_id: int):
 	_clear_node_visuals()
 	
-	var unique_edges = {}
 	var lanes = simulation_node.get_node_lanes(node_id)
 	for lane in lanes:
 		var edge_id = lane["edge_id"]
@@ -299,12 +277,6 @@ func _build_node_visuals(node_id: int):
 		var is_inc = lane["is_incoming"]
 		var pos = lane["pos"]
 		var no_movement: bool = lane.get("no_movement", false)
-		
-		# Find rough center point of edge boundary for crosswalk toggles
-		if not unique_edges.has(edge_id):
-			unique_edges[edge_id] = pos
-		else:
-			unique_edges[edge_id] = unique_edges[edge_id].lerp(pos, 0.5)
 		
 		var mesh_inst = MeshInstance3D.new()
 		add_child(mesh_inst)
@@ -344,37 +316,6 @@ func _build_node_visuals(node_id: int):
 		_draw_line(rel_inst, node_pos, pos, Color(0.5, 0.5, 1.0, 0.4))
 		connection_lines.push_back(rel_inst)
 		
-	for edge_id in unique_edges:
-		# Only arms that can cross get a toggle; the rule is Rust's.
-		if not simulation_node.can_toggle_crosswalk(node_id, edge_id):
-			continue
-		var pos = unique_edges[edge_id]
-		var node_pos = simulation_node.get_node_pos(node_id)
-		var dir = (pos - node_pos).normalized()
-		var has_cw = simulation_node.has_crosswalk(node_id, edge_id)
-		var mesh_inst = MeshInstance3D.new()
-		add_child(mesh_inst)
-		var box = BoxMesh.new()
-		box.size = Vector3(1.5, 0.2, 1.5)
-		mesh_inst.mesh = box
-		mesh_inst.global_position = pos + dir * 3.5 + Vector3(0, 0.2, 0)
-		var mat = StandardMaterial3D.new()
-		mat.albedo_color = Color(0, 1, 0, 0.8) if has_cw else Color(1, 0, 0, 0.8)
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mesh_inst.material_override = mat
-		
-		var label := _world_label(_crosswalk_label(has_cw, {}), 32, Color.WHITE)
-		add_child(label)
-		label.global_position = mesh_inst.global_position + Vector3(0, 1.5, 0)
-		crosswalk_toggles.push_back({
-			"edge_id": edge_id,
-			"pos": mesh_inst.global_position,
-			"mesh_inst": mesh_inst,
-			"label_inst": label,
-			"has_cw": has_cw
-		})
-		
 	var connections = simulation_node.get_lane_connections_array(node_id)
 	for conn in connections:
 		var f_e = int(conn["from_edge"])
@@ -394,17 +335,6 @@ func _build_node_visuals(node_id: int):
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
 
-# The toggle's label: its state, and while hovered what a click does (or why it cannot) on a
-# second line.
-func _crosswalk_label(has_cw: bool, preview: Dictionary) -> String:
-	var text := "Zebra on" if has_cw else "Zebra off"
-	if preview.is_empty():
-		return text
-	var turn := "off" if has_cw else "on"
-	if preview.get("is_valid", false):
-		return "%s\nClick to turn %s" % [text, turn]
-	return "%s\nCan't turn %s: %s" % [text, turn, str(preview.get("invalid_reason", ""))]
-
 # A billboard label drawn over everything, white-ish text in a dark outline so it reads on asphalt,
 # grass and paint alike, the same size on screen at any zoom.
 func _world_label(text: String, font_size: int, colour: Color) -> Label3D:
@@ -422,26 +352,6 @@ func _world_label(text: String, font_size: int, colour: Color) -> Label3D:
 	label.render_priority = 2
 	label.outline_render_priority = 1
 	return label
-
-# The commit's verdict on toggling `toggle`, asked once while it stays hovered.
-func _preview_crosswalk(toggle: Dictionary) -> Dictionary:
-	var key := [selected_node, toggle.edge_id, toggle.has_cw]
-	if key != _crosswalk_preview_key:
-		_crosswalk_preview_key = key
-		_crosswalk_preview = simulation_node.preview_crosswalk(selected_node, toggle.edge_id, not toggle.has_cw)
-	return _crosswalk_preview
-
-func _update_crosswalk_hover() -> void:
-	if crosswalk_toggles.is_empty():
-		return
-	var pos = _world_position(get_viewport().get_mouse_position())
-	# The simulation thread holds the core: the labels keep the last hover.
-	if pos is bool:
-		return
-	var hovered = _get_hovered_cw_toggle(pos)
-	for c in crosswalk_toggles:
-		var preview: Dictionary = _preview_crosswalk(c) if c == hovered else {}
-		c.label_inst.text = _crosswalk_label(c.has_cw, preview)
 
 # The world point under a screen position, null for none. A click's query waits while the
 # simulation thread holds the core, else a click would deselect as if it hit nothing
@@ -466,19 +376,6 @@ func _get_hovered_lane_sphere(pos):
 			best_dist = d
 			best_lane = s
 	return best_lane
-
-func _get_hovered_cw_toggle(pos):
-	if pos == null: return null
-	var best_dist = 2.0
-	var best_cw = null
-	for c in crosswalk_toggles:
-		var p = c.pos
-		p.y = pos.y
-		var d = pos.distance_to(p)
-		if d < best_dist:
-			best_dist = d
-			best_cw = c
-	return best_cw
 
 func _update_drag_line():
 	var pos = _world_position(get_viewport().get_mouse_position())
@@ -884,7 +781,7 @@ func clear_lane_rules() -> void:
 	simulation_node.clear_lane_connections(selected_node)
 	refresh_junction_visuals()
 
-## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
+## Redraws the selected junction's lane spheres (after an edit or an undo).
 func refresh_junction_visuals() -> void:
 	if selected_node != -1:
 		_build_node_visuals(selected_node)

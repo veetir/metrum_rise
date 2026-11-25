@@ -174,6 +174,7 @@ fn fixture(
             node_type: Default::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            zebra_cut_knots: None,
             retired: false,
         })
         .collect();

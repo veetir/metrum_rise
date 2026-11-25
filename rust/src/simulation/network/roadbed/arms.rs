@@ -542,11 +542,16 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 /// join into one. Anything else is occupied and keeps its place. The turn rules are this graph's
 /// (the validation excerpt carries none, so its caller also asks the live node). `O(degree)`.
 pub(crate) fn empty_joint(graph: &RegionGraph, node: u32) -> Option<[ArmKey; 2]> {
+    if !graph.node(node).crosswalk_overrides.is_empty() {
+        return None;
+    }
+    plain_road_joint(graph, node)
+}
+
+/// The physical and lane-role checks for dissolving a two-arm joint, before crossing overrides.
+pub(crate) fn plain_road_joint(graph: &RegionGraph, node: u32) -> Option<[ArmKey; 2]> {
     let record = graph.node(node);
-    if record.node_type != NodeType::Junction
-        || !record.crosswalk_overrides.is_empty()
-        || has_vehicle_turn_rules(graph, node)
-    {
+    if record.node_type != NodeType::Junction || has_vehicle_turn_rules(graph, node) {
         return None;
     }
     let incidents = node_incidents(graph, node)?;

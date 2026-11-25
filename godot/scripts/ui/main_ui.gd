@@ -50,6 +50,7 @@ var terrain_sub_menu: TerrainPanel
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
 var road_type_menu: RoadTypeMenu
 var roundabout_btn: Button
+var zebra_btn: Button
 var roundabout_row: HBoxContainer
 var roundabout_slider: HSlider
 var roundabout_size_label: Label
@@ -270,6 +271,11 @@ func _build_ui():
 	HudIcons.set_shortcut(select_main_btn, "V")
 	select_main_btn.toggle_mode = true
 	road_sub_menu.add_child(select_main_btn)
+
+	zebra_btn = HudIcons.icon_button("zebra", "Zebra crossing", "", HudIcons.TILE_SIZE)
+	zebra_btn.toggle_mode = true
+	zebra_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ZEBRA))
+	road_sub_menu.add_child(zebra_btn)
 	
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
@@ -467,6 +473,7 @@ func _connect_signals():
 func _refresh_hud_marks(_tool: int = 0) -> void:
 	var tool: int = input_manager.current_tool
 	HudIcons.mark(roundabout_btn, tool == InputManager.Tool.ROUNDABOUT)
+	HudIcons.mark(zebra_btn, tool == InputManager.Tool.ZEBRA)
 	HudIcons.mark(road_main_btn, road_combined_hbox.visible or tool in _ROAD_PANEL_TOOLS)
 	HudIcons.mark(zoning_main_btn, zoning_combined_hbox.visible or tool == InputManager.Tool.ZONING)
 	HudIcons.mark(services_main_btn, services_combined_hbox.visible or tool == InputManager.Tool.SERVICES)
@@ -475,7 +482,7 @@ func _refresh_hud_marks(_tool: int = 0) -> void:
 	HudIcons.mark(select_main_btn, tool == InputManager.Tool.SELECT)
 	HudIcons.mark(bulldoze_btn, tool == InputManager.Tool.BULLDOZE)
 
-const _ROAD_PANEL_TOOLS := [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.ROUNDABOUT, InputManager.Tool.SELECT]
+const _ROAD_PANEL_TOOLS := [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.ROUNDABOUT, InputManager.Tool.SELECT, InputManager.Tool.ZEBRA]
 const _TERRAIN_PANEL_TOOLS := [InputManager.Tool.SCULPT, InputManager.Tool.VEGETATION]
 
 # Keyboard tools (R, X, O, V, Y) open their dock panel like a click on the category does,
@@ -493,8 +500,8 @@ func _follow_tool(tool: int) -> void:
 		if not road_combined_hbox.visible:
 			_show_only_panel(road_combined_hbox)
 		# The drawing options belong to the tools that draw, however they were switched on
-		# (R, a tile, a number key); Select draws nothing.
-		var draws := tool != InputManager.Tool.SELECT
+		# (R, a tile, a number key).
+		var draws := tool in [InputManager.Tool.ROAD, InputManager.Tool.WALKWAY, InputManager.Tool.ROUNDABOUT]
 		get_meta("options_panel").visible = draws
 		get_meta("road_sep").visible = draws
 	elif tool in _TERRAIN_PANEL_TOOLS and not terrain_sub_menu.visible:
@@ -1178,7 +1185,7 @@ func _refresh_city_status_display() -> void:
 
 ## Tab, or a click on the demand bars: the city status panel with each zone's growth reasons.
 # Number keys act on the open palette's tiles, each showing its digit at its bottom edge. While
-# Roads, Zoning or Terrain is open it claims 1-9 (unnumbered digits do nothing); with none open the
+# Roads, Zoning or Terrain is open it claims 1-9, and Roads takes 0 for Zebra. With none open the
 # digits keep their global bindings (zone types, terrain overlays).
 var _numbered: Array[Button] = []
 
@@ -1187,11 +1194,15 @@ func handle_number_key(digit: int) -> bool:
 	var slots: Array = []
 	if road_combined_hbox.visible:
 		slots = _road_number_slots()
+		if digit == 0:
+			digit = 10
 	elif zoning_combined_hbox.visible:
 		slots = _zoning_number_slots()
 	elif terrain_sub_menu.visible:
 		slots = terrain_sub_menu.number_slots()
 	else:
+		return false
+	if digit == 0:
 		return false
 	if digit >= 1 and digit <= slots.size():
 		var action: Callable = slots[digit - 1][1]
@@ -1199,7 +1210,7 @@ func handle_number_key(digit: int) -> bool:
 	return true
 
 # [tile, action] per digit from 1: built-in types, new custom road (its digit closes the open
-# builder again), the custom roads tile (which cycles the player's types), roundabout, edit roads.
+# builder again), custom roads, roundabout, edit roads, and Zebra on 0.
 func _road_number_slots() -> Array:
 	var slots: Array = []
 	for tile in road_type_menu.number_tiles():
@@ -1211,6 +1222,7 @@ func _road_number_slots() -> Array:
 		slots.append([tile, action])
 	slots.append([roundabout_btn, HudIcons.activate.bind(roundabout_btn)])
 	slots.append([select_main_btn, HudIcons.activate.bind(select_main_btn)])
+	slots.append([zebra_btn, HudIcons.activate.bind(zebra_btn)])
 	return slots
 
 # Zone types 1-3 (again: the zone's next profile), then the cell tools: the workflow switch,
@@ -1256,7 +1268,7 @@ func _apply_number_badges() -> void:
 	for slots in [_road_number_slots(), _zoning_number_slots(), terrain_sub_menu.number_slots()]:
 		for index in slots.size():
 			var tile: Button = slots[index][0]
-			HudIcons.set_number(tile, str(index + 1) if index < 9 else "")
+			HudIcons.set_number(tile, "0" if tile == zebra_btn else (str(index + 1) if index < 9 else ""))
 			_numbered.append(tile)
 
 ## Closes the City panel or the open dock palette, one per call; false when none was open, so

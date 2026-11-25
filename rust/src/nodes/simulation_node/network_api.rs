@@ -6,6 +6,7 @@ use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::nodes::sim::road_tool::batch::draft_requests;
 use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
+use crate::nodes::sim::zebra::ZebraPreview;
 use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking, SidewalkWidths};
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::{RoadAttributes, validate_footpath_width};
@@ -700,6 +701,50 @@ impl SimulationNode {
         }
     }
 
+    /// Finds and validates a Zebra click on the published road view without waiting for the core.
+    #[func]
+    pub fn preview_zebra(&self, point: Vector3) -> VarDictionary {
+        let land = self.road_tool.land();
+        let mut context = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned");
+        context.land = land;
+        let ZebraPreview {
+            pose,
+            removing,
+            rejection,
+        } = context.road_edit_site().preview_zebra(point);
+        let mut output = zebra_verdict(rejection);
+        output.set("removing", removing);
+        if let Some((kerbs, slope)) = pose {
+            output.set("kerbs", PackedVector3Array::from_iter(kerbs));
+            output.set("slope", slope);
+        }
+        output
+    }
+
+    /// Revalidates and applies one Zebra click, returning a player-facing verdict.
+    #[func]
+    pub fn edit_zebra(&mut self, point: Vector3) -> VarDictionary {
+        let mut rejection = None;
+        self.publish_road_edit(|core| match core.edit_zebra(point) {
+            Ok(()) => true,
+            Err(error) => {
+                debug_log!(
+                    "road",
+                    "zebra_edit_rejected point={point:?} reason={} detail={}",
+                    error.reason,
+                    error.detail
+                );
+                rejection = Some(error);
+                false
+            }
+        });
+        zebra_verdict(rejection)
+    }
+
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
     /// `parking` (`PARK-05`: bit 0 left kerb, bit 1 right),
@@ -1228,6 +1273,13 @@ fn cross_section_spec(
         attributes.speed_ms = edge.speed_limit;
     }
     Ok((median, parking, attributes.with_sidewalk_widths(widths)))
+}
+
+fn zebra_verdict(rejection: Option<RoadRejection>) -> VarDictionary {
+    match rejection {
+        Some(error) => vdict! { "is_valid": false, "invalid_reason": error.reason },
+        None => vdict! { "is_valid": true },
+    }
 }
 
 impl SimulationNode {

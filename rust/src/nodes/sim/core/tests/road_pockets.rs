@@ -755,6 +755,49 @@ fn buildings_on_the_pair_repartition_on_resize_and_return_on_undo() {
     assert_eq!(row(&core), original);
 }
 
+#[test]
+fn pocket_removal_joins_a_parcel_building_at_its_original_frontage_station() {
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    let (house, _) = house_fronting(&mut core, west, (-45.0, -16.0));
+    let row = |core: &SimCore| {
+        let building = &core.allocator.buildings[house];
+        (
+            building.edge_idx,
+            building.cell_x,
+            building.frontage_t,
+            building.parcel_id,
+        )
+    };
+    let original = row(&core);
+    assert_eq!(original.1, 0);
+    assert_ne!(original.3, 0);
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
+        ""
+    );
+    let pocket = core
+        .get_road_pocket_internal(west as i32, end)
+        .unwrap()
+        .edge;
+    let split = row(&core);
+    assert_eq!(split.0, pocket, "the building fronts the second half");
+    assert_eq!(split.1, 0);
+    assert_eq!(
+        pocket_edit(&mut core, request(pocket, end, (false, false), 60.0)),
+        ""
+    );
+    let joined = row(&core);
+    assert_eq!((joined.0, joined.1, joined.3), (west, 0, original.3));
+    let error_m = (joined.2 - original.2).abs() * core.region_graph.edge(west).physical_length;
+    assert!(
+        error_m < 0.001,
+        "frontage moved {error_m} m before lot adoption"
+    );
+    assert!(core.undo_action_internal());
+    assert_eq!(row(&core), split);
+}
+
 // D10: a stroke crossing a pocket edge, or ending on its transition, is refused; one crossing
 // the base road beyond the transition commits.
 #[test]

@@ -1160,9 +1160,9 @@ impl BuildingAllocator {
 
     /// [`Self::migrate_split_frontages`]'s inverse for two edges joined into `first`
     /// (`ROAD-95`, a turn pocket removed or resized): the buildings fronting `second` front
-    /// `first` with their cell index offset by `offset_cells` (the first edge's cells), and
-    /// every building of either edge takes its frontage parameter along the joined edge,
-    /// `length_m` long. `undo` receives each moved row's previous edge, cell and frontage. Returns
+    /// `first` with their cell index offset by `offset_cells` (the first edge's cells). Parcel
+    /// buildings keep their station using `first_length_m` before the join and the retained
+    /// second edge's length. `undo` receives each moved row's previous edge, cell and frontage. Returns
     /// the buildings moved. The rows are found among the 512 m chunk candidates of both edges'
     /// geometry in `graph` (the retained geometry of a deleted `second` included), as the split's
     /// are; `O(candidates log candidates)`, `O(B)` while the chunk index is stale.
@@ -1171,7 +1171,7 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         [first, second]: [usize; 2],
         offset_cells: usize,
-        length_m: f32,
+        first_length_m: f32,
         cell_m: f32,
         undo: &mut Vec<(usize, usize, usize, f32)>,
     ) -> usize {
@@ -1195,15 +1195,27 @@ impl BuildingAllocator {
                 .eq(fronting.iter().copied()),
             "the join's chunk candidates hold every building fronting edges {first} and {second}"
         );
+        let length_m = graph.edge(first).physical_length.max(0.001);
+        let second_length_m = graph.edge(second).physical_length;
         for &building_idx in &fronting {
             let b = &mut self.buildings[building_idx];
             undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            if b.parcel_id != 0 {
+                let station_m = if b.edge_idx == second {
+                    first_length_m + b.frontage_t * second_length_m
+                } else {
+                    b.frontage_t * first_length_m
+                };
+                b.edge_idx = first;
+                b.frontage_t = (station_m / length_m).clamp(0.0, 1.0);
+                continue;
+            }
             if b.edge_idx == second {
                 b.edge_idx = first;
                 b.cell_x += offset_cells;
             }
             let half_cells = b.width_cells as f32 * 0.5;
-            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m;
         }
         let moved = fronting.len();
         if moved > 0 {

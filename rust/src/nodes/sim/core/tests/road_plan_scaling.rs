@@ -45,6 +45,7 @@ enum Measured {
     PocketStroke,
     Conversion,
     RingJoin,
+    Zebra,
 }
 
 // The median of the divided measurements (`ROAD-80`).
@@ -71,6 +72,14 @@ enum CellScenario {
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Ground);
+}
+
+#[test]
+#[ignore = "unprofiled edit locality; run alone with --release --ignored --nocapture"]
+fn populated_zebra_scaling() {
+    crate::debug::work::set_city_checks(false);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Zebra);
+    crate::debug::work::set_city_checks(true);
 }
 
 // `ROAD-118` round JS2 locality: a side road into the street 5 m from the joint where the street
@@ -447,6 +456,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::PocketEdit
             | Measured::Conversion
             | Measured::RingJoin
+            | Measured::Zebra
     );
     if in_place {
         let points = vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)];
@@ -710,6 +720,8 @@ fn measure_populated_road_plan_scaling(
                 measure_conversion(&mut core, remote_buildings, background_roads)
             } else if measured == Measured::RingJoin {
                 measure_ring_join(&mut core, remote_buildings, background_roads)
+            } else if measured == Measured::Zebra {
+                measure_zebra(&mut core, remote_buildings, background_roads)
             } else {
                 measure_lane_edit(&mut core, remote_buildings, background_roads, section)
             };
@@ -813,7 +825,8 @@ fn measure_populated_road_plan_scaling(
             | Measured::FootpathWidthEdit
             | Measured::PocketEdit
             | Measured::Conversion
-            | Measured::RingJoin => {
+            | Measured::RingJoin
+            | Measured::Zebra => {
                 unreachable!("measured by measure_lane_edit or its siblings")
             }
         };
@@ -966,6 +979,71 @@ fn measure_populated_road_plan_scaling(
             })
         );
     }
+}
+
+fn measure_zebra(core: &mut SimCore, buildings: usize, roads: usize) -> String {
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    let point = Vector3::new(-57.37, 0.0, 0.0);
+    let tail = core.region_graph.edge_count();
+    let local = |core: &SimCore, edges: &[usize]| {
+        let lanes = &core.transit_network.lane_system;
+        let mut products = String::new();
+        for &edge in edges {
+            let piece = core.transit_network.roadbed.span_piece(edge).unwrap();
+            products += &format!("{:?}\n", piece.mesh().positions());
+            for &lane in &lanes.edge_lanes[&edge] {
+                products += &format!("{:?}\n", lanes.lanes[lane].geometry);
+            }
+        }
+        products
+    };
+    let before = local(core, &[0]);
+    let mut products = String::new();
+    let mut timings: [Vec<f64>; 4] = Default::default();
+    for iteration in 0..23 {
+        let start = Instant::now();
+        let preview = core.road_edit_site().preview_zebra(point);
+        let add_plan = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(preview.rejection.is_none(), "{:?}", preview.rejection);
+        let start = Instant::now();
+        core.edit_zebra(point).unwrap();
+        let add = start.elapsed().as_secs_f64() * 1000.0;
+        let start = Instant::now();
+        let preview = core.road_edit_site().preview_zebra(point);
+        let remove_plan = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(preview.removing && preview.rejection.is_none());
+        if iteration == 0 {
+            products = local(core, &[0, tail]);
+        }
+        let start = Instant::now();
+        core.edit_zebra(point).unwrap();
+        let remove = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(local(core, &[0]), before);
+        if iteration >= 3 {
+            for (samples, value) in timings.iter_mut().zip([add_plan, add, remove_plan, remove]) {
+                samples.push(value);
+            }
+        }
+    }
+    let [add_plan, add, remove_plan, remove] = timings.map(|mut samples| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    });
+    eprintln!(
+        "ZEBRA_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": buildings, "remote_roads": roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(), "samples": 20,
+            "add_plan_p50_ms": add_plan, "add_p50_ms": add,
+            "remove_plan_p50_ms": remove_plan, "remove_p50_ms": remove
+        })
+    );
+    products
 }
 
 // `ROAD-80`: the T's side road (south of the T) given `(fwd, bkw, median, attributes)` in place:

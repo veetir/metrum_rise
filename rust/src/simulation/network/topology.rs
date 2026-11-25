@@ -335,6 +335,7 @@ impl RegionGraph {
             node_type,
             lane_connections: std::collections::HashMap::new(),
             crosswalk_overrides: std::collections::HashMap::new(),
+            zebra_cut_knots: None,
             retired: false,
         });
         self.adjacency.push(Vec::new());
@@ -1264,9 +1265,8 @@ pub(crate) fn process_intersections_splitting_at(
     joined_road_ends
 }
 
-// Knots closer than this to a split junction merge into it (see `split_edge`): the distance
-// within which a junction and an existing node are one place.
-const SPLIT_KNOT_MERGE_M: f32 = INTERSECTION_NODE_CAPTURE_EPSILON;
+/// Knots within this distance of a split junction merge into it.
+pub(crate) const SPLIT_KNOT_MERGE_M: f32 = INTERSECTION_NODE_CAPTURE_EPSILON;
 
 /// Splits an existing edge at a specific segment and junction node.
 ///
@@ -1376,6 +1376,27 @@ pub(crate) fn split_edge_graph(
     junction_node_id: u32,
     reuse: Option<usize>,
 ) -> Option<SplitHalves> {
+    split_edge_graph_with_cut_journal(graph, edge_id, segment_idx, junction_node_id, reuse, false)
+}
+
+/// Uses the normal split and records the original points it absorbed for the inverse join.
+pub(crate) fn split_edge_for_crossing(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    segment_idx: usize,
+    junction_node_id: u32,
+) -> Option<SplitHalves> {
+    split_edge_graph_with_cut_journal(graph, edge_id, segment_idx, junction_node_id, None, true)
+}
+
+fn split_edge_graph_with_cut_journal(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    segment_idx: usize,
+    junction_node_id: u32,
+    reuse: Option<usize>,
+    journal_cut: bool,
+) -> Option<SplitHalves> {
     let old_edge = graph.edge(edge_id);
     let geometry = &old_edge.geometry;
     let split_pos = graph.node(junction_node_id).pos;
@@ -1404,7 +1425,7 @@ pub(crate) fn split_edge_graph(
     // Splitting changes topology, not the solved profile of the retained road. Partition the
     // original physical polyline by horizontal station so its independently materialized
     // junction supports survive even when they do not coincide with control knots.
-    let (mut part1_physical, mut part2_physical) =
+    let (mut part1_physical, mut part2_physical, replaced_physical) =
         split_physical_geometry(old_edge, segment_idx, split_pos);
     if part1_geo.last().unwrap().distance_to(split_pos) > SPLIT_KNOT_MERGE_M {
         part1_geo.push(split_pos);
@@ -1422,6 +1443,19 @@ pub(crate) fn split_edge_graph(
         part1_physical = part1_geo.clone();
         part2_physical = part2_geo.clone();
     }
+
+    let cut_knots = journal_cut.then(|| {
+        debug_assert!(old_edge.roundabout.is_none());
+        let physical = if old_edge.physical_geometry.len() >= 2 {
+            &old_edge.physical_geometry
+        } else {
+            geometry
+        };
+        Box::new(super::graph::data::ZebraCutKnots {
+            control: geometry[part1_geo.len() - 1..tail_start].to_vec(),
+            physical: physical[replaced_physical].to_vec(),
+        })
+    });
 
     let primary_type = old_edge.primary_type;
     let allowed_types = old_edge.allowed_types;
@@ -1466,6 +1500,9 @@ pub(crate) fn split_edge_graph(
 
     graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
     graph.adjacency[junction_node_id as usize].push(edge_id);
+    if let Some(cut_knots) = cut_knots {
+        graph.nodes[junction_node_id as usize].zebra_cut_knots = Some(cut_knots);
+    }
 
     let mut new_edge = Edge {
         start_node: junction_node_id,
@@ -1725,7 +1762,7 @@ fn split_physical_geometry(
     edge: &Edge,
     control_segment_idx: usize,
     split_pos: Vector3,
-) -> (Vec<Vector3>, Vec<Vector3>) {
+) -> (Vec<Vector3>, Vec<Vector3>, std::ops::Range<usize>) {
     let physical = if edge.physical_geometry.len() >= 2 {
         &edge.physical_geometry
     } else {
@@ -1777,7 +1814,7 @@ fn split_physical_geometry(
     let mut second = Vec::with_capacity(physical.len() - second_start + 1);
     second.push(split_pos);
     second.extend_from_slice(&physical[second_start..]);
-    (first, second)
+    (first, second, first_end..second_start)
 }
 
 #[cfg(test)]

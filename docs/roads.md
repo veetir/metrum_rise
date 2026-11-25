@@ -11391,23 +11391,15 @@ crossings and its legacy migration.
   `NodeArms` or `pass_through_crossings`. `crossing_arm_eligible` is the set that rule ranges
   over: a car road with sidewalks at a node of two or more road arms, which at a pass-through
   node must hold the strip on its span. `O(degree)` per node, unchanged.
-- **Toggle.** The select tool shows a toggle on each eligible arm of the selected junction
-  (`can_toggle_crosswalk`), labelled with its state. Hovering asks for the commit's verdict
-  (`preview_crosswalk`, the commit's own `try_graph_edit` check run and put back), and a click
-  commits only an accepted toggle (`set_crosswalk_override`, which returns whether it applied).
-  A refused toggle (an arm that cannot cross, a node that no longer lays out, pieces over a
-  field or painted cells) changes nothing and the label names the reason. Each toggle has an
-  undo record. An applied toggle marks a render generation and publishes its pieces at once
+- **Toggle.** The [Zebra tool](#zebra-tool-road-134) targets the published crossing strip
+  directly. The arm edit uses `try_graph_edit` for the verdict and `apply_crosswalk_toggle`
+  for the new override, clips and profiles. A refusal leaves the arm as it was and displays
+  one line with the reason. Each accepted toggle has an undo record and publishes at once
   through the removal's path (`SimCore::finalize_network_render_products`: compile, terrain
   changes, changed chunks, the road tool's view), so the junction redraws in the same frame;
-  until the user's play-test of round R6 it marked none and the old paint stayed drawn
-  (`a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws`,
-  `godot/tests/crosswalk_toggle_test.gd` on the real bridge). The click finds its point with the
-  world raycast that waits for the core (`intersect_world_surface`'s `wait`); the per-frame one
-  answers `null` while the simulation thread holds the core, and a click in a tick deselected the
-  junction as if it hit nothing (`CODE-20`, found under load). Crossing edits do not appear in the road-attempt replay, which records strokes.
-  Cost: one node closure compile per hovered toggle and per click, bounded by the node's
-  neighbourhood (its arms, their spans and far-end pieces).
+  (`a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws` and
+  `godot/tests/crosswalk_toggle_test.gd`). Crossing edits do not appear in the road-attempt
+  replay, which records strokes.
 - **Remaps.** Overrides are keyed by edge per node. A split moves the far end's override onto
   the second half (`topology::split_edge`); a node merge copies the removed node's overrides to
   the survivor (`unite_nodes`); the road tool's validation excerpt copies the overrides of its
@@ -11458,7 +11450,79 @@ crossings and its legacy migration.
   restores it, preview = commit, undo, refusal, a split through an authored arm and its undo, a
   road removed and drawn again, the save file), `crosswalk_overrides_round_trip_through_their_table`,
   `node_merge_replaces_its_original_spatial_entry`, the degree-two cases in `lanes::tests::crossings`
-  and the walking tests above; `godot/tests/selection_gesture_test.gd` covers the tool.
+  and the walking tests above.
+
+### Zebra tool (ROAD-134)
+
+The Zebra tile follows Edit roads in the Roads tool group and uses the next number key, 0.
+Hovering a road shows a crossing across its carriageway. Hovering its published zebra
+highlights removal. Click once to apply the edit and press Ctrl+Z to undo it.
+Each click stores one record. Edit roads continues to own junction lanes and pockets.
+
+A mid-road add uses the stroke's graph split. The degree-two node sits at the leading edge
+of the strip so its crossing line follows the pointer. It explicitly enables the crossing
+on one half and disables the default on the other. Roadbed sections supply the preview kerbs,
+the rendered crossing and the pedestrian connectors. The road needs car lanes and two
+sidewalks on the ground. The existing mouth stations, span strip and half-span limits
+determine the clearance. The cut snaps to the nearest control or profile knot within the
+stroke splitter's merge distance. A refused pose shows a red ghost and one line from road wording.
+
+A removal of a plain split pair reuses the turn pocket's pair join, including far-end
+arm remapping and dependent frontage migration. Parcel buildings keep their road station
+during either join. Their frontage fraction locates the door along its original edge. The cell
+index is zero for parcel buildings and locates only cell-based frontages. The node leaves the
+graph and its live cut journal restores the original
+control and profile knots. A join after loading a save keeps the cut point because the existing
+save fields carry the two half-polylines without the cut journal. A node with
+attachments, a lane transition, or other authored road properties keeps its topology and uses
+the arm toggle. The crossing overrides use the existing `road_crosswalks` table.
+
+Picking visits the road R-tree and the incident arms of the selected edge's endpoints.
+Validation compiles the touched roadbed closure. The commit uses the existing network
+maintenance for lanes, agents, frontages, routing and publication.
+
+**Edit locality, 2026-11-25.** Unprofiled release test on Apple M2 Pro, branch
+`feat/zebra-tool` on `2fd413788`, with four Rayon workers and 20 measured edits per row.
+The test excludes fixture setup and checks matching local span and lane products.
+Run `RAYON_NUM_THREADS=4 METRUM_DEBUG=0 "$TEST_BINARY" populated_zebra_scaling --ignored --nocapture`.
+
+| Remote buildings | Remote roads | Agents | Parcels | Add plan p50 ms | Remove plan p50 ms | Add core p50 ms | Remove core p50 ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 24 | 4 | 0.219 | 0.196 | 0.786 | 0.739 |
+| 1,000 | 4 | 6,024 | 1,004 | 0.184 | 0.166 | 0.672 | 0.645 |
+| 10,000 | 40 | 60,024 | 10,004 | 0.199 | 0.161 | 0.798 | 0.736 |
+| 100,000 | 391 | 600,024 | 100,004 | 0.201 | 0.189 | 1.260 | 1.247 |
+
+The plan stays near its initial cost. The core edit also runs the shared agent lane-membership
+passes and copies the graph for the deferred routing rebuild. Those steps scale with the
+city. Godot chunk publication is outside the core edit measurement.
+
+**Level F timing, 2026-11-25.** Unprofiled release runs on Apple M2 Pro with eight
+workers, control `2fd413788` (binary `d569abad051590fd`) and Zebra review branch
+(binary `cd948a98b4293c09`), from the same 30k snapshot key `689eedd159cc582f`.
+The session ran with `--perf07 30000:32:ctl,br,br,ctl --perf07 30000:1:ctl,br,ctl,br,ctl,br`.
+
+| 30k 1× run | Mean ms | p99 ms | p99.9 ms | Max ms | Frames over 8 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Control 1 | 1.729 | 2.700 | 3.414 | 24.64 | 18 |
+| Branch 1 | 1.704 | 2.682 | 5.224 | 39.14 | 34 |
+| Control 2 | 1.754 | 3.027 | 5.244 | 41.59 | 40 |
+| Branch 2 | 1.723 | 2.734 | 3.356 | 12.90 | 16 |
+| Control 3 | 1.683 | 2.644 | 3.240 | 15.21 | 13 |
+| Branch 3 | 1.679 | 2.609 | 3.281 | 31.32 | 8 |
+
+The average of the 1× maxima was 27.15 / 27.79 ms (control / branch, +2.4% within
+the 4.9% tolerance). Mean and p99 improved and p99.9 stayed level. Every 1× run exceeded
+the 8 ms maximum. The largest control and branch frames occurred at different simulation
+minutes. Agent ticks accounted for 38.86 ms of the 41.59 ms control frame and 33.38 ms
+of the 39.14 ms branch frame. All six runs produced the same end-of-day record.
+The benchmark steps the core and builds snapshots without running any Zebra interaction.
+macOS supplies no scheduler wait measurements to the benchmark, so the cause of the
+sporadic stalls within those phases remains unresolved.
+
+The 32× comparison stayed within tolerance or improved, with raw maximum misses on both sides
+reported under `PERF-17`. K22 click to acknowledgement was 7.11 ms on the control and
+7.78 ms on the branch (one run each).
 
 Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
 `ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could

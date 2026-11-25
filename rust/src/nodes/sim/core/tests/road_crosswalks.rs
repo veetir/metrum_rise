@@ -150,6 +150,163 @@ fn crossing_signs(core: &mut SimCore) -> usize {
 }
 
 #[test]
+fn zebra_tool_round_trips_products_and_connects_both_sidewalks() {
+    let (mut core, _, _, _) = t_junction();
+    let point = Vector3::new(-56.5, 0.0, 0.0);
+    let before = products(&mut core);
+    let node = core.region_graph.node_count() as u32;
+    let tail = core.region_graph.edge_count();
+    let preview = core.road_edit_site().preview_zebra(point);
+    assert!(preview.rejection.is_none(), "{:?}", preview.rejection);
+    assert_eq!(products(&mut core), before);
+
+    core.edit_zebra(point).unwrap();
+    let added = products(&mut core);
+    assert_ne!(added, before);
+    assert_eq!(crossing_lanes(&core, node, tail), 2);
+    let lane_system = &core.transit_network.lane_system;
+    let crossing = lane_system.node_lanes[&(node as usize)]
+        .iter()
+        .find_map(|&lane| lane_system.crosswalk(lane)?.marking)
+        .unwrap();
+    assert!((crossing.start.z - crossing.end.z).abs() > 5.0);
+    for &id in &lane_system.node_lanes[&(node as usize)] {
+        if lane_system.crosswalk(id).is_none() {
+            continue;
+        }
+        let connector = &lane_system.lanes[id];
+        let from = lane_system.edge_lanes[&tail]
+            .iter()
+            .find(|&&lane| lane_system.lanes[lane].next_lanes.contains(&id))
+            .expect("an inbound sidewalk can route onto the zebra");
+        let to = &lane_system.lanes[connector.next_lanes[0]];
+        let from = &lane_system.lanes[*from];
+        let xz = |point: &Vector3| (point.x.to_bits(), point.z.to_bits());
+        assert_eq!(
+            from.geometry.last().map(xz),
+            connector.geometry.first().map(xz)
+        );
+        assert_eq!(
+            to.geometry.first().map(xz),
+            connector.geometry.last().map(xz)
+        );
+        assert!(from.geometry.last().unwrap().z * to.geometry.first().unwrap().z < 0.0);
+    }
+    let centre = (crossing.start + crossing.end) * 0.5;
+    assert!((centre.x - point.x).abs() < 0.001);
+
+    core.edit_zebra(centre).unwrap();
+    assert!(core.region_graph.is_retired_node(node));
+    assert!(
+        products(&mut core) == before,
+        "removal rejoins the original road"
+    );
+    assert!(core.undo_action_internal());
+    assert!(
+        products(&mut core) == added,
+        "undo removal restores the zebra bitwise"
+    );
+    assert!(core.undo_action_internal());
+    assert!(
+        products(&mut core) == before,
+        "undo removes the split bitwise"
+    );
+}
+
+#[test]
+fn zebra_tool_half_millimetre_cut_snaps_and_restores_original_knots_bitwise() {
+    use crate::simulation::network::roadbed::CROSSWALK_DEPTH_M;
+
+    let (mut core, _, _, west) = t_junction();
+    let source = core.region_graph.edge(west);
+    let knot = *source
+        .physical_geometry
+        .iter()
+        .find(|p| (-65.0..-55.0).contains(&p.x))
+        .unwrap();
+    let click = knot + Vector3::RIGHT * (0.5 * CROSSWALK_DEPTH_M as f32 + 0.0005);
+    let node = core.region_graph.node_count() as u32;
+    let tail = core.region_graph.edge_count();
+    let before = products(&mut core);
+    let control = core.region_graph.edge(west).geometry.clone();
+    core.edit_zebra(click).unwrap();
+    assert_eq!(core.region_graph.node(node).pos, knot);
+    for edge in [west, tail] {
+        let profile = &core.region_graph.edge(edge).physical_geometry;
+        assert!(
+            profile
+                .windows(2)
+                .all(|pair| pair[0].distance_to(pair[1]) > 0.001)
+        );
+    }
+    let split = products(&mut core);
+    core.edit_zebra(click).unwrap();
+    assert!(core.region_graph.is_retired_node(node));
+    assert_eq!(core.region_graph.edge(west).geometry, control);
+    assert!(
+        products(&mut core) == before,
+        "the direct join restores the road bitwise"
+    );
+    assert!(core.undo_action_internal());
+    assert!(
+        products(&mut core) == split,
+        "undo restores the snapped split bitwise"
+    );
+    assert!(core.undo_action_internal());
+    assert!(
+        products(&mut core) == before,
+        "undo restores the original road bitwise"
+    );
+}
+
+#[test]
+fn zebra_tool_split_and_join_survive_save() {
+    let (mut core, _, _, _) = t_junction();
+    let point = Vector3::new(-57.37, 0.0, 0.0);
+    let node = core.region_graph.node_count() as u32;
+    let tail = core.region_graph.edge_count();
+    core.edit_zebra(point).unwrap();
+    let path = temp_save_path("mid_road_zebra");
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(crossing_lanes(&loaded, node, tail), 2);
+    assert!(loaded.road_edit_site().preview_zebra(point).removing);
+    loaded.edit_zebra(point).unwrap();
+    assert!(loaded.region_graph.is_retired_node(node));
+}
+
+#[test]
+fn zebra_tool_refusals_match_click_and_leave_history() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::types::EdgeClass;
+
+    let (mut core, _, _, west) = t_junction();
+    let point = Vector3::new(-52.0, 0.0, 0.0);
+    let depth = core.undo_stack.len();
+    let check = |core: &mut SimCore, point, reason| {
+        let preview = core.road_edit_site().preview_zebra(point);
+        assert_eq!(preview.rejection.unwrap().reason, reason);
+        assert_eq!(core.edit_zebra(point).unwrap_err().reason, reason);
+        assert_eq!(core.undo_stack.len(), depth);
+    };
+    check(&mut core, Vector3::ZERO, "zebra_near_junction");
+    core.region_graph.edge_mut(west).class = EdgeClass::Bridge;
+    check(&mut core, point, "zebra_bridge");
+    core.region_graph.edge_mut(west).class = EdgeClass::Tunnel;
+    check(&mut core, point, "zebra_tunnel");
+    let road = core.region_graph.edge_mut(west);
+    road.class = EdgeClass::Standard;
+    road.set_sidewalks(SidewalkSides::NONE);
+    check(&mut core, point, "zebra_sidewalks");
+    core.region_graph.edge_mut(west).fwd_lanes = 0;
+    core.region_graph.edge_mut(west).bkw_lanes = 0;
+    check(&mut core, point, "zebra_walkway");
+}
+
+#[test]
 fn a_zebra_turned_off_removes_its_crossing_and_on_restores_it() {
     let (mut core, node, side, _) = t_junction();
     let before = products(&mut core);

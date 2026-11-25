@@ -165,6 +165,7 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: connections.into_iter().collect(),
                 crosswalk_overrides: HashMap::new(),
+                zebra_cut_knots: None,
                 retired: false,
             });
         }

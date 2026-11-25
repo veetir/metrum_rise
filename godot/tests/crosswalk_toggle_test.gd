@@ -1,26 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## The select tool's crossing toggle against the native bridge (`ROAD-74`): a click on an arm's
-## toggle turns its zebra off, the next render generation's road chunks, installed by the road
-## tool, carry less crossing paint and the arm reports no crossing; undo restores the paint. The
-## user's play-test found the paint staying drawn because the toggle published no generation.
+## The Zebra tool through the native bridge: a click adds and removes a mid-road crossing,
+## and an arm click updates the published junction paint. Undo publishes the same products.
 extends SceneTree
 
-const SelectTool := preload("res://scripts/tools/select_tool.gd")
+const ZebraTool := preload("res://scripts/tools/zebra_tool.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 var _failures := 0
 var simulation: SimulationNode
-
-class UiStub extends Node:
-	func hide_road_properties() -> void:
-		pass
-	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
-		pass
-	func show_junction_window(_node: int, _point: Vector2) -> void:
-		pass
-	func hide_junction_window() -> void:
-		pass
 
 class TerrainStub extends Node3D:
 	pass
@@ -94,18 +82,14 @@ func _run() -> void:
 			or not await _commit(PackedVector3Array([_ground_point(0.0, -60.0), _ground_point(0.0, 60.0)])):
 		_finish(scene)
 		return
-	var ui := UiStub.new()
-	ui.name = "MainUI"
-	scene.add_child(ui)
-	var overlay := Node3D.new()
-	overlay.name = "ZoningOverlay"
-	scene.add_child(overlay)
-	# The road tool renders the chunks; it stays out of the tree so the select tool's own
-	# refresh call is left to the renderer's generation poll, as in the game.
+	var terrain := TerrainStub.new()
+	terrain.name = "Terrain"
+	scene.add_child(terrain)
+	# Use the same chunk installation as the game.
 	var road_tool := RoadToolScript.new()
 	road_tool.name = "RoadTool"
 	road_tool.simulation_node = simulation
-	road_tool.terrain_node = TerrainStub.new()
+	road_tool.terrain_node = terrain
 	road_tool.make_chunks()
 	road_tool.blueprint_mesh = MeshInstance3D.new()
 	road_tool.add_child(road_tool.blueprint_mesh)
@@ -114,42 +98,59 @@ func _run() -> void:
 	var painted_before := _painted_vertices(road_tool)
 	_expect(painted_before > 0, "the cross is drawn with zebras")
 
-	var tool = SelectTool.new()
+	var tool := ZebraTool.new()
 	scene.add_child(tool)
-	tool.set_process(false)
-	tool.active = true
-	var node: int = simulation.get_closest_node(Vector3.ZERO, 8.0)
-	_expect(node >= 0, "the cross has a junction node")
-	tool.selected_node = node
-	tool._build_node_visuals(node)
-	_expect(tool.crosswalk_toggles.size() == 4, "every arm of the cross has a toggle: %d" % tool.crosswalk_toggles.size())
-	var toggle: Dictionary = tool.crosswalk_toggles[0]
-	_expect(toggle.has_cw, "the arm crosses before the toggle")
+	tool.set_tool_active(true)
 	var camera := Camera3D.new()
 	scene.add_child(camera)
-	camera.position = toggle.pos + Vector3(0.0, 30.0, 0.01)
-	camera.look_at(toggle.pos)
+	camera.position = Vector3(0.0, 24.0, 0.01)
+	camera.look_at(Vector3.ZERO)
 	camera.current = true
 	await process_frame
 
-	var generation := simulation.get_network_render_generation()
-	_click(camera, toggle.pos)
+	var mid := _ground_point(-37.37, 0.0)
+	var count := simulation.get_network_nodes().size()
+	tool.set_scripted_pointer(true, mid)
 	await process_frame
-	_expect(not simulation.has_crosswalk(node, toggle.edge_id), "the click turns the arm's crossing off")
-	_expect(simulation.get_network_render_generation() > generation, "the toggle publishes a new render generation")
-	_expect(simulation.is_network_dirty(), "the renderer is told to refresh")
-	_expect(_install(road_tool), "the toggle's chunks install")
-	var painted_off := _painted_vertices(road_tool)
-	_expect(painted_off < painted_before, "the arm's zebra paint is gone from the drawn chunks: %d -> %d" % [painted_before, painted_off])
-	_expect(not tool.crosswalk_toggles[0].has_cw, "the toggle shows the arm off")
-
+	_expect(tool.blueprint_mesh.mesh != null, "the straight road shows a ghost")
+	_click(camera, mid)
+	_expect(simulation.get_network_nodes().size() == count + 1, "the mid-road click adds one node")
+	_expect(simulation.preview_zebra(mid).get("removing", false), "the crossing is now the remove target")
+	_click(camera, mid)
+	_expect(not simulation.preview_zebra(mid).get("removing", false), "the second click removes the crossing")
+	var generation := simulation.get_network_render_generation()
+	_expect(simulation.undo_action(), "removal undo is queued")
+	_expect(await _await_generation(generation), "removal undo publishes")
+	_expect(simulation.preview_zebra(mid).get("removing", false), "undo brings back the mid-road zebra")
 	generation = simulation.get_network_render_generation()
-	_expect(simulation.undo_action(), "undo is queued")
-	_expect(await _await_generation(generation), "undo publishes a new render generation")
-	_expect(simulation.has_crosswalk(node, toggle.edge_id), "undo restores the arm's crossing")
-	_expect(_install(road_tool), "the undo's chunks install")
-	_expect(_painted_vertices(road_tool) == painted_before, "undo restores the zebra paint: %d" % _painted_vertices(road_tool))
-	tool.active = false
+	_expect(simulation.undo_action(), "addition undo is queued")
+	_expect(await _await_generation(generation), "addition undo publishes")
+	_expect(simulation.get_network_nodes().size() == count, "addition undo restores the original road")
+
+	var node: int = simulation.get_closest_node(Vector3.ZERO, 8.0)
+	_expect(node >= 0, "the cross has a junction node")
+	var arm_hit := Vector3.INF
+	for step in range(1, 21):
+		var point := _ground_point(float(step), 0.0)
+		if simulation.preview_zebra(point).get("removing", false):
+			arm_hit = point
+			break
+	_expect(arm_hit.is_finite(), "a painted junction arm is targetable")
+	if arm_hit.is_finite():
+		tool.set_scripted_pointer(true, arm_hit)
+		generation = simulation.get_network_render_generation()
+		_click(camera, arm_hit)
+		_expect(not simulation.preview_zebra(arm_hit).get("removing", false), "the click removes the arm zebra")
+		_expect(simulation.get_network_render_generation() > generation, "the toggle publishes a new render generation")
+		_expect(_install(road_tool), "the toggle's chunks install")
+		_expect(_painted_vertices(road_tool) < painted_before, "the arm's zebra paint is gone")
+		generation = simulation.get_network_render_generation()
+		_expect(simulation.undo_action(), "arm undo is queued")
+		_expect(await _await_generation(generation), "arm undo publishes")
+		_expect(simulation.preview_zebra(arm_hit).get("removing", false), "undo restores the arm zebra")
+		_expect(_install(road_tool), "the undo's chunks install")
+		_expect(_painted_vertices(road_tool) == painted_before, "undo restores the zebra paint")
+	tool.set_tool_active(false)
 	road_tool.free()
 	_finish(scene)
 

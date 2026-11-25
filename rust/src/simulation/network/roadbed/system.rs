@@ -161,6 +161,24 @@ pub struct RoadbedDelta {
 type BuiltNode = Result<Option<Arc<NodePiece>>, NodeError>;
 
 impl RoadbedDelta {
+    /// Kerb points of one crossing in this closure's rebuilt node or span.
+    pub(crate) fn crossing_kerbs(&self, node: u32, arm: ArmKey) -> Option<[Vector3; 2]> {
+        if let Some(piece) = self
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == node)
+            .and_then(|(_, piece)| piece.as_ref().ok()?.as_ref())
+        {
+            return piece.crosswalk_kerbs(arm);
+        }
+        self.spans
+            .iter()
+            .find(|(edge, _)| *edge == arm.edge)?
+            .1
+            .as_ref()?
+            .crosswalk_kerbs(arm.end)
+    }
+
     /// The rebuilt span and node pieces, by owner in install order; `None` where the owner has
     /// no piece. A failed node is absent.
     pub fn pieces(&self) -> impl Iterator<Item = (PieceId, Option<&PieceMesh>)> + '_ {

@@ -264,6 +264,29 @@ impl SimCore {
         self.undo_stack.push_back(snapshot);
     }
 
+    /// Records one Zebra click, including any frontage changes caused by its topology edit.
+    pub(super) fn push_zebra_undo(
+        &mut self,
+        graph: RegionGraphUndoDelta,
+        alignments: crate::simulation::zoning::RoadAlignmentRecords,
+        cells: Option<CellPaintUndo>,
+        dependents: Option<crate::simulation::network::pockets::PocketDependentsUndo>,
+    ) {
+        self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
+            graded: None,
+            terrain: None,
+            water: None,
+            trans_graph: Some(graph),
+            zoning: None,
+            cells,
+            alignments: Some(alignments),
+            runtime: dependents.map(SimulationRuntimeSnapshot::RoadDependents),
+            group: 0,
+            charged: 0.0,
+        });
+    }
+
     /// A fresh undo group id (`ROAD-112` round F). O(1).
     pub(crate) fn next_undo_group(&mut self) -> u64 {
         self.undo_group_counter = self.undo_group_counter.wrapping_add(1);
@@ -787,7 +810,11 @@ impl SimCore {
     }
 
     // [`Self::restore_lanes_locally`]'s lanes and agents, without the entrances.
-    fn rebuild_lanes_locally(&mut self, edge_ids: &HashSet<usize>, node_ids: &HashSet<u32>) {
+    pub(super) fn rebuild_lanes_locally(
+        &mut self,
+        edge_ids: &HashSet<usize>,
+        node_ids: &HashSet<u32>,
+    ) {
         let lanes = &mut self.transit_network.lane_system;
         self.agents
             .invalidate_lane_ids_for_edges(edge_ids, lanes, &self.region_graph);

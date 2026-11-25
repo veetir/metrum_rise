@@ -33,6 +33,7 @@ var industry_building_tool: Node3D
 var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
 var roundabout_tool: Node3D
+var zebra_tool: Node3D
 @onready var vegetation_tool = $"../VegetationTool"
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
@@ -42,7 +43,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT, ZEBRA }
 var current_tool: Tool = Tool.NONE:
 	set(value):
 		if current_tool != value:
@@ -133,6 +134,10 @@ func _ready():
 		roundabout_tool = rt
 	else:
 		roundabout_tool = get_node("../RoundaboutTool")
+
+	zebra_tool = preload("res://scripts/tools/zebra_tool.gd").new()
+	zebra_tool.name = "ZebraTool"
+	get_parent().call_deferred("add_child", zebra_tool)
 
 	if has_node("../BuildingInspector"):
 		building_inspector = get_node("../BuildingInspector")
@@ -305,8 +310,8 @@ func _unhandled_input(event):
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		# An open Roads, Zoning or Terrain palette takes 1-9 for its numbered tiles.
-		if event.keycode >= KEY_1 and event.keycode <= KEY_9 and not event.ctrl_pressed \
+		# Roads continues its numbered tiles with 0.
+		if event.keycode >= KEY_0 and event.keycode <= KEY_9 and not event.ctrl_pressed \
 				and not event.alt_pressed and not event.meta_pressed and main_ui \
 				and main_ui.has_method("handle_number_key") \
 				and main_ui.handle_number_key(event.keycode - KEY_0):
@@ -528,6 +533,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.ROUNDABOUT:
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 			if roundabout_tool: roundabout_tool.set_tool_active(enabled)
+		Tool.ZEBRA:
+			if zebra_tool: zebra_tool.set_tool_active(enabled)
 		Tool.FIELD_EDIT:
 			if not enabled and field_edit_tool:
 				field_edit_tool.cancel_edit()
@@ -540,8 +547,7 @@ func _handle_undo():
 	if current_tool == Tool.ZONING and zoning_tool:
 		zoning_tool.undo()
 		return
-	if simulation_node.undo_action():
-		print("Undo Queued Globally")
+	simulation_node.undo_action()
 
 func _handle_money_and_demand_cheat() -> void:
 	if not simulation_node or not simulation_node.has_method("apply_money_and_max_demand_cheat"):

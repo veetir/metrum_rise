@@ -22,6 +22,7 @@ fn fixture(
             node_type: NodeType::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            zebra_cut_knots: None,
             retired: false,
         })
         .collect();

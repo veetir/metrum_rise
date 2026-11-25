@@ -90,7 +90,7 @@ func _run() -> void:
 
 	# No node move tool (`ROAD-111`).
 	var tools: Array = input_manager.Tool.keys()
-	_expect(tools == ["NONE", "ROAD", "WALKWAY", "ZONING", "SERVICES", "INDUSTRY", "AGENT", "SCULPT", "SELECT", "BULLDOZE", "VEGETATION", "FIELD_EDIT", "ROUNDABOUT"], "the tool list: %s" % [tools])
+	_expect(tools == ["NONE", "ROAD", "WALKWAY", "ZONING", "SERVICES", "INDUSTRY", "AGENT", "SCULPT", "SELECT", "BULLDOZE", "VEGETATION", "FIELD_EDIT", "ROUNDABOUT", "ZEBRA"], "the tool list: %s" % [tools])
 	_expect(_main.get_node_or_null("MoveTool") == null, "the scene has no move tool")
 	var toolbar: Array = []
 	for button in _main.get_node("MainUI").main_toolbar.get_children():
@@ -100,6 +100,12 @@ func _run() -> void:
 	_expect(toolbar == ["Roads", "Zoning", "Services", "Industry", "Terrain", "Bulldoze"], "the toolbar: %s" % [toolbar])
 	_press(input_manager, KEY_M)
 	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "M picks no tool")
+	var ui: Node = _main.get_node("MainUI")
+	_press(input_manager, KEY_0)
+	_expect(input_manager.current_tool == input_manager.Tool.ZEBRA and ui.zebra_btn.button_pressed,
+		"0 selects and marks the Zebra tool")
+	_expect(ui.zebra_btn.get_parent() == ui.road_sub_menu and ui.zebra_btn.get_index() == ui.select_main_btn.get_index() + 1,
+		"Zebra follows Edit roads outside the road-type grid")
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	tool.active = false
 	_main.queue_free()
