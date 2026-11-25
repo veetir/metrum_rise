@@ -52,8 +52,8 @@ use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
 use super::modes::freeform::{Freeform, Grip, MAX_NODES};
 use super::modes::{self, DrawMode};
 use super::pick::{
-    NETWORK_SNAP_REACH_M, SELF_SNAP_M, SurfacePick, half_extents, is_near_border, lane_width_m,
-    level_height, pick_surface, snap_to_border,
+    NETWORK_SNAP_REACH_M, SELF_SNAP_M, SurfacePick, half_extents, is_near_border, level_height,
+    pick_surface, snap_to_border,
 };
 use super::snap::{
     GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, SquareAxis,
@@ -1192,13 +1192,10 @@ impl RoadToolSession {
             });
         let grid = (constrained && self.snap.grid).then(|| {
             let start = (self.placed_len > 0).then(|| xz_of(self.placed[0]));
-            let width = lane_width_m(
-                i32::from(self.spec.fwd_lanes),
-                i32::from(self.spec.bkw_lanes),
-            );
-            let (point, on) =
-                view.zoning_grid
-                    .snap_road_cursor_on(graph, raw_xz, start, f64::from(width));
+            let offset = grid_curb_offset_m(&self.spec);
+            let (point, on) = view
+                .zoning_grid
+                .snap_road_cursor_on(graph, raw_xz, start, offset);
             // With a start the grid snaps along an axis through it: that axis is the line.
             let dir = start.and_then(|start| (point - start).try_normalize());
             (point, dir, on)

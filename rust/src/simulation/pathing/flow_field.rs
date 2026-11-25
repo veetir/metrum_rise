@@ -507,6 +507,7 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: s,
             end_node: e,

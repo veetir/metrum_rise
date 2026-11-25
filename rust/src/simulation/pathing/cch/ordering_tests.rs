@@ -30,6 +30,7 @@ fn grid(side: u32) -> RegionGraph {
             {
                 let geometry = vec![graph.node(a).pos, graph.node(b).pos];
                 graph.add_edge(Edge {
+                    sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
                     parking: Default::default(),
                     start_node: a,
                     end_node: b,

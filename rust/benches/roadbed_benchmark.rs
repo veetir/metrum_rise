@@ -198,6 +198,7 @@ fn edge_through(start_node: u32, end_node: u32, points: Vec<Vector3>) -> Edge {
         parking: Default::default(),
         pocket: None,
         sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        sidewalk_widths: Default::default(),
         roundabout: None,
     }
 }

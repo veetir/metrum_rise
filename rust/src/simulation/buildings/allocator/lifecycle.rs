@@ -2,7 +2,6 @@
 
 //! Building removal, demand-owned household admission, and coordinate restoration.
 
-use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, DemandSpawnPlacementRejection, SiteChange, baseline_private_zone_slot,
@@ -1526,7 +1525,7 @@ impl BuildingAllocator {
                 + edge
                     .frontage_half_width_m(1)
                     .max(edge.frontage_half_width_m(-1))
-                + SIDEWALK_WIDTH;
+                + edge.sidewalk_widths.widest_m();
             let ends;
             let points = if edge.physical_geometry.len() >= 2 {
                 edge.physical_geometry.as_slice()

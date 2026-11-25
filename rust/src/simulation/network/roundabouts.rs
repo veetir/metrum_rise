@@ -15,7 +15,7 @@
 use super::graph::{Edge, RegionGraph, RoadParking, RoundaboutRing, SidewalkSides};
 use super::lanes::pedestrian_junctions::segment_distance_xz;
 use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
-use super::roadbed::visual_roadbed_half_width_m;
+use super::roadbed::{MAX_ROADBED_HALF_WIDTH_M, visual_roadbed_half_width_m};
 use super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use crate::config;
 use crate::simulation::agriculture::PolygonFootprint;
@@ -45,8 +45,6 @@ const BARE_RING_ANGLES_DEG: [f32; 3] = [90.0, 210.0, 330.0];
 // The ring's largest radius, the reach of the island query.
 const RING_MAX_RADIUS_M: f32 = 40.0;
 const ISLAND_REFUSAL: &str = "roundabout_island";
-// How far beyond the two roadbeds the clearance query looks.
-const CLEARANCE_QUERY_PAD_M: f32 = 24.0;
 // The sides of a refused ring's outline and of the ring's land (`island_footprint`).
 const OUTLINE_SIDES: usize = 64;
 // Knots nearer than this to a cut merge into it.
@@ -339,7 +337,7 @@ impl RoundaboutLayout {
                 min = min.coord_min(*point);
                 max = max.coord_max(*point);
             }
-            let halo = Vector3::new(1.0, 0.0, 1.0) * (half_m + CLEARANCE_QUERY_PAD_M);
+            let halo = Vector3::new(1.0, 0.0, 1.0) * (half_m + MAX_ROADBED_HALF_WIDTH_M);
             for id in graph.get_edges_near_aabb(min - halo, max + halo) {
                 let other = graph.edge(id);
                 if other.deleted || self.arms.iter().any(|(arm, _)| *arm == id) {
@@ -372,7 +370,10 @@ impl RoundaboutLayout {
     /// points.
     pub(crate) fn island_footprint(&self) -> PolygonFootprint<'static> {
         let half_m = 0.5 * f32::from(self.lanes) * config::LANE_WIDTH;
-        let radius_m = f64::from(self.circle.radius_m + half_m + config::SIDEWALK_WIDTH);
+        // Every piece of this generated ring has the same outer sidewalk.
+        let outer_side = if ring_sidewalk_side().right() { -1 } else { 1 };
+        let sidewalk_m = self.ring[0].sidewalk_widths.on_building_side(outer_side);
+        let radius_m = f64::from(self.circle.radius_m + half_m + sidewalk_m);
         let centre = [self.circle.centre.x, self.circle.centre.y].map(f64::from);
         PolygonFootprint::from_precise_points((0..OUTLINE_SIDES).map(|side| {
             let angle = std::f64::consts::TAU * side as f64 / OUTLINE_SIDES as f64;

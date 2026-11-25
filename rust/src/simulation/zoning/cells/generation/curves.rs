@@ -64,11 +64,7 @@ fn source_candidates<M: CellMaps>(
         let mut coverage = Vec::new();
         for &edge_id in roads {
             let edge = graph.edge(edge_id);
-            if edge.primary_type != TransitType::Road
-                || !graph.fronts_ground(edge_id)
-                || f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
-                    != source.half_width
-            {
+            if edge.primary_type != TransitType::Road || !graph.fronts_ground(edge_id) {
                 continue;
             }
             // A pocket edge's groups front its carriageway's axis (`ROAD-95`, D17): its
@@ -88,6 +84,12 @@ fn source_candidates<M: CellMaps>(
                 }
                 let c_t = (c - a).dot(tangent);
                 let d_t = (d - a).dot(tangent);
+                let side = source.side * if d_t > c_t { 1 } else { -1 };
+                let half_width = f64::from(edge.width) * 0.5
+                    + f64::from(edge.sidewalk_widths.on_building_side(side));
+                if half_width != source.half_width {
+                    continue;
+                }
                 let min = c_t.min(d_t).max(0.0);
                 let max = c_t.max(d_t).min(length);
                 if max <= min {
@@ -100,7 +102,7 @@ fn source_candidates<M: CellMaps>(
                     min: u.min(v),
                     max: u.max(v),
                     edge: edge_id,
-                    side: source.side * if d_t > c_t { 1 } else { -1 },
+                    side,
                 });
             }
         }
@@ -168,8 +170,7 @@ fn source_candidates<M: CellMaps>(
         let end = begin + 1.0;
         let mut eligible_end = begin;
         for interval in &intervals {
-            if !graph.edge(interval.edge).zones_side(interval.side)
-                || interval.max <= eligible_end
+            if !graph.edge(interval.edge).zones_side(interval.side) || interval.max <= eligible_end
             {
                 continue;
             }

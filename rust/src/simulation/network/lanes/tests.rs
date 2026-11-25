@@ -17,6 +17,7 @@ fn test_lane_geometry_and_length() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n1,
         end_node: n2,
@@ -83,6 +84,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
     let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n1,
         end_node: n2,
@@ -215,6 +217,7 @@ fn test_highway_no_sidewalks() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n1,
         end_node: n2,
@@ -318,6 +321,7 @@ fn test_dedicated_footpath_centering() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n1,
         end_node: n2,
@@ -391,6 +395,7 @@ fn build_pedestrian_junction(
         let start = graph.node(center).pos;
         let end = graph.node(arm).pos;
         edge_ids.push(graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: center,
             end_node: arm,
@@ -671,6 +676,7 @@ fn test_rht_lane_offsets() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n1,
         end_node: n2,
@@ -911,6 +917,7 @@ fn test_crosswalk_counts() {
     ];
     for (s, e) in edges {
         graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: s,
             end_node: e,
@@ -1262,6 +1269,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
             let p0 = graph.nodes[start_node as usize].pos;
             let p1 = graph.nodes[end_node as usize].pos;
             graph.add_edge(Edge {
+                sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
                 parking: Default::default(),
                 start_node,
                 end_node,
@@ -1458,6 +1466,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
     let p0 = graph.nodes[s as usize].pos;
     let p1 = graph.nodes[e as usize].pos;
     graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: s,
         end_node: e,
@@ -1709,3 +1718,42 @@ fn test_incremental_rebuild_connection_lanes_exist_at_junction() {
 mod crossings;
 mod footpaths;
 mod rebuild_benchmark;
+
+#[test]
+fn asymmetric_sidewalk_lanes_reach_their_own_crossing_ends() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    use crate::simulation::network::roadbed::{ArmKey, EdgeEnd, NodeWalkways, fixtures};
+    let mut graph = fixtures::t_junction(false);
+    graph.edge_mut(1).sidewalk_widths = SidewalkWidths::new(4.0, 1.5).unwrap();
+    fixtures::finalize(&mut graph);
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    let walkways = NodeWalkways::collect(&graph, 0).unwrap();
+    let arm = ArmKey {
+        edge: 1,
+        end: EdgeEnd::Start,
+    };
+    let (_, kerbs) = walkways.crossings().find(|(key, _)| *key == arm).unwrap();
+    // The zebra's edges are still the two 3.5 m kerbs. The sidewalk lanes
+    // meet it midway across their bands at 3.5 + 4 / 2 and 3.5 + 1.5 / 2 m.
+    assert!(kerbs.iter().all(|point| (point.z.abs() - 3.5).abs() < 1e-5));
+    for (positive, expected) in [(false, -5.5), (true, 4.25)] {
+        let mouth = walkways.sidewalk_end(arm, positive).unwrap();
+        assert!((mouth.point.z - f64::from(expected)).abs() < 1e-5);
+        let lane_idx = if positive == crate::config::DRIVE_ON_LEFT {
+            100
+        } else {
+            -100
+        };
+        for &id in &lanes.edge_lanes[&1] {
+            let lane = &lanes.lanes[id];
+            if lane.lane_idx == lane_idx {
+                assert!(
+                    lane.geometry
+                        .iter()
+                        .all(|point| (point.z - expected).abs() < 1e-5)
+                );
+            }
+        }
+    }
+}

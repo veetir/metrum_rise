@@ -413,6 +413,7 @@ mod tests {
         ];
 
         let edge_defaults = Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: 0,
             end_node: 0,

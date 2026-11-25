@@ -191,18 +191,17 @@ plane over exactly the node piece's extent. Heights never feed back into layout.
 
 ### Cross-section profile
 
-`RoadProfile` is a pure function of the edge (`primary_type`, `allowed_types`, `sidewalks`,
-`width`, `class`), ported unchanged from the legacy band rule and applied per side since
-`ROAD-107`: each side of a car road with a sidewalk (`Edge::sidewalks`, left = negative lateral)
-has the curb and sidewalk, each side without one the shoulder. Bands are listed left to right in
-the edge's forward frame:
+`RoadProfile` reads the edge's carriageway and shoulder or sidewalk bands. The left
+side is negative lateral in the edge's forward frame. On each side with a sidewalk,
+its authored width includes the 0.15 m kerb. In the table, `sL` and `sR` are the left
+and right total widths. See [Per-side sidewalk widths](#per-side-sidewalk-widths-road-132).
 
 | Edge | Bands | Levels |
 | --- | --- | --- |
-| Car road with sidewalks | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb, sidewalk | raised, raised, ground, ground, raised, raised |
+| Car road with sidewalks | sidewalk `sL - 0.15 m`, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb 0.15 m, sidewalk `sR - 0.15 m` | raised, raised, ground, ground, raised, raised |
 | Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
-| Car road with the left sidewalk only (`ROAD-107`) | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, shoulder 0.75 m | raised, raised, ground, ground, raised |
-| Car road with the right sidewalk only (`ROAD-107`) | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, curb 0.15 m, sidewalk 1.35 m | raised, ground, ground, raised, raised |
+| Car road with the left sidewalk only (`ROAD-107`) | sidewalk `sL - 0.15 m`, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, shoulder 0.75 m | raised, raised, ground, ground, raised |
+| Car road with the right sidewalk only (`ROAD-107`) | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, curb 0.15 m, sidewalk `sR - 0.15 m` | raised, ground, ground, raised, raised |
 | Footpath | footpath `max(edge.width, 2 m)` | ground |
 | Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
@@ -11921,8 +11920,9 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
 `[` / Down, `.`, `,`, N, `;`, `'`) are gone; T still toggles the tunnel.
 
 - **Model** (`simulation/network/road_types.rs`, engine-free). A layout is an ordered list of
-  parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
-  `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
+  parts, left to right looking along the road's forward direction. It can hold `Sidewalk { width_m }`
+  (1.5 to 4.0 m including the kerb, in 0.5 m steps), `CarLane { forward }` (3.5 m), at most one
+  `Median` (style and width in the
   style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
   (2.5 m kerbside parking lane at a kerb, next to a sidewalk on its own side, `PARK-05`,
   `layout_parking_needs_sidewalk`,
@@ -12158,6 +12158,69 @@ D1-D5, D22, D23).
   throughout, so read the counts, not the absolute cycles) shows code placement, not added work:
   instructions 123,409 -> 123,155 and branches 16,628 -> 16,513 fall, while cycles
   40,179 -> 41,581, branch misses 4.5 -> 6.0 and L1 instruction misses 1,626 -> 1,683 rise.
+
+#### Per-side sidewalk widths (ROAD-132)
+
+The road builder's sidewalk part holds a width from 1.5 to 4.0 m in 0.5 m steps,
+including the 0.15 m kerb. Click the sidewalk to open its width stepper. Its checkbox
+controls presence. Rust refuses off-grid widths with `sidewalk_width_out_of_range`.
+A new part and a road-type library part without `width_m` both start at 1.5 m.
+
+Save format 130 stores the left and right widths beside the edge's sidewalk mask. Format
+129 and the earlier formats supported by the loader supply 1.5 m per sidewalk. Splits, road
+end growth and undo carry the edge's widths. Roads with the same cross-section across a
+joint compare widths in a common direction before joining. Road Properties shows the
+width of each side and uses the current in-place edit path for width and type changes.
+The placed-building lot refusal is `plotted_building_overlap`. Taking zoned buildings
+uses the existing confirmation.
+
+The roadbed, pedestrian lanes, walkway endpoints, lights and frontage all read their
+own side. Symmetric corridors use the wider side under `ROAD-107` D4. Each width
+lookup is constant time. Widening uses the existing local roadbed closure and spatial
+queries.
+
+| Built-in type | Street role | Left sidewalk | Right sidewalk |
+| --- | --- | --- | --- |
+| Walkway | Pedestrian path | — | — |
+| 2-Lane Road | Residential street | 2.0 m | 2.0 m |
+| 4-Lane Road | Main street | 3.0 m | 3.0 m |
+| One-Way 1L | Local lane | 2.0 m | 2.0 m |
+| One-Way 2L | Collector | 2.5 m | 2.5 m |
+
+New roads drawn with these types use the preset widths. A player can explicitly apply a
+type to a built road through the same in-place checks. Loading a city keeps its stored
+widths. The deterministic gameplay and Kuopio replay fixtures request the original
+1.5 m widths through Rust so their products can still be compared across builds.
+
+Fresh Level F timing (2026-11-25, unprofiled Apple M2 Pro, eight Rayon workers,
+unpinned, control `b1758fb4e`, release test binaries `ea46c4d9b6bfe8fa` and
+`26475dbc5315525a`). The matched 30k control/branch/branch/control 1× day means were
+1.724 / 1.664 / 1.747 / 1.707 ms. The branch mean was 0.6% lower, within the runner's
+comparison tolerance. The earlier 1× pair had shown +3.2%, which did not reproduce.
+The 1× absolute worst-frame check failed on both builds. The 32× means were
+3.691 / 3.550 / 3.598 / 3.745 ms. K22 30k click-to-ack was 7.21 / 7.22 ms with
+matching graded tile digests.
+
+The widening locality run (`$TEST_BINARY populated_sidewalk_width_edit_scaling --ignored
+--nocapture --test-threads=1`, release binary `ffdb508cd1e9b578`, eight Rayon workers)
+held the T junction and four occupied lots fixed and grew the background to 100,000
+buildings and parcels, 600,000 agents and 391 roads. The left sidewalk grew from 1.5 to
+4.0 m. Verdict p50 at 0 / 1k / 10k / 100k remote buildings was 0.346 / 0.307 / 0.306 /
+0.348 ms over 100 checks per tier. The local mesh and lane products matched across all
+tiers and undo restored them at every tier. Publication touched one chunk. At the
+largest tier commit and undo took 1.430 and 2.119 ms p50 over 20 samples, including
+the existing lane and entrance update paths. Fixture construction was outside the
+measured operations.
+
+The format-129 test preserves lane geometry bits and the format-130 round-trip
+restores both widths. Against `b1758fb4e`, all 17 headless gameplay commit records
+and all 78 rendered Kuopio commit records match in every product field, including
+published mesh and graded tile digests. The 186 roadbed probe records also match
+the upstream run. These comparisons used the existing goldens. The targeted
+release suite passed 909 tests, with four failures reproduced on the upstream
+build and 58 ignored. Clippy adds no warning. The isolated Godot builder,
+cross-section, lane edit, road types and rejection suites pass.
+
 
 #### The road builder (ROAD-101, round RB2)
 

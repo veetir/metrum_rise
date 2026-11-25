@@ -155,7 +155,7 @@ impl<M: CellMaps> CellStore<M> {
                     // A pocket edge's corridor runs on its carriageway's axis (D17), up to its
                     // kerb shift off the indexed centreline.
                     f64::from(edge.width) * 0.5
-                        + f64::from(crate::config::SIDEWALK_WIDTH)
+                        + f64::from(edge.sidewalk_widths.widest_m())
                         + f64::from(edge.kerb_shift_m().abs())
                 }
             })
@@ -470,7 +470,7 @@ fn edge_candidates(
         && points
             .iter()
             .all(|point| (point - points[0]).perp_dot(road_direction).abs() <= straight_precision);
-    let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+    let half_width = f64::from(edge.width) * 0.5 + f64::from(edge.sidewalk_widths.widest_m());
     // A road without prepared frames takes its phase from its frontage line's junctions: its
     // base road's, for a pocket piece (`ROAD-95` round R5d1).
     let line = (straight && alignment.is_none())
@@ -526,6 +526,8 @@ fn edge_candidates(
             }
             let mut group = Vec::with_capacity(super::CELL_GROUP_COLUMNS * CELL_DEPTH);
             let normal = DVec2::new(tangent.y, -tangent.x) * side;
+            let half_width = f64::from(edge.width) * 0.5
+                + f64::from(edge.sidewalk_widths.on_building_side(side as i8));
             let mut support = normal.dot(start).max(normal.dot(end)) + half_width;
             for &point in &guide {
                 support = support.max(normal.dot(point) + half_width);
@@ -783,8 +785,12 @@ fn junction_anchor(
             if direction.length_squared() == 0.0 || direction.dot(tangent).abs() > precision {
                 continue;
             }
-            let neighbor_width =
-                f64::from(neighbor.base_width_m()) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+            let neighbor_width = f64::from(neighbor.base_width_m()) * 0.5
+                + f64::from(
+                    neighbor
+                        .sidewalk_widths
+                        .on_building_side(super::frontage_line::side_towards(neighbor, inward)),
+                );
             return Some((
                 node + normal * half_width + inward * neighbor_width,
                 direction.dot(normal) > 0.0,
@@ -813,7 +819,7 @@ pub(super) fn straight_frame(
         v * direction.dot(v).signum()
     };
     let normal = DVec2::new(tangent.y, -tangent.x) * side;
-    let half_width = f64::from(line.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+    let half_width = line.half_width_m(side as i8);
     let mut origin = start + normal * half_width;
     let anchor = junction_anchor(graph, line, tangent, normal, half_width);
     if let Some((anchor, _)) = anchor {
@@ -870,7 +876,8 @@ fn neighborhood_width_bound_matches_full_corridor_query() {
             let pad = ids
                 .iter()
                 .map(|&id| {
-                    f64::from(graph.edge(id).width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
+                    f64::from(graph.edge(id).width) * 0.5
+                        + f64::from(graph.edge(id).sidewalk_widths.widest_m())
                 })
                 .fold(0.0, f64::max)
                 .min(ROAD_QUERY_PAD_M);
@@ -931,7 +938,9 @@ fn overlaps_road_corridors_bounded(
         if overlaps || edge.deleted || edge.class != EdgeClass::Standard {
             return;
         }
-        let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+        let asphalt_half_m = f64::from(edge.width) * 0.5;
+        let left_m = asphalt_half_m + f64::from(edge.sidewalk_widths.on_lateral(false));
+        let right_m = asphalt_half_m + f64::from(edge.sidewalk_widths.on_lateral(true));
         // A pocket edge's corridor is its carriageway's, about the axis shifted by its kerb
         // shift (`ROAD-95`, D17), segment by segment: exact on both sides, with no allocation.
         let shift = f64::from(edge.kerb_shift_m());
@@ -945,7 +954,7 @@ fn overlaps_road_corridors_bounded(
             // The contracted corridor lies inside this full-width envelope. Rounding
             // disjoint coordinate intervals cannot create positive-area intersection.
             if !CellBounds::from_points([a, b])
-                .expanded(half_width)
+                .expanded(left_m.max(right_m))
                 .intersects(cell_bounds)
             {
                 continue;
@@ -953,9 +962,11 @@ fn overlaps_road_corridors_bounded(
             let precision = super::geometry::road_source_precision(CellBounds::from_points(
                 corners.iter().copied().chain([a, b]),
             ));
-            let normal = (b - a).normalize_or_zero().perp() * (half_width - precision).max(0.0);
-            if normal.length_squared() > 0.0
-                && interiors_overlap(corners, &[a - normal, b - normal, b + normal, a + normal])
+            let normal = (b - a).normalize_or_zero().perp();
+            let left = normal * (left_m - precision).max(0.0);
+            let right = normal * (right_m - precision).max(0.0);
+            if (left.length_squared() > 0.0 || right.length_squared() > 0.0)
+                && interiors_overlap(corners, &[a - left, b - left, b + right, a + right])
             {
                 overlaps = true;
                 break;

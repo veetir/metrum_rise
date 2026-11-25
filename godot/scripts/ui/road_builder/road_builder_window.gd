@@ -9,7 +9,7 @@
 ## written). The card's header is one row: the type's name, editable (Rust's suggestion until the
 ## player types one; Rust's description as its tooltip), and beside it the first reason the type
 ## cannot be created, if any. Right: the strip with the layout to scale on a stage (each end a
-## fixed sidewalk, or on a side without one a 0.75 m shoulder band, drawn but not a part) with
+## sidewalk, or on a side without one a 0.75 m shoulder band, drawn but not a part) with
 ## the total width and, under it, the type's cost per metre from Rust; a check box over each end
 ## toggles its sidewalk (`ROAD-107`, left and right as the road is drawn). Below the stage a
 ## warning when a road zones with a side or both without a sidewalk (nothing is built there),
@@ -187,6 +187,7 @@ func _build_window() -> void:
 	editor.add_child(_well(_build_bottom_row(), 8))
 
 	part_popup = RoadPartPopup.new()
+	part_popup.sidewalk_changed.connect(func(width_m: float): set_sidewalk_width(_popup_index, width_m))
 	part_popup.median_changed.connect(func(style: int, width: float): set_median(_popup_index, style, width))
 	part_popup.move_requested.connect(func(step: int): move_part_by(_popup_index, step))
 	part_popup.remove_requested.connect(func(): remove_part(_popup_index))
@@ -408,6 +409,7 @@ func open() -> void:
 	_simulation_node.reload_road_types()
 	var changed := str(_simulation_node.get_road_types()) != listed
 	_median_styles = _simulation_node.get_median_styles()
+	part_popup.sidewalk_control.grid = _simulation_node.get_road_types().get("sidewalk_widths", {})
 	for tile in tiles:
 		if String(tile.part.get("kind", "")) == "median":
 			tile.part["width_m"] = float(_median_styles[int(tile.part.style)].default_m)
@@ -440,6 +442,10 @@ func is_open() -> bool:
 func _start(layout: Array, id: String, type_name: String, from: Dictionary = {}) -> void:
 	_close_popup()
 	var start: Array = layout.duplicate(true) if not layout.is_empty() else [SIDEWALK.duplicate(), SIDEWALK.duplicate()]
+	var widths: Dictionary = part_popup.sidewalk_control.grid
+	for part: Dictionary in start:
+		if String(part.get("kind", "")) == "sidewalk" and not part.has("width_m"):
+			part["width_m"] = float(widths.default_m)
 	if not start.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath"):
 		if String(start[0].get("kind", "")) != "sidewalk":
 			start.push_front(SHOULDER.duplicate())
@@ -465,6 +471,7 @@ func _start(layout: Array, id: String, type_name: String, from: Dictionary = {})
 
 func _refresh_library() -> void:
 	_library = _simulation_node.get_road_types()
+	part_popup.sidewalk_control.grid = _library.get("sidewalk_widths", {})
 	_speeds = _library.get("speeds", {})
 	speed_box.values = PackedInt32Array(_speeds.get("kmh", PackedInt32Array()))
 	library_list.show_library(_library, editing_id)
@@ -484,7 +491,10 @@ func _is_footpath() -> bool:
 ## Gives the layout's left (`left`) or right end a sidewalk (`on`) or a shoulder: the other end
 ## and the parts between keep their places.
 func set_sidewalk(left: bool, on: bool) -> void:
-	parts[0 if left else -1] = (SIDEWALK if on else SHOULDER).duplicate()
+	var part := (SIDEWALK if on else SHOULDER).duplicate()
+	if on:
+		part["width_m"] = float(part_popup.sidewalk_control.grid.default_m)
+	parts[0 if left else -1] = part
 	_close_popup()
 	strip.set_slot(strip.selected_slot)
 	_layout_changed()
@@ -579,6 +589,13 @@ func set_median(index: int, style: int, width_m: float) -> void:
 	if index < 0 or index >= parts.size() or String(parts[index].get("kind", "")) != "median":
 		return
 	parts[index] = {"kind": "median", "style": style, "width_m": width_m}
+	_layout_changed()
+
+## Sets the clicked sidewalk's width and checks the layout in Rust.
+func set_sidewalk_width(index: int, width_m: float) -> void:
+	if index < 0 or index >= parts.size() or String(parts[index].get("kind", "")) != "sidewalk":
+		return
+	parts[index] = {"kind": "sidewalk", "width_m": width_m}
 	_layout_changed()
 
 # Asks Rust's verdict on the layout and shows it. The strip draws a shoulder band at each end

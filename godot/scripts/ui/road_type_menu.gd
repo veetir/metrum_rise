@@ -188,7 +188,7 @@ func _on_custom_item(item_id: int) -> void:
 	type_picked.emit(id, _is_walkway(_types[id]))
 
 ## The attributes the road tool and an in-place edit send for `type` (`get_road_types` entry),
-## `[speed_kmh, sidewalks, zoning, street_lights]` (`sidewalks` is Rust's side code): the type's
+## `[speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths]` (`sidewalks` is Rust's side code): the type's
 ## own, except that a walkway, which has neither a speed nor sidewalks of its own, sends
 ## `speeds.default_kmh` with both sidewalks, as every stroke did before road types (its stroke
 ## builds the same footpath either way).
@@ -196,8 +196,13 @@ static func tool_attributes(type: Dictionary, speeds: Dictionary) -> Array:
 	var zoning := bool(type.get("zoning", true))
 	var lights := bool(type.get("street_lights", true))
 	if _is_walkway(type):
-		return [int(speeds.get("default_kmh", 50)), SIDEWALKS_BOTH, zoning, lights]
-	return [int(type.get("speed_kmh", 0)), int(type.get("sidewalks", SIDEWALKS_BOTH)), zoning, lights]
+		return [int(speeds.get("default_kmh", 50)), SIDEWALKS_BOTH, zoning, lights, sidewalk_width_pair(type)]
+	return [int(type.get("speed_kmh", 0)), int(type.get("sidewalks", SIDEWALKS_BOTH)), zoning, lights,
+		sidewalk_width_pair(type)]
+
+## Widths including the kerb, in the Rust bridge's left/right order.
+static func sidewalk_width_pair(section: Dictionary) -> PackedFloat32Array:
+	return PackedFloat32Array([section.get("sidewalk_left_m", 1.5), section.get("sidewalk_right_m", 1.5)])
 
 static func _is_walkway(type: Dictionary) -> bool:
 	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0

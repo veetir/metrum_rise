@@ -34,6 +34,7 @@ const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
 const Card = preload("res://scripts/ui/inspector_card.gd")
+const SidewalkWidthStepper = preload("res://scripts/ui/sidewalk_width_stepper.gd")
 const SpeedSignPicker = preload("res://scripts/ui/speed_sign_picker.gd")
 # The speed sign's height in the window, and how long the picker rests before its limit applies:
 # scrolling 50 to 100 is one edit and one undo record, not five.
@@ -45,7 +46,7 @@ const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := UIStyle.SIGN_YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
 # verdict with Apply, the parking lane and No buildings.
-const DEFAULT_SIZE := Vector2i(428, 320)
+const DEFAULT_SIZE := Vector2i(428, 352)
 const MIN_SIZE := Vector2i(428, 140)
 ## Parking code bits of the left and right kerb, as Rust's `parking` reports them.
 const PARKING_LEFT := 1
@@ -75,6 +76,9 @@ var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
 var _parking_checks: Dictionary = {}
+var _sidewalk_row: HBoxContainer
+var _sidewalk_steppers: Array[SidewalkWidthStepper] = []
+var _pending_sidewalk_edit: Array = []
 var _speed_row: HBoxContainer
 var _speed_picker: SpeedSignPicker
 var _speed_timer: Timer
@@ -171,6 +175,30 @@ func _build_window() -> void:
 		parking_row.add_child(check)
 		_parking_checks[side[0]] = check
 
+	_sidewalk_row = HBoxContainer.new()
+	_sidewalk_row.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(_sidewalk_row)
+	var sidewalk_label := Label.new()
+	sidewalk_label.text = "Sidewalk"
+	sidewalk_label.tooltip_text = "Left and right looking along the direction the road was drawn."
+	sidewalk_label.mouse_filter = Control.MOUSE_FILTER_PASS
+	sidewalk_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sidewalk_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(sidewalk_label, 13)
+	_sidewalk_row.add_child(sidewalk_label)
+	for side: int in range(2):
+		var label := Label.new()
+		label.text = "Left" if side == 0 else "Right"
+		label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+		UIStyle.set_font_size(label, 13)
+		_sidewalk_row.add_child(label)
+		var stepper := SidewalkWidthStepper.new()
+		stepper.changed.connect(_on_sidewalk_width_changed.bind(side))
+		stepper.mouse_entered.connect(_light_side.bind(1 << side))
+		stepper.mouse_exited.connect(_light_side.bind(0))
+		_sidewalk_row.add_child(stepper)
+		_sidewalk_steppers.append(stepper)
+
 	# The speed limit as its sign; turning it changes only the speed, in place.
 	_speed_row = HBoxContainer.new()
 	_speed_row.add_theme_constant_override("separation", 8)
@@ -250,6 +278,7 @@ func _build_window() -> void:
 	_demolish_dialog.title = "Remove buildings"
 	_demolish_dialog.ok_button_text = "Apply"
 	_demolish_dialog.confirmed.connect(_apply)
+	_demolish_dialog.canceled.connect(_cancel_sidewalk_edit)
 	_window.add_child(_demolish_dialog)
 
 	add_child(_window)
@@ -258,6 +287,7 @@ func _build_window() -> void:
 	_window.hide()
 
 func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO) -> void:
+	_cancel_sidewalk_edit()
 	_selected_edges = edge_indices.duplicate()
 	if _selected_edges.is_empty():
 		close_window()
@@ -271,6 +301,7 @@ func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO
 func close_window() -> void:
 	_light_side(0)
 	_selected_edges.clear()
+	_cancel_sidewalk_edit()
 	if _window:
 		_demolish_dialog.hide()
 		_window.hide()
@@ -315,6 +346,7 @@ func _refresh() -> void:
 
 	_refresh_type()
 	_refresh_parking()
+	_refresh_sidewalk_widths()
 	_refresh_speed()
 	_no_build_check.disabled = _selected_edges.all(_has_no_sidewalk)
 	if _selected_edges.size() == 1:
@@ -376,6 +408,8 @@ func _refresh_type() -> void:
 	_type_tiles.clear()
 	var library: Dictionary = _simulation_node.get_road_types()
 	_speeds = library.get("speeds", {})
+	for stepper in _sidewalk_steppers:
+		stepper.grid = library.get("sidewalk_widths", {})
 	if current.is_empty():
 		_type_picker.add_item(CUSTOM_LAYOUT)
 		_type_picker.set_item_disabled(0, true)
@@ -419,6 +453,44 @@ func _refresh_parking() -> void:
 			func(idx): return (int(_simulation_node.get_edge_cross_section(idx).get("parking", 0)) & bit) != 0
 		)
 		(_parking_checks[bit] as CheckButton).set_pressed_no_signal(on)
+
+# Widths are edited on one road at a time, in its own forward frame.
+func _refresh_sidewalk_widths() -> void:
+	_sidewalk_row.visible = false
+	if _selected_edges.size() != 1:
+		return
+	var section: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
+	if not bool(section.get("editable", false)):
+		return
+	var sides := int(section.get("sidewalks", 0))
+	var widths := RoadTypeMenu.sidewalk_width_pair(section)
+	_sidewalk_row.show()
+	for side in range(2):
+		_sidewalk_steppers[side].set_width_no_signal(widths[side] if (sides & (1 << side)) != 0 else 0.0)
+
+func _on_sidewalk_width_changed(width_m: float, side: int) -> void:
+	if _selected_edges.size() != 1 or _select_tool == null:
+		return
+	var section: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
+	var args := _type_arguments(section)
+	var widths: PackedFloat32Array = args[-1]
+	widths[side] = width_m
+	args[-1] = widths
+	var verdict: Dictionary = _select_tool.callv("preview_selected_edge_cross_section", args)
+	if not bool(verdict.get("is_valid", false)):
+		_warning_label.text = RoadReasonText.text(verdict, "The sidewalk could not change width")
+		_warning_label.show()
+		return
+	_pending_sidewalk_edit = args
+	_verdict = verdict
+	_on_apply_pressed()
+
+func _cancel_sidewalk_edit() -> void:
+	if _pending_sidewalk_edit.is_empty():
+		return
+	_pending_sidewalk_edit.clear()
+	_verdict = {}
+	_select_tool.show_demolition(PackedVector3Array())
 
 # The first selected car road's limit on the sign; hidden when only walkways are selected.
 func _refresh_speed() -> void:
@@ -506,6 +578,14 @@ func _on_apply_pressed() -> void:
 
 # Commits the picked type on the selection (after the confirmation when it demolishes).
 func _apply() -> void:
+	if not _pending_sidewalk_edit.is_empty():
+		var refused: int = _select_tool.callv("set_selected_edge_cross_section", _pending_sidewalk_edit)
+		_pending_sidewalk_edit.clear()
+		_refresh()
+		if refused > 0:
+			_warning_label.text = "The sidewalk could not change width"
+			_warning_label.show()
+		return
 	var type := _picked_type()
 	if not type.is_empty() and _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
 		var refused: int = _select_tool.callv("set_selected_edge_cross_section", _type_arguments(type))

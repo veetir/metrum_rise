@@ -405,6 +405,7 @@ pub fn reason_text(reason: &str, facts: &ReasonFacts) -> Option<String> {
         "layout_footpath_alone" => "A footpath is a walkway on its own".into(),
         "layout_sidewalks" => "A sidewalk goes at an end of the road".into(),
         "sidewalks_out_of_range" => "Unknown sidewalk sides".into(),
+        "sidewalk_width_out_of_range" => "Choose a sidewalk width on the scale".into(),
         "layout_two_medians" => "One median at most".into(),
         "layout_lane_order" => "Lanes against traffic go on the left".into(),
         "layout_no_car_lane" => "A road needs at least one car lane".into(),

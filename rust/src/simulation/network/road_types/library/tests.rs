@@ -9,7 +9,9 @@ use std::fs;
 use crate::simulation::network::graph::SidewalkSides;
 use crate::simulation::network::road_types::RoadAttributes;
 
-const S: RoadPart = RoadPart::Sidewalk;
+const S: RoadPart = RoadPart::Sidewalk {
+    width_m: crate::config::SIDEWALK_WIDTH,
+};
 const F: RoadPart = RoadPart::CarLane { forward: true };
 const B: RoadPart = RoadPart::CarLane { forward: false };
 
@@ -130,6 +132,7 @@ fn types_round_trip_through_the_file() {
     assert_eq!(
         written[0].usable(),
         Some(RoadCrossSection {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             fwd_lanes: 2,
             bkw_lanes: 2,
             median: Some(RoadMedian {
@@ -644,6 +647,7 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
     assert_eq!(
         rural.usable(),
         Some(RoadCrossSection {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             fwd_lanes: 1,
             bkw_lanes: 1,
             median: None,

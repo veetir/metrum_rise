@@ -99,8 +99,7 @@ func part_rect(index: int) -> Rect2:
 func slot_position(slot: int) -> Vector2:
 	return Vector2(_xs[slot], SLOT_Y)
 
-## Whether part `index` may be moved, removed or opened (everything but the two ends and any
-## sidewalk).
+## Whether part `index` may be moved or removed (everything between the two ends).
 func is_interior(index: int) -> bool:
 	return index > 0 and index < parts.size() - 1 and String(parts[index].get("kind", "")) != "sidewalk"
 
@@ -275,17 +274,22 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		_press_part = part_at(button.position)
-		if is_interior(_press_part):
+		if is_interior(_press_part) or _sidewalk_width_hit(_press_part, button.position):
 			part_pressed.emit(_press_part)
 	else:
 		var index := part_at(button.position)
-		if index >= 0 and index == _press_part and is_interior(index):
+		if index >= 0 and index == _press_part and (is_interior(index) or _sidewalk_width_hit(index, button.position)):
 			part_clicked.emit(index)
 			accept_event()
 		elif index >= 0 and index == _press_part and _is_toggle_end(index):
 			end_clicked.emit(index == 0)
 			accept_event()
 		_press_part = -1
+
+# The checkbox toggles the end. Its pavement and width open the same popup as other parts.
+func _sidewalk_width_hit(index: int, at: Vector2) -> bool:
+	return _is_toggle_end(index) and String(parts[index].get("kind", "")) == "sidewalk" \
+		and at.y >= SURFACE_TOP
 
 func _get_tooltip(at_position: Vector2) -> String:
 	if get_viewport().gui_is_dragging():
@@ -296,7 +300,9 @@ func _get_tooltip(at_position: Vector2) -> String:
 	if _is_toggle_end(index):
 		var side := "left" if index == 0 else "right"
 		if String(parts[index].get("kind", "")) == "sidewalk":
-			return "%s sidewalk, %s m" % [side.capitalize(), _width_text(_metres(index))]
+			if _sidewalk_width_hit(index, at_position):
+				return "Change %s sidewalk width" % side
+			return "%s sidewalk" % side.capitalize()
 		return "No %s sidewalk" % side
 	return "%s, %s m" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index))]
 

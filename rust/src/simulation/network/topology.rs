@@ -1433,6 +1433,7 @@ pub(crate) fn split_edge_graph(
     let no_building_spawn = old_edge.no_building_spawn;
     let no_street_lights = old_edge.no_street_lights;
     let sidewalks = old_edge.sidewalks;
+    let sidewalk_widths = old_edge.sidewalk_widths;
     let roundabout = old_edge.roundabout;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
@@ -1490,6 +1491,7 @@ pub(crate) fn split_edge_graph(
         parking,
         pocket: second_pocket,
         sidewalks,
+        sidewalk_widths,
         roundabout,
     };
     let (cost_new, length_new) =

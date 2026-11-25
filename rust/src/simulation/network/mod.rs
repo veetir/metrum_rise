@@ -114,6 +114,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         parking,
         pocket: None,
         sidewalks,
+        sidewalk_widths: attributes.sidewalk_widths.for_sides(sidewalks),
         roundabout: None,
     }
 }

@@ -36,6 +36,7 @@
 ## waits for a busy core: the hover then keeps the last road and asks again the next frame.
 extends Node3D
 
+const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 const RoadHighlightShader := preload("res://assets/materials/road_highlight.gdshader")
 # The highlight runs this far past each kerb, in metres, so the outline frames the road.
@@ -609,12 +610,12 @@ func set_selected_edge_class(class_int: int) -> void:
 ## lots the widenings take (`demolish_lots`), which this tool outlines. Each road is checked as it
 ## stands, as Apply commits them one by one.
 func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
-		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> Dictionary:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool, sidewalk_widths := PackedFloat32Array()) -> Dictionary:
 	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false,
 		"demolish_lots": PackedVector3Array()}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
-			parking, speed_kmh, sidewalks, zoning, street_lights)
+			parking, speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths)
 		if not bool(verdict.get("is_valid", false)):
 			show_demolition(PackedVector3Array())
 			return verdict
@@ -640,11 +641,11 @@ func show_demolition(lots: PackedVector3Array) -> void:
 ## type's attributes, each with its undo record, and returns how many were refused. The edits
 ## publish their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
 func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
-		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> int:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool, sidewalk_widths := PackedFloat32Array()) -> int:
 	var refused := 0
 	for idx in selected_edges:
 		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, parking, speed_kmh,
-				sidewalks, zoning, street_lights):
+				sidewalks, zoning, street_lights, sidewalk_widths):
 			refused += 1
 	show_demolition(PackedVector3Array())
 	_rebuild_highlight()
@@ -668,7 +669,7 @@ func set_selected_edge_parking_side(side_bit: int, enabled: bool) -> Dictionary:
 		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
 			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)), wanted,
 			int(section.get("speed_kmh", 50)), int(section.get("sidewalks", 3)), bool(section.get("zoning", true)),
-			bool(section.get("street_lights", true))]
+			bool(section.get("street_lights", true)), RoadTypeMenu.sidewalk_width_pair(section)]
 		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
 		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):
 			refused += 1
@@ -691,7 +692,7 @@ func set_selected_edge_speed(speed_kmh: int) -> Dictionary:
 		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
 			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)),
 			int(section.get("parking", 0)), speed_kmh, int(section.get("sidewalks", 3)),
-			bool(section.get("zoning", true)), bool(section.get("street_lights", true))]
+			bool(section.get("zoning", true)), bool(section.get("street_lights", true)), RoadTypeMenu.sidewalk_width_pair(section)]
 		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
 		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):
 			refused += 1

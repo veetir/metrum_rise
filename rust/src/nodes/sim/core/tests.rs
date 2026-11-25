@@ -997,6 +997,7 @@ fn add_test_border_road(core: &mut SimCore) {
         .region_graph
         .add_node(Vector3::new(180.0, 0.0, 0.0), NodeType::Junction);
     core.region_graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         start_node: border,
         end_node: junction,
         primary_type: TransitType::Road,
@@ -1337,6 +1338,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         .map(|points| points[0].distance_to(points[1]))
         .sum();
     Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         start_node,
         end_node,
         primary_type: TransitType::Road,

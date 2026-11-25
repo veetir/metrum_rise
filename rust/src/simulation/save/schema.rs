@@ -6,7 +6,10 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 129;
+pub const SAVE_VERSION: i64 = 130;
+
+/// Format 129, before per-side sidewalk widths: each sidewalk loads as exactly 1.5 m.
+pub const PRE_SIDEWALK_WIDTH_SAVE_VERSION: i64 = 129;
 
 /// Format 128, saved before a freight truck could stand at a kerb stop (`PARK-36`): its trip
 /// rows hold no `AtKerb` phase, and a truck sent on from a full yard is `GateToDoor`, loaded as
@@ -360,6 +363,8 @@ CREATE TABLE network_edges(
     pocket_end INTEGER NOT NULL DEFAULT 0,
     pocket_roles INTEGER NOT NULL DEFAULT 0,
     sidewalks INTEGER NOT NULL DEFAULT 0,
+    sidewalk_left_m REAL NOT NULL DEFAULT 1.5,
+    sidewalk_right_m REAL NOT NULL DEFAULT 1.5,
     parking INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE network_edge_geometry(

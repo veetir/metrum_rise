@@ -200,8 +200,7 @@ func run(bench: Node) -> void:
 			push_error("[GRADED_DRAG] " + _failures[-1])
 		if _hole_pixels:
 			_magenta_background()
-		bench.input_manager.current_tool = bench.input_manager.Tool.ROAD
-		bench.input_manager._activate_tool_logic(bench.input_manager.Tool.ROAD, true)
+		bench.activate_road_fixture_tool()
 		var attempts := OS.get_environment("METRUM_GRADED_DRAG_ATTEMPTS").split(",", false)
 		for stroke in fixture.segments:
 			if not attempts.is_empty() and not str(int(stroke.attempt)) in attempts:

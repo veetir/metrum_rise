@@ -76,10 +76,10 @@ impl SimulationNode {
     /// whatever is set), `sidewalks`
     /// (`ROAD-107`: the sides of a car road with one in the stroke's direction, 0 none, 1 left,
     /// 2 right, 3 both, a shoulder on a side without; a walkway is walked either way), `zoning`
-    /// (lots and buildings along the road) and `street_lights` (visual only). Returns the empty
-    /// string when set, else `speed_out_of_range` or `sidewalks_out_of_range`, keeping the
-    /// previous attributes. The built-in types send (50, 3, true, true): the edge every stroke
-    /// built before road types.
+    /// (lots and buildings along the road), `street_lights` (visual only), and the left and
+    /// right sidewalk widths in metres including the kerb. Omitted widths use the 1.5 m legacy
+    /// default. Returns the empty string on success or a refusal key, keeping the previous
+    /// attributes on refusal.
     #[func]
     pub fn set_road_tool_attributes(
         &mut self,
@@ -87,8 +87,15 @@ impl SimulationNode {
         sidewalks: i32,
         zoning: bool,
         street_lights: bool,
+        #[opt(default = Vector2::splat(crate::config::SIDEWALK_WIDTH))] sidewalk_widths: Vector2,
     ) -> GString {
-        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights) {
+        use crate::simulation::network::graph::SidewalkWidths;
+
+        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights)
+            .and_then(|attributes| {
+                SidewalkWidths::new(sidewalk_widths.x, sidewalk_widths.y)
+                    .map(|widths| attributes.with_sidewalk_widths(widths))
+            }) {
             Ok(attributes) => {
                 self.set_road_tool_spec(RoadTypeSpec {
                     attributes,
@@ -1200,6 +1207,11 @@ impl SimulationNode {
         let tunnel = if flag("tunnel", false) { 3.0 } else { 0.0 };
         let profile = number("profile", tunnel) as i32;
         let pockets = crate::nodes::sim::core::RoadAttempt::recorded_pockets(number, flag);
+        let default_width = f64::from(crate::config::SIDEWALK_WIDTH);
+        let sidewalk_widths = crate::simulation::network::graph::SidewalkWidths::new(
+            number("sidewalk_left_m", default_width) as f32,
+            number("sidewalk_right_m", default_width) as f32,
+        )?;
         let stroke = (
             RoadMedian::from_tool(
                 number("median_style", 0.0) as i32,
@@ -1212,7 +1224,8 @@ impl SimulationNode {
                 number("sidewalks", 3.0) as i64,
                 flag("zoning", true),
                 flag("street_lights", true),
-            )?,
+            )?
+            .with_sidewalk_widths(sidewalk_widths),
         );
         if points.len() < 2 {
             return Err("too_short");

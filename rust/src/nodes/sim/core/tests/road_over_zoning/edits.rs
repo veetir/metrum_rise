@@ -315,6 +315,34 @@ fn a_placed_buildings_lot_refuses_a_widening() {
     assert_eq!(land_state(&core), state);
 }
 
+#[test]
+fn wider_sidewalk_keeps_a_placed_buildings_existing_room_refusal() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    let (mut core, farm, _) = super::super::fields::farm_fixture();
+    let building = &core.allocator.buildings[farm];
+    let (road, side) = (building.edge_idx, building.side);
+    let state = land_state(&core);
+    let edge = core.region_graph.edge(road);
+    // The farm's lot starts at the original 3.5 + 1.5 m curb. The new curb at 7.5 m
+    // would cover 2.5 m of its frontage on the farm's side only.
+    let (left, right) = if side > 0 { (4.0, 1.5) } else { (1.5, 4.0) };
+    let attributes = RoadAttributes::of_edge(edge)
+        .with_sidewalk_widths(SidewalkWidths::new(left, right).unwrap());
+    let refusal = core
+        .preview_edge_cross_section_internal(road as i32, 1, 1, None, RoadParking::NONE, attributes)
+        .expect_err("the sidewalk reaches the farm's lot");
+    assert_eq!(refusal.reason, "plotted_building_overlap");
+    assert!(!core.set_edge_cross_section_internal(
+        road as i32,
+        1,
+        1,
+        None,
+        RoadParking::NONE,
+        attributes
+    ));
+    assert_eq!(land_state(&core), state);
+}
+
 // Test 2 (decisions D5, D6): each edit's undo gives the road and the erased paint back, not the
 // demolished houses, and lots derive again from the paint; while a field holds land an erased
 // cell would take back, the undo is refused whole and changes nothing.

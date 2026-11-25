@@ -116,7 +116,12 @@ fn grid_snap_on_a_road_takes_the_centreline_at_the_grid_position() {
             NetworkSnapTarget::Edge(edge) => edge_direction_at(&graph, edge, xz_of(snap.position)),
             NetworkSnapTarget::Node(_) => None,
         };
-        let (point, on) = grid.snap_road_cursor_on(&graph, raw, None, width);
+        let (point, on) = grid.snap_road_cursor_on(
+            &graph,
+            raw,
+            None,
+            width * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH),
+        );
         SnapInput {
             raw,
             anchor: None,

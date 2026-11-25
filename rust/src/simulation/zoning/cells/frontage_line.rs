@@ -8,9 +8,10 @@
 
 use super::GridFrame;
 use super::geometry::{CellBounds, road_source_precision};
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, SidewalkWidths};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use glam::DVec2;
+use godot::prelude::Vector3;
 
 // A pocket at each end of a base road leaves three pieces: a pocket edge's junction end is never
 // a transition (the node must offer the pocket's turn), so no longer run of pieces is built.
@@ -29,6 +30,7 @@ pub(super) struct FrontageLine {
     pub(super) ends: [u32; 2],
     /// The base road's width ([`Edge::base_width_m`]).
     pub(super) width: f32,
+    sidewalk_widths: SidewalkWidths,
     // The pieces from `first`, each with whether it runs against the line.
     pieces: [(usize, bool); MAX_PIECES],
     count: usize,
@@ -50,6 +52,7 @@ impl FrontageLine {
             bits: [a.x, a.z, b.x, b.z],
             ends: [edge.start_node, edge.end_node],
             width: edge.base_width_m(),
+            sidewalk_widths: edge.sidewalk_widths,
             pieces: [(id, false); MAX_PIECES],
             count: 1,
         };
@@ -122,16 +125,23 @@ impl FrontageLine {
             bits: [a.x, a.z, b.x, b.z],
             ends,
             width,
+            sidewalk_widths: edge.sidewalk_widths,
             pieces,
             count,
         };
-        let valid = line.members().all(|piece| {
+        let valid = line.pieces[..line.count].iter().all(|&(piece, reversed)| {
             let piece = graph.edge(piece);
+            let widths = if reversed {
+                piece.sidewalk_widths.reversed()
+            } else {
+                piece.sidewalk_widths
+            };
             !piece.deleted
                 && piece.primary_type == TransitType::Road
                 && piece.class == EdgeClass::Standard
                 && piece.physical_geometry.len() >= 2
                 && piece.base_width_m().to_bits() == width.to_bits()
+                && widths == line.sidewalk_widths
         });
         let direction = (line.last - line.first).normalize_or_zero();
         if !valid || direction.length_squared() == 0.0 {
@@ -175,6 +185,11 @@ impl FrontageLine {
                     .chain(backward.into_iter().flatten())
             })
             .map(|point| DVec2::new(f64::from(point.x), f64::from(point.z)))
+    }
+
+    /// Offset of the base road's outer curb on a building side (1 left, -1 right). O(1).
+    pub(super) fn half_width_m(&self, side: i8) -> f64 {
+        f64::from(self.width) * 0.5 + f64::from(self.sidewalk_widths.on_building_side(side))
     }
 
     /// The exact source address ([`source_address`]): first X/Z, last X/Z and the base width.
@@ -238,9 +253,13 @@ pub(super) fn frames_for_edge(
 
 /// The distance from `edge`'s centreline to its curb line on the side `normal` points to (a unit
 /// vector across the edge): half its width and the sidewalk, plus or minus a pocket edge's kerb
-/// shift (`ROAD-95`, D17). Bit for bit `width / 2 + SIDEWALK_WIDTH` without a pocket. `O(1)`.
+/// shift (`ROAD-95`, D17). `O(1)`.
 pub(super) fn kerb_offset_m(edge: &Edge, normal: DVec2) -> f64 {
-    let half = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+    let half = f64::from(edge.width) * 0.5
+        + f64::from(
+            edge.sidewalk_widths
+                .on_building_side(side_towards(edge, normal)),
+        );
     let shift = f64::from(edge.kerb_shift_m());
     if shift == 0.0 {
         return half;
@@ -250,4 +269,17 @@ pub(super) fn kerb_offset_m(edge: &Edge, normal: DVec2) -> f64 {
     let (a, b) = (points[0], points[points.len() - 1]);
     let right = DVec2::new(f64::from(a.z - b.z), f64::from(b.x - a.x));
     half + shift * right.dot(normal).signum()
+}
+
+/// The side of `edge`, in its own forward frame, that `normal` points to: a road continuing this
+/// one may run the other way, so its left can be the supplier's right (`ROAD-109`). O(1).
+pub(super) fn side_towards(edge: &Edge, normal: DVec2) -> i8 {
+    let point = |point: &Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
+    let geometry = &edge.physical_geometry;
+    let forward = point(&geometry[geometry.len() - 1]) - point(&geometry[0]);
+    if DVec2::new(forward.y, -forward.x).dot(normal) > 0.0 {
+        1
+    } else {
+        -1
+    }
 }

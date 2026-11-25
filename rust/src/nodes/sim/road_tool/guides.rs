@@ -4,7 +4,7 @@
 //! alignment guides as the player sees them.
 //!
 //! Zoning depth: a road that zones offers [`CELL_DEPTH`] rows of cells on each side, starting at
-//! its kerb line, `width / 2 + SIDEWALK_WIDTH` from the centreline (`frontage_line.rs`
+//! its kerb line, half the carriageway plus the sidewalk from the centreline (`frontage_line.rs`
 //! `kerb_offset_m`), so the cells' outer edge lies [`zoning_depth_m`] from it. The guide is a
 //! circle of that radius around the stroke's start and end and the stroke offset by it on both
 //! sides (the guide kernel's exact offset; a side is left out where it is refused: a curve
@@ -39,7 +39,6 @@ use super::frame::{GizmoLineClass, Gizmos};
 use super::measure::{EndRoad, RoadTypeSpec};
 use super::pick::lane_width_m;
 use super::snap::GuideLine;
-use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::guide::{DVec2, GuidePath};
 use crate::simulation::zoning::cells::CELL_DEPTH;
@@ -91,7 +90,7 @@ pub struct ZoningScratch {
 /// width, at least 2 m) plus the sidewalk, as `RoadGridSnap::snap_road_cursor` reads it. `O(1)`.
 pub fn grid_curb_offset_m(spec: &RoadTypeSpec) -> f64 {
     let width = lane_width_m(i32::from(spec.fwd_lanes), i32::from(spec.bkw_lanes));
-    f64::from(width) * 0.5 + f64::from(SIDEWALK_WIDTH)
+    f64::from(width) * 0.5 + f64::from(spec.attributes.sidewalk_widths.widest_m())
 }
 
 /// Pushes the grid curbs of a straight leg from `start` to `end` at `offset` metres either side:
@@ -134,8 +133,8 @@ pub fn zoning_depth_m(spec: &RoadTypeSpec, cell_m: f64) -> Option<f64> {
     }
     let width =
         Edge::cross_section_width_m(spec.fwd_lanes, spec.bkw_lanes, spec.median, spec.parking);
-    // Bit for bit `kerb_offset_m` of the edge the stroke builds (no pocket on a new edge).
-    let kerb = f64::from(width) * 0.5 + f64::from(SIDEWALK_WIDTH);
+    // The symmetric guide reaches the wider of the two sidewalk sides.
+    let kerb = f64::from(width) * 0.5 + f64::from(spec.attributes.sidewalk_widths.widest_m());
     Some(kerb + CELL_DEPTH as f64 * cell_m)
 }
 

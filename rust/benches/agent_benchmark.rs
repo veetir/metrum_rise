@@ -96,6 +96,7 @@ fn build_shared() -> SharedSetup {
         parking: Default::default(),
         pocket: None,
         sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        sidewalk_widths: Default::default(),
         roundabout: None,
     };
     let edge_ab = graph.add_edge(edge);
@@ -216,6 +217,7 @@ fn create_access_edge(n0: u32, n1: u32) -> Edge {
         parking: Default::default(),
         pocket: None,
         sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        sidewalk_widths: Default::default(),
         roundabout: None,
     }
 }

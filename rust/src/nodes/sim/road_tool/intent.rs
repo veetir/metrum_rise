@@ -94,7 +94,8 @@ pub fn type_spec(ty: &RoadType) -> Result<RoadTypeSpec, &'static str> {
             sidewalks.bits().into(),
             ty.zoning,
             ty.street_lights,
-        )?,
+        )?
+        .with_sidewalk_widths(section.sidewalk_widths),
         pockets,
     })
 }
@@ -120,6 +121,7 @@ mod tests {
             width_m: 3.5,
         };
         let section = RoadCrossSection {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             fwd_lanes: 2,
             bkw_lanes: 1,
             median: Some(median),

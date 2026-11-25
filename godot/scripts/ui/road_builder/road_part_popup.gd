@@ -5,16 +5,20 @@
 ## width (the reusable median controls, compact and without "None"); then move left and move
 ## right as arrows and remove as the bulldozer in red (a cross would read as closing the popup),
 ## named by their tooltips. A view: it reports the player's
-## choice through its signals and the builder edits the layout.
+## choice through its signals and the builder edits the layout. Sidewalks show their width
+## stepper in the same popup.
 extends PopupPanel
 
 ## The player changed the median's style or width.
 signal median_changed(style: int, width_m: float)
+## The player changed the sidewalk width.
+signal sidewalk_changed(width_m: float)
 ## The player asked to move the part one place left (-1) or right (+1).
 signal move_requested(step: int)
 ## The player asked to remove the part.
 signal remove_requested
 
+const SidewalkWidthStepper = preload("res://scripts/ui/sidewalk_width_stepper.gd")
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ICON_SIDE := 30.0
@@ -45,6 +49,8 @@ class GlyphButton extends Button:
 
 ## The median controls (shown for a median part only).
 var median_controls: MedianControls
+## The width stepper shown for a sidewalk part.
+var sidewalk_control: SidewalkWidthStepper
 var move_left_button: Button
 var move_right_button: Button
 var remove_button: Button
@@ -64,6 +70,9 @@ func _init() -> void:
 	median_controls.offer_none(false)
 	median_controls.changed.connect(func(style: int, width: float): median_changed.emit(style, width))
 	row.add_child(median_controls)
+	sidewalk_control = SidewalkWidthStepper.new()
+	sidewalk_control.changed.connect(func(width_m: float): sidewalk_changed.emit(width_m))
+	row.add_child(sidewalk_control)
 	_median_gap = VSeparator.new()
 	row.add_child(_median_gap)
 	move_left_button = _action(row, Glyph.LEFT, "Move left", func(): move_requested.emit(-1))
@@ -102,7 +111,15 @@ func show_for(part: Dictionary, can_left: bool, can_right: bool, median_styles: 
 
 ## Shows `part` in the open popup (after a change) without moving it.
 func show_part(part: Dictionary, can_left: bool, can_right: bool, median_styles: Dictionary) -> void:
-	var median := String(part.get("kind", "")) == "median"
+	var kind := String(part.get("kind", ""))
+	var median := kind == "median"
+	var sidewalk := kind == "sidewalk"
+	sidewalk_control.visible = sidewalk
+	if sidewalk:
+		sidewalk_control.set_width_no_signal(float(part.get("width_m", sidewalk_control.grid.default_m)))
+	move_left_button.visible = not sidewalk
+	move_right_button.visible = not sidewalk
+	remove_button.visible = not sidewalk
 	median_controls.visible = median
 	_median_gap.visible = median
 	if median:

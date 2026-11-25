@@ -129,6 +129,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let end = graph.add_node(points[1], NodeType::Junction);
     let length = points[0].distance_to(points[1]);
     let edge_idx = graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: start,
         end_node: end,
@@ -189,6 +190,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n0,
         end_node: n1,
@@ -1590,6 +1592,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node: n0,
         end_node: n1,
@@ -2440,6 +2443,78 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
     ))
     .unwrap();
     assert!(network::load_graph(&conn, true, true).is_err());
+}
+
+#[test]
+fn sidewalk_widths_round_trip_in_130_and_load_129_bitwise() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    use crate::simulation::network::lanes::LaneSystem;
+    use crate::simulation::network::roadbed::{RoadProfile, fixtures};
+
+    let mut legacy = fixtures::t_junction(false);
+    let mut current = legacy.clone();
+    let widths = SidewalkWidths::new(4.0, 2.5).unwrap();
+    current.edge_mut(1).sidewalk_widths = widths;
+    let save = |graph: &RegionGraph, version| {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let maps = build_snapshot_maps(graph, &BuildingAllocator::new()).unwrap();
+        let tx = conn.transaction().unwrap();
+        tx.execute("INSERT INTO save_meta VALUES (?1, 0, 'test')", [version])
+            .unwrap();
+        network::save_network(&tx, graph, &maps, 0).unwrap();
+        tx.commit().unwrap();
+        conn
+    };
+    assert_eq!(SAVE_VERSION, 130);
+    let conn = save(&current, SAVE_VERSION);
+    let loaded = network::load_graph(&conn, true, true).unwrap();
+    assert_eq!(loaded.edge(1).sidewalk_widths, widths);
+    assert_eq!(
+        RoadProfile::for_edge(loaded.edge(1)),
+        RoadProfile::for_edge(current.edge(1))
+    );
+    conn.execute(
+        "UPDATE network_edges SET sidewalk_right_m = 1.25 WHERE edge_id = 1",
+        [],
+    )
+    .unwrap();
+    assert!(network::load_graph(&conn, true, true).is_err());
+
+    let conn = save(&legacy, 129);
+    conn.execute_batch(
+        "ALTER TABLE network_edges DROP COLUMN sidewalk_left_m;
+         ALTER TABLE network_edges DROP COLUMN sidewalk_right_m;",
+    )
+    .unwrap();
+    let mut loaded = network::load_graph(&conn, true, true).unwrap();
+    for (loaded, saved) in loaded.edges().iter().zip(legacy.edges()) {
+        // A format-129 road with 7 m of asphalt had 3.5 + 1.5 = 5 m on each side.
+        assert_eq!(
+            loaded.sidewalk_widths,
+            SidewalkWidths::new(1.5, 1.5).unwrap()
+        );
+        assert_eq!(RoadProfile::for_edge(loaded), RoadProfile::for_edge(saved));
+    }
+    let bits = |graph: &mut RegionGraph| {
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(graph);
+        lanes
+            .lanes
+            .iter()
+            .map(|lane| {
+                (
+                    lane.edge_id,
+                    lane.lane_idx,
+                    lane.geometry
+                        .iter()
+                        .map(|point| [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()])
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bits(&mut legacy), bits(&mut loaded));
 }
 
 // `PARK-05`, save format 118: parking and a turn pocket are independent fields of one edge.

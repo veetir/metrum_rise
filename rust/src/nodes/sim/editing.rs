@@ -992,7 +992,7 @@ impl SimCore {
                 & crate::simulation::network::types::TransitFlags::FOOT
                 != 0
             {
-                config::SIDEWALK_WIDTH
+                edge.sidewalk_widths.widest_m()
             } else {
                 0.0
             };
@@ -1013,7 +1013,7 @@ impl SimCore {
         let edge = self.region_graph.edge(edge_idx);
         let sidewalk_width =
             if edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0 {
-                config::SIDEWALK_WIDTH
+                edge.sidewalk_widths.widest_m()
             } else {
                 0.0
             };
@@ -3272,6 +3272,7 @@ mod tests {
         let start = graph.node(start_node).pos;
         let end = graph.node(end_node).pos;
         graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             start_node,
             end_node,
             primary_type: TransitType::Road,
@@ -3324,6 +3325,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -3499,6 +3501,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -4242,6 +4245,7 @@ mod tests {
             .region_graph
             .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,

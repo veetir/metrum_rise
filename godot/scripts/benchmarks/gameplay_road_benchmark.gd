@@ -243,8 +243,7 @@ func run() -> void:
 	for index in range(workload.size()):
 		_metrics.anchors[workload[index].fixture.case_id] = _vector2_array(anchors[index])
 	input_manager._cancel_active_tool()
-	input_manager.current_tool = input_manager.Tool.ROAD
-	input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
+	activate_road_fixture_tool()
 	var active_cycle_index := -1
 	for workload_index in range(workload.size()):
 		var entry: Dictionary = workload[workload_index]
@@ -381,9 +380,15 @@ func _reload_world_for_matrix_cycle(entry: Dictionary) -> Dictionary:
 		result["wait"] = load_wait
 	_phase_end(reload_phase, result)
 	if result.ok:
-		input_manager.current_tool = input_manager.Tool.ROAD
-		input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
+		activate_road_fixture_tool()
 	return result
+
+## Activates the tool with the recorded fixtures' legacy 1.5 m sidewalks.
+func activate_road_fixture_tool() -> void:
+	input_manager.current_tool = input_manager.Tool.ROAD
+	input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
+	# Omitting widths uses Rust's legacy defaults, independent of the current built-in type.
+	simulation_node.set_road_tool_attributes(50, 3, true, true)
 
 func _fixture_definitions() -> Array[Dictionary]:
 	if not selected_case_ids.is_empty() and matrix_name != "paired":

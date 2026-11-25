@@ -37,14 +37,15 @@ fn geometry_overlaps_road_edge(
     if edge.deleted || edge.physical_geometry.len() < 2 {
         return false;
     }
-    let half_width = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+    let half_widths =
+        [false, true].map(|positive| edge.width * 0.5 + edge.sidewalk_widths.on_lateral(positive));
     edge.physical_geometry.windows(2).any(|window| {
         // A pocket edge's corridor lies about its carriageway's axis (`ROAD-95`, D17).
         let (start, end) = edge.carriageway_segment(
             Vector2::new(window[0].x, window[0].z),
             Vector2::new(window[1].x, window[1].z),
         );
-        geometry_overlaps_road_corridor_segment(geometry, start, end, half_width)
+        geometry_overlaps_road_band_segment(geometry, start, end, half_widths)
     })
 }
 
@@ -54,6 +55,15 @@ pub(crate) fn geometry_overlaps_road_corridor_segment(
     end: Vector2,
     half_width: f32,
 ) -> bool {
+    geometry_overlaps_road_band_segment(geometry, start, end, [half_width; 2])
+}
+
+fn geometry_overlaps_road_band_segment(
+    geometry: &ParcelGeometry,
+    start: Vector2,
+    end: Vector2,
+    [left_m, right_m]: [f32; 2],
+) -> bool {
     let segment = end - start;
     if segment.length_squared() <= OVERLAP_EPSILON_M * OVERLAP_EPSILON_M {
         return false;
@@ -61,10 +71,10 @@ pub(crate) fn geometry_overlaps_road_corridor_segment(
     let tangent = segment.normalized();
     let normal = Vector2::new(tangent.y, -tangent.x);
     let road_corners = [
-        start - normal * half_width,
-        end - normal * half_width,
-        end + normal * half_width,
-        start + normal * half_width,
+        start - normal * right_m,
+        end - normal * right_m,
+        end + normal * left_m,
+        start + normal * left_m,
     ];
     rectangles_overlap_on_axes(
         &geometry.corners,

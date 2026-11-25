@@ -23,7 +23,7 @@ mod tests;
 
 use super::graph::{
     Edge, MAX_LANES_PER_DIRECTION, MedianStyle, PARKING_LANE_WIDTH_M, RoadMedian, RoadParking,
-    SidewalkSides,
+    SidewalkSides, SidewalkWidths,
 };
 use super::roadbed::{FOOTPATH_MIN_WIDTH_M, SHOULDER_BAND_WIDTH_M};
 use super::types::TransitFlags;
@@ -106,9 +106,11 @@ impl RoadTypePockets {
 /// One part of a road layout, as the road builder shows it from the side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadPart {
-    /// A sidewalk with its kerb, `config::SIDEWALK_WIDTH` wide; a car road has one at either end,
-    /// at both or at none (`ROAD-107`).
-    Sidewalk,
+    /// A sidewalk with its kerb; a car road has one at either end, both or neither.
+    Sidewalk {
+        /// Width including the kerb, on the shared half-metre grid.
+        width_m: f32,
+    },
     /// A car lane, `config::LANE_WIDTH` wide.
     CarLane {
         /// Whether the lane carries traffic along the road's forward direction (else against it).
@@ -124,11 +126,10 @@ pub enum RoadPart {
 }
 
 impl RoadPart {
-    /// The part's width across the road in metres: a sidewalk 1.5, a lane 3.5, a median its own
-    /// width, a footpath the walkway's 2, a parking lane 2.5. `O(1)`.
+    /// The part's width across the road in metres: a sidewalk or median its authored width, a lane 3.5, a footpath the walkway's 2, a parking lane 2.5. `O(1)`.
     pub fn width_m(self) -> f32 {
         match self {
-            Self::Sidewalk => config::SIDEWALK_WIDTH,
+            Self::Sidewalk { width_m } => width_m,
             Self::CarLane { .. } => config::LANE_WIDTH,
             Self::Median(median) => median.width_m,
             Self::Footpath => FOOTPATH_MIN_WIDTH_M,
@@ -153,6 +154,8 @@ pub struct RoadCrossSection {
     /// The sides of a car road with a sidewalk (the edge's mask, `FOOT` when any); none for a
     /// walkway, whose footpath is not a sidewalk.
     pub sidewalks: SidewalkSides,
+    /// Width including the kerb of each sidewalk in the edge's forward frame.
+    pub sidewalk_widths: SidewalkWidths,
 }
 
 impl RoadCrossSection {
@@ -163,6 +166,7 @@ impl RoadCrossSection {
         median: None,
         parking: RoadParking::NONE,
         sidewalks: SidewalkSides::NONE,
+        sidewalk_widths: SidewalkWidths::DEFAULT,
     };
 
     // A car road with sidewalks on both sides and no median.
@@ -173,6 +177,7 @@ impl RoadCrossSection {
             median: None,
             parking: RoadParking::NONE,
             sidewalks: SidewalkSides::BOTH,
+            sidewalk_widths: SidewalkWidths::DEFAULT,
         }
     }
 
@@ -185,6 +190,7 @@ impl RoadCrossSection {
             bkw_lanes: edge.bkw_lanes,
             median: edge.median,
             parking: edge.parking,
+            sidewalk_widths: edge.sidewalk_widths,
             sidewalks: if walkway {
                 SidewalkSides::NONE
             } else {
@@ -214,15 +220,19 @@ impl RoadCrossSection {
         let right_lane = RoadPart::CarLane {
             forward: !config::DRIVE_ON_LEFT,
         };
-        let sidewalk = |on: bool| on.then_some(RoadPart::Sidewalk);
+        let sidewalk = |on: bool, positive: bool| {
+            on.then_some(RoadPart::Sidewalk {
+                width_m: self.sidewalk_widths.on_lateral(positive),
+            })
+        };
         let mut parts = Vec::with_capacity(usize::from(left + right) + 5);
-        parts.extend(sidewalk(self.sidewalks.left()));
+        parts.extend(sidewalk(self.sidewalks.left(), false));
         parts.extend(self.parking.left.then_some(RoadPart::Parking));
         parts.extend((0..left).map(|_| left_lane));
         parts.extend(self.median.map(RoadPart::Median));
         parts.extend((0..right).map(|_| right_lane));
         parts.extend(self.parking.right.then_some(RoadPart::Parking));
-        parts.extend(sidewalk(self.sidewalks.right()));
+        parts.extend(sidewalk(self.sidewalks.right(), true));
         parts
     }
 
@@ -292,14 +302,15 @@ impl LayoutRefusal {
 // left one.
 fn sidewalk_ends(parts: &[RoadPart]) -> (bool, bool) {
     (
-        parts.first() == Some(&RoadPart::Sidewalk),
-        parts.len() > 1 && parts.last() == Some(&RoadPart::Sidewalk),
+        matches!(parts.first(), Some(RoadPart::Sidewalk { .. })),
+        parts.len() > 1 && matches!(parts.last(), Some(RoadPart::Sidewalk { .. })),
     )
 }
 
 /// Checks a layout and returns the cross-section it builds, or the first rule it breaks, in this
 /// order:
 /// - a footpath anywhere but as the whole layout: `layout_footpath_alone`;
+/// - a sidewalk off the width grid: `sidewalk_width_out_of_range`;
 /// - a sidewalk inside the road: `layout_sidewalks` (a car road has a sidewalk at either end, at
 ///   both or at none, `ROAD-107`);
 /// - a parking lane not at a kerb (next to a sidewalk or the road's shoulder end):
@@ -324,7 +335,24 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
             Err(LayoutRefusal::new("layout_footpath_alone", Some(at)))
         };
     }
+    for (at, part) in parts.iter().enumerate() {
+        if let RoadPart::Sidewalk { width_m } = *part {
+            SidewalkWidths::new(width_m, width_m)
+                .map_err(|reason| LayoutRefusal::new(reason, Some(at)))?;
+        }
+    }
     let (left_end, right_end) = sidewalk_ends(parts);
+    let sidewalk_widths = SidewalkWidths::new(
+        parts
+            .first()
+            .filter(|_| left_end)
+            .map_or(config::SIDEWALK_WIDTH, |part| part.width_m()),
+        parts
+            .last()
+            .filter(|_| right_end)
+            .map_or(config::SIDEWALK_WIDTH, |part| part.width_m()),
+    )
+    .map_err(|reason| LayoutRefusal::new(reason, None))?;
     let sidewalks = SidewalkSides::of_ends(left_end, right_end);
     let skip = usize::from(left_end);
     let inside = &parts[skip..parts.len() - usize::from(right_end)];
@@ -335,7 +363,7 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
     for (offset, part) in inside.iter().enumerate() {
         let at = Some(offset + skip);
         match *part {
-            RoadPart::Sidewalk => return Err(LayoutRefusal::new("layout_sidewalks", at)),
+            RoadPart::Sidewalk { .. } => return Err(LayoutRefusal::new("layout_sidewalks", at)),
             // Parts run left to right along the forward direction, as the edge's kerbs do.
             RoadPart::Parking if offset == 0 && !left_end => {
                 return Err(LayoutRefusal::new("layout_parking_needs_sidewalk", at));
@@ -382,6 +410,7 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
         median: median.map(|(_, median, _, _)| median),
         parking,
         sidewalks,
+        sidewalk_widths,
     };
     if let Some((at, found, left_before, right_before)) = median {
         let at = Some(at);
@@ -414,7 +443,7 @@ pub fn layout_widths(parts: &[RoadPart]) -> (Vec<f32>, f32, f32) {
     let total: f32 = widths.iter().sum();
     let sidewalks: f32 = parts
         .iter()
-        .filter(|part| **part == RoadPart::Sidewalk)
+        .filter(|part| matches!(part, RoadPart::Sidewalk { .. }))
         .map(|part| part.width_m())
         .sum();
     let car_road = !parts.is_empty() && !parts.contains(&RoadPart::Footpath);
@@ -457,6 +486,8 @@ pub struct RoadAttributes {
     pub speed_ms: f32,
     /// The sides of a car road with a sidewalk; a walkway is walked whatever this says.
     pub sidewalks: SidewalkSides,
+    /// Width including the kerb of each sidewalk in the edge's forward frame.
+    pub sidewalk_widths: SidewalkWidths,
     /// Whether lots and buildings zone along the road.
     pub zoning: bool,
     /// Whether the road has street lights (visual only).
@@ -464,11 +495,12 @@ pub struct RoadAttributes {
 }
 
 impl RoadAttributes {
-    /// Every built-in type's: 50 km/h, sidewalks on both sides, zoning on, street lights
+    /// Legacy stroke defaults: 50 km/h, 1.5 m sidewalks on both sides, zoning on, street lights
     /// (bitwise the edge every stroke built before `ROAD-101`).
     pub const DEFAULT: Self = Self {
         speed_ms: config::DEFAULT_URBAN_ROAD_SPEED_MS,
         sidewalks: SidewalkSides::BOTH,
+        sidewalk_widths: SidewalkWidths::DEFAULT,
         zoning: true,
         street_lights: true,
     };
@@ -486,8 +518,17 @@ impl RoadAttributes {
         Self {
             speed_ms,
             sidewalks,
+            sidewalk_widths: SidewalkWidths::DEFAULT,
             zoning,
             street_lights: true,
+        }
+    }
+
+    /// These attributes with their authored sidewalk widths in the forward frame. O(1).
+    pub(crate) fn with_sidewalk_widths(self, widths: SidewalkWidths) -> Self {
+        Self {
+            sidewalk_widths: widths.for_sides(self.sidewalks),
+            ..self
         }
     }
 
@@ -520,11 +561,19 @@ impl RoadAttributes {
     /// one sidewalk reaches the sidewalk's width on both sides (`ROAD-107`, D4: the larger side,
     /// 0.75 m conservative on the shoulder side). `O(1)`.
     pub fn corridor_side_m(self, walkway: bool) -> f32 {
-        if walkway || self.sidewalks.any() {
-            config::SIDEWALK_WIDTH
-        } else {
-            SHOULDER_BAND_WIDTH_M
+        if walkway {
+            return SidewalkWidths::DEFAULT.widest_m();
         }
+        [false, true]
+            .into_iter()
+            .map(|positive| {
+                if self.sidewalks.on_lateral(positive) {
+                    self.sidewalk_widths.on_lateral(positive)
+                } else {
+                    SHOULDER_BAND_WIDTH_M
+                }
+            })
+            .fold(0.0, f32::max)
     }
 
     /// The attributes `edge` carries: its speed limit, its sidewalk sides (none on a walkway),
@@ -533,6 +582,7 @@ impl RoadAttributes {
         Self {
             speed_ms: edge.speed_limit,
             sidewalks: edge.sidewalk_sides(),
+            sidewalk_widths: edge.sidewalk_widths,
             zoning: !edge.no_building_spawn,
             street_lights: !edge.no_street_lights,
         }
@@ -542,6 +592,7 @@ impl RoadAttributes {
     pub fn same_as(self, other: Self) -> bool {
         self.speed_ms.to_bits() == other.speed_ms.to_bits()
             && self.sidewalks == other.sidewalks
+            && self.sidewalk_widths == other.sidewalk_widths
             && self.zoning == other.zoning
             && self.street_lights == other.street_lights
     }
@@ -573,17 +624,26 @@ pub const BUILTIN_ROAD_TYPES: [BuiltinRoadType; 5] = [
         name: "Walkway",
         cross_section: RoadCrossSection::WALKWAY,
     },
-    builtin("builtin:road_2l", "2-Lane Road", 1, 1),
-    builtin("builtin:road_4l", "4-Lane Road", 2, 2),
-    builtin("builtin:one_way_1l", "One-Way 1L", 1, 0),
-    builtin("builtin:one_way_2l", "One-Way 2L", 2, 0),
+    builtin("builtin:road_2l", "2-Lane Road", 1, 1, 1),
+    builtin("builtin:road_4l", "4-Lane Road", 2, 2, 3),
+    builtin("builtin:one_way_1l", "One-Way 1L", 1, 0, 1),
+    builtin("builtin:one_way_2l", "One-Way 2L", 2, 0, 2),
 ];
 
-const fn builtin(id: &'static str, name: &'static str, fwd: u8, bkw: u8) -> BuiltinRoadType {
+const fn builtin(
+    id: &'static str,
+    name: &'static str,
+    fwd: u8,
+    bkw: u8,
+    sidewalk_steps: u8,
+) -> BuiltinRoadType {
     BuiltinRoadType {
         id,
         name,
-        cross_section: RoadCrossSection::undivided(fwd, bkw),
+        cross_section: RoadCrossSection {
+            sidewalk_widths: SidewalkWidths::symmetric_steps(sidewalk_steps),
+            ..RoadCrossSection::undivided(fwd, bkw)
+        },
     }
 }
 

@@ -18,6 +18,7 @@ mod tests {
         let edges = [(n0, n1), (n1, n2)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
                 parking: Default::default(),
                 start_node: s,
                 end_node: e,
@@ -102,6 +103,7 @@ mod tests {
         let edges = [(n0, n1), (n2, n1), (n3, n1)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
                 parking: Default::default(),
                 start_node: s,
                 end_node: e,
@@ -168,6 +170,7 @@ mod tests {
         let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
 
         graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: n0,
             end_node: n1,

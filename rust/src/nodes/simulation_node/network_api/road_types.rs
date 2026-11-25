@@ -113,6 +113,12 @@ impl SimulationNode {
             vdict! {
                 "types": types,
                 "speeds": speeds,
+                "sidewalk_widths": vdict! {
+                    "default_m": crate::config::SIDEWALK_WIDTH,
+                    "min_m": crate::simulation::network::graph::SIDEWALK_WIDTH_MIN_M,
+                    "max_m": crate::simulation::network::graph::SIDEWALK_WIDTH_MAX_M,
+                    "step_m": crate::simulation::network::graph::SIDEWALK_WIDTH_STEP_M,
+                },
                 "pocket_lengths": vdict! {
                     "default_m": crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M,
                     "min_m": crate::simulation::network::pockets::POCKET_BODY_MIN_M,
@@ -344,6 +350,7 @@ fn layout_to_variant(
         (refusal.reason, refusal.detail.as_str())
     });
     let median = section.and_then(|section| section.median);
+    let sidewalk_widths = section.map_or_else(Default::default, |section| section.sidewalk_widths);
     vdict! {
         "invalid_reason": reason,
         "detail": detail,
@@ -353,6 +360,8 @@ fn layout_to_variant(
         "median_width": median.map_or(0.0, |median| median.width_m),
         "parking": section.map_or(0, |section| i64::from(section.parking.code())),
         "sidewalks": section.map_or(0, |section| i64::from(section.sidewalks.bits())),
+        "sidewalk_left_m": sidewalk_widths.on_lateral(false),
+        "sidewalk_right_m": sidewalk_widths.on_lateral(true),
         "part_widths_m": PackedFloat32Array::from(widths.as_slice()),
         "carriageway_m": carriageway_m,
         "total_m": total_m,
@@ -361,7 +370,7 @@ fn layout_to_variant(
 
 fn part_to_variant(part: RoadPart) -> VarDictionary {
     match part {
-        RoadPart::Sidewalk => vdict! { "kind": "sidewalk" },
+        RoadPart::Sidewalk { width_m } => vdict! { "kind": "sidewalk", "width_m": width_m },
         RoadPart::CarLane { forward } => vdict! { "kind": "car_lane", "forward": forward },
         RoadPart::Median(median) => vdict! {
             "kind": "median",
@@ -392,7 +401,16 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
     let field = |key: &str| part.get(key).ok_or(UNKNOWN);
     let kind: GString = field("kind")?.try_to().map_err(|_| UNKNOWN)?;
     match kind.to_string().as_str() {
-        "sidewalk" => Ok(RoadPart::Sidewalk),
+        "sidewalk" => {
+            let width_m = match part.get("width_m") {
+                None => crate::config::SIDEWALK_WIDTH,
+                Some(value) => value
+                    .try_to::<f64>()
+                    .or_else(|_| value.try_to::<i64>().map(|width| width as f64))
+                    .map_err(|_| UNKNOWN)? as f32,
+            };
+            Ok(RoadPart::Sidewalk { width_m })
+        }
         "footpath" => Ok(RoadPart::Footpath),
         "parking" => Ok(RoadPart::Parking),
         "car_lane" => Ok(RoadPart::CarLane {

@@ -38,8 +38,8 @@ impl RoadGridSnap {
         start: Option<DVec2>,
         road_width_m: f64,
     ) -> DVec2 {
-        self.snap_road_cursor_on(graph, cursor, start, road_width_m)
-            .0
+        let half_width = road_width_m * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+        self.snap_road_cursor_on(graph, cursor, start, half_width).0
     }
 
     /// The cursor snapped to curb-compatible centreline coordinates (an active stroke keeps its
@@ -51,7 +51,7 @@ impl RoadGridSnap {
         graph: &RegionGraph,
         cursor: DVec2,
         start: Option<DVec2>,
-        road_width_m: f64,
+        half_width: f64,
     ) -> (DVec2, Option<usize>) {
         if let Some(start) = start
             && cursor.distance_squared(start) < 2.5 * 2.5
@@ -60,7 +60,6 @@ impl RoadGridSnap {
         }
         let cell_m = self.cell_m;
         let anchor = start.unwrap_or(cursor);
-        let half_width = road_width_m * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
         // Two facing six-row strips define the local block-building neighborhood.
         let reach = 2.0 * CELL_DEPTH as f64 * cell_m + 30.0;
         let mut best: Option<(f64, usize, GridFrame, DVec2, usize)> = None;

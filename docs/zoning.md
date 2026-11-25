@@ -886,10 +886,10 @@ The initial generator uses four-cell (40 m) horizontal arc-length groups, with t
 using the remaining length. Each group uses its endpoint chord orientation; intermediate XZ
 road points constrain the frontage support line. Height-only polyline subdivision does not move
 the grid. Straight groups use one endpoint phase, with a perpendicular incident road contributing
-its curb offset at a junction. The first slice reuses the parcel frontage offset
-`edge.width / 2 + SIDEWALK_WIDTH`, about a turn pocket edge's carriageway axis rather than its
-centreline ([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)); compiled surface
-exclusions are supplied by the caller.
+its curb offset at a junction. The first slice reuses the parcel frontage offset of half the
+carriageway plus that side's sidewalk width. Turn pockets measure the offset from the
+carriageway axis ([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)). The caller
+supplies compiled surface exclusions.
 Ground-level eligible road spans generate cells; bridge and tunnel spans do not.
 A tunnel's bore lies in the hill: its buried pieces neither block nor clear the cells over it,
 generated or painted, and a tunnel drawn under painted cells is not refused for them (`ROAD-61`
@@ -3947,8 +3947,8 @@ the crossing were stair-stepped, one held a hole and another a stray row. Two ca
 confirmed:
 
 - **Frames off the curb.** `straight_frame`, `junction_anchor` and the load's alignment check put
-  each curb at `width / 2 + SIDEWALK_WIDTH` about the raw centreline. A pocket edge's
-  carriageway lies `Edge::kerb_shift_m` off it ([roads.md](roads.md#turn-pockets-road-95), D17),
+  each curb at half the carriageway plus the then-fixed sidewalk width about the raw centreline.
+  A pocket edge's carriageway lies `Edge::kerb_shift_m` off it ([roads.md](roads.md#turn-pockets-road-95), D17),
   while its candidates and corridor already used that axis, so on the widened side the frame lay
   1.75 m inside the true curb. Row 0 then met the corridor, the support rule dropped the whole
   side, and the dropped side's rows 1-5 still beat the cross road's candidates (a cell loses to

@@ -106,6 +106,8 @@ func _run() -> void:
 	scene.add_child(simulation)
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
+	_expect(simulation.set_road_tool_attributes(50, 3, true, true, Vector2(2.0, 2.0)).is_empty(),
+		"the fixture draws the built-in two-lane road")
 	if not await _commit(PackedVector3Array([_ground_point(-60.0, 0.0), _ground_point(60.0, 0.0)])) \
 			or not await _commit(PackedVector3Array([_ground_point(0.0, 0.0), _ground_point(0.0, 60.0)])) \
 			or not await _commit(PackedVector3Array([_ground_point(-60.0, -80.0), _ground_point(60.0, -80.0)]), 0, 0):
@@ -142,6 +144,22 @@ func _run() -> void:
 	# The window's own size is clamped to the headless viewport; its default is what a player gets.
 	_expect(window.DEFAULT_SIZE.y >= int(content.get_combined_minimum_size().y), "the default height holds every row: %d < %d" % [window.DEFAULT_SIZE.y, int(content.get_combined_minimum_size().y)])
 	_expect(window._apply_button.disabled, "nothing to apply before a change")
+
+	# The left stepper changes only its width. Undo restores the built-in's two 2 m widths.
+	window._sidewalk_steppers[0]._plus.pressed.emit()
+	var wider: Dictionary = simulation.get_edge_cross_section(edge)
+	_expect(wider.get("sidewalk_left_m", 0.0) == 2.5 and wider.get("sidewalk_right_m", 0.0) == 2.0,
+		"road properties changes one side")
+	_expect(simulation.set_edge_cross_section(edge, 1, 1, 0, 0.0, 0, 60, 3, true, true),
+		"the ordinary in-place edit can leave the widths implicit")
+	var speed_only: Dictionary = simulation.get_edge_cross_section(edge)
+	_expect(speed_only.get("sidewalk_left_m", 0.0) == 2.5 and speed_only.get("sidewalk_right_m", 0.0) == 2.0,
+		"an edit with omitted widths preserves both sides")
+	await _undo("the speed-only change")
+	await _undo("the left sidewalk width")
+	window.show_for_edges(selection)
+	_expect(window._sidewalk_steppers[0]._width_m == 2.0 and window._sidewalk_steppers[1]._width_m == 2.0,
+		"road properties shows the restored widths")
 
 	# A road cannot become a walkway: Rust refuses and Apply stays off.
 	_pick(window, "builtin:walkway")

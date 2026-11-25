@@ -19,7 +19,6 @@ use super::super::roadbed::{ArmKey, EdgeEnd, FootpathJoin, NodeWalkways, RoadVec
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
 use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType, starts_left};
-use crate::config;
 use godot::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::{PI, TAU};
@@ -59,6 +58,8 @@ pub struct SidewalkMouth {
     pub mouth_world_pos: Vector3,
     /// Asphalt half-width; a corner walk at a node without a layout must stay outside it.
     pub road_half_width_m: f32,
+    /// Width including the kerb of this mouth's sidewalk.
+    pub sidewalk_width_m: f32,
     /// The arm's centreline from the node out to just past this mouth: a corner route that
     /// comes within `road_half_width_m` of it is on the arm's asphalt. Empty for footpaths.
     pub arm_centreline: Vec<Vector3>,
@@ -166,9 +167,10 @@ fn safe_node_centered_corner_route(
         .ceil()
         .max(1.0) as usize;
     let segment_angle = angle_delta.abs() / segment_count as f32;
-    let minimum_radius = start_radius
-        .max(end_radius)
-        .max(start.road_half_width_m.max(end.road_half_width_m) + config::SIDEWALK_WIDTH * 0.5);
+    let minimum_radius = start_radius.max(end_radius).max(
+        (start.road_half_width_m + start.sidewalk_width_m * 0.5)
+            .max(end.road_half_width_m + end.sidewalk_width_m * 0.5),
+    );
     let arc_radius =
         (minimum_radius + CONNECTION_POINT_EPSILON_M) / (segment_angle * 0.5).cos().max(0.25);
 
@@ -308,7 +310,7 @@ pub(super) fn footpath_end_insets(graph: &RegionGraph, edge_idx: usize) -> (f32,
                     };
                     roads += 1;
                     let sidewalk = if other.allowed_types & TransitFlags::FOOT != 0 {
-                        config::SIDEWALK_WIDTH
+                        other.sidewalk_widths.widest_m()
                     } else {
                         0.0
                     };
@@ -881,17 +883,19 @@ pub(crate) fn build_pedestrian_connections_at_node(
                         break;
                     }
                 }
+                let positive_lateral = super::rebuild::sidewalk_offset(edge, l_idx) > 0.0;
                 mouths.push(SidewalkMouth {
                     edge_idx: e_idx,
                     lane_idx: l_idx,
                     angle: arm_angle,
                     dir,
                     arm,
-                    positive_lateral: super::rebuild::sidewalk_offset(edge, l_idx) > 0.0,
+                    positive_lateral,
                     in_id,
                     out_id,
                     mouth_world_pos,
                     road_half_width_m: asphalt_half_width,
+                    sidewalk_width_m: edge.sidewalk_widths.on_lateral(positive_lateral),
                     arm_centreline,
                 });
             }
@@ -940,6 +944,7 @@ pub(crate) fn build_pedestrian_connections_at_node(
             out_id,
             mouth_world_pos,
             road_half_width_m: 0.0,
+            sidewalk_width_m: 0.0,
             arm_centreline: Vec::new(),
         });
     }

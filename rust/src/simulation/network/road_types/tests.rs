@@ -4,7 +4,9 @@
 
 use super::*;
 
-const S: RoadPart = RoadPart::Sidewalk;
+const S: RoadPart = RoadPart::Sidewalk {
+    width_m: crate::config::SIDEWALK_WIDTH,
+};
 const F: RoadPart = RoadPart::CarLane { forward: true };
 const B: RoadPart = RoadPart::CarLane { forward: false };
 const P: RoadPart = RoadPart::Parking;
@@ -85,6 +87,7 @@ fn valid_layouts_build_their_cross_section() {
         unreachable!()
     };
     let section = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         fwd_lanes,
         bkw_lanes,
         median,
@@ -222,16 +225,44 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
 }
 
 #[test]
+fn sidewalk_layout_widths_use_the_half_metre_grid_on_each_side() {
+    let sidewalk = |width_m| RoadPart::Sidewalk { width_m };
+    let widths = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0];
+    for (left, right) in widths.into_iter().zip(widths.into_iter().rev()) {
+        let parts = [sidewalk(left), B, F, sidewalk(right)];
+        let section = check_layout(&parts).unwrap();
+        assert_eq!(section.parts(), parts);
+        // 3.5 + 3.5 m of asphalt and a combined 5.5 m of sidewalk.
+        assert_eq!(
+            layout_widths(&parts),
+            (vec![left, 3.5, 3.5, right], 7.0, 12.5)
+        );
+    }
+    for bad in [1.25, 4.5, f32::NAN] {
+        assert_eq!(
+            refused(&[sidewalk(bad), B, F, S]),
+            ("sidewalk_width_out_of_range", Some(0))
+        );
+        assert_eq!(
+            refused(&[S, B, F, sidewalk(bad)]),
+            ("sidewalk_width_out_of_range", Some(3))
+        );
+    }
+}
+
+#[test]
 fn the_builtins_build_todays_roads_menu() {
     let expected = [
-        ("Walkway", 0, 0),
-        ("2-Lane Road", 1, 1),
-        ("4-Lane Road", 2, 2),
-        ("One-Way 1L", 1, 0),
-        ("One-Way 2L", 2, 0),
+        ("Walkway", 0, 0, 1.5),
+        ("2-Lane Road", 1, 1, 2.0),
+        ("4-Lane Road", 2, 2, 3.0),
+        ("One-Way 1L", 1, 0, 2.0),
+        ("One-Way 2L", 2, 0, 2.5),
     ];
     assert_eq!(BUILTIN_ROAD_TYPES.len(), expected.len());
-    for (builtin, (name, fwd_lanes, bkw_lanes)) in BUILTIN_ROAD_TYPES.iter().zip(expected) {
+    for (builtin, (name, fwd_lanes, bkw_lanes, sidewalk_m)) in
+        BUILTIN_ROAD_TYPES.iter().zip(expected)
+    {
         let ty = RoadType::from_builtin(builtin);
         assert_eq!(ty.name, name);
         assert!(ty.builtin && ty.id.starts_with("builtin:"));
@@ -239,6 +270,7 @@ fn the_builtins_build_todays_roads_menu() {
         assert_eq!(
             section,
             RoadCrossSection {
+                sidewalk_widths: SidewalkWidths::new(sidewalk_m, sidewalk_m).unwrap(),
                 fwd_lanes,
                 bkw_lanes,
                 median: None,
@@ -266,8 +298,9 @@ fn the_builtins_build_todays_roads_menu() {
         .collect();
     let id_of = |section, speed| type_of(&types, section, speed, true).map(|ty| ty.id.as_str());
     assert_eq!(id_of(RoadCrossSection::WALKWAY, 50), Some("builtin:walkway"));
-    let two_lane = check_layout(&[S, B, F, S]).unwrap();
+    let two_lane = BUILTIN_ROAD_TYPES[1].cross_section;
     assert_eq!(id_of(two_lane, 50), Some("builtin:road_2l"));
+    assert_eq!(id_of(check_layout(&[S, B, F, S]).unwrap(), 50), None);
     // Sidewalks, speed and street lights are part of the match.
     assert_eq!(id_of(two_lane, 60), None);
     assert!(type_of(&types, two_lane, 50, false).is_none());
@@ -395,6 +428,7 @@ fn pockets_fit_the_layout_they_are_saved_with() {
     // A left pocket on a divided two-way road takes a lane's width out of a raised median and
     // leaves its kerb stub (`ROAD-128`); right pockets and undivided roads always have room.
     let road = |fwd_lanes, bkw_lanes, style, width_m| RoadCrossSection {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         fwd_lanes,
         bkw_lanes,
         median: RoadMedian::from_tool(style, width_m).unwrap(),

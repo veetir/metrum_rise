@@ -33,6 +33,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     Edge {
+        sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
         parking: Default::default(),
         start_node,
         end_node,

@@ -617,6 +617,11 @@ fn one_road((a, a_end): (&Edge, EdgeEnd), (b, b_end): (&Edge, EdgeEnd)) -> bool 
         && a.pocket.is_none()
         && b.pocket.is_none()
         && sidewalks == b.sidewalks
+        && (if turned {
+            a.sidewalk_widths.reversed()
+        } else {
+            a.sidewalk_widths
+        }) == b.sidewalk_widths
         && a.roundabout.is_none()
         && b.roundabout.is_none()
 }

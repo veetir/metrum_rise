@@ -85,6 +85,10 @@ fn default_speed_kmh() -> u16 {
     DEFAULT_SPEED_KMH
 }
 
+fn default_sidewalk_width() -> f32 {
+    crate::config::SIDEWALK_WIDTH
+}
+
 fn default_true() -> bool {
     true
 }
@@ -92,9 +96,17 @@ fn default_true() -> bool {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StoredPart {
-    Sidewalk,
-    CarLane { forward: bool },
-    Median { style: String, width_m: f32 },
+    Sidewalk {
+        #[serde(default = "default_sidewalk_width")]
+        width_m: f32,
+    },
+    CarLane {
+        forward: bool,
+    },
+    Median {
+        style: String,
+        width_m: f32,
+    },
     Footpath,
     Parking,
 }
@@ -108,7 +120,7 @@ const STYLE_KEYS: [(MedianStyle, &str); 3] = [
 impl StoredPart {
     fn from_part(part: RoadPart) -> Self {
         match part {
-            RoadPart::Sidewalk => Self::Sidewalk,
+            RoadPart::Sidewalk { width_m } => Self::Sidewalk { width_m },
             RoadPart::CarLane { forward } => Self::CarLane { forward },
             RoadPart::Median(median) => Self::Median {
                 style: STYLE_KEYS
@@ -125,7 +137,7 @@ impl StoredPart {
 
     fn to_part(&self) -> Result<RoadPart, &'static str> {
         Ok(match self {
-            Self::Sidewalk => RoadPart::Sidewalk,
+            Self::Sidewalk { width_m } => RoadPart::Sidewalk { width_m: *width_m },
             Self::CarLane { forward } => RoadPart::CarLane { forward: *forward },
             Self::Median { style, width_m } => RoadPart::Median(RoadMedian {
                 style: STYLE_KEYS

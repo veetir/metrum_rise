@@ -123,6 +123,73 @@ pub struct RoundaboutRing {
     pub radius_m: f32,
 }
 
+/// Smallest sidewalk width, including its kerb, in metres.
+pub const SIDEWALK_WIDTH_MIN_M: f32 = config::SIDEWALK_WIDTH;
+/// Largest sidewalk width, including its kerb, in metres.
+pub const SIDEWALK_WIDTH_MAX_M: f32 = 4.0;
+/// Spacing of legal sidewalk widths in metres.
+pub const SIDEWALK_WIDTH_STEP_M: f32 = 0.5;
+
+/// Per-side sidewalk widths in the edge's forward frame, stored as two exact half-metre
+/// steps above the minimum. Absent sides retain the default; presence is `SidewalkSides`'s.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SidewalkWidths(u8);
+
+impl SidewalkWidths {
+    /// Legacy and new-part widths: 1.5 m on each side.
+    pub const DEFAULT: Self = Self(0);
+
+    // Built-in designs specify widths on the same grid as player-authored types.
+    pub(crate) const fn symmetric_steps(steps: u8) -> Self {
+        assert!(steps <= 5);
+        Self(steps | (steps << 3))
+    }
+
+    /// Checks the finite 1.5–4 m half-metre grid, returning `sidewalk_width_out_of_range`
+    /// for any other dimension. O(1), allocation-free.
+    pub fn new(left_m: f32, right_m: f32) -> Result<Self, &'static str> {
+        let code = |width: f32| {
+            if !width.is_finite()
+                || !(SIDEWALK_WIDTH_MIN_M..=SIDEWALK_WIDTH_MAX_M).contains(&width)
+                || width % SIDEWALK_WIDTH_STEP_M != 0.0
+            {
+                return Err("sidewalk_width_out_of_range");
+            }
+            Ok(((width - SIDEWALK_WIDTH_MIN_M) / SIDEWALK_WIDTH_STEP_M) as u8)
+        };
+        Ok(Self(code(left_m)? | (code(right_m)? << 3)))
+    }
+
+    /// Removes dimensions on absent sides, which always carry the default width. O(1).
+    pub(crate) fn for_sides(self, sides: SidewalkSides) -> Self {
+        let left = if sides.left() { 7 } else { 0 };
+        let right = if sides.right() { 7 << 3 } else { 0 };
+        Self(self.0 & (left | right))
+    }
+
+    /// The larger stored width, for symmetric envelopes that use a default margin
+    /// on edges without a sidewalk. O(1).
+    pub(crate) fn widest_m(self) -> f32 {
+        self.on_lateral(false).max(self.on_lateral(true))
+    }
+
+    /// Width including the kerb on the right (`positive_lateral`) or left side. O(1).
+    pub fn on_lateral(self, positive_lateral: bool) -> f32 {
+        SIDEWALK_WIDTH_MIN_M
+            + f32::from((self.0 >> (3 * u8::from(positive_lateral))) & 7) * SIDEWALK_WIDTH_STEP_M
+    }
+
+    /// Width including the kerb on a building's side (1 left, -1 right). O(1).
+    pub fn on_building_side(self, side: i8) -> f32 {
+        self.on_lateral(side < 0)
+    }
+
+    /// The widths in the opposite forward frame. O(1).
+    pub fn reversed(self) -> Self {
+        Self((self.0 >> 3) | ((self.0 & 7) << 3))
+    }
+}
+
 /// Which sides of a car road carry a sidewalk (`ROAD-107`), in the edge's forward frame: the
 /// left is the negative lateral side (sidewalk lane 100, building and lot side 1), the right the
 /// positive one (lane -100, side -1). A car road is walked (`TransitFlags::FOOT`) exactly when it
@@ -838,6 +905,7 @@ impl RegionGraph {
         edge.parking = parking;
         edge.width = Edge::cross_section_width_m(fwd, bkw, median, parking);
         edge.set_sidewalks(attributes.sidewalks);
+        edge.sidewalk_widths = attributes.sidewalk_widths.for_sides(attributes.sidewalks);
         edge.no_building_spawn = !attributes.zoning;
         edge.no_street_lights = !attributes.street_lights;
         if edge.speed_limit.to_bits() != attributes.speed_ms.to_bits() {

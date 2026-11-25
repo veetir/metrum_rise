@@ -29,7 +29,8 @@ pub(crate) fn road_edge_at(graph: &RegionGraph, world_pos: Vector2) -> Option<us
         // The road reaches its curb on the cursor's side (a pocket edge's lie off its
         // centreline, `ROAD-95`, D17).
         if projected.dist_m
-            > edge.frontage_half_width_m(projected.side) + crate::config::SIDEWALK_WIDTH
+            > edge.frontage_half_width_m(projected.side)
+                + edge.sidewalk_widths.on_building_side(projected.side)
         {
             return;
         }
@@ -73,7 +74,7 @@ pub(crate) fn project_buildable_road_point_at(
             continue;
         }
         let max_centerline_dist = edge.frontage_half_width_m(projected.side)
-            + crate::config::SIDEWALK_WIDTH
+            + edge.sidewalk_widths.on_building_side(projected.side)
             + depth_m
             + 8.0;
         if projected.dist_m > max_centerline_dist {

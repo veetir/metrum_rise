@@ -23,7 +23,7 @@ extends SceneTree
 
 const TIMEOUT_MS := 60000
 const LIBRARY := "user://road_types.json"
-const SW := {"kind": "sidewalk"}
+const SW := {"kind": "sidewalk", "width_m": 1.5}
 const BACK := {"kind": "car_lane", "forward": false}
 const AHEAD := {"kind": "car_lane", "forward": true}
 const SH := {"kind": "shoulder"}
@@ -131,7 +131,8 @@ func _remove_in_popup() -> void:
 # Clicks the left (`left`) or right end of the strip when its sidewalk is not already `on`.
 func _set_sidewalk(left: bool, on: bool) -> void:
 	if _builder.has_sidewalk(left) != on:
-		_click(_builder.strip.part_rect(0 if left else _builder.parts.size() - 1).get_center())
+		var part: Rect2 = _builder.strip.part_rect(0 if left else _builder.parts.size() - 1)
+		_click(Vector2(part.get_center().x, _builder.strip.GLYPH_TOP + _builder.strip.GLYPH_SIZE * 0.5))
 
 # Rust's carriageway and total widths of the layout.
 func _widths_are(carriageway_m: float, total_m: float) -> bool:
@@ -245,6 +246,42 @@ func _run() -> void:
 	_expect(_cost() == "15 / m, 0.10 / m / day" and _builder.warning_label.text.is_empty(),
 		"Rust's cost of the 2-Lane Road: %s" % _cost())
 
+	# The pavement opens its own width control. The checkbox still controls presence.
+	var width_captures := OS.get_environment("METRUM_SIDEWALK_SCREENSHOTS")
+	if not width_captures.is_empty():
+		window.gui_embed_subwindows = true
+	await process_frame
+	await process_frame
+	await _click_part(0)
+	var sidewalk = _builder.part_popup.sidewalk_control
+	_expect(sidewalk.visible, "clicking sidewalk pavement opens the width stepper")
+	for i in range(3):
+		sidewalk._plus.pressed.emit()
+	_expect(_builder.parts[0].width_m == 3.0 and _builder.parts[-1].width_m == 1.5,
+		"only the left sidewalk grew")
+	_expect(_widths_are(7.0, 11.5), "the strip measures 7 + 3 + 1.5 m")
+	var width_type: Dictionary = _simulation.create_road_type(
+		"Sidewalk Width Test", _builder.rust_parts(), 50, true, true, {})
+	var width_id := String(width_type.get("id", ""))
+	_expect(not width_id.is_empty(), "the library writes asymmetric widths")
+	_simulation.reload_road_types()
+	_expect(float(_type(width_id).get("sidewalk_left_m", 0.0)) == 3.0
+		and float(_type(width_id).get("sidewalk_right_m", 0.0)) == 1.5,
+		"the library reloads both widths")
+	_simulation.delete_road_type(width_id)
+	if not width_captures.is_empty():
+		await RenderingServer.frame_post_draw
+		_expect(window.get_texture().get_image().save_png(width_captures.path_join("road-builder.png")) == OK,
+			"road builder capture saves")
+		var controls: Image = _builder.part_popup.get_texture().get_image()
+		if controls != null and not controls.is_empty():
+			_expect(controls.save_png(width_captures.path_join("road-builder-control.png")) == OK,
+				"sidewalk width stepper capture saves")
+	for i in range(3):
+		sidewalk._minus.pressed.emit()
+	_builder._close_popup()
+	await process_frame
+
 	var pockets = _builder.pocket_controls
 	_expect(not pockets.left_button.button_pressed and not pockets.right_button.button_pressed
 		and pockets.body_m == 60.0 and not _builder.pocket_badge.visible, "new types have no pockets")
@@ -316,9 +353,9 @@ func _run() -> void:
 	_expect(not _builder.strip.valid and _builder.create_button.disabled and _builder.status_label.text == "A road needs at least one car lane",
 		"bare sidewalks are refused: %s" % _builder.status_label.text)
 	# A click on an end turns its sidewalk off and on again, without a popup.
-	_click(_builder.strip.part_rect(0).get_center())
+	_set_sidewalk(true, false)
 	_expect(not popup.visible and _builder.parts == [SH, SW], "a click on the left sidewalk removes it: %s" % [_builder.parts])
-	_click(_builder.strip.part_rect(0).get_center())
+	_set_sidewalk(true, true)
 	_expect(_builder.parts == [SW, SW], "a second click gives it back: %s" % [_builder.parts])
 	_click_slot(1)
 	_tile(TILE_BACK)
@@ -474,7 +511,7 @@ func _run() -> void:
 	var copy_name: String = _builder.name_edit.text
 	_expect(copy_name != "Builder Test Avenue" and not _builder.create_button.disabled, "the copy has a free name: %s" % copy_name)
 	list.pick("builtin:road_4l")
-	_expect(_builder.parts == [SW, BACK, BACK, AHEAD, AHEAD, SW] and _builder.editing_id.is_empty() and list.delete_button.disabled,
+	_expect(_builder.parts == [{"kind": "sidewalk", "width_m": 3.0}, BACK, BACK, AHEAD, AHEAD, {"kind": "sidewalk", "width_m": 3.0}] and _builder.editing_id.is_empty() and list.delete_button.disabled,
 		"a built-in starts a new type and cannot be deleted")
 	list.pick("builtin:walkway")
 	_expect(list.duplicate_button.disabled, "the walkway cannot be duplicated")

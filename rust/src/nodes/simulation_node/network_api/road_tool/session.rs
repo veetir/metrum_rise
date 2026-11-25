@@ -353,6 +353,8 @@ impl SimulationNode {
             "parking": spec.parking.code(),
             "speed_kmh": i64::from(RoadAttributes::speed_kmh_of(spec.attributes.speed_ms)),
             "sidewalks": i64::from(spec.attributes.sidewalks.bits()),
+            "sidewalk_left_m": spec.attributes.sidewalk_widths.on_lateral(false),
+            "sidewalk_right_m": spec.attributes.sidewalk_widths.on_lateral(true),
             "zoning": spec.attributes.zoning,
             "street_lights": spec.attributes.street_lights,
             "network_snap": snap.network,

@@ -5,14 +5,14 @@
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{
     Edge, MedianStyle, RegionGraph, RoadMedian, RoadParking, RoadPocket, RoundaboutRing,
-    SidewalkSides,
+    SidewalkSides, SidewalkWidths,
 };
 use crate::simulation::network::roundabouts::validate_ring_edge;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
 use godot::prelude::{Vector2, Vector3};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
 use super::schema::*;
@@ -63,7 +63,7 @@ pub(super) fn save_network(
 
     // 2. Edges: every live edge at its id.
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking, sidewalk_left_m, sidewalk_right_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)")?;
         for (saved_id, edge) in graph.edges().iter().enumerate() {
             if edge.deleted {
                 continue;
@@ -98,7 +98,9 @@ pub(super) fn save_network(
                 pocket_end,
                 pocket_roles,
                 i64::from(edge.sidewalks.bits()),
-                edge.parking.code()
+                edge.parking.code(),
+                edge.sidewalk_widths.on_lateral(false),
+                edge.sidewalk_widths.on_lateral(true)
             ])?;
         }
     }
@@ -293,7 +295,20 @@ pub(super) fn load_graph(
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking FROM network_edges ORDER BY edge_id")?;
+        // Graph-only test fixtures have the current schema but no metadata row. A legacy
+        // city is read without touching its file or requiring the new columns.
+        let widths_saved = conn
+            .query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .is_none_or(|version| version == SAVE_VERSION);
+        let widths = if widths_saved {
+            "sidewalk_left_m, sidewalk_right_m"
+        } else {
+            "NULL, NULL"
+        };
+        let mut stmt = conn.prepare(&format!("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking, {widths} FROM network_edges ORDER BY edge_id"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -378,6 +393,17 @@ pub(super) fn load_graph(
                 parking,
                 pocket,
                 sidewalks,
+                sidewalk_widths: if widths_saved {
+                    SidewalkWidths::new(row.get(23)?, row.get(24)?)
+                        .map_err(|reason| {
+                            SaveLoadError::custom(format!(
+                                "edge {eid} has invalid sidewalk widths ({reason})"
+                            ))
+                        })?
+                        .for_sides(sidewalks)
+                } else {
+                    SidewalkWidths::DEFAULT
+                },
                 roundabout: None,
             };
             // A median loads only as a stroke or an edit could have built it (`ROAD-80`), a

@@ -268,7 +268,13 @@ impl SimCore {
             .collect();
         let edges = self.live_edges_at(&nodes, edge);
         // A side given a sidewalk widens there whatever the larger side does (`ROAD-107`).
-        let check_corridor = widens || attributes.sidewalks.adds_to(current.sidewalk_sides());
+        let check_corridor = widens
+            || attributes.sidewalks.adds_to(current.sidewalk_sides())
+            || [false, true].into_iter().any(|positive| {
+                attributes.sidewalks.on_lateral(positive)
+                    && attributes.sidewalk_widths.on_lateral(positive)
+                        > current.sidewalk_widths.on_lateral(positive)
+            });
         let mut corridor = None;
         let tried = self
             .road_edit_site()
@@ -310,6 +316,7 @@ impl SimCore {
             ..Edge::default()
         };
         probe.set_sidewalks(attributes.sidewalks);
+        probe.sidewalk_widths = attributes.sidewalk_widths;
         visual_roadbed_half_width_m(&probe)
     }
 
@@ -348,6 +355,7 @@ impl SimCore {
             median,
             parking,
             sidewalks: attributes.sidewalks,
+            sidewalk_widths: attributes.sidewalk_widths,
         };
         let weight = road_weight(
             section,

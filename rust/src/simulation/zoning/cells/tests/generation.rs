@@ -776,3 +776,29 @@ fn curved_group_ignores_submicrometre_sliver_columns() {
     assert!(report.accepted > 0);
     assert_disjoint(&store, extent());
 }
+
+#[test]
+fn asymmetric_sidewalks_move_the_zoning_frontage_on_each_side() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 120.0, 0.0);
+    let id = road(&mut graph, a, b);
+    let curb = |graph: &RegionGraph, sign: f64| {
+        let mut store = CellStore::default();
+        store.generate_in_bounds(graph, &WorldConfig::default(), extent(), |_| false);
+        keys(&store, extent())
+            .into_iter()
+            .flat_map(|key| store.frame(key.grid).unwrap().corners(key.x, key.y))
+            .map(|point| point.y * sign)
+            .filter(|&offset| offset > 0.0)
+            .min_by(f64::total_cmp)
+            .unwrap()
+    };
+    let before = [-1.0, 1.0].map(|sign| curb(&graph, sign));
+    graph.edge_mut(id).sidewalk_widths = SidewalkWidths::new(4.0, 2.5).unwrap();
+    let after = [-1.0, 1.0].map(|sign| curb(&graph, sign));
+    // Curb offsets start at 3.5 + 1.5 = 5 m. Left grows 2.5 m, right 1.0 m.
+    assert_eq!(before, [5.0, 5.0]);
+    assert_eq!(after, [7.5, 6.0]);
+}

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::simulation::zoning::cells::CELL_FRONTAGE_UNITS;
-use crate::simulation::zoning::cells::frontage_line::kerb_offset_m;
+use crate::simulation::zoning::cells::frontage_line::{kerb_offset_m, side_towards};
 use crate::simulation::zoning::cells::geometry::road_contact_precision;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,21 +38,29 @@ pub(super) fn column_is_covered(
     // A pocket edge's axis lies off the centrelines of the roads continuing it.
     let query = bounds.expanded(epsilon + f64::from(supplier.kerb_shift_m().abs()));
     let mut intervals = Vec::new();
+    let supplier_width = supplier
+        .sidewalk_widths
+        .on_building_side(side_towards(supplier, normal));
     graph.visit_edges_near_aabb(
         Vector3::new(query.min.x as f32, 0.0, query.min.y as f32),
         Vector3::new(query.max.x as f32, 0.0, query.max.y as f32),
         |id| {
             let edge = graph.edge(id);
-            let plain = supplier.pocket.is_none() && edge.pocket.is_none();
+            if edge.physical_geometry.len() < 2 {
+                return;
+            }
+            let side = side_towards(edge, normal);
+            let plain = supplier.pocket.is_none()
+                && edge.pocket.is_none()
+                && edge.sidewalk_widths.on_building_side(side) == supplier_width;
             if edge.primary_type != TransitType::Road
                 || !graph.fronts_ground(id)
                 || (plain && edge.width != supplier.width)
-                || edge.physical_geometry.len() < 2
-                || !edge.zones_side(side_towards(edge, normal))
+                || !edge.zones_side(side)
             {
                 return;
             }
-            // With a pocket on either road, its curb line on this side against the supplier's.
+            // Compare curb lines when a pocket or different sidewalk width shifts one.
             let offset = (!plain).then(|| normal * (kerb_offset_m(edge, normal) - half_width));
             let mut min = f64::INFINITY;
             let mut max = f64::NEG_INFINITY;
@@ -80,19 +88,6 @@ pub(super) fn column_is_covered(
         }
     }
     false
-}
-
-// The side of `edge`, in its own forward frame, that `normal` points to: a road continuing this
-// one may run the other way, so its left can be the supplier's right (`ROAD-109`). O(1).
-fn side_towards(edge: &Edge, normal: DVec2) -> i8 {
-    let point = |point: &Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
-    let geometry = &edge.physical_geometry;
-    let forward = point(&geometry[geometry.len() - 1]) - point(&geometry[0]);
-    if DVec2::new(forward.y, -forward.x).dot(normal) > 0.0 {
-        1
-    } else {
-        -1
-    }
 }
 
 /// Reuses nearby reserved frames when the current curb lies on their exact lattice boundary.

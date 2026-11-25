@@ -53,7 +53,7 @@ impl<M: CellMaps> CellStore<M> {
                 continue;
             }
             let reach = f64::from(edge.width) * 0.5
-                + f64::from(crate::config::SIDEWALK_WIDTH)
+                + f64::from(edge.sidewalk_widths.widest_m())
                 + f64::from(edge.kerb_shift_m().abs())
                 + (CELL_DEPTH + 2) as f64 * cell_m;
             let bounds = CellBounds::from_points(

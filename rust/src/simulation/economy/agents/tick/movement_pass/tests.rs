@@ -151,6 +151,7 @@ fn turn_fixture(count: usize) -> (AgentSystem, TransitNetwork, RegionGraph, Vec<
             let start = graph.add_node(end, NodeType::Junction);
             let geometry = vec![end, Vector3::new(x, 0.0, z)];
             let edge = graph.add_edge(Edge {
+                sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
                 start_node: start,
                 end_node: centre,
                 primary_type: TransitType::Road,
@@ -502,6 +503,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
         let end = graph.add_node(Vector3::new(2_000.0, 0.0, z), NodeType::Junction);
         let geometry = vec![Vector3::new(0.0, 0.0, z), Vector3::new(2_000.0, 0.0, z)];
         let edge = graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: start,
             end_node: end,

@@ -39,6 +39,7 @@ enum Measured {
     MedianEdit,
     TypeEdit,
     SideEdit,
+    SidewalkWidthEdit,
     PocketEdit,
     PocketStroke,
     Conversion,
@@ -231,6 +232,23 @@ fn populated_road_side_edit_scaling() {
     );
 }
 
+// Widen just the left sidewalk of the T's side road, with the right at 1.5 m.
+#[test]
+#[ignore = "unprofiled sidewalk width edit locality; run alone with --release --ignored --nocapture"]
+fn populated_sidewalk_width_edit_scaling() {
+    // The detached background sites are synthetic. As for the ring-join timing,
+    // exclude the test-only whole-city attachment comparison from the measurements.
+    crate::debug::work::set_city_checks(false);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::SidewalkWidthEdit,
+    );
+    crate::debug::work::set_city_checks(true);
+}
+
 // `ROAD-101` locality: the T's side road given a rural road type's attributes in place: its
 // sidewalks off and 80 km/h (lanes rebuilt without sidewalks, the routing cost recomputed).
 #[test]
@@ -408,6 +426,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::MedianEdit
             | Measured::TypeEdit
             | Measured::SideEdit
+            | Measured::SidewalkWidthEdit
             | Measured::PocketEdit
             | Measured::Conversion
             | Measured::RingJoin
@@ -645,6 +664,16 @@ fn measure_populated_road_plan_scaling(
                 Measured::LaneEdit => (2, 2, None, RoadAttributes::DEFAULT),
                 Measured::MedianEdit => (1, 1, Some(GRASS), RoadAttributes::DEFAULT),
                 Measured::SideEdit => (1, 1, None, one_sided()),
+                Measured::SidewalkWidthEdit => {
+                    use crate::simulation::network::graph::SidewalkWidths;
+                    let widths = SidewalkWidths::new(4.0, 1.5).unwrap();
+                    (
+                        1,
+                        1,
+                        None,
+                        RoadAttributes::DEFAULT.with_sidewalk_widths(widths),
+                    )
+                }
                 _ => (1, 1, None, RoadAttributes::new(80, SidewalkSides::NONE, true)),
             };
             let products = if measured == Measured::PocketEdit {
@@ -752,6 +781,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::MedianEdit
             | Measured::TypeEdit
             | Measured::SideEdit
+            | Measured::SidewalkWidthEdit
             | Measured::PocketEdit
             | Measured::Conversion
             | Measured::RingJoin => {

@@ -148,8 +148,7 @@ impl StraightRoad {
         let along = usize::from(delta.dot(v).abs() > delta.dot(u).abs());
         let tangent = [u, v][along] * delta.dot([u, v][along]).signum();
         let normal = DVec2::new(tangent.y, -tangent.x);
-        let width = f64::from(f32::from_bits(self.source[4])) * 0.5
-            + f64::from(crate::config::SIDEWALK_WIDTH);
+        let width = self.line.half_width_m(if side == 0 { -1 } else { 1 });
         let point =
             frame.local(self.points[0] + normal * width * if side == 0 { -1.0 } else { 1.0 });
         (point[1 - along] - point[1 - along].round()).abs() * frame.cell_m() <= self.precision

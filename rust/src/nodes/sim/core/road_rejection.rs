@@ -164,6 +164,8 @@ impl RoadRejection {
             parking: attempt.parking.code(),
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
             sidewalks: attempt.attributes.sidewalks.bits(),
+            sidewalk_left_m: attempt.attributes.sidewalk_widths.on_lateral(false),
+            sidewalk_right_m: attempt.attributes.sidewalk_widths.on_lateral(true),
             zoning: attempt.attributes.zoning,
             street_lights: attempt.attributes.street_lights,
             pocket_left: attempt.pockets.left,
@@ -199,6 +201,8 @@ struct AttemptRecord<'a> {
     // `sidewalks` is the side code (`ROAD-107`).
     speed_kmh: u16,
     sidewalks: u8,
+    sidewalk_left_m: f32,
+    sidewalk_right_m: f32,
     zoning: bool,
     street_lights: bool,
     // The road type's turn pockets (`ROAD-128`), as `RoadTypePockets`: which roles the stroke's

@@ -4,9 +4,9 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
-use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::nodes::sim::road_tool::batch::draft_requests;
 use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
+use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking, SidewalkWidths};
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 
@@ -705,6 +705,7 @@ impl SimulationNode {
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
     /// change), `sidewalks` (`ROAD-107`: the sides with one in the road's forward direction, 0
     /// none, 1 left, 2 right, 3 both; 0 for a walkway),
+    /// `sidewalk_left_m` and `sidewalk_right_m` (widths including the kerb),
     /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
     /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
     /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
@@ -746,6 +747,8 @@ impl SimulationNode {
                 crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
             let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
             result.set("sidewalks", i64::from(section.sidewalks.bits()));
+            result.set("sidewalk_left_m", section.sidewalk_widths.on_lateral(false));
+            result.set("sidewalk_right_m", section.sidewalk_widths.on_lateral(true));
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
@@ -775,7 +778,8 @@ impl SimulationNode {
     /// road's length, never negative), `demolish_count` and `demolish_lots` (the widening's land
     /// take: its buildings, and four corners per lot as the road preview's); when refused
     /// `invalid_reason` (stable key) and `detail`.
-    /// The same check as [`Self::set_edge_cross_section`].
+    /// The same check as [`Self::set_edge_cross_section`]. `sidewalk_widths` is
+    /// a two-element array in metres, left then right. Omit it to keep both widths.
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn preview_edge_cross_section(
@@ -790,10 +794,14 @@ impl SimulationNode {
         sidewalks: i32,
         zoning: bool,
         street_lights: bool,
+        #[opt(default = &PackedFloat32Array::new())] sidewalk_widths: PackedFloat32Array,
     ) -> VarDictionary {
-        let attributes = (speed_kmh, sidewalks, zoning, street_lights);
+        let attributes = (speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths);
         let mut core = self.lock_core();
-        let verdict = cross_section_spec(median_style, median_width, parking, attributes)
+        let current = usize::try_from(edge_id)
+            .ok()
+            .and_then(|id| core.region_graph.get_edge(id));
+        let verdict = cross_section_spec(median_style, median_width, parking, attributes, current)
             .and_then(|(median, parking, attributes)| {
                 core.preview_edge_cross_section_internal(
                     edge_id,
@@ -843,14 +851,18 @@ impl SimulationNode {
         sidewalks: i32,
         zoning: bool,
         street_lights: bool,
+        #[opt(default = &PackedFloat32Array::new())] sidewalk_widths: PackedFloat32Array,
     ) -> bool {
-        let attributes = (speed_kmh, sidewalks, zoning, street_lights);
-        let Ok((median, parking, attributes)) =
-            cross_section_spec(median_style, median_width, parking, attributes)
-        else {
-            return false;
-        };
+        let attributes = (speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths);
         self.publish_road_edit(|core| {
+            let current = usize::try_from(edge_id)
+                .ok()
+                .and_then(|id| core.region_graph.get_edge(id));
+            let Ok((median, parking, attributes)) =
+                cross_section_spec(median_style, median_width, parking, attributes, current)
+            else {
+                return false;
+            };
             core.set_edge_cross_section_internal(
                 edge_id,
                 lanes_u8(fwd),
@@ -1143,19 +1155,44 @@ fn cross_section_spec(
     median_style: i32,
     median_width: f32,
     parking: i32,
-    (speed_kmh, sidewalks, zoning, street_lights): (i32, i32, bool, bool),
+    (speed_kmh, sidewalks, zoning, street_lights, widths): (i32, i32, bool, bool, PackedFloat32Array),
+    current: Option<&Edge>,
 ) -> Result<(Option<RoadMedian>, RoadParking, RoadAttributes), RoadRejection> {
     let median = RoadMedian::from_tool(median_style, median_width)
         .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
     let parking = RoadParking::from_code(parking).ok_or_else(|| {
         RoadRejection::new("parking_code_out_of_range", format!("parking code {parking}"))
     })?;
-    let attributes =
-        RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights)
+    // A saved road can still have a formerly posted limit. Width and parking edits keep it.
+    let existing_speed = current
+        .map(|edge| edge.speed_limit)
+        .filter(|&speed| i32::from(RoadAttributes::speed_kmh_of(speed)) == speed_kmh);
+    let checked_speed = if existing_speed.is_some() {
+        i64::from(crate::simulation::network::road_types::DEFAULT_SPEED_KMH)
+    } else {
+        i64::from(speed_kmh)
+    };
+    let mut attributes =
+        RoadAttributes::from_tool(checked_speed, sidewalks.into(), zoning, street_lights)
             .map_err(|reason| {
                 RoadRejection::new(reason, format!("{speed_kmh} km/h, sidewalks {sidewalks}"))
             })?;
-    Ok((median, parking, attributes))
+    if let Some(speed) = existing_speed {
+        attributes.speed_ms = speed;
+    }
+    let widths = match widths.as_slice() {
+        [] => current.map_or(SidewalkWidths::DEFAULT, |edge| edge.sidewalk_widths),
+        &[left_m, right_m] => SidewalkWidths::new(left_m, right_m).map_err(|reason| {
+            RoadRejection::new(reason, format!("sidewalk widths ({left_m}, {right_m})"))
+        })?,
+        _ => {
+            return Err(RoadRejection::new(
+                "sidewalk_width_out_of_range",
+                "expected two sidewalk widths",
+            ));
+        }
+    };
+    Ok((median, parking, attributes.with_sidewalk_widths(widths)))
 }
 
 impl SimulationNode {

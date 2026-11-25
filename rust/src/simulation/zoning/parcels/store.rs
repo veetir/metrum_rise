@@ -52,7 +52,7 @@ pub(crate) fn road_span_chunks(
 ) {
     // A pocket edge's farther kerb (`ROAD-95`, D17).
     let pad = edge.frontage_half_width_m(1).max(edge.frontage_half_width_m(-1))
-        + crate::config::SIDEWALK_WIDTH
+        + edge.sidewalk_widths.widest_m()
         + crate::simulation::zoning::MIN_PARCEL_DEPTH_M * 0.5;
     let mut station = 0.0;
     let mut chunks_seen = HashSet::new();

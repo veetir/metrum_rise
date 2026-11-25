@@ -431,6 +431,7 @@ mod tests {
         let p0 = graph.node(start).pos;
         let p1 = graph.node(end).pos;
         graph.add_edge(Edge {
+            sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
             parking: Default::default(),
             start_node: start,
             end_node: end,

@@ -371,3 +371,40 @@ fn a_corners_game_saves_and_loads() {
         assert_same_network(&core, &loaded, label);
     }
 }
+
+#[test]
+fn extending_and_merging_an_asymmetric_road_keeps_its_widths() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    use crate::simulation::network::road_types::RoadAttributes;
+    let mut core = city(&[[(-100.0, 0.0), (0.0, 0.0)]], 1);
+    let joint = node_near(&core, v(0.0, 0.0));
+    let road = core.region_graph.node_adjacency(joint)[0];
+    let widths = SidewalkWidths::new(4.0, 2.5).unwrap();
+    let attributes =
+        RoadAttributes::of_edge(core.region_graph.edge(road)).with_sidewalk_widths(widths);
+    assert!(core.set_edge_cross_section_internal(
+        road as i32,
+        1,
+        1,
+        None,
+        RoadParking::NONE,
+        attributes
+    ));
+    core.precompute_road_mesh_data();
+    // The stroke lands 6 m past the original dead end. The existing road grows 6 m and
+    // absorbs the added piece, preserving its id and the two widths in its own direction.
+    build(
+        &mut core,
+        [v(6.0, -60.0), v(6.0, 60.0)],
+        RoadParking::NONE,
+        "asymmetric pass",
+    );
+    let edge = core.region_graph.edge(road);
+    assert_eq!(edge.sidewalk_widths, widths);
+    assert!((edge.geometry.last().unwrap().x - 6.0).abs() < 1e-3);
+    assert_ne!(core.region_graph.get_valid_node(joint), joint);
+    assert!(core.undo_action_internal());
+    let edge = core.region_graph.edge(road);
+    assert_eq!(edge.sidewalk_widths, widths);
+    assert_eq!(edge.geometry.last().unwrap().x, 0.0);
+}

@@ -3,7 +3,7 @@
 //! Cross-section profiles: ordered lateral bands with widths and levels, and the roadbed
 //! half-width rule derived from them.
 //!
-//! The band rule is the legacy one, unchanged: `docs/roads.md` "Cross-section profile".
+//! Band ordering and levels follow `docs/roads.md` "Cross-section profile".
 
 use crate::config;
 use crate::simulation::network::build_surface_edge;
@@ -15,14 +15,20 @@ use godot::prelude::Vector3;
 /// Height of raised bands (curb, shoulder, sidewalk) above the carriageway, in metres.
 pub const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
+/// The widest roadbed half width a road can have (`ROAD-118` round JS4a): four lanes, a parking
+/// lane, half the widest (12 m) median and a sidewalk. The contact query pads an end's own half
+/// width by it, as the edge R-tree holds centreline bounds. A test holds the widest road to it.
+pub(crate) const MAX_ROADBED_HALF_WIDTH_M: f32 = 4.0 * config::LANE_WIDTH
+    + crate::simulation::network::graph::PARKING_LANE_WIDTH_M
+    + 6.0
+    + crate::simulation::network::graph::SIDEWALK_WIDTH_MAX_M;
+
 // Lateral widths of the raised bands beside the carriageway; a car road without sidewalks has
 // only the shoulder (`ROAD-101`'s road types say so in their widths).
 const CURB_BAND_WIDTH_M: f32 = 0.15;
 pub(crate) const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 // `(sidewalk, curb or shoulder)` widths of one side of a car road (`ROAD-107`): the sidewalk
-// proper and its curb, which together are `config::SIDEWALK_WIDTH`, or the shoulder alone.
-const SIDEWALK_SIDE_BANDS_M: (f32, f32) =
-    (config::SIDEWALK_WIDTH - CURB_BAND_WIDTH_M, CURB_BAND_WIDTH_M);
+// proper and its curb, which together are the authored side width, or the shoulder alone.
 const SHOULDER_SIDE_BANDS_M: (f32, f32) = (0.0, SHOULDER_BAND_WIDTH_M);
 // A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
 pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
@@ -143,15 +149,18 @@ impl RoadProfile {
         let half_carriageway =
             (edge.width.max(config::LANE_WIDTH) * 0.5).max(config::LANE_WIDTH * 0.5);
         let sides = edge.sidewalk_sides();
-        let side_bands = |sidewalk: bool| {
-            if sidewalk {
-                SIDEWALK_SIDE_BANDS_M
+        let side_bands = |positive: bool| {
+            if sides.on_lateral(positive) {
+                (
+                    edge.sidewalk_widths.on_lateral(positive) - CURB_BAND_WIDTH_M,
+                    CURB_BAND_WIDTH_M,
+                )
             } else {
                 SHOULDER_SIDE_BANDS_M
             }
         };
-        let (left_sidewalk_width, left_curb_width) = side_bands(sides.left());
-        let (right_sidewalk_width, right_curb_width) = side_bands(sides.right());
+        let (left_sidewalk_width, left_curb_width) = side_bands(false);
+        let (right_sidewalk_width, right_curb_width) = side_bands(true);
         // The carriageway's edges: centred, or moved by a pocket's kerb shift (`ROAD-95`), which
         // moves one kerb by a lane and keeps the other. The split between the two carriageway
         // bands stays on the centreline (the shift is half a lane, under the half width), so
@@ -405,7 +414,7 @@ pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
 
 /// The raised band outside `edge`'s carriageway on `side` (1 left of the forward direction, -1
 /// right, as `Edge::frontage_half_width_m` takes it), as [`RoadProfile::for_edge`] builds it:
-/// `config::SIDEWALK_WIDTH` where a car road has a sidewalk (`ROAD-107`), the 0.75 m shoulder
+/// the authored width where a car road has a sidewalk (`ROAD-107`), the 0.75 m shoulder
 /// where it has none, 0 for a walkway (its footpath is its whole width). The building door
 /// probes read it so a building on a side without a sidewalk fronts the shoulder's outer edge,
 /// not the carriageway's. `O(1)`.
@@ -413,7 +422,7 @@ pub(crate) fn side_band_width_m(edge: &Edge, side: i8) -> f32 {
     if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
         0.0
     } else if edge.sidewalk_sides().on_lateral(side < 0) {
-        config::SIDEWALK_WIDTH
+        edge.sidewalk_widths.on_building_side(side)
     } else {
         SHOULDER_BAND_WIDTH_M
     }
@@ -463,6 +472,41 @@ mod tests {
             primary_type,
             sidewalks: crate::simulation::network::graph::SidewalkSides::both_or_none(walked_road),
             ..Edge::default()
+        }
+    }
+
+    #[test]
+    fn sidewalk_bands_follow_their_own_widths() {
+        use crate::simulation::network::graph::{SidewalkSides, SidewalkWidths};
+        let mut road = edge(
+            7.0,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            TransitType::Road,
+        );
+        // Each curb is 0.15 m. Clear widths for 1.5, 2.5 and 4.0 m sidewalks are
+        // 1.35, 2.35 and 3.85 m. The half carriageway is 3.5 m on each side.
+        for (left, right, clear, ends) in [
+            (1.5, 1.5, vec![1.35, 1.35], (5.0, 5.0)),
+            (2.5, 2.5, vec![2.35, 2.35], (6.0, 6.0)),
+            (4.0, 1.5, vec![3.85, 1.35], (7.5, 5.0)),
+            (4.0, 0.0, vec![3.85], (7.5, 4.25)),
+        ] {
+            road.set_sidewalks(SidewalkSides::of_ends(true, right > 0.0));
+            road.sidewalk_widths =
+                SidewalkWidths::new(left, if right > 0.0 { right } else { 1.5 }).unwrap();
+            let profile = RoadProfile::for_edge(&road);
+            let sidewalk_bands: Vec<_> = profile
+                .bands()
+                .iter()
+                .filter(|band| band.kind == BandKind::Sidewalk)
+                .map(|band| band.end_m - band.start_m)
+                .collect();
+            assert_eq!(sidewalk_bands.len(), clear.len());
+            for (found, expected) in sidewalk_bands.into_iter().zip(clear) {
+                assert!((found - expected).abs() < 1e-6);
+            }
+            assert_eq!(profile.side_half_widths_m(false), (3.5, ends.0));
+            assert_eq!(profile.side_half_widths_m(true), (3.5, ends.1));
         }
     }
 

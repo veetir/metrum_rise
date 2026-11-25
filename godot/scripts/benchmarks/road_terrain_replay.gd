@@ -75,8 +75,7 @@ func run(bench: Node) -> void:
 			result["error"] = "clean world did not settle"
 			result["wait"] = reset
 			continue
-		bench.input_manager.current_tool = bench.input_manager.Tool.ROAD
-		bench.input_manager._activate_tool_logic(bench.input_manager.Tool.ROAD, true)
+		bench.activate_road_fixture_tool()
 		for stroke in fixture.segments:
 			_label = "%s_%02d" % [fixture.case_id, int(stroke.attempt)]
 			var step: Dictionary = await _run_stroke(bench, fixture, stroke)

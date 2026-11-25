@@ -30,18 +30,10 @@ use super::{PREVIEW_ROADS_OVERLAP_REASON, RoadPreviewValidation};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::road_edit::input::{PreparedRoadInput, is_surface_edge};
-use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
+use crate::simulation::network::roadbed::{MAX_ROADBED_HALF_WIDTH_M, visual_roadbed_half_width_m};
 use crate::simulation::network::topology::INTERSECTION_NODE_CAPTURE_EPSILON;
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use godot::prelude::Vector3;
-
-/// The widest roadbed half width a road can have (`ROAD-118` round JS4a): four lanes, a parking
-/// lane, half the widest (12 m) median and a sidewalk. The contact query pads an end's own half
-/// width by it, as the edge R-tree holds centreline bounds. A test holds the widest road to it.
-pub(crate) const MAX_ROADBED_HALF_WIDTH_M: f32 = 4.0 * config::LANE_WIDTH
-    + crate::simulation::network::graph::PARKING_LANE_WIDTH_M
-    + 6.0
-    + config::SIDEWALK_WIDTH;
 
 // The rounding of an end's line meeting a centreline it stands on: an end on the centreline may
 // read its meeting a hair behind it.

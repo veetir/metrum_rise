@@ -309,10 +309,9 @@ pub(crate) fn lot_front_gaps(
                 {
                     return;
                 }
-                let outer = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
                 for pair in edge.physical_geometry.windows(2) {
-                    // A pocket edge's road spans `outer` about its carriageway's axis
-                    // (`ROAD-95`, D17).
+                    // A pocket edge's road spans its respective sidewalks about its carriageway's
+                    // axis (`ROAD-95`, D17).
                     let (a, b) = edge.carriageway_segment(
                         Vector2::new(pair[0].x, pair[0].z),
                         Vector2::new(pair[1].x, pair[1].z),
@@ -323,6 +322,8 @@ pub(crate) fn lot_front_gaps(
                     } else {
                         0.0
                     };
+                    let outer = edge.width * 0.5
+                        + edge.sidewalk_widths.on_lateral(ab.cross(point - a) > 0.0);
                     gap = gap.min((a + ab * t).distance_to(point) - outer);
                 }
             },
@@ -337,10 +338,9 @@ pub(crate) fn lot_front_gaps(
 
 /// [`Building::side_offset`](super::Building::side_offset) for a frontage on `side` of `edge`
 /// (`1` left of its forward direction, `-1` right): the curb on that side, the carriageway's edge
-/// plus the sidewalk. A pocket edge's kerbs lie off its centreline (`ROAD-95`, D17); bit for bit
-/// `width / 2 + SIDEWALK_WIDTH` on any other road. `O(1)`.
+/// plus that side's sidewalk. A pocket edge's kerbs lie off its centreline (`ROAD-95`, D17). `O(1)`.
 pub(crate) fn frontage_side_offset_m(edge: &Edge, side: i8) -> f32 {
-    edge.frontage_half_width_m(side) + crate::config::SIDEWALK_WIDTH
+    edge.frontage_half_width_m(side) + edge.sidewalk_widths.on_building_side(side)
 }
 
 /// The gap of [`lot_front_gaps`] at lateral position `s` in `-1..=1` across the lot front,
@@ -352,4 +352,25 @@ pub(crate) fn front_gap_at(gaps: [f32; 3], s: f32) -> f32 {
     let bend = (right + left) * 0.5 - mid;
     let gap = mid + slope * s + bend * s * s;
     if gap < MIN_FRONT_GAP_M { 0.0 } else { gap }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::SidewalkWidths;
+    use crate::simulation::network::roadbed::fixtures::t_junction;
+
+    #[test]
+    fn building_setback_tracks_its_own_sidewalk_width() {
+        let mut graph = t_junction(false);
+        let setback = |graph: &RegionGraph, side| {
+            BuildingAllocator::explicit_frontage_transform(graph, 1, 0.5, side, 10.0)
+                .unwrap()
+                .2
+        };
+        assert_eq!([setback(&graph, 1), setback(&graph, -1)], [5.0, 5.0]);
+        graph.edge_mut(1).sidewalk_widths = SidewalkWidths::new(4.0, 2.5).unwrap();
+        // The left curb moves from 3.5 + 1.5 to 3.5 + 4.0 m. The right moves to 3.5 + 2.5 m.
+        assert_eq!([setback(&graph, 1), setback(&graph, -1)], [7.5, 6.0]);
+    }
 }

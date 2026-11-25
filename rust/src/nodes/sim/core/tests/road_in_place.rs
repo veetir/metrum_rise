@@ -1504,3 +1504,82 @@ fn a_commit_keeps_the_ids_of_the_lanes_it_rebuilds_unchanged() {
         );
     }
 }
+
+#[test]
+fn in_place_sidewalk_width_change_undoes_and_reapplies() {
+    use crate::simulation::network::graph::SidewalkWidths;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let attributes = RoadAttributes::of_edge(core.region_graph.edge(side));
+    let widths = SidewalkWidths::new(4.0, 2.5).unwrap();
+    let wider_type = attributes.with_sidewalk_widths(widths);
+    let saved = core.region_graph.edge(side).geometry.clone();
+    let previous_profile = core.region_graph.edge(side).physical_geometry.clone();
+    for _ in 0..2 {
+        assert_eq!(edit(&mut core, side, (1, 1, None), wider_type), "");
+        let edge = core.region_graph.edge(side);
+        assert_eq!(edge.sidewalk_widths, widths);
+        assert_eq!(edge.geometry, saved);
+        assert!(core.undo_action_internal());
+        let restored = core.region_graph.edge(side);
+        assert_eq!(restored.sidewalk_widths, attributes.sidewalk_widths);
+        assert_eq!(restored.physical_geometry, previous_profile);
+    }
+}
+
+#[test]
+fn a_curved_stroke_keeps_its_sidewalk_widths_through_a_split_and_undo() {
+    use crate::nodes::sim::core::RoadCommitRequest;
+    use crate::simulation::network::graph::SidewalkWidths;
+    use crate::simulation::network::road_edit::RoadProfile;
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e7;
+    let widths = SidewalkWidths::new(3.0, 1.5).unwrap();
+    let curve: Vec<_> = (-10..=10)
+        .map(|i| {
+            let angle = i as f32 * 0.04;
+            Vector3::new(150.0 * angle.sin(), 0.0, 150.0 * (1.0 - angle.cos()))
+        })
+        .collect();
+    let commit = |core: &mut SimCore, points, attributes| {
+        core.precompute_road_mesh_data();
+        let result = core.commit_road(
+            RoadCommitRequest {
+                points,
+                parking: Default::default(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                profile: RoadProfile::FollowGround,
+                median: None,
+                attributes,
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(result.committed, "{}", result.rejection);
+    };
+    let defaults = RoadAttributes::DEFAULT;
+    commit(&mut core, curve, defaults.with_sidewalk_widths(widths));
+    assert_eq!(core.region_graph.edge(0).sidewalk_widths, widths);
+    let crossing = vec![Vector3::new(0.0, 0.0, -60.0), Vector3::new(0.0, 0.0, 60.0)];
+    for _ in 0..2 {
+        commit(&mut core, crossing.clone(), defaults);
+        let matches: Vec<_> = core
+            .region_graph
+            .edges()
+            .iter()
+            .filter(|edge| !edge.deleted && edge.sidewalk_widths == widths)
+            .collect();
+        assert_eq!(matches.len(), 2);
+        // Both halves still run east, so their left width is 3.0 m in the same world direction.
+        assert!(
+            matches
+                .iter()
+                .all(|edge| edge.geometry[0].x < edge.geometry.last().unwrap().x)
+        );
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge(0).sidewalk_widths, widths);
+    }
+}

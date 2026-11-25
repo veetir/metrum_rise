@@ -433,6 +433,7 @@ fn add_edge(
         parking: Default::default(),
         pocket: None,
         sidewalks: SidewalkSides::BOTH,
+        sidewalk_widths: Default::default(),
         roundabout: None,
     })
 }
