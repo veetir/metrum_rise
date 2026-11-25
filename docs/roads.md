@@ -202,7 +202,7 @@ and right total widths. See [Per-side sidewalk widths](#per-side-sidewalk-widths
 | Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
 | Car road with the left sidewalk only (`ROAD-107`) | sidewalk `sL - 0.15 m`, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, shoulder 0.75 m | raised, raised, ground, ground, raised |
 | Car road with the right sidewalk only (`ROAD-107`) | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, curb 0.15 m, sidewalk `sR - 0.15 m` | raised, ground, ground, raised, raised |
-| Footpath | footpath `max(edge.width, 2 m)` | ground |
+| Footpath | footpath `max(edge.width, 1.5 m)` | ground |
 | Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
 `w` is `max(edge.width, LANE_WIDTH)`; `Edge::width` includes a median (`ROAD-80`). The profile, not the `Edge::width` doc comment, defines what
@@ -1487,10 +1487,12 @@ mouth. The outer chain is cut at each attached arm: one chain ends along its rig
 mouth corner, the next starts along its left edge. Attached arms are ordered by sector and along
 its outer path, which in a sector through angle zero (a road end's cap) is not angle order. An
 edge that meets no boundary inside the node, a ribbon outline that is not simple, or two ribbons
-that touch or overlap fail with `LayoutError::FootpathDoesNotJoin { arm }`. Where only footpaths meet, they are ordinary arms
-with one ground-level band per side, laid out by the corner and round-join rules above; a
-straight pair of footpaths is a pass-through pair, but a footpath continuing a road end
-straight on attaches to its cap.
+that touch or overlap fail with `LayoutError::FootpathDoesNotJoin { arm }`. Walkway-only junctions
+have one ground-level band per side. Inside corners meet at the first intersection of the arms'
+outer offsets. Outside corners and end caps use the round-join rule. Each arm at an inside
+corner reserves a metre of run beyond the mitre for a separate mouth row. A straight pair of
+equal-width footpaths passes through. A footpath continuing a road end attaches to its cap.
+See [Walkway width and joints](#walkway-width-and-joints-road-133).
 
 **Fitting.** Each end may use its edge's length less what the far end needs (`ROAD-118` round
 JS1): a road end (a node where only this standard edge meets) needs only its cap's
@@ -11923,7 +11925,7 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   parts, left to right looking along the road's forward direction. It can hold `Sidewalk { width_m }`
   (1.5 to 4.0 m including the kerb, in 0.5 m steps), `CarLane { forward }` (3.5 m), at most one
   `Median` (style and width in the
-  style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
+  style's range), `Footpath { width_m }` (1.5 to 5.0 m, the Walkway's only part) and `Parking`
   (2.5 m kerbside parking lane at a kerb, next to a sidewalk on its own side, `PARK-05`,
   `layout_parking_needs_sidewalk`,
   [`traffic.md`](traffic.md#kerbside-parking-lanes-park-05)). One check
@@ -12222,6 +12224,62 @@ build and 58 ignored. Clippy adds no warning. The isolated Godot builder,
 cross-section, lane edit, road types and rejection suites pass.
 
 
+#### Walkway width and joints (ROAD-133)
+
+Select the built-in Walkway in the road builder to start a custom type. Click its part or
+use the stepper in Road Properties to choose 1.5 to 5.0 m in 0.5 m steps. Rust reports
+`footpath_width_out_of_range` for values outside the grid. A new type or a library part
+without `width_m` starts at 2.0 m. Save format 130 already carries the built width in
+`network_edges.width`. In-place changes use the cross-section edit's widening checks,
+demolition confirmation and undo. The walkway keeps a centreline lane in each direction.
+Lane ends and junction connectors use the width-dependent mouth rows. Path lights use the
+outer edge of the footpath band. The preview, parcel corridor, water and geometry-radius
+checks read the same edge width. Width lookup is constant time and widening compiles the
+existing local roadbed closure.
+
+An inside mitre fills the intersection of the path strips. The outside join rounds about
+the node. In the 90° bend and T fixtures, tested at 1.5, 2.0 and 5.0 m, each sampled point
+of the joint mesh lies within half the path width plus 1 mm of at least one incident
+centreline ray. At a road sidewalk, the raised footpath ribbon runs to the sidewalk's
+outer vertices. Its mesh carries the footpath material through the join.
+
+Fresh comparison with the ROAD-132 control, with eight Rayon workers on an M2 Pro.
+All 17 gameplay commit records and 78 Kuopio commit records match in every field.
+Of the 180 roadbed fixture records, four change. The new inside mitre moves the
+mouths, trims the adjoining spans and changes the derived lanes, outlines and queries.
+The four fixture hashes and their strip hashes were recorded on Linux x86-64 with Rust
+1.98.1.
+
+| Fixture | Changed products |
+| --- | --- |
+| `path_bend/false` | Graph clips, node mesh, layout, spans, walkways, lanes, queries and strips |
+| `path_bend/true` | Same on the 2.5% slope |
+| `path_t/false` | Graph clips, node mesh, layout, spans, walkways, lanes, queries and strips |
+| `path_t/true` | Same on the 2.5% slope |
+
+Unprofiled release locality used `$TEST_BINARY populated_footpath_width_edit_scaling
+--ignored --nocapture --test-threads=1`. Widening the same 2 m approach to 5 m at a
+sidewalk junction gave verdict p50 of 0.252 / 0.232 / 0.230 / 0.249 ms at 0 / 1k /
+10k / 100k remote buildings. The largest tier held 600,024 agents, 100,004 parcels
+and 391 remote roads. Each tier reused the four local occupied lots. Local mesh
+and lanes matched across tiers, undo restored both, and each edit published one chunk.
+The largest tier's commit and undo took 1.414 and 1.984 ms p50 over 20 samples. Fixture
+setup was outside the timings.
+
+Fresh Level F timing used `./run.sh --timing --level F --base 43e0b03be` with
+eight Rayon workers, unpinned release binaries `c77ca67e308e3c27` and
+`b9b9c326faef0240`. At 30k, the 32× control/branch/branch/control means were
+3.856 / 3.795 / 3.702 / 3.751 ms. The 1× means were 1.674 and 1.686 ms, within the
+run's comparison tolerance. Both builds failed the 1× absolute worst-frame gate
+at 16.16 and 12.10 ms respectively. K22 click-to-ack was 6.93 and 7.30 ms with
+identical commit products.
+
+The focused Linux release suite passed 216 tests, including the re-recorded fixtures.
+On macOS the broader release suite passed 925 tests and reproduced seven control
+failures. The isolated Godot builder, lane edit, cross-section, types, walkway preset,
+mixed-junction, render publication and rejection tests passed. The rendered junction
+reference reported the same terrain-pinhole count on both builds.
+
 #### The road builder (ROAD-101, round RB2)
 
 **Built-in turn pockets (`ROAD-128`, Veeti Reis's `feat/road-type-pockets`, merged with the icon UI
@@ -12287,20 +12345,20 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   hatching, a kerbed grass or paving median. Above each part a procedural `_draw()` glyph (an
   arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
   sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
-  width (between the sidewalks) and the total width. A sidewalk is fixed at its end; it cannot
-  be moved, removed or opened. An end without one (round RB3c, each end on its own since
+  width (between the sidewalks) and the total width. Each sidewalk stays at its end. Click its pavement to adjust its width. An end without one (round RB3c, each end on its own since
   `ROAD-107`) is the roadbed's 0.75 m shoulder band, drawn as gravel between edge lines, never a
   part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
 - **Parts in.** Six tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
-  median (each median at its style's default width) and Parking lane (`PARK-05`); no footpath
-  tile: the Walkway stays a built-in. Both gestures: click a "+" slot between two parts and then a tile (the tile goes
+  median (each median at its style's default width) and Parking lane (`PARK-05`). Start a
+  walkway from the built-in Walkway template. For a car layout, click a "+" slot between two parts and then a tile (the tile goes
   there and the next slot is selected; the slot before the right sidewalk is selected at
   first), or drag a tile into the strip (a marker shows the boundary it lands on). A part
   dragged along the strip moves; dragged off it, it is removed.
 - **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
   Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
-  None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
+  None). Sidewalks and walkways use the width stepper. Interior parts can move left or right
+  or be removed.
 - **Attributes** (round RB3c). Under the strip: **Left sidewalk** and **Right sidewalk**
   (`ROAD-107`: one per end, left and right as the road is drawn; a type without one sends no
   sidewalk part at that end), **Speed** (Finnish speed limit signs on Rust's grid,
@@ -12322,8 +12380,8 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   written; the line under the strip gives the first reason it is not. Enter creates, Esc and
   Cancel close without writing. Create and Save write the library and close the builder; a
   created type becomes the road tool's, ready to draw.
-- **Library column.** The built-ins (selecting one starts a new type from its layout; Duplicate
-  does the same; the Walkway cannot be duplicated), then the player's types (select to edit,
+- **Library column.** The built-ins come first. Selecting or duplicating one starts a new
+  type from its layout. The player's types follow (select to edit,
   Duplicate, Delete after a `ConfirmationDialog` naming the type and that built roads keep their
   layout). An unusable entry is greyed with its reason ("Broken Road: Lanes against traffic go on
   the left"); selecting it opens it for editing so it can be fixed and saved. When the file does
@@ -19560,21 +19618,17 @@ residential. Lane-line quads stay continuous geometry; `road_marking.gdshader` c
 from UV.x (metres) and the pattern in UV.y (2 solid, 3 short, 4 long). Paint opacity rose from
 0.35 to 0.8. Edge lines (K6), warning lines (K4), wetness from weather, gravel roads and footpath surface variants are not wired yet.
 
-Footpaths draw as Finnish light-traffic asphalt (`godot/assets/materials/road_path.gdshader`,
-functions in `godot/scripts/shaders/path_surface_finnish.gdshaderinc`, also from Codex look-dev):
-finer and darker than the carriageway, no wheel ruts, frost cracks across, root heave and
-patches with age, and a crumbling margin. The sidewalk layer's material switched to this shader,
-but roadside sidewalks still take its first branch and look exactly as before; only footpath
-geometry carries the marker:
+Footpaths draw as Finnish light-traffic asphalt (`godot/assets/materials/road_path.gdshader`
+and `godot/scripts/shaders/path_surface_finnish.gdshaderinc`). The asphalt shares its
+world-space grain across spans and joints. Span wear adds fine frost cracks and root
+heave. The asphalt colour reaches the mesh edge.
 
-- Footpath span quads get road-space UVs and COLOR = (half-width in decimetres, 255 marker,
-  surface kind 0 = asphalt, 128 + 127 × age).
-- Node pieces where only footpaths meet get the marker with a zero half-width: the path surface
-  in world space, age 0, so no cracks line up with the world axes.
-- The stone-dust and forest-trail variants exist in the include (surface kinds 1 and 2) but no
-  edge can select them yet: that needs a per-path surface setting in the tool and the save.
-- The path mesh ends at the path edge, so the grass blend has nowhere to go and the edge reads
-  as a hard line. A narrow apron strip beyond the edge would let it blend.
+- Footpath span quads carry road-space UVs and COLOR = (half-width in decimetres, 255
+  footpath marker, surface kind 0 for asphalt, 128 + 127 × age).
+- Footpath bands in node pieces carry the same marker with zero half-width and age.
+  This selects world space through bends, end caps and the ribbons that reach sidewalks.
+  Roadside sidewalk bands use the shared paving material.
+- Stone-dust and forest-trail surface kinds remain in the shader include for future use.
 
 Frame cost, measured 2026-10-09 on the M2 Pro (release, 1080p, `kuopio-city.sqlite` at 12:00,
 `--gameplay-road-benchmark` idle matrix, 210 warm-up and 120 measured frames, before = `c848c7f3`

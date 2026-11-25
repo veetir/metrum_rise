@@ -368,6 +368,12 @@ pub struct SectorLayout {
     pub boundaries: Range<usize>,
 }
 
+impl SectorLayout {
+    fn is_mitred(&self) -> bool {
+        self.corner.is_some_and(|corner| corner.radius_m == 0.0)
+    }
+}
+
 /// Band on one side of a sector boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BoundaryBand {
@@ -1137,7 +1143,14 @@ fn plan_sectors(
         let start = boundaries.len();
         let corner = match kind {
             SectorKind::Concave => {
-                let (radius_m, crossing) = fit_corner(a, b)?;
+                let (radius_m, crossing) = if a.left.bands[0].kind == BandKind::Footpath {
+                    let crossing =
+                        corner_crossing(a, a.left.core_offset(), b, -b.right.core_offset())
+                            .ok_or(LayoutError::CornerDoesNotFit { arm: a.key })?;
+                    (0.0, crossing)
+                } else {
+                    fit_corner(a, b)?
+                };
                 push_boundaries(boundaries, a, b, None, |_, _| {
                     Some((crossing.a_station, crossing.b_station))
                 })?;
@@ -1577,7 +1590,13 @@ fn assign_mouths(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(
         let mouth_m = attached_m.fold(reach_m + input.crosswalk_depth(), f64::max);
         let short_run =
             reaches().any(|run_m| run_m < mouth_m && mouth_m - run_m < MIN_MOUTH_STATION_M);
-        arm.mouth_station_m = if short_run {
+        arm.mouth_station_m = if left.is_mitred() || right.is_mitred() {
+            // An inside mitre is shared by two arms. Keep their mouth rows apart even when
+            // both offset runs reach the mitre at the same station.
+            reaches()
+                .map(|station| station + MIN_MOUTH_STATION_M)
+                .fold(mouth_m, f64::max)
+        } else if short_run {
             reaches().fold(f64::NEG_INFINITY, f64::max) + MIN_MOUTH_STATION_M
         } else {
             mouth_m
@@ -1709,7 +1728,12 @@ fn sample_sectors(
         let a = &arms[sorted[sector.from_arm].input_index];
         let b = &arms[sorted[sector.to_arm].input_index];
         let centre = sector.corner.map_or(node, |corner| corner.centre);
+        let mitred = sector.is_mitred();
         let curve = |boundary: &SectorBoundary| {
+            if mitred {
+                // Both offset runs meet at this point. Use the intersection itself on both sides.
+                return PolarCurve::new(centre, centre, centre, false);
+            }
             let start = a.offset_point(boundary.from_station_m, boundary.from_offset_m);
             // In a straight sector's miter every boundary has equal offsets on both arms: the
             // arms' own where no boundary steps, the mean of the two where one does (D4's taper).
@@ -1727,7 +1751,7 @@ fn sample_sectors(
         for boundary in &boundaries[range.clone()] {
             let curve = curve(boundary);
             // A curb return turns clockwise about its centre; anything else cannot be built.
-            if sector.kind == SectorKind::Concave && curve.sweep >= 0.0 {
+            if sector.kind == SectorKind::Concave && !mitred && curve.sweep >= 0.0 {
                 return Err(LayoutError::CornerDoesNotFit { arm: a.key });
             }
             segments = segments.max(curve.segment_count());

@@ -778,13 +778,16 @@ pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -
 // Per-vertex footpath description for road_path.gdshader: half-width in decimetres, a full green
 // channel marking the vertex as footpath (roadside sidewalks keep `sidewalk_color`'s zero), the
 // surface kind (0 asphalt), and the cosmetic age as in `road_space_color`.
-pub(super) fn footpath_color(edge: &crate::simulation::network::graph::Edge) -> Color {
+pub(super) fn footpath_color(edge: Option<&crate::simulation::network::graph::Edge>) -> Color {
     let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
     Color::from_rgba(
-        channel(edge.width.max(2.0) * 0.5 * 10.0),
+        // A zero width is the world-space marker for joints and attached ribbons.
+        edge.map_or(0.0, |edge| channel(edge.width * 0.5 * 10.0)),
         1.0,
         0.0,
-        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
+        edge.map_or(128.0 / 255.0, |edge| {
+            channel(128.0 + 127.0 * cosmetic_road_age(edge))
+        }),
     )
 }
 

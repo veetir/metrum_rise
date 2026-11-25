@@ -62,17 +62,14 @@ void fp_surface(sampler2D detail_map, vec2 world_xz, vec2 road_m,
 	float puddle = smoothstep(0.48, 0.87, w) * smoothstep(0.20, 0.80, dip) * (1.0 - margin);
 	float fine_fade = 1.0 - smoothstep(0.008, 0.035, px);
 	if (kind < 0.5) {
-		vec2 repair_q = vec2(local_s - (2.0 + h0 * 2.9), l - (h2 - 0.5) * hw);
-		float repair_d = max(abs(repair_q.x) - (0.35 + h1 * 0.48), abs(repair_q.y) - (0.24 + h0 * 0.22));
-		float repair = (1.0 - smoothstep(-px, px, repair_d)) * step(0.68, h1) * smoothstep(0.25, 0.85, a);
-		float base = 0.075 + a * 0.031 + (grain.r - 0.34) * 0.10 + (macro - 0.5) * 0.016;
-		albedo = vec3(base * 1.02, base * 1.015, base);
-		albedo = mix(albedo, albedo * 0.60, repair);
-		albedo = mix(albedo, vec3(0.024), fissure * (1.0 - repair));
-		height_m = 0.010 * heave - 0.0015 * fissure - 0.004 * dip + 0.001 * repair;
-		roughness = 0.79 - repair * 0.07;
+		float base = 0.075 + (grain.r - 0.34) * 0.10 + (macro - 0.5) * 0.016;
+		albedo = mix(vec3(base * 1.02, base * 1.015, base), vec3(0.024), fissure);
+		height_m = 0.010 * heave - 0.0015 * fissure - 0.004 * dip;
+		roughness = 0.79;
 		micro_slope = (grain.gb - 0.5) * 0.17;
 		water = puddle * 0.55;
+		// Asphalt runs to the mesh edge and shares its world-space grain with junctions.
+		return;
 	} else if (kind < 1.5) {
 		float loose = 0.25 + margin * 0.75;
 		float base = 0.29 + (broad - 0.5) * 0.04 - centre * 0.024;

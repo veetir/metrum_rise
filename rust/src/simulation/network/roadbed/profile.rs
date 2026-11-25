@@ -8,7 +8,9 @@
 use crate::config;
 use crate::simulation::network::build_surface_edge;
 use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking};
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{
+    FOOTPATH_DEFAULT_WIDTH_M, FOOTPATH_MIN_WIDTH_M, RoadAttributes,
+};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use godot::prelude::Vector3;
 
@@ -30,8 +32,6 @@ pub(crate) const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 // `(sidewalk, curb or shoulder)` widths of one side of a car road (`ROAD-107`): the sidewalk
 // proper and its curb, which together are the authored side width, or the shoulder alone.
 const SHOULDER_SIDE_BANDS_M: (f32, f32) = (0.0, SHOULDER_BAND_WIDTH_M);
-// A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
-pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
 /// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's
 /// width; a nose scales the kerbs with the median.
 pub const MEDIAN_KERB_WIDTH_M: f32 = 0.15;
@@ -141,7 +141,12 @@ impl RoadProfile {
         };
 
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
-            let half_width = edge.width.max(FOOTPATH_MIN_WIDTH_M) * 0.5;
+            let min_width = if edge.primary_type == TransitType::Foot {
+                FOOTPATH_MIN_WIDTH_M
+            } else {
+                FOOTPATH_DEFAULT_WIDTH_M
+            };
+            let half_width = edge.width.max(min_width) * 0.5;
             push(BandKind::Footpath, -half_width, half_width, Level::Ground);
             return profile;
         }
@@ -577,7 +582,7 @@ mod tests {
         let path = RoadProfile::for_edge(&path);
         assert_eq!(path.bands().len(), 1);
         assert_eq!(path.bands()[0].kind, BandKind::Footpath);
-        assert_eq!(path.half_width_m(), 1.0);
+        assert_eq!(path.half_width_m(), FOOTPATH_MIN_WIDTH_M * 0.5);
         assert_eq!(path.carriageway_half_width_m(), 0.0);
     }
 

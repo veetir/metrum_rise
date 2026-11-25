@@ -20,7 +20,8 @@ use crate::simulation::network::graph::{MedianStyle, RoadMedian};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    DEFAULT_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypePockets,
+    DEFAULT_SPEED_KMH, FOOTPATH_DEFAULT_WIDTH_M, FOOTPATH_MAX_WIDTH_M, FOOTPATH_MIN_WIDTH_M,
+    FOOTPATH_WIDTH_STEP_M, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypePockets,
     RoadTypeRefusal, SPEEDS_KMH, layout_widths, type_of,
 };
 use crate::simulation::network::types::EdgeClass;
@@ -118,6 +119,12 @@ impl SimulationNode {
                     "min_m": crate::simulation::network::graph::SIDEWALK_WIDTH_MIN_M,
                     "max_m": crate::simulation::network::graph::SIDEWALK_WIDTH_MAX_M,
                     "step_m": crate::simulation::network::graph::SIDEWALK_WIDTH_STEP_M,
+                },
+                "footpath_widths": vdict! {
+                    "default_m": FOOTPATH_DEFAULT_WIDTH_M,
+                    "min_m": FOOTPATH_MIN_WIDTH_M,
+                    "max_m": FOOTPATH_MAX_WIDTH_M,
+                    "step_m": FOOTPATH_WIDTH_STEP_M,
                 },
                 "pocket_lengths": vdict! {
                     "default_m": crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M,
@@ -306,6 +313,9 @@ fn refusal_to_variant(refusal: &RoadTypeRefusal) -> VarDictionary {
 
 fn type_to_variant(ty: &RoadType) -> VarDictionary {
     let mut result = layout_to_variant(&ty.parts, ty.verdict.as_ref());
+    if let Some(section) = ty.usable().filter(|section| section.is_walkway()) {
+        result.set("footpath_width_m", section.footpath_width_m);
+    }
     result.set("id", ty.id.as_str());
     result.set("name", ty.name.as_str());
     result.set("builtin", ty.builtin);
@@ -377,7 +387,7 @@ fn part_to_variant(part: RoadPart) -> VarDictionary {
             "style": median.style as i64,
             "width_m": median.width_m,
         },
-        RoadPart::Footpath => vdict! { "kind": "footpath" },
+        RoadPart::Footpath { width_m } => vdict! { "kind": "footpath", "width_m": width_m },
         RoadPart::Parking => vdict! { "kind": "parking" },
     }
 }
@@ -400,18 +410,17 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
     let part: VarDictionary = part.try_to().map_err(|_| UNKNOWN)?;
     let field = |key: &str| part.get(key).ok_or(UNKNOWN);
     let kind: GString = field("kind")?.try_to().map_err(|_| UNKNOWN)?;
+    let width_or = |default| match part.get("width_m") {
+        None => Ok(default),
+        Some(value) => width_from_variant(&value).ok_or(UNKNOWN),
+    };
     match kind.to_string().as_str() {
-        "sidewalk" => {
-            let width_m = match part.get("width_m") {
-                None => crate::config::SIDEWALK_WIDTH,
-                Some(value) => value
-                    .try_to::<f64>()
-                    .or_else(|_| value.try_to::<i64>().map(|width| width as f64))
-                    .map_err(|_| UNKNOWN)? as f32,
-            };
-            Ok(RoadPart::Sidewalk { width_m })
-        }
-        "footpath" => Ok(RoadPart::Footpath),
+        "sidewalk" => Ok(RoadPart::Sidewalk {
+            width_m: width_or(crate::config::SIDEWALK_WIDTH)?,
+        }),
+        "footpath" => Ok(RoadPart::Footpath {
+            width_m: width_or(FOOTPATH_DEFAULT_WIDTH_M)?,
+        }),
         "parking" => Ok(RoadPart::Parking),
         "car_lane" => Ok(RoadPart::CarLane {
             forward: field("forward")?.try_to().map_err(|_| UNKNOWN)?,
@@ -423,15 +432,20 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
                 .and_then(MedianStyle::from_code)
                 .ok_or("unknown_median_style")?;
             // GDScript may send a whole width as an int.
-            let width = field("width_m")?;
-            let width_m = width
-                .try_to::<f64>()
-                .or_else(|_| width.try_to::<i64>().map(|width| width as f64))
-                .map_err(|_| UNKNOWN)? as f32;
+            let width_m = width_from_variant(&field("width_m")?).ok_or(UNKNOWN)?;
             Ok(RoadPart::Median(RoadMedian { style, width_m }))
         }
         _ => Err(UNKNOWN),
     }
+}
+
+// Godot sends authored widths as floats or whole numbers.
+fn width_from_variant(value: &Variant) -> Option<f32> {
+    value
+        .try_to::<f64>()
+        .ok()
+        .or_else(|| value.try_to::<i64>().ok().map(|width| width as f64))
+        .map(|width| width as f32)
 }
 
 /// The builder and road tool share this configuration; omitted fields mean the defaults.

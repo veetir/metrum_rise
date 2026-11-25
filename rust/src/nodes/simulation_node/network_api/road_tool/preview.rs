@@ -9,7 +9,9 @@ use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::outcome::PreviewOutcome;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
-use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
+use crate::simulation::network::road_types::{
+    FOOTPATH_DEFAULT_WIDTH_M, RoadAttributes, RoadTypePockets, validate_footpath_width,
+};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::types::EdgeClass;
 
@@ -96,11 +98,10 @@ impl SimulationNode {
                 SidewalkWidths::new(sidewalk_widths.x, sidewalk_widths.y)
                     .map(|widths| attributes.with_sidewalk_widths(widths))
             }) {
-            Ok(attributes) => {
-                self.set_road_tool_spec(RoadTypeSpec {
-                    attributes,
-                    ..self.road_tool_spec()
-                });
+            Ok(mut attributes) => {
+                let spec = self.road_tool_spec();
+                attributes.footpath_width_m = spec.attributes.footpath_width_m;
+                self.set_road_tool_spec(RoadTypeSpec { attributes, ..spec });
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -1212,6 +1213,18 @@ impl SimulationNode {
             number("sidewalk_left_m", default_width) as f32,
             number("sidewalk_right_m", default_width) as f32,
         )?;
+        let width_m = number("footpath_width_m", f64::from(FOOTPATH_DEFAULT_WIDTH_M)) as f32;
+        validate_footpath_width(width_m)?;
+        let attributes = RoadAttributes {
+            footpath_width_m: width_m,
+            ..RoadAttributes::from_tool(
+                number("speed_kmh", 50.0) as i64,
+                number("sidewalks", 3.0) as i64,
+                flag("zoning", true),
+                flag("street_lights", true),
+            )?
+            .with_sidewalk_widths(sidewalk_widths)
+        };
         let stroke = (
             RoadMedian::from_tool(
                 number("median_style", 0.0) as i32,
@@ -1219,13 +1232,7 @@ impl SimulationNode {
             )?,
             RoadParking::from_code(number("parking", 0.0) as i32)
                 .ok_or("parking_code_out_of_range")?,
-            RoadAttributes::from_tool(
-                number("speed_kmh", 50.0) as i64,
-                number("sidewalks", 3.0) as i64,
-                flag("zoning", true),
-                flag("street_lights", true),
-            )?
-            .with_sidewalk_widths(sidewalk_widths),
+            attributes,
         );
         if points.len() < 2 {
             return Err("too_short");

@@ -2618,3 +2618,41 @@ fn street_lights_round_trip_through_the_edge_table() {
         assert_eq!(network::load_graph(&conn, true, true).unwrap().edge(edge).no_street_lights, dark);
     }
 }
+
+#[test]
+fn footpath_widths_round_trip_in_format_130() {
+    use crate::simulation::network::roadbed::{RoadProfile, fixtures};
+
+    let mut graph = fixtures::footpath_fixtures(false)
+        .into_iter()
+        .find(|(name, _)| name == "path_t/false")
+        .unwrap()
+        .1;
+    let widths = [1.5, 2.0, 5.0];
+    for (id, width) in widths.into_iter().enumerate() {
+        graph.edge_mut(id).width = width;
+    }
+    fixtures::finalize(&mut graph);
+
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new()).unwrap();
+    let tx = conn.transaction().unwrap();
+    assert_eq!(SAVE_VERSION, 130);
+    tx.execute(
+        "INSERT INTO save_meta VALUES (?1, 0, 'test')",
+        [SAVE_VERSION],
+    )
+    .unwrap();
+    network::save_network(&tx, &graph, &maps, 0).unwrap();
+    tx.commit().unwrap();
+
+    let loaded = network::load_graph(&conn, true, true).unwrap();
+    for (id, width) in widths.into_iter().enumerate() {
+        assert_eq!(loaded.edge(id).width, width);
+        assert_eq!(
+            RoadProfile::for_edge(loaded.edge(id)),
+            RoadProfile::for_edge(graph.edge(id))
+        );
+    }
+}

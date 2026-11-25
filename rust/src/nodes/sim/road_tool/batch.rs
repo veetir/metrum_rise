@@ -9,7 +9,6 @@ use godot::prelude::Vector3;
 
 use super::height::{DraftSection, DraftStroke};
 use crate::nodes::sim::core::RoadPreviewRequest;
-use crate::simulation::network::graph::Edge;
 use crate::simulation::network::road_edit::PreparedRoadInput;
 
 /// The preview requests of a draft's strokes, in drawing order (the batch's determinism rule),
@@ -53,7 +52,10 @@ pub(crate) fn ghost_half_width_m(request: &RoadPreviewRequest) -> f32 {
 pub(crate) fn section_half_width_m(section: &DraftSection) -> f32 {
     let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
     let (fwd, bkw) = (lanes(section.fwd_lanes), lanes(section.bkw_lanes));
-    Edge::cross_section_width_m(fwd, bkw, section.median, section.parking) * 0.5
+    section
+        .attributes
+        .carriageway_width_m(fwd, bkw, section.median, section.parking)
+        * 0.5
         + section.attributes.corridor_side_m(fwd == 0 && bkw == 0)
 }
 

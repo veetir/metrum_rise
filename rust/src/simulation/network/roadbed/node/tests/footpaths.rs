@@ -221,3 +221,90 @@ fn a_footpath_beside_an_arm_moves_its_mouth_but_not_its_zebra() {
         assert_eq!(moved, 1, "{sloped}: the footpath meets one arm side");
     }
 }
+
+#[test]
+fn walkway_bends_and_tees_stay_within_the_path_width() {
+    use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::roadbed::fixtures::finalize;
+
+    for name in ["path_bend/false", "path_t/false"] {
+        let fixture = fixtures().into_iter().find(|(id, _)| id == name).unwrap().1;
+        for width in [1.5, 2.0, 5.0] {
+            let mut graph = fixture.clone();
+            for edge in 0..graph.edge_count() {
+                graph.edge_mut(edge).width = width;
+            }
+            finalize(&mut graph);
+            let bed = compiled(&graph);
+            let piece = bed.node_piece(0).unwrap();
+            let mesh = piece.mesh();
+            check_watertight(name, &bed, piece);
+            let directions: Vec<_> = graph
+                .node_adjacency(0)
+                .iter()
+                .map(|&idx| {
+                    let edge = graph.edge(idx);
+                    let far = if edge.start_node == 0 {
+                        edge.end_node
+                    } else {
+                        edge.start_node
+                    };
+                    let p = graph.node(far).pos;
+                    RoadVec2::new(f64::from(p.x), f64::from(p.z)).normalize()
+                })
+                .collect();
+            let half = f64::from(width) * 0.5;
+            let inside = |p: RoadVec2| {
+                // The union of the arm strips with a rounded outside. The tolerance is 1 mm.
+                directions
+                    .iter()
+                    .any(|&dir| (p - dir * p.dot(dir).max(0.0)).length() <= half + 0.001)
+            };
+            for triangle in mesh.band_triangles(BandKind::Footpath) {
+                let [a, b, c] = triangle.map(|v| {
+                    let point = mesh.positions()[v as usize];
+                    RoadVec2::new(point.x, point.z)
+                });
+                for i in 0..=16 {
+                    for j in 0..=16 - i {
+                        let p =
+                            a + (b - a) * (f64::from(i) / 16.0) + (c - a) * (f64::from(j) / 16.0);
+                        assert!(inside(p), "{name} at {width} m: {p:?}");
+                    }
+                }
+            }
+
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            for arm in &piece.layout().arms {
+                let edge_id = arm.key.edge;
+                let mouth = piece.mouth(arm.key).unwrap();
+                let profile = RoadProfile::for_edge(graph.edge(edge_id));
+                let band = &profile.bands()[0];
+                assert_eq!(
+                    (band.kind, band.start_m, band.end_m),
+                    (BandKind::Footpath, -width * 0.5, width * 0.5)
+                );
+                let center = mouth.section.center_xz;
+                let expected = Vector3::new(
+                    center.x as f32,
+                    mouth.section.center_height_m,
+                    center.y as f32,
+                );
+                let ids = &lanes.edge_lanes[&edge_id];
+                assert_eq!(ids.len(), 2);
+                for &id in ids {
+                    let lane = &lanes.lanes[id];
+                    assert_eq!(lane.lane_type, LaneType::Foot);
+                    let starts_at_node = lane.is_fwd == (arm.key.end == EdgeEnd::Start);
+                    let actual = if starts_at_node {
+                        lane.geometry.first()
+                    } else {
+                        lane.geometry.last()
+                    };
+                    assert!(actual.unwrap().distance_to(expected) <= 0.001);
+                }
+            }
+        }
+    }
+}

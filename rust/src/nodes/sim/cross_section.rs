@@ -26,9 +26,9 @@ use crate::simulation::network::graph::{
     Edge, RoadMedian, RoadParking, SidewalkSides,
 };
 use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
-use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
+use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection, validate_footpath_width};
 use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
-use crate::simulation::network::types::EdgeClass;
+use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
 };
@@ -234,6 +234,12 @@ impl SimCore {
                     ),
                 )
             })?;
+        if current.primary_type == TransitType::Foot
+            && current.width.to_bits() != attributes.footpath_width_m.to_bits()
+        {
+            validate_footpath_width(attributes.footpath_width_m)
+                .map_err(|reason| RoadRejection::new(reason, "the walkway's width"))?;
+        }
         if (
             current.fwd_lanes,
             current.bkw_lanes,
@@ -312,10 +318,12 @@ impl SimCore {
         let mut probe = Edge {
             primary_type: current.primary_type,
             allowed_types: current.allowed_types,
-            width: Edge::cross_section_width_m(fwd, bkw, median, parking),
+            width: attributes.carriageway_width_m(fwd, bkw, median, parking),
             ..Edge::default()
         };
-        probe.set_sidewalks(attributes.sidewalks);
+        if current.primary_type == TransitType::Road {
+            probe.set_sidewalks(attributes.sidewalks);
+        }
         probe.sidewalk_widths = attributes.sidewalk_widths;
         visual_roadbed_half_width_m(&probe)
     }
@@ -356,6 +364,7 @@ impl SimCore {
             parking,
             sidewalks: attributes.sidewalks,
             sidewalk_widths: attributes.sidewalk_widths,
+            footpath_width_m: attributes.footpath_width_m,
         };
         let weight = road_weight(
             section,

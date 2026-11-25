@@ -1583,3 +1583,76 @@ fn a_curved_stroke_keeps_its_sidewalk_widths_through_a_split_and_undo() {
         assert_eq!(core.region_graph.edge(0).sidewalk_widths, widths);
     }
 }
+
+#[test]
+fn walkway_width_edit_checks_the_grid_and_undoes() {
+    let mut core = test_core();
+    let points = vec![
+        Vector3::new(-60.0, 0.0, 20.0),
+        Vector3::new(60.0, 0.0, 20.0),
+    ];
+    assert!(core.add_road_internal(points, 0, 0).committed);
+    core.finalize_network_render_products();
+    let edge = core.get_hovered_edge_internal(0.0, 20.0) as usize;
+    let before = products(&mut core);
+    let drawn = published_chunks(&core);
+    let widths = RoadAttributes::of_edge(core.region_graph.edge(edge));
+    assert_eq!(widths.footpath_width_m, 2.0);
+    assert_eq!(
+        edit(
+            &mut core,
+            edge,
+            (0, 0, None),
+            RoadAttributes {
+                footpath_width_m: 2.25,
+                ..widths
+            }
+        ),
+        "footpath_width_out_of_range"
+    );
+    assert_eq!(
+        edit(
+            &mut core,
+            edge,
+            (0, 0, None),
+            RoadAttributes {
+                footpath_width_m: 5.0,
+                ..widths
+            }
+        ),
+        ""
+    );
+    core.finalize_network_render_products();
+    assert_eq!(core.region_graph.edge(edge).width, 5.0);
+    assert_ne!(published_chunks(&core), drawn);
+    assert_eq!(fully_emitted_chunks(&mut core), published_chunks(&core));
+    assert!(core.undo_action_internal());
+    core.finalize_network_render_products();
+    assert_eq!(core.region_graph.edge(edge).width, 2.0);
+    assert_eq!(products(&mut core), before);
+    assert_eq!(published_chunks(&core), drawn);
+}
+
+#[test]
+fn walkway_widening_checks_the_full_width_for_water() {
+    let mut core = test_core();
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    let mut water = WaterSystem::with_chunking(257, 257, 1.0, 129);
+    let mut depth = vec![0.0; 257 * 257];
+    for x in 108..=148 {
+        depth[x + 130 * 257] = 2.0;
+    }
+    water.replace_baseline_depth_from_dense(&depth).unwrap();
+    core.watermap = water;
+
+    let points = vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)];
+    assert!(core.add_road_internal(points, 0, 0).committed);
+    let attributes = RoadAttributes {
+        footpath_width_m: 5.0,
+        ..RoadAttributes::of_edge(core.region_graph.edge(0))
+    };
+    assert_eq!(
+        edit(&mut core, 0, (0, 0, None), attributes),
+        "water_requires_bridge"
+    );
+}

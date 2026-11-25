@@ -3,8 +3,8 @@
 ## The road builder's library column (`ROAD-101`): the library error on top when the file cannot
 ## be written (it does not parse, or a newer game wrote it), then every road type from Rust's
 ## `get_road_types`, the built-ins first and the player's below, the unusable ones greyed with
-## their reason, and New, Duplicate and Delete under the list. Built-ins can only be duplicated;
-## the walkway not even that (the builder makes car roads). A view: selections and buttons are
+## their reason, and New, Duplicate and Delete under the list. Built-ins are templates.
+## Selections and buttons are
 ## reported through its signals; the builder decides and calls Rust.
 extends VBoxContainer
 
@@ -22,8 +22,6 @@ const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const HEADER := Color(0.65, 0.65, 0.90)
 const UNUSABLE := Color(0.55, 0.55, 0.55)
-## The walkway built-in, which the builder cannot make.
-const WALKWAY_ID := "builtin:walkway"
 
 var error_label: Label
 var list: ItemList
@@ -149,7 +147,6 @@ func _on_item_selected(index: int) -> void:
 func _update_buttons() -> void:
 	var type := selected_type()
 	var builtin := bool(type.get("builtin", false))
-	duplicate_button.disabled = type.is_empty() or String(type.get("id", "")) == WALKWAY_ID or type.get("parts", []).is_empty()
+	duplicate_button.disabled = type.is_empty() or type.get("parts", []).is_empty()
 	delete_button.disabled = type.is_empty() or builtin or not _writable
-	duplicate_button.tooltip_text = "The walkway is not built in the road builder" \
-		if String(type.get("id", "")) == WALKWAY_ID else "Start a new road type from the selected one"
+	duplicate_button.tooltip_text = "Start a new road type from the selected one"

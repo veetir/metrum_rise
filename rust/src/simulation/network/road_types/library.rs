@@ -107,8 +107,15 @@ enum StoredPart {
         style: String,
         width_m: f32,
     },
-    Footpath,
+    Footpath {
+        #[serde(default = "default_footpath_width_m")]
+        width_m: f32,
+    },
     Parking,
+}
+
+fn default_footpath_width_m() -> f32 {
+    super::FOOTPATH_DEFAULT_WIDTH_M
 }
 
 const STYLE_KEYS: [(MedianStyle, &str); 3] = [
@@ -130,7 +137,7 @@ impl StoredPart {
                     .unwrap_or_default(),
                 width_m: median.width_m,
             },
-            RoadPart::Footpath => Self::Footpath,
+            RoadPart::Footpath { width_m } => Self::Footpath { width_m },
             RoadPart::Parking => Self::Parking,
         }
     }
@@ -147,7 +154,7 @@ impl StoredPart {
                     .ok_or("unknown_median_style")?,
                 width_m: *width_m,
             }),
-            Self::Footpath => RoadPart::Footpath,
+            Self::Footpath { width_m } => RoadPart::Footpath { width_m: *width_m },
             Self::Parking => RoadPart::Parking,
         })
     }

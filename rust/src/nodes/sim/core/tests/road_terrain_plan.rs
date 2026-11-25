@@ -69,7 +69,7 @@ pub(super) fn commit_ready(core: &mut SimCore, points: Vec<Vector3>) -> RoadEdit
     commit_ready_with_lanes(core, points, 1, 1)
 }
 
-fn commit_ready_with_lanes(
+pub(super) fn commit_ready_with_lanes(
     core: &mut SimCore,
     points: Vec<Vector3>,
     fwd_lanes: i32,

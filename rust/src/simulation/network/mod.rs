@@ -96,7 +96,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         },
         allowed_types,
         class,
-        width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median, parking),
+        width: attributes.carriageway_width_m(fwd_lanes, bkw_lanes, median, parking),
         fwd_lanes,
         bkw_lanes,
         speed_limit,

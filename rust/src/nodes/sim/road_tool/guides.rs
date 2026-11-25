@@ -89,7 +89,11 @@ pub struct ZoningScratch {
 /// `spec`, in metres: half the width the snap is given (`lane_width_m`, lanes times the lane
 /// width, at least 2 m) plus the sidewalk, as `RoadGridSnap::snap_road_cursor` reads it. `O(1)`.
 pub fn grid_curb_offset_m(spec: &RoadTypeSpec) -> f64 {
-    let width = lane_width_m(i32::from(spec.fwd_lanes), i32::from(spec.bkw_lanes));
+    let width = if spec.fwd_lanes == 0 && spec.bkw_lanes == 0 {
+        spec.attributes.footpath_width_m
+    } else {
+        lane_width_m(i32::from(spec.fwd_lanes), i32::from(spec.bkw_lanes))
+    };
     f64::from(width) * 0.5 + f64::from(spec.attributes.sidewalk_widths.widest_m())
 }
 

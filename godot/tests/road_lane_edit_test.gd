@@ -359,13 +359,19 @@ func _run() -> void:
 	tool.selected_edges = walkway_selection
 	window.show_for_edges(walkway_selection)
 	_expect(_picked_text(window) == "Walkway (3.75 / m)" and not window._type_picker.disabled, "a walkway shows its type with the picker enabled: %s" % _picked_text(window))
+	_expect(window._footpath_row.visible and not window._sidewalk_row.visible, "the walkway shows its own width stepper")
+	window._footpath_stepper._plus.pressed.emit()
+	_expect(simulation.get_edge_width(walkway) == 2.5, "the walkway widens to 2.5 m")
+	await _undo("walkway width")
+	_expect(simulation.get_edge_width(walkway) == 2.0, "undo restores the walkway width")
+	window.show_for_edges(walkway_selection)
 	_pick(window, "builtin:road_2l")
 	_expect(window._apply_button.disabled, "a walkway cannot become a road")
 	_expect(window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway refusal: %s" % window._verdict_label.text)
 	var walkway_right: CheckButton = window._parking_checks[window.PARKING_RIGHT]
 	walkway_right.button_pressed = true
 	_expect(not walkway_right.button_pressed and int(simulation.get_edge_cross_section(walkway).get("parking", -1)) == 0, "a walkway keeps no parking lane")
-	_expect(window._warning_label.visible and window._warning_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway parking refusal: %s" % window._warning_label.text)
+	_expect(window._warning_label.visible and window._warning_label.text == "Only roads with lanes can have parking", "the walkway parking refusal: %s" % window._warning_label.text)
 
 	# The median controls the road builder reuses step within the style's range.
 	var controls := MedianControls.new()

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Displays one sidewalk's width with the same stepper layout as the median control.
+## Displays a sidewalk or walkway width using the same layout as the median control.
 ## The host supplies Rust's width grid and applies the changes Rust accepts.
 extends HBoxContainer
 
@@ -42,6 +42,11 @@ func set_width_no_signal(width_m: float) -> void:
 	_plus.disabled = _width_m <= 0.0 or _width_m >= float(grid.get("max_m", 0.0))
 
 func _step(direction: int) -> void:
-	var width_m := clampf(_width_m + direction * float(grid.step_m), grid.min_m, grid.max_m)
+	var step_m := float(grid.step_m)
+	var min_m := float(grid.min_m)
+	# An older edge can carry a width between the choices. Step to the next grid point.
+	var slot := (_width_m - min_m) / step_m
+	var next := floorf(slot) + 1.0 if direction > 0 else ceilf(slot) - 1.0
+	var width_m := clampf(min_m + next * step_m, min_m, float(grid.max_m))
 	if width_m != _width_m:
 		changed.emit(width_m)

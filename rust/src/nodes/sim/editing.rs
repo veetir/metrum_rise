@@ -1875,7 +1875,7 @@ impl SimCore {
         // A staged edit's pieces take the land under them, or a plotted reservation refuses
         // them, in `validate_staged_road_render_installing` (`ZONE-09`). An unstaged caller
         // (bulk setup) never takes land, so parcels in its corridor still refuse it.
-        let road_width_m = crate::simulation::network::graph::Edge::cross_section_width_m(
+        let road_width_m = prepared_input.attributes.carriageway_width_m(
             fwd_lanes_u8,
             bkw_lanes_u8,
             prepared_input.median,

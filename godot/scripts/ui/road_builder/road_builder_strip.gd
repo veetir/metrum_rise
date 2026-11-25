@@ -274,11 +274,11 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		_press_part = part_at(button.position)
-		if is_interior(_press_part) or _sidewalk_width_hit(_press_part, button.position):
+		if is_interior(_press_part) or _width_hit(_press_part, button.position):
 			part_pressed.emit(_press_part)
 	else:
 		var index := part_at(button.position)
-		if index >= 0 and index == _press_part and (is_interior(index) or _sidewalk_width_hit(index, button.position)):
+		if index >= 0 and index == _press_part and (is_interior(index) or _width_hit(index, button.position)):
 			part_clicked.emit(index)
 			accept_event()
 		elif index >= 0 and index == _press_part and _is_toggle_end(index):
@@ -286,10 +286,12 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 		_press_part = -1
 
-# The checkbox toggles the end. Its pavement and width open the same popup as other parts.
-func _sidewalk_width_hit(index: int, at: Vector2) -> bool:
-	return _is_toggle_end(index) and String(parts[index].get("kind", "")) == "sidewalk" \
-		and at.y >= SURFACE_TOP
+# The sidewalk's checkbox toggles it. Its pavement and the walkway part open the width popup.
+func _width_hit(index: int, at: Vector2) -> bool:
+	if index < 0:
+		return false
+	var kind := String(parts[index].get("kind", ""))
+	return kind == "footpath" or (_is_toggle_end(index) and kind == "sidewalk" and at.y >= SURFACE_TOP)
 
 func _get_tooltip(at_position: Vector2) -> String:
 	if get_viewport().gui_is_dragging():
@@ -300,7 +302,7 @@ func _get_tooltip(at_position: Vector2) -> String:
 	if _is_toggle_end(index):
 		var side := "left" if index == 0 else "right"
 		if String(parts[index].get("kind", "")) == "sidewalk":
-			if _sidewalk_width_hit(index, at_position):
+			if _width_hit(index, at_position):
 				return "Change %s sidewalk width" % side
 			return "%s sidewalk" % side.capitalize()
 		return "No %s sidewalk" % side

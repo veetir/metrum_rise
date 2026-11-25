@@ -133,6 +133,7 @@ fn types_round_trip_through_the_file() {
         written[0].usable(),
         Some(RoadCrossSection {
             sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+            footpath_width_m: crate::simulation::network::road_types::FOOTPATH_DEFAULT_WIDTH_M,
             fwd_lanes: 2,
             bkw_lanes: 2,
             median: Some(RoadMedian {
@@ -648,6 +649,7 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
         rural.usable(),
         Some(RoadCrossSection {
             sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+            footpath_width_m: crate::simulation::network::road_types::FOOTPATH_DEFAULT_WIDTH_M,
             fwd_lanes: 1,
             bkw_lanes: 1,
             median: None,
@@ -691,7 +693,9 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
     assert_eq!(
         library.create(
             "Path",
-            &[RoadPart::Footpath],
+            &[RoadPart::Footpath {
+                width_m: crate::simulation::network::road_types::FOOTPATH_DEFAULT_WIDTH_M
+            }],
             999,
             true,
             true,
@@ -700,8 +704,18 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
         Ok("custom:4".into())
     );
     assert_eq!(custom(&mut library)[3].speed_kmh, 0);
-    // An entry with a speed out of range is listed unusable and kept as it was.
     let mut json = fixture.json();
+    let part = json["types"][3]["parts"][0].as_object_mut().unwrap();
+    assert_eq!(part.remove("width_m"), Some(2.0.into()));
+    fs::write(fixture.path(), serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(
+        custom(&mut fixture.library())[3]
+            .usable()
+            .unwrap()
+            .footpath_width_m,
+        2.0
+    );
+    // An entry with a speed out of range is listed unusable and kept as it was.
     json["types"][1]["speed_kmh"] = 45.into();
     fs::write(fixture.path(), serde_json::to_vec(&json).unwrap()).unwrap();
     let mut library = fixture.library();

@@ -24,7 +24,7 @@ use crate::nodes::sim::road_tool::draw::chunks::PreviewOverlay;
 use crate::nodes::sim::road_tool::draw::marks::JoinMarks;
 use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
+use crate::simulation::network::graph::{RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
@@ -104,7 +104,7 @@ impl RoadCorridorClearance {
     ) -> Self {
         let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
         let (fwd, bkw) = (lanes(fwd_lanes), lanes(bkw_lanes));
-        let half_width = Edge::cross_section_width_m(fwd, bkw, median, parking) * 0.5
+        let half_width = attributes.carriageway_width_m(fwd, bkw, median, parking) * 0.5
             + attributes.corridor_side_m(fwd == 0 && bkw == 0);
         let parcels = core
             .zoning

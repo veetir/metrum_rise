@@ -253,7 +253,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	await _click_part(0)
-	var sidewalk = _builder.part_popup.sidewalk_control
+	var sidewalk = _builder.part_popup.width_control
 	_expect(sidewalk.visible, "clicking sidewalk pavement opens the width stepper")
 	for i in range(3):
 		sidewalk._plus.pressed.emit()
@@ -501,7 +501,7 @@ func _run() -> void:
 	_expect(is_equal_approx(float(_type(avenue).median_width), wider) and _type(avenue).name == "Builder Test Avenue", "Save writes the edit: %s" % _type(avenue).median_width)
 	_expect(_changes == [""] and is_equal_approx(_tool.intent().median_width, wider) and _tool.intent().road_type_id == avenue, "the tool re-picks the edited type")
 
-	# Duplicate: a custom type and a built-in start new types; the walkway cannot be duplicated.
+	# A custom type and any built-in can be templates.
 	await _open()
 	var list = _builder.library_list
 	list.pick(avenue)
@@ -514,7 +514,33 @@ func _run() -> void:
 	_expect(_builder.parts == [{"kind": "sidewalk", "width_m": 3.0}, BACK, BACK, AHEAD, AHEAD, {"kind": "sidewalk", "width_m": 3.0}] and _builder.editing_id.is_empty() and list.delete_button.disabled,
 		"a built-in starts a new type and cannot be deleted")
 	list.pick("builtin:walkway")
-	_expect(list.duplicate_button.disabled, "the walkway cannot be duplicated")
+	_expect(not list.duplicate_button.disabled and _widths_are(2.0, 2.0), "the walkway starts at 2 m")
+	await _click_part(0)
+	var walkway = _builder.part_popup.width_control
+	_expect(walkway.visible, "clicking the walkway opens its width stepper")
+	walkway._minus.pressed.emit()
+	_expect(walkway._minus.disabled and _widths_are(1.5, 1.5), "the walkway steps down to 1.5 m")
+	for i in range(7):
+		walkway._plus.pressed.emit()
+	_expect(walkway._plus.disabled and _widths_are(5.0, 5.0), "the walkway steps up to 5 m")
+	_builder.part_popup.hide()
+	await process_frame
+	_builder.name_edit.text = "Wide walkway"
+	_builder.name_edit.text_changed.emit("Wide walkway")
+	_builder.create_button.pressed.emit()
+	await process_frame
+	var wide := String(_type_named("Wide walkway").get("id", ""))
+	_simulation.reload_road_types()
+	_expect(not wide.is_empty() and float(_type(wide).get("footpath_width_m", 0.0)) == 5.0,
+		"the walkway library keeps the chosen width")
+	_expect(_tool.intent().road_type_id == wide and _input.current_tool == _input.Tool.WALKWAY,
+		"creating a custom walkway selects it for drawing")
+	var walkway_edge := await _draw(-200.0)
+	_expect(walkway_edge >= 0 and _simulation.get_edge_width(walkway_edge) == 5.0, "the built walkway is 5 m wide")
+	var walkway_generation: int = _simulation.get_network_render_generation()
+	_expect(_simulation.undo_action() and await _await_generation(walkway_generation), "undo removes the fixture walkway")
+	_simulation.delete_road_type(wide)
+	await _open()
 	list.pick(avenue)
 	list.duplicate_button.pressed.emit()
 	_builder.create_button.pressed.emit()

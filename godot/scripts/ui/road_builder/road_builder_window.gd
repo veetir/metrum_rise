@@ -187,7 +187,7 @@ func _build_window() -> void:
 	editor.add_child(_well(_build_bottom_row(), 8))
 
 	part_popup = RoadPartPopup.new()
-	part_popup.sidewalk_changed.connect(func(width_m: float): set_sidewalk_width(_popup_index, width_m))
+	part_popup.width_changed.connect(func(width_m: float): set_part_width(_popup_index, width_m))
 	part_popup.median_changed.connect(func(style: int, width: float): set_median(_popup_index, style, width))
 	part_popup.move_requested.connect(func(step: int): move_part_by(_popup_index, step))
 	part_popup.remove_requested.connect(func(): remove_part(_popup_index))
@@ -409,7 +409,7 @@ func open() -> void:
 	_simulation_node.reload_road_types()
 	var changed := str(_simulation_node.get_road_types()) != listed
 	_median_styles = _simulation_node.get_median_styles()
-	part_popup.sidewalk_control.grid = _simulation_node.get_road_types().get("sidewalk_widths", {})
+	_set_width_grids(_simulation_node.get_road_types())
 	for tile in tiles:
 		if String(tile.part.get("kind", "")) == "median":
 			tile.part["width_m"] = float(_median_styles[int(tile.part.style)].default_m)
@@ -442,10 +442,10 @@ func is_open() -> bool:
 func _start(layout: Array, id: String, type_name: String, from: Dictionary = {}) -> void:
 	_close_popup()
 	var start: Array = layout.duplicate(true) if not layout.is_empty() else [SIDEWALK.duplicate(), SIDEWALK.duplicate()]
-	var widths: Dictionary = part_popup.sidewalk_control.grid
 	for part: Dictionary in start:
-		if String(part.get("kind", "")) == "sidewalk" and not part.has("width_m"):
-			part["width_m"] = float(widths.default_m)
+		var grid: Dictionary = part_popup.width_grids.get(part.get("kind", ""), {})
+		if not grid.is_empty() and not part.has("width_m"):
+			part["width_m"] = float(grid.default_m)
 	if not start.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath"):
 		if String(start[0].get("kind", "")) != "sidewalk":
 			start.push_front(SHOULDER.duplicate())
@@ -471,10 +471,16 @@ func _start(layout: Array, id: String, type_name: String, from: Dictionary = {})
 
 func _refresh_library() -> void:
 	_library = _simulation_node.get_road_types()
-	part_popup.sidewalk_control.grid = _library.get("sidewalk_widths", {})
+	_set_width_grids(_library)
 	_speeds = _library.get("speeds", {})
 	speed_box.values = PackedInt32Array(_speeds.get("kmh", PackedInt32Array()))
 	library_list.show_library(_library, editing_id)
+
+func _set_width_grids(library: Dictionary) -> void:
+	part_popup.width_grids = {
+		"sidewalk": library["sidewalk_widths"],
+		"footpath": library["footpath_widths"],
+	}
 
 ## The layout as Rust takes it: `parts` without the shoulder ends.
 func rust_parts() -> Array:
@@ -484,7 +490,7 @@ func rust_parts() -> Array:
 func has_sidewalk(left: bool) -> bool:
 	return parts.is_empty() or String(parts[0 if left else -1].get("kind", "")) != "shoulder"
 
-# A footpath layout (a walkway, only from a hand-written entry): no speed and no sidewalks.
+# A footpath layout has no speed or sidewalks.
 func _is_footpath() -> bool:
 	return parts.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath")
 
@@ -493,7 +499,7 @@ func _is_footpath() -> bool:
 func set_sidewalk(left: bool, on: bool) -> void:
 	var part := (SIDEWALK if on else SHOULDER).duplicate()
 	if on:
-		part["width_m"] = float(part_popup.sidewalk_control.grid.default_m)
+		part["width_m"] = float(part_popup.width_grids["sidewalk"].default_m)
 	parts[0 if left else -1] = part
 	_close_popup()
 	strip.set_slot(strip.selected_slot)
@@ -591,11 +597,14 @@ func set_median(index: int, style: int, width_m: float) -> void:
 	parts[index] = {"kind": "median", "style": style, "width_m": width_m}
 	_layout_changed()
 
-## Sets the clicked sidewalk's width and checks the layout in Rust.
-func set_sidewalk_width(index: int, width_m: float) -> void:
-	if index < 0 or index >= parts.size() or String(parts[index].get("kind", "")) != "sidewalk":
+## Sets the clicked sidewalk or walkway width and checks the layout in Rust.
+func set_part_width(index: int, width_m: float) -> void:
+	if index < 0 or index >= parts.size():
 		return
-	parts[index] = {"kind": "sidewalk", "width_m": width_m}
+	var part: Dictionary = parts[index]
+	if not part_popup.width_grids.has(part.get("kind", "")):
+		return
+	part["width_m"] = width_m
 	_layout_changed()
 
 # Asks Rust's verdict on the layout and shows it. The strip draws a shoulder band at each end
@@ -705,9 +714,6 @@ func create() -> void:
 
 func _on_type_selected(type: Dictionary) -> void:
 	if bool(type.get("builtin", false)):
-		if String(type.get("id", "")) == RoadTypeLibraryList.WALKWAY_ID:
-			_status("The walkway is not built in the road builder", STATUS_NAME)
-			return
 		# A built-in is a template: its layout starts a new type.
 		_start(type.get("parts", []), "", "", type)
 		library_list.select_id(String(type.get("id", "")))

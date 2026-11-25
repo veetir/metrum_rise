@@ -8,7 +8,8 @@ use crate::nodes::sim::road_tool::batch::draft_requests;
 use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
 use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking, SidewalkWidths};
 use crate::simulation::network::road_edit::RoadProfile;
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{RoadAttributes, validate_footpath_width};
+use crate::simulation::network::types::TransitType;
 
 mod road_holds;
 pub(super) mod road_tool;
@@ -706,6 +707,7 @@ impl SimulationNode {
     /// change), `sidewalks` (`ROAD-107`: the sides with one in the road's forward direction, 0
     /// none, 1 left, 2 right, 3 both; 0 for a walkway),
     /// `sidewalk_left_m` and `sidewalk_right_m` (widths including the kerb),
+    /// `footpath_width_m` on a walkway,
     /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
     /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
     /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
@@ -733,7 +735,7 @@ impl SimulationNode {
                 "median_style": i64::from(RoadMedian::style_code(edge.median)),
                 "median_width": edge.median.map_or(0.0, |median| median.width_m),
                 "parking": i64::from(edge.parking.code()),
-                "editable": edge
+                "editable": edge.primary_type == TransitType::Road && edge
                     .validate_cross_section(
                         edge.fwd_lanes,
                         edge.bkw_lanes,
@@ -750,6 +752,9 @@ impl SimulationNode {
             result.set("sidewalk_left_m", section.sidewalk_widths.on_lateral(false));
             result.set("sidewalk_right_m", section.sidewalk_widths.on_lateral(true));
             result.set("speed_kmh", i64::from(speed_kmh));
+            if edge.primary_type == TransitType::Foot {
+                result.set("footpath_width_m", edge.width);
+            }
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
             result.set("lanes", lane_rows(edge));
@@ -780,6 +785,7 @@ impl SimulationNode {
     /// `invalid_reason` (stable key) and `detail`.
     /// The same check as [`Self::set_edge_cross_section`]. `sidewalk_widths` is
     /// a two-element array in metres, left then right. Omit it to keep both widths.
+    /// A walkway can receive one width in metres in `footpath_width`. Omit it to keep the stored width.
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn preview_edge_cross_section(
@@ -795,23 +801,31 @@ impl SimulationNode {
         zoning: bool,
         street_lights: bool,
         #[opt(default = &PackedFloat32Array::new())] sidewalk_widths: PackedFloat32Array,
+        #[opt(default = &PackedFloat32Array::new())] footpath_width: PackedFloat32Array,
     ) -> VarDictionary {
         let attributes = (speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths);
         let mut core = self.lock_core();
         let current = usize::try_from(edge_id)
             .ok()
             .and_then(|id| core.region_graph.get_edge(id));
-        let verdict = cross_section_spec(median_style, median_width, parking, attributes, current)
-            .and_then(|(median, parking, attributes)| {
-                core.preview_edge_cross_section_internal(
-                    edge_id,
-                    lanes_u8(fwd),
-                    lanes_u8(bkw),
-                    median,
-                    parking,
-                    attributes,
-                )
-            });
+        let verdict = cross_section_spec(
+            median_style,
+            median_width,
+            parking,
+            attributes,
+            current,
+            &footpath_width,
+        )
+        .and_then(|(median, parking, attributes)| {
+            core.preview_edge_cross_section_internal(
+                edge_id,
+                lanes_u8(fwd),
+                lanes_u8(bkw),
+                median,
+                parking,
+                attributes,
+            )
+        });
         match verdict {
             Ok(verdict) => vdict! {
                 "is_valid": true,
@@ -836,7 +850,7 @@ impl SimulationNode {
     /// zoning off demolished stay demolished, as with the "No buildings" checkbox); its pieces
     /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
     /// Returns whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
-    /// changes nothing.
+    /// changes nothing. Pass `footpath_width` to resize a walkway.
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn set_edge_cross_section(
@@ -852,15 +866,21 @@ impl SimulationNode {
         zoning: bool,
         street_lights: bool,
         #[opt(default = &PackedFloat32Array::new())] sidewalk_widths: PackedFloat32Array,
+        #[opt(default = &PackedFloat32Array::new())] footpath_width: PackedFloat32Array,
     ) -> bool {
         let attributes = (speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths);
         self.publish_road_edit(|core| {
             let current = usize::try_from(edge_id)
                 .ok()
                 .and_then(|id| core.region_graph.get_edge(id));
-            let Ok((median, parking, attributes)) =
-                cross_section_spec(median_style, median_width, parking, attributes, current)
-            else {
+            let Ok((median, parking, attributes)) = cross_section_spec(
+                median_style,
+                median_width,
+                parking,
+                attributes,
+                current,
+                &footpath_width,
+            ) else {
                 return false;
             };
             core.set_edge_cross_section_internal(
@@ -1157,6 +1177,7 @@ fn cross_section_spec(
     parking: i32,
     (speed_kmh, sidewalks, zoning, street_lights, widths): (i32, i32, bool, bool, PackedFloat32Array),
     current: Option<&Edge>,
+    footpath_width: &PackedFloat32Array,
 ) -> Result<(Option<RoadMedian>, RoadParking, RoadAttributes), RoadRejection> {
     let median = RoadMedian::from_tool(median_style, median_width)
         .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
@@ -1192,6 +1213,20 @@ fn cross_section_spec(
             ));
         }
     };
+    if let Some(edge) = current.filter(|edge| edge.primary_type == TransitType::Foot) {
+        let refusal = |reason| RoadRejection::new(reason, "the walkway's width");
+        attributes.footpath_width_m = match footpath_width.as_slice() {
+            [] => edge.width,
+            &[width] => {
+                validate_footpath_width(width).map_err(refusal)?;
+                width
+            }
+            _ => return Err(refusal("footpath_width_out_of_range")),
+        };
+        // A walkway has its own pedestrian lanes, independent of the sidewalk mask.
+        attributes.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
+        attributes.speed_ms = edge.speed_limit;
+    }
     Ok((median, parking, attributes.with_sidewalk_widths(widths)))
 }
 

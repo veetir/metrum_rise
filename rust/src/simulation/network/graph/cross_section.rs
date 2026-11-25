@@ -710,8 +710,8 @@ impl Edge {
     }
 
     /// Whether this edge may carry `fwd` forward and `bkw` backward lanes, `median` and
-    /// `parking` after an in-place edit (`ROAD-80`, `PARK-05`): it must be a live road (a
-    /// footpath stays a footpath), keep at least one lane and stay within
+    /// `parking` after an in-place edit. A walkway stays a walkway. A car road keeps at least
+    /// one lane and stays within
     /// [`MAX_LANES_PER_DIRECTION`] per direction; a median must be valid, on a car road, between
     /// two directions; parking needs a car lane and a sidewalk on its side; a ring edge keeps
     /// its section
@@ -724,7 +724,17 @@ impl Edge {
         parking: RoadParking,
         sidewalks: SidewalkSides,
     ) -> Result<(), &'static str> {
-        if self.deleted || self.primary_type != TransitType::Road {
+        if self.deleted {
+            return Err("cross_section_not_road");
+        }
+        if self.primary_type == TransitType::Foot {
+            if fwd != 0 || bkw != 0 {
+                return Err("cross_section_not_road");
+            }
+            Self::validate_median(self.allowed_types, fwd, bkw, median)?;
+            return Self::validate_parking(self.allowed_types, fwd, bkw, parking, sidewalks);
+        }
+        if self.primary_type != TransitType::Road {
             return Err("cross_section_not_road");
         }
         if self.roundabout.is_some() {
@@ -881,8 +891,8 @@ impl RegionGraph {
     /// `sidewalks` (`ROAD-107`), the speed limit (the routing `base_cost` recomputed from it when
     /// it changes),
     /// `no_building_spawn` from `zoning` and `no_street_lights` from `street_lights`. Keeps its centreline, id, class and everything else
-    /// (`ROAD-80`). The cross-section must pass [`Edge::validate_cross_section`], so the edge is
-    /// a car road. The spatial index reads the centreline only, so it is kept. Callers re-lay out
+    /// (`ROAD-80`). The cross-section must pass [`Edge::validate_cross_section`]. The spatial
+    /// index reads the centreline only, so it is kept. Callers re-lay out
     /// both end nodes and rebuild their lanes, as `SimCore`'s in-place edit does. `O(1)`, or
     /// `O(points)` for a speed change.
     pub(crate) fn set_edge_cross_section(
@@ -903,9 +913,11 @@ impl RegionGraph {
         edge.bkw_lanes = bkw;
         edge.median = median;
         edge.parking = parking;
-        edge.width = Edge::cross_section_width_m(fwd, bkw, median, parking);
-        edge.set_sidewalks(attributes.sidewalks);
-        edge.sidewalk_widths = attributes.sidewalk_widths.for_sides(attributes.sidewalks);
+        edge.width = attributes.carriageway_width_m(fwd, bkw, median, parking);
+        if edge.primary_type == TransitType::Road {
+            edge.set_sidewalks(attributes.sidewalks);
+            edge.sidewalk_widths = attributes.sidewalk_widths.for_sides(attributes.sidewalks);
+        }
         edge.no_building_spawn = !attributes.zoning;
         edge.no_street_lights = !attributes.street_lights;
         if edge.speed_limit.to_bits() != attributes.speed_ms.to_bits() {
@@ -951,7 +963,7 @@ mod tests {
         };
         assert_eq!(
             foot.validate_cross_section(0, 0, median, RoadParking::NONE, SidewalkSides::NONE),
-            Err("cross_section_not_road")
+            Err("median_requires_vehicle_road")
         );
         assert!(RoadMedian::from_tool(1, f32::NAN).is_err());
         assert!(RoadMedian::from_tool(3, 0.5).is_err());

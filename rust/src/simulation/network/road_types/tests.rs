@@ -9,6 +9,9 @@ const S: RoadPart = RoadPart::Sidewalk {
 };
 const F: RoadPart = RoadPart::CarLane { forward: true };
 const B: RoadPart = RoadPart::CarLane { forward: false };
+const W: RoadPart = RoadPart::Footpath {
+    width_m: FOOTPATH_DEFAULT_WIDTH_M,
+};
 const P: RoadPart = RoadPart::Parking;
 
 fn median(style: MedianStyle, width_m: f32) -> RoadPart {
@@ -28,12 +31,8 @@ fn refused(parts: &[RoadPart]) -> (&'static str, Option<usize>) {
 fn every_layout_refusal_has_its_key_and_part() {
     let m = grass(3.0);
     let cases: &[(&[RoadPart], &str, Option<usize>)] = &[
-        (&[RoadPart::Footpath, S], "layout_footpath_alone", Some(0)),
-        (
-            &[S, B, RoadPart::Footpath, F, S],
-            "layout_footpath_alone",
-            Some(2),
-        ),
+        (&[W, S], "layout_footpath_alone", Some(0)),
+        (&[S, B, W, F, S], "layout_footpath_alone", Some(2)),
         (&[], "layout_no_car_lane", None),
         (&[S], "layout_no_car_lane", None),
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
@@ -88,6 +87,7 @@ fn valid_layouts_build_their_cross_section() {
     };
     let section = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
         sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+        footpath_width_m: FOOTPATH_DEFAULT_WIDTH_M,
         fwd_lanes,
         bkw_lanes,
         median,
@@ -103,7 +103,7 @@ fn valid_layouts_build_their_cross_section() {
         ..section(fwd_lanes, bkw_lanes, median)
     };
     let cases: &[(&[RoadPart], RoadCrossSection)] = &[
-        (&[RoadPart::Footpath], RoadCrossSection::WALKWAY),
+        (&[W], RoadCrossSection::WALKWAY),
         (&[B, F], bare(1, 1, None)),
         (&[F], bare(1, 0, None)),
         (&[B, B, paving, F, F], bare(2, 2, Some(paving_median))),
@@ -198,7 +198,7 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
         )
     );
     // A walkway is its footpath, as wide as a 0 + 0 edge.
-    let (widths, carriageway, total) = layout_widths(&[RoadPart::Footpath]);
+    let (widths, carriageway, total) = layout_widths(&[W]);
     assert_eq!((widths, carriageway, total), (vec![2.0], 2.0, 2.0));
     assert_eq!(
         carriageway,
@@ -271,6 +271,7 @@ fn the_builtins_build_todays_roads_menu() {
             section,
             RoadCrossSection {
                 sidewalk_widths: SidewalkWidths::new(sidewalk_m, sidewalk_m).unwrap(),
+                footpath_width_m: FOOTPATH_DEFAULT_WIDTH_M,
                 fwd_lanes,
                 bkw_lanes,
                 median: None,
@@ -429,6 +430,7 @@ fn pockets_fit_the_layout_they_are_saved_with() {
     // leaves its kerb stub (`ROAD-128`); right pockets and undivided roads always have room.
     let road = |fwd_lanes, bkw_lanes, style, width_m| RoadCrossSection {
         sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+        footpath_width_m: FOOTPATH_DEFAULT_WIDTH_M,
         fwd_lanes,
         bkw_lanes,
         median: RoadMedian::from_tool(style, width_m).unwrap(),
@@ -452,4 +454,22 @@ fn pockets_fit_the_layout_they_are_saved_with() {
         Err("pocket_lane_limit")
     );
     assert_eq!(pockets(false, true).fits(&road(3, 3, 0, 0.0)), Ok(()));
+}
+
+#[test]
+fn footpath_widths_use_the_half_metre_grid() {
+    for steps in 3..=10 {
+        let width_m = steps as f32 * 0.5;
+        let part = RoadPart::Footpath { width_m };
+        let section = check_layout(&[part]).unwrap();
+        assert_eq!(section.footpath_width_m, width_m);
+        assert_eq!(section.parts(), [part]);
+        assert_eq!(layout_widths(&[part]), (vec![width_m], width_m, width_m));
+    }
+    for width_m in [0.0, 1.0, 1.25, 2.25, 5.5, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            refused(&[RoadPart::Footpath { width_m }]),
+            ("footpath_width_out_of_range", Some(0)),
+        );
+    }
 }

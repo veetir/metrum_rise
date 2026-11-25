@@ -100,6 +100,7 @@ pub fn stroke_weight(
 ) -> f64 {
     let section = RoadCrossSection {
         sidewalk_widths: attributes.sidewalk_widths,
+        footpath_width_m: attributes.footpath_width_m,
         fwd_lanes: fwd,
         bkw_lanes: bkw,
         median,
@@ -152,6 +153,7 @@ mod tests {
     ) -> RoadCrossSection {
         RoadCrossSection {
             sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+            footpath_width_m: super::super::FOOTPATH_DEFAULT_WIDTH_M,
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median: median.map(|(style, width_m)| RoadMedian { style, width_m }),

@@ -40,6 +40,7 @@ enum Measured {
     TypeEdit,
     SideEdit,
     SidewalkWidthEdit,
+    FootpathWidthEdit,
     PocketEdit,
     PocketStroke,
     Conversion,
@@ -249,6 +250,21 @@ fn populated_sidewalk_width_edit_scaling() {
     crate::debug::work::set_city_checks(true);
 }
 
+// The same fixed local T and remote city, with a 2 m walkway as its side arm.
+#[test]
+#[ignore = "unprofiled walkway width edit locality; run alone with --release --ignored --nocapture"]
+fn populated_footpath_width_edit_scaling() {
+    crate::debug::work::set_city_checks(false);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::FootpathWidthEdit,
+    );
+    crate::debug::work::set_city_checks(true);
+}
+
 // `ROAD-101` locality: the T's side road given a rural road type's attributes in place: its
 // sidewalks off and 80 km/h (lanes rebuilt without sidewalks, the routing cost recomputed).
 #[test]
@@ -427,15 +443,18 @@ fn measure_populated_road_plan_scaling(
             | Measured::TypeEdit
             | Measured::SideEdit
             | Measured::SidewalkWidthEdit
+            | Measured::FootpathWidthEdit
             | Measured::PocketEdit
             | Measured::Conversion
             | Measured::RingJoin
     );
     if in_place {
-        road_terrain_plan::commit_ready(
-            &mut core,
-            vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
-        );
+        let points = vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)];
+        if measured == Measured::FootpathWidthEdit {
+            road_terrain_plan::commit_ready_with_lanes(&mut core, points, 0, 0);
+        } else {
+            road_terrain_plan::commit_ready(&mut core, points);
+        }
         core.precompute_road_mesh_data();
     }
     let mut previous_lane_products = None;
@@ -674,6 +693,15 @@ fn measure_populated_road_plan_scaling(
                         RoadAttributes::DEFAULT.with_sidewalk_widths(widths),
                     )
                 }
+                Measured::FootpathWidthEdit => (
+                    0,
+                    0,
+                    None,
+                    RoadAttributes {
+                        footpath_width_m: 5.0,
+                        ..RoadAttributes::new(50, SidewalkSides::NONE, true)
+                    },
+                ),
                 _ => (1, 1, None, RoadAttributes::new(80, SidewalkSides::NONE, true)),
             };
             let products = if measured == Measured::PocketEdit {
@@ -782,6 +810,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::TypeEdit
             | Measured::SideEdit
             | Measured::SidewalkWidthEdit
+            | Measured::FootpathWidthEdit
             | Measured::PocketEdit
             | Measured::Conversion
             | Measured::RingJoin => {
@@ -1028,7 +1057,7 @@ fn measure_lane_edit(
     }
     // The side arm's crossing toggled off and undone: its lanes rebuild locally too.
     let mut toggles = Vec::new();
-    for _ in 0..20 {
+    for _ in 0..if fwd + bkw == 0 { 0 } else { 20 } {
         let start = Instant::now();
         assert!(core.set_crosswalk_override_internal(node, side, false));
         toggles.push(start.elapsed().as_secs_f64() * 1000.0);
@@ -1045,7 +1074,7 @@ fn measure_lane_edit(
             "sidewalks": attributes.sidewalks.bits(), "speed_ms": attributes.speed_ms,
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
-            "toggle_p50_ms": p50(&mut toggles),
+            "toggle_p50_ms": (!toggles.is_empty()).then(|| p50(&mut toggles)),
             "publish_p50_ms": p50(&mut publishes), "published_chunks": published_chunks,
             "commit_samples": commits.len(), "identical_local_products": true,
         })

@@ -187,16 +187,13 @@ func _on_custom_item(item_id: int) -> void:
 	var id: String = custom_ids[item_id - 1]
 	type_picked.emit(id, _is_walkway(_types[id]))
 
-## The attributes the road tool and an in-place edit send for `type` (`get_road_types` entry),
-## `[speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths]` (`sidewalks` is Rust's side code): the type's
-## own, except that a walkway, which has neither a speed nor sidewalks of its own, sends
-## `speeds.default_kmh` with both sidewalks, as every stroke did before road types (its stroke
-## builds the same footpath either way).
+## Cross-section attributes for Road Properties. A walkway carries its own width and no sidewalk.
 static func tool_attributes(type: Dictionary, speeds: Dictionary) -> Array:
 	var zoning := bool(type.get("zoning", true))
 	var lights := bool(type.get("street_lights", true))
 	if _is_walkway(type):
-		return [int(speeds.get("default_kmh", 50)), SIDEWALKS_BOTH, zoning, lights, sidewalk_width_pair(type)]
+		return [int(speeds.get("default_kmh", 50)), 0, zoning, lights, PackedFloat32Array(),
+			PackedFloat32Array([type["footpath_width_m"]])]
 	return [int(type.get("speed_kmh", 0)), int(type.get("sidewalks", SIDEWALKS_BOTH)), zoning, lights,
 		sidewalk_width_pair(type)]
 

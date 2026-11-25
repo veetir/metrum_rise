@@ -84,18 +84,20 @@ pub fn type_spec(ty: &RoadType) -> Result<RoadTypeSpec, &'static str> {
     } else {
         (ty.speed_kmh, section.sidewalks, ty.pockets)
     };
+    let mut attributes = RoadAttributes::from_tool(
+        speed_kmh.into(),
+        sidewalks.bits().into(),
+        ty.zoning,
+        ty.street_lights,
+    )?
+    .with_sidewalk_widths(section.sidewalk_widths);
+    attributes.footpath_width_m = section.footpath_width_m;
     Ok(RoadTypeSpec {
         fwd_lanes: section.fwd_lanes,
         bkw_lanes: section.bkw_lanes,
         median: section.median,
         parking: section.parking,
-        attributes: RoadAttributes::from_tool(
-            speed_kmh.into(),
-            sidewalks.bits().into(),
-            ty.zoning,
-            ty.street_lights,
-        )?
-        .with_sidewalk_widths(section.sidewalk_widths),
+        attributes,
         pockets,
     })
 }
@@ -122,6 +124,7 @@ mod tests {
         };
         let section = RoadCrossSection {
             sidewalk_widths: crate::simulation::network::graph::SidewalkWidths::DEFAULT,
+            footpath_width_m: crate::simulation::network::road_types::FOOTPATH_DEFAULT_WIDTH_M,
             fwd_lanes: 2,
             bkw_lanes: 1,
             median: Some(median),

@@ -610,12 +610,13 @@ func set_selected_edge_class(class_int: int) -> void:
 ## lots the widenings take (`demolish_lots`), which this tool outlines. Each road is checked as it
 ## stands, as Apply commits them one by one.
 func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
-		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool, sidewalk_widths := PackedFloat32Array()) -> Dictionary:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool,
+		sidewalk_widths := PackedFloat32Array(), footpath_width := PackedFloat32Array()) -> Dictionary:
 	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false,
 		"demolish_lots": PackedVector3Array()}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
-			parking, speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths)
+			parking, speed_kmh, sidewalks, zoning, street_lights, sidewalk_widths, footpath_width)
 		if not bool(verdict.get("is_valid", false)):
 			show_demolition(PackedVector3Array())
 			return verdict
@@ -641,11 +642,12 @@ func show_demolition(lots: PackedVector3Array) -> void:
 ## type's attributes, each with its undo record, and returns how many were refused. The edits
 ## publish their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
 func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
-		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool, sidewalk_widths := PackedFloat32Array()) -> int:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool,
+		sidewalk_widths := PackedFloat32Array(), footpath_width := PackedFloat32Array()) -> int:
 	var refused := 0
 	for idx in selected_edges:
 		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, parking, speed_kmh,
-				sidewalks, zoning, street_lights, sidewalk_widths):
+				sidewalks, zoning, street_lights, sidewalk_widths, footpath_width):
 			refused += 1
 	show_demolition(PackedVector3Array())
 	_rebuild_highlight()

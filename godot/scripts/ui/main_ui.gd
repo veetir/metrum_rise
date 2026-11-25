@@ -639,7 +639,7 @@ func _on_road_types_changed(created_id: String) -> void:
 	refresh_road_types()
 	if not created_id.is_empty():
 		road_combined_hbox.visible = true
-		_select_road_type(created_id, false)
+		road_type_menu.pick(created_id)
 
 # The Snapping and Steps controls (`ROAD-112` round E): the session's snapping toggles and steps,
 # each sent to Rust by the road tool under its option name. The controls start at the tool's

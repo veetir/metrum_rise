@@ -4,7 +4,7 @@
 //!
 //! Band kinds map to layers as the legacy top-surface renderer did: carriageway to the road
 //! layer with road-space UVs, curb or shoulder to the curb layer, every other band to the
-//! sidewalk layer (road-space footpath colour on footpath edges), and curb faces to the
+//! sidewalk layer (the band kind marks footpath asphalt), and curb faces to the
 //! raised-step layer. Node pieces use world UVs throughout, and their carriageway keeps
 //! `road_color`'s zero alpha: junction asphalt has no road space. The triangles are the pieces'
 //! own, so queries answer from what renders. A kerbed grass median's top goes to the median
@@ -23,7 +23,6 @@ use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_abutment_faces, emit_chain_strips, emit_lining, triangle_is_too_small};
 use crate::simulation::network::graph::{MedianStyle, RegionGraph, RoadMedian};
 use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem, StripKind};
-use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2};
 
 // Bands other than carriageway and curb draw on the sidewalk layer.
@@ -72,13 +71,12 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             curb_color(),
         );
         emit_curb_faces(mesh, piece);
-        // Footpaths draw their own path surface (road_path.gdshader) in road space.
-        let (uvs, color) = if edge.primary_type == TransitType::Foot {
-            (Uvs::RoadSpace { centre_m: 0.0 }, footpath_color(edge))
-        } else {
-            (Uvs::World, sidewalk_color())
-        };
         for kind in NON_ROAD_KINDS {
+            let (uvs, color) = if kind == BandKind::Footpath {
+                (Uvs::RoadSpace { centre_m: 0.0 }, footpath_color(Some(edge)))
+            } else {
+                (Uvs::World, sidewalk_color())
+            };
             // A kerbed grass median's top draws on the grass layer (`ROAD-80`); paving stays
             // with the sidewalk.
             let layer = if kind == BandKind::Median && edge.median.is_some_and(is_grass) {
@@ -134,7 +132,12 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             } else {
                 MeshLayer::Sidewalk
             };
-            emit_band(mesh, piece, kind, layer, Uvs::World, sidewalk_color());
+            let color = if kind == BandKind::Footpath {
+                footpath_color(None)
+            } else {
+                sidewalk_color()
+            };
+            emit_band(mesh, piece, kind, layer, Uvs::World, color);
         }
         emit_band(
             mesh,
@@ -314,6 +317,61 @@ mod tests {
             clipped > 10 && chunks.len() > 10,
             "{clipped} clipped triangles in {} chunks",
             chunks.len()
+        );
+    }
+
+    #[test]
+    fn footpath_material_reaches_the_shared_sidewalk_edge() {
+        use crate::simulation::network::roadbed::fixtures::{finalize, footpath_fixtures};
+        use crate::simulation::network::types::TransitType;
+
+        let mut graph = footpath_fixtures(false)
+            .into_iter()
+            .find(|(name, _)| name == "through_road/false")
+            .unwrap()
+            .1;
+        let path = (0..graph.edge_count())
+            .find(|&id| graph.edge(id).primary_type == TransitType::Foot)
+            .unwrap();
+        graph.edge_mut(path).width = 5.0;
+        finalize(&mut graph);
+        let mut roadbed = RoadbedSystem::new_with_chunk_grid(512.0, -256.0, -256.0);
+        roadbed.compile_dirty(&graph);
+        let node = roadbed.node_piece(0).unwrap();
+        let target = node.layout().attachments[0].edges[0].point;
+        let targets = roadbed.occupied_chunks().collect();
+        let chunks = RoadRenderer.generate_mesh_chunks_with_surface(
+            &graph,
+            &mut LaneSystem::new(),
+            &TerrainSystem::new(4, 4),
+            &crate::simulation::terrain::graded::NoSites,
+            &roadbed,
+            &targets,
+            None,
+            &Default::default(),
+        );
+        let mesh = chunks.values().next().unwrap();
+        assert_eq!(chunks.len(), 1);
+        let mut seam = [false; 2];
+        for (p, colour) in mesh.sidewalk_vertices.iter().zip(&mesh.sidewalk_colors) {
+            if p.x == target.x as f32 && p.z == target.y as f32 {
+                if colour.g == 1.0 {
+                    assert_eq!(colour.r, 0.0, "the footpath ribbon is in world space");
+                    seam[0] = true;
+                } else {
+                    seam[1] = true;
+                }
+            }
+        }
+        assert_eq!(
+            seam,
+            [true, true],
+            "the asphalt ribbon and paving share the seam"
+        );
+        assert!(
+            mesh.sidewalk_colors
+                .iter()
+                .any(|colour| colour.g == 1.0 && colour.r > 0.0)
         );
     }
 
