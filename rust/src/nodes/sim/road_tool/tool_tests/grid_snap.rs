@@ -263,7 +263,7 @@ fn grid_off_frames_are_unchanged() {
     assert!(frames.iter().any(|frame| frame.contains("snap: Node")));
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (36, 0x9ec0_7cae_572c_1b29)
+        (36, 0xf086_f754_4633_add7)
     );
 }
 

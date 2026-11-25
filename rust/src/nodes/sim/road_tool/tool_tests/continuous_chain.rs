@@ -384,6 +384,6 @@ fn continuous_off_and_straight_curve_chains_are_unchanged() {
     run_script(&mut tool, &on, &mut frames);
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (58, 0x53d2_088c_9ddb_29fd)
+        (58, 0xfaed_a397_dbab_623d)
     );
 }

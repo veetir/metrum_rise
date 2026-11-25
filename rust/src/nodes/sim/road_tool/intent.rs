@@ -106,7 +106,7 @@ pub fn type_spec(ty: &RoadType) -> Result<RoadTypeSpec, &'static str> {
 mod tests {
     use super::*;
     use crate::nodes::sim::road_tool::session::{RoadToolOption, RoadToolSession};
-    use crate::simulation::network::graph::{MedianStyle, RoadMedian, RoadParking};
+    use crate::simulation::network::graph::{MedianStyle, RoadMedian, RoadParking, SidewalkWidths};
     use crate::simulation::network::road_types::{
         BUILTIN_ROAD_TYPES, RoadCrossSection, RoadTypeRefusal,
     };
@@ -199,9 +199,17 @@ mod tests {
         assert_eq!(spec.attributes, RoadAttributes::DEFAULT);
         assert_eq!(pick.current.as_deref(), Some(WALKWAY_ROAD_TYPE));
         assert_eq!(pick.last, "custom:1");
-        // A built-in is bitwise the default road's spec.
+        // The 2-Lane Road has the built-in's authored sidewalk widths.
         pick_on(&mut session, &mut pick, &types, DEFAULT_ROAD_TYPE).expect("built-in");
-        assert_eq!(session.spec(), RoadTypeSpec::default());
+        assert_eq!(session.spec(), expected_two_lane_spec());
+    }
+
+    fn expected_two_lane_spec() -> RoadTypeSpec {
+        RoadTypeSpec {
+            attributes: RoadAttributes::DEFAULT
+                .with_sidewalk_widths(SidewalkWidths::new(2.0, 2.0).unwrap()),
+            ..RoadTypeSpec::default()
+        }
     }
 
     #[test]
@@ -238,7 +246,7 @@ mod tests {
         // The avenue is deleted: the current and last types fall back to the 2-Lane Road.
         types.remove(5);
         let spec = pick.reload(&types).expect("picked").expect("default");
-        assert_eq!(spec, RoadTypeSpec::default());
+        assert_eq!(spec, expected_two_lane_spec());
         assert_eq!(pick.current.as_deref(), Some(DEFAULT_ROAD_TYPE));
         assert_eq!(pick.last, DEFAULT_ROAD_TYPE);
     }
